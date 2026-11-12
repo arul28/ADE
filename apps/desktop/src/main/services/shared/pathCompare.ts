@@ -2,6 +2,7 @@
 // (`piSessionLease.ts` imports `pathCompare.ts` by explicit source
 // extension). Extensionless specifiers fail that load with empty stdout and
 // exit 1, which is the CI failure this comment exists to prevent.
+import os from "node:os";
 // @ts-expect-error TS5097: the strip-types child loader requires the source extension.
 import { foldsCase, type ContainmentPlatform } from "../../../shared/pathCase.ts";
 // @ts-expect-error TS5097: the strip-types child loader requires the source extension.
@@ -98,4 +99,16 @@ export function isPathInside(
   if (candidateKey === parentKey) return true;
   const prefix = parentKey.endsWith(api.sep) ? parentKey : `${parentKey}${api.sep}`;
   return candidateKey.startsWith(prefix);
+}
+
+/**
+ * Whether a path is in a folder the OS may clear (where test projects live):
+ * the OS temp folder, and on macOS and Linux `/tmp` and `/var/folders`.
+ */
+export function isInsideTempFolder(candidate: string, platform: NodeJS.Platform = process.platform): boolean {
+  const temps = [
+    os.tmpdir(),
+    ...(platform === "win32" ? [] : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
+  ];
+  return temps.some((temp) => isPathInside(candidate, temp, platform));
 }

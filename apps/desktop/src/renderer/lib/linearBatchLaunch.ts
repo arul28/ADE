@@ -12,6 +12,7 @@ import type {
   AgentChatInteractionMode,
   AgentChatOpenCodePermissionMode,
   AgentChatEventEnvelope,
+  ChatLaunchArgs,
   LaneGitHubIssue,
   LaneLinearIssue,
   LaneSummary,
@@ -581,6 +582,59 @@ export function issueChatLaunchArgs(args: {
     kickoffText: args.kickoffText,
     contextAttachments: args.contextAttachment ? [args.contextAttachment] : [],
     ...(presetId ? { presetId } : {}),
+  };
+}
+
+/**
+ * One issue of a batch as an ADE Cloud launch: the lane alone (`lane`), or
+ * the lane with its chat (`chat`). The lane gets the issue's name and branch,
+ * and the chat gets the issue as its context, as on any other machine. Main
+ * makes a new computer for each. A CLI session can't start from a batch on
+ * ADE Cloud (the window that starts it after the hand-off is the composer's).
+ */
+export function issueAdeCloudLaunchArgs(
+  entry: { issue: LaunchIssue; config: BatchLaunchIssueConfig },
+  ids: { launchId: string; laneId: string },
+): Omit<ChatLaunchArgs, "cloud" | "originClientId"> & { laneId: string; laneName: string } {
+  const { issue, config } = entry;
+  const laneConfig = {
+    mode: "new" as const,
+    branchName: config.branchOverride.trim() || issue.branchName,
+    // The issue is a lane link on the computer too, not only the chat's context.
+    ...issue.createLaneLink,
+  };
+  const common = {
+    mode: "background" as const,
+    launchId: ids.launchId,
+    laneId: ids.laneId,
+    laneName: issue.laneName,
+    title: issue.laneName,
+    laneConfig,
+  };
+  if (config.laneOnly) return { ...common, kind: "lane", prompt: "" };
+  const kickoffText = config.kickoffPrompt.trim() || defaultIssueKickoffPrompt(issue);
+  const {
+    laneId: _laneId,
+    kickoffText: _kickoff,
+    contextAttachments,
+    permissionMode,
+    ...create
+  } = issueChatLaunchArgs({
+    laneId: ids.laneId,
+    config,
+    kickoffText,
+    contextAttachment: issue.contextAttachment,
+  });
+  return {
+    ...common,
+    kind: "chat",
+    prompt: kickoffText,
+    provider: create.provider,
+    modelId: create.modelId,
+    chat: {
+      create: { ...create, ...(permissionMode != null ? { permissionMode } : {}) },
+      message: { text: kickoffText, ...(contextAttachments.length ? { contextAttachments } : {}) },
+    },
   };
 }
 

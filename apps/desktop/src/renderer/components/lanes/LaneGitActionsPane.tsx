@@ -1,11 +1,13 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
-import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, Minus, Stack, Trash } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, GitMerge, Minus, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
+  selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
+import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -302,6 +304,8 @@ export function LaneGitActionsPane({
   const lanes = useAppStore((s) => s.lanes);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  // This tab's key for the "Creating…" row; the global store can name another tab by then.
+  const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
   // divergence guard below; the slice is reference-stable while unchanged.
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
@@ -1027,9 +1031,13 @@ export function LaneGitActionsPane({
     });
     try {
       // Made on this lane's machine: the copy reads this lane's folder.
-      const created = await window.ade.lanes.create(
-        { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
-        pin,
+      // The lane lists show a "Creating…" row while this runs.
+      const created = await trackPendingLaneCreate(
+        { name: name.trim(), scopeKey: tabScopeKey },
+        () => window.ade.lanes.create(
+          { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
+          pin,
+        ),
       );
       // The lane is made even when the copy did not apply (or a fallback was
       // taken); say so instead of claiming the changes came along.
@@ -1202,6 +1210,33 @@ export function LaneGitActionsPane({
   }, [laneId]);
 
   const upstreamMissing = syncStatus?.upstreamState === "missing";
+
+  // The remote branch went away. If the lane's PR merged, that was the normal
+  // end of the lane and there is nothing to push. Asked of the lane's machine.
+  const [mergedPrNumber, setMergedPrNumber] = useState<number | null>(null);
+  const pinKey = pin?.key ?? null;
+  useEffect(() => {
+    setMergedPrNumber(null);
+    if (!laneId || !upstreamMissing) return;
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const read = (attempt: number): void => {
+      window.ade.prs.getForLane(laneId, pin).then((pr) => {
+        if (!cancelled && pr?.state === "merged") setMergedPrNumber(pr.githubPrNumber);
+      }).catch((error) => {
+        console.warn("git_pane.lane_pr_read_failed", error);
+        if (!cancelled && attempt < 3) retry = setTimeout(() => read(attempt + 1), 3_000 * (attempt + 1));
+      });
+    };
+    read(0);
+    return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
+    };
+    // Keyed on the stable pin key: a rebuilt pin is the same machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey, upstreamMissing]);
+  const laneMerged = upstreamMissing && mergedPrNumber != null;
 
   const nextActionHint = useMemo<NextActionHint | null>(() => {
     if (!laneId) return null;
@@ -1857,28 +1892,39 @@ export function LaneGitActionsPane({
         >
           <ArrowDown size={16} />
         </WorkToolChromeButton>
-        <WorkToolChromeButton
-          label={upstreamMissing
-            ? "Recreate remote branch"
-            : syncStatus?.hasUpstream === false
-              ? "Publish branch"
-              : nextActionHint?.action === "force_push_lease"
-                ? "Force push (lease)"
-                : "Push"}
-          onClick={async () => {
-            if (nextActionHint?.action === "force_push_lease") {
-              const ok = await confirmForcePushWithLease();
-              if (!ok) return;
-              runPush(true);
-              return;
-            }
-            runPush(false);
-          }}
-          disabled={!laneId || busyAction != null}
-          testId="git-pane-push"
-        >
-          <ArrowUp size={16} />
-        </WorkToolChromeButton>
+        {laneMerged ? (
+          <span
+            className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full border border-(color:--pr-merged)/30 px-2 text-[11px] font-medium text-fg/75"
+            data-testid="git-pane-merged-note"
+            title="This lane's pull request was merged and its remote branch is gone. There is nothing left to push."
+          >
+            <GitMerge size={12} weight="bold" style={{ color: "var(--pr-merged)" }} aria-hidden />
+            #{mergedPrNumber} merged
+          </span>
+        ) : (
+          <WorkToolChromeButton
+            label={upstreamMissing
+              ? "Recreate remote branch"
+              : syncStatus?.hasUpstream === false
+                ? "Publish branch"
+                : nextActionHint?.action === "force_push_lease"
+                  ? "Force push (lease)"
+                  : "Push"}
+            onClick={async () => {
+              if (nextActionHint?.action === "force_push_lease") {
+                const ok = await confirmForcePushWithLease();
+                if (!ok) return;
+                runPush(true);
+                return;
+              }
+              runPush(false);
+            }}
+            disabled={!laneId || busyAction != null}
+            testId="git-pane-push"
+          >
+            <ArrowUp size={16} />
+          </WorkToolChromeButton>
+        )}
         {catchUpLine && lane && laneId ? (
           <LaneCatchUpMenu
             lane={lane}

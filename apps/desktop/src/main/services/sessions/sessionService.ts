@@ -1104,21 +1104,26 @@ export function createSessionService({
       return [];
     }
     const hasOutcome = Object.prototype.hasOwnProperty.call(options, "outcome");
-    const writeSettle = () => writeSettleLifecycle({
-      intent: {
-        kind: "settle",
-        settledAt: normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
-        source: options.source ?? "user",
-      },
-      extraSet: {
-        ...(hasOutcome ? { status_note: normalizeSessionStatusNote(options.outcome) } : {}),
-        attention_requested_at: null,
-        attention_message: null,
-        attention_source: null,
-      },
-      guard: "(settled_at is null or settle_override is not null)",
-      sessionIds: newlySettled,
-    });
+    const writeSettle = () => {
+      writeSettleLifecycle({
+        intent: {
+          kind: "settle",
+          settledAt: normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
+          source: options.source ?? "user",
+        },
+        extraSet: {
+          ...(hasOutcome ? { status_note: normalizeSessionStatusNote(options.outcome) } : {}),
+          attention_requested_at: null,
+          attention_message: null,
+          attention_source: null,
+        },
+        guard: "(settled_at is null or settle_override is not null)",
+        sessionIds: newlySettled,
+      });
+      // The row's settle columns are wiped by the next turn, so this line is the
+      // only record of what settled a chat.
+      logger?.info("session.settled", { sessionIds: newlySettled, source: options.source ?? "user" });
+    };
     if (commitGuard) {
       if (newlySettled.length !== 1) {
         throw new Error("A guarded settle commit must name exactly one session.");

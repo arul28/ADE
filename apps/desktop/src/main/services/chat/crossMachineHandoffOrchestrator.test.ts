@@ -122,7 +122,7 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
         if (input.action === "acceptCrossMachineHandoff") {
           const args = input.args as { capsule: AgentChatCrossMachineHandoffCapsule; capsuleFingerprint: string };
           accepted.push(args);
-          return { machine, result: accept(args.capsule) };
+          return { machine, project: { projectId: "project-there" }, result: accept(args.capsule) };
         }
         throw new Error(`unexpected destination action ${input.action}`);
       },
@@ -722,7 +722,7 @@ describe("cross-machine move orchestrator", () => {
     expect(await h.settled()).toMatchObject({
       handoffId: started.handoffId,
       state: "continued",
-      continuedOn: { handoffId: started.handoffId, targetSessionId: "chat-there" },
+      continuedOn: { handoffId: started.handoffId, targetSessionId: "chat-there", targetProjectId: "project-there" },
     });
     expect(h.prepared).toHaveLength(1);
     expect(h.accepted).toHaveLength(2);
@@ -1201,6 +1201,55 @@ describe("handoff git bundle", () => {
     expect(fs.readFileSync(path.join(lanePath, "config"), "utf8")).toBe("now a file\n");
     expect(git(lanePath, "rev-parse", "HEAD")).toBe(git(source, "rev-parse", "HEAD"));
     expect(git(lanePath, "status", "--porcelain=v1")).toBe("");
+  });
+
+  it("lands another person's work only on a new branch, with the arriving tree's hooks off", async () => {
+    const { root, source, clone } = makeRepos();
+    const marker = path.join(root, "hook-ran");
+    fs.mkdirSync(path.join(source, ".husky"));
+    fs.writeFileSync(path.join(source, ".husky", "post-checkout"), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+    git(source, "add", "-A");
+    git(source, "commit", "--quiet", "-m", "a hook in the tree");
+    fs.writeFileSync(path.join(source, "edit.txt"), "uncommitted\n");
+    const handoffId = `lsm_${"1".repeat(32)}`;
+    const bundle = await packHandoffGitBundle({ worktreePath: source, branchRef: "feature", handoffId });
+    if (!bundle) throw new Error("an unpushed commit must pack");
+
+    const destination = clone("move-destination");
+    // This clone runs hooks from the tree (husky), so an arriving hook would run.
+    git(destination, "config", "core.hooksPath", ".husky");
+    git(destination, "branch", "taken", "origin/main");
+    const noHooks = makeTempDir("ade-no-hooks-");
+    const lanePath = path.join(root, "move-lane");
+    const attach = async (branch: string) => {
+      git(destination, "-c", `core.hooksPath=${noHooks}`, "worktree", "add", "--quiet", lanePath, branch);
+      return { worktreePath: lanePath, undo: async () => { git(destination, "worktree", "remove", "--force", lanePath); } };
+    };
+    const land = (branchRef: string, landed = bundle) => applyHandoffGitBundle({
+      projectRoot: destination,
+      handoffId,
+      branchRef,
+      bundle: landed,
+      untrusted: true,
+      target: { kind: "attach", attach },
+    });
+
+    // A branch this machine has is never moved; nothing lands.
+    const takenBefore = git(destination, "rev-parse", "taken");
+    await expect(land("taken")).rejects.toThrow(/already exists/);
+    expect(git(destination, "rev-parse", "taken")).toBe(takenBefore);
+
+    // A bundle whose one ref is not the handoff ref is refused.
+    const rawPath = path.join(root, "raw.bundle");
+    git(source, "bundle", "create", "--quiet", rawPath, "feature", "^origin/main");
+    const raw = fs.readFileSync(rawPath);
+    await expect(land("raw-ref", { ...bundle, contentBase64: raw.toString("base64"), bytes: raw.length, snapshotSha: null }))
+      .rejects.toThrow(/did not expect/);
+    expect(() => git(destination, "rev-parse", "--verify", "--quiet", "refs/heads/raw-ref")).toThrow();
+
+    await land("feature-moved");
+    expect(fs.readFileSync(path.join(lanePath, "edit.txt"), "utf8")).toBe("uncommitted\n");
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   it("carries an uncommitted directory-to-file change into a new lane", async () => {

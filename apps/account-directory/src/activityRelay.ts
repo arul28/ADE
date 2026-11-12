@@ -43,7 +43,7 @@ export type ActivityRelayOutcome =
  * a configured value that carries one is trusted for its origin rather than
  * refused — the one way this differs from the CORS allow-list.
  */
-function trustedActivityRelayBaseUrl(env: ActivityRelayEnv): string | null {
+function trustedActivityRelayBaseUrl(env: Pick<ActivityRelayEnv, "PUSH_RELAY_URL">): string | null {
   return trustedHttpsOrigin(env.PUSH_RELAY_URL);
 }
 
@@ -95,7 +95,39 @@ export async function callActivityRelay(
   const fetchImpl = args.options.fetchImpl
     ?? ("ACTIVITY_RELAY" in env ? env.ACTIVITY_RELAY.fetch.bind(env.ACTIVITY_RELAY) : undefined);
   if (!fetchImpl) return { ok: false, reason: "activity relay binding is not configured" };
-  const retryDelayMs = Math.max(0, args.options.retryDelayMs ?? 250);
+  const outcome = await sendToRelay(fetchImpl, url, {
+    method: args.operation === "purge" ? "DELETE" : "POST",
+    headers: {
+      accept: "application/json",
+      authorization,
+      "x-ade-directory-auth": directoryAuth,
+      "x-ade-correlation-id": args.correlationId,
+    },
+  }, args.options.retryDelayMs);
+  if (!outcome.ok) {
+    logActivityRelayFailure({
+      correlationId: args.correlationId,
+      operation: args.operation,
+      machineKey: args.machineKey,
+      reason: outcome.reason,
+      attempts: 2,
+    });
+  }
+  return outcome;
+}
+
+/**
+ * One request to the relay, retried once on a network error, a 5xx or a 429.
+ * Any other refusal (a rejected token, a refused request) will not heal on a
+ * retry, so it answers at once.
+ */
+async function sendToRelay(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: { method: string; headers: Record<string, string> },
+  retryDelay: number | undefined,
+): Promise<ActivityRelayOutcome> {
+  const retryDelayMs = Math.max(0, retryDelay ?? 250);
   let reason = "activity relay is unreachable";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     if (attempt > 1 && retryDelayMs > 0) {
@@ -103,13 +135,7 @@ export async function callActivityRelay(
     }
     try {
       const response = await fetchImpl(url, {
-        method: args.operation === "purge" ? "DELETE" : "POST",
-        headers: {
-          accept: "application/json",
-          authorization,
-          "x-ade-directory-auth": directoryAuth,
-          "x-ade-correlation-id": args.correlationId,
-        },
+        ...init,
         // "manual", not "error": the Workers runtime rejects "error" outright
         // ("won't be implemented since it does not make sense at the edge"),
         // so every restore and purge threw and the directory answered 503.
@@ -120,18 +146,44 @@ export async function callActivityRelay(
       await response.body?.cancel().catch(() => {});
       if (response.ok) return { ok: true };
       reason = `activity relay returned ${response.status}`;
-      // A rejected token or a refused request will not heal on a retry.
       if (response.status < 500 && response.status !== 429) break;
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
   }
-  logActivityRelayFailure({
-    correlationId: args.correlationId,
-    operation: args.operation,
-    machineKey: args.machineKey,
-    reason,
-    attempts: 2,
-  });
   return { ok: false, reason };
+}
+
+/** The slice of the env an account purge needs. The binding may be missing; the purge then fails closed. */
+export type RelayAccountPurgeEnv = {
+  PUSH_RELAY_URL?: string;
+  ACTIVITY_RELAY?: { fetch: typeof fetch };
+  DIRECTORY_AUTH_SECRET?: string;
+};
+
+/**
+ * Remove a deleted account's vault and settings from the push relay
+ * (`DELETE /directory/accounts/<userId>` there). The relay owns those tables in
+ * its own D1, so the directory asks it.
+ *
+ * Only `x-ade-directory-auth` travels: a deleted account has no token, and the
+ * relay deletes for whichever account the path names, so the secret is the
+ * whole authorization. The relay's delete is safe to repeat. A failure is
+ * returned, never swallowed, so the caller can answer Clerk with an error and
+ * Clerk delivers the deletion again.
+ */
+export async function purgeRelayAccountData(
+  env: RelayAccountPurgeEnv,
+  userId: string,
+): Promise<ActivityRelayOutcome> {
+  const baseUrl = trustedActivityRelayBaseUrl(env);
+  if (!baseUrl) return { ok: false, reason: "activity relay is not configured" };
+  const directoryAuth = env.DIRECTORY_AUTH_SECRET?.trim();
+  if (!directoryAuth) return { ok: false, reason: "directory relay authentication is not configured" };
+  const relay = env.ACTIVITY_RELAY;
+  if (!relay) return { ok: false, reason: "activity relay binding is not configured" };
+  return await sendToRelay(relay.fetch.bind(relay), `${baseUrl}/directory/accounts/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
+    headers: { accept: "application/json", "x-ade-directory-auth": directoryAuth },
+  }, undefined);
 }

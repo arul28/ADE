@@ -1181,6 +1181,7 @@ describe("ADE CLI", () => {
       ADE_SYNC_HOST_SINGLETON_TEST_MODE: process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE,
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL,
       ADE_DISABLE_TOOLS_FETCH: process.env.ADE_DISABLE_TOOLS_FETCH,
+      ADE_DEV_TEST_MACHINE: process.env.ADE_DEV_TEST_MACHINE,
     };
     const ownerProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
       stdio: "ignore",
@@ -1199,6 +1200,9 @@ describe("ADE CLI", () => {
       process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE = "1";
       process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = "1";
       process.env.ADE_DISABLE_TOOLS_FETCH = "1";
+      // Its own machine on this computer: a scratch home may host sync, and an
+      // installed ADE brain running here does not switch sync off.
+      process.env.ADE_DEV_TEST_MACHINE = "1";
       writeSyncHostSingletonLock({
         lockPath,
         pid: ownerProcess.pid,
@@ -1226,6 +1230,8 @@ describe("ADE CLI", () => {
       else process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = originalEnv.ADE_DISABLE_RUNTIME_SERVICE_INSTALL;
       if (originalEnv.ADE_DISABLE_TOOLS_FETCH === undefined) delete process.env.ADE_DISABLE_TOOLS_FETCH;
       else process.env.ADE_DISABLE_TOOLS_FETCH = originalEnv.ADE_DISABLE_TOOLS_FETCH;
+      if (originalEnv.ADE_DEV_TEST_MACHINE === undefined) delete process.env.ADE_DEV_TEST_MACHINE;
+      else process.env.ADE_DEV_TEST_MACHINE = originalEnv.ADE_DEV_TEST_MACHINE;
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
@@ -1292,6 +1298,10 @@ describe("ADE CLI", () => {
             ADE_SYNC_HOST_SINGLETON_TEST_MODE: "1",
             ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
             ADE_DISABLE_TOOLS_FETCH: "1",
+            // Its own machine on this computer: a scratch home may host sync,
+            // and an installed ADE brain running here does not switch sync off.
+            ADE_DEV_TEST_MACHINE: "1",
+            ADE_TAILSCALE_SERVE: "0",
             NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
           },
           stdio: ["ignore", "ignore", "pipe"],
@@ -2119,6 +2129,7 @@ describe("ADE CLI", () => {
       rootPath: "/tmp/project",
       catalogVisibility: "system",
       registrationSource: "runtime-auto",
+      withoutIcon: true,
     });
   });
 
@@ -3722,6 +3733,34 @@ describe("ADE CLI", () => {
         },
       },
     });
+  });
+
+  it.each([
+    { name: "a multi-line file", content: "line one\nline two\n", extra: [] as string[], sent: "line one\nline two" },
+    { name: "a BOM-prefixed file", content: "\uFEFFfrom powershell", extra: [] as string[], sent: "from powershell" },
+    { name: "an empty file", content: "  \n", extra: [] as string[], error: /is empty/ },
+    { name: "--prompt beside the file", content: "text", extra: ["--prompt", "other"], error: /not both/ },
+    { name: "a text flag this command does not use", content: "text", extra: ["--note", "other"], error: /does not take --note/ },
+  ])("ade new takes the first message from --prompt-file: $name", ({ content, extra, sent, error }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-new-prompt-file-"));
+    try {
+      const file = path.join(dir, "brief.md");
+      fs.writeFileSync(file, content, "utf8");
+      const argv = ["new", "chat", "--mode", "chat", "--lane", "lane-1", "--provider", "codex", "--prompt-file", file, ...extra];
+      if (error) {
+        expect(() => buildCliPlan(argv)).toThrow(error);
+        return;
+      }
+      const steps = expectExecutePlan(buildCliPlan(argv)).steps;
+      const sendParams = (steps[steps.length - 1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+        session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
+      });
+      expect(sendParams).toMatchObject({
+        arguments: { domain: "chat", action: "messageSession", args: { sessionId: "chat-new", text: sent } },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("builds new chat mode with auto-created lane and kickoff prompt", () => {

@@ -1,6 +1,7 @@
 import { createDeviceViewModeStore, type DeviceViewMode } from "../device/deviceViewMode";
 import { androidCatalogColor, androidCatalogEntry } from "../../../shared/androidDeviceCatalog";
 import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { parseAndroidLowDisk, parseEmulatorUserdataSpace } from "../../../shared/androidDisk";
 import {
   ANDROID_EMULATOR_ERROR_CODES,
   type AndroidEmulatorErrorCode,
@@ -260,6 +261,8 @@ export type AndroidErrorDescription = {
   /** The wire text, behind `Details`. Null when it adds nothing. */
   detail: string | null;
   code: AndroidEmulatorErrorCode | null;
+  /** A first start the disk can't hold: the free space it needs and the free space there is, in MB. */
+  disk?: { neededMb: number; freeMb: number } | null;
 };
 
 const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
@@ -288,6 +291,7 @@ const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_SDK_INSTALL_FAILED: "The Android SDK install failed.",
   ANDROID_SDK_PATH_INVALID: "That folder cannot be used for the Android SDK.",
   ANDROID_LOW_MEMORY: "This machine has too little free memory to start the device.",
+  ANDROID_LOW_DISK: "This machine's disk has too little free space to start the device.",
 };
 
 /** After the RAM guard's own sentence, wherever "Start anyway" is offered. */
@@ -336,7 +340,21 @@ export function describeAndroidError(error: unknown): AndroidErrorDescription {
       ? ANDROID_ERROR_SENTENCE[code]
       : "Something went wrong with the Android emulator.";
   const detail = raw && raw !== sentence ? raw : null;
-  return { sentence, detail, code };
+  return { sentence, detail, code, disk: lowDiskOf(error, code, raw) };
+}
+
+/**
+ * The numbers of a low-disk failure. A brain error the pane holds itself (the
+ * lane's crash) carries them as fields. A thrown refusal reaches the renderer
+ * as text only, since IPC keeps no fields, so its numbers are read back from
+ * the refusal; a brain without the disk check sends the emulator's own line.
+ */
+function lowDiskOf(error: unknown, code: AndroidEmulatorErrorCode | null, raw: string): { neededMb: number; freeMb: number } | null {
+  const fields = error && typeof error === "object" ? (error as { neededMb?: unknown; freeMb?: unknown }) : null;
+  if (typeof fields?.neededMb === "number" && typeof fields.freeMb === "number") {
+    return { neededMb: fields.neededMb, freeMb: fields.freeMb };
+  }
+  return (code === "ANDROID_LOW_DISK" ? parseAndroidLowDisk(raw) : null) ?? parseEmulatorUserdataSpace(raw);
 }
 
 /* ── P1 look: the view mode ─────────────────────────────────────────────── */

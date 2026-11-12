@@ -115,6 +115,8 @@ export type RemoteRuntimeProjectRecord = {
   icon?: ProjectIcon | null;
 };
 
+export type RemoteRuntimeUpdateInstallMode = "in_place" | "manual_download" | "runtime_only";
+
 export type RemoteRuntimeConnectResult = {
   target: RemoteRuntimeTarget;
   arch: string;
@@ -124,6 +126,8 @@ export type RemoteRuntimeConnectResult = {
    * Null with no app (a headless server); absent from brains before v1.2.126.
    */
   appVersion?: string | null;
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
@@ -234,6 +238,8 @@ export type RemoteRuntimeConnectionAttempt = {
   durationMs: number;
   outcome: "connected" | "failed" | "skipped";
   failure?: RemoteRuntimeConnectionAttemptFailure;
+  /** Why it failed, as a fixed token (`ECONNREFUSED`, `http_502`, `ws_close_4505`). Never message text. */
+  errorCode?: string;
 };
 
 export type RemoteRuntimeConnectionRoute = {
@@ -330,6 +336,8 @@ export type RemoteRuntimeConnectionStatus = {
   version: string | null;
   /** See `RemoteRuntimeConnectResult.appVersion`. Live while connected; not persisted. */
   appVersion?: string | null;
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
@@ -433,7 +441,9 @@ export type RemoteRuntimeMachineProjectCapability =
   | "clone"
   | "listMyGitHubRepos"
   /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
-  | "setIcon";
+  | "setIcon"
+  /** `projects.inspectRemoval` + `projects.removeCopy`: remove a project, and its folder, on the host. */
+  | "removeCopy";
 
 /** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
 export type RemoteRuntimeProjectIconUpload = {
@@ -446,6 +456,10 @@ export type RemoteRuntimeProjectIconUpload = {
 export type RemoteRuntimeCapabilities = {
   projects: boolean;
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
+  /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
+  clientSendDedupe?: boolean;
+  /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */
+  chatLaunchKinds?: string[];
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {
@@ -628,6 +642,9 @@ export type RemoteRuntimeUpdateAndRestartResult = {
    * `targetVersion` for an `ok` result that applied an update.
    */
   pendingVersion?: string | null;
+  /** A manual package cannot be changed by the remote update operation. */
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

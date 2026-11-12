@@ -20,4 +20,8 @@ export const LINKS = {
   downloadMacArm64: "/download/mac-arm64",
   downloadMacX64: "/download/mac-x64",
   downloadWindows: "/download/windows",
+  downloadLinuxX64AppImage: "/download/linux-x64-appimage",
+  downloadLinuxArm64AppImage: "/download/linux-arm64-appimage",
+  downloadLinuxX64Deb: "/download/linux-x64-deb",
+  downloadLinuxArm64Deb: "/download/linux-arm64-deb",
 } as const;

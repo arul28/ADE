@@ -5,7 +5,8 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
-import { agent37MachineResting } from "../../../../shared/agent37";
+import { cloudMachineResting, selfUpdatingCloudMachineKeys } from "../../../../shared/adeCloud";
+import { adeCloudEnabled } from "../../../state/cloudAccess";
 import type { AiConfig } from "../../../../shared/types/config";
 import type { ProviderInstance } from "../../../../shared/types/providerInstances";
 import { isProviderDisabled } from "../../../../shared/providerEnablement";
@@ -19,7 +20,9 @@ import {
   knownAdeVersions,
   machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
-import { agent37BoxForMachine } from "../../remoteTargets/agent37MachineModel";
+import { cloudBoxForMachine } from "../../remoteTargets/cloudMachineModel";
+import { readSelfUpdatingCloudKeys, withoutSelfUpdatingCloud } from "../../remoteTargets/machineUpdates";
+import { watchedCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
@@ -172,7 +175,7 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
 function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!update) return [];
   const route = settingsRouteFor("general.auto-updates");
-  if (update.lastInstallFailed && update.status === "ready" && update.lastInstallFailed.targetVersion === update.version) {
+  if (update.installMode !== "manual" && update.lastInstallFailed && update.status === "ready" && update.lastInstallFailed.targetVersion === update.version) {
     return [{
       id: "update-install-failed",
       severity: "warning",
@@ -182,7 +185,7 @@ function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
       route,
     }];
   }
-  if (update.parked) {
+  if (update.installMode !== "manual" && update.parked) {
     return [{
       id: "update-parked",
       severity: "warning",
@@ -321,30 +324,62 @@ function unreachableConnections(snapshot: ConnectionSnapshot | null) {
 }
 
 /**
- * The "Can't reach" rows that are an Agent 37 box resting
- * (`agent37MachineResting`): it can't answer by design, and wakes when it is
+ * The "Can't reach" rows that are a cloud box resting
+ * (`cloudMachineResting`): it can't answer by design, and wakes when it is
  * used. The
  * box list is a network read, so it runs after first paint and only when
  * something is unreachable; the rows show meanwhile and drop when it answers.
  */
-async function restingAgent37ItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
+async function restingCloudItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
   const unreachable = unreachableConnections(snapshot);
-  const listMachines = window.ade?.agent37?.listMachines;
-  if (unreachable.length === 0 || !isAdeAvailable(listMachines)) return new Set();
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (unreachable.length === 0 || !adeCloudEnabled() || !isAdeAvailable(listMachines)) return new Set();
   const listed = await listMachines().catch((error: unknown) => {
-    console.warn("[needs-attention] reading Agent 37 boxes failed", error);
+    console.warn("[needs-attention] reading ADE Cloud boxes failed", error);
     return null;
   });
   const boxes = listed?.state === "ok" ? listed.machines : [];
   return new Set(unreachable
     .filter((connection) => {
-      const box = agent37BoxForMachine(boxes, {
+      const box = cloudBoxForMachine(boxes, {
         machineKey: connection.target.pairedMachine?.machineKey,
         hostname: connection.target.hostname,
       });
-      return box != null && agent37MachineResting(box.state);
+      return box != null && cloudMachineResting(box.state);
     })
     .map((connection) => machineItemId(connection.target.id)));
+}
+
+/**
+ * "N machines run an older ADE", on each machine's own track only (a Stable
+ * machine is not "older" than this computer's Beta). A cloud computer that
+ * updates itself (`selfUpdating`, its machine key) is never in it.
+ */
+function machinesBehindItem(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null, selfUpdating: ReadonlySet<string>): AttentionItem | null {
+  if (!snapshot) return null;
+  const behind = withoutSelfUpdatingCloud(machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update)), selfUpdating);
+  if (behind.length === 0) return null;
+  return {
+    id: MACHINES_BEHIND_ITEM_ID,
+    severity: "note",
+    title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
+    detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
+    where: behind.length === 1 ? behind[0]!.name : "Your computers",
+    route: settingsRouteFor("general.update-other-machines"),
+  };
+}
+
+const MACHINES_BEHIND_ITEM_ID = "machines-behind";
+
+/**
+ * The behind item again once the account's cloud list says which computers
+ * update themselves. Undefined when nothing changes (no item, or no cloud
+ * computer among the behind ones). Never rejects.
+ */
+async function machinesBehindWithCloud(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): Promise<AttentionItem | null | undefined> {
+  if (!machinesBehindItem(snapshot, update, new Set())) return undefined;
+  const keys = await readSelfUpdatingCloudKeys();
+  return keys.size === 0 ? undefined : machinesBehindItem(snapshot, update, keys);
 }
 
 function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): AttentionItem[] {
@@ -360,19 +395,10 @@ function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSna
       route: settingsRouteFor("account.computers"),
     });
   }
-  // Behind on its own track only: a Stable machine is not "older" than this
-  // computer's Beta.
-  const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
-  if (behind.length > 0) {
-    items.push({
-      id: "machines-behind",
-      severity: "note",
-      title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
-      detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
-      where: behind.length === 1 ? behind[0]!.name : "Your computers",
-      route: settingsRouteFor("general.update-other-machines"),
-    });
-  }
+  // The cloud list already in memory, if a surface read it; the full read
+  // after the list is on screen corrects it (`machinesBehindWithCloud`).
+  const behind = machinesBehindItem(snapshot, update, selfUpdatingCloudMachineKeys(watchedCloudMachines()));
+  if (behind) items.push(behind);
   return items;
 }
 
@@ -610,10 +636,18 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     setLoading(false);
     setChecking(false);
     // The slow ones, after the list is on screen.
-    // The Agent 37 read can take long; it never holds back the other rows.
-    void restingAgent37ItemIds(machines).then((resting) => {
+    // The provider read can take long; it never holds back the other rows.
+    void restingCloudItemIds(machines).then((resting) => {
       if (current !== request.current || resting.size === 0) return;
       setItems((currentItems) => currentItems.filter((item) => !resting.has(item.id)));
+    });
+    // A cloud computer that updates itself never counts as behind.
+    void machinesBehindWithCloud(machines, update).then((behind) => {
+      if (current !== request.current || behind === undefined) return;
+      setItems((currentItems) => [
+        ...currentItems.filter((item) => item.id !== MACHINES_BEHIND_ITEM_ID),
+        ...(behind ? [behind] : []),
+      ]);
     });
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),

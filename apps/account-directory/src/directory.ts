@@ -179,7 +179,7 @@ type AccountRoute =
   | { kind: "list" }
   | { kind: "machine"; machineKey: string };
 
-export const DEFAULT_ONLINE_WINDOW_MS = 90_000;
+export const DEFAULT_ONLINE_WINDOW_MS = 150_000;
 /**
  * Most rows one register call may supersede.
  *

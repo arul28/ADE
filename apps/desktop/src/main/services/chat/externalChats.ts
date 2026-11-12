@@ -24,6 +24,7 @@ import { readPermissionLevel, type PermissionLevel } from "../../../shared/permi
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import type { AgentChatSpawnCompletion } from "../../../shared/types/chat";
 import { writeFileAtomic } from "../state/durableFile";
+import { cutTextAtCodePoint } from "../../../shared/codePointText";
 
 /** Where a chat on THIS machine lives, so a wake can find it without a scan. */
 export type ExternalChatScope = { kind: "project"; projectId: string } | { kind: "personal" };
@@ -285,7 +286,7 @@ export function readExternalParentWake(
       spawnKind,
       status,
       ...(typeof completion.childTurnId === "string" ? { childTurnId: completion.childTurnId.slice(0, 200) } : {}),
-      ...(typeof completion.summary === "string" ? { summary: completion.summary.slice(0, 4_000) } : {}),
+      ...(typeof completion.summary === "string" ? { summary: cutTextAtCodePoint(completion.summary, 4_000) } : {}),
       ...(typeof completion.humanMessageCount === "number" ? { humanMessageCount: completion.humanMessageCount } : {}),
     },
     ...(record.notice === "awaiting_user" ? { notice: "awaiting_user" as const } : {}),

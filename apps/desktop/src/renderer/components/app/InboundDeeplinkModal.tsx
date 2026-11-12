@@ -19,6 +19,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
 import { Banner } from "../ui/notice";
+import { useAppStore } from "../../state/appStore";
 
 export type InboundBranchDeeplink = {
   repoOwner: string;
@@ -38,7 +39,7 @@ export type InboundDeeplinkTarget =
   | {
       kind: "switch-project";
       entity: "chat" | "lane" | "commit";
-      project: { rootPath: string; displayName: string };
+      project: { rootPath: string; displayName: string; remote?: { targetId: string; projectId: string; machineName: string } };
       original: AppNavigationTarget;
     };
 
@@ -238,19 +239,26 @@ export function InboundDeeplinkModal({
       const repoLabel = envelope?.repoOwner && envelope.repoName ? `${envelope.repoOwner}/${envelope.repoName}` : null;
       const rows: Array<readonly [string, string]> = [
         ["Project", currentTarget.project.displayName],
+        ...(currentTarget.project.remote ? [["Machine", currentTarget.project.remote.machineName] as const] : []),
         ...(repoLabel ? [["Repo", repoLabel] as const] : []),
         ["Opens", originalTargetLabel(currentTarget.original, currentTarget.entity)],
       ];
+      const remoteCopy = currentTarget.project.remote ?? null;
       const onSwitchProject = async () => {
         const switchToPath = window.ade?.project?.switchToPath;
-        if (!switchToPath || !onDispatchTarget) {
+        if ((!remoteCopy && !switchToPath) || !onDispatchTarget) {
           setError("Project switching is not available in this build.");
           return;
         }
         setBusy(true);
         setError(null);
         try {
-          await switchToPath(currentTarget.project.rootPath);
+          if (remoteCopy) {
+            // The only copy is on another machine: the project opens there.
+            await useAppStore.getState().switchRemoteProject(remoteCopy.targetId, remoteCopy.projectId);
+          } else {
+            await switchToPath!(currentTarget.project.rootPath);
+          }
         } catch (err) {
           setError(formatActionError(err));
           setBusy(false);
@@ -270,7 +278,9 @@ export function InboundDeeplinkModal({
       };
 
       return renderFrame(
-        "This link belongs to another ADE project on this machine.",
+        remoteCopy
+          ? `This link belongs to an ADE project on ${remoteCopy.machineName}.`
+          : "This link belongs to another ADE project on this machine.",
         <div style={{ display: "grid", gap: 10 }}>
           {rows.map(([label, value]) => (
             <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>

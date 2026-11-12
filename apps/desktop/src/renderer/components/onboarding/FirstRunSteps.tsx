@@ -40,6 +40,7 @@ export function useFirstRunSteps({
   enabled = true,
   skipAgents = false,
   onFinish,
+  onSkip,
 }: {
   /** False: read nothing and stay `done` (the hosted web client has no first run). */
   enabled?: boolean;
@@ -51,6 +52,7 @@ export function useFirstRunSteps({
    */
   skipAgents?: boolean;
   onFinish?: (result: FirstRunResult) => void;
+  onSkip?: () => void;
 } = {}): FirstRunSteps {
   const [phase, setPhase] = useState<FirstRunPhase>(enabled ? "checking" : "done");
 
@@ -86,7 +88,8 @@ export function useFirstRunSteps({
     skipOnboarding();
     setPhase("done");
     void window.ade.app.markWelcomeVideoSeen("dismissed").catch(() => undefined);
-  }, []);
+    onSkip?.();
+  }, [onSkip]);
 
   const finish = useCallback((result: FirstRunResult) => {
     setPhase("done");

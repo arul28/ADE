@@ -135,7 +135,8 @@ export function SessionStatusSlot({
     && !session.pendingInputItemId
     && !isActivelyRunning
     && (session.activeBackgroundTaskCount ?? 0) <= 0
-    && totalBackgroundWork(session.backgroundWork) === 0,
+    && totalBackgroundWork(session.backgroundWork) === 0
+    && !session.activePrWatch,
   );
 
   return (
@@ -155,7 +156,12 @@ export function SessionStatusSlot({
            its own sentence, still takes the slot over. Compact rows keep the
            swap — they have no width to spare. */
         className={cn(
-          "pointer-events-none self-center whitespace-nowrap tabular-nums transition-opacity",
+          "self-center whitespace-nowrap tabular-nums transition-opacity",
+          // A hint is hover text, so that label takes the pointer. It only stays
+          // in flow, clear of the action buttons, on a full-size row.
+          shownPresentation?.hint && !compact && !snoozeMenuOpen && !showSettleNudge
+            ? "pointer-events-auto"
+            : "pointer-events-none",
           compact && "group-focus-within/status-slot:absolute group-focus-within/status-slot:right-0 group-focus-within/status-slot:opacity-0",
           compact && "group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0",
           (snoozeMenuOpen || showSettleNudge) && "absolute right-0 opacity-0",

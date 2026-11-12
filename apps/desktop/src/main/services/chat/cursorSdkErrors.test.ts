@@ -53,6 +53,14 @@ describe("classifyCursorSdkErrorText", () => {
     expect(isUsageLimitChatError({ message: text })).toBe(true);
   });
 
+  it.each([
+    "Agent agent-1 already has active run",
+    "Agent agent-1 already has an active run",
+    "Cursor agent is already running another task. (agent_busy)",
+  ])("classifies %s as busy, so a dead worker's run can be cleared", (text) => {
+    expect(classifyCursorSdkErrorText(text)).toBe("busy");
+  });
+
   it("classifies write ECANCELED as a transport failure", () => {
     // The 2026-08-11 incident: this killed a run and poisoned the agent thread.
     expect(isCursorSdkTransportErrorText("[internal] write ECANCELED")).toBe(true);

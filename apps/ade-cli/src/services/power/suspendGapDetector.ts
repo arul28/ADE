@@ -3,7 +3,7 @@
  * fires four minutes late means the machine was suspended in between.
  *
  * This is the fallback that gives every environment sleep detection with zero
- * platform code — Linux (which has no Electron app at all), a headless brain on
+ * platform code — a headless brain on
  * any OS, and any host whose native suspend event was missed. Deliberately kept
  * free of Node and Electron imports so the desktop main process and the brain
  * can share one implementation and tests can drive it with a fake clock.

@@ -3,7 +3,7 @@
  * 3D, the provider's name and state, and what the user ran on it across
  * every machine on their ADE account in the last 30 days.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { cloneElement, isValidElement, useEffect, useMemo, useState, type CSSProperties, type ReactNode, type SVGProps } from "react";
 import type { AdeUsageStats } from "../../../../shared/types/usage";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { formatCost, formatTokens } from "../../../lib/format";
@@ -77,7 +77,12 @@ const SOLID_DEPTH = 10;
  * viewer with its depth falling straight down (the integration pages); the
  * provider pages turn it a little.
  */
-export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }>; straight?: boolean }) {
+export function SolidLogo({ spec, straight = false, floor = false }: {
+  spec: Extract<ProviderBrandLogo, { kind: "solid" }>;
+  straight?: boolean;
+  /** The shadow it casts under it, for a hero-sized logo. Tiles and cards go without. */
+  floor?: boolean;
+}) {
   const size = spec.size ?? 84;
   // A straight mark is seen from the front: a thin edge, in proportion to the
   // mark. A fixed depth would make a small mark look tall and tipped back.
@@ -89,12 +94,12 @@ export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBr
   const layers = Array.from({ length: count }, (_, index) => count - index);
   return (
     <div className="ade-pv-mark3d" data-straight={straight ? "true" : undefined} aria-hidden>
-      <div className="ade-pv-mark3d-floor" />
+      {floor ? <div className="ade-pv-mark3d-floor" /> : null}
       <div className="ade-pv-mark3d-body">
         {layers.map((depth) => (
-          <span
+          <SolidLayer
             key={depth}
-            className="ade-pv-mark3d-layer"
+            mark={spec.mark(size)}
             style={{
               transform: straight ? `translateY(${depth * straightStep}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
               // The far layers are darker, so the side reads as lit from the front.
@@ -102,24 +107,36 @@ export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBr
                 ? { filter: `brightness(${0.32 + (SOLID_DEPTH - depth * (SOLID_DEPTH / count)) * 0.035}) saturate(1.3)` }
                 : { color: spec.side, filter: `brightness(${0.7 + (SOLID_DEPTH - depth * (SOLID_DEPTH / count)) * 0.04})` }),
             }}
-          >
-            {spec.mark(size)}
-          </span>
+          />
         ))}
-        <span className="ade-pv-mark3d-layer" data-face="true" style={spec.face ? { color: spec.face } : undefined}>
-          {spec.mark(size)}
-        </span>
-        <span className="ade-pv-mark3d-layer" data-gloss="true">
-          {spec.mark(size)}
-        </span>
+        <SolidLayer mark={spec.mark(size)} part="face" style={spec.face ? { color: spec.face } : undefined} />
+        <SolidLayer mark={spec.mark(size)} part="gloss" />
       </div>
     </div>
   );
 }
 
+/**
+ * One copy of the mark. A plain `<svg>` mark is the layer itself; any other
+ * mark (a component) sits in a span. A grid of tiles draws five copies per
+ * logo, so the span it saves is about a sixth of the Integrations page.
+ */
+function SolidLayer({ mark, part, style }: { mark: ReactNode; part?: "face" | "gloss"; style?: CSSProperties }) {
+  const layer = {
+    className: "ade-pv-mark3d-layer",
+    "data-face": part === "face" ? "true" : undefined,
+    "data-gloss": part === "gloss" ? "true" : undefined,
+  };
+  if (isValidElement<SVGProps<SVGSVGElement>>(mark) && mark.type === "svg") {
+    const className = [mark.props.className, layer.className].filter(Boolean).join(" ");
+    return cloneElement(mark, { ...layer, className, style: { ...mark.props.style, ...style } });
+  }
+  return <span {...layer} style={style}>{mark}</span>;
+}
+
 function ProviderLogo3d({ descriptor }: { descriptor: ProviderDescriptor }) {
   const logo = providerBrand(descriptor.id).logo;
-  if (logo.kind === "solid") return <SolidLogo spec={logo} />;
+  if (logo.kind === "solid") return <SolidLogo spec={logo} floor />;
   return (
     <div className="ade-pv-logo3d" aria-hidden>
       <div className="ade-pv-logo3d-face" style={{ background: logo.background, color: logo.color }}>
@@ -135,15 +152,26 @@ export function ProviderHero({
   version,
   pin,
   modelLabel,
+  tagline = descriptor.tagline,
+  accountUsageOnly = false,
 }: {
   descriptor: ProviderDescriptor;
-  status: { state: ProviderStatusState; label: string };
+  status: { state: ProviderStatusState; label: string; account?: string | null };
   version: string | null;
   pin: OpenProjectBinding | null;
   modelLabel: (id: string) => string;
+  /** The line under the name; null shows none. The descriptor's line describes a computer's own sign-in. */
+  tagline?: string | null;
+  /**
+   * The usage panel shows only when its figures add up every computer of the
+   * account, and says so. For a place that is not one computer (ADE Cloud):
+   * one computer's figures would not be about it.
+   */
+  accountUsageOnly?: boolean;
 }) {
   const brand = providerBrand(descriptor.id);
-  const hero = useProviderUsage(descriptor.id, pin, modelLabel);
+  const read = useProviderUsage(descriptor.id, pin, modelLabel);
+  const hero = accountUsageOnly && read && !read.allMachines ? undefined : read;
   const usage = hero?.usage ?? null;
   const topTokens = usage?.models[0]?.tokens ?? 0;
 
@@ -170,12 +198,13 @@ export function ProviderHero({
         <ProviderLogo3d descriptor={descriptor} />
         <div className="ade-pv-hero-id">
           <div className="ade-pv-hero-name">{descriptor.label}</div>
-          {descriptor.tagline ? <div className="ade-pv-hero-tagline">{descriptor.tagline}</div> : null}
+          {tagline ? <div className="ade-pv-hero-tagline">{tagline}</div> : null}
           <div className="ade-pv-hero-chips">
             <span className="ade-pv-hero-chip">
               <i style={{ background: providerStatusColor(status.state) }} />
               {status.label}
             </span>
+            {status.account ? <span className="ade-pv-hero-chip">{status.account}</span> : null}
             {version ? <span className="ade-pv-hero-chip">v{version}</span> : null}
             {descriptor.preview ? <span className="ade-pv-hero-chip">Preview</span> : null}
           </div>
@@ -183,7 +212,7 @@ export function ProviderHero({
         {hero === undefined ? null : (
           <div className="ade-pv-hero-stats">
             <div className="ade-pv-hero-stats-head">
-              <span>{hero.allMachines ? "All machines" : "One machine"}</span>
+              <span>{accountUsageOnly ? "Chats on all your computers" : hero.allMachines ? "All machines" : "One machine"}</span>
               <span>30 days</span>
             </div>
             {usage ? (
@@ -219,7 +248,11 @@ export function ProviderHero({
                 ) : null}
               </>
             ) : (
-              <div className="ade-pv-hero-empty">No chats ran on {descriptor.label} on your machines in the last 30 days.</div>
+              <div className="ade-pv-hero-empty">
+                {accountUsageOnly
+                  ? `No chats ran on ${descriptor.label} on any of your computers in the last 30 days.`
+                  : `No chats ran on ${descriptor.label} on your machines in the last 30 days.`}
+              </div>
             )}
           </div>
         )}

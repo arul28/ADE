@@ -187,6 +187,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var writtenByAde = false
   /// True for a message the chat's side chat sent here; the bubble says so.
   var fromSideChat = false
+  /// Set for a message another person wrote on a shared lane: "From <name>".
+  var guestAuthorName: String? = nil
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -2302,9 +2304,13 @@ struct WorkContinuityNotice: Equatable {
   /// `pending` or `failed`, once ADE has tried on its own.
   let autoRecovery: String?
   let autoRecoveryStartedAt: String?
+  /// "Try again" got the same thread back; the failed message was not resent.
+  var originalThreadResumed = false
 
-  /// Reconnected, or moved to a new chat: the thread's failed turns are noise.
+  /// Reconnected, or moved to a new chat: the notice needs no action.
   var isResolved: Bool { state == "reconstructed" || supersededBySessionId != nil }
+  /// Rebuilt or moved on: the thread's failed turns are noise.
+  var hidesFailedTurns: Bool { isResolved && !originalThreadResumed }
 }
 
 struct WorkChatEnvelope: Identifiable, Equatable {
@@ -2326,6 +2332,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     default:
       break
     }
+    if let omittedRowOffset {
+      return "\(sessionId):omitted-row:\(omittedRowOffset)"
+    }
     return "\(sessionId):\(sequence ?? -1):\(timestamp):\(event.typeKey)"
   }
   let sessionId: String
@@ -2338,11 +2347,17 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   var userMessageWrittenByAde = false
   /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
   var userMessageFromSideChat = false
+  /// The other person on a shared lane who wrote this user message (`metadata.author`).
+  var userMessageGuestAuthorName: String? = nil
   var userMessageIsRecoveryHandOff = false
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.
   var continuityNotice: WorkContinuityNotice?
+  /// Set on a stand-in for a transcript row too large to page: that row's
+  /// byte offset (`AgentChatEventEnvelope.omittedRowOffset`). Part of `id` and
+  /// of the merge key, so two stand-ins that read the same both stay.
+  var omittedRowOffset: Int?
   /// Set on an `error` whose `errorInfo.agentCli` says the chat's agent is
   /// signed out (category `unauthenticated`): the agent id, e.g. `claude`.
   /// The event keeps only the presented text; the sign-in card reads this.

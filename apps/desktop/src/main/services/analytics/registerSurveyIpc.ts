@@ -42,9 +42,12 @@ function parseSurveyEventInput(input: unknown): ProductSurveyEventInput | null {
   if (typeof value.surveyId !== "string") return null;
   const surveyId = value.surveyId;
   if (value.kind === "shown") return { kind: "shown", surveyId };
-  if (value.kind === "dismissed") return { kind: "dismissed", surveyId, partiallyCompleted: value.partiallyCompleted === true };
+  const shownForMs = typeof value.shownForMs === "number" && Number.isFinite(value.shownForMs) ? value.shownForMs : undefined;
+  if (value.kind === "dismissed") {
+    return { kind: "dismissed", surveyId, partiallyCompleted: value.partiallyCompleted === true, shownForMs };
+  }
   if (value.kind === "sent" && value.answers && typeof value.answers === "object" && !Array.isArray(value.answers)) {
-    return { kind: "sent", surveyId, answers: value.answers as Record<string, ProductSurveyAnswer> };
+    return { kind: "sent", surveyId, answers: value.answers as Record<string, ProductSurveyAnswer>, shownForMs };
   }
   return null;
 }

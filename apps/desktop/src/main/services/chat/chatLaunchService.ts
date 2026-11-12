@@ -21,12 +21,22 @@ import type {
   DeleteLaneArgs,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneSummary,
   NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { chatLaunchLaneStart, createChatLaunchSnapshot, isChatLaunchTerminal, toQueuedMessage } from "../../../shared/chatLaunch";
+import {
+  chatLaunchAlreadyStartedMessage,
+  chatLaunchLaneStart,
+  createChatLaunchSnapshot,
+  isChatLaunchTerminal,
+  chatLaunchKindOf,
+  normalizeChatLaunchPriorStages,
+  toQueuedMessage,
+} from "../../../shared/chatLaunch";
 import { DEFAULT_LANE_START, laneStartSourceBranch, type LaneStart } from "../../../shared/laneStart";
 import {
   deriveDeterministicLaneNameFromPrompt,
@@ -64,6 +74,9 @@ type LaneServiceLike = {
       autoNamedBranch?: boolean;
       /** Bound to the new lane the same way a manual create binds it. */
       linearIssue?: LaneLinearIssue | null;
+      /** Linked to the new lane, so its pull request names the issue. */
+      githubIssue?: LaneGitHubIssue | null;
+      jiraIssue?: LaneJiraIssue | null;
     },
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
@@ -81,6 +94,8 @@ type LaneServiceLike = {
   cleanupReservedWorktree?: (args: { laneId: string; name: string }) => Promise<void>;
   /** The live lane row with this id, or null (see `laneService.findLaneIdentity`). */
   findLaneIdentity?: (laneId: string) => ReservedLaneIdentity | null;
+  /** Throws the one-lane refusal of an ADE Cloud computer that already holds a lane (`laneService.assertRoomForNewLane`). */
+  assertRoomForNewLane?: () => void;
 };
 
 type ReservedLaneIdentity = Pick<LaneSummary, "id" | "name" | "branchRef" | "baseRef" | "worktreePath">;
@@ -130,6 +145,11 @@ export type ChatLaunchServiceDeps = {
   logger: Logger;
   laneService: LaneServiceLike;
   agentChatService: AgentChatServiceLike;
+  /**
+   * Links a lane to its pull request (`prService.linkToLane`), for an
+   * existing-branch launch that names one. Unset: the lane stays unlinked.
+   */
+  linkPullRequest?: (args: { laneId: string; prUrlOrNumber: string }) => Promise<unknown>;
   /**
    * Fetch the branch a new lane starts from (`on: "remote"` only) and
    * report `origin/<branch>` and how fresh it is (`fetchLaneStartBranch`).
@@ -184,8 +204,8 @@ const DEFAULT_FINISHED_RETENTION_MS = 10 * 60_000;
 
 const requireLaunchId = (value: unknown): string => requireNormalizedUuid(value, "launchId must be a UUID.");
 
-/** Cancel is for setup only; once the agent runs, the lane is the user's to delete. */
-export const CHAT_LAUNCH_ALREADY_STARTED_ERROR = "This chat already started — delete its lane from the lane menu instead.";
+/** A lane launch starts no chat, so there is nothing to send a message to. */
+const CHAT_LAUNCH_NO_CHAT_ERROR = "This lane starts no chat, so it can't take messages.";
 
 function autoLaneGenericSuffix(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -643,6 +663,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
             : laneIsAutoNamed(record) ? { autoNamedBranch: true } : {}),
           ...(start ? { start } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
+          ...(config?.githubIssue ? { githubIssue: config.githubIssue } : {}),
+          ...(config?.jiraIssue ? { jiraIssue: config.jiraIssue } : {}),
         },
         // The fetch stage already fetched the start branch.
         startFetched ? { ...runtimeOptions, skipStartFetch: true } : runtimeOptions,
@@ -662,9 +684,20 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       clearTimeout(runtime.progressTimer);
       runtime.progressTimer = null;
     }
+    // A lane from a PR's branch is linked to that PR, as a local one is. A
+    // failed link is a warning: the lane is there and the person can link it.
+    const linkNotes: string[] = [];
+    if (config?.mode === "existing" && config.pullRequestUrl && deps.linkPullRequest) {
+      try {
+        await deps.linkPullRequest({ laneId: lane.id, prUrlOrNumber: config.pullRequestUrl });
+      } catch (error) {
+        logger.warn("chat_launch.pr_link_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+        linkNotes.push(`ADE couldn't link the lane to its pull request (${getErrorMessage(error).replace(/[.\s]+$/, "")}). Link it from the lane.`);
+      }
+    }
     // The start's fallbacks (no local branch, nothing to copy, a copy that
     // failed) finished the checkout another way than asked: say so.
-    const notes = lane.createdFrom?.notes ?? [];
+    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes];
     setStage(record, "checkout", notes.length ? "warning" : "done", {
       percent: 100,
       detail: totalFiles > 0 ? `${totalFiles.toLocaleString("en-US")} files` : null,
@@ -844,7 +877,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   /** Complete the launch once the agent runs and no stage is still open. Returns whether it did. */
   const finishIfSettled = (record: LaunchRecord): boolean => {
     const snapshot = record.snapshot;
-    if (snapshot.phase !== "running" || !snapshot.agentStarted) return false;
+    // A lane launch starts nothing: it is done once its stages are.
+    if (snapshot.phase !== "running" || (!snapshot.agentStarted && snapshot.kind !== "lane")) return false;
     if (snapshot.stages.some((stage) => stage.status === "pending" || stage.status === "running")) return false;
     snapshot.phase = "completed";
     snapshot.endedAt = nowIso();
@@ -895,7 +929,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       activeStage = "agent";
       if (record.snapshot.kind === "chat") {
         await runChatAgentStage(record);
-      } else if (!record.snapshot.agentStarted) {
+      } else if (record.snapshot.kind === "cli" && !record.snapshot.agentStarted) {
         setStage(record, "agent", "running");
         record.snapshot.phase = "awaiting-client";
         publish(record);
@@ -940,8 +974,15 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const launchId = requireLaunchId(args?.launchId);
     const existing = records.get(launchId);
     if (existing) return cloneSnapshot(existing.snapshot);
+    // Every launch makes a lane. A cloud computer that already holds one says
+    // so now, to the caller, instead of at the checkout stage. A launch whose
+    // reserved lane row already exists is a retry, not a new lane.
+    const reservedLaneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+    if (!(reservedLaneId && deps.laneService.findLaneIdentity?.(reservedLaneId))) {
+      deps.laneService.assertRoomForNewLane?.();
+    }
 
-    const kind = args.kind === "cli" ? "cli" : "chat";
+    const kind = chatLaunchKindOf(args.kind);
     let chat: ChatLaunchChatArgs | null = null;
     if (kind === "chat") {
       // Untrusted payloads were already parsed by `parseChatLaunchArgs` (chatLaunchArgs.ts).
@@ -963,12 +1004,16 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const start = chatLaunchLaneStart(laneConfig, laneDefaults()?.defaults.start ?? DEFAULT_LANE_START);
     // No template asked for: the project's default template (its new-lane defaults).
     const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
+    // An ADE Cloud launch's desktop stages: shown first and never run here.
+    // Re-checked even after the parser, because in-process callers skip it.
+    const priorStages = normalizeChatLaunchPriorStages(args.priorStages);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
       includeFetch: start?.on === "remote",
       includeEnvironment: environment.hasEnvironment,
+      ...(priorStages.length ? { priorStages } : {}),
       templateName: environment.templateName,
       nowIso: nowIso(),
     });
@@ -985,7 +1030,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     };
     records.set(launchId, record);
     publish(record);
-    logger.info("chat_launch.started", { launchId, kind, laneId, stages: snapshot.stages.map((stage) => stage.id) });
+    logger.info("chat_launch.started", {
+      launchId,
+      kind,
+      laneId,
+      stages: snapshot.stages.map((stage) => stage.id),
+      ...(priorStages.length ? { priorStages: priorStages.length } : {}),
+    });
     void runPipeline(record);
     return cloneSnapshot(record.snapshot);
   };
@@ -1044,7 +1095,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (!record) return null;
     if (record.snapshot.phase === "cancelled") return cloneSnapshot(record.snapshot);
     if (record.snapshot.agentStarted || record.snapshot.phase === "completed") {
-      throw new Error(CHAT_LAUNCH_ALREADY_STARTED_ERROR);
+      // Cancel is for setup only; once the agent runs, the lane is the user's to delete.
+      throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
     }
     const runtime = runtimeFor(launchId);
     const pipeline = runtime.pipeline;
@@ -1157,6 +1209,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const text = String(args.text ?? "");
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
+    if (record.snapshot.kind === "lane") throw new Error(CHAT_LAUNCH_NO_CHAT_ERROR);
     // A client that still sees the failed launch routes the chat's sends here.
     await adoptIfChatStarted(record);
     // A cancel can land during that transcript read (re-read: the await widens what TS narrowed).

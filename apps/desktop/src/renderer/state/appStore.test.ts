@@ -1746,11 +1746,18 @@ describe("appStore", () => {
           rootPath: "/tmp/next",
         }),
       );
-      expect(useAppStore.getState().projectBinding).toBeNull();
+      // The open project's binding stays until the new project replaces it,
+      // so a slow or failed switch never leaves the window bound to nothing.
+      expect(useAppStore.getState().projectBinding).toEqual(
+        expect.objectContaining({ kind: "local", rootPath: "/tmp/old" }),
+      );
 
       await pending;
 
       expect(useAppStore.getState().project).toEqual(nextProject);
+      expect(useAppStore.getState().projectBinding).toEqual(
+        expect.objectContaining({ kind: "local", rootPath: "/tmp/next" }),
+      );
       expect(useAppStore.getState().projectTransition).toBeNull();
       expect(useAppStore.getState().projectTransitionError).toBeNull();
     });

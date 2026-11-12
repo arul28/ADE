@@ -24,6 +24,7 @@ import {
   HARNESS_PRESET_BODIES,
   HARNESS_PRESET_SUBAGENT_INHERIT,
   HARNESS_SUBAGENT_SUPPORT,
+  clampEffortToLadder,
   harnessSubagentSupport,
   type HarnessPreset,
   type HarnessPresetAgentKey,
@@ -99,10 +100,10 @@ export function resolveClaudeSubagentEfforts(preset: HarnessPreset): {
 } {
   const agents: Partial<Record<HarnessPresetAgentKey, string>> = {};
   for (const key of HARNESS_PRESET_AGENT_KEYS) {
-    const effort = preset.agentEfforts?.[key]?.trim();
+    const effort = clampEffortToLadder(preset.agentEfforts?.[key], preset.harness, undefined);
     if (effort) agents[key] = effort;
   }
-  const defaultSubagentEffort = preset.subagentEffort?.trim() || undefined;
+  const defaultSubagentEffort = clampEffortToLadder(preset.subagentEffort, preset.harness, undefined);
   return {
     agents,
     ...(defaultSubagentEffort ? { defaultSubagentEffort } : {}),
@@ -130,7 +131,9 @@ export function resolveSubagentLaunch(
     if (!subagentTypeName(harness, key)) continue;
     const raw = preset.agentOverrides?.[key]?.trim();
     const model = raw === HARNESS_PRESET_AGENT_FOLLOWS ? followed : raw;
-    const effort = support.effort ? preset.agentEfforts?.[key]?.trim() : "";
+    const effort = support.effort
+      ? clampEffortToLadder(preset.agentEfforts?.[key], harness, undefined) ?? ""
+      : "";
     if (!model && !effort) continue;
     agents[key] = { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
   }
@@ -138,7 +141,9 @@ export function resolveSubagentLaunch(
   // without also naming a model, and dropping that would ignore a choice the
   // wizard offered.
   const defaultSubagent = resolveSubagentModel(preset);
-  const defaultEffort = support.effort ? preset.subagentEffort?.trim() : "";
+  const defaultEffort = support.effort
+    ? clampEffortToLadder(preset.subagentEffort, harness, undefined) ?? ""
+    : "";
   const subagents: HarnessSubagentPin | undefined = defaultSubagent || defaultEffort
     ? {
       ...(defaultSubagent ? { model: defaultSubagent } : {}),

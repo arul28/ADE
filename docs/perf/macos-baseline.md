@@ -61,7 +61,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
 | Settings › Overview, Project › Lanes, Location, Computer › ADE service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
 | Settings › Machines (list with each machine's load) and one machine's page (Right now, What it can run), idle after load: main-thread work | — | list 4.7–7.6 ms/s, machine page 2.2–2.4 ms/s, no long task on opening; one `machine_stats.get` per machine on open, no poll (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-10-30, branch `ade/machine-stats-and-preferences`, CPU 80–100% busy from other agents, not the baseline machine) | 30 ms/s |
-| Settings › Integrations (home with the 72-server MCP catalogue grid; the MCP servers and GitHub pages), idle after load: main-thread work and page elements | — | home 0.3–1.3 ms/s, 2,480 elements (77 small 3D logos; 4,043 before a straight logo drew its thin edge with fewer copies); MCP page 0.4 ms/s, 808 elements; GitHub page 0.5 ms/s, 625 elements; no long task on opening (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-04, branch `ade/integration-connect-cards-81787be4` on `27ed4b1dd`, sync off, load average ~5 from other agents, not the baseline machine) | 30 ms/s; 3k elements |
+| Settings › Integrations (home with the 95-server MCP catalogue grid; the MCP servers and GitHub pages), idle after load: main-thread work and page elements | — | 2026-11-09, 95 servers (98 tiles): 2,940 elements against 2,987 for main's 72 servers in the same setup, so 23 more tiles cost nothing; a tile is 19 elements, was 25 (a logo's copies are its own `<svg>` with no wrapping span, and tiles and cards no longer draw the floor shadow they hid), pixel-identical; idle 0.2–0.5 ms/s, no long task on opening (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, branch `ade/rakazo-ideas-discussion`). Earlier, home 0.3–1.3 ms/s, 2,480 elements (77 small 3D logos; 4,043 before a straight logo drew its thin edge with fewer copies); MCP page 0.4 ms/s, 808 elements; GitHub page 0.5 ms/s, 625 elements; no long task on opening (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-04, branch `ade/integration-connect-cards-81787be4` on `27ed4b1dd`, sync off, load average ~5 from other agents, not the baseline machine) | 30 ms/s; 3k elements |
 | Settings › Storage & cleanup › Recently deleted (39-chat list with a conversation preview), idle after load: main-thread work and page elements; list and reopen latency | — | 0.7–3.4 ms/s, 1,204–1,207 elements, no long task on opening, no animation, 0 IPC/min idle; `chat.listDeletedChats` adds no measurable time over an empty action (551–573 ms vs 552–561 ms CLI round trip); a 48 MB Claude conversation previews in ~1.4 s and reopens in ~1.0–1.4 s (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-05, branch `ade/recently-deleted-chats-ef31f148` on `aa6f998f1`, sync off, not the baseline machine) | 30 ms/s; 3k elements |
 | Settings › Account (profile banner: avatar float + mesh), idle after 30 s: frames drawn, GPU swap, main-thread work | float looped forever: 240 frames/s, 54 ms/s GPU swap, 12.9 style recalcs/s, 7.9 ms/s | float stops after 3 cycles (18 s) and the mesh freezes at 20 s: 0 frames/s, 0.1 style recalcs/s, 6.6 ms/s; the first 18 s draw at the display rate like any CSS animation (Mac Studio M4 Max dev build, 2026-10-29, load average ~8 from other agents, not the baseline machine) | 0 frames/s after 30 s idle; 30 ms/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
@@ -187,8 +187,10 @@ Run without the app (`scripts/perf/service/`).
 
 | Metric | Bench | Before #1560 | Baseline | Ceiling |
 |---|---|---|---|---|
+| `ade` command startup, agent shim path (Electron-as-node, `cli.cjs` 27 MB, one brain round trip): `--version`, `lanes list`, `chat list`, `chat note` (a rejected note, same round trips). Before: no compile cache on the shim, and every command evaluated all of `bootstrap.ts` | one-off spawn loop (11 alternated rounds per bundle), a throwaway project on a dev brain with its own socket (no bench file yet). Mac Studio M4 Max, 2026-11-09 on `d41ee85de` + this branch, load average 5-8, not the baseline machine | `--version` 346 ms, `lanes list` 375 ms, `chat list` 385 ms, `chat note` 377 ms (min 339-369); the shim set no compile cache | 100 ms, 132 ms, 123 ms, 124 ms (min 97-122, slowest round 139 ms). The same commands with `NODE_COMPILE_CACHE` set before and after (the launcher in `bin/ade`): 206 -> 100, 234 -> 132, 243 -> 123, 234 -> 124 ms. A warm compile cache alone: 346 -> 206 ms (-40%). The first call after a brain start also stops waiting on the brain's icon worker (350-480 ms, 128 ms with no worker). `bootstrap.ts` still loads on the commands that start an agent or a runtime | proposed, needs approval: 150 ms |
 | `machine_stats.get` (CPU over a 200 ms sample, memory, disk; `ps`, `pmset`, `vm_stat` at most every 15 s; CLIs, Xcode, simulators at most every 3 min, in the background) | one-off `tsx` call of `createMachineStatsReader` (no bench file yet) | — | cold 206 ms (the CPU sample), cached 0 ms; 0 runs while nobody asks (Mac Studio M4 Max, 2026-10-30, not the baseline machine) | not set yet; needs approval |
 | Android emulator sweep (each brain with an Android service, every 5 min: the owner file, the discovery folders, and one `ps` for start times only when there are records) and the memory guard before each emulator start (`sysctl`, two `vm_stat`s 2 s apart, `ps` + `footprint` for the running emulators) | one-off `tsx` loop over `createAndroidEmulatorLifecycle().sweep()` against this machine's real discovery folders (no bench file yet) | — (no sweep, no guard read) | sweep: 0.06 ms wall / 0.08 ms CPU with no records and 0 processes started; 2.4 ms wall / 2.0 ms CPU and 1 `ps` with a record; at most 12 sweeps per hour, so ≤ 1 extra process per 5 min (spawn row above: 293 → ≤ 294). Guard: 2.0 s wall (the paging sample), 0.1 s for the emulators' memory, once per start only. "Last used" writes the owner file at most once a minute per emulator; a touch costs < 1 µs (Mac Studio M4 Max dev build, 2026-11-06, branch `ade/unreleased-issues-triage-before-stable`, not the baseline machine) | not set yet; needs approval |
+| Lane status: comparing against `origin/<base>` when the local base only trails it (`resolveCompareBase` in `laneService.ts`) | one-off `git` timing in this repo, 20 runs (no bench file yet) | — | per lane-list refresh at most 1 extra `rev-parse` of `origin/<base>` for all lanes on that base (11.8 ms median, shared through the volatile git cache), plus 1 `rev-list --count` per new pair of base commits (12.6 ms, then memoized); 0 per lane (Mac Studio M4 Max, 2026-11-09, `ade/ade-mcp-client-fixes`, not the baseline machine) | not set yet; needs approval |
 | Files quick-open index build (this repo) | `file-index.bench.mts` | 17.5 s, ~540 git processes | 120–183 ms, 1 git process | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | — | 2–13 ms | 50 ms |
 | Project registry: one read per project (35) | `registry-read.bench.mts` | 360 ms | 0.3 ms | 5 ms |
@@ -929,10 +931,32 @@ chat, query `the`. The A/B streaming rows are `npm run bench:webclient
 | Find: first count after typing, 5,031-event chat, cold index | in-page timer | — | 114 ms | 200 ms |
 | Find: final count, same chat, cold index (3 ms slices + 300 ms recount) | same | — | 492 ms | 800 ms |
 | Find: next match to painted highlight, p50 / max of 20 | same | — | 4 / 7 ms | 8 / 33 ms |
+| Find open while a 50 KB reply streams: markdown parses of the streaming row | Browser mock, see below | 281-485 | 51-53 | 70 |
+| Find open while a 50 KB reply streams: main-thread script time over the stream | same | 12.6-13.4 s (find closed: 8.5-9.4 s) | 8.8-9.2 s | 10.5 s |
 
 Closed, find does no work: its layer is memoized on stable props and
 subscribes to rows only while open. Indexing parses markdown in 3 ms slices, so
 it never holds a 240 Hz frame.
+
+The two streaming rows: a reply that streams while find is open changes its
+row on every delta, and folding that row parses the whole reply so far. The
+row is folded at the count's own pace (at most every 300 ms), and each fold
+replaces the row's earlier text in the find cache, so while find stays open
+the cache holds one text per reply. Before, every partial text stayed: one 50 KB reply filled the cache
+to its 16 M character limit and evicted the chat's own entries. Measured
+2026-11-10 on a Mac Studio M4 Max, load average 4-12: Vite dev build in
+headless Chrome 155, the 5,103-event real chat, query `the`, real markdown
+streamed as 1,000 deltas of 50 characters, one every 16 ms, 2 rounds each,
+alternated with find closed. An 8 KB reply (the longest real message found)
+went from 149 parses to 10. To rebuild it: load a real transcript into the
+first mock chat (`window.__adeMockEmitChatEvent`), open find with
+`setPendingChatFind`, emit `text` events with one `messageId` on a 16 ms timer
+in the page, and read `ScriptDuration` from `Performance.getMetrics` before
+and after. With find open, paint and pre-paint still cost about 2.2 s more
+over that 17.5 s stream than with find closed (the highlight repaint, at most
+every 100 ms); that part is not changed.
+
+Ceilings of the two streaming rows approved by the owner on 2026-11-10.
 
 ### Desktop dev app
 
@@ -1495,6 +1519,16 @@ rows did not move. Most idle requests are `304 Not Modified` answers, which
 GitHub does not count against the rate limit. The tab still loads the first
 PR's detail when it opens without a deep link: that PR is the one on screen,
 so its reads are the point, not waste.
+
+Writing in a PR (mention search, references, checkbox permission), dev app on the
+Mac Studio against a private test repo, 2026-11-09:
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| A new `@` query: GraphQL requests | 1 per distinct query per repo and minute, after 180 ms of no typing (312 ms) | not set yet; needs approval |
+| The same `@` query again, or five at once | 0 requests (1 ms; joined and cached 60 s) | not set yet; needs approval |
+| `#` references for a repo: GraphQL requests | 1 per repo per 2 minutes, however many writers type | not set yet; needs approval |
+| Opening a PR with task boxes when the viewer is not its author | 1 permission read, shared with the mention cache; 0 otherwise | not set yet; needs approval |
 
 ## iOS app: Lanes and PRs (simulator)
 
@@ -2758,3 +2792,75 @@ Two method notes:
   `qemu-system-*` subtree out of ADE's count, the same as a simulator. The
   `ps` output grows to about 160 KB for 1,100 processes, far under its 2 MB
   limit.
+
+
+### Work lane identity in Status and Time (2026-11-08)
+
+Base `2bc519666`, uncommitted renderer change, Mac13,1 (M1 Max, 64 GB),
+Node 26.7.0. One detached dev window, 1460×880 capture / 1327×800 CSS pixels,
+sync off, no DevTools and no `ADE_PERF_RUN_ID`. Nine active local rows and a
+collapsed four-session Settled shelf; new-chat surface and the activity skyline
+visible. Other agents were running (load average 12–17); the same top-bar activity
+pulse ran in both arms (~2.7 style recalculations/s).
+
+`route-sweep.mjs <id> /work,/work 20`, with each organization already warm,
+measured two visits per arm. `render-count.mjs 30 reload` measured Status
+separately. Only `SessionListPane.tsx` switched between HEAD and the candidate;
+the GitHub reminder port and the coordinator's separate Settings edits were
+held fixed. Earlier measurements that overlapped a coordinator hot reload were
+discarded. These numbers supersede the old-base measurements for this change.
+
+| Row | Before | After | Existing ceiling |
+| --- | --- | --- | --- |
+| Status: main-thread work, initial two warm visits | 2.8, 2.5 ms/s | 4.8, 4.4 ms/s | 30 ms/s |
+| Status: follow-up adjacent baseline/candidate, 20 s each | 3.6 ms/s | 3.8 ms/s | 30 ms/s |
+| Time: main-thread work, two warm visits | 3.3, 1.7 ms/s (median 2.5) | 1.9, 3.1 ms/s (median 2.5) | 30 ms/s |
+| Status: renderer heap / page elements, follow-up | 129 MB / 850 | 125 MB / 888 | 220 MB / 3k |
+| Time: renderer heap / page elements, second visit | 127 MB / 862 | 123 MB / 896 | 220 MB / 3k |
+| Navigation long tasks | 0 ms | 0 ms | 100 ms |
+| Status: React commits in 30 s | 16 | 16 | no list churn |
+| Status: SessionCard renders / callback-wrapper renders in 30 s | 2 / 9 | 1 / 9 | no list churn |
+
+The initial Status increase exceeded the relative budget, so it was investigated
+before accepting the result. A 10 s `cdp.mjs profile` sampled the preload, shell,
+activity skyline and stepped animation clock, with no Work row hot loop. The
+render counter showed no increase in commits or row renders (the actual card
+renders had changed session props). A settled candidate `cdp.mjs metrics 20`
+read 4.2 ms/s, then returning to HEAD's Work component reproduced 3.6 ms/s and
+restoring the candidate read 3.8 ms/s with `route-sweep.mjs /work 20`: a 6%
+difference, below the 25% limit. Layout stayed at 0/s in that pair. The initial
+higher readings are retained above rather than treated as a proven row cost.
+
+The added identity uses existing roster and lane/device data, with no new row
+fetch, effect, timer or subscription. A temporary offline renderer roster was
+checked separately for foreign Status and Time rows: correct lane and runtime
+pin, offline guard, attached-shell filing, and **Settle local**. It was removed
+before proof. No paired machine was connected; this is not a live remote,
+Windows, GPU or process-footprint measurement.
+
+### Providers and sign-ins (Cloud 4, 2026-11-11)
+
+Dev app on the lane branch at `a14eb694c` against main at `d6b1696d9`, same
+Mac (MacBook Pro M3 Pro, 18 GB), same steps for both: a fresh launch with sync
+off on the throwaway project `~/Projects/ade-mac-desktop-test`, 20 s settle,
+one General visit, then `route-sweep.mjs` with 20 s idle (no perf run; the
+first visit of each page is dropped). Nothing streamed. ADE Cloud is off in a
+dev app with no account, so the ADE Cloud place and the pass warning were not
+on screen; their reads do not run while ADE Cloud is off.
+
+| Row | Before (main) | After (branch) | Ceiling |
+| --- | --- | --- | --- |
+| Settings › Providers, idle: main-thread work | 0.4–0.5 ms/s | 0.4–0.5 ms/s | 30 ms/s (static tabs) |
+| Settings › Providers: page elements / renderer heap | 738 / 110 MB | 752 / 109 MB | 3k / 220 MB |
+| Claude provider page, idle after its first visit: main-thread work | 0.5 ms/s | 0.5 ms/s | 30 ms/s |
+| Claude provider page: page elements / renderer heap | 1,023 / 112 MB | 1,038 / 110 MB | 3k / 220 MB |
+| Navigation long tasks (both pages) | 0 ms | 0 ms | 100 ms |
+| Processes on the idle Providers page, 30 s (`process-cpu.sh`): CPU main / renderer / brain | 0.4% / 0.1% / 0.7% | 0.4% / 0.1% / 0.7% | the Processes table |
+| Same: RSS main / renderer / brain | 384 / 571 / 406 MB | 383 / 565 / 357 MB | the Processes table |
+| Sign-in sync pass in the brain, nothing changed, 4 sign-ins (scratch bench, fake files and fake vault) | — (new) | 0.23–0.25 ms per pass | 1 ms |
+
+The renderer RSS is over the Processes table's 300 MB on main and on the
+branch alike: a dev build with Vite modules after page visits, not this
+change. One earlier branch run read 5.8 ms/s on Providers after a longer
+session with Work visits; the same-steps pair above is the comparison.
+The sync pass runs on the brain's existing 30 s tick; it adds no timer.

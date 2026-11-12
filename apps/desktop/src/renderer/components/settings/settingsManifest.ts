@@ -11,6 +11,7 @@
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TABS,
+  isAdeCloudSettingEntry,
   scoreSettingsEntry,
   settingsEntryById,
   type SettingEntry,
@@ -18,6 +19,7 @@ import {
   type SettingsTab,
   type SettingsTabId,
 } from "../../../shared/settingsManifest";
+import { adeCloudEnabled } from "../../state/cloudAccess";
 import { isMacPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 
@@ -35,6 +37,8 @@ export * from "../../../shared/settingsManifest";
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
   if (entry.macOnly && !isMacPlatform()) return false;
+  // Not on the access list: ADE Cloud's settings aren't anywhere, on any tab.
+  if (isAdeCloudSettingEntry(entry) && !adeCloudEnabled()) return false;
   if (!isWebClientMode()) {
     // Standalone Settings, opened from the new-project screen with no project:
     // a project-scoped setting has nowhere to write, so it is hidden here as

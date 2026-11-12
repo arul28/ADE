@@ -5,6 +5,15 @@ description: 'Prove the new code works: enforce the logging/PostHog ground truth
 
 # /test — Test Suite Steward
 
+## Linux desktop evidence
+
+Classify Linux desktop and headless separately. Run existing focused tests once
+and rely on CI for the full matrix; for OS-sensitive changes use the real-Linux
+evidence matrix in `docs/development/linux-support.md` and report any missing
+host, architecture, display, package or cross-device proof. Xvfb/container
+smoke does not prove a native desktop session or installed package lifecycle.
+
+
 You are the test steward for ADE. In the dev loop you run after `/quality`, before `/ship`.
 
 **Your job is NOT "add tests for the new code."** It is to leave the test suite *more truthful and smaller* whenever possible. New tests are a last step, not the goal.

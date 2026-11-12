@@ -88,7 +88,9 @@ into a machine transition. Two rules govern what goes in `projectId`:
 dropped rather than failing the whole link, since no link minted today carries it.
 
 The HTTPS form lives on `apps/web` (Vercel). Its `/open` page
-(`apps/web/src/app/pages/OpenPage.tsx`) forwards everything the link carries
+(`apps/web/src/app/pages/OpenPage.tsx`) is a hand-off screen in the style of
+the ADE start screens, without the site header and footer (`SiteLayout.tsx`).
+It forwards everything the link carries
 (ownership included) and offers **Open in the ADE app** (the `ade://` form) or
 **Open in your browser** (the web client at `https://app.ade-app.dev/open` with
 the same query: the web client must keep its own origin, which holds its
@@ -168,6 +170,9 @@ Desktop main process — protocol handler:
   the URL, maps it to an `AppNavigationTarget`, and forwards through the
   caller-supplied dispatcher. `main.ts` wires the dispatcher to focus the
   most-suitable `BrowserWindow` and `webContents.send(IPC.appNavigate, …)`.
+  On Linux the claim names a desktop entry: the `.deb` installs one, and an
+  AppImage writes its own to the user's applications folder at launch
+  (`native/appImageDesktopEntry.ts`).
   `handleDeeplinkUrl` is also re-used by the iOS Send-to-Mac sync command
   (`syncRemoteCommandService.ts`'s `deeplinks.open`). Its `log` hook is wired
   to the machine logger (`~/.ade/runtime/desktop-main.jsonl`), not a project
@@ -334,6 +339,7 @@ Send-to-Mac:
 | `ade://pr/<owner>/<repo>/<number>` | `{ kind: "pr", repoOwner, repoName, prNumber }` | If the PR isn't yet local, the renderer jumps to the PRs tab pre-filtered or falls back to the create-lane-from-branch flow. |
 | `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off. Opens ADE's Linear pane focused to the issue. If no project is open or this project is not connected to Linear, ADE shows a setup modal with the next action. |
 | `ade://settings/<entry-id>[?machine=<id>]` | `{ kind: "settings", entryId, machineId? }` | One card in Settings, by its id in `shared/settingsManifest.ts`; https form `type=settings&id=`. Navigates only. `machine` picks a Computer page's machine; one this window does not know opens This computer's page. An id this build does not know draws a generic ADE link. |
+| `ade://lane-share/<grant-id>` | `{ kind: "lane-share", grantId }` | A lane another account shares with this one: the invite link. https form `type=lane-share&id=<grant-id>`, minted by the host as `https://ade-app.dev/open?type=lane-share&id=…`. The grant id (`ls_` and 32 hex characters, `LANE_SHARE_GRANT_ID_PATTERN`) is an address only: the account directory decides whether this account may see the grant. Needs no project. Desktop and the hosted web client route it to `/shared?grant=<id>`; in a chat it is an ADE link chip labelled "Shared lane". See [lane sharing](../lanes/lane-sharing.md). |
 | `ade://open/<place>` | `{ kind: "open", place }` | A page from `shared/openPlaces.ts` (PRs, Lanes, History, Connections…). No https form, and the protocol handler refuses it: it runs only from a click on its chip in a chat. |
 
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the

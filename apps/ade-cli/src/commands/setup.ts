@@ -532,6 +532,18 @@ async function runDesktopStep(args: {
   const { step, options, platform, env, reporter, ask, interactive, deps } = args;
   const fetchImpl = deps.fetchImpl ?? fetch;
 
+  if (platform === "linux") {
+    const installed = deps.readInstalledDesktop();
+    if (installed.path && fs.existsSync(installed.path)) {
+      step.state = "ok";
+      step.detail = installed.version ? `${installed.version} installed` : "installed";
+      step.location = installed.path;
+    } else {
+      step.state = "skipped";
+      step.detail = `optional for headless use; desktop app: https://ade-app.dev/docs/getting-started/linux`;
+    }
+    return 0;
+  }
   if (platform !== "win32" && platform !== "darwin") {
     step.state = "skipped";
     step.detail = "no desktop build for this platform";

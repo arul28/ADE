@@ -1784,7 +1784,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).toHaveBeenCalledWith(
       "C:\\ade-test\\tools\\codex.exe",
-      ["-c", "check_for_update_on_startup=false", "-s", "read-only", "-a", "never", "app-server"],
+      ["-c", "check_for_update_on_startup=false", "-c", "features.plugin_discovery_prefetch=false", "-s", "read-only", "-a", "never", "app-server"],
       expect.objectContaining({ windowsVerbatimArguments: false }),
     );
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
@@ -1823,7 +1823,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     const [spawnFile, spawnArgs, spawnOptions] = mockState.spawn.mock.calls[0]!;
     expect(spawnFile).toBe("/ade-test/tools/codex");
-    expect(spawnArgs).toEqual(["-c", "check_for_update_on_startup=false", "-s", "read-only", "-a", "never", "app-server"]);
+    expect(spawnArgs).toEqual(["-c", "check_for_update_on_startup=false", "-c", "features.plugin_discovery_prefetch=false", "-s", "read-only", "-a", "never", "app-server"]);
     expect(spawnOptions).toEqual(expect.objectContaining({ windowsVerbatimArguments: false }));
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);
@@ -4239,6 +4239,46 @@ describe("scanCodexLogs", () => {
     return { timestamp: at, type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { service_tier: serviceTier } } };
   }
 
+  it.each([
+    { name: "a turn cut off after the last snapshot", tail: ["record:r2:300"], expected: [100, 300] },
+    { name: "a response a later snapshot reports", tail: ["record:r2:100", "count:200"], expected: [100, 100] },
+    { name: "a compaction no snapshot reports, before one that does", tail: ["record:compact:900", "record:r3:100", "count:200"], expected: [100, 900, 100] },
+  ])("bills each response once: $name", async ({ tail, expected }) => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "10", "04");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const at = (seconds: number) => `2026-10-04T12:00:${String(seconds).padStart(2, "0")}.000Z`;
+      const record = (index: number, id: string, total: number) => ({
+        timestamp: at(index),
+        type: "token_usage_record",
+        payload: { response_id: id, usage: { input_tokens: total, cached_input_tokens: 0, output_tokens: 0, total_tokens: total } },
+      });
+      const file = path.join(sessionDir, "rollout-records.jsonl");
+      fs.writeFileSync(file, codexRollout([
+        { timestamp: at(0), type: "session_meta", payload: { id: "s-records", originator: "codex_cli_rs" } },
+        record(1, "r1", 100),
+        tokenCount(at(2), 100),
+        ...tail.map((entry, index) => {
+          const [kind, id, total] = entry.split(":");
+          return kind === "record" ? record(3 + index, id!, Number(total)) : tokenCount(at(3 + index), Number(id));
+        }),
+      ]));
+      const longAgo = new Date(Date.now() - 60 * 60_000);
+      fs.utimesSync(file, longAgo, longAgo);
+
+      const entries = await scanCodexLogs();
+
+      expect(entries.map((entry) => entry.inputTokens).sort((a, b) => a - b)).toEqual([...expected].sort((a, b) => a - b));
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("prices each response at the service tier the thread was set to then", async () => {
     const tmpDir = makeTmpDir();
     const originalCodexHome = process.env.CODEX_HOME;
@@ -6404,6 +6444,15 @@ describe("ADE database usage aggregation", () => {
     expect(usageActionFromIpcChannel("ade.pty.create")).toBe("work.startCliSession");
     expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane", "archiveAndReclaim"))).toBe(true);
+    // Lane sharing: share decisions count as lane mutations; reads,
+    // invite re-sends and the transfer steps of a move do not.
+    expect(usageActionFromRpcDomain("lane_share", "create")).toBe("lanes.share");
+    for (const action of ["create", "updateRights", "revoke", "leave", "moveStart", "moveRespond"]) {
+      expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane_share", action)), action).toBe(true);
+    }
+    for (const action of ["list", "resendInvite", "moveList", "movePackChunk", "moveReceiveChunk"]) {
+      expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane_share", action)), action).toBe(false);
+    }
     expect(usageActionFromRpcDomain("file", "writeWorkspaceText")).toBe("files.writeText");
     expect(usageActionFromRpcDomain("pty", "write")).toBe("pty.write");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pty", "write"))).toBe(false);

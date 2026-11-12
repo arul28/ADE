@@ -4,6 +4,7 @@ import { Lock } from "@phosphor-icons/react";
 import { base64ToBytes } from "../../../../lib/base64";
 import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
+import { formatBytes } from "../../../../../shared/formatting";
 
 const LINE_HEIGHT = 18;
 const STREAM_CHUNK_BYTES = 512 * 1024;
@@ -13,12 +14,6 @@ const MAX_STREAM_BYTES = 25 * 1024 * 1024;
 export function decodeFileRangeContent(content: string, encoding: "utf-8" | "base64"): string {
   if (encoding === "utf-8") return content;
   return new TextDecoder().decode(base64ToBytes(content));
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** Read-only, virtualized viewer for oversized text streamed via readFileRange. */

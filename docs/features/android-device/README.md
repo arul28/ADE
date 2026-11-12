@@ -1221,7 +1221,7 @@ still skips frames for a viewer that falls behind.
 
 Why not a second encode for remote viewers: it doubles the encoder's CPU
 while both kinds of viewer watch. That is too much on a 4 vCPU Linux host
-(Agent 37), where the emulator already shares the CPU with its own software
+(ADE Cloud), where the emulator already shares the CPU with its own software
 encoder. A cheaper second encode at a lower size would also need a second
 input path and a second keyframe cache. One encode keeps the cost of one
 viewer, wherever it is. The trade-off: while someone on the machine watches
@@ -1387,5 +1387,6 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `preview`: "has no build.gradle" | Pass `--module <folder>`: the Gradle module that holds the `@Preview` functions, not the project's root. |
 | `ANDROID_NO_FREE_PORT` | All ports 5554–5682 are in use. Stop an emulator you do not need. |
 | `ANDROID_LOW_MEMORY` | The [memory guard](#the-memory-guard-p2) refused the start: the sentence says why (pressure, swapping, the emulators' budget, or free memory). Stop an emulator you do not need, or close apps. **Start anyway** (`--force`) boots past it. `android.start_low_memory` in the brain log has the numbers. |
+| `ANDROID_LOW_DISK` | A device's first start makes its data partition (6 GB), and the emulator wants 1.2 times that free. On an ADE Cloud computer ADE checks this before the start (one `statfs` of the AVD folder) and refuses; the sentence gives both numbers. Elsewhere the emulator's own "Not enough space to create userdata partition" exit reads the same. On ADE Cloud the Android pane offers **Grow the disk** (inside the plan's disk at one time, or as extra disk on a paid plan; the computer restarts). Elsewhere, free disk space and start again. `android.start_low_disk` in the brain log has the numbers. |
 | The emulator stopped by itself | ADE stops an emulator nobody used for 20 minutes, and one whose brain is gone ([Emulator lifecycle](#emulator-lifecycle)). Start it again, or turn on **Keep running** (`ade android keep-running on`). `android.emulator_stopped` in the brain log says why. |
 | `ANDROID_STREAM_FAILED` | The live view failed. `tap`, `swipe`, `button`, `type` and `screenshot` do not need it. Press **Reconnect** in the pane. |

@@ -15,6 +15,7 @@ struct ConnectionSettingsView: View {
   @StateObject private var machineController = SettingsMachineController()
   @EnvironmentObject private var machineFleet: MachineFleet
   @ObservedObject private var account = AccountService.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @State private var signInPresented = false
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
@@ -31,13 +32,13 @@ struct ConnectionSettingsView: View {
 
   var body: some View {
     // The Duo's inner display gets Apple Settings' two columns: this list on
-    // the left, the page a row opens on the right (General first, as the
-    // desktop opens on it). Everywhere else it is one pushed stack.
+    // the left, the page a row opens on the right. It opens on the first row,
+    // Machines. Everywhere else it is one pushed stack.
     if duo.isWide && !pairingOnly {
-      DuoSettingsSplit(onClose: { dismiss() }, landingTitle: SettingsRoute.general.title) {
+      DuoSettingsSplit(onClose: { dismiss() }, landingTitle: SettingsRoute.machines.title) {
         settingsChrome(settingsList)
       } landing: {
-        generalPage
+        machinesPage
       } page: { title in
         page(SettingsRoute.allCases.first { $0.title == title } ?? .general)
       }
@@ -130,6 +131,14 @@ struct ConnectionSettingsView: View {
       } message: { _ in
         Text("The phone keeps \(MachineFleet.liveMachineLimit) machines live at a time. Pick one to disconnect.")
       }
+      // Ask again whether the account has ADE Cloud each time Settings opens
+      // or the connection comes back: the phone may now be on a machine of
+      // another account. Until the answer, the ADE Cloud row stays hidden
+      // (`SyncService` clears `cloudAvailable` whenever the phone leaves a machine).
+      .task(id: syncService.connectionState == .connected) {
+        guard syncService.connectionState == .connected else { return }
+        await syncService.refreshCloudAvailability()
+      }
       .onAppear {
         machineController.bind(syncService: syncService, fleet: machineFleet)
         presentationModel.bind(to: syncService)
@@ -179,7 +188,7 @@ struct ConnectionSettingsView: View {
   }
 
   /// The root list, as the desktop's settings sidebar lays it out: who you
-  /// are, then General, then You, App, Project and System. On the Duo's
+  /// are, then Machines and General, then You, App, Project and System. On the Duo's
   /// inner display held landscape this is the left column and each row's page
   /// fills the right one (`DuoSettingsSplit`).
   private var settingsList: some View {
@@ -210,9 +219,12 @@ struct ConnectionSettingsView: View {
 
   /// The project pages act on the open project, so they show only while the
   /// phone has one, as the desktop shows them only with a project open.
+  /// ADE Cloud shows only for an account with access, on a machine that can
+  /// run the page: unknown or no is hidden.
   private var visibleRoutes: [SettingsRoute] {
     SettingsRoute.allCases.filter { route in
-      route.group != .project || syncService.activeProject != nil
+      if route == .adeCloud { return syncService.cloudAvailable && syncService.cloudSupported }
+      return route.group != .project || syncService.activeProject != nil
     }
   }
 
@@ -238,11 +250,16 @@ struct ConnectionSettingsView: View {
   private func page(_ route: SettingsRoute) -> some View {
     switch route {
     case .general: generalPage
-    case .account: SettingsAccountPage(onSignIn: { signInPresented = true })
+    case .account: accountPage
     case .usage: SettingsUsagePage(syncService: syncService)
     case .chat: SettingsChatPage(syncService: syncService)
     case .providers: SettingsProvidersPage(syncService: syncService)
     case .integrations: SettingsIntegrationsPage(syncService: syncService)
+    case .adeCloud:
+      // A stale link from before access changed still lands on nothing.
+      if syncService.cloudAvailable && syncService.cloudSupported {
+        CloudSettingsPage(syncService: syncService)
+      }
     case .notifications:
       ADESettingsPage(route: .notifications) {
         SettingsPushDeliverySection(
@@ -281,6 +298,16 @@ struct ConnectionSettingsView: View {
       account: account,
       fleet: machineFleet,
       hidden: HiddenMachineStore.shared
+    )
+  }
+
+  private var accountPage: some View {
+    SettingsAccountPage(
+      syncService: syncService,
+      machineController: machineController,
+      onSignIn: { signInPresented = true },
+      machinesPage: { AnyView(machinesPage) },
+      integrationsPage: { AnyView(page(.integrations)) }
     )
   }
 
@@ -331,7 +358,7 @@ struct ConnectionSettingsView: View {
       case .signedIn:
         if let identity = account.identity {
           SettingsAccountHeaderLink(identity: identity) {
-            SettingsAccountPage(onSignIn: { signInPresented = true })
+            accountPage
           }
         }
       case .loading:
@@ -764,130 +791,4 @@ func settingsMachineRowErrorsRetiring(
   var remaining = existing
   remaining.removeValue(forKey: attachedEntryId)
   return remaining
-}
-
-/// Settings > Account: who is signed in, and Sign out; or Sign in.
-struct SettingsAccountPage: View {
-  let onSignIn: () -> Void
-  @ObservedObject private var account = AccountService.shared
-  @State private var confirmSignOut = false
-
-  var body: some View {
-    ADESettingsPage(route: .account) {
-      if let identity = account.identity, account.phase == .signedIn {
-        ADESettingsRows {
-          HStack(spacing: 14) {
-            AccountAvatar(identity: identity)
-            VStack(alignment: .leading, spacing: 3) {
-              Text(identity.displayName)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-              if let email = identity.email {
-                Text(email)
-                  .font(.system(size: 13))
-                  .foregroundStyle(ADEColor.textSecondary)
-                  .truncationMode(.middle)
-              }
-            }
-            Spacer(minLength: 8)
-            ADEKitTag(text: identity.providerLabel)
-          }
-          .padding(ADEKit.inset)
-        }
-        ADESettingsRows {
-          ADESettingsActionRow(title: "Sign out", destructive: true) {
-            confirmSignOut = true
-          }
-        }
-      } else {
-        signedOutPanel
-      }
-    }
-    .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
-      Button("Sign out", role: .destructive) {
-        Task { await account.signOut() }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Signing out removes this iPhone's access to your account and its account-connected machines. Devices paired directly with a code stay connected.")
-    }
-  }
-}
-
-extension SettingsAccountPage {
-  /// Signed out: the empty avatar, what an account gives you, and one wide
-  /// Sign in, centred in one panel rather than a lone button on an empty page.
-  fileprivate var signedOutPanel: some View {
-    VStack(spacing: 14) {
-      Image(systemName: "person.fill")
-        .font(.system(size: 30, weight: .medium))
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(width: 72, height: 72)
-        .background(ADEKit.track, in: Circle())
-        .overlay(Circle().strokeBorder(ADEKit.rule, lineWidth: 1))
-        .accessibilityHidden(true)
-      VStack(spacing: 6) {
-        Text("Not signed in")
-          .font(.system(size: 19, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(account.isConfigured
-          ? "Sign in to reach your machines from any network and keep your settings on every device."
-          : "This build has no ADE account. Pair a computer with a code instead.")
-          .font(.system(size: 14))
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      if account.isConfigured {
-        Button("Sign in to ADE", action: onSignIn)
-          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-          .padding(.top, 4)
-      }
-    }
-    .padding(.horizontal, 22)
-    .padding(.vertical, 26)
-    .frame(maxWidth: .infinity)
-    .adeKitCard(padding: nil)
-  }
-}
-
-/// The root list's account row: avatar, name and email, opening Account. A
-/// sidebar row, so on the Duo's two columns it fills the right column
-/// instead of pushing.
-private struct SettingsAccountHeaderLink<Destination: View>: View {
-  let identity: AccountIdentity
-  @ViewBuilder var destination: () -> Destination
-
-  var body: some View {
-    ADESettingsPageLink(title: SettingsRoute.account.title, shape: .sidebar, destination: destination) { _, pushes in
-      label(pushes: pushes)
-    }
-  }
-
-  private func label(pushes: Bool) -> some View {
-    HStack(spacing: 12) {
-      AccountAvatar(identity: identity)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(identity.displayName)
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if let email = identity.email {
-          Text(email)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-      }
-      Spacer(minLength: 8)
-      if pushes {
-        ADESettingsChevron()
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .accessibilityElement(children: .combine)
-    .accessibilityHint("Opens Account.")
-  }
 }

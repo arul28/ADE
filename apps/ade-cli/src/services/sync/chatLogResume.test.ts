@@ -83,6 +83,42 @@ describe("readChatEventsAfterSequence", () => {
     const exact = await readChatEventsAfterSequence({ transcriptPath: file, sessionId: SESSION, sinceSequence: 4 });
     expect(exact.status === "ok" && exact.events.map((event) => event.sequence)).toEqual([5, 6]);
   });
+
+  // A row too large to page reaches the reader as a display-only stand-in
+  // with no sequence. "ok" is allowed only when the rows read prove the client
+  // holds everything up to the newest row; any doubt is a gap (the client
+  // takes a snapshot), never an "ok" with a silent hole. `budget` lifts the
+  // byte cap where the cap would otherwise decide first; by default only the
+  // first big row is free of it.
+  const BIG = 64 * 1024 * 1024;
+  it.each([
+    { name: "client before one big row", rows: [1, 2, "big3", 4], since: 2, expected: "row_too_large" },
+    { name: "client before a run of big rows", rows: [1, "big2", "big3", 4], since: 1, budget: BIG, expected: "row_too_large" },
+    { name: "client inside a run of big rows", rows: [1, "big2", "big3", 4], since: 2, budget: BIG, expected: "row_too_large" },
+    { name: "a run of big rows within the default budget", rows: [1, "big2", "big3", 4], since: 1, expected: "resume_too_large" },
+    { name: "fresh client, big first row", rows: ["big1", 2], since: 0, expected: "row_too_large" },
+    { name: "client past a big first row", rows: ["big1", 2, 3], since: 2, expected: [3] },
+    { name: "client before a big newest row", rows: [1, "big2"], since: 1, expected: "row_too_large" },
+    { name: "client current with a big newest row (unprovable)", rows: [1, "big2"], since: 2, expected: "row_too_large" },
+    { name: "client just past the big row", rows: [1, "big2", 3], since: 2, expected: [3] },
+    { name: "client well past the big row", rows: [1, "big2", 3, 4], since: 3, expected: [4] },
+    { name: "legacy numbering with holes", rows: [2, 4, "big6", 8], since: 4, budget: BIG, expected: "row_too_large" },
+  ])("resumes across a row too large to page: $name", async ({ rows, since, budget, expected }) => {
+    fs.writeFileSync(file, rows.map((entry) => typeof entry === "number"
+      ? text(entry)
+      : text(Number(entry.slice(3)), 3_000_000)).join(""));
+    const read = await readChatEventsAfterSequence({
+      transcriptPath: file,
+      sessionId: SESSION,
+      sinceSequence: since,
+      ...(budget ? { maxBytes: budget } : {}),
+    });
+    if (typeof expected === "string") {
+      expect(read).toEqual({ status: "gap", reason: expected });
+    } else {
+      expect(read.status === "ok" && read.events.map((event) => event.sequence)).toEqual(expected);
+    }
+  });
 });
 
 describe("readTurnAlignedTranscriptTail", () => {

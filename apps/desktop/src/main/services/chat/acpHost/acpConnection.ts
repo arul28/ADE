@@ -28,6 +28,7 @@
  * line here; it always travels over stdio.
  */
 
+import { StringDecoder } from "node:string_decoder";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "../../logging/logger";
 import { resolveCliSpawnInvocation } from "../../shared/processExecution";
@@ -52,8 +53,15 @@ import { redactProcessOutput } from "../../../utils/redaction";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-/** Handshake must be quick. A hung binary must not wedge a chat launch. */
-export const ACP_HANDSHAKE_TIMEOUT_MS = 20_000;
+/**
+ * How long an agent may take to answer `initialize`. A hung binary must not
+ * wedge a chat launch, but a cold start is not a hang: an agent that unpacks
+ * itself on every launch (Antigravity), or one a virus scanner reads on its
+ * first run (Windows), took longer than the old 20 s on real machines and was
+ * shown as broken (ADE-BRAIN-6P, 6T and 1S, 2026-11-09). An agent that dies
+ * closes the connection at once and never waits for this.
+ */
+export const ACP_HANDSHAKE_TIMEOUT_MS = 60_000;
 /** Grace period between SIGTERM and SIGKILL on disposal. */
 export const ACP_TERMINATE_GRACE_MS = 1_500;
 
@@ -124,6 +132,25 @@ export type AcpConnectionExit = {
   stderrTail: string;
 };
 
+/**
+ * What the agent's process did between its spawn and now, in counts and closed
+ * values only (no text the agent wrote). An agent that never answered
+ * `initialize` left nothing else to read: no stderr, no exit (ADE-BRAIN-6P,
+ * three Windows machines, 2026-11-09). These say whether the process was still
+ * running, and whether it wrote anything at all.
+ */
+export type AcpStartupTrace = {
+  pid: number | null;
+  alive: boolean;
+  ageMs: number;
+  stdoutBytes: number;
+  stderrBytes: number;
+  /** How long after the spawn the first stdout byte came; null when none has. */
+  firstStdoutAfterMs: number | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+};
+
 export type AcpConnection = {
   readonly pid: number | null;
   readonly spawnPlan: AcpSpawnPlan;
@@ -139,6 +166,8 @@ export type AcpConnection = {
    * handler is registered) can still hand its diagnostics to the caller.
    */
   readStderrTail(): string;
+  /** The process's life so far, for a failure report. See `AcpStartupTrace`. */
+  readStartupTrace(): AcpStartupTrace;
   request<TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<TResult>;
   notify(method: string, params?: unknown): void;
   /** Register a handler for `session/update`. Returns an unsubscribe function. */
@@ -180,6 +209,8 @@ type ReverseRequestRegistration = {
   matches?: AcpReverseRequestMatcher;
 };
 
+/** How long a finished process gets to deliver its last stdout bytes. */
+const ACP_STDOUT_END_GRACE_MS = 500;
 const STDERR_TAIL_LIMIT = 4_000;
 /**
  * The longest unfinished stderr line kept for whole-line redaction. A longer
@@ -198,18 +229,36 @@ export function redactAcpDiagnosticText(text: string): string {
   return redactProcessOutput(text);
 }
 
-/** Split a byte stream into complete lines. Holds the partial tail. */
-function createLineSplitter(onLine: (line: string) => void): (chunk: Buffer | string) => void {
+/**
+ * Split a byte stream into complete lines. Holds the partial tail, and the
+ * bytes of a character cut in two by a pipe read, until the stream ends.
+ */
+function createLineSplitter(onLine: (line: string) => void): {
+  push: (chunk: Buffer | string) => void;
+  flush: () => void;
+} {
+  const decoder = new StringDecoder("utf8");
   let buffer = "";
-  return (chunk) => {
-    buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    let index = buffer.indexOf("\n");
-    while (index !== -1) {
-      const line = buffer.slice(0, index).replace(/\r$/, "");
-      buffer = buffer.slice(index + 1);
-      if (line.length) onLine(line);
-      index = buffer.indexOf("\n");
-    }
+  const emit = (line: string) => {
+    const trimmed = line.replace(/\r$/, "");
+    if (trimmed.length) onLine(trimmed);
+  };
+  return {
+    push(chunk) {
+      buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
+      let index = buffer.indexOf("\n");
+      while (index !== -1) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        emit(line);
+        index = buffer.indexOf("\n");
+      }
+    },
+    flush() {
+      const tail = buffer + decoder.end();
+      buffer = "";
+      emit(tail);
+    },
   };
 }
 
@@ -280,6 +329,8 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   let nextRequestId = 1;
   let disposed = false;
   let exited: AcpConnectionExit | null = null;
+  /** The process has exited, but its last stdout may still be arriving. */
+  let exitAwaitingStdout: AcpConnectionExit | null = null;
   let killTimer: NodeJS.Timeout | null = null;
   let stderrTail = "";
   let initializeResult: AcpInitializeResponse | null = null;
@@ -290,7 +341,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   };
 
   const writeFrame = (frame: Record<string, unknown>): boolean => {
-    if (exited || !child.stdin || child.stdin.destroyed) return false;
+    if (exited || exitAwaitingStdout || !child.stdin || child.stdin.destroyed || child.stdin.writableEnded) return false;
     try {
       child.stdin.write(`${JSON.stringify(frame)}\n`);
       return true;
@@ -425,9 +476,12 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       logEvent("debug", "agent_chat.acp_response_without_request", { id: String(id) });
       return;
     }
+    const errorPayload = normalizeAcpRpcError(frame.error);
+    // After the process has died, how it died says more than an error reply;
+    // leave the request to the exit, which reports stderr with it.
+    if (errorPayload && exitAwaitingStdout) return;
     pending.delete(id);
     if (waiter.timer) clearTimeout(waiter.timer);
-    const errorPayload = normalizeAcpRpcError(frame.error);
     if (errorPayload) {
       waiter.reject(new AcpRpcError(waiter.method, errorPayload));
       return;
@@ -456,8 +510,32 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     handleFrame(frame);
   });
 
-  child.stdout?.on("data", readStdoutLine);
+  const spawnedAtMs = Date.now();
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let firstStdoutAtMs: number | null = null;
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    firstStdoutAtMs ??= Date.now();
+    stdoutBytes += chunk.length;
+    readStdoutLine.push(chunk);
+  });
+  // The process can exit before its last output is read. Waiting for stdout to
+  // end keeps a final message that has no newline; the bound covers a child
+  // that left a grandchild holding the pipe.
+  let stdoutDone = child.stdout == null;
+  let stdoutGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  const finishStdout = () => {
+    if (stdoutDone) return;
+    stdoutDone = true;
+    if (stdoutGraceTimer) clearTimeout(stdoutGraceTimer);
+    stdoutGraceTimer = null;
+    readStdoutLine.flush();
+    if (exitAwaitingStdout) settleExit(exitAwaitingStdout);
+  };
+  child.stdout?.once("end", finishStdout);
+  child.stdout?.once("close", finishStdout);
   const readStderrLine = createLineSplitter((line) => emitDiagnosticLine(line, "stderr"));
+  const stderrDecoder = new StringDecoder("utf8");
   /**
    * Stderr is redacted a whole line at a time: a secret split across two
    * chunks (`?state` then `=value`) is matched only once both halves arrive.
@@ -479,10 +557,9 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   };
   const stderrTailWithPartial = () =>
     stderrPartial ? `${stderrTail}${redactAcpDiagnosticText(stderrPartial)}`.slice(-STDERR_TAIL_LIMIT) : stderrTail;
-  child.stderr?.once("close", flushStderrPartial);
-  child.stderr?.on("data", (chunk: Buffer | string) => {
-    let text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    if (diagnosticLineHandlers.size) readStderrLine(chunk);
+  const readStderrText = (decoded: string) => {
+    let text = decoded;
+    if (diagnosticLineHandlers.size) readStderrLine.push(text);
     if (droppingStderrLine) {
       const newline = text.indexOf("\n");
       if (newline < 0) return;
@@ -498,6 +575,16 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       stderrPartial = "";
       droppingStderrLine = true;
     }
+  };
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderrBytes += chunk.length;
+    readStderrText(typeof chunk === "string" ? chunk : stderrDecoder.write(chunk));
+  });
+  child.stderr?.once("close", () => {
+    const rest = stderrDecoder.end();
+    if (rest) readStderrText(rest);
+    readStderrLine.flush();
+    flushStderrPartial();
   });
   child.on("error", (error) => {
     logEvent("error", "agent_chat.acp_process_error", { error: error.message });
@@ -506,7 +593,20 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   });
   child.on("exit", (code, signal) => {
     logEvent("info", "agent_chat.acp_process_exit", { code, signal });
-    settleExit({ code, signal, stderrTail: stderrTailWithPartial() });
+    const exit = { code, signal, stderrTail: stderrTailWithPartial() };
+    if (stdoutDone) {
+      settleExit(exit);
+      return;
+    }
+    exitAwaitingStdout = exit;
+    // The process is gone, so the only answers left are already in the pipe.
+    // The exit settles whatever they do not.
+    for (const waiter of pending.values()) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.timer = null;
+    }
+    stdoutGraceTimer = setTimeout(finishStdout, ACP_STDOUT_END_GRACE_MS);
+    stdoutGraceTimer.unref?.();
   });
 
   const connection: AcpConnection = {
@@ -522,6 +622,19 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     },
     isAlive: () => !disposed && !exited,
     readStderrTail: stderrTailWithPartial,
+    readStartupTrace: () => {
+      const exit = exited ?? exitAwaitingStdout;
+      return {
+        pid: child.pid ?? null,
+        alive: !disposed && !exit,
+        ageMs: Date.now() - spawnedAtMs,
+        stdoutBytes,
+        stderrBytes,
+        firstStdoutAfterMs: firstStdoutAtMs === null ? null : firstStdoutAtMs - spawnedAtMs,
+        exitCode: exit?.code ?? null,
+        exitSignal: exit?.signal ?? null,
+      };
+    },
     request: <TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }) => {
       return new Promise<TResult>((resolve, reject) => {
         if (exited) {

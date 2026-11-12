@@ -6,7 +6,7 @@
  * too old, ADE moves to Anthropic's newest build on its own
  * (`claudeFallForward.ts`). A false trigger would replace a tested binary
  * with an untested one, so these matchers recognise only the refusals the
- * shipped binary itself emits (re-checked in CLI 2.1.300, SDK 0.3.300), and
+ * shipped binary itself emits (re-checked in CLI 2.1.321, SDK 0.3.321), and
  * nothing else: no network, auth, rate-limit, crash, timeout or local
  * database error, and no vague "please update".
  *
@@ -269,11 +269,11 @@ const CODEX_MODEL_FLOOR_TEXT =
  * Codex error kinds (`codexErrorInfo`) the floor can arrive under. A request
  * refusal is a bad request (or unclassified); a usage limit, an auth failure,
  * a connection failure or a full context is never this refusal, whatever its
- * words.
+ * words. Since 0.165 a provider's `model_not_found` arrives as its own kind.
  */
-const CODEX_FLOOR_ERROR_KINDS = new Set(["badrequest", "other"]);
+const CODEX_FLOOR_ERROR_KINDS = new Set(["badrequest", "other", "modelnotfound"]);
 
-function codexErrorKind(errorInfo: unknown): string | null {
+export function codexErrorKind(errorInfo: unknown): string | null {
   if (errorInfo == null) return null;
   if (typeof errorInfo === "string") return errorInfo.replace(/[_\s-]/g, "").toLowerCase();
   const record = asRecord(errorInfo);

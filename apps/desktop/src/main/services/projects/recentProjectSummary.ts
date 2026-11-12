@@ -424,7 +424,10 @@ export function readGitConfigOriginUrl(projectRoot: string): string | null {
 
     let mtimeMs: number;
     try {
-      mtimeMs = fs.statSync(configPath).mtimeMs;
+      const stat = fs.statSync(configPath);
+      // Reading a FIFO here would freeze the whole process.
+      if (!stat.isFile()) return null;
+      mtimeMs = stat.mtimeMs;
     } catch {
       return null;
     }

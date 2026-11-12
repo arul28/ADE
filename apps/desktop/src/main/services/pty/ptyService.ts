@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { readProcChildren, readPtyForeground, type ProcChildren } from "./procForeground";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -194,6 +196,8 @@ import {
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
 import { museCredentialEnv } from "../ai/museAuth";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -1069,6 +1073,16 @@ function terminatePtyProcessTree(
   }, PTY_PROCESS_TREE_KILL_DELAY_MS);
   timer.unref?.();
 }
+
+/** One live terminal, for the cloud busy list. */
+export type CloudBusyTerminalFacts = {
+  kind: "agent_cli" | "shell";
+  state: TerminalRuntimeState;
+  atPrompt: boolean | null;
+  foreground: string | null;
+  lastOutputAt: number;
+  lastInputAt: number;
+};
 
 type RuntimeStateEntry = {
   state: TerminalRuntimeState;
@@ -2662,6 +2676,29 @@ export function createPtyService({
   disposePtyBackend?: () => void;
 }) {
   const ptys = new Map<string, PtyEntry>();
+  /**
+   * The account a new CLI session starts on when it names none, the same pick
+   * a new chat makes. Set once the chat service exists, which is created after
+   * this service; until then a launch keeps the machine's own login.
+   */
+  let pickNewCliSessionAccount: ((provider: string, modelId: string | null) => string | null | undefined) | null = null;
+  /**
+   * A new CLI session that names no account starts on the one a new chat
+   * would (smart balance, else the default), and its resume metadata records
+   * it, so it keeps that account until it ends. A named account, a harness
+   * preset, a stored key, a resume, or a session that already exists keeps
+   * what it has.
+   */
+  const withNewCliSessionAccount = (args: PtyCreateArgs): PtyCreateArgs["runtimeCliLaunch"] => {
+    const launch = args.runtimeCliLaunch;
+    if (!launch || !pickNewCliSessionAccount) return launch;
+    if (launch.instanceId?.trim() || launch.presetId?.trim() || launch.credentialId?.trim()) return launch;
+    if (args.resumeMetadata) return launch;
+    const requestedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (requestedSessionId && sessionService.get(requestedSessionId)) return launch;
+    const instanceId = pickNewCliSessionAccount(String(launch.provider), launch.model?.trim() || null);
+    return instanceId ? { ...launch, instanceId } : launch;
+  };
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
   const exitListeners = new Set<PtyExitListener>();
@@ -6434,6 +6471,11 @@ export function createPtyService({
       }
     },
 
+    /** See `pickNewCliSessionAccount`. */
+    setNewCliSessionAccountPicker(picker: ((provider: string, modelId: string | null) => string | null | undefined) | null): void {
+      pickNewCliSessionAccount = picker;
+    },
+
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId } = args;
       const title = normalizePtySessionTitle(args.title);
@@ -6448,7 +6490,7 @@ export function createPtyService({
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
-      const runtimeCliLaunch = args.runtimeCliLaunch;
+      const runtimeCliLaunch = withNewCliSessionAccount(args);
       if (runtimeCliLaunch) {
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
@@ -7287,12 +7329,18 @@ export function createPtyService({
           });
         }
         const ptyLib = loadPty();
+        // A Claude CLI on a Claude pass account gets the pass here, at the
+        // spawn: never in `launchEnv`, which a tracked command can carry. The
+        // Copilot CLI on a cloud computer gets the account's Copilot token the same way.
+        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint)
+          ? withClaudePassEnv(launchEnv)
+          : toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv;
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,
           rows,
           cwd,
-          env: launchEnv
+          env: spawnEnv
         };
         let lastErr: unknown = null;
         let created: IPty | null = null;
@@ -7322,7 +7370,7 @@ export function createPtyService({
             try {
               created = await spawnPtyWhenReady(() => ptyLib.spawn(shell.file, shell.args, {
                 ...opts,
-                env: shell.env ? { ...launchEnv, ...shell.env } : launchEnv,
+                env: shell.env ? { ...spawnEnv, ...shell.env } : spawnEnv,
               }));
               selectedShell = shell;
               launchedDirectCommand = false;
@@ -8649,11 +8697,11 @@ export function createPtyService({
 
     async readTerminal(args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> {
       const terminalId = resolveTerminalId(args);
-      if (!terminalId) throw new Error("terminal.read requires terminalId, ptyId, or an active chat terminal.");
+      if (!terminalId) throw new AdeExpectedError("terminal.read requires terminalId, ptyId, or an active chat terminal.", "user");
       const session = sessionService.get(terminalId);
       if (!session) throw new AdeExpectedError(`Terminal session '${terminalId}' was not found.`, "user");
       if (isPersistedChatToolType(session.toolType)) {
-        throw new Error(`Session '${terminalId}' is an agent chat session, not a terminal.`);
+        throw new AdeExpectedError(`Session '${terminalId}' is an agent chat session, not a terminal.`, "user");
       }
       const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
@@ -8876,6 +8924,47 @@ export function createPtyService({
         logger.warn("pty.write_by_session_failed", { sessionId, err: String(err) });
         return false;
       }
+    },
+
+    /**
+     * What each live terminal is doing, for the cloud busy list
+     * (`decideCloudBusy` in cloudKeepAwake.ts). Chat CLI rows are skipped: their
+     * chat answers for them. Reads `/proc` once per live terminal per check.
+     */
+    listBusyFacts(): CloudBusyTerminalFacts[] {
+      const facts: CloudBusyTerminalFacts[] = [];
+      let children: ProcChildren | null = null;
+      const procChildren = () => children ??= readProcChildren();
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !entry.tracked || isChatToolType(entry.toolTypeHint)) continue;
+        const runtime = runtimeStates.get(entry.sessionId);
+        const foreground = readPtyForeground(entry.pty.pid, procChildren);
+        facts.push({
+          kind: isTrackedAgentCliToolType(entry.toolTypeHint) ? "agent_cli" : "shell",
+          state: runtime?.state ?? "running",
+          atPrompt: foreground?.atPrompt ?? (entry.shellPromptVisible ? true : null),
+          foreground: foreground?.name ?? null,
+          lastOutputAt: runtime?.lastActivityAt ?? entry.createdAt,
+          lastInputAt: entry.lastUserInputAt ?? 0,
+        });
+      }
+      return facts;
+    },
+
+    /** Interrupts every agent CLI mid-work (Ctrl-C), for a computer about to stop at 0 hours. Returns how many. */
+    interruptAgentClis(): number {
+      let interrupted = 0;
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+        if (runtimeStates.get(entry.sessionId)?.state !== "running") continue;
+        try {
+          entry.pty.write("\x03");
+          interrupted += 1;
+        } catch (error) {
+          logger.warn("pty.prepare_stop_interrupt_failed", { sessionId: entry.sessionId, err: String(error) });
+        }
+      }
+      return interrupted;
     },
 
     /** Whether a live (non-disposed) PTY currently backs `sessionId`. */

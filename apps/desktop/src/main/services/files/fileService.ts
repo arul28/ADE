@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type fs from "node:fs";
 import path from "node:path";
 import type {
@@ -30,6 +31,7 @@ import type {
   FilesSearchTextMatch,
   FilesWatchArgs,
   FilesWorkspace,
+  FilesWriteReceipt,
   FilesWriteTextArgs
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
@@ -43,7 +45,8 @@ import {
   secureMkdirWithinRoot,
   secureRenameWithinRoot,
   secureWriteFileWithinRoot,
-  secureWriteTextAtomicWithinRoot,
+  readFileWithinRootSecure,
+  secureWriteAtomicWithinRoot,
 } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
@@ -392,30 +395,73 @@ function omittedFileContent(args: {
   };
 }
 
+/** A batch stops at each submodule it meets, so this is how many it can get past. */
+const CHECK_IGNORE_MAX_SUBMODULES = 16;
+
 /**
- * The paths git ignores, or null when git could not answer for a reason that
- * may clear up — the folder is one git refuses to use until the user trusts it
- * (safe.directory). Null is not cached, so the tree is right once they do.
- * Other failures (timeout, not a repository) keep the old answer: nothing is
- * ignored.
+ * The paths git ignores, or null when git could not answer. Null is not cached,
+ * so the tree is right once it can (a folder git refuses to use until the user
+ * trusts it, a timeout). A folder that is not a repository has a real answer:
+ * nothing is ignored.
+ *
+ * `check-ignore` dies at the first path inside a submodule and drops the rest
+ * of the batch, so paths in a submodule are asked of the submodule itself.
  */
-async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; timeoutMs?: number }): Promise<Set<string> | null> {
+async function runGitCheckIgnoreBatch(args: {
+  cwd: string;
+  paths: string[];
+  timeoutMs?: number;
+  submodulesLeft?: number;
+}): Promise<Set<string> | null> {
   if (args.paths.length === 0) return new Set<string>();
   const result = await runGit(["check-ignore", "--stdin"], {
     cwd: args.cwd,
     timeoutMs: args.timeoutMs ?? 7_000,
     stdin: `${args.paths.join("\n")}\n`,
   });
-  // check-ignore exits 1 when nothing matched.
-  if (result.exitCode !== 0 && result.exitCode !== 1) {
-    return parseGitOwnershipError(result.stderr) ? null : new Set<string>();
-  }
-  return new Set(
+  const ignored = new Set(
     result.stdout
       .split(/\r?\n/)
       .map((line) => normalizeRelative(line.trim()))
       .filter(Boolean)
   );
+  // check-ignore exits 1 when nothing matched.
+  if (result.exitCode === 0 || result.exitCode === 1) return ignored;
+  if (/not a git repository/i.test(result.stderr)) return ignored;
+  const submodule = /is in submodule '(.+)'\s*$/m.exec(result.stderr)?.[1]?.replace(/\/+$/, "");
+  const submodulesLeft = args.submodulesLeft ?? CHECK_IGNORE_MAX_SUBMODULES;
+  if (!submodule || submodulesLeft <= 0) return null;
+  const prefix = `${submodule}/`;
+  const nested = args.paths.filter((entry) => entry.startsWith(prefix));
+  if (nested.length === 0) return null;
+  const [rest, inSubmodule] = await Promise.all([
+    runGitCheckIgnoreBatch({
+      ...args,
+      paths: args.paths.filter((entry) => !entry.startsWith(prefix) && !ignored.has(entry)),
+      submodulesLeft: submodulesLeft - 1,
+    }),
+    runGitCheckIgnoreBatch({
+      ...args,
+      cwd: path.join(args.cwd, submodule),
+      paths: nested.map((entry) => entry.slice(prefix.length)),
+      submodulesLeft: submodulesLeft - 1,
+    }),
+  ]);
+  if (!rest || !inSubmodule) return null;
+  for (const entry of rest) ignored.add(entry);
+  for (const entry of inSubmodule) ignored.add(`${prefix}${entry}`);
+  return ignored;
+}
+
+/**
+ * Whether a path, once `..` is collapsed, lands in ADE's runtime folders.
+ * Checking the text as given let `foo/../.ade/secrets/x` (and `.ADE/Secrets`
+ * on a case-insensitive disk) through.
+ */
+function resolvesIntoVolatileAdePath(rootPath: string, joinedPath: string): boolean {
+  const relative = path.relative(path.normalize(rootPath), joinedPath).split(path.sep).join("/");
+  const folded = process.platform === "darwin" || process.platform === "win32" ? relative.toLowerCase() : relative;
+  return isVolatileAdeRuntimePath(folded);
 }
 
 function ensureSafePath(
@@ -424,10 +470,10 @@ function ensureSafePath(
   opts: { allowMissing?: boolean } = {},
 ): { absPath: string; normalizedRel: string } {
   const normalizedRel = normalizeRelative(relPath);
-  if (isVolatileAdeRuntimePath(normalizedRel)) {
+  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
+  if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, joinedPath)) {
     throw new Error("Refusing to access ADE runtime paths");
   }
-  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
   let absPath: string;
   try {
     absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
@@ -448,12 +494,36 @@ function ensureSafePath(
   return { absPath, normalizedRel };
 }
 
+const CHUNKED_WRITE_MAX_BYTES = 64 * 1024 * 1024;
+
+function decodeBase64Strict(text: string): Buffer {
+  const compact = text.replace(/\s+/g, "");
+  if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) throw new Error("The text isn't valid base64.");
+  return Buffer.from(compact, "base64");
+}
+
+/**
+ * The file's bytes for a chunk appended at `offset`, read inside the root
+ * without following links; empty when it is not there. A file longer than
+ * `offset` is refused before it is read, so a wrong offset never loads a huge file.
+ */
+function readExistingWithinRoot(rootPath: string, relPath: string, offset: number): Buffer {
+  try {
+    return readFileWithinRootSecure(rootPath, relPath, { maxBytes: offset });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return Buffer.alloc(0);
+    const tooLarge = error instanceof Error ? /^File is too large \((\d+) bytes\)$/.exec(error.message) : null;
+    if (tooLarge) throw new Error(`Can't write at byte ${offset}: ${relPath} is ${tooLarge[1]} bytes. Send the chunk that starts there.`);
+    throw error;
+  }
+}
+
 function assertMutablePathAllowed(rootPath: string, relPath: string): string {
   const normalizedRel = normalizeRelative(relPath);
-  if (isVolatileAdeRuntimePath(normalizedRel)) {
+  const candidatePath = path.join(rootPath, normalizedRel);
+  if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, path.normalize(candidatePath))) {
     throw new Error("Refusing to mutate ADE runtime paths");
   }
-  const candidatePath = path.join(rootPath, normalizedRel);
   if (containsDotGit(candidatePath)) {
     throw new Error("Refusing to access .git internals");
   }
@@ -854,6 +924,31 @@ export function createFileService({
     return cached?.snapshot ?? emptyGitStatusSnapshot;
   };
 
+  /**
+   * A lane-sharing guest's read (`refuseIgnored`): refuses a file under
+   * `.ade/` (ADE's own state), a file git ignores (`.env`, keys, build
+   * output), and a link that resolves to either. Git answers fresh, not from
+   * the tree's cache; when git cannot answer, the read is refused.
+   */
+  const assertSharedReadable = async (rootPath: string, normalizedRel: string, absPath: string): Promise<void> => {
+    const refuse = (): never => {
+      throw markExpected(new Error("That file is not shared on this lane."), "user");
+    };
+    const candidates = new Set<string>([normalizedRel]);
+    try {
+      const realRoot = await nonAsarFs.promises.realpath(rootPath);
+      const resolved = path.relative(realRoot, absPath).split(path.sep).join("/");
+      if (resolved && !resolved.startsWith("..") && !path.isAbsolute(resolved)) candidates.add(resolved);
+    } catch {
+      refuse();
+    }
+    for (const rel of candidates) {
+      if (rel.split("/")[0]?.toLowerCase() === ".ade") refuse();
+    }
+    const ignored = await runGitCheckIgnoreBatch({ cwd: rootPath, paths: [...candidates] });
+    if (!ignored || [...candidates].some((rel) => ignored.has(normalizeRelative(rel)))) refuse();
+  };
+
   const isIgnoredPath = async (rootPath: string, relPath: string, includeIgnored: boolean): Promise<boolean> => {
     const normalized = normalizeRelative(relPath);
     if (!normalized) return false;
@@ -997,7 +1092,7 @@ export function createFileService({
     writeTextAtomic({ laneId, relPath, text }: { laneId: string; relPath: string; text: string }): void {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       assertMutablePathAllowed(worktreePath, relPath);
-      secureWriteTextAtomicWithinRoot(worktreePath, relPath, text);
+      secureWriteAtomicWithinRoot(worktreePath, relPath, text);
       invalidateGitStatusCache(worktreePath);
       clearPagedDirectoryEntriesCacheForRoot(worktreePath);
       if (onLaneWorktreeMutation) {
@@ -1112,6 +1207,7 @@ export function createFileService({
     async readFile(args: FilesReadFileArgs): Promise<FileContent> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      if (args.refuseIgnored) await assertSharedReadable(workspace.rootPath, normalizedRel, absPath);
       const stat = await nonAsarFs.promises.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
@@ -1220,6 +1316,7 @@ export function createFileService({
     async readFileRange(args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      if (args.refuseIgnored) await assertSharedReadable(workspace.rootPath, normalizedRel, absPath);
       const stat = await nonAsarFs.promises.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
@@ -1326,10 +1423,30 @@ export function createFileService({
       return { path: normalizedRel, lines };
     },
 
-    writeWorkspaceText(args: FilesWriteTextArgs): void {
+    writeWorkspaceText(args: FilesWriteTextArgs): FilesWriteReceipt {
       const workspace = resolveWorkspace(args.workspaceId);
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
-      secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, args.text);
+      const chunk = args.encoding === "base64" ? decodeBase64Strict(args.text) : Buffer.from(args.text, "utf8");
+      const offset = args.offset ?? 0;
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("`offset` is the number of bytes already written: a whole number, 0 or more.");
+      // Each chunk rewrites the whole file, so a chunked write stops at a size where that stays cheap.
+      if (offset > 0 && offset + chunk.length > CHUNKED_WRITE_MAX_BYTES) {
+        throw new Error(`A chunked write stops at ${CHUNKED_WRITE_MAX_BYTES / (1024 * 1024)} MB. Move bigger files another way (git, a clone).`);
+      }
+      let content = chunk;
+      if (offset > 0) {
+        const existing = readExistingWithinRoot(workspace.rootPath, normalizedRel, offset);
+        if (existing.length !== offset) {
+          throw new Error(`Can't write at byte ${offset}: ${normalizedRel} is ${existing.length} bytes. Send the chunk that starts there.`);
+        }
+        content = Buffer.concat([existing, chunk]);
+      }
+      secureWriteAtomicWithinRoot(workspace.rootPath, args.path, content);
+      const receipt: FilesWriteReceipt = {
+        path: normalizedRel,
+        bytes: content.length,
+        sha256: createHash("sha256").update(content).digest("hex"),
+      };
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
@@ -1343,6 +1460,7 @@ export function createFileService({
         shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_write");
+      return receipt;
     },
 
     createFile(args: FilesCreateFileArgs): void {
@@ -1491,6 +1609,7 @@ export function createFileService({
       // query still guard on their own side (global search, chat.fileSearch).
       const query = args.query.trim();
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, args.limit)) : 120;
+      if (args.refreshIndex) indexService.invalidateWorkspace(args.workspaceId);
       return await indexService.quickOpen({
         workspaceId: args.workspaceId,
         rootPath: workspace.rootPath,

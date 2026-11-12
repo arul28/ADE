@@ -748,6 +748,73 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(session.id))?.awaitingInput).toBeUndefined();
     });
 
+    // An automation's own turn has nobody behind it, so a card would hold the
+    // run forever. A Linear delegator and a person in the chat can answer.
+    it.each([
+      {
+        name: "an automation's own turn",
+        metadata: { automationRun: { automationId: "rule-1", runId: "run-1", name: "Rule" } },
+        refused: true,
+      },
+      {
+        name: "a Linear run, whose delegator answers",
+        metadata: { automationRun: { automationId: "rule-1", runId: "run-1", name: "Rule", attended: true as const } },
+        refused: false,
+      },
+      { name: "a person's turn", metadata: undefined, refused: false },
+    ])("settles a Codex approval correctly during $name", async ({ metadata, refused }) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Run the tests.",
+        ...(metadata ? { metadata } : {}),
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-1",
+        method: "item/commandExecution/requestApproval",
+        params: { itemId: "cmd-1", turnId: "turn-1", command: "npm test", reason: "Run tests" },
+      });
+
+      if (refused) {
+        await vi.waitFor(() => expect(events.some((event) => event.event.type === "pending_input_resolved" && event.event.itemId === "cmd-1")).toBe(true));
+        await vi.waitFor(() => expect(events.some((event) => event.event.type === "system_notice" && event.event.message.includes("nobody can answer"))).toBe(true));
+      } else {
+        await vi.waitFor(() => expect(events.some((event) => event.event.type === "approval_request" && event.event.itemId === "cmd-1")).toBe(true));
+        await service.respondToInput({ sessionId: session.id, itemId: "cmd-1", decision: "accept" });
+      }
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-1")).toMatchObject({
+        result: { decision: refused ? "decline" : "accept" },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await turn;
+    });
+
     it("keeps Codex isBlocking:false as live steering instead of awaiting you", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

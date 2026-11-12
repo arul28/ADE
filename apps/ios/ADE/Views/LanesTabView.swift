@@ -14,6 +14,7 @@ struct LanesRootInputs: Equatable {
   var laneStatus = SyncDomainStatus.disconnected
   var suppressHydrationNotices = false
   var activeLaneDeletionError: String?
+  var laneDeletionsKeptIds: [String] = []
   var lanesProjectionRevision = 0
   var laneGithubPrItems: [GitHubPrListItem] = []
   var pendingLaneDeletionIds: Set<String> = []
@@ -32,6 +33,7 @@ struct LanesRootInputs: Equatable {
     laneStatus = sync.status(for: .lanes)
     suppressHydrationNotices = sync.shouldSuppressDomainHydrationNotices
     activeLaneDeletionError = sync.activeLaneDeletionError
+    laneDeletionsKeptIds = sync.activeLaneDeletionsKept.map(\.id)
     lanesProjectionRevision = sync.lanesProjectionRevision
     laneGithubPrItems = sync.laneGithubPrItems
     pendingLaneDeletionIds = sync.pendingLaneDeletionIds

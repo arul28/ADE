@@ -6,6 +6,7 @@ import { MachineAvatar, machineFormFactor } from "../remoteTargets/MachineIdenti
 import { machineSectionAvailable, settingsMachinePageFor } from "./SettingsMachinesNav";
 import { useMachineFacts, type MachineFacts } from "./machines/machineFacts";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
+import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import "./machines/machinesPage.css";
 
 /** The machines whose brain a setting can be read and changed through from here. */
@@ -15,8 +16,11 @@ export function reachableMachines(machines: readonly ProjectMachine[]): ProjectM
 
 /**
  * A machine as a tile and a name, opening a menu of the machines a page can
- * act on. Only machines reachable from here are offered; with just one,
- * nothing is drawn and the page acts on This computer.
+ * act on. Only machines reachable from here are offered; with just one (and
+ * no ADE Cloud item), nothing is drawn and the page acts on This computer.
+ *
+ * `adeCloud`: Providers also offers ADE Cloud, after a rule. It is not a
+ * machine; the page says what cloud chats sign in with.
  */
 export function MachinePicker({
   machines,
@@ -24,6 +28,7 @@ export function MachinePicker({
   thisMachineName,
   onPick,
   variant = "inline",
+  adeCloud = null,
 }: {
   machines: readonly ProjectMachine[];
   selectedId: string;
@@ -31,15 +36,18 @@ export function MachinePicker({
   onPick: (machineId: string) => void;
   /** `title`: sits in a page title ("Providers on [machine ▾]"), at its size. */
   variant?: "inline" | "title";
+  adeCloud?: { selected: boolean; onPick: () => void } | null;
 }) {
   const reachable = useMemo(() => reachableMachines(machines), [machines]);
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(reachable, update.currentVersion || null);
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
-  if (reachable.length < 2) return null;
+  if (reachable.length < (adeCloud ? 1 : 2)) return null;
   const selected = reachable.find((machine) => machine.machineId === selectedId) ?? reachable[0]!;
   const nameOf = (machine: ProjectMachine) => (machine.isThisMachine ? (thisMachineName ?? machine.machineName) : machine.machineName);
+  const cloudSelected = adeCloud?.selected === true;
+  const triggerName = cloudSelected ? ADE_CLOUD_NAME : nameOf(selected);
 
   return (
     <>
@@ -50,12 +58,14 @@ export function MachinePicker({
         data-variant={variant}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Machine: ${nameOf(selected)}`}
+        aria-label={`Machine: ${triggerName}`}
         data-testid="settings-machine-picker"
         onClick={() => setOpen((value) => !value)}
       >
-        <PickerTile machine={selected} facts={facts.get(selected.machineId)} size={variant === "title" ? 24 : 20} />
-        <span className="ade-mpick-name">{nameOf(selected)}</span>
+        {cloudSelected
+          ? <CloudTile size={variant === "title" ? 24 : 20} />
+          : <PickerTile machine={selected} facts={facts.get(selected.machineId)} size={variant === "title" ? 24 : 20} />}
+        <span className="ade-mpick-name">{triggerName}</span>
         <CaretDown size={variant === "title" ? 13 : 11} weight="bold" aria-hidden />
       </button>
       <AnchoredMenu
@@ -67,7 +77,7 @@ export function MachinePicker({
         className="ade-mpick-menu"
       >
         {reachable.map((machine) => {
-          const isSelected = machine.machineId === selected.machineId;
+          const isSelected = !cloudSelected && machine.machineId === selected.machineId;
           return (
             <button
               key={machine.machineId}
@@ -86,6 +96,26 @@ export function MachinePicker({
             </button>
           );
         })}
+        {adeCloud ? (
+          <>
+            <div role="separator" className="ade-mpick-rule" />
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={cloudSelected}
+              className="ade-mpick-item"
+              data-testid="settings-machine-picker-ade-cloud"
+              onClick={() => {
+                setOpen(false);
+                if (!cloudSelected) adeCloud.onPick();
+              }}
+            >
+              <CloudTile size={22} />
+              <span className="ade-mpick-item-name">{ADE_CLOUD_NAME}</span>
+              {cloudSelected ? <Check size={12} weight="bold" aria-hidden /> : <span aria-hidden />}
+            </button>
+          </>
+        ) : null}
       </AnchoredMenu>
     </>
   );
@@ -100,5 +130,14 @@ function PickerTile({ machine, facts, size }: { machine: ProjectMachine; facts: 
       formFactor={machineFormFactor({ name: machine.machineName })}
       size={size}
     />
+  );
+}
+
+/** ADE Cloud's mark at a machine tile's size. */
+function CloudTile({ size }: { size: number }) {
+  return (
+    <span className="ade-mpick-cloud" style={{ width: size, height: size }} aria-hidden>
+      <CloudMark size={Math.round(size * 0.62)} bold />
+    </span>
   );
 }

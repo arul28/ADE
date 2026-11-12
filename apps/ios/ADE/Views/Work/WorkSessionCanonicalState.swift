@@ -100,6 +100,9 @@ struct SessionBadge: Equatable {
 /// copy riding along on the state value where it could drift.
 struct CanonicalSessionState: Equatable {
   let phase: CanonicalSessionPhase
+  /// `running` only because a PR watch is live between turns (desktop's
+  /// `liveness == "pr_watch"`). The turn is over, so such a row can be settled.
+  var restingOnPrWatch: Bool = false
 }
 
 /// A session still marked running that has produced no output for this long is
@@ -193,6 +196,8 @@ func workCanonicalSessionState(
   attentionRequestedAt: String? = nil,
   lastTurnFailedAt: String? = nil,
   backgroundTaskCount: Int = 0,
+  backgroundWorkingCount: Int? = nil,
+  prWatchActive: Bool = false,
   now: Date = Date(),
   isChatTool: (String?) -> Bool = isWorkChatToolType
 ) -> CanonicalSessionState {
@@ -263,10 +268,14 @@ func workCanonicalSessionState(
       if !lastTurnFailed.isEmpty && !chatTurnLive {
         return CanonicalSessionState(phase: .failed)
       }
-      if statusLower == "detached" {
+      // A brain restart detaches a resting chat, but its PR watch survives
+      // and its next wake brings the chat back. Mirrors desktop.
+      if statusLower == "detached" && !prWatchActive {
         return CanonicalSessionState(phase: .ended)
       }
-      return CanonicalSessionState(phase: .ready)
+      return prWatchActive
+        ? CanonicalSessionState(phase: .running, restingOnPrWatch: true)
+        : CanonicalSessionState(phase: .ready)
     }
 
     // Process completion is not a lifecycle declaration.
@@ -287,10 +296,16 @@ func workCanonicalSessionState(
   // claims live background work and that claim has gone quiet: chat rows keep
   // status "running" between turns, so checking silence first filed every
   // reply older than three hours as busy.
-  // Mirrors desktop `canonicalSessionState`.
+  // Mirrors desktop `canonicalSessionState`. A PR watch is never stale (the host
+  // polls the PR every minute) and covers quiet monitors, but real jobs still
+  // go stale. An older host sends no split, so its count is read as real jobs.
   if runtimeLower == "idle" {
-    if backgroundTaskCount > 0 && silentPastStale {
+    let onlyMonitorsBesideWatch = prWatchActive && backgroundWorkingCount == 0
+    if backgroundTaskCount > 0 && silentPastStale && !onlyMonitorsBesideWatch {
       return CanonicalSessionState(phase: .stale)
+    }
+    if chat && prWatchActive {
+      return CanonicalSessionState(phase: .running, restingOnPrWatch: true)
     }
     return chat
       ? CanonicalSessionState(phase: .ready)
@@ -472,7 +487,8 @@ func workSessionRowPresentation(
   waitingOnSubagent: Bool = false,
   now: Date = Date()
 ) -> WorkSessionRowPresentation {
-  let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
+  let state = workCanonicalSessionState(session: session, summary: summary, now: now)
+  let phase = state.phase
   let resolved = workSessionPhasePresentation(
     phase: phase,
     isPlanning: workSessionIsPlanning(summary: summary)
@@ -501,7 +517,8 @@ func workSessionRowPresentation(
     scheduledWakePending: workScheduledWakeIsPending(summary?.nextWakeAt, now: now),
     waitingOnSubagent: waitingOnSubagent,
     usageLimitStatus: usageLimitStatus,
-    currentTurnStartedAt: summary?.currentTurnStartedAt
+    currentTurnStartedAt: summary?.currentTurnStartedAt,
+    restingPrWatch: state.restingOnPrWatch ? summary?.activePrWatch : nil
   )
   // Whether the usage-limit overlay actually took the slot is the slot
   // function's own answer, not something to re-derive from the rendered glyph:
@@ -567,7 +584,8 @@ private func workSessionStatusSlot(
   scheduledWakePending: Bool,
   waitingOnSubagent: Bool,
   usageLimitStatus: WorkUsageLimitRowStatus?,
-  currentTurnStartedAt: String?
+  currentTurnStartedAt: String?,
+  restingPrWatch: SessionActivePrWatch?
 ) -> (presentation: WorkSessionStatusPresentation?, ownedByUsageLimit: Bool) {
   // needsYou skips the overlay gate entirely and falls straight through to the
   // phase table below, which already says "Needs you" in amber.
@@ -630,7 +648,9 @@ private func workSessionStatusSlot(
   //   • `starting` / `stale` / `stopped` / `ended` keep their own word for the
   //     same reason — the resume row is stale news next to what the row is
   //     actually doing.
-  if workUsageLimitStatusMayOwnSlot(phase), let usageLimitStatus {
+  //   • A chat resting on a PR watch is `running` in name only. Its wake cannot
+  //     run until the limit lifts, so the limit keeps the slot, as on desktop.
+  if workUsageLimitStatusMayOwnSlot(phase) || restingPrWatch != nil, let usageLimitStatus {
     return (WorkSessionStatusPresentation(
       label: usageLimitStatus.label,
       tone: usageLimitStatus.tone,
@@ -650,6 +670,20 @@ private func workSessionStatusSlot(
     currentTurnStartedAt: currentTurnStartedAt
   ) {
     return (activityPresentation, false)
+  }
+
+  // The turn is over but ADE is still watching the chat's PR and will wake it.
+  // Mirrors desktop's `pr_watch` branch; the elapsed counts from the watch.
+  if let restingPrWatch {
+    return (WorkSessionStatusPresentation(
+      label: restingPrWatch.count > 1 ? "Shipping ×\(restingPrWatch.count)" : "Shipping",
+      tone: .blue,
+      glyph: .shipping,
+      showsElapsed: true,
+      prominent: false,
+      kind: nil,
+      activityReportUpdatedAt: restingPrWatch.startedAt
+    ), false)
   }
 
   return (WorkSessionStatusPresentation(
@@ -704,6 +738,8 @@ func workCanonicalSessionState(
     attentionRequestedAt: session.attentionRequestedAt,
     lastTurnFailedAt: session.lastTurnFailedAt,
     backgroundTaskCount: summary?.activeBackgroundTaskCount ?? 0,
+    backgroundWorkingCount: summary?.backgroundWork?.workingCount,
+    prWatchActive: summary?.activePrWatch != nil,
     now: now
   )
 }

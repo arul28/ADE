@@ -1,6 +1,7 @@
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import fs from "node:fs";
-import { captureError } from "../../../shared/sentry/capture";
+import { addSentryBreadcrumb, captureError } from "../../../shared/sentry/capture";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   AdeActionRegistryEntry,
@@ -54,6 +55,15 @@ import {
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjectIcon, coerceProjects } from "./remoteBootstrap";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../../../shared/projectRemoval";
+
+/** A permanent delete of a large folder runs in a separate process with retries; it can take minutes. */
+const PROJECT_REMOVAL_TIMEOUT_MS = 10 * 60_000;
 import {
   parseRemoteAttachmentUploadTicket,
   uploadRemoteAttachment,
@@ -63,7 +73,15 @@ import {
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
+import type { Logger } from "../logging/logger";
+import { RemoteDialTelemetry, type RemoteDialOutcome } from "./remoteDialTelemetry";
+import {
+  REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS,
+  runWithEventSetupDeadline,
+  type RemoteEventSetupPhase,
+} from "./remoteEventSetup";
 import { HostReturnWatches } from "./remoteHostReturnWatch";
+import { CloudAsleepChecks } from "./remoteCloudAsleepChecks";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "./pairingInput";
@@ -96,11 +114,18 @@ import {
   describeLinkHeldByOtherAdeApp,
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
-import { adeActionAccess, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { findMachineProject } from "../../../shared/projectIdentity";
+// How long a woken machine gets to come back online before the call fails as usual.
+import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
 type RemoteConnectionServiceOptions = {
+  /** Receives one line per outage saying which routes were tried and how each ended. */
+  logger?: Pick<Logger, "info">;
+  onDialOutcome?: (outcome: RemoteDialOutcome) => void;
   autoconnectIntervalMs?: number;
   pingTimeoutMs?: number;
   appVersion?: string;
@@ -124,18 +149,39 @@ type RemoteConnectionServiceOptions = {
    */
   explicitConnectOnly?: boolean;
   /**
-   * Wakes a sleeping cloud machine (an Agent 37 box) the person is about to
+   * Wakes a sleeping cloud machine (a cloud box) the person is about to
    * use. True when it woke one, so the connect waits for it to come back;
    * throws with the reason when it may not (the monthly cap). Asked only for
    * an explicit Connect and for a call that changes something: background
    * reads never wake a box, or an open window would keep it awake forever.
    */
   wakeForUse?: (target: RemoteRuntimeTarget) => Promise<boolean>;
+  /**
+   * Whether a cloud computer is asleep or stopped. Asked when a call to it
+   * fails the way a sleeping computer fails (its relay tunnel looks open until
+   * a call times out), so the app shows it as not connected, quietly, where it
+   * used to show a connected machine whose reads fail. Null for a machine that
+   * isn't a cloud computer: at once when that is plain, or as the answer after
+   * a bounded lookup. Such a machine then takes the normal failure path.
+   */
+  asleepForUse?: (target: RemoteRuntimeTarget) => Promise<boolean | null> | null;
+  /**
+   * A cloud computer started or ended a rest (found asleep, or answering
+   * again). Once per change. The owner tells the windows, whose view of the
+   * computer is otherwise read only when a wake or a cloud action changes it.
+   */
+  onCloudRestChanged?: (targetId: string, resting: boolean) => void;
 };
 
-/** How long a woken machine gets to come back online before the call fails as usual. */
-const WOKEN_MACHINE_CONNECT_WAIT_MS = 45_000;
 const WOKEN_MACHINE_RETRY_MS = 1_500;
+/**
+ * How often a cloud computer found asleep is asked about again, so one that
+ * something else woke (a timer, the phone) reconnects by itself. No dial goes
+ * out in between; a person's use wakes it at once.
+ */
+const CLOUD_ASLEEP_RECHECK_MS = 5 * 60_000;
+/** After a link dropped and the computer still read as awake: when to ask again. */
+const CLOUD_ASLEEP_FOLLOW_UP_MS = [45_000, 90_000];
 
 const EXPLICIT_CONNECT_ONLY_MESSAGE =
   "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
@@ -326,6 +372,18 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * After a wake, may this call go out again? Replay-safe actions may. A chat send
+ * may when it carries a client id and the brain says it recognizes a retry of one
+ * it already took, so a message caught by a sleep is delivered, and never twice.
+ */
+function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
+  if (isReplaySafeAdeAction(request.domain, request.action)) return true;
+  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
+  const args = request.args as { clientSendId?: unknown } | undefined;
+  return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
+}
+
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
@@ -336,6 +394,17 @@ export class RemoteConnectionService {
     number
   >();
   private readonly automaticReconnectRetryAtByTargetId = new Map<string, number>();
+  /** Which cloud computers are asleep, and the questions that find out. */
+  private readonly asleepChecks = new CloudAsleepChecks(
+    {
+      ask: (target) => this.options.asleepForUse?.(target) ?? null,
+      stillWanted: (target) => Boolean(this.registry.get(target.id)) && !this.isManuallyDisconnected(target),
+      linkIsDown: (targetId) => this.statusById.get(targetId)?.state === "error",
+      rest: (target) => this.restAsleep(target),
+      restChanged: (targetId, resting) => this.options.onCloudRestChanged?.(targetId, resting),
+    },
+    CLOUD_ASLEEP_FOLLOW_UP_MS,
+  );
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly latencyProbeTargetIds = new Set<string>();
   /** Redials for each dropped link, until the machine is back or the time is up. */
@@ -351,6 +420,7 @@ export class RemoteConnectionService {
     },
     { firstAttemptMs: HOST_RETURN_FIRST_ATTEMPT_MS, watchMs: HOST_RETURN_WATCH_MS },
   );
+  private readonly dialTelemetry: RemoteDialTelemetry;
   private readonly pairedFallbackSshTrustByTargetId = new Map<
     string,
     Extract<RemoteRuntimeSshHostKeyTrustStatus, { state: "needs_trust" | "changed" }>
@@ -372,12 +442,19 @@ export class RemoteConnectionService {
     private readonly options: RemoteConnectionServiceOptions = {},
     private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {
+    this.dialTelemetry = new RemoteDialTelemetry({
+      describeTarget: (targetId) => this.describeDialTarget(targetId),
+      logger: this.options.logger,
+      onOutcome: this.options.onDialOutcome,
+    });
+    this.pool.onDialFailed((targetId, error) => this.dialTelemetry.noteFailed(targetId, error));
     // A call that finds the machine gone reconnects on its own, without
     // `connect()`. The machine may have restarted on a new version (an update
     // it was just sent), so what it reports now replaces what it reported at
     // the last explicit Connect. Without this the list kept the old version
     // and called a finished update "didn't apply".
     this.pool.onEntryConnected((targetId, result) => {
+      this.dialTelemetry.noteConnected(targetId, result.route);
       // The machine is back, whoever dialed it.
       this.hostReturnWatches.stop(targetId);
       // A connect that finishes after the machine was removed or disconnected
@@ -387,6 +464,8 @@ export class RemoteConnectionService {
         version: result.version,
         // Read with the version, so a brain that stopped reporting it clears it.
         appVersion: result.appVersion ?? null,
+        updateInstallMode: result.updateInstallMode,
+        downloadUrl: result.downloadUrl ?? null,
         arch: result.arch,
         ...(result.route ? { route: result.route } : {}),
         ...(result.capabilities ? { capabilities: result.capabilities } : {}),
@@ -453,6 +532,9 @@ export class RemoteConnectionService {
         lastAttemptedAt: Date.now(),
         recovery,
       });
+      // A cloud computer that went to sleep closes its link the same way; it
+      // then rests instead of showing an error and redialing.
+      void this.asleepAfterFailure(targetId, error);
     });
   }
 
@@ -890,6 +972,8 @@ export class RemoteConnectionService {
           // Only beside the live version it was read with, never beside the
           // persisted one, which can be from another connection.
           appVersion: status.version != null ? status.appVersion ?? null : null,
+          updateInstallMode: status.version != null ? status.updateInstallMode : undefined,
+          downloadUrl: status.version != null ? status.downloadUrl ?? null : null,
           ...(status.route ? { route: status.route } : {}),
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
           ...(status.compatibilityWarnings
@@ -949,6 +1033,7 @@ export class RemoteConnectionService {
   /** Ends every redial for a dropped link at once (the app is quitting). */
   stopHostReturnWatches(): void {
     this.hostReturnWatches.stopAll();
+    this.asleepChecks.stopAll();
   }
 
   async connect(
@@ -980,13 +1065,17 @@ export class RemoteConnectionService {
     });
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
-      // open until a call times out. Only Agent 37 boxes cost a lookup.
+      // open until a call times out. Only cloud boxes cost a lookup.
       const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
+      // An explicit connect counts as the person asking for this machine
+      // (Connect, Test, Try again, and opening or switching to one of its
+      // projects), so it may start the machine's brain. Unattended
+      // reconnects, the event pump and autoconnect dial as "background".
       const result = woke
         ? await this.connectWokenMachine(target)
         : explicit
-          ? await this.pool.connect(target, { bypassFailureBackoff: true })
-          : await this.pool.connect(target);
+          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" })
+          : await this.pool.connect(target, { initiatedBy: "background" });
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         if (this.manuallyDisconnectedTargetIds.has(target.id)) {
           this.pool.disconnect(target.id);
@@ -1015,6 +1104,8 @@ export class RemoteConnectionService {
         arch: connectedResult.arch,
         version: connectedResult.version,
         appVersion: connectedResult.appVersion ?? null,
+        updateInstallMode: connectedResult.updateInstallMode,
+        downloadUrl: connectedResult.downloadUrl ?? null,
         route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
@@ -1056,6 +1147,9 @@ export class RemoteConnectionService {
         lastAttemptedAt: Date.now(),
         recovery: this.recoveryAfterFailure(target.id),
       });
+      // A redial that found a cloud computer asleep ends the redials. A
+      // person's Connect woke it first, so its failure is a real one.
+      if (!explicit) void this.asleepAfterFailure(target.id, error);
       throw error;
     }
   }
@@ -1203,6 +1297,79 @@ export class RemoteConnectionService {
     const icon = coerceProjectIcon(value);
     this.patchProjectIcon(targetId, rootPath, icon);
     return icon;
+  }
+
+  /**
+   * The state of a host's copy of a project, for the remove dialog. Asked
+   * only of a machine that is connected now: this never dials, reconnects or
+   * wakes one. A host without `projects.inspectRemoval` answers
+   * `supported: false`, and the dialog offers entry-only removal there.
+   */
+  async inspectProjectRemoval(
+    targetId: string,
+    projectId: string,
+  ): Promise<RemoteProjectRemovalInspection> {
+    const target = this.requireConnectedTargetForRemoval(targetId);
+    if (this.statusById.get(target.id)?.capabilities?.machineProjects?.removeCopy !== true) {
+      return { supported: false, entryOnly: true };
+    }
+    const value = await this.callMachine(target, "projects.inspectRemoval", { projectId }, {
+      retryOnConnectionError: false,
+    });
+    return { supported: true, report: value as ProjectRemovalReport };
+  }
+
+  /**
+   * Removes a project from a host: its entry, and its folder when asked (the
+   * host deletes it for good: it has no trash). The host checks the copy
+   * again right before a delete and refuses when it changed. A host without
+   * `projects.removeCopy` gets the old `projects.remove` for an entry-only
+   * removal, and a clear refusal for a delete.
+   */
+  async removeProjectCopy(
+    targetId: string,
+    projectId: string,
+    request: ProjectRemovalRequest,
+  ): Promise<ProjectRemovalOutcome> {
+    const target = this.requireConnectedTargetForRemoval(targetId);
+    const machineName = target.name || target.hostname;
+    const supported = this.statusById.get(target.id)?.capabilities?.machineProjects?.removeCopy === true;
+    let outcome: ProjectRemovalOutcome;
+    if (!supported) {
+      if (request.deleteFolder) {
+        return { status: "refused", code: "unsupported", reason: `Update ADE on ${machineName} to delete its folder from here.` };
+      }
+      await this.callMachine(target, "projects.remove", { projectId }, { retryOnConnectionError: false });
+      outcome = { status: "removed", folder: "kept", outsideLaneFolders: [] };
+    } else {
+      outcome = (await this.callMachine(target, "projects.removeCopy", {
+        projectId,
+        deleteFolder: request.deleteFolder,
+        stateToken: request.stateToken,
+        acceptWork: request.acceptWork,
+      }, {
+        // A delete is never replayed: a second try after a dropped answer
+        // could act on a copy nobody checked.
+        retryOnConnectionError: false,
+        timeoutMs: PROJECT_REMOVAL_TIMEOUT_MS,
+      })) as ProjectRemovalOutcome;
+    }
+    if (outcome.status !== "refused") this.dropProject(target.id, projectId);
+    return outcome;
+  }
+
+  private requireConnectedTargetForRemoval(targetId: string): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    if (this.statusById.get(target.id)?.state !== "connected") {
+      throw new AdeExpectedError(`${target.name || target.hostname} is offline. It keeps its copy and its entry.`, "user");
+    }
+    return target;
+  }
+
+  private dropProject(targetId: string, projectId: string): void {
+    const projects = this.statusById.get(targetId)?.projects;
+    if (!projects?.some((project) => project.projectId === projectId)) return;
+    this.mergeStatus(targetId, { projects: projects.filter((project) => project.projectId !== projectId) });
   }
 
   private async callProjectIconMethod(
@@ -1451,14 +1618,67 @@ export class RemoteConnectionService {
     }));
   }
 
+  /**
+   * The id the machine routes a project by. A pin made from a saved chat can
+   * name the project by an id the machine never had (older cloud computers
+   * uploaded the project's database id); the pin's folder finds it there.
+   * Anything else goes as asked, and the machine answers for it.
+   */
+  private projectIdOnMachine(
+    targetId: string,
+    projectId: string,
+    projectRootPath: string | null | undefined,
+    known: readonly RemoteRuntimeProjectRecord[] | null = null,
+  ): string {
+    if (!projectRootPath) return projectId;
+    const projects = known ?? this.statusById.get(targetId)?.projects;
+    return findMachineProject(projects, { projectId, rootPath: projectRootPath })?.projectId ?? projectId;
+  }
+
+  /**
+   * `projectIdOnMachine`, for a call about to go out. A machine this app holds
+   * no project list for (awake, but not connected here yet) is asked for it
+   * first; a failure there is the call's failure.
+   */
+  private async routedProjectId(
+    target: RemoteRuntimeTarget,
+    projectId: string,
+    projectRootPath: string | null | undefined,
+    known: readonly RemoteRuntimeProjectRecord[] | null = null,
+    onPhase?: (phase: RemoteEventSetupPhase) => void,
+  ): Promise<string> {
+    if (!projectRootPath) return projectId;
+    let projects = known;
+    if (!projects && !this.statusById.get(target.id)?.projects?.length) {
+      projects = coerceProjects(await this.pool.projectsForTarget(target, { onPhase }));
+      this.mergeStatus(target.id, { projects: [...projects] });
+    }
+    return this.projectIdOnMachine(target.id, projectId, projectRootPath, projects);
+  }
+
+  /** A machine woken for a call lists its projects, as a Connect does. */
+  private noteWokenProjects(targetId: string, result: RemoteRuntimeConnectResult): RemoteRuntimeProjectRecord[] {
+    if (this.registry.get(targetId) && !this.manuallyDisconnectedTargetIds.has(targetId)) {
+      this.mergeStatus(targetId, { projects: result.projects });
+    }
+    return result.projects;
+  }
+
   async callAction(
     targetId: string,
     projectId: string,
     request: RemoteRuntimeActionRequest,
+    options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeActionResult> {
     // Sending to a chat or changing anything on a sleeping cloud machine wakes
-    // it first, and waits for it to come back.
-    if (!this.pool.hasEntry(targetId) && adeActionAccess(request.domain, request.action) === "write") {
+    // it first, and waits for it to come back. The app's own background writes don't.
+    const wakes = adeActionAccess(request.domain, request.action) === "write"
+      && !isBackgroundAdeWrite(request.domain, request.action);
+    // Read after any wake: the woken machine's own list, else the last one known.
+    let wokenProjects: RemoteRuntimeProjectRecord[] | null = null;
+    const routedProjectId = (machine: RemoteRuntimeTarget) =>
+      this.routedProjectId(machine, projectId, options?.projectRootPath, wokenProjects);
+    if (!this.pool.hasEntry(targetId) && wakes) {
       const sleeping = this.registry.get(targetId);
       // The same guards as any implicit use, but for the reconnect backoff a
       // sleeping box has run up: nothing is woken that the call may not reach.
@@ -1471,24 +1691,29 @@ export class RemoteConnectionService {
       }
       if (sleeping && await this.wakeForUse(sleeping)) {
         this.clearAutomaticReconnectState(targetId);
-        await this.connectWokenMachine(sleeping);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
+      } else if (this.asleepChecks.isResting(targetId)) {
+        // Not woken by this app: another device woke it already. The rest
+        // ends, and the dial below finds out (a failed one asks again).
+        this.clearAutomaticReconnectState(targetId);
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
     try {
       let result: RemoteRuntimeActionResult;
       try {
-        result = await this.pool.callActionForTarget(target, projectId, request);
+        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       } catch (error) {
         // A connection that looked open to a box that is asleep: wake it. The
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
+        if (!wakes || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
-        await this.connectWokenMachine(target);
-        if (error instanceof RemoteActionOutcomeUnknownError && !isReplaySafeAdeAction(request.domain, request.action)) throw error;
-        result = await this.pool.callActionForTarget(target, projectId, request);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
+        if (error instanceof RemoteActionOutcomeUnknownError
+          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
+        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       }
       this.mergeStatus(targetId, {
         state: "connected",
@@ -1512,6 +1737,7 @@ export class RemoteConnectionService {
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
+    options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
     const key = JSON.stringify([
       targetId,
@@ -1523,7 +1749,7 @@ export class RemoteConnectionService {
     ]);
     const inFlight = this.inFlightStreamEvents.get(key);
     if (inFlight) return inFlight;
-    const read = this.readStreamEvents(targetId, projectId, request).finally(() => {
+    const read = this.readStreamEvents(targetId, projectId, request, options).finally(() => {
       if (this.inFlightStreamEvents.get(key) === read) this.inFlightStreamEvents.delete(key);
     });
     this.inFlightStreamEvents.set(key, read);
@@ -1534,25 +1760,72 @@ export class RemoteConnectionService {
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest,
+    options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    const target = await this.requireTargetForImplicitUse(targetId);
-    try {
-      const result = await this.pool.streamEventsForTarget(
-        target,
-        projectId,
-        request,
-      );
-      this.mergeStatus(targetId, {
-        state: "connected",
-        lastError: null,
-        lastAttemptedAt: Date.now(),
-      });
-      this.clearAutomaticReconnectState(targetId);
-      return result;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    // A read that finishes after its deadline changes no status: a newer
+    // poll owns the machine's status by then.
+    return await this.withEventSetupDeadline(targetId, "read", async (notePhase, gaveUp) => {
+      const target = await this.requireTargetForImplicitUse(targetId);
+      try {
+        const result = await this.pool.streamEventsForTarget(
+          target,
+          await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
+          request,
+          { onPhase: notePhase },
+        );
+        if (gaveUp()) return result;
+        this.mergeStatus(targetId, {
+          state: "connected",
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+        });
+        this.clearAutomaticReconnectState(targetId);
+        return result;
+      } catch (error) {
+        if (!gaveUp()) this.markCallFailure(targetId, error);
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * An event read or subscription, bounded as a whole. Every step under it
+   * has its own bound, but a dial can try several routes or join a long SSH
+   * install, and a renderer poll must not sit on that: past
+   * REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS it fails naming the step it was on,
+   * and the pump polls again (joining the dial, which keeps going).
+   */
+  private withEventSetupDeadline<T>(
+    targetId: string,
+    kind: "read" | "subscribe",
+    run: (notePhase: (phase: RemoteEventSetupPhase) => void, isAbandoned: () => boolean) => Promise<T>,
+    onLateResult?: (value: T) => void,
+  ): Promise<T> {
+    const known = this.registry.get(targetId);
+    const machineName = known?.name?.trim() || known?.hostname?.trim() || "that computer";
+    return runWithEventSetupDeadline({
+      machineName,
+      run,
+      onLateResult,
+      onSettled: ({ timedOut, clock }) => {
+        const totalMs = clock.totalMs();
+        if (!timedOut && totalMs < REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS) return;
+        const meta = {
+          kind,
+          transport: known?.transport ?? "ssh",
+          phase: clock.current(),
+          totalMs,
+          phases: clock.summary(),
+        };
+        if (timedOut) {
+          // Breadcrumb plus a budgeted Sentry Log, keyed by the step that hung.
+          forwardSignalToSentry("remote.event_setup_timed_out", meta, `remote.event_setup_timed_out:${meta.phase}`);
+          this.options.logger?.info("remote.event_setup_timed_out", { targetId, ...meta });
+        } else {
+          addSentryBreadcrumb("remote", "remote.event_setup_slow", meta);
+        }
+      },
+    });
   }
 
   async subscribeEvents(
@@ -1562,28 +1835,46 @@ export class RemoteConnectionService {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
+    options?: { projectRootPath?: string | null },
   ): Promise<() => void> {
-    const target = await this.requireTargetForImplicitUse(targetId);
-    try {
-      const cleanup = await this.pool.subscribeEventsForTarget(
-        target,
-        projectId,
-        request,
-        onEvent,
-        onEnded,
-        onSubscribed,
-      );
-      this.mergeStatus(targetId, {
-        state: "connected",
-        lastError: null,
-        lastAttemptedAt: Date.now(),
-      });
-      this.clearAutomaticReconnectState(targetId);
-      return cleanup;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    // A subscription acknowledged after the deadline is closed again
+    // (`onLateResult`): the caller gave up on it and holds no handle to it.
+    return await this.withEventSetupDeadline(
+      targetId,
+      "subscribe",
+      async (notePhase, gaveUp) => {
+        const target = await this.requireTargetForImplicitUse(targetId);
+        try {
+          const cleanup = await this.pool.subscribeEventsForTarget(
+            target,
+            await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
+            request,
+            (event, eventEpoch) => {
+              if (!gaveUp()) onEvent(event, eventEpoch);
+            },
+            () => {
+              if (!gaveUp()) onEnded?.();
+            },
+            (result) => {
+              if (!gaveUp()) onSubscribed?.(result);
+            },
+            { onPhase: notePhase },
+          );
+          if (gaveUp()) return cleanup;
+          this.mergeStatus(targetId, {
+            state: "connected",
+            lastError: null,
+            lastAttemptedAt: Date.now(),
+          });
+          this.clearAutomaticReconnectState(targetId);
+          return cleanup;
+        } catch (error) {
+          if (!gaveUp()) this.markCallFailure(targetId, error);
+          throw error;
+        }
+      },
+      (lateCleanup) => lateCleanup(),
+    );
   }
 
   async listActionRegistry(
@@ -1666,6 +1957,17 @@ export class RemoteConnectionService {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.isManuallyDisconnected(target) || this.isHeldForUserAction(target.id)) continue;
       if (!this.automaticReconnectRetryIsDue(target.id)) continue;
+      if (this.asleepChecks.isResting(target.id)) {
+        // Still asleep: no dial, ask again later. Awake (something else woke
+        // it), or no longer a cloud computer: the dial below brings it back.
+        const stillAsleep = await this.asleepChecks.stillAsleep(target);
+        if (!this.asleepChecks.isResting(target.id)) continue;
+        if (stillAsleep) {
+          this.automaticReconnectRetryAtByTargetId.set(target.id, Date.now() + CLOUD_ASLEEP_RECHECK_MS);
+          continue;
+        }
+        this.asleepChecks.endRest(target.id);
+      }
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
@@ -1692,6 +1994,7 @@ export class RemoteConnectionService {
           }
           continue;
         } catch (error) {
+          if (await this.asleepAfterFailure(target.id, error)) continue;
           if (!isImplicitConnectionFailure(error)) continue;
           this.pool.disconnect(target.id);
           // Without the 30 s maintenance (a dev app, after a wake) the
@@ -1796,7 +2099,9 @@ export class RemoteConnectionService {
     if (retryAt != null && retryAt > Date.now()) {
       const status = this.statusById.get(targetId);
       throw new RemoteConnectBackoffError(
-        status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine did not answer",
+        this.asleepChecks.isResting(targetId)
+          ? "the computer is asleep"
+          : status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine did not answer",
         retryAt,
       );
     }
@@ -1920,7 +2225,7 @@ export class RemoteConnectionService {
     const deadline = Date.now() + WOKEN_MACHINE_CONNECT_WAIT_MS;
     for (;;) {
       try {
-        return await this.pool.connect(target, { bypassFailureBackoff: true });
+        return await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" });
       } catch (error) {
         // Waiting fixes a relay that isn't up yet, not a sign-in or a pairing.
         if (error instanceof PairedRuntimeRelayAuthRequiredError || this.pool.needsUserAction(target.id)) throw error;
@@ -1933,6 +2238,38 @@ export class RemoteConnectionService {
   private clearAutomaticReconnectState(targetId: string): void {
     this.automaticReconnectFailuresByTargetId.delete(targetId);
     this.automaticReconnectRetryAtByTargetId.delete(targetId);
+    this.asleepChecks.noteAlive(targetId);
+  }
+
+  /**
+   * A call or a dial failed. When it failed the way a sleeping cloud computer
+   * fails, asks whether the machine is one and rests the connection when it
+   * is. Null when nothing was asked (not a cloud computer, or an answer from
+   * the machine, which proves it awake).
+   */
+  private asleepAfterFailure(targetId: string, error: unknown): Promise<boolean> | null {
+    if (!this.options.asleepForUse || isConnectionBackoffThrottle(error)) return null;
+    if (
+      !isRuntimeTransportTimeoutError(error)
+      && !(error instanceof RemoteActionOutcomeUnknownError)
+      && !this.isConnectionFailure(targetId, error)
+    ) return null;
+    const target = this.registry.get(targetId);
+    return target ? this.asleepChecks.afterFailure(target) : null;
+  }
+
+  /**
+   * The cloud computer is asleep: not an error and nothing to redial. The link
+   * closes and the status says idle, so the lists show its saved chats and no
+   * read goes out. A person's use wakes it; the maintenance asks again later.
+   */
+  private restAsleep(target: RemoteRuntimeTarget): void {
+    this.pool.disconnect(target.id);
+    this.hostReturnWatches.stop(target.id);
+    this.automaticReconnectFailuresByTargetId.delete(target.id);
+    this.automaticReconnectRetryAtByTargetId.set(target.id, Date.now() + CLOUD_ASLEEP_RECHECK_MS);
+    this.mergeStatus(target.id, { state: "idle", lastError: null, recovery: null });
+    this.options.logger?.info("remote.cloud_computer_asleep", { targetId: target.id });
   }
 
   private automaticReconnectRetryIsDue(targetId: string): boolean {
@@ -1955,6 +2292,27 @@ export class RemoteConnectionService {
    * backoff state; everything else is left to rethrow to the caller untouched.
    */
   private markCallFailure(targetId: string, error: unknown): void {
+    const asleep = this.asleepAfterFailure(targetId, error);
+    if (!asleep) {
+      this.recordCallFailure(targetId, error);
+      return;
+    }
+    // A sleeping cloud computer is not a failed connection. The status waits
+    // for the answer, and takes the failure only if the machine is awake and
+    // nothing has reached it since.
+    const stamp = this.asleepChecks.aliveStamp(targetId);
+    const disconnectGeneration = this.getDisconnectGeneration(targetId);
+    void asleep.then((isAsleep) => {
+      // A Disconnect pressed while the question was out stays a disconnect.
+      if (
+        !isAsleep
+        && this.asleepChecks.aliveStamp(targetId) === stamp
+        && this.isDisconnectGenerationCurrent(targetId, disconnectGeneration)
+      ) this.recordCallFailure(targetId, error);
+    });
+  }
+
+  private recordCallFailure(targetId: string, error: unknown): void {
     if (!this.isConnectionFailure(targetId, error)) return;
     // A refusal to dial changes nothing; the status already holds the failure
     // that started the wait, with its kind (SSH sign-in, unreachable).
@@ -2005,6 +2363,18 @@ export class RemoteConnectionService {
       });
     }
     return errorMessage(error);
+  }
+
+  private describeDialTarget(targetId: string) {
+    const target = this.registry.get(targetId);
+    if (!target) return null;
+    const credentials = target.pairedMachine ? this.pairedStore.getForReference(target.pairedMachine) : null;
+    return {
+      deviceRef: syncDeviceTelemetryRef(credentials?.deviceId),
+      peerDeviceRef: syncDeviceTelemetryRef(credentials?.hostIdentity.deviceId),
+      peerVersion: target.runtimeBinaryVersion ?? null,
+      lastConnectedAt: target.lastConnectedAt ?? null,
+    };
   }
 
   private upsertProject(

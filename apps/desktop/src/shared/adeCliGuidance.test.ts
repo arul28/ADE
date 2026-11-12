@@ -1,10 +1,12 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
+import { adeHostWithheldAgentSkills, setAdeCloudSkillVisible } from "./agentSkillRoots";
 import {
   adeBundledAgentSkills,
+  adeOutsideClientAgentSkills,
   adeDeprecatedAgentSkillAliases,
   buildAdeBootstrapGuidance,
   buildAdeCliAgentGuidance,
@@ -14,6 +16,10 @@ import {
   buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
 
+// `ade-cloud` shows only for an account on ADE Cloud's list; these cases are about the rest of the list.
+beforeEach(() => setAdeCloudSkillVisible(true));
+afterEach(() => setAdeCloudSkillVisible(false));
+
 describe("ADE CLI guidance", () => {
   it("now aliases the minimal bootstrap (the verbose always-on blob was removed)", () => {
     const roots = ["/Applications/ADE.app/Contents/Resources/agent-skills"];
@@ -22,10 +28,13 @@ describe("ADE CLI guidance", () => {
     // The canonical builder is a thin alias over the bootstrap.
     expect(guidance).toBe(buildAdeBootstrapGuidance(roots));
     // It still advertises the bundled skill index so the model knows what
-    // exists, minus the deprecated aliases (one name per skill).
+    // exists, minus the deprecated aliases (one name per skill), the skills
+    // only an app outside ADE reads, and the skills this host cannot run.
+    const hostWithheld = new Set(adeHostWithheldAgentSkills());
     for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName)) expect(guidance).not.toContain(`\`${skillName}\``);
-      else expect(guidance).toContain(`\`${skillName}\``);
+      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) {
+        expect(guidance).not.toContain(`\`${skillName}\``);
+      } else expect(guidance).toContain(`\`${skillName}\``);
     }
     // The old always-on rulebook is gone — those rules now live in the skills.
     expect(guidance).not.toContain("### Minimum operating rules");
@@ -69,10 +78,14 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade chat update --title");
     expect(bootstrap).toContain("ade lanes rename");
     // The skill index is still advertised so the model knows what exists.
+    const hostWithheld = new Set(adeHostWithheldAgentSkills());
     for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName)) continue;
+      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) continue;
       expect(bootstrap).toContain(`\`${skillName}\``);
     }
+    // An account off ADE Cloud's list isn't told it exists.
+    setAdeCloudSkillVisible(false);
+    expect(buildAdeBootstrapGuidance(roots)).not.toContain("`ade-cloud`");
   });
 
   it("stays within a small budget — the always-on socket/browser/proof tax is gone", () => {

@@ -54,6 +54,7 @@ export type FeatureAnalyticsAction =
   | "session_continue_cli"
   | "session_copy_cli"
   | "webhook_url_created"
+  | "run_on_changed"
   | "safe_test_started"
   | "live_test_started"
   | "secret_requested"
@@ -61,6 +62,7 @@ export type FeatureAnalyticsAction =
   | "mcp_server_requested"
   | "mcp_server_remove_requested"
   | "notification_sent"
+  | "settled_lane_released"
   | "music_connected"
   | "spotify_connected"
   | "server_toggled"
@@ -126,6 +128,8 @@ export function captureFeatureUsedAnalytics(args: {
   outcome: FeatureAnalyticsOutcome;
   provider?: unknown;
   sessionId?: string | null;
+  /** Background work nobody asked for at that moment: not counted as activity. */
+  automatic?: boolean;
 }): void {
   if (!args.analytics) return;
   const provider = args.provider === undefined ? undefined : coarseProviderFamily(args.provider);
@@ -135,6 +139,7 @@ export function captureFeatureUsedAnalytics(args: {
     action: args.action,
     outcome: args.outcome,
     ...(provider ? { provider } : {}),
+    ...(args.automatic ? { mode: "automatic" } : {}),
   };
   const dedupeProvider = provider ? `:${provider}` : "";
   args.analytics.captureInternal({
@@ -288,6 +293,17 @@ export function captureWebhookUrlCreatedAnalytics(args: {
   surface: ProductAnalyticsSurface;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "webhook_url_created", outcome: "completed" });
+}
+
+/**
+ * A person chose another computer to run an automation that follows their
+ * account ("Runs on"). Never the rule, either computer, or the repository.
+ */
+export function captureAutomationRunOnChangedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "run_on_changed", outcome: "completed" });
 }
 
 /**

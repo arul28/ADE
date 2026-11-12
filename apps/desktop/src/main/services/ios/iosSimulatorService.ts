@@ -1,6 +1,7 @@
 import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -2462,6 +2463,9 @@ function readPngSize(filePath: string): { width: number; height: number } | null
   }
 }
 
+/** The chat whose agent made the call in progress; empty for a person's call. */
+const agentCallChat = new AsyncLocalStorage<string>();
+
 export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   let lastSelectedItem: IosElementContextItem | null = null;
   let controlQueue: Promise<void> = Promise.resolve();
@@ -2536,6 +2540,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * lane, so nothing has to special-case "no lane" beyond resolving the key.
    */
   type LaneRuntime = {
+    lastListedDevices?: IosSimulatorDevice[];
+    deviceListingFailed?: boolean;
     key: string;
     laneId: string | null;
     activeSession: IosSimulatorSession | null;
@@ -3460,6 +3466,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // Every ADE boot passes here: a device ADE powered off earlier is on
       // again, so its "ADE powered this off" note is no longer true.
       if (reason === "boot") laneMaintenance().clearPowerOff(udid);
+      // Also the one place that knows the boot really happened: a device that
+      // was already up keeps its record, and a person's boot records nobody.
+      // A shutdown leaves it: the shutdown can fail, and the record goes once
+      // the device is seen off.
+      if (reason === "boot") laneMaintenance().recordBootedBy(udid, agentCallChat.getStore() ?? null);
       return resetHelperDevice(udid, reason);
     },
     stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),
@@ -4070,7 +4081,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const computeStatus = async (runtime: LaneRuntime): Promise<IosSimulatorStatus> => {
     const isDarwin = process.platform === "darwin";
     const tools = buildToolStatuses();
-    const devices = isDarwin ? await listDevices().catch(() => []) : [];
+    // A listing that failed says nothing about the devices, so the last good
+    // one stands and no device is reported as powered off.
+    const listed = isDarwin
+      ? await listDevices().catch((error: unknown) => {
+        // Once per outage: this read sits on a polled status.
+        if (!runtime.deviceListingFailed) {
+          args.logger.warn("apple.device_listing_failed", {
+            laneId: runtime.key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        runtime.deviceListingFailed = true;
+        return null;
+      })
+      : [];
+    if (listed) {
+      runtime.lastListedDevices = listed;
+      runtime.deviceListingFailed = false;
+    }
+    const devices = listed ?? runtime.lastListedDevices ?? [];
     // An open device session names the device as surely as an app session does,
     // and it comes second only because an app session is the more specific
     // claim. The lane's own device comes next: a lane that created one and has
@@ -4090,8 +4120,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // pane that polls the status must not pay a second `simctl list` for it.
     // A notice that cannot be built must not fail the status read; it is
     // logged so the failing read is not invisible.
-    const powerOffNotices = isDarwin
-      ? await devicePowerOffNotices(runtime.key, devices).catch((error: unknown) => {
+    const powerOffNotices = isDarwin && listed
+      ? await devicePowerOffNotices(runtime.key, listed).catch((error: unknown) => {
         args.logger.warn("apple.device_power_off_notices_failed", {
           laneId: runtime.key,
           error: error instanceof Error ? error.message : String(error),
@@ -7212,7 +7242,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       .map((device) => ({ device, record: laneMaintenance().readPowerOff(device.udid) }))
       .filter((entry): entry is { device: AppleLaneDevice; record: AppleDevicePowerOffRecord } => entry.record !== null);
     if (!records.length) return [];
-    const listed = installed ?? await listDevices().catch(() => [] as IosSimulatorDevice[]);
+    const listed = installed ?? await listDevices().catch(() => null);
+    if (!listed) return [];
     return records
       .filter(({ device }) => listed.find((entry) => entry.udid === device.udid)?.state !== "Booted")
       .map(({ device, record }) => describeDevicePowerOff(
@@ -7509,6 +7540,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     invalidateDeviceList();
     for (const runtime of runtimes.values()) invalidateStatus(runtime);
     return result;
+  };
+
+  /**
+   * Power off the lane's devices that these chats' agents booted and nothing
+   * is using now. Not an agent action: the settled-lane release calls it.
+   */
+  const powerOffChatStartedDevices = async (powerArgs: {
+    laneId: string;
+    chatSessionIds: ReadonlySet<string>;
+  }): Promise<{ poweredOff: Array<{ udid: string; name: string | null }>; incomplete?: boolean }> => {
+    if (process.platform !== "darwin") return { poweredOff: [] };
+    const own = laneDevices.get(powerArgs.laneId);
+    const onlyUdids = new Set([...(own ? [own.udid] : []), ...laneDevices.extras(powerArgs.laneId).map((device) => device.udid)]);
+    if (onlyUdids.size === 0) return { poweredOff: [] };
+    const { poweredOff, failed } = await laneMaintenance().runIdlePass({ force: true, onlyUdids, onlyBootedBy: powerArgs.chatSessionIds });
+    if (poweredOff.length > 0) {
+      invalidateDeviceList();
+      for (const runtime of runtimes.values()) invalidateStatus(runtime);
+    }
+    return { poweredOff, incomplete: Boolean(failed) };
   };
 
   /**
@@ -7866,10 +7917,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── maintenance ───────────────────────── */
 
-  const isBusyHere = (udid: string): boolean => {
+  const isBusyHere = (udid: string, options: { onlyWatchedStreams?: boolean } = {}): boolean => {
     if (activeTestUdids.has(udid)) return true;
     for (const runtime of runtimes.values()) {
-      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === udid) return true;
+      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === udid) {
+        const watched = hasLocalViewer(runtime.laneId) || Boolean(runtime.laneId && remoteViewers?.watching(runtime.laneId));
+        if (!options.onlyWatchedStreams || watched) return true;
+      }
       const laneUdid = runtime.key ? laneDevices.get(runtime.key)?.udid ?? null : null;
       if (laneUdid !== udid) continue;
       if (runtime.activeLaunchId) return true;
@@ -8038,6 +8092,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
     for (const action of AGENT_DEVICE_DRIVING_ACTIONS) wrap(action, "drive");
     for (const action of AGENT_DEVICE_CHECKED_ACTIONS) wrap(action, "check");
+    // Outermost, while `agentCaller` is still on the arguments: a boot anywhere
+    // inside an agent's call, however deep, knows which chat asked for it.
+    for (const [action, handler] of Object.entries(guarded)) {
+      if (typeof handler !== "function") continue;
+      guarded[action] = (actionArgs: unknown, ...rest: unknown[]) => {
+        const call = actionArgs as { agentCaller?: unknown; chatSessionId?: unknown } | null | undefined;
+        const chat = call?.agentCaller === true && typeof call.chatSessionId === "string" ? call.chatSessionId.trim() : "";
+        const invoke = () => (handler as (...params: unknown[]) => unknown)(actionArgs, ...rest);
+        return chat ? agentCallChat.run(chat, invoke) : invoke();
+      };
+    }
     return guarded as T;
   };
 
@@ -8120,6 +8185,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,
     /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
     deviceCleanup,
+    powerOffChatStartedDevices,
 
     /* Simulator runtimes: list, install the one this Xcode expects, remove old ones. */
     runtimeList: async () => darwinRuntimeManager().runtimeList(),

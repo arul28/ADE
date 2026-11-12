@@ -6,9 +6,11 @@
 // Like xterm, an ESC that does not start ST ends the string and begins the
 // next sequence.
 const OSC_REGEX = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g;
-const APC_REGEX = /\u001b_[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC _ ... BEL or ST (Kitty graphics protocol)
-const DCS_REGEX = /\u001bP[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC P ... BEL or ST
-const PM_REGEX = /\u001b\^[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC ^ ... BEL or ST
+// DCS, SOS, PM and APC end the same way OSC does.
+const APC_REGEX = /\u001b_[^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g; // ESC _ ... (Kitty graphics protocol)
+const DCS_REGEX = /\u001bP[^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g; // ESC P ...
+const SOS_REGEX = /\u001bX[^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g; // ESC X ...
+const PM_REGEX = /\u001b\^[^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g; // ESC ^ ...
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g; // ESC [ ... cmd
 // ECMA-35: intermediate bytes (0x20-0x2F) and one final byte, as in ESC ( B,
 // ESC # 8 or ESC % G. A control or ESC after the intermediates is not a final
@@ -50,6 +52,7 @@ export function stripAnsiWithOptions(
     .replace(OSC_REGEX, "")
     .replace(APC_REGEX, "")
     .replace(DCS_REGEX, "")
+    .replace(SOS_REGEX, "")
     .replace(PM_REGEX, "")
     .replace(RESTARTED_ESC_REGEX, "")
     .replace(INTERMEDIATE_ESC_REGEX, "")

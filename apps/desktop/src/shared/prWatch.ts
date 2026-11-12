@@ -16,7 +16,9 @@
 import type { AdeCardPayload, AdeCardProgress, AdeCardRow } from "./adeCard";
 import { classifyPrAuthor } from "./prBotIdentity";
 import { isCiProducerCheck } from "./prChecksRollup";
+import { isSessionMetaOnly } from "./sessionMetaEvents";
 import type { PrCheck, PrChecksStatus, PrState } from "./types/prs";
+import { cutTextAtCodePoint } from "./codePointText";
 
 export type PrWatchMode = "watch" | "ship";
 
@@ -31,7 +33,11 @@ export type PrWatchArmedBy = "user" | "agent";
 
 /** Comment-only wakes in a row before the watch stops itself (a bot loop). */
 export const PR_WATCH_COMMENT_ONLY_WAKE_LIMIT = 10;
-/** A PR that cannot be read for this long ends the watch with a final wake. */
+/**
+ * A PR GitHub keeps refusing (gone, or no longer visible to this account) for
+ * this long ends the watch with a final wake. Outages, a laptop going offline
+ * and rate limits never count: those watches carry on when GitHub is back.
+ */
 export const PR_WATCH_UNREADABLE_LIMIT_MS = 15 * 60_000;
 /**
  * Ship mode waits this long after a new head for review bots to show up.
@@ -293,6 +299,8 @@ export function evaluatePrWatch(args: {
   mergeQueueRemoval?: PrMergeQueueRemoval | null;
   /** When the watch began. A removal from before it is history, not news. */
   watchStartedAt?: string;
+  /** GitHub refused this PR in a way waiting will not fix (gone, or access lost). */
+  permanentlyUnreadable?: boolean;
   nowMs: number;
 }): PrWatchEvaluation {
   const { mode, pr, nowMs } = args;
@@ -382,15 +390,17 @@ export function evaluatePrWatch(args: {
   const { fresh, remarksThrough, remarkIds } = readFreshRemarks(previous, args.remarks, args.ignoredRemarkIds);
   if (fresh.length > 0) found.push({ kind: "remarks", remarks: fresh });
 
-  // `null` is GitHub still computing after a push: only a clean answer clears it.
-  const conflictingNow = pr.mergeConflicts == null ? previous.conflicting : pr.mergeConflicts === true;
-  if (conflictingNow && !previous.conflicting) found.push({ kind: "conflicting" });
+  // `null` is GitHub still computing after a push: only a clean answer clears
+  // it. A new head starts over, so a push that still conflicts is news.
+  const wasConflicting = headMoved ? false : previous.conflicting;
+  const conflictingNow = pr.mergeConflicts == null ? wasConflicting : pr.mergeConflicts === true;
+  if (conflictingNow && !wasConflicting) found.push({ kind: "conflicting" });
 
-  const unreadable = args.checks === null && args.remarks === null;
+  const unreadable = args.permanentlyUnreadable === true;
   const unreadableSince = unreadable ? (previous.unreadableSince ?? nowIso) : null;
   if (unreadable && nowMs - timeMs(unreadableSince) >= PR_WATCH_UNREADABLE_LIMIT_MS) {
     return {
-      changes: [...held, { kind: "unreadable", reason: "ADE could not read this pull request from GitHub for 15 minutes." }],
+      changes: [...held, { kind: "unreadable", reason: "GitHub no longer lets ADE read this pull request. It was removed, or this account lost access to it." }],
       next: { ...previous, unreadableSince, held: [] },
       exhausted: false,
       stop: "unreadable",
@@ -469,7 +479,7 @@ function snippet(body: string | null | undefined): string {
     .replaceAll(/<details>[\s\S]*?<\/details>/gi, " ")
     .replaceAll(/\s+/g, " ")
     .trim();
-  return text.length <= SNIPPET_LENGTH ? text : `${text.slice(0, SNIPPET_LENGTH - 1).trimEnd()}…`;
+  return text.length <= SNIPPET_LENGTH ? text : `${cutTextAtCodePoint(text, SNIPPET_LENGTH - 1).trimEnd()}…`;
 }
 
 function listed<T>(items: readonly T[], line: (item: T) => string): string[] {
@@ -722,6 +732,32 @@ export type PrChatWatchSummary = {
   /** Ship: news found and held until CI and the review bots finish. */
   holding: boolean;
 };
+
+/**
+ * A chat's live PR watches, as its Work row needs them. Built by the machine
+ * that runs the watch and carried on the chat summary, so a row listed from
+ * another machine reads the same thing. Absent when no watch is live, or from
+ * a host older than this field.
+ */
+export type SessionActivePrWatch = {
+  /** The oldest live watch's start: the row's elapsed counts from here. */
+  startedAt: string;
+  /** The oldest live watch's PR. Null when its PR row is gone. */
+  githubPrNumber: number | null;
+  /** How many PRs this chat is watching. Always at least 1. */
+  count: number;
+};
+
+/** What the watch is about, e.g. "PR #2130". Null when its PR row is gone. */
+export function prWatchHint(watch: SessionActivePrWatch): string | null {
+  if (watch.count > 1) return `${watch.count} pull requests`;
+  return watch.githubPrNumber != null ? `PR #${watch.githubPrNumber}` : null;
+}
+
+/** A `session_meta_updated` that only says a PR watch started or stopped. */
+export function isPrWatchChangedOnlyMetaEvent(event: { type: string }): boolean {
+  return isSessionMetaOnly(event, "prWatchChanged");
+}
 
 export type SetPrChatWatchArgs = {
   prId: string;

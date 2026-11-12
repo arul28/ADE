@@ -1147,6 +1147,11 @@ function systemNoticeSignature(
   const kind = event.noticeKind ?? null;
   const message = event.message.trim();
   const detail = event.detail ?? null;
+  // Two stand-ins for different oversized rows can read the same; the row's
+  // offset tells them apart.
+  if (event.omittedRow) {
+    return `o${JSON.stringify([turnId, kind, message, detail, event.omittedRow.offset])}`;
+  }
   // The common notice has text fields only: join them with a separator none of
   // them holds ("s" form). Anything else is JSON ("j" form). The two forms
   // never collide, and each is exact within itself.
@@ -3533,6 +3538,7 @@ export function appendCollapsedChatTranscriptEvent(
         && previous.event.message.trim() === event.message.trim()
         && JSON.stringify(previous.event.detail ?? null) === JSON.stringify(event.detail ?? null)
         && (previous.event.turnId ?? null) === (event.turnId ?? null)
+        && (previous.event.omittedRow?.offset ?? null) === (event.omittedRow?.offset ?? null)
       ) {
         return;
       }

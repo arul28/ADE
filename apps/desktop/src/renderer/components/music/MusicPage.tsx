@@ -18,7 +18,7 @@ import { ChatSceneBackdrop } from "../personalChats/ChatSceneBackdrop";
 import { MusicNowPlayingBar } from "./MusicNowPlayingBar";
 import { MusicPlayerCard } from "./MusicPlayer";
 import { queueableId } from "./musicQueue";
-import { friendlyMusicError, musicActions, useMusicLastError, useMusicState } from "./musicStore";
+import { friendlyMusicError, musicActions, musicAvailable, useMusicLastError, useMusicState } from "./musicStore";
 import { ConnectButton, ConnectHero, SignInControls } from "./MusicWelcome";
 import { MusicAccountArea } from "./MusicAccount";
 import { DetailView } from "./MusicDetailView";
@@ -140,6 +140,20 @@ function MusicPageContent() {
       void musicActions.playItems([queueableId(item) ?? item.id]);
     }
   };
+
+  if (!musicAvailable()) {
+    return (
+      <MusicFrame>
+        <div className="ade-music-center">
+          <section className="ade-music-gate ade-chat-scene-plane" data-testid="music-no-bridge">
+            <span className="ade-music-gate-glyph"><MusicNotes size={30} weight="fill" /></span>
+            <h1>Music isn't available here</h1>
+            <p>Open the ADE desktop app on this computer to use Music.</p>
+          </section>
+        </div>
+      </MusicFrame>
+    );
+  }
 
   if (!hasState) {
     return (

@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { ChatThreadComment, ChatThreadCommentAnchor } from "../../../shared/threadComments";
+import { threadCommentRevision, type ChatThreadComment, type ChatThreadCommentAnchor, type ChatThreadCommentSelection } from "../../../shared/threadComments";
 
 /**
  * Pending thread comments per chat, as last reported by the chat's host.
@@ -140,6 +140,16 @@ export function useThreadComments(
     if (sessionId) void refreshThreadComments(sessionId, pin);
   }, [pin, sessionId]);
   return comments;
+}
+
+/**
+ * The lane-sharing guest comments the owner ticked: a send names each one with
+ * the body revision shown here (`includeGuestComments`).
+ */
+export function guestCommentsForNextSend(comments: readonly ChatThreadComment[]): ChatThreadCommentSelection[] {
+  return comments
+    .filter((comment) => comment.includeInNextSend && comment.author?.kind === "guest")
+    .map((comment) => ({ id: comment.id, revision: threadCommentRevision(comment) }));
 }
 
 /** How many comments go with the next send. */

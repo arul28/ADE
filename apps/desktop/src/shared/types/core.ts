@@ -420,6 +420,10 @@ export const DEFAULT_AUTO_UPDATE_PREFERENCES = {
 
 export type AutoUpdateSnapshot = {
   status: AutoUpdateStatus;
+  /** Older brains may omit these fields; their updates use the existing in-app flow. */
+  installMode?: "automatic" | "manual";
+  /** Download page for an installation that cannot update itself. */
+  downloadUrl?: string | null;
   currentVersion: string;
   /** Latest version observed from electron-updater's configured feed. */
   latestKnownVersion: string | null;
@@ -713,11 +717,21 @@ export type AppNavigationTarget =
       entryId?: string | null;
       /** The machine a Computer page opens for. Null or absent: the default. */
       machineId?: string | null;
+      /**
+       * An ADE Cloud invite code to fill in Settings › Account's code box
+       * (`ade://invite/<CODE>`). The page gets it as `?invite=<CODE>`.
+       */
+      inviteCode?: string | null;
     }
   | {
       /** A page from `shared/openPlaces.ts`. Only a chat chip click sends it. */
       kind: "open-place";
       place: string;
+    }
+  | {
+      /** A lane another account shares with this one (an invite link). No project needed. */
+      kind: "lane-share";
+      grantId: string;
     }
   | {
       kind: "linear-issue";
@@ -896,6 +910,12 @@ export type ProjectFindForRepoArgs = {
 export type ProjectFindForRepoResult = {
   rootPath: string;
   displayName: string;
+  /**
+   * Set when the only copy is on another machine of the account: the link
+   * opens the project there. A project is the repository, so a copy on any
+   * connected machine answers.
+   */
+  remote?: { targetId: string; projectId: string; machineName: string };
 } | null;
 
 export type CreateProjectInput = {

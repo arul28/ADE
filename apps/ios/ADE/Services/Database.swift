@@ -469,6 +469,19 @@ final class DatabaseService {
         }
       }
       try applyAcceptedRemoteChanges(acceptedChanges)
+      // A replicated lane carries the machine's project id. It can arrive
+      // after hydration and undo the active id that hydration wrote.
+      var candidateProjectIds = Set<String>()
+      for change in acceptedChanges {
+        if change.table == "projects", case .string(let projectId) = decodeCrsqlPk(change.pk) {
+          candidateProjectIds.insert(projectId)
+        } else if change.table == "lanes", change.cid == "project_id", case .string(let projectId) = change.val {
+          candidateProjectIds.insert(projectId)
+        }
+      }
+      if !candidateProjectIds.isEmpty, try reconcileLaneProjectScopeLocked(candidateProjectIds: candidateProjectIds) {
+        touchedTables.insert("lanes")
+      }
       if try purgeRetiredTerminalSessions() > 0 {
         touchedTables.insert("terminal_sessions")
       }
@@ -3732,6 +3745,41 @@ final class DatabaseService {
       ordered.append(id)
     }
     return ordered
+  }
+
+  /// Moves lanes from an alias project id to the active project id.
+  ///
+  /// The phone knows one checkout under two ids. The active id is the catalog
+  /// id. Replicated rows carry the machine's own project id. Every lane read
+  /// filters by the active id, so a lane with the machine's id is hidden, and
+  /// so is every session in it. Hydration writes the active id, but a
+  /// replicated change can arrive after hydration and write the machine's id
+  /// back.
+  ///
+  /// Only ids that the current batch names move. The database also keeps the
+  /// rows of other paired machines, and an alias matches by root path only.
+  /// A wider match can pull another machine's lanes into the active project.
+  /// Change capture is off, so this rewrite never goes back to the machine.
+  /// Returns true when a row changed.
+  private func reconcileLaneProjectScopeLocked(candidateProjectIds: Set<String>) throws -> Bool {
+    guard db != nil, !candidateProjectIds.isEmpty, hasTable(named: "lanes") else { return false }
+    let scopeIds = currentProjectScopeIds()
+    guard let activeId = scopeIds.first else { return false }
+    let aliasIds = scopeIds.dropFirst().filter { candidateProjectIds.contains($0) }
+    guard !aliasIds.isEmpty else { return false }
+    let placeholders = Array(repeating: "?", count: aliasIds.count).joined(separator: ", ")
+
+    let previousCaptureState = shouldCaptureLocalChanges
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = previousCaptureState }
+
+    let changed = try execute("update lanes set project_id = ? where project_id in (\(placeholders))") { statement in
+      try bindText(activeId, to: statement, index: 1)
+      for (index, aliasId) in aliasIds.enumerated() {
+        try bindText(aliasId, to: statement, index: Int32(index + 2))
+      }
+    }
+    return changed > 0
   }
 
   private func projectCount() -> Int {

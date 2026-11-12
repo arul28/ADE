@@ -13,8 +13,6 @@ import type {
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
   SyncRelayAuthorizationLease,
-  SyncRelayClientAccepted,
-  SyncRelayClientReady,
   SyncRelayReauthorizePayload,
   SyncRelayReauthorizeResultPayload,
 } from "../../../shared/types/sync";
@@ -24,7 +22,6 @@ import {
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
-  SYNC_RELAY_READY_VERSION,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
@@ -36,6 +33,13 @@ import {
 import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof, signRelayReauthorizationProof } from "./dpop";
 import { randomHex } from "./ids";
+import {
+  RELAY_READY_NEGOTIATION_WINDOW_MS,
+  browserConnectionCorrelationId,
+  relayTransportFrame,
+  withRelayCorrelationId,
+  withRelayReadyNegotiation,
+} from "./relayReady";
 import {
   availableBrowserSyncApplicationCompressionCodecs,
   createEnvelopeChunkAssembler,
@@ -49,6 +53,15 @@ import {
 
 const SOCKET_OPEN = 1;
 const DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS = 8_000;
+/**
+ * How long a route gets to open when the route that worked last time comes
+ * after it in the dial order. Direct routes are tried before ADE Relay so a
+ * browser that gains one starts to use it; a direct route that is there opens
+ * in well under a second, and one that is not (a Tailscale name from a
+ * network this browser is not on) would otherwise hold the dial for the full
+ * timeout before the working route gets its turn.
+ */
+const SPECULATIVE_TRANSPORT_OPEN_TIMEOUT_MS = 3_000;
 const DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS = 12_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 const INBOUND_STALE_MS = 75_000;
@@ -67,7 +80,7 @@ const RELAY_REAUTH_EXPIRY_SAFETY_MS = 5_000;
 // becoming visible again: otherwise a healthy Relay socket is guaranteed to
 // reconnect whenever the tab stays hidden across account-token expiry.
 const RELAY_REAUTH_CLIENT_SAFETY_LEAD_MS = 90_000;
-export const RELAY_READY_NEGOTIATION_WINDOW_MS = 750;
+export { RELAY_READY_NEGOTIATION_WINDOW_MS } from "./relayReady";
 // Keep this as table-shaped names so the web adapter's existing invalidation
 // scheduler maps one accepted hello to every UI domain it owns.
 const FULL_INVALIDATION_TABLES = [
@@ -250,39 +263,6 @@ function asMessageEvent(data: unknown): MessageEvent<string> {
   return { data: dataToText(data) } as MessageEvent<string>;
 }
 
-function withRelayReadyNegotiation(endpoint: string): string {
-  const url = new URL(endpoint);
-  url.searchParams.set("ready", String(SYNC_RELAY_READY_VERSION));
-  return url.toString();
-}
-
-function browserConnectionCorrelationId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  const raw = randomHex(16).toLowerCase();
-  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-4${raw.slice(13, 16)}-8${raw.slice(17, 20)}-${raw.slice(20, 32)}`;
-}
-
-function withRelayCorrelationId(endpoint: string, correlationId: string): string {
-  const url = new URL(endpoint);
-  url.searchParams.set("cid", correlationId);
-  return url.toString();
-}
-
-function relayTransportFrame(data: unknown): SyncRelayClientAccepted | SyncRelayClientReady | null {
-  if (typeof data !== "string") return null;
-  try {
-    const parsed = JSON.parse(data) as Record<string, unknown>;
-    if (parsed.v !== SYNC_RELAY_READY_VERSION) return null;
-    if (parsed.t === "accepted") return { t: "accepted", v: SYNC_RELAY_READY_VERSION };
-    if (parsed.t === "ready") return { t: "ready", v: SYNC_RELAY_READY_VERSION };
-  } catch {
-    // ADE envelopes and binary frames are handled by the normal decoder.
-  }
-  return null;
-}
-
 export class SyncConnection {
   private ws: WebSocketLike | null = null;
   private environment: WebClientEnvironmentRecord | null = null;
@@ -295,6 +275,8 @@ export class SyncConnection {
   private backoffMs = BACKOFF_MIN_MS;
   private backoffResetTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingAttemptCancel: (() => void) | null = null;
+  /** The route of this connection's last successful dial. */
+  private lastConnectedEndpoint: string | null = null;
   private consecutiveAuthFailures = 0;
   private lastDialStartedAtMs = 0;
   private intentionalClose = false;
@@ -519,9 +501,21 @@ export class SyncConnection {
     });
     const correlationId = browserConnectionCorrelationId();
     let lastError: Error | null = null;
-    for (const candidate of dialable) {
+    // The route this connection last used, when it has one: the stored record
+    // can still name an older route.
+    const lastGood = dialable.some((candidate) => candidate.url === this.lastConnectedEndpoint)
+      ? this.lastConnectedEndpoint
+      : environment.lastGoodEndpoint;
+    const lastGoodIndex = dialable.findIndex((candidate) => candidate.url === lastGood);
+    for (const [index, candidate] of dialable.entries()) {
+      // Only a direct route is a guess. ADE Relay can take longer than that to
+      // open, and it is the live route a project switch dials first.
+      const speculative = index < lastGoodIndex && browserDialCandidateRouteKind(candidate) !== "relay";
+      const openTimeoutMs = speculative
+        ? Math.min(this.transportOpenTimeoutMs, SPECULATIVE_TRANSPORT_OPEN_TIMEOUT_MS)
+        : this.transportOpenTimeoutMs;
       try {
-        await this.connectEndpoint(environment, candidate, correlationId);
+        await this.connectEndpoint(environment, candidate, correlationId, openTimeoutMs);
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -547,13 +541,14 @@ export class SyncConnection {
     environment: WebClientEnvironmentRecord,
     candidate: BrowserDialCandidate,
     correlationId: string,
+    openTimeoutMs: number,
   ): Promise<void> {
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
     try {
-      await this.connectEndpointAttempt(environment, candidate, throughRelay, correlationId);
+      await this.connectEndpointAttempt(environment, candidate, throughRelay, correlationId, openTimeoutMs);
     } catch (error) {
       if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
-      await this.connectEndpointAttempt(environment, candidate, false, correlationId);
+      await this.connectEndpointAttempt(environment, candidate, false, correlationId, openTimeoutMs);
     }
   }
 
@@ -562,6 +557,7 @@ export class SyncConnection {
     candidate: BrowserDialCandidate,
     useRelayReadyV2: boolean,
     correlationId: string,
+    openTimeoutMs: number,
   ): Promise<void> {
     const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
@@ -626,7 +622,7 @@ export class SyncConnection {
       this.pendingAttemptCancel = cancelAttempt;
       const openTimeout = setTimeout(() => {
         fail(new Error(`Timed out opening ${endpoint}.`), "Transport open timeout");
-      }, this.transportOpenTimeoutMs);
+      }, openTimeoutMs);
 
       socket.onopen = () => {
         if (settled || !this.isCurrentSocket(socket, generation)) return;
@@ -1080,6 +1076,7 @@ export class SyncConnection {
   ): boolean {
     if (!this.isCurrentSocket(socket, generation)) return false;
     this.environment = environment;
+    this.lastConnectedEndpoint = endpoint;
     const winningCandidate = this.endpoints.find(
       (candidate) => candidate.url === endpoint,
     );

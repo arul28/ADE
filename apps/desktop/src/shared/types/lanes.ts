@@ -24,6 +24,8 @@ export type LaneStatus = {
   dirty: boolean;
   ahead: number;
   behind: number;
+  /** The ref `ahead` and `behind` count against: the base branch, or `origin/<base>` when the local copy only trails it. */
+  comparedTo?: string;
   /** Commits the remote tracking branch is ahead of local (0 = in sync, -1 = no upstream) */
   remoteBehind: number;
   /** Number of changed worktree entries, including untracked files. */
@@ -595,6 +597,18 @@ export type RestoreLaneResult = {
   lane: LaneSummary;
   worktreeRecreated: boolean;
   setupWarning?: string | null;
+  /**
+   * The uncommitted files freeing up space had discarded (and ADE kept), when
+   * restoring the lane tried to put them back. `restored: false` leaves them
+   * in Recently deleted.
+   */
+  restoredFiles?: RestoredLaneFiles | null;
+};
+
+export type RestoredLaneFiles = {
+  restored: boolean;
+  /** Why the files did not come back, when they did not. */
+  warning: string | null;
 };
 
 /**
@@ -627,6 +641,60 @@ export type LaneDeleteLeftoverWorktree = {
 
 export type DeleteLaneResult = {
   leftoverWorktree: LaneDeleteLeftoverWorktree | null;
+  /** Work the delete would have lost, kept for restore; null when nothing was at risk. */
+  savedWork?: DeletedLaneSnapshot | null;
+};
+
+/**
+ * A deleted lane's work kept as a git ref: uncommitted files and commits no
+ * other branch or remote held. Recently deleted restores it as a new lane.
+ */
+export type DeletedLaneSnapshot = {
+  /** Stable id: `<epochMs>-<laneId>`. */
+  id: string;
+  laneId: string;
+  laneName: string;
+  branchName: string | null;
+  /** The saved commit: the working tree on top of `baseCommit`. */
+  commit: string;
+  /** The lane's HEAD when it was deleted; null for a branch with no commits. */
+  baseCommit: string | null;
+  /** True when the save holds uncommitted files, not only commits. */
+  uncommitted: boolean;
+  /**
+   * "deleted": the lane is gone and Restore brings it back. "freed": freeing
+   * up space discarded the files; the lane is still there (archived), and
+   * restoring it puts them back.
+   */
+  kind: "deleted" | "freed";
+  /** Commits the lane's HEAD does not hold that would otherwise be lost. */
+  extraTips: DeletedLaneTip[];
+  deletedAt: string;
+  /** When ADE drops the save. */
+  expiresAt: string;
+};
+
+/**
+ * A commit kept alongside the lane's HEAD: `remote` is the tip of the remote
+ * branch the delete removed, `previous` the lane's branch when its folder had
+ * moved to another one.
+ */
+export type DeletedLaneTip = { label: "remote" | "previous"; commit: string };
+
+export type RestoreDeletedLaneArgs = { id: string };
+
+export type RemoveDeletedLaneArgs = { id: string };
+
+export type RestoreDeletedLaneResult = {
+  lane: LaneSummary;
+  /** The branch the restored lane works on (the old name, or a free variant of it). */
+  branchName: string;
+  /** False when the uncommitted files could not be put back; they stay saved. */
+  restoredUncommitted: boolean;
+  /** Why the uncommitted files did not come back, when they did not. */
+  warning: string | null;
+  /** Other branches a restore made for commits the lane's branch does not hold. */
+  extraBranches: string[];
 };
 
 export type LaneDeleteStepName =
@@ -677,6 +745,8 @@ export type LaneDeleteProgress = {
    * Present on the terminal progress event the desktop dialog reads.
    */
   leftoverWorktree?: LaneDeleteLeftoverWorktree | null;
+  /** Work the delete kept (uncommitted files, unpushed commits); see DeletedLaneSnapshot. */
+  savedWork?: DeletedLaneSnapshot | null;
 };
 
 export type LaneDeleteEvent = {
@@ -742,6 +812,29 @@ export type LaneLifecycleEvent = {
    * has it open, background tabs included.
    */
   autoArchive?: { reason: string; projectRoot?: string };
+};
+
+/**
+ * "Push this branch?" before an ADE Cloud launch: the new computer clones
+ * from GitHub, so the branch the lane starts from must be there
+ * (`lane.cloudStartBranch`). `push` is set when it should be pushed first.
+ */
+export type CloudStartBranchCheck = {
+  /** The plain branch name the lane starts from, or null when it is the project's default branch. */
+  branch: string | null;
+  /** The branch is on the origin remote. */
+  onRemote: boolean;
+  /** Commits on the local branch that no remote has: they stay here unless pushed. */
+  unpushedCommits: number;
+  /** True when the launch should offer "Push this branch?" first. */
+  push: boolean;
+};
+
+export type CloudStartBranchArgs = {
+  /** A new lane's start (`laneConfig.start`), or the project's default start when left out. */
+  start?: LaneStart | null;
+  /** An existing-branch lane's branch (`laneConfig.branchRef`); wins over `start`. */
+  branchRef?: string | null;
 };
 
 export type LaneDeleteRisk = {

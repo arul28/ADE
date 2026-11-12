@@ -1,4 +1,5 @@
 import type { NoticeKind } from "../ui/notice";
+import { SAVED_CHAT_COMPUTER_GONE_MESSAGE } from "../../state/cloudSavedChats";
 
 /**
  * The one line a chat pane shows above its composer. Its kind (see
@@ -38,6 +39,9 @@ export function chatNoticeReducer(current: ChatNotice | null, action: ChatNotice
  */
 const MACHINE_CONNECTION_DROPPED = /remote (?:runtime|ADE service) connection (?:(?:was )?interrupted|closed|failed)/i;
 
+/** The paired transport's words for a machine it cannot reach: "Can't reach <name> — it may be asleep…". */
+const MACHINE_UNREACHABLE = /^Can't reach .+ it may be asleep/i;
+
 const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
   "The connection to this chat's machine dropped for a moment. The chat keeps running there, and ADE reconnects by itself. If something you just did is missing, do it again.";
 
@@ -47,8 +51,18 @@ const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
  * chat keeps running there. The stored notice keeps the raw message, so
  * "clear it if it is still mine" and the draft-restore match still find it.
  */
-export function shownChatNotice(notice: ChatNotice | null, chatOnAnotherMachine: boolean): ChatNotice | null {
+export function shownChatNotice(
+  notice: ChatNotice | null,
+  chatOnAnotherMachine: boolean,
+  /** The chat's cloud computer was deleted (its saved copy says so): no reconnect is coming. */
+  computerGone = false,
+): ChatNotice | null {
   if (!notice || !chatOnAnotherMachine || notice.kind !== "failure") return notice;
+  // A call to a deleted computer fails as a dropped or unreachable link; the
+  // truth is one sentence, not "ADE reconnects by itself".
+  if (computerGone && (MACHINE_CONNECTION_DROPPED.test(notice.message) || MACHINE_UNREACHABLE.test(notice.message))) {
+    return { message: SAVED_CHAT_COMPUTER_GONE_MESSAGE, kind: "failure" };
+  }
   return MACHINE_CONNECTION_DROPPED.test(notice.message)
     ? { message: CHAT_MACHINE_CONNECTION_DROPPED_NOTICE, kind: "status" }
     : notice;

@@ -51,6 +51,8 @@ import {
 } from "../../scene/useScene";
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
+import { MiniChrome, SANS_FONT_LABELS, UserSceneThumb, gradientSceneBackground } from "./appearanceArt";
+import { AppearanceScheduleSettings } from "./AppearanceScheduleSettings";
 import "./AppearanceSection.css";
 import { AdeWordmark } from "../ui/AdeWordmark";
 
@@ -89,9 +91,9 @@ export const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
 };
 
 const SANS_SPECIMENS: { value: InterfaceSansFont; label: string; stack: string }[] = [
-  { value: "geist", label: "Geist", stack: '"Geist", system-ui, sans-serif' },
-  { value: "system", label: "System", stack: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
-  { value: "geist-mono", label: "Geist Mono", stack: '"Geist Mono", ui-monospace, monospace' },
+  { value: "geist", label: SANS_FONT_LABELS.geist, stack: '"Geist", system-ui, sans-serif' },
+  { value: "system", label: SANS_FONT_LABELS.system, stack: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { value: "geist-mono", label: SANS_FONT_LABELS["geist-mono"], stack: '"Geist Mono", ui-monospace, monospace' },
 ];
 
 const MONO_SPECIMENS: { value: InterfaceMonoFont; label: string; stack: string }[] = [
@@ -193,6 +195,15 @@ export function AppearanceSection() {
             hint="What fills the window behind the top bar, the home screen and new chats."
           >
             <BackgroundPicker />
+          </ModernSection>
+
+          <ModernSection
+            group="Background"
+            anchor="schedule"
+            title="Schedule"
+            hint="Change the whole look by time of day: theme, mode, background and fonts. Only on this computer."
+          >
+            <AppearanceScheduleSettings />
           </ModernSection>
 
           <ModernSection group="Interface" anchor="interface-font" title="Interface font" hint="Everything outside code and the terminal.">
@@ -338,33 +349,6 @@ function ModeCards() {
   );
 }
 
-/** A tiny ADE window in a given palette: top bar, sidebar, a card and a composer. */
-function MiniChrome({ palette }: { palette: ResolvedAdeThemePalette }) {
-  const p = palette;
-  return (
-    <div className="ade-ap-mini" style={{ background: p.bg }}>
-      <div className="ade-ap-mini-top" style={{ background: `color-mix(in srgb, ${p.accent} 22%, ${p.bg})` }}>
-        <span style={{ background: p.fg, opacity: 0.55 }} />
-        <span style={{ background: p.accent }} />
-      </div>
-      <div className="ade-ap-mini-body">
-        <div className="ade-ap-mini-side" style={{ background: p.surface, borderColor: `color-mix(in srgb, ${p.fg} 10%, transparent)` }}>
-          <span style={{ background: p.accent, opacity: 0.9 }} />
-          <span style={{ background: p.fg, opacity: 0.25 }} />
-          <span style={{ background: p.fg, opacity: 0.18 }} />
-        </div>
-        <div className="ade-ap-mini-main">
-          <span className="ade-ap-mini-line" style={{ background: p.fg, opacity: 0.4 }} />
-          <div className="ade-ap-mini-card" style={{ background: p.surface, borderColor: `color-mix(in srgb, ${p.fg} 10%, transparent)` }}>
-            <span style={{ background: p.fg, opacity: 0.3 }} />
-            <span style={{ background: p.accent }} />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ── Background ─────────────────────────────────────────────────────── */
 
 function BackgroundPicker() {
@@ -424,9 +408,7 @@ function BackgroundPicker() {
         >
           <div
             className="ade-ap-scene-art"
-            style={{
-              background: `radial-gradient(120% 90% at 20% 15%, color-mix(in srgb, ${palette.accentDeep} 70%, transparent), transparent 62%), radial-gradient(110% 90% at 85% 85%, color-mix(in srgb, ${palette.accent} 55%, transparent), transparent 60%), ${palette.bg}`,
-            }}
+            style={{ background: gradientSceneBackground(palette) }}
           />
           <SceneLabel name="Gradient" sub="Animated, from the theme" active={scenePrefs.mode === "gradient"} />
         </button>
@@ -709,20 +691,6 @@ function ShuffleOptions({
       </div>
     </div>
   );
-}
-
-function UserSceneThumb({ id }: { id: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void userSceneUrl(id).then((next) => {
-      if (!cancelled) setUrl(next);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-  return url ? <img src={url} alt="" draggable={false} /> : null;
 }
 
 function SceneLabel({ name, sub, active }: { name: string; sub: string; active: boolean }) {

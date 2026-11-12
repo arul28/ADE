@@ -6,7 +6,7 @@ import type { AgentChatEventEnvelope } from "./types/chat";
 // therefore the only ones the "Compact first" offer can exist for. Keep in step
 // with `providerSupportsManualCompact` (`contextCompaction.ts`).
 // ---------------------------------------------------------------------------
-const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode"]);
+const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode", "cursor"]);
 
 export function compactFirstSupportedProvider(provider: string | null | undefined): boolean {
   return typeof provider === "string" && COMPACT_FIRST_PROVIDERS.has(provider);
@@ -32,9 +32,10 @@ export function compactFirstSupportedProvider(provider: string | null | undefine
 //   Anthropic — 5 minutes, or 1 hour at 2x the input price.
 //   https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 //
-// Pi and OpenCode run whatever model the person picked, so their cache window
-// belongs to that model's vendor, not to the harness. OpenCode reports the
-// vendor (`providerID`); Pi ids carry it as a `provider/model` prefix.
+// Pi, OpenCode and Cursor run whatever model the person picked, so their cache
+// window belongs to that model's vendor, not to the harness. OpenCode reports
+// the vendor (`providerID`); Pi ids carry it as a `provider/model` prefix;
+// Cursor ids name the model, and its own models count as unknown.
 // ---------------------------------------------------------------------------
 const OPENAI_PROMPT_CACHE_IDLE_MS = 30 * 60 * 1000;
 const ANTHROPIC_PROMPT_CACHE_IDLE_MS = 60 * 60 * 1000;
@@ -198,9 +199,11 @@ function compactFirstCandidate({ provider, model, events, contextTokens, cache, 
       const lastInput = event.usage?.last?.inputTokens;
       if (lastInput != null && Number.isFinite(lastInput) && lastInput > 0) measured = lastInput;
     }
-    if (event.type === "context_compact" && event.state !== "started" && event.state !== "failed" && event.postTokens != null) {
-      lastPost = event.postTokens;
-      if (contextTokens == null) measured = lastPost;
+    if (event.type === "context_compact" && event.state !== "started" && event.state !== "failed") {
+      if (event.postTokens != null) lastPost = event.postTokens;
+      // A compaction that reports no size (Cursor's `/compact`) leaves only the
+      // reading from before it, so nothing is known until the next turn.
+      if (contextTokens == null) measured = event.postTokens ?? null;
     }
   }
   if (measured == null || !Number.isFinite(measured) || measured < (minTokens ?? COMPACT_FIRST_MIN_TOKENS) || endedAt == null || !Number.isFinite(endedAt)) return null;

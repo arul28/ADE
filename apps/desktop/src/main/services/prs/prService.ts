@@ -59,6 +59,11 @@ import type {
   PrMobileSnapshot,
   PrMobileGithubDetailSnapshot,
   UpdatePrDescriptionArgs,
+  GetPrRepoReferencesArgs,
+  PrMentionableTeam,
+  PrRepoReference,
+  SearchPrMentionablesArgs,
+  SearchPrMentionablesResult,
   AddPrCommentArgs,
   UpdatePrCommentArgs,
   UpdatePrTitleArgs,
@@ -119,7 +124,8 @@ import type { AdeDb, SqlValue } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import { createPrListFilterOps } from "./prListFilters";
-import { createPrGithubReadCache } from "./prGithubReadCache";
+import { createPrGithubReadCache, githubRepoKey } from "./prGithubReadCache";
+import { createKeyedPromiseCache } from "../../../shared/expiringPromiseCache";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
@@ -141,6 +147,7 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit } from "../git/git";
+import { isGitWorktreeRoot } from "../git/gitWorktreeRoot";
 import { classifyGitPushFailure } from "../git/gitPushFailure";
 import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
@@ -149,6 +156,7 @@ import {
   markGithubRequestError,
 } from "./githubReadBackoff";
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
+import { setBounded } from "../../../shared/boundedMap";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
 import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
@@ -845,13 +853,59 @@ function commitAgeMs(timestamp: string | null | undefined, nowMs: number): numbe
   return Number.isFinite(parsed) ? Math.max(0, nowMs - parsed) : null;
 }
 
+/** Each reviewer's standing opinion: their latest verdict, unless it was dismissed. */
+function latestReviewStatesByUser(reviews: readonly PrReview[]): Map<string, string> {
+  const latest = new Map<string, string>();
+  for (const review of reviews) {
+    if (review.state === "approved") latest.set(review.reviewer, "APPROVED");
+    else if (review.state === "changes_requested") latest.set(review.reviewer, "CHANGES_REQUESTED");
+    else if (review.state === "dismissed") latest.delete(review.reviewer);
+  }
+  return latest;
+}
+
+/**
+ * GitHub's own verdict wins: one approval on a branch that needs two is not
+ * approved. `reviewStatesByUser` decides only when GitHub has none, as on a
+ * repo with no required reviews. Hidden reviews are already out of the map, so
+ * a changes-requested verdict that rests on one alone does not count.
+ *
+ * `verdictUnavailable` means GitHub could not be asked. An approval alone then
+ * proves nothing, so "approved" can only be the status the PR already had.
+ */
 function computeReviewStatus(args: {
+  reviewDecision?: PrReviewDecision;
+  verdictUnavailable?: { previousStatus: string | null | undefined };
+  /** The reviews list could not be read this time, so an empty list proves nothing. */
+  reviewsUnavailable?: boolean;
   requestedReviewers: string[];
   requestedTeams?: string[];
   reviewStatesByUser: Map<string, string>;
 }): PrReviewStatus {
-  for (const state of args.reviewStatesByUser.values()) {
-    if (state === "CHANGES_REQUESTED") return "changes_requested";
+  const visibleChangesRequested = Array.from(args.reviewStatesByUser.values()).includes("CHANGES_REQUESTED");
+  if (args.reviewDecision === "approved") return "approved";
+  if (args.reviewDecision === "review_required") return visibleChangesRequested ? "changes_requested" : "requested";
+  if (visibleChangesRequested) return "changes_requested";
+  if (args.verdictUnavailable) {
+    const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
+    if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
+    // A blocking verdict outranks a pending request while the reviews read
+    // could not say whether it ended. Keep it until a read that worked shows
+    // no visible changes-requested, so the status cannot flip
+    // changes_requested → requested → changes_requested on the wire.
+    if (args.verdictUnavailable.previousStatus === "changes_requested" && args.reviewsUnavailable) {
+      return "changes_requested";
+    }
+    // A reviewer named in the REST payload is current evidence, even with no
+    // verdict, so an explicit request still overrides a saved `none`. No
+    // verdict and no request means keep the last real status: a branch that
+    // requires a review but names no reviewer flipped to `none` on every failed
+    // read and back to `requested` on the next good one, re-announcing the same
+    // review request each time.
+    if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
+    const previous = args.verdictUnavailable.previousStatus;
+    if (previous === "requested" || previous === "none") return previous;
+    return "none";
   }
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";
@@ -859,6 +913,15 @@ function computeReviewStatus(args: {
   if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
   return "none";
 }
+
+/** `verdictKnown` is false when GitHub could not be asked this time. */
+type PrVisibility = { reviewDecision: PrReviewDecision; hiddenNodeIds: string[]; verdictKnown: boolean };
+
+const NO_PR_VISIBILITY: PrVisibility = { reviewDecision: null, hiddenNodeIds: [], verdictKnown: false };
+const LAST_PR_VISIBILITY_MAX_ENTRIES = 256;
+
+/** A PR's review verdict and hidden items, reused while the PR is quiet. */
+const PR_VISIBILITY_REUSE_MS = 10 * 60_000;
 
 function rowToSummary(row: PullRequestRow): PrSummary {
   const creationStrategy = normalizePrCreationStrategy(row.creation_strategy);
@@ -1150,6 +1213,9 @@ function parsePrLocator(raw: string): { owner?: string; repo?: string; number: n
   }
   try {
     const url = new URL(trimmed);
+    // Otherwise a link to some other host would resolve to the same-named repo
+    // on github.com.
+    if (url.hostname.toLowerCase() !== "github.com") throw new Error("Invalid PR URL format");
     const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/([0-9]+)(?:\/|$)/);
     if (!match) throw new Error("Invalid PR URL format");
     return { owner: match[1], repo: match[2], number: Number(match[3]) };
@@ -1247,6 +1313,7 @@ function toDeploymentState(raw: unknown): PrDeploymentState {
 type GraphqlReviewThreadCommentNode = {
   id?: unknown;
   databaseId?: unknown;
+  isMinimized?: unknown;
   body?: unknown;
   url?: unknown;
   diffHunk?: unknown;
@@ -3377,6 +3444,8 @@ export function createPrService({
       lane: LaneSummary;
       state: PrSummary["state"];
       isOpen: boolean;
+      /** The live row this PR already has, if any (it is not a new row). */
+      existingRow: PullRequestRow | null;
     };
     const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
@@ -3402,10 +3471,27 @@ export function createPrService({
         !prev
         || (isOpen && !prev.isOpen)
         || (isOpen === prev.isOpen && prNumber > prev.prNumber);
-      if (better) bestByLane.set(lane.id, { rawPr, prNumber, headBranch, lane, state, isOpen });
+      if (better) {
+        bestByLane.set(lane.id, {
+          rawPr,
+          prNumber,
+          headBranch,
+          lane,
+          state,
+          isOpen,
+          existingRow: existingRepoRow,
+        });
+      }
     }
 
-    for (const { rawPr, prNumber, headBranch, lane, state } of bestByLane.values()) {
+    const createdIds: string[] = [];
+    for (const { rawPr, prNumber, headBranch, lane, state, existingRow } of bestByLane.values()) {
+      // This is a lane-mapping backfill, not a status read. A row that is
+      // already tracked keeps its live verdicts: the pull list this walks only
+      // carries state and branch, so writing its defaults here reset a checked,
+      // reviewed PR to `none`. The poller then saw the PR move back to
+      // `requested` and announced the same review request again on every sweep
+      // — the notice a person could not keep dismissed.
       const summary: PrSummary = {
         id: randomUUID(),
         laneId: lane.id,
@@ -3419,13 +3505,13 @@ export function createPrService({
         state,
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
-        checksStatus: "none",
-        checksReason: null,
-        checksMissingRequired: [],
-        reviewStatus: "none",
+        checksStatus: (existingRow?.checks_status as PrChecksStatus | null) ?? "none",
+        checksReason: existingRow?.checks_reason ?? null,
+        checksMissingRequired: parseMissingRequired(existingRow?.checks_missing_required),
+        reviewStatus: (existingRow?.review_status as PrReviewStatus | null) ?? "none",
         additions: Number(rawPr?.additions ?? 0),
         deletions: Number(rawPr?.deletions ?? 0),
-        lastSyncedAt: nowIso(),
+        lastSyncedAt: existingRow?.last_synced_at ?? nowIso(),
         createdAt: asString(rawPr?.created_at) || nowIso(),
         updatedAt: asString(rawPr?.updated_at) || nowIso(),
         mergedAt: asString(rawPr?.merged_at) || null,
@@ -3439,10 +3525,14 @@ export function createPrService({
         laneId: lane.id,
       });
       backfilledIds.push(prId);
+      // Only a row this sweep actually created needs a hot-refresh window. An
+      // already-tracked row is on its normal staleness schedule; marking it hot
+      // on every snapshot re-armed the poller (and another live fetch) forever.
+      if (!existingRow) createdIds.push(prId);
     }
 
-    if (backfilledIds.length > 0) {
-      markHotRefresh(backfilledIds, { invalidateGithubSnapshot: false });
+    if (createdIds.length > 0) {
+      markHotRefresh(createdIds, { invalidateGithubSnapshot: false });
     }
     return backfilledIds.length;
   };
@@ -5179,12 +5269,94 @@ export function createPrService({
     return reviews.map((review) => ({ ...review }));
   };
 
-  const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
-    const data = await fetchAllPages<any>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
-    });
+  /**
+   * What REST cannot say about a PR: GitHub's review verdict and which comments
+   * and reviews a moderator hid. Reuse follows `whileQuiet`, for longer than the
+   * merge box: this is read for every open PR on every poll, and hiding a
+   * comment is rare. A failed read says the verdict is unknown and keeps the
+   * hidden items from the last read that worked, so an outage cannot turn one
+   * approval into "Approved" or bring hidden items back.
+   */
+  const lastPrVisibility = new Map<string, PrVisibility>();
+  const fetchPrVisibility = async (repo: GitHubRepoRef, prNumber: number): Promise<PrVisibility> => {
+    const brakeRepoKey = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
+    const lastKey = `${brakeRepoKey}#${prNumber}`;
+    // Hidden items stay hidden. The verdict does not carry over: reviews may have
+    // moved since it was read.
+    const lastKnown = (): PrVisibility => ({ ...(lastPrVisibility.get(lastKey) ?? NO_PR_VISIBILITY), reviewDecision: null, verdictKnown: false });
+    if (mergeStateGraphqlBrake.isCooling(brakeRepoKey)) return lastKnown();
+    try {
+      const pull = await fetchPr(repo, prNumber);
+      const what = `visibility:${prNumber}`;
+      const visibility = await readCache.shared(repo, what, () =>
+        readCache.whileQuiet(repo, what, pull, () => fetchPrVisibilityUncached(repo, prNumber), undefined, PR_VISIBILITY_REUSE_MS));
+      setBounded(lastPrVisibility, lastKey, visibility, LAST_PR_VISIBILITY_MAX_ENTRIES);
+      return visibility;
+    } catch (error) {
+      if (isGithubRateLimitFailure(error)) {
+        // Concurrent reads land here together; one line per incident.
+        const alreadyCooling = mergeStateGraphqlBrake.isCooling(brakeRepoKey);
+        const untilMs = mergeStateGraphqlBrake.armRateLimitCooldown(brakeRepoKey, githubRateLimitResetAtMsOf(error));
+        if (!alreadyCooling) {
+          logger.warn("prs.computeStatus.graphql_rate_limited", {
+            repo: `${repo.owner}/${repo.name}`,
+            prNumber,
+            retryAt: new Date(untilMs).toISOString(),
+            error: getErrorMessage(error),
+          });
+        }
+        return lastKnown();
+      }
+      logger.warn("prs.visibility_read_failed", {
+        repo: `${repo.owner}/${repo.name}`,
+        prNumber,
+        error: getErrorMessage(error),
+      });
+      return lastKnown();
+    }
+  };
 
-    return data.map((entry: any) => {
+  const fetchPrVisibilityUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrVisibility> => {
+    type MinimizableNode = { id?: unknown; isMinimized?: unknown } | null;
+    const data = await graphqlRequest<{
+      repository?: {
+        pullRequest?: {
+          reviewDecision?: unknown;
+          comments?: { nodes?: MinimizableNode[] | null } | null;
+          reviews?: {
+            nodes?: Array<(NonNullable<MinimizableNode> & { comments?: { nodes?: MinimizableNode[] | null } | null }) | null> | null;
+          } | null;
+        } | null;
+      } | null;
+    }>(`query AdePullRequestVisibility($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewDecision
+      comments(last: 100) { nodes { id isMinimized } }
+      reviews(last: 100) { nodes { id isMinimized comments(first: 50) { nodes { id isMinimized } } } }
+    }
+  }
+}`, { owner: repo.owner, name: repo.name, number: prNumber });
+    const pull = data?.repository?.pullRequest ?? null;
+    const reviewNodes = pull?.reviews?.nodes ?? [];
+    const hiddenNodeIds = [
+      ...(pull?.comments?.nodes ?? []),
+      ...reviewNodes,
+      ...reviewNodes.flatMap((review) => review?.comments?.nodes ?? []),
+    ].flatMap((node) => (node?.isMinimized === true && asString(node.id) ? [asString(node.id)] : []));
+    return { reviewDecision: normalizeReviewDecision(pull?.reviewDecision), hiddenNodeIds, verdictKnown: true };
+  };
+
+  const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
+    const [data, visibility] = await Promise.all([
+      fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
+      }),
+      fetchPrVisibility(repo, prNumber),
+    ]);
+    const hidden = new Set(visibility.hiddenNodeIds);
+
+    return data.filter((entry: any) => !hidden.has(asString(entry?.node_id))).map((entry: any) => {
       const rawState = asString(entry?.state).toLowerCase();
       let state: PrReview["state"];
       if (rawState === "approved") state = "approved";
@@ -5203,11 +5375,15 @@ export function createPrService({
   };
 
   const fetchIssueComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const data = await fetchAllPages<Record<string, unknown>>({
-      path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`
-    });
+    const [data, visibility] = await Promise.all([
+      fetchAllPages<Record<string, unknown>>({
+        path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`
+      }),
+      fetchPrVisibility(repo, prNumber),
+    ]);
+    const hidden = new Set(visibility.hiddenNodeIds);
 
-    return data.map((entry) => toPrComment(
+    return data.filter((entry) => !hidden.has(asString(entry.node_id))).map((entry) => toPrComment(
       "issue",
       entry,
       `issue:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
@@ -5215,11 +5391,15 @@ export function createPrService({
   };
 
   const fetchReviewComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const data = await fetchAllPages<Record<string, unknown>>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`
-    });
+    const [data, visibility] = await Promise.all([
+      fetchAllPages<Record<string, unknown>>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`
+      }),
+      fetchPrVisibility(repo, prNumber),
+    ]);
+    const hidden = new Set(visibility.hiddenNodeIds);
 
-    return data.map((entry) => toPrComment(
+    return data.filter((entry) => !hidden.has(asString(entry.node_id))).map((entry) => toPrComment(
       "review",
       entry,
       `review:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
@@ -5269,6 +5449,7 @@ export function createPrService({
                    nodes {
                      id
                      databaseId
+                     isMinimized
                      body
                      url
                     diffHunk
@@ -5321,7 +5502,7 @@ export function createPrService({
       const nodes = Array.isArray(reviewThreads?.nodes) ? reviewThreads.nodes : [];
       for (const node of nodes) {
         const comments: PrReviewThreadComment[] = Array.isArray(node?.comments?.nodes)
-          ? node.comments.nodes.map((entry: GraphqlReviewThreadCommentNode) => ({
+          ? node.comments.nodes.filter((entry: GraphqlReviewThreadCommentNode) => entry?.isMinimized !== true).map((entry: GraphqlReviewThreadCommentNode) => ({
               id: asString(entry?.id) || String(randomUUID()),
               githubId: Number.isSafeInteger(Number(entry?.databaseId)) ? Number(entry.databaseId) : null,
               author: asString(entry?.author?.login) || "unknown",
@@ -5335,6 +5516,8 @@ export function createPrService({
               updatedAt: asString(entry?.updatedAt) || null,
             }))
           : [];
+        // A thread whose every comment was hidden has nothing left to show.
+        if (comments.length === 0 && (node?.comments?.nodes?.length ?? 0) > 0) continue;
         const latestComment = comments[comments.length - 1] ?? comments[0] ?? null;
         const diffSideRaw = asString(node?.diffSide).trim().toUpperCase();
         threads.push({
@@ -5504,25 +5687,23 @@ export function createPrService({
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
     let checkRunsFetchFailed = false;
-    const [combinedStatus, checkRuns, reviews, compare] = shouldFetchLiveStatus
+    let reviewsFetchFailed = false;
+    const [combinedStatus, checkRuns, reviews, compare, visibility] = shouldFetchLiveStatus
       ? await Promise.all([
           headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
           headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
-          baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
+          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), [], () => { reviewsFetchFailed = true; }),
+          baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
+          fetchPrVisibility(repo, Number(row.github_pr_number)),
         ])
       : [
           { state: "", statuses: [] },
           [] as any[],
           [] as Awaited<ReturnType<typeof fetchReviews>>,
           { behindBy: null as number | null },
+          NO_PR_VISIBILITY,
         ];
-    const reviewStatesByUser = new Map<string, string>();
-    for (const review of reviews) {
-      // Only treat these as gating states.
-      if (review.state === "approved") reviewStatesByUser.set(review.reviewer, "APPROVED");
-      if (review.state === "changes_requested") reviewStatesByUser.set(review.reviewer, "CHANGES_REQUESTED");
-    }
+    const reviewStatesByUser = latestReviewStatesByUser(reviews);
 
     const checksRollup = shouldFetchLiveStatus
       ? await deriveChecksRollup({
@@ -5548,7 +5729,14 @@ export function createPrService({
         };
     const checksStatus = checksRollup.status;
     const reviewStatus = shouldFetchLiveStatus
-      ? computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser })
+      ? computeReviewStatus({
+        reviewDecision: visibility.reviewDecision,
+        ...(visibility.verdictKnown ? {} : { verdictUnavailable: { previousStatus: row.review_status } }),
+        reviewsUnavailable: reviewsFetchFailed,
+        requestedReviewers,
+        requestedTeams,
+        reviewStatesByUser,
+      })
       : (row.review_status as PrReviewStatus | null) ?? "none";
     const additions = Number(pr?.additions ?? 0);
     const deletions = Number(pr?.deletions ?? 0);
@@ -5899,10 +6087,11 @@ export function createPrService({
     const mergeConflicts = mergeConflictsFromPull(pr);
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
       restHeadSha ? bestEffort("computeStatus.fetchCombinedStatus", fetchCombinedStatus(repo, restHeadSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
+      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), [], () => { reviewsFetchFailed = true; }),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
       readCache.whileQuiet(
         repo,
@@ -5915,11 +6104,7 @@ export function createPrService({
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
-    const reviewStatesByUser = new Map<string, string>();
-    for (const review of reviews) {
-      if (review.state === "approved") reviewStatesByUser.set(review.reviewer, "APPROVED");
-      if (review.state === "changes_requested") reviewStatesByUser.set(review.reviewer, "CHANGES_REQUESTED");
-    }
+    const reviewStatesByUser = latestReviewStatesByUser(reviews);
 
     const nextState = toPrState({
       state: asString(pr?.state) || "open",
@@ -5937,7 +6122,15 @@ export function createPrService({
       previous: previousChecksRollup(prId),
     });
     const checksStatus = checksRollup.status;
-    const reviewStatus = computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser });
+    const visibility = mergeState ? null : await fetchPrVisibility(repo, prNumber);
+    const reviewStatus = computeReviewStatus({
+      reviewDecision: mergeState ? mergeState.reviewDecision : visibility?.reviewDecision,
+      ...(visibility?.verdictKnown === false ? { verdictUnavailable: { previousStatus: getRowById(prId)?.review_status } } : {}),
+      reviewsUnavailable: reviewsFetchFailed,
+      requestedReviewers,
+      requestedTeams,
+      reviewStatesByUser,
+    });
     const behindBaseBy = compare.behindBy;
 
     const mergeStateStatus = mergeState?.mergeStateStatus ?? null;
@@ -7090,16 +7283,117 @@ export function createPrService({
     upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files, commits });
   };
 
+  /** One writer's typing is a stream of nearly identical reads: join and keep them per repo and query. */
+  const mentionablesCache = createKeyedPromiseCache<SearchPrMentionablesResult>({ ttlMs: 60_000, maxEntries: 200 });
+  const repoReferencesCache = createKeyedPromiseCache<PrRepoReference[]>({ ttlMs: 2 * 60_000, maxEntries: 64 });
+
+  const resolveWritingRepo = async (repoOwner?: string | null, repoName?: string | null): Promise<GitHubRepoRef> => {
+    const owner = repoOwner?.trim();
+    const name = repoName?.trim();
+    if (owner && name) return { owner, name };
+    const repo = await githubService.getRepoOrThrow();
+    return { owner: repo.owner, name: repo.name };
+  };
+
+  const searchMentionables = async (args: SearchPrMentionablesArgs): Promise<SearchPrMentionablesResult> => {
+    const repo = await resolveWritingRepo(args.repoOwner, args.repoName);
+    const query = args.query.trim().replace(/^@/, "").slice(0, 80);
+    const cacheKey = `${githubRepoKey(repo)}\0${args.includeTeams ? "t" : "u"}\0${query.toLowerCase()}`;
+    return await mentionablesCache.read(cacheKey, async () => {
+      // The reviewer picker asks for teams too. On a public repo anyone who
+      // commented can be mentioned, but GitHub refuses a review request to them.
+      const peopleField = args.includeTeams ? "assignableUsers" : "mentionableUsers";
+      const data = await graphqlRequest<{
+        repository?: {
+          viewerPermission?: unknown;
+          people?: { nodes?: Array<{ login?: unknown; name?: unknown; avatarUrl?: unknown } | null> | null } | null;
+        } | null;
+      }>(
+        `query($owner: String!, $name: String!, $query: String, $first: Int!) {
+          repository(owner: $owner, name: $name) {
+            viewerPermission
+            people: ${peopleField}(query: $query, first: $first) {
+              nodes { login name avatarUrl(size: 48) }
+            }
+          }
+        }`,
+        { owner: repo.owner, name: repo.name, query: query || null, first: 20 },
+        { repo },
+      );
+      const users = (data.repository?.people?.nodes ?? []).flatMap((node) => {
+        const login = asString(node?.login).trim();
+        if (!login) return [];
+        return [{ login, name: asString(node?.name).trim() || null, avatarUrl: asString(node?.avatarUrl).trim() || null }];
+      });
+      let teams: PrMentionableTeam[] = [];
+      if (args.includeTeams) {
+        // Asked separately: a personal account has no organization, and a token
+        // without read:org gets an error that would otherwise lose the users.
+        try {
+          const teamData = await graphqlRequest<{
+            organization?: { teams?: { nodes?: Array<{ slug?: unknown; name?: unknown } | null> | null } | null } | null;
+          }>(
+            `query($owner: String!, $query: String, $first: Int!) {
+              organization(login: $owner) {
+                teams(query: $query, first: $first) { nodes { slug name } }
+              }
+            }`,
+            { owner: repo.owner, query: query || null, first: 10 },
+            { repo },
+          );
+          teams = (teamData.organization?.teams?.nodes ?? []).flatMap((node) => {
+            const slug = asString(node?.slug).trim();
+            return slug ? [{ slug, name: asString(node?.name).trim() || slug }] : [];
+          });
+        } catch (error) {
+          // A personal account has no organization to ask; anything else is news.
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/resolve to an Organization/i.test(message)) logger.warn("prs.reviewer_team_search_failed", { error: message });
+          teams = [];
+        }
+      }
+      return { users, teams, viewerPermission: asString(data.repository?.viewerPermission).trim() || null };
+    });
+  };
+
+  const getRepoReferences = async (args: GetPrRepoReferencesArgs): Promise<PrRepoReference[]> => {
+    const repo = await resolveWritingRepo(args.repoOwner, args.repoName);
+    return await repoReferencesCache.read(githubRepoKey(repo), async () => {
+      const data = await graphqlRequest<{
+        repository?: {
+          issues?: { nodes?: Array<{ number?: unknown; title?: unknown; state?: unknown } | null> | null } | null;
+          pullRequests?: { nodes?: Array<{ number?: unknown; title?: unknown; state?: unknown } | null> | null } | null;
+        } | null;
+      }>(
+        `query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            issues(first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { number title state } }
+            pullRequests(first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { number title state } }
+          }
+        }`,
+        { owner: repo.owner, name: repo.name },
+        { repo },
+      );
+      const toRefs = (kind: "issue" | "pr", nodes: Array<{ number?: unknown; title?: unknown; state?: unknown } | null> | null | undefined) =>
+        (nodes ?? []).flatMap((node): PrRepoReference[] => {
+          const number = Number(node?.number);
+          if (!Number.isInteger(number) || number <= 0) return [];
+          return [{ number, title: asString(node?.title), kind, state: asString(node?.state).toLowerCase() }];
+        });
+      return [...toRefs("issue", data.repository?.issues?.nodes), ...toRefs("pr", data.repository?.pullRequests?.nodes)]
+        .sort((left, right) => right.number - left.number);
+    });
+  };
+
   const updateDescription = async (args: UpdatePrDescriptionArgs): Promise<void> => {
-    const row = getRow(args.prId);
-    if (!row) throw new Error(`PR not found: ${args.prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    // A PR opened from the list may have no local row; its id then names the repo.
+    const target = resolvePrTarget(args.prId);
     await githubService.apiRequest({
       method: "PATCH",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+      path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
       body: { body: args.body }
     });
-    await refreshOne(args.prId);
+    await refreshAfterMutation(target, { hot: false });
   };
 
   const deletePr = async (args: DeletePrArgs): Promise<DeletePrResult> => {
@@ -7168,6 +7462,11 @@ export function createPrService({
    * is actually on before using the record.
    */
   const adoptWorktreeBranch = async (lane: LaneSummary): Promise<LaneSummary> => {
+    // A lane folder that lost its `.git` answers for the repository above it,
+    // and the lane would adopt that branch and open a PR for it.
+    if (!(await isGitWorktreeRoot(lane.worktreePath))) {
+      throw new Error(`Lane "${lane.name}" has no git worktree at ${lane.worktreePath}. Restore or recreate the lane before creating a PR.`);
+    }
     const head = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
     const checkedOut = head.exitCode === 0 ? branchNameFromHeadRef(head.stdout) : "";
     if (!checkedOut || checkedOut === "HEAD" || checkedOut === branchNameFromRef(lane.branchRef)) return lane;
@@ -10280,6 +10579,14 @@ export function createPrService({
 
     async updateDescription(args: UpdatePrDescriptionArgs): Promise<void> {
       return await updateDescription(args);
+    },
+
+    async searchMentionables(args: SearchPrMentionablesArgs): Promise<SearchPrMentionablesResult> {
+      return await searchMentionables(args);
+    },
+
+    async getRepoReferences(args: GetPrRepoReferencesArgs): Promise<PrRepoReference[]> {
+      return await getRepoReferences(args);
     },
 
     async delete(args: DeletePrArgs): Promise<DeletePrResult> {

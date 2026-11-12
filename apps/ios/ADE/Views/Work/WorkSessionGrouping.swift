@@ -536,6 +536,7 @@ private func workRootSessionPresentationRenderSignature(
       hasher.combine(summary.idleSinceAt)
       hasher.combine(summary.endedAt)
       hasher.combine(summary.nextWakeAt)
+      hasher.combine(summary.activePrWatch)
       hasher.combine(summary.steeringInput)
       hasher.combine(summary.usageLimitResume?.state.rawValue)
       hasher.combine(summary.usageLimitResume?.fireAt)

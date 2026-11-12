@@ -51,7 +51,6 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
   linear: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
   jira: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
-  agent37: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
 };
 
 /** Where the credential lives: what the status says, else where a new one is saved. */
@@ -60,20 +59,6 @@ function savedIn(id: IntegrationId, summary?: Summary): string {
 }
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
-  if (id === "agent37") {
-    // Account-wide: the key is in the account vault, so this computer answers for every machine.
-    const status = await window.ade.agent37?.getStatus();
-    if (!status) return UNKNOWN;
-    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach Agent 37" : "Needs attention" };
-    if (status.connected) {
-      return {
-        tone: "ok",
-        label: status.balanceUsd != null ? `Connected · $${status.balanceUsd.toFixed(2)} left` : "Connected",
-        savedIn: status.credentialStorage?.storage === "device" ? "This computer" : "Your account",
-      };
-    }
-    return { tone: "neutral", label: "Not connected" };
-  }
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
     if (status.connected) {
@@ -115,15 +100,14 @@ function useIntegrationSummaries(
     github: CHECKING,
     linear: CHECKING,
     jira: CHECKING,
-    agent37: CHECKING,
   });
   useEffect(() => {
     let cancelled = false;
     if (!online) {
-      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE, agent37: OFFLINE });
+      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE });
       return undefined;
     }
-    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, agent37: CHECKING });
+    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING });
     for (const id of ids) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })
@@ -345,7 +329,7 @@ export function IntegrationsHome({
                   >
                     <span className="ade-ig-tile-banner" style={brand.banner} aria-hidden>
                       <img src={brand.art} alt="" draggable={false} />
-                      <SolidLogo spec={brand.logo} straight />
+                      <SolidLogo spec={brand.logo} straight floor />
                     </span>
                     <span className="ade-ig-tile-body">
                       <span className="ade-ig-tile-name">

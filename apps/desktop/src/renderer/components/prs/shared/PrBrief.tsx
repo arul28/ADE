@@ -7,7 +7,7 @@ import {
 } from "../../../../shared/prBrief";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { PR_DOCUMENT_HEADING_CLASS, PrMarkdown } from "./PrMarkdown";
-import { PrMarkdownEnvContext, PrQuoteSourceContext } from "./prMarkdownContext";
+import { PrMarkdownEnvContext, PrQuoteSourceContext, PrTaskToggleContext } from "./prMarkdownContext";
 import { PrAddToChatButton } from "./PrProofMedia";
 
 /**
@@ -127,21 +127,26 @@ export const PrDescriptionBody = memo(function PrDescriptionBody({
 }) {
   const brief = useMemo(() => parsePrBrief(body), [body]);
   const from = "the description";
-  const addToChat = useContext(PrMarkdownEnvContext)?.onAddToChat;
-  if (brief) return <PrBriefParts brief={brief} repoOwner={repoOwner} repoName={repoName} from={from} />;
+  const env = useContext(PrMarkdownEnvContext);
+  const addToChat = env?.onAddToChat;
+  const toggleTask = env?.onToggleDescriptionTask ?? null;
   return (
-    <PrQuoteSourceContext.Provider value={from}>
-      <div className="group/part relative">
-        <PrMarkdown repoOwner={repoOwner} repoName={repoName} variant="document">
-          {body}
-        </PrMarkdown>
-        {addToChat ? (
-          <PrAddToChatButton
-            onClick={() => addToChat({ text: body, from })}
-            className="absolute right-0 top-0 opacity-0 group-hover/part:opacity-100 focus-visible:opacity-100"
-          />
-        ) : null}
-      </div>
-    </PrQuoteSourceContext.Provider>
+    <PrTaskToggleContext.Provider value={toggleTask}>
+      {brief ? <PrBriefParts brief={brief} repoOwner={repoOwner} repoName={repoName} from={from} /> : (
+        <PrQuoteSourceContext.Provider value={from}>
+          <div className="group/part relative">
+            <PrMarkdown repoOwner={repoOwner} repoName={repoName} variant="document">
+              {body}
+            </PrMarkdown>
+            {addToChat ? (
+              <PrAddToChatButton
+                onClick={() => addToChat({ text: body, from })}
+                className="absolute right-0 top-0 opacity-0 group-hover/part:opacity-100 focus-visible:opacity-100"
+              />
+            ) : null}
+          </div>
+        </PrQuoteSourceContext.Provider>
+      )}
+    </PrTaskToggleContext.Provider>
   );
 });

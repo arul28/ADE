@@ -21,6 +21,9 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
+import { openKvDb } from "../state/kvDb";
+import { createDraft } from "./draftService";
+import { noteProviderModelsChanged } from "../ai/providerLoginChanged";
 
 
 // ---------------------------------------------------------------------------
@@ -58,6 +61,8 @@ describe("acp chat runtime", () => {
     /** Seeded persisted state, for the resume test. */
     seedPersistedState?: Record<string, unknown>;
     sessionOverrides?: Record<string, unknown>;
+    /** A real database, for the draft tests. */
+    db?: unknown;
   }) {
     const agent = createMockAcpAgent();
     agent.on("session/new", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
@@ -75,6 +80,7 @@ describe("acp chat runtime", () => {
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       acpSpawnOverride: () => agent.child,
       acpSessionPool: pool,
+      ...(options.db ? { db: options.db } : {}),
     });
     const session = await harness.service.createSession({
       laneId: "lane-1",
@@ -607,11 +613,21 @@ describe("acp chat runtime", () => {
     expect(harness.agent.received.filter((entry) => entry.method === "session/prompt")).toHaveLength(0);
   });
 
+  // The last row: a lane share guest wrote the draft and the owner sends it.
+  // It keeps the guest author, but it is the owner's send, so the share check
+  // for a guest's own queued message (here refusing) does not drop it.
   it.each([
     ["a steer (the composer's queue mode)", "steer"],
     ["a direct send (CLI, automations)", "sendMessage"],
+    ["a guest's draft that the owner sends", "ownerSendsGuestDraft"],
   ] as const)("queues %s made while a Grok turn runs, and runs it next", async (_label, route) => {
-    const harness = await openAcpHarness({ provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6" });
+    const db = route === "ownerSendsGuestDraft"
+      ? await openKvDb(path.join(tmpRoot, "guest-draft.db"), { debug() {}, info() {}, warn() {}, error() {} } as never)
+      : null;
+    const harness = await openAcpHarness({ provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6", ...(db ? { db } : {}) });
+    if (db) acpTeardown.push(() => db.close());
+    const guestGate = vi.fn(() => false);
+    if (db) harness.service.installQueuedGuestSteerGate(guestGate);
     let releaseFirst: (() => void) | null = null;
     let prompts = 0;
     harness.agent.on("session/prompt", async () => {
@@ -625,8 +641,18 @@ describe("acp chat runtime", () => {
     if (route === "steer") {
       const result = await harness.service.steer({ sessionId: harness.session.id, text: "second" });
       expect(result.queued).toBe(true);
-    } else {
+    } else if (route === "sendMessage") {
       await harness.service.sendMessage({ sessionId: harness.session.id, text: "second" });
+    } else {
+      const draft = createDraft(db!, {
+        text: "second",
+        schedule: {
+          scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+          targetKind: "existing",
+          targetSessionId: harness.session.id,
+        },
+      }, { author: { kind: "guest", userId: "user_guest", name: "Guest" } });
+      await expect(harness.service.sendDraftNow(draft.id)).resolves.toEqual({ ok: true });
     }
     await vi.waitFor(() => {
       expect(eventsOfType(harness, "user_message").some((event) => event.deliveryState === "queued")).toBe(true);
@@ -1192,5 +1218,81 @@ describe("acp chat runtime", () => {
     expect(presentation?.technicalDetail).toContain("unknown flag --model");
     const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
     expect(done?.status).toBe("failed");
+  });
+
+  it("ends idle processes on a login change, never a running turn, and never hands out the older login's process", async () => {
+    // P5 §6. One agent per spawn, so each process is told apart by its agent.
+    const agents: MockAcpAgent[] = [];
+    const held: Array<() => void> = [];
+    let sessionCounter = 0;
+    const spawnAgent = () => {
+      const agent = createMockAcpAgent();
+      const session = () => ({ result: { sessionId: `acp-${++sessionCounter}` } });
+      agent.on("session/new", session);
+      agent.on("session/load", session);
+      agent.on("session/resume", session);
+      agent.on("session/close", () => ({ result: {} }));
+      agent.on("session/set_config_option", () => ({ result: {} }));
+      agent.on("session/cancel", () => ({ result: {} }));
+      agent.on("session/prompt", async (params) => {
+        // A prompt that says "hold" runs until the test lets it end.
+        const text = JSON.stringify(params);
+        if (text.includes("hold")) await new Promise<void>((resolve) => { held.push(resolve); });
+        return { result: { stopReason: "end_turn" } };
+      });
+      agents.push(agent);
+      return agent.child;
+    };
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: spawnAgent,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const open = () => harness.service.createSession({ laneId: "lane-1", provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6" });
+    const doneFor = (sessionId: string) => events
+      .filter((envelope) => envelope.sessionId === sessionId && envelope.event.type === "done")
+      .map((envelope) => envelope.event as Record<string, any>);
+    const sessionStartsOn = (agent: MockAcpAgent) => agent.methodsReceived()
+      .filter((method) => method === "session/new" || method === "session/load" || method === "session/resume").length;
+
+    const busy = await open();
+    const idle = await open();
+    await harness.service.sendMessage({ sessionId: idle.id, text: "first" });
+    await vi.waitFor(() => expect(doneFor(idle.id)).toHaveLength(1));
+    void harness.service.sendMessage({ sessionId: busy.id, text: "hold this turn" });
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    // Both chats share the one Grok process of the old login.
+    expect(agents).toHaveLength(1);
+
+    // The generation bump `noteProviderLoginChanged` makes (its cache resets are mocked here).
+    noteProviderModelsChanged("grok");
+    harness.service.restartProviderRuntimesWhenIdle("grok");
+
+    // The idle chat's next turn runs in a new process, on the new login.
+    await harness.service.sendMessage({ sessionId: idle.id, text: "second" });
+    await vi.waitFor(() => expect(doneFor(idle.id)).toHaveLength(2));
+    expect(agents).toHaveLength(2);
+    expect(sessionStartsOn(agents[1]!)).toBe(1);
+    // A new chat never gets the process the running turn still holds.
+    const fresh = await open();
+    await harness.service.sendMessage({ sessionId: fresh.id, text: "hello" });
+    await vi.waitFor(() => expect(doneFor(fresh.id)).toHaveLength(1));
+    expect(sessionStartsOn(agents[0]!)).toBe(2);
+
+    // The running turn was never cut: it ends on its own, completed.
+    expect((agents[0]!.child as unknown as { killed?: boolean }).killed).not.toBe(true);
+    expect(doneFor(busy.id)).toHaveLength(0);
+    held[0]!();
+    await vi.waitFor(() => expect(doneFor(busy.id)).toHaveLength(1));
+    expect(doneFor(busy.id)[0]?.status).toBe("completed");
+    // Then its process of the old login ends too, and its next turn starts on the new one.
+    await vi.waitFor(() => expect(agents[0]!.methodsReceived()).toContain("session/close"));
+    await harness.service.sendMessage({ sessionId: busy.id, text: "after" });
+    await vi.waitFor(() => expect(doneFor(busy.id)).toHaveLength(2));
+    expect(sessionStartsOn(agents[0]!)).toBe(2);
   });
 });

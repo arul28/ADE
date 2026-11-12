@@ -47,6 +47,7 @@ export function buildContextCompactEvent(
     failReason?: ContextCompactFailReason;
     failDetail?: string;
     summary?: string;
+    fallback?: boolean;
     accountLabel?: string;
     turnId?: string;
     compactionId?: string;
@@ -94,6 +95,7 @@ export function buildContextCompactEvent(
     ...(input.failReason ? { failReason: input.failReason } : {}),
     ...(input.failDetail ? { failDetail: input.failDetail } : {}),
     ...(input.summary ? { summary: input.summary } : {}),
+    ...(input.fallback ? { fallback: true } : {}),
     ...(input.accountLabel ? { accountLabel: input.accountLabel } : {}),
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(compactionId ? { compactionId } : {}),
@@ -123,6 +125,7 @@ export function mapLegacyCompactionEvent(
       failReason: event.failReason,
       failDetail: event.failDetail,
       summary: event.summary,
+      fallback: event.fallback,
       accountLabel: event.accountLabel,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,

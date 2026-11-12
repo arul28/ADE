@@ -8,6 +8,11 @@ import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import { ANDROID_AGENT_ACTIONS, ANDROID_PERSON_ONLY_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
+import {
+  PROVIDER_LOGIN_ACCOUNT_WRITES,
+  PROVIDER_LOGIN_ACTIONS,
+  PROVIDER_LOGIN_PERSON_ACTIONS,
+} from "../../../shared/types/providerLogins";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -38,9 +43,10 @@ export type CtoOnlyRule =
   | { only: readonly string[] }
   | { allExcept: readonly string[] };
 
-/** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › Agent 37 only. */
-const AGENT37_CLOUD_SIGN_IN_WRITES = [
+/** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › the provider only. */
+const CLOUD_SIGN_IN_WRITES = [
   "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+  "cloud_sign_in_keep",
 ] as const;
 
 /**
@@ -49,6 +55,7 @@ const AGENT37_CLOUD_SIGN_IN_WRITES = [
  * agent is told where the setting is rather than that it lacks a role.
  * `ADE_ACTION_CTO_ONLY` reads these lists, so a write added here is refused.
  */
+
 const USER_SETTING_WRITES = {
   account_settings: { actions: ["set", "remove"], entryId: null },
   provider_instances: {
@@ -58,6 +65,10 @@ const USER_SETTING_WRITES = {
     ],
     entryId: "agents.providers",
   },
+  // Copying this computer's sign-ins into the account, and which ones ADE
+  // Cloud uses, are the person's calls (P5). The five account writes are also
+  // user-only below: outside apps and agents read the status, never change it.
+  provider_logins: { actions: [...PROVIDER_LOGIN_PERSON_ACTIONS], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
@@ -69,7 +80,7 @@ const USER_SETTING_WRITES = {
   analytics: { actions: ["setEnabled"], entryId: null },
   // A provider sign-in kept for new cloud machines is the person's; no agent
   // saves a key or signs a provider in for them.
-  agent37: { actions: AGENT37_CLOUD_SIGN_IN_WRITES, entryId: "integrations.agent37-sign-ins" },
+  cloud: { actions: CLOUD_SIGN_IN_WRITES, entryId: "integrations.ade-cloud-sign-ins" },
   remote_mcp: {
     actions: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
     entryId: "ade-mcp.server",
@@ -130,10 +141,15 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   pty: { only: [...USER_SETTING_WRITES.pty.actions] },
   // A provider sign-in kept for new cloud machines is the person's; agents
   // read which are kept (never a value) and change none.
-  agent37: { only: [...USER_SETTING_WRITES.agent37.actions] },
+  cloud: { only: [...USER_SETTING_WRITES.cloud.actions] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
+  // Lane sharing gives another person's account a lane on this computer:
+  // only the owner decides, from their own client (also user-only, below).
+  // An agent may list, make a Watch share and stop a share: the host service
+  // holds it to that (`laneShareHostService.ts`, docs/features/lanes/lane-sharing.md).
+  lane_share: { allExcept: ["list", "create", "revoke"] },
   linear_credentials: {
     only: [
       "setToken",
@@ -158,7 +174,8 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
   // Writing or destroying a provider credential is operator work.
-  // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
+  // `acpProviderDiagnostics` can run a provider CLI's doctor, and
+  // `verifyProviderSignIn` starts the provider's CLI or agent, so both are
   // operator-only.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
@@ -166,7 +183,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Both are operator work, like `project_secret.exportEnv`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
-  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
+  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "verifyProviderSignIn", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
   budget: { only: USER_SETTING_WRITES.budget.actions },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
@@ -192,6 +209,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // (`ownerOnlyProjectConfigChange`).
   account_settings: { only: USER_SETTING_WRITES.account_settings.actions },
   provider_instances: { only: USER_SETTING_WRITES.provider_instances.actions },
+  provider_logins: { only: USER_SETTING_WRITES.provider_logins.actions },
   keybindings: { only: USER_SETTING_WRITES.keybindings.actions },
   project_config: { only: USER_SETTING_WRITES.project_config.actions },
   /*
@@ -370,11 +388,19 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   android_emulator: ANDROID_PERSON_ONLY_ACTIONS,
   // Another machine's chat owns each copy; only a person deletes one for it.
   remote_work: ["list", "delete"],
+  // Which sign-ins ADE Cloud uses, removing one from the account, and the one Keychain read on a Mac (P5).
+  provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain", "allowGitHubCli"],
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // Dropping a deleted lane's saved work means it can no longer be restored.
+  lane: ["removeDeletedLane"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
-  agent37: AGENT37_CLOUD_SIGN_IN_WRITES,
+  // Entering an invite code sets the account's referrer once, forever: the
+  // person enters it in Settings › Account (desktop, or the phone's own
+  // `cloud.write`), never an agent, an ADE MCP app or a terminal.
+  // (`clear_caches` is not here: an agent may ask, and the action asks the person with a card.)
+  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem"],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -396,6 +422,16 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "updateConnection",
     "removeConnection",
   ],
+  // Sharing a lane with another account, and what that person may do in it,
+  // is the owner's call. An agent may only list shares, make a Watch share
+  // and stop a share of this machine (`list`, `create`, `revoke`; the host
+  // service checks the caller the RPC server stamps). No agent widens a
+  // share, sends an invite again, reads or leaves shares given to the
+  // account, or moves a chat to or from the other person (`move*`).
+  lane_share: [
+    "updateRights", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -405,17 +441,19 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
 /**
  * Actions about the account or this machine, never one project, that a brain
  * also serves with no project open, to this computer's own connections only:
- * `agent37.call` and `accountVault.call` (multiProjectRpcServer). Every rule
+ * `cloud.call` and `accountVault.call` (multiProjectRpcServer). Every rule
  * above still applies to them.
  *
- * The other `agent37` actions stay with a project: a ready machine is a
+ * The other `cloud` actions stay with a project: a lane launch is a
  * project's, and what spends money or deletes asks in the caller's own chat.
- * The vault actions are for this computer's desktop and reach only Agent 37's
- * items (agent37VaultItems.ts).
+ * The vault actions are for this computer's desktop and reach only the provider's
+ * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  agent37: ["list", "spending", "limits", "sleep", "wake", "cloud_sign_in_status", ...AGENT37_CLOUD_SIGN_IN_WRITES],
+  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
+  // The account's sign-ins, from a window with no project here (`providerLogins.call`).
+  provider_logins: PROVIDER_LOGIN_ACTIONS,
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -481,7 +519,7 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
  * The first caller rule that refuses `domain.action`, or null: a setting only
  * the user changes, an action that needs the operator role, a secret asked for
  * by another machine's brain. Every route that runs ADE actions asks this
- * (`run_ade_action`, `agent37.call`), so the routes cannot drift apart.
+ * (`run_ade_action`, `cloud.call`), so the routes cannot drift apart.
  *
  * `userClient`: the person's own client, not an agent and not another brain.
  * `remoteBrain`: a caller from another machine's brain.
@@ -540,6 +578,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "sendNotification",
   ],
   keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  lane_share: [
+    "create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
   remote_mcp: [
     "getStatus",
     "listActivity",
@@ -572,6 +614,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "diagnosticsRunFullCheck",
     "diagnosticsRunHealthCheck",
     "checkBranchName",
+    "cloudStartBranch",
+    "pushCloudStartBranch",
     "getBranchDrift",
     "getDefaultTemplate",
     "getNewLaneDefaults",
@@ -587,6 +631,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "initEnv",
     "list",
     "listDeleteProgress",
+    "listDeletedLanes",
     "listSnapshots",
     "listTemplates",
     "listLinearIssuesForLaneSessions",
@@ -616,6 +661,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "proxyStart",
     "proxyStop",
     "refreshSnapshots",
+    "removeDeletedLane",
+    "restoreDeletedLane",
     "rebaseAbort",
     "rebasePush",
     "rebaseRollback",
@@ -759,6 +806,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listWithConflicts",
     "postReviewComment",
     "reactToComment",
+    "searchMentionables",
+    "getRepoReferences",
     "refresh",
     "addGithubStackPullRequests",
     "requestReviewers",
@@ -851,6 +900,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "armWait",
     "listWaits",
     "cancelWait",
+    "getChatEvents",
+    "armWebhook",
+    "listWebhooks",
+    "cancelWebhook",
     "holdBackgroundWork",
     "recoverTurn",
     "recoverCodexTurn",
@@ -1007,6 +1060,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "storeApiCredential",
     "removeApiCredential",
     "verifyApiKeyConnection",
+    "verifyProviderSignIn",
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
@@ -1117,15 +1171,24 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.
   integration_connect: ["request", "status"],
-  // Agent 37: ready machines (read the pool, take a project's ready machine,
-  // give an unused claim back) and the machine verbs. What spends money or
-  // deletes asks the person first (the RPC server stamps who asks). Never the key.
-  agent37: [
-    "ready_status", "claim_ready", "release_ready", "list", "spending", "create", "sleep", "wake", "resize",
-    "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+  // the provider: the machine verbs. What spends money or deletes asks the
+  // person first (the RPC server stamps who asks). Never the key.
+  cloud: [
+    // `status` is the whole account in one read (plan, hours, disk, lanes,
+    // sizes, agent limits, canStartLane); no key, no wake, no spend.
+    "access", "status", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    "copy", "move", "delete", "make_status", "limits", "set_limits",
+    // A new lane on its own new computer (`ade chat create --machine cloud`).
+    "lane_launch", "lane_launch_status", "lane_launch_cancel",
+    // An agent asks the person for a tier change: a card in its chat; it changes nothing.
+    "tier_request",
+    // Clear a cloud computer's caches: the person from the dashboard; an agent asks the person with a card.
+    "clear_caches",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
-    "cloud_sign_in_status", ...AGENT37_CLOUD_SIGN_IN_WRITES,
+    "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,
+    // The invite link and what it earned; entering a friend's code (CTO-only above: a person's client).
+    "referral", "invite_redeem",
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person
@@ -1344,6 +1407,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listDevServers",
     "probePort",
     "stopDevServer",
+    "noteWatching",
   ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
@@ -1458,6 +1522,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "saveRule",
     "deleteRule",
     "toggleRule",
+    "setRunOn",
     "triggerManually",
     "planTest",
     "runTest",
@@ -1538,6 +1603,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "loginCommand",
     "refresh",
   ],
+  /*
+   * The sign-ins the account keeps for ADE Cloud (P5). `status` returns no
+   * token, key, file content or hash, so agents and other machines may read
+   * it. `captureNow`, `allowKeychain` and `allowGitHubCli` are the person's.
+   */
+  provider_logins: [...PROVIDER_LOGIN_ACTIONS],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -1621,6 +1692,10 @@ export function isAutomationAllowedAdeAction(
   return isAllowedAdeAction(domain, action)
     && !isCtoOnlyAdeAction(domain, action)
     && !isUserOnlyAdeAction(domain, action)
+    // A lane share gives another account a lane on this computer. An
+    // automation step passes no caller the host can trust, so it makes,
+    // lists and stops none.
+    && domain !== "lane_share"
     // A config save writes the whole file, owner-only keys included. The RPC
     // server checks an agent's save key by key; an automation step skips that
     // check, so it may not save the config at all.

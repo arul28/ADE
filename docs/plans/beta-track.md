@@ -42,7 +42,7 @@ guard that covers it. Keep it current while the work runs.
 - The track of a build comes from its version only: a `-beta.` prerelease is
   Beta, anything else is Stable (`apps/desktop/src/shared/updateTrack.ts`).
 - Beta builds are packaged with `-c.detectUpdateChannel=false`, so their
-  updater manifests keep the names `latest-mac.yml` and `latest.yml`.
+  updater manifests keep the names `latest-mac.yml`, `latest.yml`, `latest-linux.yml` and `latest-linux-arm64.yml`.
 
 ### Release manifest (every release, stable and beta)
 
@@ -328,7 +328,7 @@ How the pipeline is built, and what is still open.
   requires it. `publishedAt` is the time the publish job assembled the draft
   (for stable, the owner undrafts later).
 - `beta-feed` is created on first use as a prerelease. Manifests are uploaded
-  before `beta.json`. A beta without a Windows build removes `latest.yml` from
+  before `beta.json`. A beta without a Windows or Linux build removes that platform's manifests from
   the feed. This relies on immutable releases staying off for the repo
   (checked 2026-10-29: off); with them on, the feed's assets cannot be
   replaced.
@@ -337,6 +337,15 @@ How the pipeline is built, and what is still open.
 - `concurrency.queue: max` was left out: an unknown key would stop every
   beta, and a replaced pending run is harmless because each run resolves the
   newest green commit itself.
+
+### ADE Cloud template
+
+`beta.yml`'s `cloud-template` job calls `cloud-template.yml` with the beta's tag
+once it is public, beside the feed and outside the report job, so a late or
+failed build blocks nothing and opens no issue. A stable release builds it from
+the `release: published` trigger when the release skill undrafts it (a beta's
+undraft uses GITHUB_TOKEN and starts no workflow, hence the explicit call).
+Previews do not build one. See `infra/ade-cloud/README.md`.
 
 ### iOS TestFlight from CI (work item 8)
 

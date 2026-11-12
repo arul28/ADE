@@ -59,8 +59,8 @@ export type ProductSurveyAnswer = string | string[];
 
 export type ProductSurveyEventInput =
   | { kind: "shown"; surveyId: string }
-  | { kind: "dismissed"; surveyId: string; partiallyCompleted?: boolean }
-  | { kind: "sent"; surveyId: string; answers: Record<string, ProductSurveyAnswer> };
+  | { kind: "dismissed"; surveyId: string; partiallyCompleted?: boolean; shownForMs?: number }
+  | { kind: "sent"; surveyId: string; answers: Record<string, ProductSurveyAnswer>; shownForMs?: number };
 
 export type ProductSurveyEventResult = { accepted: boolean };
 
@@ -83,6 +83,8 @@ export type ProductSurveyEventPayload = {
   submissionId?: string;
   completed?: boolean;
   partiallyCompleted?: boolean;
+  /** How long the card was on screen before the person answered or hid it. */
+  shownForMs?: number;
   /** Keyed by question id. */
   responses?: Record<string, ProductSurveyAnswer>;
 };

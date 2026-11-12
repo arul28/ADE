@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Banner } from "../../ui/notice";
 import { ArrowSquareOut, Copy, File as FileIcon, FilePlus, FolderPlus, Path, PencilSimple, TextT, Trash } from "@phosphor-icons/react";
 import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../shared/types";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
@@ -324,6 +325,8 @@ export function FilesWorkbench({
   // hand it the same request again. Identity is the durable "already handled"
   // record — every request is a fresh object.
   const consumedWorkspaceOpenRef = useRef<unknown>(null);
+  const pendingWorkspaceOpenRef = useRef(pendingWorkspaceOpen);
+  pendingWorkspaceOpenRef.current = pendingWorkspaceOpen;
   const lastGlobalLaneIdRef = useRef(globalLaneId);
   const workspacesProjectRootRef = useRef(projectRootPath);
   const workspacesCacheKeyRef = useRef(projectCacheKey);
@@ -812,6 +815,9 @@ export function FilesWorkbench({
     if (!workspaces.length) return;
     const laneChanged = lastGlobalLaneIdRef.current !== globalLaneId;
     lastGlobalLaneIdRef.current = globalLaneId;
+    // A file open waits for its own workspace to be selected. Following the
+    // selected lane now would move away from it and strand the open.
+    if (pendingWorkspaceOpenRef.current) return;
     // The selected lane is a lane on the tab's machine. While Files reads
     // another machine, that id must not be matched against its roster (a lane
     // id can exist on both); go back to the tab's machine for it instead.
@@ -1039,11 +1045,14 @@ export function FilesWorkbench({
 
   const openFile = useCallback(
     async (path: string, opts: { preview?: boolean; line?: number; column?: number } = {}) => {
-      if (!workspaceId) return;
+      if (!workspaceId) {
+        setError(`Couldn't open ${path}: no workspace is selected.`);
+        return;
+      }
       setSelectedNodePath(path);
       setEmbeddedSurface("editor");
       if (opts.line && opts.line > 0) {
-        setPendingReveal(path, { line: opts.line, column: opts.column });
+        setPendingReveal(path, { line: opts.line, column: opts.column }, workspaceId);
       }
       try {
         // The viewer reads the same LRU through useFileContent, so a cached
@@ -1079,7 +1088,7 @@ export function FilesWorkbench({
         applyGroups((s) => openInGroup(s, s.activeGroupId, tab, { preview: opts.preview ?? true }));
         recordRecentFile(recentSessionKey, path);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [files, workspace, workspaceId, applyGroups, recentSessionKey, revalidateOpenedFile],
@@ -1113,7 +1122,7 @@ export function FilesWorkbench({
           line,
         });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [upsertWorkspace],
@@ -1171,8 +1180,12 @@ export function FilesWorkbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedPinKey]);
 
+  // Once per navigation: the request is rebuilt on every render and must not
+  // undo a machine picked afterwards.
+  const appliedNavigationPinRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!active || !navigationOpenRequest) return;
+    if (!active || !navigationOpenRequest || appliedNavigationPinRef.current === navigationOpenRequest.nonce) return;
+    appliedNavigationPinRef.current = navigationOpenRequest.nonce;
     const requestedPin = navigationOpenRequest.pin ?? null;
     setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
   }, [active, navigationOpenRequest]);
@@ -1468,7 +1481,7 @@ export function FilesWorkbench({
       try {
         await files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
         return;
       }
       forgetRecentFilesUnder(recentSessionKey, sourcePath);
@@ -1495,7 +1508,7 @@ export function FilesWorkbench({
         closeOpenTabsUnder(workspaceId, path);
         await refreshRoot();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, files, recentSessionKey, refreshRoot, workspaceId],
@@ -1544,7 +1557,7 @@ export function FilesWorkbench({
         await refreshRoot();
         if (kind === "file") void openFile(rel, { preview: false });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [files, workspaceId, refreshRoot, openFile],
@@ -1707,7 +1720,11 @@ export function FilesWorkbench({
           onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
           onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
           onToggleDirectory={toggleDirectory}
-          onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
+          onLoadMoreChildren={(path, offset) => {
+            loadMoreChildren(path, offset).catch((err: unknown) => {
+              setError(formatFilesError(err));
+            });
+          }}
           onOpenFile={(path) => void openFile(path, { preview: true })}
           onActivateFile={(path) => void openFile(path, { preview: false })}
           onSelectNode={setSelectedNodePath}
@@ -1769,8 +1786,27 @@ export function FilesWorkbench({
         </div>
       ) : null}
       {error ? (
-        <div className="shrink-0 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
-          {error}
+        <div className="shrink-0">
+          <Banner
+            layout="inline"
+            model={{
+              id: "files-workbench-error",
+              tone: "error",
+              // A file error can carry a path; keep it out of session replay.
+              title: <span data-ph-mask="">{error}</span>,
+              ariaLabel: error,
+              actions: [{
+                // A file operation (rename, create, delete) cannot be replayed
+                // safely from here; refreshing the tree is the honest action.
+                label: "Refresh",
+                onClick: () => {
+                  setError(null);
+                  void refreshRoot();
+                },
+              }],
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
         </div>
       ) : null}
       {/*

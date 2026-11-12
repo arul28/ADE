@@ -7,7 +7,10 @@ export type Matcher = string | number | boolean | { re: string };
 
 export type ExpectedCall = {
   tool: string;
-  /** Each named argument must match: a string compares case-insensitively, `{ re }` tests JSON of the value. */
+  /**
+   * Each named argument must match: a string compares case-insensitively, `{ re }` tests JSON of the value.
+   * `"*"` tests JSON of all the arguments, for an answer a tool takes in more than one input.
+   */
   args?: Record<string, Matcher>;
   /** At least this many matching calls. Default 1. */
   count?: number;
@@ -42,7 +45,8 @@ function matches(value: unknown, matcher: Matcher): boolean {
 
 function callMatches(call: ToolCall, expected: ExpectedCall): boolean {
   if (call.name !== expected.tool) return false;
-  return Object.entries(expected.args ?? {}).every(([key, matcher]) => matches(call.arguments[key], matcher));
+  return Object.entries(expected.args ?? {}).every(([key, matcher]) =>
+    matches(key === "*" ? call.arguments : call.arguments[key], matcher));
 }
 
 export function grade(grading: Grading, calls: readonly ToolCall[], reply: string): Verdict {

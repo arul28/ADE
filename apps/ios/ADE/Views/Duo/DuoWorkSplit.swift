@@ -202,6 +202,20 @@ extension WorkRootListScreen {
   /// the list stays where the user left it.
   func duoSelectSession(_ session: TerminalSessionSummary) {
     guard !workIsPendingChatCreationSession(session) else { return }
+    // Another machine's CLI or shell row opens in the column over that
+    // machine's light link when it can. Otherwise it opens on its own
+    // machine, as a tap on the phone layout does.
+    let remoteTerminal: WorkRemoteTerminalContext?
+    if workIsRemoteMachineTerminalRow(session) {
+      guard let remote = remoteTerminalContextOrOpen(
+        session: session,
+        sessionId: session.id,
+        laneId: session.laneId
+      ) else { return }
+      remoteTerminal = remote
+    } else {
+      remoteTerminal = nil
+    }
     if let previous = duoSelectedRoute?.sessionId, previous != session.id {
       WorkSeenStore.stamp([previous])
     }
@@ -220,7 +234,7 @@ extension WorkRootListScreen {
     ChatOpenCloseTiming.openTapped(sessionId: session.id)
     // A row from another machine opens through that machine, exactly as the
     // pushed route does.
-    let remoteChat: WorkChatCrossProjectContext? = isWorkRemoteLaneId(session.laneId)
+    let remoteChat: WorkChatCrossProjectContext? = isWorkRemoteLaneId(session.laneId) && remoteTerminal == nil
       ? syncService.remoteMachineChat(sessionId: session.id).map { remote in
         WorkChatCrossProjectContext(
           projectId: remote.projectId,
@@ -230,8 +244,8 @@ extension WorkRootListScreen {
         )
       }
       : nil
-    duoSelectedRoute = WorkSessionRoute(sessionId: session.id, remoteChat: remoteChat)
-    if remoteChat == nil {
+    duoSelectedRoute = WorkSessionRoute(sessionId: session.id, remoteChat: remoteChat, remoteTerminal: remoteTerminal)
+    if remoteChat == nil, remoteTerminal == nil {
       syncService.persistOpenWorkSessionRoute(sessionId: session.id)
     }
     scheduleSessionPresentationRebuild()

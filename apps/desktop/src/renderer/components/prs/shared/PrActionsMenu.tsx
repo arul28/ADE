@@ -82,8 +82,16 @@ export type PrActionsContext = {
   onError?: (message: string) => void;
   /** Opens the "Manage lane" dialog. Undefined, or a PR with no lane, hides the item. */
   onManageLane?: () => void;
-  /** Lane chats the caller already has. When set, the menu does not fetch them again. */
-  laneChats?: AgentChatSessionSummary[];
+  /**
+   * Lane chats the caller already has, including its failure and retry. One
+   * atomic value: a caller that owns the read cannot supply an error without
+   * the way to retry it.
+   */
+  laneChats?: {
+    sessions: AgentChatSessionSummary[];
+    error: string | null;
+    retry: () => void;
+  };
 };
 
 type PrMenuItem = {
@@ -123,26 +131,45 @@ export function usePrActionsMenu(context: PrActionsContext) {
     laneChats: providedChats,
   } = context;
   const [fetchedChats, setFetchedChats] = React.useState<AgentChatSessionSummary[] | null>(null);
+  const [fetchedChatsError, setFetchedChatsError] = React.useState<string | null>(null);
   // Every call below reaches the machine that owns the PR's lane.
   const runtimePin = usePrRuntimePin();
   const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
   // Chat hand-offs keep the lane's machine (a draft or focus on the owner).
   const handOff = usePrChatHandoff();
-  const laneChats = providedChats ?? fetchedChats;
+  const laneChats = providedChats?.sessions ?? fetchedChats;
+  const chatsError = providedChats ? (providedChats.error ?? null) : fetchedChatsError;
   const [busy, setBusy] = React.useState<string | null>(null);
 
+  const chatsRequestRef = React.useRef(0);
   const ensureChats = React.useCallback(() => {
     if (!pr.laneId || laneChats !== null) return;
+    const request = ++chatsRequestRef.current;
     void window.ade.agentChat
       .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
-      .then(setFetchedChats)
-      .catch(() => setFetchedChats([]));
+      .then((sessions) => {
+        if (chatsRequestRef.current !== request) return;
+        setFetchedChats(sessions);
+        setFetchedChatsError(null);
+      })
+      // Do not cache a failed read as an empty list: that would silently offer
+      // "Starts a chat in this lane" to a PR that already has chats and never
+      // retry. Keep `fetchedChats` null so the next open reads again.
+      .catch((error) => {
+        if (chatsRequestRef.current !== request) return;
+        setFetchedChatsError(extractError(error));
+      });
   }, [laneChats, onPin, pr.laneId]);
 
-  // A different PR (or lane) invalidates the cached chat list.
+  // A different PR (or lane) invalidates the cached chat list and any read in
+  // flight, so a superseded answer cannot land after the switch.
+  // The owning machine can change without the PR or lane id (a foreign machine
+  // goes offline), so the pin is part of the key too.
   React.useEffect(() => {
+    chatsRequestRef.current += 1;
     setFetchedChats(null);
-  }, [pr.id, pr.laneId]);
+    setFetchedChatsError(null);
+  }, [pr.id, pr.laneId, onPin]);
 
   // Close and reopen paint the list at once, before the refetch, like a merge.
   const prs = useOptionalPrs();
@@ -201,7 +228,11 @@ export function usePrActionsMenu(context: PrActionsContext) {
         const target = linked[0] ?? null;
         return {
           id, label, icon, tone,
-          description: description ?? (target ? `In ${chatLabel(target)}` : "Starts a chat in this lane"),
+          description: description ?? (target
+            ? `In ${chatLabel(target)}`
+            : chatsError
+              ? "Couldn't check existing chats; starts a new one"
+              : "Starts a chat in this lane"),
           onSelect: () => handOff({ laneId, sessionId: target?.sessionId ?? null, prompt: prompt() }),
         };
       };
@@ -235,6 +266,23 @@ export function usePrActionsMenu(context: PrActionsContext) {
           id: "update_description", kind: "update_description", label: "Update the description",
           icon: <Sparkle size={14} weight="duotone" />, tone: TONE.chat, description: "Rewrite it from the current diff",
         }));
+      }
+      if (chatsError) {
+        items.push({
+          id: "chats-error",
+          label: "Couldn't read this lane's chats",
+          description: chatsError,
+          icon: <WarningCircle size={14} weight="duotone" />,
+          tone: TONE.danger,
+          onSelect: () => {
+            if (providedChats) {
+              providedChats.retry();
+              return;
+            }
+            setFetchedChatsError(null);
+            ensureChats();
+          },
+        });
       }
       out.push({ id: "chat", label: "Chat", items });
     }
@@ -341,7 +389,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
       });
     }
     return out;
-  }, [busy, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, pr, prs, refreshing, run, status]);
+  }, [busy, chatsError, ensureChats, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, providedChats, pr, prs, refreshing, run, status]);
 
   return { sections, ensureChats, busy };
 }

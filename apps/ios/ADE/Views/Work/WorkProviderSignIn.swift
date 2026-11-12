@@ -33,11 +33,13 @@ func workProviderSignInLabel(_ provider: String) -> String {
   }
 }
 
-/// Who the person signs in with: "Continue with ChatGPT".
-private func workProviderSignInVia(_ provider: String) -> String {
+/// Who the person signs in with: "Continue with Claude". Nil when the sign-in
+/// belongs to the agent itself: "Sign in to Codex" runs `codex login`, and
+/// "Continue with ChatGPT" is the label of OpenAI's separate app program.
+private func workProviderSignInVia(_ provider: String) -> String? {
   switch provider.lowercased() {
   case "claude": return "Claude"
-  case "codex": return "ChatGPT"
+  case "codex": return nil
   case "copilot": return "GitHub"
   case "grok": return "xAI"
   case "kimi": return "Kimi"
@@ -177,6 +179,17 @@ final class WorkProviderSignInController: ObservableObject {
     self.host = host
     self.instanceId = instanceId
   }
+
+  #if DEBUG
+  /// Fixture screens: a sign-in frozen at one phase, with nothing to reach.
+  convenience init(fixtureProvider provider: String, phase: Phase, url: String?, deviceCode: String?, awaitingCode: Bool = false) {
+    self.init(provider: provider, host: nil, instanceId: nil)
+    self.phase = phase
+    self.url = url
+    self.deviceCode = deviceCode
+    self.awaitingCode = awaitingCode
+  }
+  #endif
 
   var signingIn: Bool { phase == .starting || phase == .waiting || phase == .verifying }
   /// The phone has a connection to the chat's machine to sign in on.
@@ -506,61 +519,16 @@ struct WorkProviderSignInCard: View {
 
   @ViewBuilder
   private var actionRow: some View {
-    if controller.phase == .waiting && controller.awaitingCode {
-      VStack(alignment: .leading, spacing: 8) {
-        if let link = workSignInPageURL(controller.url) {
-          Link(destination: link) {
-            Label(linkHost.map { "Open \($0)" } ?? "Open the sign-in page", systemImage: "arrow.up.right.square")
-              .font(.footnote.weight(.semibold))
-          }
-        }
-        HStack(spacing: 8) {
-          TextField(controller.kind == .antigravity ? "Paste the address it ends on" : "Paste the code it shows", text: $code)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.footnote.monospaced())
-            .padding(.horizontal, 10)
-            .frame(height: 36)
-            .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          Button("Finish") {
-            Task { await controller.submit(code: code) }
-          }
-          .buttonStyle(.borderedProminent)
-          .tint(tint)
-          .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.submitting)
-        }
+    if controller.phase == .waiting || controller.phase == .verifying {
+      // The same parts as the Settings sheet: the account note, then the steps
+      // with the code, its QR and Open sign-in page.
+      VStack(alignment: .leading, spacing: 10) {
+        Text(providerSignInAccountNote(provider: provider, expected: nil))
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        ProviderSignInStepList(controller: controller, code: $code, compact: true)
         cancelButton
-      }
-    } else if controller.phase == .waiting, let deviceCode = controller.deviceCode {
-      VStack(alignment: .leading, spacing: 8) {
-        Button {
-          UIPasteboard.general.string = deviceCode
-          copied = true
-        } label: {
-          HStack(spacing: 8) {
-            Text(deviceCode)
-              .font(.system(.title3, design: .monospaced).weight(.semibold))
-              .tracking(2)
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-              .font(.caption)
-          }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(.horizontal, 12)
-          .frame(height: 40)
-          .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(tint.opacity(0.5), lineWidth: 1))
-        }
-        .accessibilityLabel("Copy the code \(deviceCode)")
-        HStack(spacing: 12) {
-          if let link = workSignInPageURL(controller.url) {
-            Link(destination: link) {
-              Label(linkHost.map { "Enter it on \($0)" } ?? "Open the sign-in page", systemImage: "arrow.up.right.square")
-                .font(.footnote.weight(.semibold))
-            }
-          }
-          ProgressView().controlSize(.small)
-          cancelButton
-        }
       }
     } else {
       if provider.lowercased() == "kimi" && !controller.signingIn {
@@ -601,7 +569,9 @@ struct WorkProviderSignInCard: View {
     case .verifying, .done: return "Checking…"
     case .waiting: return linkHost.map { "Waiting for \($0)…" } ?? "Waiting for the browser…"
     case .failed: return "Try again"
-    case .idle: return "Continue with \(workProviderSignInVia(provider))"
+    case .idle:
+      return workProviderSignInVia(provider).map { "Continue with \($0)" }
+        ?? "Sign in to \(workProviderSignInLabel(provider))"
     }
   }
 

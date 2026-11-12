@@ -25,8 +25,10 @@ import {
   droidPermissionModeFromLegacyPermissionMode,
   museCliApprovalFlag,
 } from "./types/chat";
+import { codexCliApprovalFlagValue } from "./codexApprovalPolicy";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
+  filterAdeAgentSkillRoots,
   getAdeAgentSkillRootsForPrompt,
   getAgentSkillRootCandidates,
   joinAdeAgentSkillRoots,
@@ -45,6 +47,7 @@ import { musePermissionModeFromLegacyPermissionMode } from "./modelPermissions";
 import { PI_THINKING_LEVELS } from "./piThinkingLevels";
 import { PROVIDER_DISPLAY_NAME } from "./providers";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
+import { cutTextAtCodePoint } from "./codePointText";
 
 export { PI_THINKING_LEVELS } from "./piThinkingLevels";
 
@@ -360,7 +363,7 @@ export function sanitizeTrackedCliPromptSeed(raw: string): string {
     .replace(/\s+/g, " ")
     .trim();
   if (!stripped.length) return "";
-  return stripped.slice(0, TRACKED_CLI_PROMPT_SEED_MAX_LEN);
+  return cutTextAtCodePoint(stripped, TRACKED_CLI_PROMPT_SEED_MAX_LEN);
 }
 
 function unwrapAdeGuidancePromptForTitle(raw: string): string {
@@ -439,9 +442,9 @@ export function trackedCliTitleFromPromptSeed(seed: string): string {
   const clause = clauseMatch?.[1]?.replace(/[,.!?;:]+$/u, "").trim();
   const base = clause && clause.length >= 12 ? clause : cleaned;
   const clipped = base.length > TRACKED_CLI_PROMPT_TITLE_MAX_LEN
-    ? base.slice(0, TRACKED_CLI_PROMPT_TITLE_MAX_LEN).replace(/\s+\S*$/u, "").trim()
+    ? cutTextAtCodePoint(base, TRACKED_CLI_PROMPT_TITLE_MAX_LEN).replace(/\s+\S*$/u, "").trim()
     : base;
-  return sentenceCase(clipped || base.slice(0, TRACKED_CLI_PROMPT_TITLE_MAX_LEN).trim()).replace(/[.?!,:;]+$/u, "");
+  return sentenceCase(clipped || cutTextAtCodePoint(base, TRACKED_CLI_PROMPT_TITLE_MAX_LEN).trim()).replace(/[.?!,:;]+$/u, "");
 }
 
 export function isLaunchProfilePlaceholderTitle(
@@ -1220,7 +1223,7 @@ export function buildTrackedCliLaunchCommand(args: {
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
   const skillRoots = args.laneWorktreePath
-    ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
+    ? filterAdeAgentSkillRoots(getAgentSkillRootCandidates({ cwd: args.laneWorktreePath }))
     : getAdeAgentSkillRootsForPrompt();
   const sessionGuidance = buildAdeCliSessionGuidance(skillRoots, args.spawnLineage);
   // The preset lands LAST so it outranks the account env: a preset that names
@@ -2059,8 +2062,10 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (permissionMode === "default") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
-  if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
+  // The CLI flag has no value between "ask" and "never", so both rungs match.
+  if (permissionMode === "default" || permissionMode === "edit") {
+    return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
+  }
   if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];
 }
@@ -2073,7 +2078,7 @@ function codexResumePermissionFlags(args: {
 }): string[] {
   if (args.configSource === "config-toml") return [];
   if (args.approvalPolicy && args.sandbox) {
-    return ["--sandbox", args.sandbox, "--ask-for-approval", args.approvalPolicy];
+    return ["--sandbox", args.sandbox, "--ask-for-approval", codexCliApprovalFlagValue(args.approvalPolicy)];
   }
   if (args.approvalPolicy || args.sandbox) return [];
   return permissionModeToCodexFlags(args.permissionMode);

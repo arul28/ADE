@@ -213,6 +213,8 @@ import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
+import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
+import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
@@ -329,6 +331,7 @@ import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDr
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -2318,7 +2321,14 @@ function ToolResultCard({
   // Bash: a command that auto-backgrounded on timeout carries the elapsed ms;
   // surface it as a calm chip instead of the generic status word.
   const timedOutMs = typeof event.timedOutAfterMs === "number" ? event.timedOutAfterMs : null;
-  const timedOutLabel = timedOutMs != null ? formatTimedOutAfter(timedOutMs) : null;
+  const toolNote = timedOutMs != null
+    ? {
+        text: `auto-backgrounded after ${formatTimedOutAfter(timedOutMs)}`,
+        title: event.backgroundCwdHint ? `Running in ${event.backgroundCwdHint}` : undefined,
+      }
+    : event.searchTimedOut
+      ? { text: "stopped at time limit", title: "The search hit its time limit, so more matches may exist." }
+      : null;
 
   return (
     <motion.div
@@ -2356,12 +2366,12 @@ function ToolResultCard({
               {preview}
             </span>
           ) : null}
-          {timedOutLabel ? (
+          {toolNote ? (
             <span
               className="inline-flex items-center gap-1 rounded-md border border-fg/[0.07] bg-fg/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
-              title={event.backgroundCwdHint ? `Running in ${event.backgroundCwdHint}` : undefined}
+              title={toolNote.title}
             >
-              auto-backgrounded after {timedOutLabel}
+              {toolNote.text}
             </span>
           ) : event.status ? (
             <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider", statusColorClass(event.status))}>
@@ -3218,6 +3228,10 @@ function renderEvent(
       : event.metadata?.sideChat
         ? "your side chat"
         : "";
+    // Lane sharing: a guest's message names its author (set by the host).
+    // The owner's own messages stay unlabelled, as before.
+    const guestAuthor = parseMessageAuthor(event.metadata?.author);
+    const guestAuthorLabel = guestAuthor?.kind === "guest" ? (guestAuthor.name?.trim() || "A guest") : null;
     // A brief handoff's first message is the hidden brief. The thread marks it
     // with a line, like the fork line, not with a label inside the bubble.
     const handoffBriefLabel = metadataKind === "handoff"
@@ -3356,6 +3370,16 @@ function renderEvent(
               className="mt-2 text-right font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45"
             >
               via {remoteMcpLabel}
+            </div>
+          ) : null}
+          {guestAuthorLabel ? (
+            <div
+              data-ade-find-skip=""
+              data-testid="chat-user-message-author"
+              className="mt-2 truncate text-right font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55"
+              title={guestAuthorLabel}
+            >
+              From {guestAuthorLabel}
             </div>
           ) : null}
         </div>
@@ -4582,6 +4606,10 @@ function renderEvent(
     // while setup runs; afterwards it is a one-line summary that expands.
     if (event.variant === "lane_setup") {
       return <LaneSetupTranscriptCard card={event} />;
+    }
+    // An agent asks the person for a new ADE Cloud size: the tier-change card, then its steps.
+    if (event.variant === CLOUD_TIER_REQUEST_CARD_VARIANT) {
+      return <CloudTierRequestCard card={event} sessionId={options?.sessionId ?? null} />;
     }
     // An MCP App: the page a server ships with a tool, run in the scene
     // sandbox. Where this build cannot host one (the web client) the card
@@ -6122,6 +6150,7 @@ function AgentChatMessageListMain({
   surfaceProfile = "standard",
   assistantLabel,
   sessionTurnActive = false,
+  wakingSinceMs = null,
   usageLimitResumeActive = false,
   usageLimitResumeTurnId = null,
   onOpenWorkspacePath,
@@ -6204,6 +6233,12 @@ function AgentChatMessageListMain({
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   sessionTurnActive?: boolean;
+  /**
+   * Set while a send wakes the chat's sleeping cloud computer: when the wake
+   * started. Until a live turn takes over, the working indicator shows
+   * "Waking the computer…" and counts from here.
+   */
+  wakingSinceMs?: number | null;
   /**
    * The host's live usage-limit resume state for this chat, or null. Only two
    * facts are read here — that a limit is live (the quota card stands down for
@@ -7635,9 +7670,11 @@ function AgentChatMessageListMain({
   // every done divider in the thread renders this, so that gate made the
   // control a silent no-op on every turn but the last.
   const handleReviewChanges = useCallback(() => {
-    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
+    const state = currentLaneId
+      ? { laneId: currentLaneId, ...(runtimePin ? { filesPin: runtimePin } : {}) }
+      : undefined;
     navigate("/files", state ? { state } : undefined);
-  }, [currentLaneId, navigate]);
+  }, [currentLaneId, navigate, runtimePin]);
 
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;
@@ -9147,7 +9184,18 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
+  const liveTurnIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId));
+  // The same indicator element, so a live turn that follows the wake takes it
+  // over in place instead of a second one fading in.
+  const wakingIndicator = !liveTurnIndicator && !sessionEnded && wakingSinceMs != null;
+  const workingActivity = wakingIndicator
+    ? "Waking the computer…"
+    : activeProviderRetryActivity || resolveWorkingIndicatorLabel(
+      latestActivity?.activity ?? null,
+      transcriptToolActivity.activeFileEntries,
+      transcriptToolActivity.activeEntries,
+    );
+  const streamingIndicator = liveTurnIndicator || wakingIndicator ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       // Read when it mounts: shown with the chat it opened with, it does not fade in.
@@ -9156,17 +9204,9 @@ function AgentChatMessageListMain({
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
       <WorkingIndicator
-        activity={
-          activeProviderRetryActivity
-            ? activeProviderRetryActivity
-            : resolveWorkingIndicatorLabel(
-              latestActivity?.activity ?? null,
-              transcriptToolActivity.activeFileEntries,
-              transcriptToolActivity.activeEntries,
-            )
-        }
-        startedAt={activeTurnStartedAt}
-        toolEntries={transcriptToolActivity.activeEntries}
+        activity={workingActivity}
+        startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
+        toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
         replyWritesScene={activeTurnReplyWritesScene}
         onNavigateSuggestion={handleNavigateSuggestion}
         onInsertDraft={onInsertDraft}

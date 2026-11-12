@@ -7,10 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Models
+
+- Claude Fable 5.2 leads the Claude list (Medium effort by default, $8 / $40 per million tokens); Fable 5.1 moves below Haiku 5.5. Claude Agent SDK 0.3.321 (Claude Code 2.1.321), the first to know Fable 5.2.
+- Requests from the CLI, MCP and agents name a model by its full name (`claude-fable-5-2` or `anthropic/claude-fable-5-2`). Short names such as `opus` or `fable` are refused with the full name to use; saved chats and settings keep working.
+
 ### SDK 0.7
 
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
 - **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
+
+## [1.2.129] - 2026-11-08
+
+### Desktop and web
+
+- Android Development on macOS, Windows and Linux: per-lane emulators, guided SDK setup, recording, Inspect, fold, Compose previews, remote viewers and `ade android` (#2045, #2069, #2072, #2073, #2098, #2107).
+- ADE Cloud machines: one click from the picker, provider sign-ins, ready machines, sleep, spending cap, copy and move (#2050, #2054, #2055, #2056, #2065, #2071, #2078, #2093, #2101, #2102, #2103, #2104, #2105, #2108).
+- One Integrations page with connect cards and an MCP catalogue (#2048, #2059); Settings › Keyboard and Quick slots (#2041); Recently deleted chats (#2064); sign in from the chat (#2080, #2084); comments on images and videos (#2036).
+- Agents form a mesh with subagents by default (#2043); links open on the right machine and proof review over MCP (#2037); branch names and lane cleanup you choose, true Storage numbers (#2085); onboarding agent rail (#2044); What's new refresh (#2060).
+- Fixes: open Sentry and PostHog issues (#2090), review of recent merges and six T3 Code bugs (#2111), Android-lane bug ledger (#2063), ADE bug ledger (#2058), Needs attention (#2112), GitHub publishing (#2097), PR cards (#2088), attachments across machines (#2042), launch failures and queued messages (#2062, #2076), calls across sleep (#2068), sync takeover (#2075), web crash handling (#2082, #2086), Worker hardening (#2053), relay and provider failures (#2087).
+- Analytics, logging and CI work (#2040, #2046, #2051, #2066, #2067, #2070, #2077, #2089, #2100, #2106).
+
+### iOS
+
+- Full-screen live streams, Turn, posture-aware Inspect and Duo fold mirroring (#2039); Settings matches desktop and the Hub's top row sits beside the clock (#2096); model tags and the `@` menu (#2092); Duo recording fixes (#2079, #2081).
+
+### Windows
+
+- Agents use apps on the main screen without taking focus (#2061); brain freezes on secrets reads and `taskkill` (#2074).
 
 ## [1.2.128] - 2026-11-03
 
@@ -2825,7 +2849,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.128...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.129...HEAD
+[1.2.129]: https://github.com/arul28/ADE/compare/v1.2.128...v1.2.129
 [1.2.128]: https://github.com/arul28/ADE/compare/v1.2.127...v1.2.128
 [1.2.127]: https://github.com/arul28/ADE/compare/v1.2.126...v1.2.127
 [1.2.126]: https://github.com/arul28/ADE/compare/v1.2.125...v1.2.126

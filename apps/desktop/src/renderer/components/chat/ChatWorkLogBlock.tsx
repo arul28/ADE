@@ -23,7 +23,7 @@ import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinKey } from "../../state/pinKey";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { useChatWorkspacePaths } from "./chatWorkspacePaths";
+import { looksLikeWorkspacePath, useChatWorkspacePathOpener, useChatWorkspacePaths } from "./chatWorkspacePaths";
 import { ComputerUseInlineIcon } from "./ChatComputerUseActions";
 import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatComputerUseRows";
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
@@ -124,6 +124,17 @@ function entryArgText(entry: ChatWorkLogEntry): string {
     if (entry.detail) return summarizeArgText(entry.detail, 140);
   }
   return "";
+}
+
+const FILE_TARGET_TOOLS = new Set(["read", "readfile", "write", "edit", "multiedit", "notebookedit"]);
+
+/** The file a file-tool row acts on. Search, shell and list tools have no single file. */
+function toolEntryFileTarget(entry: ChatWorkLogEntry): string | null {
+  if (entry.entryKind !== "tool" || entry.mcp || !entry.toolName) return null;
+  if (!FILE_TARGET_TOOLS.has(entry.toolName.toLowerCase())) return null;
+  const args = readRecord(entry.args) ?? {};
+  const target = String(args.file_path ?? args.notebook_path ?? args.path ?? "").trim();
+  return target && looksLikeWorkspacePath(target) ? target : null;
 }
 
 function collectLocalhostUrls(entries: ChatWorkLogEntry[]): ChatLocalhostUrl[] {
@@ -543,6 +554,8 @@ function ToolCallRow({
   // Only an open row shows its detail, and a live command's detail is its
   // whole output: build it when the row opens, not on every streamed chunk.
   const detailBody = useMemo(() => (open ? buildEntryDetail(entry) : null), [entry, open]);
+  const openWorkspacePath = useChatWorkspacePathOpener();
+  const fileTarget = open && openWorkspacePath ? toolEntryFileTarget(entry) : null;
   // A failed tool says why on its own row, so the reason is readable without
   // opening it (the turn carries on; this row is the whole report).
   const failureText = useMemo(() => toolEntryFailureText(entry), [entry]);
@@ -588,6 +601,18 @@ function ToolCallRow({
           </span>
         ) : null}
       </button>
+      {fileTarget ? (
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full">
+          <button
+            type="button"
+            onClick={() => openWorkspacePath?.(fileTarget)}
+            title={fileTarget}
+            className="rounded-[6px] border border-accent/20 px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-semibold text-accent/85 transition-colors hover:border-accent/40 hover:text-accent"
+          >
+            Open file
+          </button>
+        </div>
+      ) : null}
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
         <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-fg/[0.05] pt-2">
           {navigationSuggestions.map((suggestion) => (
@@ -671,13 +696,14 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   }
   if (entry.entryKind === "tool") {
     const command = computerUseEntryCommand(entry);
+    const result = entry.result === undefined
+      ? null
+      : toolEntryFailureText(entry) ?? formatStructuredValue(maskInlineImages(entry.result));
     if (command?.trim()) {
-      const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(entry.result));
+      const out = result ?? "";
       return out.trim() ? `$ ${command}\n${out}` : `$ ${command}`;
     }
-    if (entry.result !== undefined) {
-      return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
-    }
+    if (result !== null) return result;
     const args = readRecord(entry.args);
     if (args && Object.keys(args).length > 0) return formatStructuredValue(maskShellCommandArgs(entry.toolName, args));
   }
@@ -685,6 +711,15 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     return replaceInternalToolNames(entry.detail);
   }
   return null;
+}
+
+/** A tool's image blocks as a short label, so a result doesn't print its base64. */
+function maskInlineImages(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(maskInlineImages);
+  const record = readRecord(value);
+  if (!record) return value;
+  if (record.type === "image") return "[image]";
+  return Array.isArray(record.content) ? { ...record, content: maskInlineImages(record.content) } : value;
 }
 
 function ToolCallsPanel({

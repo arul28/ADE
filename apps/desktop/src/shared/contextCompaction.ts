@@ -9,12 +9,17 @@ import type {
 export type { ContextCompactFailReason };
 
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
-type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode" | "copilot";
+type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode" | "copilot" | "cursor";
 
 /** Matches the host `/compact` slash, including optional trailing instructions. */
 export function isManualCompactCommand(text: string | null | undefined): boolean {
   if (!text) return false;
   return /^\/compact(?:\s|$)/i.test(text.trim());
+}
+
+/** What follows `/compact`; empty when the command stands alone. */
+export function manualCompactInstructions(text: string): string {
+  return text.trim().replace(/^\/compact(?:\s+|$)/i, "").trim();
 }
 
 export function providerSupportsManualCompact(
@@ -26,10 +31,20 @@ export function providerSupportsManualCompact(
     case "pi":
     case "opencode":
     case "copilot":
+    case "cursor":
       return true;
     default:
       return false;
   }
+}
+
+/**
+ * Providers whose `/compact` exists only on some chats, so each chat reports
+ * whether it has one: OpenCode's server may not list it, and Cursor runs it on
+ * local chats but not Cursor Cloud.
+ */
+export function manualCompactDependsOnChat(provider: string | null | undefined): boolean {
+  return provider === "opencode" || provider === "cursor";
 }
 
 export const COMPACT_BLOCKED_PENDING_INPUT =
@@ -48,13 +63,13 @@ export function resolveContextCompactControl(args: {
   provider?: string | null;
   state: AgentChatContextUsageState;
   enabled: boolean;
-  openCodeCompactAvailable?: boolean;
+  compactAvailableOnChat?: boolean;
   turnActive?: boolean;
   busy?: boolean;
   pendingInput?: boolean;
   inputLocked?: boolean;
 }): ContextCompactControl {
-  if ((args.provider === "opencode" && !args.openCodeCompactAvailable) || !args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
+  if ((manualCompactDependsOnChat(args.provider) && !args.compactAvailableOnChat) || !args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
     return HIDDEN_CONTEXT_COMPACT;
   }
   switch (args.state) {
@@ -96,6 +111,7 @@ export type NormalizedContextCompact = {
   provider?: AgentChatCompactProvider;
   sessionCompactionCount?: number;
   detection?: AgentChatCompactDetection;
+  fallback?: boolean;
 };
 
 const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: string }> = {
@@ -138,6 +154,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       provider: event.provider,
       sessionCompactionCount: event.sessionCompactionCount,
       ...(event.detection ? { detection: event.detection } : {}),
+      ...(event.fallback ? { fallback: true } : {}),
     };
   }
   if (event.type === "codex_context_compaction") {
@@ -275,6 +292,7 @@ export function toContextCompactChatEvent(
     ...(compact.durationMs != null ? { durationMs: compact.durationMs } : {}),
     ...(compact.provider ? { provider: compact.provider } : {}),
     ...(compact.sessionCompactionCount != null ? { sessionCompactionCount: compact.sessionCompactionCount } : {}),
+    ...(compact.fallback ? { fallback: true } : {}),
   };
 }
 

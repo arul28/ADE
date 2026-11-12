@@ -137,6 +137,7 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     disconnect: remoteDisconnectMock,
     onHostStorageWait: vi.fn(() => () => {}),
     onEntryConnected: vi.fn(() => () => {}),
+    onDialFailed: vi.fn(() => () => {}),
     onEntryEvicted: vi.fn(() => () => {}),
     onPortForwardsInvalidated: onPortForwardsInvalidatedMock,
     hasEntry: vi.fn(() => false),
@@ -200,7 +201,15 @@ function sender(id = 42) {
 }
 
 function eventForSender(nextSender = sender()) {
-  return { sender: nextSender } as any;
+  // A registered channel now refuses anything but ADE's own renderer; these
+  // fake events stand for the main window's frame. Follow the renderer URL the
+  // trust helper will accept in this environment (tests set the dev URL).
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  const url = devServerUrl ? `${new URL(devServerUrl).origin}/` : "file:///tmp/ade/renderer/index.html";
+  return {
+    sender: nextSender,
+    senderFrame: { url },
+  } as any;
 }
 
 function localBinding(rootPath = "/repo"): OpenProjectBinding {
@@ -1427,7 +1436,7 @@ describe("registerRuntimeBridge", () => {
       localUrl: "http://127.0.0.1:49152",
     });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).toHaveBeenCalledWith(target, { initiatedBy: "background" });
     expect(remoteEnsureLocalPortForwardMock).toHaveBeenCalledWith(
       target.id,
       {
@@ -1558,14 +1567,13 @@ describe("registerRuntimeBridge", () => {
     });
 
     expect(remoteStreamEventsForTargetMock).not.toHaveBeenCalled();
-    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+    // The machine, project and request the subscription went out with.
+    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+    expect(remoteSubscribeEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       { cursor: 0, limit: 100, category: undefined, replay: false },
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    ]);
   });
 
   it("normalizes malformed remote event stream requests before forwarding", async () => {
@@ -1591,12 +1599,13 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
 
-    expect(remoteStreamEventsForTargetMock).toHaveBeenCalledWith(
+    // The read and the subscription both go out with the request normalized.
+    expect(remoteStreamEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       {},
-    );
-    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+    ]);
+    expect(remoteSubscribeEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       {
@@ -1605,10 +1614,7 @@ describe("registerRuntimeBridge", () => {
         category: undefined,
         replay: undefined,
       },
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    ]);
   });
 
   it("cleans a remote event subscription before disconnecting that target", async () => {
@@ -1808,6 +1814,7 @@ describe("registerRuntimeBridge", () => {
 
     expect(remoteConnectMock).toHaveBeenCalledWith(target, {
       bypassFailureBackoff: true,
+      initiatedBy: "user",
     });
     expect(remoteProjectsForTargetMock).toHaveBeenCalledWith(target);
     expect(bindRemoteProject).toHaveBeenCalledWith(7, {
@@ -2263,7 +2270,7 @@ describe("registerRuntimeBridge", () => {
 describe("registerIpc usage bridge", () => {
   beforeEach(() => {
     ipcHandlers.clear();
-    browserWindowFromWebContents.mockReset();
+    browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7, isDestroyed: () => false });
   });
 
   const brainSnapshot = {
@@ -2323,6 +2330,22 @@ describe("registerIpc usage bridge", () => {
     });
     return { pool, dormantTracker };
   }
+
+  it("refuses a channel call from a page that is not ADE's renderer", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    await expect(handler({
+      sender: sender(),
+      senderFrame: { url: "https://example.com/" },
+    })).rejects.toThrow(/only available to the ADE window/);
+  });
+
+  it("treats a closing window as an expected refusal, not an untrusted page", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    const closing = { ...sender(), isDestroyed: () => true };
+    await expect(handler(eventForSender(closing))).rejects.toMatchObject({ adeExpected: "user" });
+  });
 
   it("reads the brain's shared tracker for a window with no project binding", async () => {
     const { pool, dormantTracker } = registerUsageIpc({

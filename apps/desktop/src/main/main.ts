@@ -87,6 +87,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { isTrustedAdeRendererSender } from "./services/ipc/trustedRendererSender";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
 import { createDesktopStartupRecovery } from "./services/startupRecovery/desktopStartupRecovery";
@@ -385,6 +386,10 @@ import {
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { registerAppImageDesktopEntry } from "./services/native/appImageDesktopEntry";
+import { runningAppImagePath } from "./services/native/runningAppImage";
+import { compareUpdateVersions } from "../shared/updateVersions";
+import { markAppImageDowngrade } from "./services/localRuntime/appImageRuntime";
 import { checkRuntimeServiceRemovable, installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   deferToRunningWindowsInstall,
@@ -461,6 +466,7 @@ import {
   isRendererFrameNavigationAllowed,
   shouldApplyRendererCsp,
 } from "./rendererCsp";
+import { trustedAccountRelayBaseUrls } from "../shared/accountDirectory";
 import {
   RENDERER_RECOVERY_DELAY_MS,
   RENDERER_RECOVERY_WINDOW_MS,
@@ -468,6 +474,7 @@ import {
   createRendererCrashRecoveryBudget,
   isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
+import { forgetRendererMemory, noteRendererPageStarted, rendererMemoryAnalytics, takeRendererCrashState, type RendererRecoveryOutcome } from "./rendererMemoryLedger";
 import { isWindowLoadTargetGone } from "./windowLoadTarget";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
@@ -510,7 +517,7 @@ import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/built
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
-import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
 import { createLatestByTrackReader } from "./services/updates/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
 import { fetchReleaseManifestJson } from "../../../ade-cli/src/lib/releaseAssets";
@@ -528,6 +535,7 @@ import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrai
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
 import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
+import { isSecureStorageAvailable } from "./services/shared/secureStorage";
 import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
@@ -945,7 +953,9 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
   try {
-    if (safeStorage.isEncryptionAvailable()) {
+    // Electron reports encryption available for Linux's basic_text backend,
+    // even though its fixed key offers no OS credential-store protection.
+    if (isSecureStorageAvailable(safeStorage)) {
       const primary = new ElectronSafeStorageCredentialStore({
         secretsDir,
         safeStorage,
@@ -1021,7 +1031,7 @@ async function createWindow(args: {
    * Reports a lost renderer as a product fact. Optional so window creation
    * stays usable before the analytics service exists.
    */
-  onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
+  onRendererRecovery?: (outcome: RendererRecoveryOutcome) => void;
   /**
    * The renderer is gone for good: it kept crashing until the recovery budget
    * ran out, or it never loaded. The "ADE could not start" window takes over.
@@ -1177,7 +1187,13 @@ async function createWindow(args: {
 
   // Set CSP dynamically so it works with both http:// (dev) and file:// (production).
   const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
-  const cspPolicy = buildRendererCspPolicy(isDevMode, { replayConnectSources: sessionReplayConnectSources() });
+  const cspPolicy = buildRendererCspPolicy(isDevMode, {
+    replayConnectSources: sessionReplayConnectSources(),
+    // The lane share guest socket dials only ADE's trusted relays.
+    relayConnectSources: trustedAccountRelayBaseUrls(
+      process.env.ADE_TUNNEL_RELAY_URL?.trim() ? [process.env.ADE_TUNNEL_RELAY_URL.trim()] : [],
+    ).map((base) => new URL(base).origin),
+  });
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     if (
@@ -1225,17 +1241,39 @@ async function createWindow(args: {
 
   const rendererRecoveryBudget = createRendererCrashRecoveryBudget();
 
+  const webContentsId = win.webContents.id;
+  win.once("closed", () => forgetRendererMemory(webContentsId));
+  // A load or reload (including a recovery) is a new page: its own clock and peak.
+  win.webContents.on("did-navigate", () => noteRendererPageStarted(webContentsId));
   win.webContents.on("render-process-gone", (_event, details) => {
     // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
     // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
     // an issue. A crash, an OOM or a failed launch stays one.
     const level = details.reason === "killed" ? "warn" : "error";
+    // What the renderer last said it held (every 30 s while visible), with
+    // the snapshot's age. The line goes to Sentry with these numbers;
+    // analytics gets only buckets, and none from a stale snapshot.
+    const crashState = takeRendererCrashState(webContentsId);
+    const memory = crashState.record;
     args.logger?.[level]("window.render_process_gone", {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
       url: win.webContents.getURL(),
+      ...(memory
+        ? {
+            lastHeapUsedMb: memory.heapUsedMb,
+            peakHeapUsedMb: memory.peakHeapUsedMb,
+            heapLimitMb: memory.heapLimitMb,
+            openChatPanes: memory.openChatPanes,
+            largestTranscriptEvents: memory.largestTranscriptEvents,
+            replayActive: memory.replayActive,
+          }
+        : { memorySnapshot: crashState.snapshotAgeSec == null ? "none" : "stale" }),
+      openForSec: crashState.openForSec,
+      snapshotAgeSec: crashState.snapshotAgeSec,
     });
+    const memoryBuckets = rendererMemoryAnalytics(crashState);
 
     // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
     // correction mid-crash-storm would either free the budget early or freeze it.
@@ -1249,7 +1287,7 @@ async function createWindow(args: {
     const crashReason = coarseRenderProcessGoneReason(details.reason);
     const reportRecovery = (recovered: boolean): void => {
       if (!isRecoverableRenderProcessGone(details.reason)) return;
-      args.onRendererRecovery?.({ crash_reason: crashReason, recovered });
+      args.onRendererRecovery?.({ crash_reason: crashReason, recovered, ...memoryBuckets });
     };
     if (!decision.recover) {
       if (decision.cause === "budget-exhausted") {
@@ -1643,6 +1681,12 @@ function exitDevAppSharingUserData(): void {
   app.exit(1);
 }
 
+// Before the handler claims the scheme: the claim names this desktop entry.
+registerAppImageDesktopEntry({
+  isPackaged: app.isPackaged,
+  log: (level, event, fields) => logMachineEvent(level, event, fields),
+});
+
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
   dispatch: dispatchOrQueueAppNavigationRequest,
@@ -1755,6 +1799,7 @@ app.whenReady().then(async () => {
     executablePath: process.execPath,
     userDataPath: app.getPath("userData"),
     version: app.getVersion(),
+    downloadUrl: `https://github.com/${packagedReleaseRepository}/releases/latest`,
     logger: getMachineMainLogger(),
   });
 
@@ -1799,7 +1844,10 @@ app.whenReady().then(async () => {
     warn: (message, details) => logMachineEvent("warn", "computer_use.artifact_media_failed", { message, ...details }),
     onRefused: logArtifactServeRefusal,
   });
-  ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
+  ipcMain.handle(IPC.computerUseMediaBaseUrl, (event) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Computer-use media is only available to the ADE window.");
+    return artifactMediaServer.baseUrl();
+  });
   // Saves a proof video that plays from the media server. The renderer cannot
   // read that server (a different origin with no CORS) and the whole-file
   // preview read stops at 10 MB, so main asks where to save and streams the
@@ -1807,6 +1855,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(
     IPC.computerUseSaveMediaAs,
     async (event, arg: { url?: unknown; fileName?: unknown }): Promise<{ saved: boolean; path?: string }> => {
+      if (!isTrustedAdeRendererSender(event)) throw new Error("Saving proof media is only available to the ADE window.");
       const url = typeof arg?.url === "string" ? arg.url : "";
       const base = await artifactMediaServer.baseUrl();
       if (!url || !url.startsWith(base.replace(/\/+$/, "") + "/")) {
@@ -2089,6 +2138,7 @@ app.whenReady().then(async () => {
       arg: { theme?: WindowsTitleBarOverlayTheme; zoomFactor?: number } = {},
     ): { applied: boolean } => {
       if (process.platform !== "win32") return { applied: false };
+      if (!isTrustedAdeRendererSender(event)) return { applied: false };
       const win = BrowserWindow.fromWebContents(event.sender);
       if (!win || win.isDestroyed()) return { applied: false };
       try {
@@ -2103,6 +2153,7 @@ app.whenReady().then(async () => {
   );
 
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");
     setPtyDataSubscriptionsForSender(
       event.sender,
       normalizePtyDataSubscriptions(arg?.ptyIds),
@@ -2110,6 +2161,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle(IPC.appControlFrameSubscriptions, (event, arg: { laneIds?: unknown } | undefined) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("App Control frames are only available to the ADE window.");
     setAppControlFrameLanesForSender(
       event.sender,
       normalizeAppControlFrameLaneIds(arg?.laneIds),
@@ -2304,10 +2356,14 @@ app.whenReady().then(async () => {
   let remoteUpdateInstaller: RemoteUpdateInstaller | null = null;
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
-  ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
+  ipcMain.handle(IPC.appGetElevatedDesktop, (event) => {
+    if (!isTrustedAdeRendererSender(event)) return false;
+    return elevatedDesktop;
+  });
   // A link clicked inside ADE that names its computer and project goes through
   // the same owner routing as one from outside, so it opens on that computer.
-  ipcMain.handle(IPC.appOpenOwnedDeeplink, (_event, url: unknown) => {
+  ipcMain.handle(IPC.appOpenOwnedDeeplink, (event, url: unknown) => {
+    if (!isTrustedAdeRendererSender(event)) return false;
     if (typeof url !== "string" || url.length > 8_192) return false;
     handleDeeplinkUrl(url, "in-app", dispatchOrQueueAppNavigationRequest, (event, fields) =>
       logMachineEvent("info", event, fields));
@@ -2388,6 +2444,7 @@ app.whenReady().then(async () => {
     });
   };
   ipcMain.on(IPC.appCommandsReady, (event) => {
+    if (!isTrustedAdeRendererSender(event)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
     windowCommandSubscribers.add(win.id);
@@ -2488,7 +2545,7 @@ app.whenReady().then(async () => {
    * One reporter for every window: a third `createWindow` site that forgets to
    * wire this would silently stop reporting lost renderers.
    */
-  const reportRendererRecovery = (outcome: { crash_reason: string; recovered: boolean }): void => {
+  const reportRendererRecovery = (outcome: RendererRecoveryOutcome): void => {
     productAnalyticsService.captureInternal({
       event: "ade_renderer_recovered",
       surface: "desktop",
@@ -2944,9 +3001,15 @@ app.whenReady().then(async () => {
     options: { persistRecent?: boolean } = {},
   ): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
-    void reconcileSyncHostContexts().then(() => {
-      notifyMobileSyncProjectCatalogChanged();
-    });
+    void reconcileSyncHostContexts()
+      .then(() => {
+        notifyMobileSyncProjectCatalogChanged();
+      })
+      .catch((error: unknown) => {
+        getActiveContext().logger.warn("sync.host_reconcile_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       const activeCtx = projectContexts.get(activeProjectRoot);
@@ -3409,7 +3472,11 @@ app.whenReady().then(async () => {
     // whether or not this abort has anything to reinstall.
     localRuntimePool.endUpdateWindow(`install_aborted:${reason}`);
     if (!runtimeServiceUninstalledForUpdate) return;
-    const result = await installRuntimeService();
+    // From an AppImage, the plain install would point the service into this
+    // launch's temporary mount, so it goes through the durable standalone copy.
+    const result = runningAppImagePath()
+      ? await localRuntimePool.reinstallStandaloneService()
+      : await installRuntimeService();
     const payload = {
       reason,
       ok: result.ok,
@@ -3483,6 +3550,10 @@ app.whenReady().then(async () => {
     }
     updateLogger.info("autoUpdate.runtime_service_uninstalled_before_install", payload);
     runtimeServiceUninstalledForUpdate = true;
+    const installingVersion = autoUpdateService.getSnapshot().version;
+    if (runningAppImagePath() && installingVersion && compareUpdateVersions(installingVersion, app.getVersion()) < 0) {
+      await markAppImageDowngrade(installingVersion);
+    }
     if (autoUpdateInstallRollbackReason) {
       await reinstallRuntimeServiceAfterUpdateAbort(autoUpdateInstallRollbackReason);
       return interruptedChats;
@@ -3499,17 +3570,31 @@ app.whenReady().then(async () => {
   // Channel builds do not check for updates. There is no per-channel publish
   // feed: an Alpha would poll Stable's feed and offer to "update" itself into
   // a Stable installer with a different appId and ADE home.
-  const hasUpdateFeed = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const linuxManualUpdate = app.isPackaged && process.platform === "linux" && !runningAppImagePath();
+  const hasReleaseChannel = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const hasUpdateFeed = hasReleaseChannel && !linuxManualUpdate;
   // The "ADE could not start" window. Built right after the update service,
   // which its "Go back" drives; the install hook below reads it then.
   let startupRecovery: StartupRecovery | null = null;
   const autoUpdateService = createAutoUpdateService({
+    prepareWatchdogMs: process.platform === "win32" ? WINDOWS_PREPARE_WATCHDOG_MS : undefined,
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,
+    manualInstallOnly: linuxManualUpdate,
+    checkManualRelease: linuxManualUpdate && hasReleaseChannel ? async () => {
+      const [owner, name] = packagedReleaseRepository.split("/");
+      if (!owner || !name) return null;
+      const release = await fetchAdeLatestRelease({
+        repo: { owner, name },
+        fetchImpl: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }),
+      });
+      return release ? { version: release.version, url: `https://github.com/${packagedReleaseRepository}/releases/tag/${encodeURIComponent(release.tagName)}` } : null;
+    } : undefined,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
-    installTargetPath: process.execPath,
-    autoCheckEnabled: hasUpdateFeed,
+    installTargetPath: runningAppImagePath() ?? process.execPath,
+    autoCheckEnabled: hasReleaseChannel,
+    autoApplyEnabled: hasUpdateFeed && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
     // Stable and Beta are tracks of this same install, not channels: the
     // machine's choice lives in ~/.ade/update-track.json so the brain and the
     // CLI read the same one (docs/plans/beta-track.md). A channel build (Alpha)
@@ -4625,6 +4710,7 @@ app.whenReady().then(async () => {
       if (event.type === "prs-updated") {
         for (const pr of event.prs) searchServiceHolder.current?.notifyPrChanged(pr.id);
       }
+      if (event.type === "pr-chat-watch-changed") agentChatServiceRef?.notifyPrWatchChanged(event.sessionId);
     };
 
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
@@ -5043,6 +5129,7 @@ app.whenReady().then(async () => {
     };
 
     const agentChatService = createAgentChatService({
+      listActivePrWatches: () => prService.chatWatchStore.activeBySession(),
       museQuota,
       // One value per machine (in-process runtimes in dev share this machine's).
       readContinueAfterRestart: () => resolveContinueAfterRestart(),
@@ -5254,6 +5341,9 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    // A new CLI session that names no account starts where a new chat would.
+    ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
+      agentChatService.pickNewCliSessionAccount(provider, modelId));
     const prShellLinkWatcher = createPrShellLinkWatcher({
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),
@@ -5365,7 +5455,8 @@ app.whenReady().then(async () => {
       githubService,
       getAccountAccessToken,
       subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
-      listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+      // Only the rules this computer runs; another computer polls for its own.
+      listRules: () => (automationService ? (projectConfigService.get().effective.automations ?? []).filter((rule) => rule.runsHere !== false) : []),
       ingressCursorStore: createKvIngressCursorStore(db),
       webhooks: {
         db,
@@ -8826,7 +8917,7 @@ app.whenReady().then(async () => {
     // them under it and crashed (ADE-DESKTOP-9H). That read takes well under a
     // second, so the exit waits for it, bounded.
     if (systemCertificateReadInFlight()) {
-      void whenSystemCertificateReadSettles(SYSTEM_CA_READ_EXIT_WAIT_MS).then(exitNow);
+      void whenSystemCertificateReadSettles(SYSTEM_CA_READ_EXIT_WAIT_MS).then(exitNow).catch(() => {});
       return;
     }
     exitNow();
@@ -8857,6 +8948,7 @@ app.whenReady().then(async () => {
         reason: args.reason,
         forceAfterMs,
       });
+      localRuntimePool.killOwnedRuntimeNow();
       runImmediateProcessCleanup(`forced:${args.reason}`);
       finalizeAppExit(exitCode);
     }, forceAfterMs);
@@ -10879,9 +10971,13 @@ app.whenReady().then(async () => {
         getActiveContext().logger.warn("startup.project_open_wait_exceeded", { waitMs: STARTUP_PROJECT_WINDOW_WAIT_MS });
         // The window answered without the project; give it the project once
         // the open lands, unless the user picked something meanwhile.
-        void startupProjectOpenTask.then(() => {
+        void startupProjectOpenTask?.then(() => {
           if (initialWindow.isDestroyed() || windowProjectRoots.get(initialWindow.id) || !activeProjectRoot) return;
           bindWindowToProject(initialWindow.id, activeProjectRoot, { emit: true, foreground: false });
+        }).catch((error: unknown) => {
+          getActiveContext().logger.warn("startup.project_open_late_bind_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       }
       bindLaunchWindow();

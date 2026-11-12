@@ -363,6 +363,11 @@ export function createAccountSettingsStore(args: {
       return cache.health();
     },
 
+    /** False on a brain with no account service to sync with (`--no-sync`): no other computer shares its settings. */
+    hasRelay(): boolean {
+      return args.relay !== null;
+    },
+
     /** Also log to `logger`; see `getSharedAccountSettingsStore`. */
     attachLogger(logger: AccountSettingsLogger): void {
       cache.attachLogger(logger);

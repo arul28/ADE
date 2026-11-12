@@ -61,6 +61,12 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   boot can take a minute). `ANDROID_LOW_MEMORY` means the machine is short
   of memory: stop an emulator you no longer need (`android stop`), or tell
   the user. Ask the user before `android start --force`.
+  `ANDROID_LOW_DISK` means the disk has too little free space for a new
+  device's first start (its data partition takes about 7 GB free); the
+  sentence gives both numbers. Where the Android pane offers **Grow the
+  disk**, the user grows it there (the computer restarts). Elsewhere, tell
+  the user to free space. Never delete project files, build
+  output or caches to make room, and `--force` does not help.
 - `state: booted`: drive it.
 
 ADE stops an emulator it started that nobody has used for 20 minutes
@@ -283,6 +289,6 @@ Each error prints its next step. The common ones:
 | `ANDROID_LANE_DEVICE_BUSY` | the device is in use (a recording, the user's live view, tests, an install, another agent's lease): wait for it, then promote again |
 | `ANDROID_DEVICE_IS_EXTRA` | that AVD is one of the lane's extras: `device-promote --device <avd>` |
 | `ANDROID_SDK_NOT_FOUND` | `android sdk status`, then ask the user to set it up |
-| `ANDROID_NO_ACCELERATION` | on an Agent 37 box: tell the user the message, then move to a VM (`ade-agent37` skill, "Your chat runs on a box and needs a VM"). Elsewhere: turn on KVM or the Windows Hypervisor Platform |
+| `ANDROID_NO_ACCELERATION` | on a cloud computer without virtualization: tell the user the message and move to a full computer. Elsewhere: turn on KVM or the Windows Hypervisor Platform |
 
 `"$A" android --help` lists every verb and flag.

@@ -35,6 +35,18 @@ const MENU_VIEW_WIDTH: Record<MenuView, number | undefined> = { main: undefined,
 /** The account settings that only a Claude account has. */
 export type ClaudeAccountSettingPatch = Pick<ProviderInstanceSettingsPatch, "mainPromptCacheTtl" | "subagentPromptCacheTtl" | "onExtraUsage">;
 
+/**
+ * Only ever "around": the date can be a 30-day estimate and the login can end
+ * up to 3 days sooner, and a past date means it has probably ended, not that it
+ * has.
+ */
+function claudeLoginEndText(endsAt: string | undefined, nowMs: number): string | null {
+  const ms = endsAt ? Date.parse(endsAt) : Number.NaN;
+  if (!Number.isFinite(ms)) return null;
+  const day = new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return ms > nowMs ? `Sign-in ends around ${day}` : `Sign-in may have ended around ${day}`;
+}
+
 export function AccountCard({
   instance,
   limitRow,
@@ -50,6 +62,7 @@ export function AccountCard({
   replacedNote,
   compactionControl,
   onSetClaudeSetting,
+  pass = null,
 }: {
   instance: ProviderInstance;
   limitRow: AccountLimitRow | null;
@@ -70,6 +83,12 @@ export function AccountCard({
   compactionControl?: React.ReactNode;
   /** Claude only: sets one of this account's Claude settings; null restores Claude Code's own behavior. */
   onSetClaudeSetting?: (instance: ProviderInstance, patch: ClaudeAccountSettingPatch) => void;
+  /**
+   * A Claude pass on a cloud computer (ADE Cloud made the account): it is
+   * not signed in or out, or removed, here. The card shows the pass's state
+   * and a way to ADE Cloud, in place of the sign-in end date.
+   */
+  pass?: { line: React.ReactNode; title: string } | null;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -89,10 +108,12 @@ export function AccountCard({
   // Without one, a working login (a key login has no plan either) is still
   // signed in: the registry's signed-in state decides, not the plan.
   const name = email?.trim()
+    || pass?.title
     || (providerInstanceHasAccount(instance) ? PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL : PROVIDER_ACCOUNT_NOT_SIGNED_IN);
-  // The usage row carries its own "Signed out" pill when the poller saw the
+  // The usage row carries its own signed-out pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
+  const loginEnd = !pass && !signedOut && providerInstanceHasAccount(instance) ? claudeLoginEndText(instance.claudeLoginEndsAt, nowMs) : null;
   const longPromptCache = instance.subagentPromptCacheTtl === "1h";
   const mainPromptCache = instance.mainPromptCacheTtl ?? null;
   const stopsOnExtraUsage = instance.onExtraUsage === "stop";
@@ -248,11 +269,11 @@ export function AccountCard({
             {name}
           </span>
           {badge ? <NoticeBadge tone="accent">{badge}</NoticeBadge> : null}
-          {signedOut && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <NoticeBadge tone="warning">Signed out</NoticeBadge> : null}
+          {signedOut && !pass && !rowSaysSignedOut && providerInstanceHasAccount(instance) ? <NoticeBadge tone="warning">Not signed in</NoticeBadge> : null}
           {isCopy ? <NoticeBadge tone="neutral">Copy</NoticeBadge> : null}
           {longPromptCache ? <NoticeBadge tone="neutral">1h cache</NoticeBadge> : null}
         </div>
-        {signedOut ? (
+        {signedOut && !pass ? (
           <button
             type="button"
             onClick={() => onSignIn(instance)}
@@ -317,14 +338,14 @@ export function AccountCard({
           >
             {menuView === "main" ? (
               <>
-                {item("signIn", signedOut ? "Sign in" : "Sign in again")}
-                {compactionControl || onSetClaudeSetting ? <div style={menuRuleStyle} /> : null}
+                {pass ? null : item("signIn", signedOut ? "Sign in" : "Sign in again")}
+                {!pass && (compactionControl || onSetClaudeSetting) ? <div style={menuRuleStyle} /> : null}
                 {compactionControl ? subviewRow("compaction", "Auto-compact", instance.compaction ? "Custom" : "Default") : null}
                 {onSetClaudeSetting ? subviewRow("mainCache", "Main chat cache", mainPromptCache === "1h" ? "1 hour" : mainPromptCache === "5m" ? "5 minutes" : "Automatic") : null}
                 {onSetClaudeSetting ? subviewRow("cache", "Subagent cache", longPromptCache ? "1 hour" : "5 minutes") : null}
                 {onSetClaudeSetting ? subviewRow("onExtraUsage", "Extra usage", stopsOnExtraUsage ? "Stop the turn" : "Continue") : null}
                 {/* The store refuses both on the default, and Remove on the machine's own login. */}
-                {instance.isDefault ? null : (
+                {instance.isDefault || pass ? null : (
                   <>
                     <div style={menuRuleStyle} />
                     {instance.signedIn || instance.loginBroken ? item("signOut", "Sign out", true) : null}
@@ -388,9 +409,9 @@ export function AccountCard({
           dim={signedOut}
           hideIdentity
         />
-      ) : (
+      ) : pass && !providerInstanceHasAccount(instance) ? null : (
         <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-          {/* The header badge already says "Signed out". */}
+          {/* The header badge already says "Not signed in". */}
           <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {/* The title already says "Not signed in". */}
             {providerInstanceHasAccount(instance) ? accountIdentityLine(instance, false) : "Sign in to use it for chats."}
@@ -400,6 +421,9 @@ export function AccountCard({
           ) : null}
         </span>
       )}
+
+      {loginEnd ? <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>{loginEnd}</span> : null}
+      {pass ? pass.line : null}
 
       {replacedNote}
     </div>

@@ -113,6 +113,7 @@ function chatCanBeJudged(chat: AgentChatSessionSummary): boolean {
     && (chat.turnOpenWorkCount ?? 0) <= 0
     && (chat.activeBackgroundTaskCount ?? 0) <= 0
     && totalBackgroundWork(chat.backgroundWork) === 0
+    && !chat.activePrWatch
     && chat.runtimeOwnedElsewhere == null;
 }
 

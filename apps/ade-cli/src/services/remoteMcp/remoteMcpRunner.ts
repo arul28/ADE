@@ -145,10 +145,27 @@ async function resolveLaunch(): Promise<Launch> {
 }
 
 const running = new Set<ChildProcess>();
+/** The connection each running command was started for: set here, never read from the caller. */
+const runConnection = new WeakMap<ChildProcess, string>();
 
 /** How many commands connected apps have running right now. */
 export function activeRemoteRunCount(): number {
   return running.size;
+}
+
+/**
+ * Whether `pid` is a command this brain started for a connected app and that
+ * still runs. The proof that a caller claiming an ADE MCP connection is one:
+ * the claim itself is only an environment variable any shell can set.
+ */
+export function isRunningRemoteRun(pid: number, connectionId?: string | null): boolean {
+  for (const child of running) {
+    if (child.pid !== pid) continue;
+    // A claimed connection must be the one this brain started that command for.
+    if (connectionId !== undefined && runConnection.get(child) !== connectionId) return false;
+    return true;
+  }
+  return false;
 }
 
 /** Stops every command still running, e.g. when the brain shuts down. */
@@ -214,6 +231,7 @@ export async function runAdeForRemote(args: {
       shell: false,
     });
     running.add(child);
+    runConnection.set(child, args.connectionId);
     if (hasStdin && child.stdin) {
       // A command that exits without reading its stdin closes the pipe early.
       child.stdin.on("error", () => {});

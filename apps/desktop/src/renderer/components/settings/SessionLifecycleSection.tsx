@@ -1,12 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SessionLifecycleSettings } from "../../../shared/types";
-import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { ModernRow, SettingsToggle } from "./primitives";
 import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 
+/**
+ * The "Chats" group of Storage & cleanup → Rules: settle a lane's chats when
+ * its PR merges, and optionally release what they were using once settled. Stored in each machine's runtime; read and written on the
+ * machine shown (`useSettingsMachineScope().pin`).
+ */
 export function SessionLifecycleSection() {
-  // Stored in each machine's runtime; read and written on the machine shown.
   const { pin } = useSettingsMachineScope();
+  // The effect is keyed on the machine, not on a pin rebuilt with the same key.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const [settings, setSettings] = useState<SessionLifecycleSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,56 +27,53 @@ export function SessionLifecycleSection() {
     setSettings(null);
     setLoadFailed(false);
     setError(null);
-    void window.ade.sessions.getLifecycleSettings(pin)
+    void window.ade.sessions.getLifecycleSettings(pinRef.current)
       .then((next) => {
         if (!cancelled) setSettings(next);
       })
       .catch(() => {
         if (cancelled) return;
         setLoadFailed(true);
-        setError("Session lifecycle settings are unavailable right now.");
+        setError("Couldn't read this chat setting right now.");
       });
     return () => {
       cancelled = true;
     };
-  }, [pin, attempt]);
+  }, [pinKey, attempt]);
 
-  const update = async (enabled: boolean) => {
-    if (saving) return;
+  const update = async (patch: Partial<SessionLifecycleSettings>) => {
+    if (saving || !settings) return;
     setSaving(true);
     setError(null);
     try {
       setSettings(await window.ade.sessions.updateLifecycleSettings({
-        autoSettleLaneSessionsOnPrMerge: enabled,
-      }, pin));
+        ...settings,
+        ...patch,
+      }, pinRef.current));
     } catch {
-      setError("ADE could not save this session lifecycle preference.");
+      setError("ADE couldn't save this chat setting.");
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <ModernSection
-      group="Session lifecycle"
-      anchor="session-lifecycle"
-      title="Session lifecycle"
-      hint="When finished lane work moves to Settled."
-    >
-      <ModernRows>
+    <div className="ade-cleanup-group" id="session-lifecycle" data-settings-anchor="session-lifecycle">
+      <h3 className="ade-cleanup-group-title">Chats</h3>
+      <div className="ade-cleanup-rows">
         <ModernRow
-          title="Auto-settle sessions when lane PR merges"
-          hint="A merged PR settles the sessions it covers, once any running turn finishes."
+          title="Settle chats when the lane's PR merges"
+          hint="Once any running turn finishes, they move to Settled."
           control={
             // Until the machine answers, the toggle is not drawn: a switch
             // shown "on" while loading (or after a failed read) claimed a
             // setting nobody had read.
             settings ? (
               <SettingsToggle
-                label="Auto-settle sessions when lane PR merges"
+                label="Settle chats when the lane's PR merges"
                 checked={settings.autoSettleLaneSessionsOnPrMerge}
                 disabled={saving}
-                onChange={(enabled) => void update(enabled)}
+                onChange={(enabled) => void update({ autoSettleLaneSessionsOnPrMerge: enabled })}
               />
             ) : loadFailed ? (
               <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAttempt((value) => value + 1)}>
@@ -92,7 +97,23 @@ export function SessionLifecycleSection() {
             />
           ) : null}
         </ModernRow>
-      </ModernRows>
-    </ModernSection>
+        <ModernRow
+          title="Release what settled chats were using"
+          hint="Five minutes after a lane's last chat settles, power off the simulators and emulators its chats started, stop their dev servers, and give up the Mac Desktop control they held. Anything you started yourself, pinned to keep running, or are viewing stays on. A chat waking cancels it. Applies to every project on this machine."
+          control={
+            settings ? (
+              <SettingsToggle
+                label="Release what settled chats were using"
+                checked={settings.releaseLaneResourcesOnSettle === true}
+                disabled={saving}
+                onChange={(enabled) => void update({ releaseLaneResourcesOnSettle: enabled })}
+              />
+            ) : (
+              <span className="ade-modern-muted" aria-live="polite">{loadFailed ? "" : "Loading…"}</span>
+            )
+          }
+        />
+      </div>
+    </div>
   );
 }

@@ -46,6 +46,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Agent | Model-backed operator. The persistent CTO plus ephemeral lane-bound and personal chat agents. | [agents/README.md](./features/agents/README.md) |
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Lane runtime | Per-lane env initialization, ports, proxy, OAuth routing, and diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
+| Lane share | Limited access to one lane for another ADE account, enforced by the machine that holds the lane. | [lanes/lane-sharing.md](./features/lanes/lane-sharing.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
@@ -87,13 +88,14 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Brain, runtime, and clients
 
-- [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects. [Agent 37 machines](./features/remote-runtime/agent37.md): cloud Linux boxes made from ADE and signed in with no code to type.
+- [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects. [ADE Cloud machines](./features/ade-cloud/README.md): cloud Linux boxes made from ADE and signed in with no code to type.
+- [**ADE Cloud**](./features/ade-cloud/README.md) — Linux machines ADE runs for the person. The provider seam, access, the machine template, a computer per lane, sleep and the monthly cap.
 - [**ADE MCP**](./features/ade-mcp/README.md) — Each computer as an MCP server for AI apps the person picks (claude.ai, ChatGPT, Cursor, Claude Code, Grok), reached through ADE Relay. One `ade` tool that runs the real CLI; off by default; per-app read-only or full access; sign-in with the ADE account or a bearer token; Settings → App → ADE MCP and `ade mcp`.
 - [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, ADE account sign-in, account-directory machine selection, DPoP-bound sync WebSocket transport, no local DB, and account Activity that remains independent of the selected project.
 
 ### Work execution
 
-- [**Lanes**](./features/lanes/README.md) — Worktree isolation, where new lanes start, catching up with the base, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox on its own branch. Lane runtime covers ports, env initialization, proxy routing, and health checks.
+- [**Lanes**](./features/lanes/README.md) — Worktree isolation, where new lanes start, catching up with the base, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox on its own branch. Lane runtime covers ports, env initialization, proxy routing, and health checks. [Lane sharing](./features/lanes/lane-sharing.md) gives another ADE account limited access to one lane.
 - [**Pull Requests**](./features/pull-requests/README.md) — GitHub PRs for lanes: list, detail, checks, reviews, GitHub stacks, and merging. Backed by lanes.
 - [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution proposals.
 ### Agents and chat

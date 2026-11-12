@@ -9,6 +9,7 @@ import { parseSearchQuery } from "./searchQueryParser";
 import {
   RANK_TIER_BODY,
   RANK_TIER_TITLE_EXACT,
+  RANK_TIER_TITLE_WHOLE_WORD,
   RANK_TIER_TITLE_PREFIX,
   RANK_TIER_TITLE_SUBSTRING,
   extractSnippetRanges,
@@ -809,11 +810,15 @@ describe("searchService excludeSessionContent scoping", () => {
 // ── Ranking primitives (searchRanking.ts is only consumed by searchService) ──
 
 describe("titleRankTier", () => {
-  it("orders exact > prefix > substring > body", () => {
-    expect(titleRankTier("Fix login", "fix login")).toBe(RANK_TIER_TITLE_EXACT);
-    expect(titleRankTier("Fix login flow", "fix login")).toBe(RANK_TIER_TITLE_PREFIX);
-    expect(titleRankTier("Hotfix login flow", "fix login")).toBe(RANK_TIER_TITLE_SUBSTRING);
-    expect(titleRankTier("Unrelated", "fix login")).toBe(RANK_TIER_BODY);
+  it.each([
+    ["Fix login", RANK_TIER_TITLE_EXACT],
+    ["Fix login flow", RANK_TIER_TITLE_WHOLE_WORD],
+    ["Please fix login now", RANK_TIER_TITLE_WHOLE_WORD],
+    ["Fix loginator", RANK_TIER_TITLE_PREFIX],
+    ["Hotfix login flow", RANK_TIER_TITLE_SUBSTRING],
+    ["Unrelated", RANK_TIER_BODY],
+  ])("ranks %s by how the query appears in it", (title, tier) => {
+    expect(titleRankTier(title, "fix login")).toBe(tier);
   });
 });
 
@@ -832,8 +837,8 @@ describe("rankCandidates determinism", () => {
     const ranked = rankCandidates(corpus, parsed);
     expect(ranked.map((r) => r.docId)).toEqual([
       "d-exact",
-      "d-prefix",
       "d-substr",
+      "d-prefix",
       "d-body-good",
       "d-body-weak"
     ]);

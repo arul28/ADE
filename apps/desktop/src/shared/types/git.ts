@@ -111,8 +111,20 @@ export type GitUpstreamSyncStatus = {
   recommendedAction: GitRecommendedAction;
 };
 
+export type GitGetSyncStatusArgs = {
+  laneId: string;
+  /**
+   * Callers that only show ahead/behind counts can skip the extra
+   * merge-base/reflog probes used to choose a safe recommendation on a
+   * diverged branch. A diverged lane then reports `pull`.
+   */
+  skipRecommendation?: boolean;
+};
+
 export type GitSyncStatusesArgs = {
   laneIds: string[];
+  /** See `GitGetSyncStatusArgs.skipRecommendation`. */
+  skipRecommendation?: boolean;
 };
 
 /** Sync status keyed by the lane id requested by the caller. */
@@ -184,11 +196,15 @@ export type GitFileHistoryEntry = {
 export type GitListCommitFilesArgs = {
   laneId: string;
   commitSha: string;
+  /** Refuse a commit that is not in the lane's own history (a lane share guest's read). */
+  onlyLaneHistory?: boolean;
 };
 
 export type GitGetCommitMessageArgs = {
   laneId: string;
   commitSha: string;
+  /** Refuse a commit that is not in the lane's own history (a lane share guest's read). */
+  onlyLaneHistory?: boolean;
 };
 
 export type GitGetFileHistoryArgs = {
@@ -255,6 +271,11 @@ export type GetFileDiffArgs = {
   mode: DiffMode;
   compareRef?: string;
   compareTo?: "worktree" | "parent";
+  /**
+   * Refuse a file git ignores, a file under `.ade/`, or a link to one. The
+   * lane-sharing host sets it for every guest read.
+   */
+  refuseIgnored?: boolean;
 };
 
 export type GetFilePatchArgs = GetFileDiffArgs;
@@ -365,6 +386,24 @@ export type GitCheckoutBranchArgs = {
 export type GitHubRepoRef = {
   owner: string;
   name: string;
+};
+
+/**
+ * The origin of one project: `github.getRemoteStatus`.
+ *
+ * `projectRoot` names the project this answer describes. A caller that asks
+ * for one project can get an answer for another while a window switches
+ * projects (the window's project context and the caller's project change at
+ * different moments), so a caller compares it and drops a mismatch. The
+ * window's no-project context sends an empty string, which matches no project.
+ * Optional: an older runtime does not send it. A missing value means "not
+ * known", and the caller keeps the answer as before.
+ */
+export type GitHubRemoteStatus = {
+  repo: GitHubRepoRef | null;
+  // True when the project has any `origin` remote, even non-GitHub.
+  hasOrigin: boolean;
+  projectRoot?: string;
 };
 
 export type GitHubRateLimitState = {

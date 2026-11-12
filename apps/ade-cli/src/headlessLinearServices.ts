@@ -42,6 +42,7 @@ import type {
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
   GitHubCredentialVerification,
+  GitHubRemoteStatus,
   GitHubRepoRef,
   GitHubRateLimitState,
   GitHubRepoStarState,
@@ -2382,11 +2383,13 @@ export function createHeadlessGitHubService(
     async getRequestBudget(): Promise<GitHubRequestBudget> {
       return githubRequestBudget();
     },
-    async getRemoteStatus() {
+    async getRemoteStatus(): Promise<GitHubRemoteStatus> {
       const origin = await readGitOriginAsync(projectRoot);
       return {
         repo: await resolveGithubRepoRef(origin ?? ""),
         hasOrigin: Boolean(origin),
+        // Names the project it describes. See GitHubRemoteStatus.
+        projectRoot,
       };
     },
     async detectRepo() {

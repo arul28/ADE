@@ -431,36 +431,28 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // Claude chat surfaces use the native Agent SDK effort ladder. Keep these
   // tiers aligned with the launch validation path.
   {
-    id: "anthropic/claude-fable-5-1",
-    shortId: "fable",
+    id: "anthropic/claude-fable-5-2",
+    shortId: "fable-5-2",
     aliases: [
-      "fable",
-      "fable-5.1",
-      "fable-5-1",
-      "claude-fable-5-1",
-      "anthropic/claude-fable-5-1-api",
-      "fable-5",
-      "fable-5.0",
-      "claude-fable-5",
-      "anthropic/claude-fable-5",
-      "anthropic/claude-fable-5-api",
+      "claude-fable-5-2",
+      "anthropic/claude-fable-5-2-api",
     ],
-    displayName: "Claude Fable 5.1",
+    displayName: "Claude Fable 5.2",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    defaultReasoningEffort: "high",
+    defaultReasoningEffort: "medium",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-fable-5-1",
+    providerModelId: "claude-fable-5-2",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 10,
-    outputPricePer1M: 50,
+    inputPricePer1M: 8,
+    outputPricePer1M: 40,
     costTier: "very_high",
   },
   {
@@ -554,6 +546,39 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 0.1,
     outputPricePer1M: 0.5,
     costTier: "low",
+  },
+  {
+    id: "anthropic/claude-fable-5-1",
+    shortId: "fable",
+    aliases: [
+      "fable",
+      "fable-5.1",
+      "fable-5-1",
+      "claude-fable-5-1",
+      "anthropic/claude-fable-5-1-api",
+      "fable-5",
+      "fable-5.0",
+      "claude-fable-5",
+      "anthropic/claude-fable-5",
+      "anthropic/claude-fable-5-api",
+    ],
+    displayName: "Claude Fable 5.1",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    defaultReasoningEffort: "high",
+    serviceTiers: ["fast"],
+    color: "#D97706",
+    providerRoute: "claude-cli",
+    providerModelId: "claude-fable-5-1",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 10,
+    outputPricePer1M: 50,
+    costTier: "very_high",
   },
   {
     id: "anthropic/claude-sonnet-5",
@@ -2026,6 +2051,19 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
 } | null {
   const normalized = modelId.trim().toLowerCase();
   if (!normalized.length) return null;
+  if (normalized === "claude-fable-5-2") {
+    return {
+      modelId: "claude-fable-5-2",
+      displayName: "Claude Fable 5.2",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      defaultReasoningEffort: "medium",
+      serviceTiers: ["fast"],
+      wasAlias: false,
+    };
+  }
   if (
     normalized === "claude-fable-5-1"
     || normalized === "fable"
@@ -2943,6 +2981,7 @@ function normalizeDroidEffortLabel(value: string): string {
 }
 
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-fable-5-2": "Fable 5.2",
   "claude-fable-5-1": "Fable 5.1",
   "claude-fable-5": "Fable 5",
   "claude-opus-5-5": "Opus 5.5",
@@ -3284,6 +3323,46 @@ export function resolveModelAlias(alias: string): ModelDescriptor | undefined {
     ?? undefined;
 }
 
+/**
+ * Why a model name typed into ADE is refused, or null when it may be used.
+ *
+ * A request names a model by its full name: the registry id
+ * (`anthropic/claude-fable-5-2`) or the model's own wire id
+ * (`claude-fable-5-2`). Short names (`opus`, `fable`, `sol`), old spellings and
+ * retired ids are refused, because what they stand for moves whenever a new
+ * model ships and a request would quietly run a different model than its
+ * author meant. Saved chats and settings still resolve through
+ * {@link resolveModelDescriptor}; this check is for names coming in now.
+ * A name ADE does not know is left to the caller's own handling.
+ */
+export function shorthandModelNameRefusal(modelRef: unknown): string | null {
+  if (typeof modelRef !== "string") return null;
+  const raw = modelRef.trim();
+  if (!raw.length) return null;
+  const lower = raw.toLowerCase();
+  // A dynamic row (OpenCode, Cursor, Droid, Pi, a local model) is named by its
+  // own id; only the curated aliases and short ids are shorthand.
+  if (!byAlias.has(lower) && !byShortId.has(lower)) return null;
+  const rows = curatedRows();
+  if (rows.some((row) => row.id.toLowerCase() === lower)) return null;
+  // The same word can be one row's short name and another harness's own model
+  // id (Devin calls its Claude models `opus`, `fable`, `sonnet`). Bare, it
+  // could mean either, so it is refused with every model it could mean.
+  const meant = rows.filter((row) =>
+    !row.deprecated
+    && (row.providerModelId.toLowerCase() === lower
+      || row.shortId.toLowerCase() === lower
+      || (row.aliases ?? []).some((alias) => alias.trim().toLowerCase() === lower)));
+  if (meant.length === 1 && meant[0]!.providerModelId.toLowerCase() === lower) return null;
+  if (!meant.length) {
+    return `"${raw}" is not a full model name. Pick one from \`ade models catalog --text\` and pass its full name.`;
+  }
+  const options = meant.map((row) => `"${row.id}" (${row.displayName})`).join(", ");
+  return meant.length === 1
+    ? `"${raw}" is not a full model name. Use ${options}.`
+    : `"${raw}" is not a full model name. Use one of ${options}.`;
+}
+
 export function resolveModelDescriptor(modelRef: string): ModelDescriptor | undefined {
   const normalized = modelRef.trim();
   if (!normalized.length) return undefined;
@@ -3547,6 +3626,9 @@ function pickPreferredModel(
 function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (model) =>
+      model.id === "anthropic/claude-fable-5-2"
+      || /fable-5-2|fable 5\.2/i.test(`${model.displayName} ${model.providerModelId}`),
+    (model) =>
       model.id === "anthropic/claude-fable-5-1"
       || /fable-5-1|fable 5\.1/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => /\bfable\b/i.test(model.displayName) || /\bfable\b/i.test(model.providerModelId),
@@ -3584,6 +3666,7 @@ function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | und
 function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.providerModelId}`),
+    (model) => model.id === "opencode/anthropic/claude-fable-5-2" || (model.family === "anthropic" && /fable-5-2|fable 5\.2/i.test(`${model.displayName} ${model.providerModelId}`)),
     (model) => model.id === "opencode/anthropic/claude-fable-5-1" || (model.family === "anthropic" && /fable-5-1|fable 5\.1/i.test(`${model.displayName} ${model.providerModelId}`)),
     (model) => model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => model.id === "opencode/anthropic/claude-sonnet-5" || (model.family === "anthropic" && model.providerRoute === "opencode"),

@@ -305,11 +305,16 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       if (!entry) return { kind: "ade_link", token: url, label: `ADE · settings/${target.entryId}`, source };
       return { kind: "setting", token: url, label: settingsEntryLabel(entry), source };
     }
+    case "lane-share":
+      // An invite link: an address only; the shared lanes page decides.
+      return { kind: "ade_link", token: url, label: "Shared lane", source };
     case "open": {
       const place = openPlaceById(target.place);
       if (!place) return { kind: "ade_link", token: url, label: `ADE · open/${target.place}`, source };
       return { kind: "place", token: url, label: place.label, source };
     }
+    case "invite":
+      return { kind: "ade_link", token: url, label: "ADE Cloud invite", source };
   }
 }
 

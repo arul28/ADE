@@ -136,61 +136,6 @@ extension EnvironmentValues {
   @Entry var hubHeaderMenuAdd: (() -> Void)? = nil
 }
 
-/// The width of the empty band the status bar leaves on the leading side of
-/// a tall top inset, or nil where there is none. The Duo's outer display,
-/// upright, draws its clock and status in a block at the top trailing corner
-/// (reported as an occlusion) under a top inset deep enough for a header row,
-/// and leaves the rest of that band empty. Every other iPhone's top occlusion
-/// is the Dynamic Island, centred, with no row's height beside it.
-///
-/// A call, a timer, a recording or navigation adds a pill to the block's
-/// leading side, so the band can be much narrower than usual. The header has
-/// tiers down to `hubStatusBandMinimumWidth` (`HubHeaderRow`); only a band
-/// narrower than that puts the header on a row of its own.
-func hubStatusBandLeadingWidth(_ proxy: GeometryProxy) -> CGFloat? {
-  guard !proxy.isLandscapeIgnoringKeyboard, proxy.safeAreaInsets.top >= 64 else { return nil }
-  #if compiler(>=6.4)
-  guard #available(iOS 27.1, *) else { return nil }
-  let width = proxy.size.width
-  // Its bottom is not checked: with the ringer silenced the phone stacks a
-  // bell over the clock, and the block can reach below the inset. The header
-  // only needs the band to its leading side.
-  let top = proxy.reservedRegions(kind: .occlusion).filter { region in
-    region.isActive && region.frame.minY < 0
-  }
-  // A block that reaches the trailing corner, not an island in the middle.
-  guard top.contains(where: { $0.frame.maxX > width * 0.75 }) else { return nil }
-  // Every pill of the block, the leading one included, ends the band.
-  guard var leading = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else { return nil }
-  #if DEBUG
-  // `-adeHubStatusBand <points>` stands in for a call or timer pill, which a
-  // simulator cannot show: it narrows the band to that width.
-  if let forced = hubDebugStatusBandWidth { leading = min(leading, forced) }
-  #endif
-  guard leading >= hubStatusBandMinimumWidth else { return nil }
-  return leading
-  #else
-  return nil
-  #endif
-}
-
-#if DEBUG
-private let hubDebugStatusBandWidth: CGFloat? = {
-  let arguments = ProcessInfo.processInfo.arguments
-  guard let index = arguments.firstIndex(of: "-adeHubStatusBand"),
-        arguments.index(after: index) < arguments.endIndex,
-        let value = Double(arguments[arguments.index(after: index)])
-  else { return nil }
-  return CGFloat(value)
-}()
-#endif
-
-/// The narrowest band beside the clock that the header's tightest tier fits
-/// in. That tier is about 153 points wide: three 34-point icons, the machines
-/// glyph with its spinner, and the capsule's padding. The band's header gives
-/// 24 points to its margins (`HubPhoneLayout.header`).
-let hubStatusBandMinimumWidth: CGFloat = 180
-
 @MainActor
 private func hubKeyWindowScene() -> UIWindowScene? {
   let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }

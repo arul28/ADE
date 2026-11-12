@@ -587,19 +587,20 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
         },
       },
     });
-    // The Rules view also draws the session and .ade folder sections.
+    // The Rules view also draws the chat row.
     (window.ade as any).sessions = { getLifecycleSettings: vi.fn(async () => ({ autoSettleLaneSessionsOnPrMerge: true })) };
     (window.ade as any).project = { getSnapshot: vi.fn(() => new Promise(() => undefined)), onStateEvent: vi.fn(() => () => undefined) };
     renderStorage();
     await openView("Rules");
 
-    // An inherited rule shows the value in force, not an empty box.
-    const inherited = await screen.findByLabelText(/Archive idle lanes after/i);
-    await waitFor(() => expect((inherited as HTMLInputElement).value).toBe("2"));
+    // An inherited rule shows the value in force, even one that is not a preset.
+    const inherited = await screen.findByLabelText("Archive idle lanes");
+    await waitFor(() => expect((inherited as HTMLSelectElement).value).toBe("2"));
 
     // Typing "60" passes through "6": a rule that deletes lanes must never
     // save a half-typed number, however long the typing pauses.
-    const deleteAfter = screen.getByLabelText(/^Delete after/i);
+    fireEvent.change(screen.getByLabelText("Delete archived lanes"), { target: { value: "custom" } });
+    const deleteAfter = await screen.findByLabelText("Delete archived lanes, custom days");
     vi.useFakeTimers();
     try {
       fireEvent.change(deleteAfter, { target: { value: "6" } });
@@ -809,7 +810,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     Element.prototype.scrollIntoView = vi.fn();
     renderStorage("/settings?tab=storage#session-lifecycle");
     expect(await screen.findByRole("tab", { name: /^Rules/, selected: true })).toBeTruthy();
-    expect(await screen.findByText("Auto-settle sessions when lane PR merges")).toBeTruthy();
+    expect(await screen.findByText("Settle chats when the lane's PR merges")).toBeTruthy();
     // The lane list belongs to another view and is not drawn.
     expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
   });

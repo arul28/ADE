@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AdeExpectedError } from "../../../shared/expectedError";
-import { runGit } from "../git/git";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import {
+  formatGitExecutionError,
+  gitCommandError,
+  GitUntrustedFolderError,
+  runGit,
+  type GitRunResult,
+} from "../git/git";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import {
   laneStartRefLabel,
@@ -38,6 +44,19 @@ async function verifyCommit(ref: string, cwd: string): Promise<string | null> {
 }
 
 /**
+ * The error for a branch listing git itself refused, with git's own words: the
+ * branch may well be there. A machine with no git, or a folder git will not
+ * trust, is the user's to fix; any other failure stays reported.
+ */
+function branchListingError(result: GitRunResult): Error {
+  if (result.timedOut) return new Error("ADE couldn't read this repository's branches: Git took too long to answer.");
+  // A message, not a log: git's first lines say why.
+  const raw = (result.stderr.trim() || result.stdout.trim() || `git exited with code ${result.exitCode}`).slice(0, 1_000);
+  const error = gitCommandError(raw, `ADE couldn't read this repository's branches. ${formatGitExecutionError(raw)}`);
+  return error instanceof GitUntrustedFolderError ? markExpected(error, "user") : error;
+}
+
+/**
  * The error for a start branch that does not resolve. A repository with no
  * commit at all (a fresh `git init`) has no branch to start from yet, and
  * "wasn't found" would send the user looking for a branch that cannot exist.
@@ -45,9 +64,10 @@ async function verifyCommit(ref: string, cwd: string): Promise<string | null> {
 async function missingStartBranchError(projectRoot: string, refs: readonly string[], message: string): Promise<Error> {
   const anyRef = await runGit(["for-each-ref", "--count=1", "--format=%(refname)"], { cwd: projectRoot, timeoutMs: 10_000 });
   // A branch the user named that is not there, or a repository with no
-  // commits, is their answer. A failed listing is ADE's and stays an issue,
-  // and so does a `rev-parse` that timed out on a branch that is there.
-  if (anyRef.exitCode !== 0) return new Error(message);
+  // commits, is their answer. A failed listing says why in git's words, and
+  // stays an issue unless the cause is the user's; so does a `rev-parse`
+  // that timed out on a branch that is there.
+  if (anyRef.exitCode !== 0) return branchListingError(anyRef);
   if (!anyRef.stdout.trim()) {
     return new AdeExpectedError("This repository has no commits yet. Make a first commit, then create a lane.", "user");
   }
@@ -165,7 +185,8 @@ export async function copyUncommittedChanges(args: {
       }
     }
     const env = { GIT_INDEX_FILE: tmpIndex };
-    const add = await runGit(["add", "-A"], { cwd: args.fromPath, timeoutMs: 120_000, env });
+    // A personal `core.safecrlf` must not refuse a file ADE only snapshots.
+    const add = await runGit(["-c", "core.safecrlf=false", "-c", "core.sparseCheckout=false", "add", "-A"], { cwd: args.fromPath, timeoutMs: 120_000, env });
     if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "Couldn't read the uncommitted changes.");
     const tree = await runGit(["write-tree"], { cwd: args.fromPath, timeoutMs: 60_000, env });
     const treeSha = tree.exitCode === 0 ? tree.stdout.trim() : "";

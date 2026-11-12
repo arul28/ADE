@@ -1,10 +1,14 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { CLOUD_DEFAULT_TIER_SETTING_KEY } from "../../../shared/cloudTiers";
 import {
   resolveContinueAfterRestart,
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
-import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { LaneShareError } from "../../../../../ade-cli/src/services/sync/laneShareError";
+import type { LaneShareCaller } from "../../../shared/laneShareRights";
 import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
@@ -13,6 +17,7 @@ import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import type { IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
+import type { AdeCardPayload } from "../../../shared/adeCard";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
 import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -67,6 +72,7 @@ import type {
   AgentCliLoginSubmitCodeArgs,
 } from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
+import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
 import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
@@ -233,6 +239,7 @@ import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
+import { redactOutgoingChatText } from "../../utils/redaction";
 import {
   createRemoteWorkCopyService,
   isRemoteWorkCopyInUse,
@@ -280,11 +287,13 @@ import {
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
 import type { AutomationAdeActionRegistry } from "../automations/automationService";
+import { readGitOriginUrl } from "../projects/recentProjectSummary";
 import {
   asActionRecord,
   optionalNonEmptyString,
   readBranchDriftResolution,
   readChatHistoryActionArgs,
+  readCloudStartBranchArgs,
   readObjectActionArg,
   readOptionalIntegerActionField,
   readRuntimeFileWatchSenderId,
@@ -301,22 +310,27 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
-import { agent37MachineEnv, type Agent37CloudSignInVaults } from "../agent37/agent37CloudSignInStore";
-import { buildAgent37CloudSignInActions } from "../agent37/agent37CloudSignInActions";
-import { agent37OnlyVaultService } from "../agent37/agent37VaultItems";
-import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
-import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
-import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../agent37/agent37HeadlessApproval";
-import { AGENT37_DEFAULT_TEMPLATE } from "../../../shared/agent37";
-import { createAgent37Machines } from "../agent37/agent37Machines";
-import { AGENT37_BUDGET_VAULT_KEY, createAgent37BudgetStore } from "../agent37/agent37Sleep";
-import { readAgent37Key } from "../agent37/agent37Credential";
-import { createAgent37Client } from "../agent37/agent37Client";
+import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
+import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
+import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
+import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
+import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
+import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
+import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
+import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
+import {
+  cloudLaneLaunchRecordsDir,
+  cloudLaneLaunchTransportSet,
+  createCloudLaneLaunchBrainHost,
+  hasCloudLaneLaunchRecords,
+  type CloudLaneLaunchBrainHost,
+} from "../adeCloud/cloudLaneLaunchBrainHost";
+import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
+import { createCloudMachines } from "../adeCloud/cloudMachines";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "../agent37/agent37ReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -395,6 +409,7 @@ type AutomationsDomainService = {
   saveRule(args: AutomationSaveDraftRequest): AutomationSaveDraftResult;
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
+  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null }): AutomationRuleSummary[];
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
   planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
   runTest(args: AutomationTestRequest): Promise<AutomationRun>;
@@ -449,6 +464,7 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     saveRule: (args) => plannerService.saveDraft(args),
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
+    setRunOn: (args) => automationService.setRunOn(args),
     triggerManually: (args) => automationService.triggerManually(args),
     planTest: (args) => automationService.planTest(args),
     runTest: async (args) => {
@@ -616,7 +632,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "agentChatService" | "getAgent37Desktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -711,6 +727,119 @@ function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null 
   return Object.fromEntries(
     Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
   );
+}
+
+/**
+ * Lane sharing, the owner's side (lanes on THIS machine). A renderer call for
+ * a lane on another machine passes that machine's pin, so it runs there.
+ */
+/**
+ * The lane share services throw `LaneShareError` with a `code`. Error fields
+ * do not cross IPC, so the code goes in the message (`code: sentence`), where
+ * `parseCodedErrorMessage` reads it.
+ */
+async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof LaneShareError) {
+      throw codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Who calls a `lane_share` action. `callerClass` is set by the host's RPC
+ * server from its own session (`run_ade_action` drops any value the caller
+ * sent, and refuses positional arguments for this domain), so here it is
+ * the host's word. Anything but exactly "person" is an agent: a route that
+ * does not set it can never act as the person. Automations never reach this
+ * domain (`isAutomationAllowedAdeAction`).
+ */
+export function laneShareCallerOf(args: Record<string, unknown> | undefined): LaneShareCaller {
+  return args?.callerClass === "person" ? "person" : "agent";
+}
+
+function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const sync = runtime.syncService;
+  const service = typeof sync?.getLaneShareService === "function" ? sync.getLaneShareService() : null;
+  if (!service) return null;
+  return {
+    create: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.create({
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }, laneShareCallerOf(args))),
+    list: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.list({ scope: args?.scope })),
+    updateRights: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.updateRights({
+      grantId: args?.grantId,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }, laneShareCallerOf(args))),
+    revoke: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.revoke({
+      grantId: args?.grantId,
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+    }, laneShareCallerOf(args))),
+    resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    listReceived: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.listReceived(laneShareCallerOf(args))),
+    leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    ...buildLaneShareMoveActions(sync),
+  };
+}
+
+/**
+ * Moving a chat to or from the other person of a share (`laneShareMoveService.ts`).
+ * The host part (`moveStart`, `moveRespond`, `moveCancel`, `moveList`) runs on
+ * the machine of the shared lane. The `moveReceive*` and `movePack*` parts run
+ * on the guest's own machine, through its pin. All are user-only.
+ */
+function buildLaneShareMoveActions(sync: AdeRuntime["syncService"]): Record<string, (args?: Record<string, unknown>) => Promise<unknown>> {
+  const moves = typeof sync?.getLaneShareMoveService === "function" ? sync.getLaneShareMoveService() : null;
+  if (!moves) return {};
+  const run = <T>(call: () => T | Promise<T>) => withLaneShareErrorCode(async () => await call());
+  return {
+    moveStart: (args) => run(() => moves.start({ grantId: args?.grantId, sessionId: args?.sessionId })),
+    moveRespond: (args) => run(() => moves.respond({
+      moveId: args?.moveId,
+      accept: args?.accept,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    })),
+    moveCancel: (args) => run(() => moves.cancel({ moveId: args?.moveId })),
+    moveList: () => run(() => moves.list()),
+    moveReceivePrepare: (args) => run(() => moves.receivePrepare({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      repoKey: args?.repoKey,
+      modelHint: args?.modelHint,
+      expiresAt: args?.expiresAt,
+    })),
+    moveReceiveBegin: (args) => run(() => moves.receiveBegin({ moveId: args?.moveId, grantId: args?.grantId, payload: args?.payload })),
+    moveReceiveChunk: (args) => run(() => moves.receiveChunk({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      index: args?.index,
+      data: args?.data,
+    })),
+    moveReceiveLand: (args) => run(() => moves.receiveLand({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      fromName: args?.fromName,
+      shareBack: args?.shareBack,
+    })),
+    moveReceiveStatus: (args) => run(() => moves.receiveStatus({ moveId: args?.moveId, grantId: args?.grantId })),
+    moveReceiveCancel: (args) => run(() => moves.receiveCancel({ moveId: args?.moveId, grantId: args?.grantId })),
+    movePackStart: (args) => run(() => moves.packStart({ moveId: args?.moveId, grantId: args?.grantId, sessionId: args?.sessionId })),
+    movePackStatus: (args) => run(() => moves.packStatus({ moveId: args?.moveId })),
+    movePackChunk: (args) => run(() => moves.packChunk({ moveId: args?.moveId, index: args?.index })),
+    movePackRelease: (args) => run(() => moves.packRelease({ moveId: args?.moveId, landed: args?.landed, toName: args?.toName })),
+  };
 }
 
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -957,6 +1086,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           runtime.ptyService,
           "Terminal service not available.",
         ),
+        pickAccount: (provider, modelId) => agentChatService.pickNewCliSessionAccount(provider, modelId),
       }),
     // Object form `{ laneId?, ...options }`, or the desktop's positional
     // `argsList [laneId?, options?]`.
@@ -1010,11 +1140,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         getChatTranscript?: (args: { sessionId: string; limit?: number; maxChars?: number }) => Promise<unknown> | unknown;
       };
       if (typeof chatService.getChatTranscript === "function") {
-        const transcript = await chatService.getChatTranscript({
+        const transcript = redactOutgoingChatText(await chatService.getChatTranscript({
           sessionId,
           ...(limit !== undefined ? { limit } : {}),
           maxChars,
-        });
+        }));
         const entries = Array.isArray(transcript)
           ? transcript
           : isRecord(transcript) && Array.isArray(transcript.entries)
@@ -1093,12 +1223,12 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (typeof chatService.getChatTranscriptPage !== "function") {
         throw new Error("Paged chat transcript reads are not available in this runtime.");
       }
-      return chatService.getChatTranscriptPage({
+      return redactOutgoingChatText(await chatService.getChatTranscriptPage({
         sessionId,
         ...(beforeOffset !== undefined ? { beforeOffset } : {}),
         ...(limit !== undefined ? { limit } : {}),
         ...(maxChars !== undefined ? { maxChars } : {}),
-      });
+      }));
     },
     sendMessage: async (args?: unknown) => {
       const { inputOrigin, ...record } = readObjectActionArg(args, "chat.sendMessage");
@@ -1315,6 +1445,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(sessionActivity ? { activityStatus: sessionActivity.activityStatus ?? null } : {}),
       };
     };
+  }
+  // Every transcript read hands out what agents printed: secrets in it are
+  // masked on the way out, as `readTranscript` does above.
+  for (const action of ["getMainTranscript", "getSubagentTranscript"] as const) {
+    const read = base[action];
+    if (typeof read === "function") {
+      service[action] = async (...args: unknown[]) => redactOutgoingChatText(await (read as (...input: unknown[]) => unknown)(...args));
+    }
   }
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
@@ -1832,13 +1970,24 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     getLifecycleSettings: () => getSessionLifecycleSettings(runtime.db),
     updateLifecycleSettings: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.updateLifecycleSettings");
-      if (typeof record.autoSettleLaneSessionsOnPrMerge !== "boolean") {
+      const { autoSettleLaneSessionsOnPrMerge, releaseLaneResourcesOnSettle } = record;
+      if (autoSettleLaneSessionsOnPrMerge !== undefined && typeof autoSettleLaneSessionsOnPrMerge !== "boolean") {
         throw new Error("autoSettleLaneSessionsOnPrMerge must be a boolean.");
       }
+      if (releaseLaneResourcesOnSettle !== undefined && typeof releaseLaneResourcesOnSettle !== "boolean") {
+        throw new Error("releaseLaneResourcesOnSettle must be a boolean.");
+      }
+      if (autoSettleLaneSessionsOnPrMerge === undefined && releaseLaneResourcesOnSettle === undefined) {
+        throw new Error("Name a lifecycle setting to change.");
+      }
+      // A caller that knows only one setting (a phone on an older build) must
+      // not reset the other.
+      const current = getSessionLifecycleSettings(runtime.db);
       return setSessionLifecycleSettings({
         db: runtime.db,
         settings: {
-          autoSettleLaneSessionsOnPrMerge: record.autoSettleLaneSessionsOnPrMerge,
+          autoSettleLaneSessionsOnPrMerge: autoSettleLaneSessionsOnPrMerge ?? current.autoSettleLaneSessionsOnPrMerge,
+          releaseLaneResourcesOnSettle: releaseLaneResourcesOnSettle ?? current.releaseLaneResourcesOnSettle,
         },
         currentPrs: runtime.prService?.listAll() ?? [],
       });
@@ -2225,6 +2374,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     getDeleteRisk: async (args?: unknown) =>
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
+    // "Push this branch?" before an ADE Cloud launch, on the machine that has the project.
+    cloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.cloudStartBranch(readCloudStartBranchArgs(args, "lane.cloudStartBranch")),
+    pushCloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.pushCloudStartBranch(readCloudStartBranchArgs(args, "lane.pushCloudStartBranch")),
     cancelDelete: async (args?: unknown) =>
       runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
@@ -2650,19 +2804,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         providerId,
         ...(args?.method ? { method: args.method } : {}),
       });
-      // Signing in unlocks models, so the readiness cache is stale until it is
-      // dropped. The IPC handler does the same; this keeps the action path
-      // (remote runtime, `ade actions run`) consistent with it.
-      if (result.ok) {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.pi_auth_cache_invalidation_failed", {
-            provider: providerId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // The one "login changed" path, here as on the IPC handler, so a
+      // remote runtime or `ade actions run` sign-in reads fresh too.
+      if (result.ok) noteProviderLoginChanged("pi");
       return result;
     },
     piLoginSubmit: (args?: { providerId?: string; requestId?: string; value?: string }) =>
@@ -2678,6 +2822,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     cursorAuthLogin: async () => {
       const result = await loginCursorSdk();
       if (result.ok) {
+        noteProviderLoginChanged("cursor");
         try {
           aiIntegrationService.invalidateProviderReadinessCaches();
         } catch (error) {
@@ -2690,6 +2835,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cursorAuthLogout: async () => {
       const result = await logoutCursorSdk();
+      if (result.ok) noteProviderLoginChanged("cursor");
       try {
         aiIntegrationService.invalidateProviderReadinessCaches();
       } catch (error) {
@@ -2817,20 +2963,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cliLoginStatus: async (args?: AgentCliLoginRefArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-      const status = getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
-      // Signing in unlocks models, so the readiness cache is stale until it
-      // is dropped; the IPC handler does the same.
-      if (status.state === "succeeded") {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.cli_login_cache_invalidation_failed", {
-            provider: status.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      return status;
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers (the runner's `onSignedIn`); other providers keep theirs.
+      return getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
     },
     cliLoginSubmitCode: async (args?: AgentCliLoginSubmitCodeArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
@@ -2864,6 +2999,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
+    // The one-provider sign-in check: it runs that provider's own check (its
+    // CLI, agent or SDK) on this machine, within 20 s.
+    verifyProviderSignIn: (args?: { provider?: string }) =>
+      aiIntegrationService.verifyProviderSignIn(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
       aiIntegrationService.storeApiKey(
         requireNonEmptyString(args?.provider, "provider"),
@@ -3944,20 +4083,10 @@ export function buildProviderInstancesDomainService(
       };
     },
     loginStatus(args: unknown) {
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers, the signed-out mark a failed turn left included (the
+      // runner's `verify`), so the next send is not refused.
       const login = getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? ""));
-      // Signing in unlocks models, and a turn that failed on the sign-in left
-      // the provider marked signed out: drop both, or the next send (a chat's
-      // automatic resend) is refused. The IPC handler does the same.
-      if (login.state === "succeeded") {
-        try {
-          runtime.aiIntegrationService?.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger?.warn("provider_instances.login_cache_invalidation_failed", {
-            provider: login.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
       return { login };
     },
     loginSubmitCode(args: unknown) {
@@ -4065,27 +4194,27 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   };
 }
 
-/** The machine's shared credential file, for an Agent37 key saved while signed out. One per process. */
-let agent37MachineCredentialStore: EncryptedFileCredentialStore | null = null;
-function agent37MachineStore(): EncryptedFileCredentialStore {
-  agent37MachineCredentialStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
-  return agent37MachineCredentialStore;
+/** The machine's shared credential file, for a provider key saved while signed out. One per process. */
+let cloudMachineCredentialStore: EncryptedFileCredentialStore | null = null;
+function cloudMachineStore(): EncryptedFileCredentialStore {
+  cloudMachineCredentialStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
+  return cloudMachineCredentialStore;
 }
 
-/** The account vault's cloud sign-in items, or null when signed out of ADE (agent37CloudSignInStore.ts). */
-function agent37CloudSignInVaults(runtime: AccountDomainRuntime): Agent37CloudSignInVaults | null {
+/** The account vault's cloud sign-in items, or null when signed out of ADE (cloudSignInStore.ts). */
+function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | null {
   const store = runtime.accountVaultStore;
   if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
-  return (vaultKey) => agent37VaultFromStore(store, vaultKey);
+  return (vaultKey) => cloudVaultFromStore(store, vaultKey);
 }
 
-function agent37CredentialDeps(runtime: AccountDomainRuntime): Agent37CredentialDeps {
-  return {
-    vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
-    machineStore: () => agent37MachineStore(),
-    signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
+  return cloudAccessDepsFor({
+    account: () => runtime.accountAuthService,
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
+    deviceName: () => os.hostname(),
     logger: runtime.logger,
-  };
+  });
 }
 
 /**
@@ -4100,7 +4229,6 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
-    agent37: buildAgent37ConnectAdapter(agent37CredentialDeps(runtime)),
   });
 }
 
@@ -4108,16 +4236,58 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
  * One maker per runtime: the domain services are rebuilt per call, and a
  * background make (the phone's) is read back by a later `make_status`.
  */
-const agent37BrainMakers = new WeakMap<AccountDomainRuntime, Agent37BrainMaker | null>();
+const cloudBrainMakers = new WeakMap<AccountDomainRuntime, CloudBrainMaker | null>();
 
-function agent37BrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createAgent37Machines>): Agent37BrainMaker | null {
-  if (agent37BrainMakers.has(runtime)) return agent37BrainMakers.get(runtime) ?? null;
+function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMaker | null {
+  if (cloudBrainMakers.has(runtime)) return cloudBrainMakers.get(runtime) ?? null;
+  const base = cloudBrainMakerBase(runtime, machines);
+  const maker = base ? createCloudBrainMaker({ base, logger: runtime.logger }) : null;
+  cloudBrainMakers.set(runtime, maker);
+  return maker;
+}
+
+/**
+ * The brain's ADE Cloud lane launches. One per process, not per runtime: the
+ * records live in the machine's ADE folder, and two owners would resume each
+ * launch twice. Built on first use, or at the brain's start when a quit left
+ * launches to resume (`resumeCloudLaneLaunches`). Null in a process that can't
+ * reach other machines (no transport), or with no account here.
+ */
+let cloudLaneLaunchHost: CloudLaneLaunchBrainHost | null = null;
+
+function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudLaneLaunchBrainHost | null {
+  if (cloudLaneLaunchHost) return cloudLaneLaunchHost;
+  if (!cloudLaneLaunchTransportSet()) return null;
+  const base = cloudBrainMakerBase(runtime, machines);
+  if (!base) return null;
+  cloudLaneLaunchHost = createCloudLaneLaunchBrainHost({
+    base,
+    recordsDir: cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir),
+    logger: runtime.logger,
+    // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
+    onComputerCreated: noteCloudComputerMade,
+    analytics: runtime.productAnalyticsService ?? null,
+  });
+  return cloudLaneLaunchHost;
+}
+
+/** At a brain's start: picks up the ADE Cloud lane launches a quit left, when there are any. */
+export function resumeCloudLaneLaunches(runtime: AccountDomainRuntime): void {
+  if (!hasCloudLaneLaunchRecords(cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir), runtime.logger)) return;
+  const credentials = cloudAccessDeps(runtime);
+  cloudLaneLaunchHostFor(runtime, createCloudMachines({
+    client: () => getCloudProvider(credentials),
+    whyNoClient: () => cloudNoProviderSentence(credentials),
+    removeAccountMachine: async () => undefined,
+    logger: runtime.logger,
+  }));
+}
+
+/** The creator's deps a brain fills in (no window), or null with no account here. */
+function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMakerBase | null {
   const account = runtime.accountAuthService ?? null;
-  if (!account) {
-    agent37BrainMakers.set(runtime, null);
-    return null;
-  }
-  const credentials = agent37CredentialDeps(runtime);
+  if (!account) return null;
+  const credentials = cloudAccessDeps(runtime);
   const directoryBaseUrl = () => {
     try {
       return getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null;
@@ -4129,66 +4299,47 @@ function agent37BrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnTyp
     appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
     directoryBaseUrl: () => directoryBaseUrl() ?? "",
   });
-  // Only a brain on an Agent 37 machine approves the machines it makes; anywhere
+  // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.AGENT37_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
-  const maker = createAgent37BrainMaker({
-    base: {
-      client: async () => {
-        const saved = await readAgent37Key(credentials);
-        if (!saved) throw new Error("Connect Agent 37 first: Settings › Integrations › Agent 37.");
-        return createAgent37Client({ apiKey: saved.key });
-      },
-      getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
-      directoryBaseUrl,
-      listAccountMachines: () => directory().listMachines(),
-      renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
-      templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE,
-      // The person's provider sign-ins, so they are signed in on the new machine (agent37CloudSignInStore.ts).
-      machineEnv: () => agent37MachineEnv(agent37CloudSignInVaults(runtime), runtime.logger),
-      // This brain's release: a machine made from an older template installs it on boot.
-      // Only a released build: a development build's version may not be published.
-      minAdeVersion: () => stampedAdeVersion(),
-      spending: () => machines.spending(),
-      removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
-      // No window here: the sign-in of a machine this brain made with an
-      // unattended yes opens in a headless Chromium (the template ships one).
-      ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-        approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
-      logger: runtime.logger,
-    },
+  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
+  return {
+    client: () => requireCloudProvider(credentials),
+    getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
+    directoryBaseUrl,
+    listAccountMachines: () => directory().listMachines(),
+    renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
+    // This brain's release: a machine made from an older template installs it on boot.
+    // Only a released build: a development build's version may not be published.
+    minAdeVersion: () => stampedAdeVersion(),
+    account: () => machines.account(),
+    removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
+    // No window here: the sign-in of a machine this brain made with an
+    // unattended yes opens in a headless Chromium (the template ships one).
+    ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
     logger: runtime.logger,
-  });
-  agent37BrainMakers.set(runtime, maker);
-  return maker;
+  };
 }
 
 /**
- * The `agent37` domain for the CLI and agents: ready machines (read through
- * the same store the desktop writes) and the machine verbs. The key, the cap
- * and the choice are the account's, so every brain answers the same; making a
- * machine goes to the desktop attached to this brain.
+ * The `cloud` domain for the CLI and agents: the machine verbs, lane
+ * launches and sign-ins. The key and the cap are the account's, so every
+ * brain answers the same; making a machine goes to the desktop attached to
+ * this brain.
  */
-function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService {
+function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
-  const settings = createAgent37ReadySettingsStore({
-    vault: () => (signedIn() && runtime.accountVaultStore
-      ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_READY_VAULT_KEY)
-      : null),
-    machineStore: () => agent37MachineStore(),
+  const credentials = cloudAccessDeps(runtime);
+  const agentLimits = createCloudAgentLimitsStore({
+    vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
+    machineStore: () => cloudMachineStore(),
     logger: runtime.logger,
   });
-  const credentials = agent37CredentialDeps(runtime);
-  const budget = createAgent37BudgetStore({
-    vault: () => (signedIn() && runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_BUDGET_VAULT_KEY) : null),
-    machineStore: () => agent37MachineStore(),
-    logger: runtime.logger,
-  });
-  const machines = createAgent37Machines({
-    client: async () => {
-      const saved = await readAgent37Key(credentials);
-      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
-    },
+  // A good list or a finished make also tells the sign-in renewal that the
+  // account has cloud computers, with no request of its own.
+  const machines = observeCloudComputerLists(createCloudMachines({
+    client: () => getCloudProvider(credentials),
+    whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
       if (!runtime.accountAuthService) throw new Error("This ADE isn't signed in to your account.");
       return await new AccountMachineDirectoryService(runtime.accountAuthService, {
@@ -4196,32 +4347,23 @@ function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService
         directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
       }).deleteMachine(machineKey);
     },
-    readBudget: () => budget.read(),
     logger: runtime.logger,
-  });
+  }));
   const agentChatService = runtime.agentChatService ?? null;
-  const maker = agent37BrainMakerFor(runtime, machines);
-  const ready = buildAgent37ReadyActions({
-    credentials,
-    readSettings: async () => (await settings.read()).projects,
-    spending: () => machines.spending(),
-    // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
-    onClaimed: () => runtime.productAnalyticsService?.capture({
-      event: "ade_feature_used",
-      surface: "api",
-      properties: { feature: "connections", action: "agent37_ready", outcome: "ready_cli" },
-      projectId: null,
-      dedupeKey: "agent37_ready:ready_cli",
-      minimumIntervalMs: 6 * 60 * 60 * 1_000,
-    }),
-    logger: runtime.logger,
-  });
-  const verbs = buildAgent37AgentActions({
+  const maker = observeCloudComputerMakes(cloudBrainMakerFor(runtime, machines));
+  const verbs = buildCloudAgentActions({
     machines,
-    budget,
-    readySettings: settings,
-    desktop: () => runtime.getAgent37Desktop?.() ?? null,
+    limits: agentLimits,
+    desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,
+    laneLaunch: () => cloudLaneLaunchHostFor(runtime, machines),
+    // The project's GitHub origin, for a lane launch that names none (the CTO, an automation).
+    projectOriginUrl: () => (runtime.projectRoot ? readGitOriginUrl(runtime.projectRoot) : null),
+    // The size the person picked for new lanes (Settings, the composer's size
+    // button), synced through the account settings. No store: can't read it.
+    savedDefaultTier: runtime.accountSettingsStore
+      ? () => runtime.accountSettingsStore!.get(ACCOUNT_SCOPE_ALL, CLOUD_DEFAULT_TIER_SETTING_KEY)
+      : null,
     // A runtime with no chat service of its own (the CLI's in-process
     // fallback) has no chat to ask in; costly actions are then refused.
     approvals: agentChatService && typeof agentChatService.requestChatInput === "function"
@@ -4229,49 +4371,62 @@ function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService
           requestChatInput: (input) => agentChatService.requestChatInput(input),
           permissionLevel: (chatSessionId) => agentChatService.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null,
           isAutomationRun: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId),
+          ...(typeof agentChatService.emitAdeCard === "function"
+            ? { postCard: (chatSessionId: string, card: AdeCardPayload) => agentChatService.emitAdeCard({ sessionId: chatSessionId, card }) }
+            : {}),
           notice: (chatSessionId, message) => {
             try {
               agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });
             } catch (error) {
-              runtime.logger.warn("agent37.approval_notice_failed", { error: error instanceof Error ? error.message : String(error) });
+              runtime.logger.warn("cloud.approval_notice_failed", { error: error instanceof Error ? error.message : String(error) });
             }
           },
         }
       : null,
+    analytics: runtime.productAnalyticsService ?? null,
     logger: runtime.logger,
   });
-  const cloudSignIns = buildAgent37CloudSignInActions({
-    vaults: () => agent37CloudSignInVaults(runtime),
+  const cloudSignIns = buildCloudSignInActions({
+    vaults: () => cloudSignInVaults(runtime),
+    passVault: () => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true ? claudePassVaultFromStore(runtime.accountVaultStore) : null),
     accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
     // Which providers people sign in for cloud machines. A six-hour dedupe per
     // provider: at most 36 accepted events a day.
     onSaved: (id) => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",
       surface: "api",
-      properties: { feature: "connections", action: "agent37_cloud_sign_in", outcome: `signin_${id}` },
+      properties: { feature: "connections", action: "cloud_sign_in", outcome: `signin_${id}` },
       projectId: null,
-      dedupeKey: `agent37_cloud_sign_in:${id}`,
+      dedupeKey: `cloud_sign_in:${id}`,
       minimumIntervalMs: 6 * 60 * 60 * 1_000,
     }),
     logger: runtime.logger,
   });
-  return { ...ready, ...verbs, ...cloudSignIns };
+  return {
+    ...verbs,
+    ...cloudSignIns,
+    /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
+    access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
 }
 
 /**
  * The account-level domains a brain serves with no project open, over the
- * machine's account stores (`agent37.call` and `accountVault.call` in
+ * machine's account stores (`cloud.call` and `accountVault.call` in
  * multiProjectRpcServer). The same services a project runtime builds, so
  * every scope answers the same; which actions are served this way is
- * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only Agent 37's items.
+ * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only the provider's items.
  */
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
-  agent37: OpaqueService;
+  cloud: OpaqueService;
   account_vault: OpaqueService | null;
+  provider_logins: OpaqueService | null;
 } {
   return {
-    agent37: buildAgent37DomainService(runtime),
-    account_vault: agent37OnlyVaultService(buildAccountVaultDomainService(runtime)),
+    cloud: buildCloudDomainService(runtime),
+    account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
+    // The brain's one sign-in sync, the same service a project runtime serves.
+    provider_logins: toService(buildProviderLoginsDomainService()),
   };
 }
 
@@ -4472,6 +4627,7 @@ export function getAdeActionDomainServices(
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
     remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
+    lane_share: toService(buildLaneShareDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),
@@ -4492,7 +4648,7 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
     integration_connect: buildIntegrationConnectDomainService(runtime),
-    agent37: buildAgent37DomainService(runtime),
+    cloud: buildCloudDomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),
@@ -4533,6 +4689,8 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+    // The sign-ins the account keeps for ADE Cloud; the brain's one service answers.
+    provider_logins: toService(buildProviderLoginsDomainService()),
   };
 }
 

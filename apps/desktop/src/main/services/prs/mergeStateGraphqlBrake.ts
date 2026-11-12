@@ -58,6 +58,8 @@ export type MergeStateGraphqlCooldown = {
 export type MergeStateGraphqlBrake = {
   /** The live cooldown for `repoKey`, or null when the read may proceed. */
   cooldown: (repoKey: string, nowMs?: number) => MergeStateGraphqlCooldown | null;
+  /** Whether a cooldown is live, without spending its log budget. */
+  isCooling: (repoKey: string, nowMs?: number) => boolean;
   /** Arms (or extends) the per-repo cooldown. Returns the deadline it applied. */
   armRateLimitCooldown: (
     repoKey: string,
@@ -103,6 +105,8 @@ export function createMergeStateGraphqlBrake(): MergeStateGraphqlBrake {
       entry.logged = true;
       return { untilMs: entry.untilMs, shouldLog };
     },
+
+    isCooling: (repoKey, nowMs = Date.now()) => readCooldown(repoKey, nowMs) != null,
 
     armRateLimitCooldown: (repoKey, rateLimitResetAtMs, nowMs = Date.now()) => {
       const reset = rateLimitResetAtMs != null && Number.isFinite(rateLimitResetAtMs)

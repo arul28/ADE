@@ -12,10 +12,10 @@
  *   to `screencapture -l`, which needs Screen Recording).
  * - Windows → `native/ADECaptureHelperWin` (both Ctrl keys; `WH_KEYBOARD_LL`
  *   plus `PrintWindow`/BitBlt).
- * - Linux → nothing. X11 and Wayland need different grabs, Wayland refuses
- *   foreign-window pixel capture outright without a portal handshake, and ADE
- *   ships no Linux packaging target today. Rather than ship a switch that is
- *   present and permanently dead, the gesture is hidden there.
+ * - Linux → nothing. X11 and Wayland need different grabs, and Wayland refuses
+ *   foreign-window pixel capture outright without a portal handshake. Rather
+ *   than ship a switch that is present and permanently dead, the gesture is
+ *   hidden there.
  *
  * This is deliberately NOT a `process.platform === "darwin"` check scattered
  * across main, preload and the renderer: there was no "macOS and Windows but

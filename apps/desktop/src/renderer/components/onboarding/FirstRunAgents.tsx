@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CircleNotch } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../shared/types";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { useAppStore } from "../../state/appStore";
+import { settingsMachineScope, SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import type { SettingsProviderId } from "../settings/providers/types";
 import { FirstRunAgentRail } from "./FirstRunAgentRail";
 import { prefetchOnboardingDiscovery } from "./FirstRunFlow";
@@ -30,6 +33,12 @@ import "./firstRun.css";
  * The status is re-read when the card opens, after a sign-in finishes, and
  * when the window regains focus (back from a browser login); only a running
  * Antigravity sign-in polls its own flow.
+ *
+ * Every read and sign-in here goes to this computer. The card hands its rail
+ * one machine scope, and each call takes the pin from it (null: the unpinned
+ * route, which reaches this computer while the front tab is bound here). A
+ * front tab on another machine would take the unpinned calls there, so the
+ * card leaves itself out then, as `useFirstRunSteps`' `skipAgents` does.
  */
 
 type AgentTile = { agent: FirstRunAgent; status: FirstRunAgentStatus };
@@ -49,7 +58,24 @@ export function FirstRunAgents({
   // The top grid's order, fixed at the first answer, so a sign-in changes a
   // tile in place instead of reshuffling the grid under the pointer.
   const [order, setOrder] = useState<SettingsProviderId[] | null>(null);
-
+  const remoteTab = useAppStore((state) => state.projectBinding?.kind === "remote");
+  const scope = useMemo(
+    () =>
+      settingsMachineScope({
+        machineId: THIS_MACHINE_ID,
+        machineName: machineName ?? THIS_MACHINE_NAME,
+        target: { kind: "this" },
+        isThisMachine: true,
+        isActiveBinding: true,
+        online: true,
+      }),
+    [machineName],
+  );
+  const pin = scope.pin;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  // No forced read: a successful sign-in clears the status cache, and the
+  // rail runs the provider's own check before it asks for this refresh.
   const refresh = useCallback(async () => {
     if (loadingRef.current) {
       pendingRef.current = true;
@@ -60,7 +86,7 @@ export function FirstRunAgents({
       do {
         pendingRef.current = false;
         try {
-          const next = await window.ade.ai.getStatus({ force: true });
+          const next = await window.ade.ai.getStatus(undefined, pinRef.current);
           setStatus(next);
           setFailed(false);
         } catch {
@@ -71,6 +97,13 @@ export function FirstRunAgents({
       loadingRef.current = false;
     }
   }, []);
+  const refreshAfterSignIn = useCallback(() => void refresh(), [refresh]);
+
+  // The front tab moved to another machine while the card was open: go on to
+  // the projects rather than read or sign in there under this computer's name.
+  useEffect(() => {
+    if (remoteTab) onDone();
+  }, [onDone, remoteTab]);
 
   // Start finding projects now, so the next card opens with its list; it also names this computer.
   useEffect(() => {
@@ -85,12 +118,14 @@ export function FirstRunAgents({
     };
   }, []);
 
+  const pinKey = pin?.key ?? null;
   useEffect(() => {
+    if (remoteTab) return undefined;
     void refresh();
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [refresh]);
+  }, [pinKey, refresh, remoteTab]);
 
   const agents = useMemo(() => firstRunAgents(), []);
   const tiles = useMemo<AgentTile[]>(
@@ -132,7 +167,9 @@ export function FirstRunAgents({
       </header>
 
       <section className="ade-fr-list" aria-label="Coding agents on this computer">
-        <FirstRunAgentRail primary={primary} later={later} onChanged={refresh} />
+        <SettingsMachineScopeProvider scope={scope}>
+          <FirstRunAgentRail primary={primary} later={later} onChanged={refreshAfterSignIn} />
+        </SettingsMachineScopeProvider>
       </section>
 
       <footer className="ade-fr-foot">

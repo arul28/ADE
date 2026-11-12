@@ -379,6 +379,7 @@ func workContextCompactSummary(from eventDict: [String: Any]) -> String {
     optionalString(eventDict["accountLabel"]).map { "account:\($0)" },
     optionalString(eventDict["failReason"]).map { "failReason:\($0)" },
     optionalString(eventDict["failDetail"]).map { "failure:" + $0.components(separatedBy: .newlines).joined(separator: " ") },
+    eventDict["fallback"] as? Bool == true ? "fallback:true" : nil,
     optionalString(eventDict["summary"]).map { "summary:\($0)" },
   ]
   return header + trailer.compactMap { $0 }.map { "\n" + $0 }.joined()
@@ -1216,6 +1217,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         }
         if let sideChat = metadata[agentChatSideChatMetadataKey], !(sideChat is NSNull) {
           parsed.userMessageFromSideChat = true
+        }
+        if let author = metadata["author"] as? [String: Any], (author["kind"] as? String) == "guest" {
+          parsed.userMessageGuestAuthorName = ((author["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if (metadata["kind"] as? String) == "continuity_recovery" {
           parsed.userMessageIsRecoveryHandOff = true

@@ -101,13 +101,22 @@ private struct DuoLayoutRootModifier: ViewModifier {
 }
 
 extension GeometryProxy {
-  /// Wider than tall, measured on the view's whole frame, safe areas
-  /// included. The keyboard is a safe area: it shrinks `size` (an upright
-  /// phone's view goes wider than tall while it is up), and a layout that
+  /// The view's whole frame, safe areas included. The keyboard is a safe
+  /// area: it shrinks `size` and leaves this as it was.
+  var sizeWithSafeAreas: CGSize {
+    let insets = safeAreaInsets
+    return CGSize(
+      width: size.width + insets.leading + insets.trailing,
+      height: size.height + insets.top + insets.bottom
+    )
+  }
+
+  /// Wider than tall, measured on the view's whole frame. With the keyboard
+  /// up, an upright phone's `size` goes wider than tall, and a layout that
   /// changed with it would drop the keyboard, grow back, and loop.
   var isLandscapeIgnoringKeyboard: Bool {
-    let insets = safeAreaInsets
-    return size.width + insets.leading + insets.trailing > size.height + insets.top + insets.bottom
+    let whole = sizeWithSafeAreas
+    return whole.width > whole.height
   }
 }
 

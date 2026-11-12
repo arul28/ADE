@@ -1756,6 +1756,41 @@ client paging loops provably terminating. A page that claims `hasMore` without
 decreasing the cursor is a retryable protocol failure, not evidence that the
 head was reached.
 
+### A row too large to page
+
+A transcript row larger than the 2 MB page cap (a huge tool result, say) never
+blocks scroll-back. `chatTranscriptHistoryPager.ts` returns that one row as its
+own page whose `startOffset` is the row's start, carrying in the row's place a
+display-only `system_notice` with `status: "history_row_omitted"` and **no
+`sequence`**, and the cursor continues from there. Every client already draws a
+`system_notice` as a quiet info line, so older desktops, the web client and the
+phone show it with no new code. A row up to 8 MB (`SEQUENCE_PROBE_MAX_ROW_BYTES`)
+is read and parsed so the notice can name its size and kind and keep its
+timestamp; a larger row is not parsed and gets a generic notice dated from its
+leading fields (or the epoch). A row that belongs to another chat, or is
+malformed, is dropped as it always was. Because the notice has no sequence, a
+durable log keyed on sequence never stores it as the real row.
+
+A reply to a sequence cursor (`beforeSequence`, `chat.getChatEvents`) always
+holds a sequenced row older than the cursor that the caller will show, or
+`hasMore: false`. It keeps reading older pages past oversized rows (without
+parsing the later ones), past legacy rows with no sequence, and past rows the
+service hides (Codex subagent rows, through the `isVisible` filter the service
+passes in). If the file shrinks while an oversized row is being read, the page
+fails with the retryable `chat_history_changed_during_read`; the caller's
+cursor has not moved.
+
+The notice carries `omittedRow: { offset, bytes, eventType? }`. The offset is
+its identity: the renderer and the phone key on it, so two notices with the
+same text or timestamp stay separate. `eventType` is missing when the row was
+too large to parse. A transcript read (`getChatTranscript`,
+`getChatTranscriptPage`, and so `ade chat read` and handoff briefs) reports
+`truncated: true` when the omitted row may have held a message (a user
+message, a text reply, or an unknown kind) inside the returned window; an
+omitted tool result does not, because it is never a transcript entry.
+`getChatEventHistoryPage` returns `envelopeStartOffsets` lined up with the
+events it returns.
+
 Desktop and personal chat request 256 KiB pages; the desktop
 background fill requests 512 KiB. Desktop and
 personal-chat selected views keep at most 60,000 events / 32 MiB resident; a

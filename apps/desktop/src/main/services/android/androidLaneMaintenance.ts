@@ -170,12 +170,13 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
    * `--power-off-idle`: powers off each ADE-started emulator that nothing
    * uses now, whatever its idle time, except one the person pinned.
    */
-  const powerOffNow = async (options: { onlyLaneId?: string | null; dryRun?: boolean } = {}) => {
+  const powerOffNow = async (options: { onlyLaneId?: string | null; onlyAvdNames?: ReadonlySet<string> | null; dryRun?: boolean } = {}) => {
     const done: AndroidDeviceCleanupResult["poweredOff"] = [];
     const errors: AndroidDeviceCleanupResult["errors"] = [];
     for (const device of deps.listRows()) {
       if (stopped) break;
       if (options.onlyLaneId && device.laneId !== options.onlyLaneId) continue;
+      if (options.onlyAvdNames && !options.onlyAvdNames.has(device.avdName.toLowerCase())) continue;
       if (!candidate(device)) continue;
       if (deps.isBusy(device) || deps.isPinned(device.avdName)) continue;
       const idleMinutes = deps.idleMinutes(device.avdName);
@@ -374,6 +375,7 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
       poweredOff.delete(key);
     },
     runCleanup,
+    powerOffNow,
     refresh,
     start,
     stop,

@@ -7,6 +7,13 @@ import {
   DEFAULT_ADE_TURN_USAGE_GROUP_BY,
 } from "../../../shared/types/turnUsage";
 import type { AdeActionDomain } from "./domains";
+import {
+  CLOUD_INVITE_REFUSAL_REASONS,
+  CLOUD_REFERRAL_ENTER_DAYS,
+  CLOUD_REFERRAL_REWARD_LIMIT,
+  CLOUD_REFERRAL_REWARD_MILLI,
+  formatCloudHours,
+} from "../../../shared/adeCloud";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 import { PROVIDER_CONTEXT_PROVIDER_IDS } from "../../../shared/types/providerContext";
 
@@ -193,106 +200,111 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade integrations status --text",
     },
   },
-  agent37: {
-    ready_status: {
-      description: "List the account's Agent 37 ready machines: per project kept ready (its git identity and name), whether a machine is ready (prepared and asleep), being prepared, or failed, with machine names and states. Reads Agent 37 with the account's key; never returns the key.",
+  cloud: {
+    status: {
+      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computers_full | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, computers, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake, max}, lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
       input: "no input",
-      example: "ade agent37 ready --text",
-    },
-    claim_ready: {
-      description: "Take this project's ready Agent 37 machine for a new chat: marks it claimed and wakes it (about 1-2 s), then returns {instanceId, machineKey, name, projectPath, laneId, wakeMs, claimToken}. Its ADE comes online a few seconds later; wait for it before sending work there. `ade chat create --machine agent37:ready` does all of this. Throws when there is no ready machine (with whether one is being prepared). A claimed machine bills while awake; give an unused one back with release_ready.",
-      input: "object { originUrl: string }",
-      example: "ade chat create --machine agent37:ready --prompt \"…\"",
+      example: "ade cloud status --text",
     },
     list: {
-      description: "List the account's Agent 37 machines: name, Agent 37 id, ADE machine key, state (running, asleep…), type and size, what an hour costs awake and asleep, spend, what sleeping saved, how it sleeps, plus the wallet and this month against the cap. Reads Agent 37 with the account's key; never returns the key.",
+      description: "List the account's ADE Cloud machines: name, id, ADE machine key, state (running, asleep…), type and size, how fast it uses hours, how it sleeps, plus the account's plan and hours. Reads ADE Cloud with the account's key; never returns the key. status has the same computers with their lanes, and more.",
       input: "no input",
-      example: "ade agent37 list --text",
+      example: "ade cloud list --text",
     },
-    spending: {
-      description: "This month's Agent 37 spend against the account's monthly cap, the wallet, and what sleeping saved. Returns {monthlyCapUsd, monthSpentUsd, capReached, capNear, balanceUsd, savedUsd}.",
+    hours: {
+      description: "The account's plan and hours. Returns {plan, rules, hours: {includedMilli, usedMilli, leftMilli, percentUsed, state}, extraHours, disk, computers, dueForDeletion, billing}. Milli values are thousandths of a Small-hour; state is none, warn80, warn95 or zero.",
       input: "no input",
-      example: "ade agent37 spending --text",
+      example: "ade cloud hours --text",
+    },
+    referral: {
+      description: `The account's ADE Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} hours, and so does this account when the friend's first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Small-hour.`,
+      input: "no input",
+      example: "ade cloud invite --text",
+    },
+    invite_redeem: {
+      description: `Enter a friend's ADE Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within ${CLOUD_REFERRAL_ENTER_DAYS} days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (${CLOUD_INVITE_REFUSAL_REASONS.join(" | ")}), message}. The person's own call from the ADE app (Settings › Account, desktop or phone): an agent, an ADE MCP app and the CLI are refused.`,
+      input: "object { code: string (the link https://ade-app.dev/invite/<CODE>, ade://invite/<CODE>, or the bare code) }",
+      example: "App only: Settings › Account (desktop or phone). A terminal is refused.",
+    },
+    update: {
+      description: "Update an ADE Cloud computer to the current ADE: it restarts on the newest ADE release, files stay, running work stops. Asks the person first.",
+      input: "object { machine: string }",
+      example: "ade cloud update \"android vm\"",
     },
     create: {
-      description: "Make an Agent 37 machine from ADE's template, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs money: asks the person in your chat first (a full-auto chat is answered by ADE within the monthly cap). Refused at the cap. Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
-      input: "object { kind?: \"box\" | \"vm\", shape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
-      example: "ade agent37 create --kind vm --shape 4x8 --name \"android vm\"",
+      description: "Make an ADE Cloud computer, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs hours: asks the person in your chat first (a full-auto chat is answered by ADE within the agent limits). Refused before any card when the account is out of hours, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
+      input: "object { kind?: \"box\" | \"vm\" (vm is a full computer: Android and Docker), shape?: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
+      example: "ade cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
     limits: {
-      description: "What unattended agents (full-auto chats, automation runs) may spend on Agent 37 alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
+      description: "What unattended agents (full-auto chats, automation runs) may do on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
       input: "none",
-      example: "ade agent37 limits --text",
+      example: "ade cloud limits --text",
     },
     set_limits: {
-      description: "Change what unattended agents may spend: a preset, or single limits. Loosening any limit asks the person; an unattended agent is refused.",
+      description: "Change what unattended agents may do: a preset, or single limits. Loosening any limit asks the person; an unattended agent is refused.",
       input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
-      example: "ade agent37 limits balanced",
+      example: "ade cloud limits balanced",
     },
     make_status: {
       description: "A create, copy or move started with background: true: {stage, message, approvalUrl (the sign-in link to open while it waits for the person), done, result, error}.",
       input: "object { requestId: string }",
-      example: "ade --role agent actions run agent37.make_status --input-json '{\"requestId\":\"…\"}' --json",
+      example: "ade --role agent actions run cloud.make_status --input-json '{\"requestId\":\"…\"}' --json",
+    },
+    lane_launch: {
+      description: "Start a new lane on ADE Cloud: this brain makes one new computer for the lane alone, joins it to the account, gets the GitHub repository there, then starts the chat there (chat.startLaunch on that computer, same launch id). Returns at once with {launch, machine, approvalUrl, madeByChat}; read progress with lane_launch_status. The same launch id again answers that launch (a failed one goes on from its failed step), never a second computer. Refused before any card when the account is out of hours, uses all its computers or has a full disk, with status's canStartLane sentence. Costs hours: asks the person in your chat first, within the agent limits for unattended chats. The lane starts from the pushed copy of its branch.",
+      input: "object { launch: chat launch args (kind \"chat\", launchId, prompt, chat, laneConfig?) with cloud: { sizeId: \"small\" | \"medium\" | \"large\" | \"xlarge\" }, originUrl: string (the project's git origin) }",
+      example: "ade chat create --machine cloud --size medium --prompt \"…\"",
+    },
+    lane_launch_status: {
+      description: "An ADE Cloud lane launch this brain owns: {launch (stages, phase, laneId, sessionId), machine {name, instanceId, machineKey}, approvalUrl (the sign-in link while the join waits for the person), madeByChat}. Null for an unknown id.",
+      input: "object { launchId: string }",
+      example: "ade chat launch-status <launchId> --machine cloud",
+    },
+    tier_request: {
+      description: "Ask the person to change a lane computer's size (for example Android needs Large): posts a card in your chat with the size, its hours rate and your reason. It changes nothing; the person confirms on the card (when you are idle, or now). An agent never changes a size itself.",
+      input: "object { size: \"small\" | \"medium\" | \"large\" | \"xlarge\", reason: string, machine?: string (default: the cloud computer this runs on) }",
+      example: "ade cloud resize --request --size large --reason \"Android needs a full computer\"",
+    },
+    clear_caches: {
+      description: "On the ADE Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to ADE's server. Never a repository, dependencies, an image or an emulator. An agent's call asks the person with a card in its chat first; with nobody watching (full-auto, an automation, ADE MCP) the answer is no. Answers { freedGb }.",
+      input: "object { machine?: string (the instance id of the computer this runs on, the default: a call that names another machine is refused) }",
+      example: "ade actions run cloud.clear_caches (on a lane's cloud computer), or Settings › ADE Cloud › a lane › Clear caches",
+    },
+    lane_launch_cancel: {
+      description: "Stop an ADE Cloud lane launch before its chat starts, and delete the computer made for it. Only the chat that started it, or the person.",
+      input: "object { launchId: string }",
+      example: "ade chat launch-cancel <launchId> --machine cloud",
     },
     sleep: {
-      description: "Put an Agent 37 machine to sleep now: memory kept, only its disk bills. Free.",
-      input: "object { machine: string (name, Agent 37 id or machine key) }",
-      example: "ade agent37 sleep \"android vm\"",
+      description: "Put an ADE Cloud computer to sleep now: memory kept, it uses no hours.",
+      input: "object { machine: string (name, id or machine key) }",
+      example: "ade cloud sleep \"android vm\"",
     },
     wake: {
-      description: "Wake an asleep Agent 37 machine (about a second; ADE on it is online a few seconds later). Bounded by the monthly cap. A --machine call to an asleep machine wakes it on its own.",
+      description: "Wake an asleep ADE Cloud machine (about a second; ADE on it is online a few seconds later). The server refuses it at 0 hours. A --machine call to an asleep machine wakes it on its own.",
       input: "object { machine: string }",
-      example: "ade agent37 wake \"android vm\"",
+      example: "ade cloud wake \"android vm\"",
     },
     resize: {
-      description: "Change an Agent 37 machine's size (same type). It restarts: files stay, running work stops. Asks the person first.",
-      input: "object { machine: string, shape: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
-      example: "ade agent37 resize \"android vm\" --shape 4x16",
+      description: "Change an ADE Cloud machine's size (same type). It restarts: files stay, running work stops. Asks the person first.",
+      input: "object { machine: string, shape: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
+      example: "ade cloud resize \"android vm\" --shape 4x16",
     },
     copy: {
-      description: "Copy an Agent 37 machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first.",
+      description: "Copy an ADE Cloud machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first.",
       input: "object { machine: string, name?: string, shape?: string }",
-      example: "ade agent37 copy \"supabase-stack 9d77\" --name \"lane copy\"",
+      example: "ade cloud copy \"supabase-stack 9d77\" --name \"lane copy\"",
     },
     move: {
-      description: "Move an Agent 37 machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first. To move one chat and its lane to another computer, use ade chat move.",
+      description: "Move an ADE Cloud machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first. To move one chat and its lane to another computer, use ade chat move.",
       input: "object { machine: string, to: \"box\" | \"vm\", shape?: string }",
-      example: "ade agent37 move \"my box\" --to vm",
+      example: "ade cloud move \"my box\" --to vm",
     },
     delete: {
-      description: "Delete an Agent 37 machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
+      description: "Delete an ADE Cloud machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
       input: "object { machine: string }",
-      example: "ade agent37 delete \"lane copy\"",
-    },
-    set_sleep: {
-      description: "How long an Agent 37 machine waits with nothing running before it sleeps (5 to 1440 minutes), or never. Never asks first: it bills around the clock.",
-      input: "object { machine: string, minutes: number | \"never\" }",
-      example: "ade agent37 sleep-after \"my box\" 30",
-    },
-    set_cap: {
-      description: "Set the account's monthly cap for every Agent 37 machine (dollars), or off. Raising or removing it asks the person first; lowering never does. At the cap ADE makes and wakes nothing.",
-      input: "object { monthlyCapUsd: number | \"off\" }",
-      example: "ade agent37 cap 50",
-    },
-    ready_set: {
-      description: "Turn on (or change) \"Keep a cloud machine ready\" for this project: a machine kept prepared and asleep for the next chat. Turning it on asks the person first. A desktop on the account prepares it.",
-      input: "object { originUrl?: string, kind?: \"box\" | \"vm\", shape?: string, setup?: string, projectName?: string }",
-      example: "ade agent37 ready on --kind vm --setup \"npm ci\"",
-    },
-    ready_off: {
-      description: "Turn off \"Keep a cloud machine ready\" for this project; its unclaimed machine is deleted on the next pass.",
-      input: "object { originUrl?: string }",
-      example: "ade agent37 ready off",
-    },
-    ready_retry: {
-      description: "Prepare this project's ready machine again after a failure.",
-      input: "object { originUrl?: string }",
-      example: "ade agent37 ready retry",
-    },
-    release_ready: {
-      description: "Give back a ready machine you claimed in the last 30 minutes and no chat used: it is tagged ready again and put back to sleep. Needs the claimToken claim_ready returned, so it never sleeps a machine another caller claimed. Returns {released: boolean}.",
-      input: "object { instanceId: string, claimToken: string }",
-      example: "ade --role agent actions run agent37.release_ready --input-json '{\"instanceId\":\"o2m461src2\",\"claimToken\":\"<from claim_ready>\"}' --json",
+      example: "ade cloud delete \"lane copy\"",
     },
   },
   mcp_registry: {
@@ -446,7 +458,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",
       input:
         "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"lead\" | \"unknown\" }",
-      example: "ade router pick \"summarize how sync works\" --provider claude --model opus --text",
+      example: "ade router pick \"summarize how sync works\" --provider claude --model claude-opus-5-5 --text",
     },
     getRouterShadowSummary: {
       description:
@@ -552,6 +564,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { laneId: string, confirmation: \"RECLAIM\", forceDirty?: boolean }",
       example: "ade lanes archive-and-reclaim lane-123 --confirm RECLAIM --text",
     },
+    cloudStartBranch: {
+      description: "Before an ADE Cloud lane starts: whether the branch it starts from is on GitHub, and how many local commits no remote has. push=true means push it first.",
+      input: "object { start?: { from: \"default\" | \"primary\" | \"branch\", branch?, on: \"remote\" | \"local\" }, branchRef?: string }",
+      example: "ade actions run lane.cloudStartBranch --input-json '{\"start\":{\"from\":\"branch\",\"branch\":\"feature\",\"on\":\"local\"}}'",
+    },
+    pushCloudStartBranch: {
+      description: "Push the branch an ADE Cloud lane starts from to origin, so the new computer can clone it. Answers the check again after the push.",
+      input: "object { start?: { from, branch?, on }, branchRef?: string }",
+      example: "ade actions run lane.pushCloudStartBranch --input-json '{\"branchRef\":\"feature\"}'",
+    },
     unarchive: {
       description: "Restore an archived lane and safely recreate its managed worktree when it was reclaimed.",
       input: "object { laneId: string }",
@@ -561,7 +583,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   chat: {
     startLaunch: {
       description: "Launch a chat (or prepare a CLI lane) in a brand-new lane: reserves the chat and lane ids, returns at once, then fetches the base, checks out the worktree, applies the default lane template, creates the chat and sends the opening message. Progress streams as chat_launch_event.",
-      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, laneConfig?: { mode: \"new\" | \"existing\", start?: { from: \"default\" | \"primary\" | \"branch\", branch? (from branch), on: \"remote\" | \"local\" | \"uncommitted\" } (new; default: the project's new-lane defaults), branchRef? (existing), templateId?, color?, linearIssue? } (default: a new lane with the project's new-lane defaults), title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
+      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, laneConfig?: { mode: \"new\" | \"existing\", start?: { from: \"default\" | \"primary\" | \"branch\", branch? (from branch), on: \"remote\" | \"local\" | \"uncommitted\" } (new; default: the project's new-lane defaults), branchRef? (existing), pullRequestUrl? (existing: link the lane to that PR), templateId?, color?, linearIssue?, githubIssue? (new), jiraIssue? (new) } (default: a new lane with the project's new-lane defaults), title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
       example: "ade actions run chat.startLaunch --input-json '{\"kind\":\"chat\",\"mode\":\"background\",\"launchId\":\"6f1c…\",\"prompt\":\"fix the flaky test\",\"chat\":{\"create\":{\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\"},\"message\":{\"text\":\"fix the flaky test\"}}}'",
     },
     listLaunches: {
@@ -618,6 +640,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Read live turn status for one chat: RUNNING, BLOCKED, or IDLE.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getTurnStatus --scalar chat-123",
+    },
+    getChatEvents: {
+      description: "What happened to a chat since a cursor (turn starts and ends, input needed, errors), answered at once. Pass the returned cursor back as since.",
+      input: "object { sessionId: string, since?: number, limit?: number }",
+      example: "ade chat events chat-123 --since 412 --json",
+    },
+    armWebhook: {
+      description: "POST to a public https URL each time a chat goes idle, needs input or fails. Retries a failed POST; lasts 7 days.",
+      input: "object { sessionId: string, url: string, token?: string }",
+      example: "ade chat notify chat-123 --url https://example.com/hook --token-stdin",
     },
     listPendingInputs: {
       description: "List the questions and approvals a chat is blocked on right now, with each item id, kind, questions and options. Empty after a restart: the provider request died with the process.",
@@ -957,7 +989,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run automations.listRuns --input-json '{\"limit\":20}' --json",
     },
     deleteRule: {
-      description: "Delete one local automation rule. Shared rules must be removed from the shared project config.",
+      description: "Delete one automation rule. A rule that follows the ADE account is deleted on every computer.",
       input: "object { id: string }",
       example: "ade actions run automations.deleteRule --input-json '{\"id\":\"nightly-review\"}' --text",
     },
@@ -965,6 +997,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Enable or disable one automation rule. Reversible, and keeps the rule and its run history.",
       input: "object { id: string, enabled: boolean }",
       example: "ade actions run automations.toggleRule --input-json '{\"id\":\"nightly-review\",\"enabled\":false}' --text",
+    },
+    setRunOn: {
+      description:
+        "Choose which computer runs a rule that follows the ADE account (\"Run on\"). Every computer with the repository shows the rule; "
+        + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name.",
+      input: "object { id: string, deviceId?: string, name?: string (required with deviceId) }",
+      example: "ade automations run-on nightly-review --text",
     },
     triggerManually: {
       description: "Fire one automation rule now, optionally against a lane or as a dry run.",
@@ -1685,6 +1724,68 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         + "safe to call on a cadence.",
       input: "object { provider?: \"claude\" | \"codex\" }",
       example: "ade actions run provider_instances.refresh --input-json '{\"provider\":\"claude\"}' --text",
+    },
+  },
+  provider_logins: {
+    status: {
+      description:
+        "The provider sign-ins your ADE account keeps for ADE Cloud, and this computer's part: whether it copies its "
+        + "sign-ins (and why not), and what it found for each provider. Never a token, a key or a file's content.",
+      input: "object { provider?: string }",
+      example: "ade actions run provider_logins.status --input-json '{\"provider\":\"grok\"}' --text",
+    },
+    captureNow: {
+      description:
+        "Look at this computer's login files now and copy any changed sign-in into the account, behind the same rules as "
+        + "the background pass (an account with ADE Cloud, sync on, switched on). The user's action; agents are refused.",
+      input: "object { provider?: string }",
+      example: "ade actions run provider_logins.captureNow --text",
+    },
+    allowKeychain: {
+      description:
+        "On a Mac: copy Antigravity's Google sign-in from this Mac's Keychain into the account, once. macOS asks the "
+        + "person first; ADE never reads the Keychain in the background. Refused off macOS and for another computer. "
+        + "Only the ADE desktop app on this Mac calls it.",
+      input: "object { provider: \"antigravity\", slot?: \"personal\" | \"business\" }",
+      example: "(desktop only) provider_logins.allowKeychain {\"provider\":\"antigravity\"}",
+    },
+    allowGitHubCli: {
+      description:
+        "Turn on or off the copy of this computer's GitHub CLI login (github.com) for Copilot on ADE Cloud. Off at the "
+        + "start. On runs one `gh auth token` at once (it can ask to unlock the keychain), so only the ADE desktop app "
+        + "on that computer turns it on; off removes this computer's copy from the account, from any of the person's "
+        + "desktops. Refused on a cloud computer.",
+      input: "object { on: boolean }",
+      example: "(desktop only) provider_logins.allowGitHubCli {\"on\":true}",
+    },
+    use: {
+      description:
+        "Pick the sign-in ADE Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved ADE Cloud key, "
+        + "or null for the newest switched-on sign-in. Only the ADE desktop app calls it; the CLI, agents and outside apps are refused.",
+      input: "object { provider: string, key: string | null, slot?: string }",
+      example: "(desktop only) provider_logins.use {\"provider\":\"codex\",\"key\":\"key\"}",
+    },
+    setCloud: {
+      description: "Switch one sign-in on or off for ADE Cloud. Only the ADE desktop app calls it.",
+      input: "object { key: string, on: boolean }",
+      example: "(desktop only) provider_logins.setCloud {\"key\":\"grok/3f9a0c11d2e4.base\",\"on\":false}",
+    },
+    setCloudAll: {
+      description: "The one off switch for all of ADE Cloud's sign-ins. Only the ADE desktop app calls it.",
+      input: "object { on: boolean }",
+      example: "(desktop only) provider_logins.setCloudAll {\"on\":false}",
+    },
+    setCloudBalance: {
+      description:
+        "Switch Claude's smart balance on or off for ADE Cloud. One switch for ADE Cloud, off at the start, apart from "
+        + "each computer's own switch. Only the ADE desktop app calls it.",
+      input: "object { provider: \"claude\", on: boolean }",
+      example: "(desktop only) provider_logins.setCloudBalance {\"provider\":\"claude\",\"on\":true}",
+    },
+    remove: {
+      description: "Remove one sign-in from the account; every computer hears it. Only the ADE desktop app calls it.",
+      input: "object { key: string }",
+      example: "(desktop only) provider_logins.remove {\"key\":\"grok/3f9a0c11d2e4.base\"}",
     },
   },
 };

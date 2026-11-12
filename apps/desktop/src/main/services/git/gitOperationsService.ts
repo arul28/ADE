@@ -2,7 +2,8 @@ import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { runGitPushOrThrow } from "./gitPushFailure";
-import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, gitWorktreeRootCached, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { isGitWorktreeRoot } from "./gitWorktreeRoot";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
 import { GIT_PULL_TIMEOUT_MS, GIT_REMOTE_FETCH_TIMEOUT_MS } from "./gitTimeouts";
@@ -38,6 +39,7 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GitSyncMode,
+  GitGetSyncStatusArgs,
   GitSyncStatusesArgs,
   GitSyncStatuses,
   GitUpstreamSyncStatus,
@@ -66,10 +68,6 @@ type LaneInfo = {
 type BranchStashSummary = GitStashSummary & {
   oid: string;
 };
-
-function normAbs(p: string): string {
-  return path.resolve(p);
-}
 
 type CachedReadEntry<T> = {
   expiresAt: number;
@@ -211,6 +209,32 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
 async function listUnmergedFiles(worktreePath: string, timeoutMs: number): Promise<string[]> {
   const res = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: worktreePath, timeoutMs });
   return res.exitCode === 0 ? parseDiffNameOnlySorted(res.stdout) : [];
+}
+
+/**
+ * The recommendation for a diverged branch. `pull` is the default. A diverged
+ * branch is by definition one where upstream is not an ancestor (it is behind
+ * and ahead), so the reflog is what distinguishes a lane that rewrote its own
+ * pushed history (a recent rebase) from one that must merge upstream work.
+ * The paste action is a confirm-gated lease push. Counts-only callers skip this
+ * whole function.
+ */
+async function recommendDivergedAction(
+  worktreePath: string,
+  upstreamRef: string,
+): Promise<GitRecommendedAction> {
+  const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  if (mergeBaseRes.exitCode === 0) return "force_push_lease";
+  const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  const hasRecentRebase = reflogRes.exitCode === 0 &&
+    reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+  return hasRecentRebase ? "force_push_lease" : "pull";
 }
 
 export function createGitOperationsService({
@@ -406,31 +430,45 @@ export function createGitOperationsService({
     return /git working directory not found:|Lane worktree is missing\./i.test(message);
   }
 
+  /**
+   * What is staged as a rename: new path to old path. Restoring only the new
+   * path leaves the old path's staged deletion, and the next commit deletes it.
+   */
+  async function stagedRenameSources(worktreePath: string): Promise<Map<string, string>> {
+    const renames = new Map<string, string>();
+    const res = await runGit(["diff", "--cached", "--name-status", "-M", "-z"], { cwd: worktreePath, timeoutMs: 15_000 });
+    if (res.exitCode !== 0) return renames;
+    const fields = res.stdout.split("\0");
+    for (let index = 0; index < fields.length - 1;) {
+      const status = fields[index] ?? "";
+      if (status.startsWith("R")) {
+        const oldPath = fields[index + 1];
+        const newPath = fields[index + 2];
+        if (oldPath && newPath) renames.set(newPath, oldPath);
+        index += 3;
+      } else {
+        index += status.startsWith("C") ? 3 : 2;
+      }
+    }
+    return renames;
+  }
+
+  function withStagedRenameSources(paths: readonly string[], renames: ReadonlyMap<string, string>): string[] {
+    return [...new Set(paths.flatMap((entry) => {
+      const oldPath = renames.get(entry);
+      return oldPath ? [entry, oldPath] : [entry];
+    }))];
+  }
+
   function laneWorktreeMissingError(lane: LaneInfo): Error {
     return new Error(
       `Lane worktree is missing. Restore or recreate the lane worktree at ${lane.worktreePath} before viewing history.`,
     );
   }
 
-  // Every git operation checks its lane folder first. The answer is kept while
-  // the folder and its `.git` entry are the same (gitWorktreeRootCached), so
-  // the check stops starting a git process per call (~30 ms on Windows).
+  // Every git operation checks its lane folder first.
   async function assertLaneWorktreeRoot(lane: LaneInfo): Promise<void> {
-    const isRoot = await gitWorktreeRootCached(lane.worktreePath, async () => {
-      try {
-        const topLevelRes = await runGit(
-          ["rev-parse", "--path-format=absolute", "--show-toplevel"],
-          { cwd: lane.worktreePath, timeoutMs: 8_000 },
-        );
-        if (!topLevelRes || typeof topLevelRes.exitCode !== "number") return true;
-        if (topLevelRes.exitCode !== 0) return false;
-        const topLevel = topLevelRes.stdout.trim();
-        return !topLevel || normAbs(topLevel) === normAbs(lane.worktreePath);
-      } catch {
-        return false;
-      }
-    });
-    if (!isRoot) throw laneWorktreeMissingError(lane);
+    if (!(await isGitWorktreeRoot(lane.worktreePath))) throw laneWorktreeMissingError(lane);
   }
 
   const runLaneOperation = async <T>({
@@ -636,6 +674,15 @@ export function createGitOperationsService({
     return gitStdoutOrThrow(await runGitRepoCached(args, opts, { key: `commit-${kind}:${sha.toLowerCase()}`, cacheClass: "stable" }), args, opts);
   }
 
+  /**
+   * Lanes share one object store, so a hash can name another lane's commit.
+   * A lane share guest's read names only a commit HEAD of its lane reaches.
+   */
+  async function assertCommitInLaneHistory(worktreePath: string, sha: string): Promise<void> {
+    const res = await runGit(["merge-base", "--is-ancestor", `${sha}^{commit}`, "HEAD"], { cwd: worktreePath, timeoutMs: 12_000 });
+    if (res.exitCode !== 0) throw new AdeExpectedError("That commit is not in this lane's history.", "user");
+  }
+
   function normalizeCommitShaArg(commitSha: string): string {
     const normalized = commitSha.trim();
     if (!normalized.length) throw new Error("Commit SHA is required");
@@ -669,7 +716,7 @@ export function createGitOperationsService({
         metadata: { count: fileCount },
         fn: async (lane) => {
           // Stage against current worktree state to avoid stale or partial path lists.
-          await runGitOrThrow(["add", "-A", "--", "."], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          await runGitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A", "--", "."], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -684,7 +731,8 @@ export function createGitOperationsService({
         metadata: { count: filePaths.length },
         fn: async (lane) => {
           if (filePaths.length === 0) return;
-          await runGitOrThrow(["restore", "--staged", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          const renames = await stagedRenameSources(lane.worktreePath);
+          await runGitOrThrow(["restore", "--staged", "--", ...withStagedRenameSources(filePaths, renames)], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -698,7 +746,8 @@ export function createGitOperationsService({
         reason: "unstage_file",
         metadata: { path: filePath },
         fn: async (lane) => {
-          await runGitOrThrow(["restore", "--staged", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+          const renames = await stagedRenameSources(lane.worktreePath);
+          await runGitOrThrow(["restore", "--staged", "--", ...withStagedRenameSources([filePath], renames)], { cwd: lane.worktreePath, timeoutMs: 15_000 });
         }
       });
       return action;
@@ -935,11 +984,13 @@ export function createGitOperationsService({
 
         let pushed = false;
         const upstreamRes = await runGit(
-          ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+          ["rev-parse", "--symbolic-full-name", "@{upstream}"],
           { cwd: lane.worktreePath, timeoutMs: 10_000 },
         );
         if (upstreamRes.exitCode === 0) {
-          const upstream = upstreamRes.stdout.trim();
+          // The full name, stripped by hand: `--abbrev-ref` renames the upstream
+          // when a local branch shares its short name, and `branch -r` then misses it.
+          const upstream = upstreamRes.stdout.trim().replace(/^refs\/remotes\//, "");
           if (upstream.length) {
             const containsRes = await runGit(
               ["branch", "-r", "--contains", sha, upstream],
@@ -1069,9 +1120,10 @@ export function createGitOperationsService({
       });
     },
 
-    async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {
+    async getSyncStatus(args: GitGetSyncStatusArgs): Promise<GitUpstreamSyncStatus> {
       const laneId = args.laneId.trim();
-      return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
+      const skipRecommendation = args.skipRecommendation === true;
+      return readLaneCached(`sync-status:${laneId}:${skipRecommendation ? "counts" : "default"}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         await assertLaneWorktreeRoot(lane);
         const readConfiguredUpstream = async (): Promise<string | null> => {
@@ -1151,21 +1203,9 @@ export function createGitOperationsService({
         } else if (normalizedBehind > 0 && normalizedAhead === 0) {
           recommendedAction = "pull";
         } else if (diverged) {
-          const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
-            cwd: lane.worktreePath,
-            timeoutMs: 5_000
-          });
-          if (mergeBaseRes.exitCode === 0) {
-            recommendedAction = "force_push_lease";
-          } else {
-            const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
-              cwd: lane.worktreePath,
-              timeoutMs: 5_000
-            });
-            const hasRecentRebase = reflogRes.exitCode === 0 &&
-              reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
-            recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
-          }
+          recommendedAction = skipRecommendation
+            ? "pull"
+            : await recommendDivergedAction(lane.worktreePath, upstreamRef);
         }
 
         return {
@@ -1182,13 +1222,16 @@ export function createGitOperationsService({
 
     async getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
       const laneIds = normalizeSyncStatusLaneIds(args);
-      return settleLaneSyncStatuses(laneIds, async (laneId) => service.getSyncStatus({ laneId }));
+      const skipRecommendation = args.skipRecommendation === true;
+      return settleLaneSyncStatuses(laneIds, async (laneId) =>
+        service.getSyncStatus(skipRecommendation ? { laneId, skipRecommendation: true } : { laneId }));
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
+      if (args.onlyLaneHistory) await assertCommitInLaneHistory(lane.worktreePath, sha);
       const res = await readCommitObject(lane.worktreePath, sha, "files", ["show", "--pretty=format:", "--name-only", "-z", sha, "--"]);
       return parseDiffNameOnly(res);
     },
@@ -1197,6 +1240,7 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
+      if (args.onlyLaneHistory) await assertCommitInLaneHistory(lane.worktreePath, sha);
       const res = await readCommitObject(lane.worktreePath, sha, "message", ["show", "-s", "--format=%B", sha, "--"]);
       const message = res.trimEnd();
       const MAX = 8000;
@@ -1397,13 +1441,20 @@ export function createGitOperationsService({
       return action;
     },
 
-    async fetch(args: { laneId: string; signal?: AbortSignal }): Promise<GitActionResult> {
+    /**
+     * `allRemotes`: fetch and prune every remote (`--all --prune`), for a
+     * check of unsaved work that counts commits against every remote: a
+     * branch deleted on GitHub loses its tracking ref, so its commits read as
+     * unsaved unless they are already in the base (`readUnsavedWork`).
+     */
+    async fetch(args: { laneId: string; signal?: AbortSignal; allRemotes?: boolean }): Promise<GitActionResult> {
+      const fetchArgs = args.allRemotes ? ["fetch", "--all", "--prune"] : ["fetch", "--prune"];
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
+          await runGitWithGithubAuthFallbackOrThrow(fetchArgs, {
             cwd: lane.worktreePath,
             timeoutMs: GIT_FETCH_TIMEOUT_MS,
             signal: args.signal,

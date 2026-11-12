@@ -44,6 +44,9 @@ on:
       mac_result:
         description: Aggregate result of the build-mac-release matrix.
         value: ${{ jobs.build-results.outputs.mac_result }}
+      linux_result:
+        description: Aggregate result of the Linux packaging matrix.
+        value: ${{ jobs.build-results.outputs.linux_result }}
       windows_result:
         description: >-
           Result of build-win-release. 'skipped' when the Windows publication
@@ -444,6 +447,9 @@ jobs:
       # electron-builder does not notarize DMGs by default either, and this
       # step cost 4-7 minutes per job.
       - name: Validate ${{ matrix.arch }} release artifacts
+        env:
+          # A CI launch is not a person; see the Windows lifecycle step.
+          DO_NOT_TRACK: "1"
         run: cd apps/desktop && npm run validate:mac:artifacts
 
       # Artifact size is unknowable before the build, so this is its own step
@@ -484,6 +490,122 @@ jobs:
       # already in the bundles (nothing is injected), so a beta and the stable
       # that promotes it both resolve. Skips without POSTHOG_PERSONAL_API_KEY
       # and never exits non-zero. See scripts/posthog/upload-sourcemaps.mjs.
+      - name: Upload ${{ matrix.arch }} source maps to PostHog
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
+
+  build-linux-release:
+    needs: [verify, build-runtime-binaries]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A fixed Ubuntu, not ubuntu-latest: native modules need the glibc of
+          # whichever image built them, so a moved image drops every older
+          # distro. validate-linux-artifacts.mjs fails the build if one slips.
+          - arch: x64
+            os: ubuntu-24.04
+            rust: x86_64-unknown-linux-musl
+          - arch: arm64
+            os: ubuntu-24.04-arm
+            rust: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    env:
+      ADE_RUNTIME_TARGET: linux-${{ matrix.arch }}
+      ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/apps/desktop/resources/runtime
+      ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+      ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Linux build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake git build-essential
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.rust }}
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm download cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+      - name: Install CLI dependencies
+        run: cd apps/ade-cli && npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: ade-runtime-linux-${{ matrix.arch }}
+          path: apps/desktop/resources/runtime
+      - name: Gate runtime resources to linux-${{ matrix.arch }}
+        run: cd apps/desktop && npm run assert:runtime-target
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: cd apps/desktop && npm run version:release
+      - name: Apply release track
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/beta/apply-build-track.mjs
+      # What's new comes from the same place as on macOS and Windows.
+      - name: Take release notes from main
+        if: ${{ !contains(inputs.release_tag, '-') }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          git checkout FETCH_HEAD -- changelog
+      - name: Write the beta's release notes
+        if: ${{ contains(inputs.release_tag, '-') && inputs.beta_notes != '' }}
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+          ADE_BETA_NOTES: ${{ inputs.beta_notes }}
+        run: node scripts/beta/write-beta-changelog.mjs
+      - name: Reset release output
+        run: |
+          rm -rf apps/desktop/release apps/desktop/.cache
+          mkdir -p apps/desktop/.cache
+      - name: Prefetch Electron for ${{ matrix.arch }}
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
+        run: cd apps/desktop && node scripts/prefetch-electron.mjs --platform=linux --arch=${{ matrix.arch }}
+      - name: Build and validate Linux packages
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          # See the equivalent step in build-mac-release.
+          ADE_BUILD_SOURCEMAPS: "1"
+        run: cd apps/desktop && npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ade-linux-release-${{ inputs.release_tag }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/ADE-*-linux-${{ matrix.arch }}.AppImage
+            apps/desktop/release/ADE-*-linux-${{ matrix.arch }}.deb
+            apps/desktop/release/latest-linux*.yml
+          if-no-files-found: error
+      - name: Upload ${{ matrix.arch }} source maps to Sentry
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "linux-${{ matrix.arch }}"
       - name: Upload ${{ matrix.arch }} source maps to PostHog
         if: ${{ !inputs.windows_proof }}
         continue-on-error: true
@@ -696,6 +818,11 @@ jobs:
 
       - name: Test installed signed Windows product lifecycle
         shell: pwsh
+        env:
+          # A CI launch is not a person: with this the app sends no product
+          # analytics and no Sentry events. Each beta's smoke install counted
+          # as a new Windows user who never got past the first screen.
+          DO_NOT_TRACK: "1"
         run: |
           $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
@@ -708,6 +835,7 @@ jobs:
       - name: Open the last stable release's database
         env:
           GH_TOKEN: ${{ github.token }}
+          DO_NOT_TRACK: "1"
         run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/win-unpacked
 
       - name: Upload validated Windows release artifacts
@@ -867,8 +995,9 @@ jobs:
           - target: darwin-x64
             os: macos-15-intel
             binary: ade-darwin-x64
+          # Fixed for the same reason as build-linux-release.
           - target: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-24.04
             binary: ade-linux-x64
           - target: linux-arm64
             os: ubuntu-24.04-arm
@@ -1243,6 +1372,8 @@ jobs:
           mv latest-mac-x64.yml latest-mac.yml
 
       - name: Validate x64 release on x64 hardware
+        env:
+          DO_NOT_TRACK: "1"
         run: cd apps/desktop && node scripts/validate-mac-artifacts.mjs --skip-dmg
 
       # The last stable release makes a project database; this build's own
@@ -1250,6 +1381,7 @@ jobs:
       - name: Open the last stable release's database
         env:
           GH_TOKEN: ${{ github.token }}
+          DO_NOT_TRACK: "1"
         run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/mac/ADE.app
 
   build-results:
@@ -1266,11 +1398,13 @@ jobs:
       - build-mac-release
       - smoke-mac-x64
       - build-win-release
+      - build-linux-release
     runs-on: ubuntu-latest
     outputs:
       runtime_result: ${{ needs.build-runtime-binaries.result }}
       # The macOS build counts only when the x64 smoke on x64 hardware passed.
       mac_result: ${{ needs.build-mac-release.result != 'success' && needs.build-mac-release.result || needs.smoke-mac-x64.result }}
+      linux_result: ${{ needs.build-linux-release.result }}
       windows_result: ${{ needs.build-win-release.result }}
     steps:
       - name: Report build results

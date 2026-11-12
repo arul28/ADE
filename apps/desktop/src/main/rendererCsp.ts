@@ -116,6 +116,11 @@ export function buildRendererCspPolicy(
      * recorder is bundled, so script-src gains nothing.
      */
     replayConnectSources?: readonly string[];
+    /**
+     * ADE Relay origins (`wss://…`) the lane share guest connection may open
+     * a socket to (`laneShareGuestConnection.ts`). Exact origins only.
+     */
+    relayConnectSources?: readonly string[];
   } = {},
 ): string {
   const cspSources = isDevMode
@@ -169,6 +174,10 @@ export function buildRendererCspPolicy(
     .filter((source) => /^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(source))
     .map((source) => ` ${source}`)
     .join("");
+  const cspRelaySources = (options.relayConnectSources ?? [])
+    .filter((source) => /^wss:\/\/[a-z0-9.-]+(:\d+)?$/i.test(source))
+    .map((source) => ` ${source}`)
+    .join("");
   return [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
@@ -180,7 +189,7 @@ export function buildRendererCspPolicy(
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
     `media-src ${cspSources}${cspLocalSources} ${GITHUB_ATTACHMENT_MEDIA_SOURCES.join(" ")} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
-    `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}${cspReplaySources}`,
+    `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}${cspReplaySources}${cspRelaySources}`,
     `worker-src 'self' blob:`,
   ].join("; ");
 }

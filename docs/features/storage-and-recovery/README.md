@@ -238,7 +238,10 @@ kept). Only when that fails (a second notice with `autoRecovery: "failed"`), or
 the chat already recovered by itself in the last 10 minutes, does the chat wait
 for one explicit action:
 
-- `retry_original` retries the preserved pointer.
+- `retry_original` retries the preserved pointer. Success writes a notice with
+  `state: "reconstructed"` and `originalThreadResumed: true`, so a reopened
+  transcript draws "Reconnected" instead of the failure. Nothing resends the
+  failed message, so that turn keeps its Retry.
 - `recover_from_history` creates a new provider thread in the same chat with the
   hidden conversation hand-off and records old/new pointer lineage.
 - `start_new_chat` creates a distinct chat and records the relationship.
@@ -722,7 +725,7 @@ compressed transcript before reopening it for append.
 | Category | Contents | Default safety |
 |---|---|---|
 | Chats and history | Chat/terminal JSONL, logs, terminal snapshots | `compressible` |
-| Lanes and worktrees | Active, archived, reclaimed, and orphaned managed worktrees | Active `protected`; archived lanes use Archive & Reclaim; orphans `review_first` |
+| Lanes and worktrees | Active, archived, reclaimed, and orphaned managed worktrees | Active `protected`, including a plain folder that holds a worktree further down; archived lanes use Archive & Reclaim; orphans `review_first` |
 | Build and release | ADE temp staging, build output, and iOS DerivedData | `review_first` |
 | Caches | Rebuildable cache and update staging | `safe_to_remove`; chat session records `protected` |
 | Proof and attachments | Artifacts, recordings, attachments | `review_first` |
@@ -1074,6 +1077,15 @@ machine-local and excluded from CRR sync, because the copy it names is on this
 machine only. Neither Reopen nor Remove from list deletes the agent's files; a
 cleanup of those is the separate "Chats from deleted lanes" row above. See
 [Recently deleted chats](../chat/README.md#recently-deleted-chats).
+
+**Recently deleted lanes.** The same tab lists deleted lanes whose unsaved
+work the delete kept (uncommitted files, commits only that lane held) as git
+refs under `refs/ade/deleted-lanes/`, for 30 days. Restore brings one back as a
+new lane with those files; Drop (the person only, like Remove from list)
+deletes the ref. Freeing up space with its discard option saves the same way,
+marked "Space freed": the lane is still there, so Put back (or restoring the
+lane from Archive) returns the files to it. On the phone the same list sits
+under Lanes › Archived. See [Saved work](../lanes/worktree-isolation.md).
 
 Step 6's hooks are awaited individually, so a hook may be `async` — the two
 newest ones are, because they delete in paced batches. Each is invoked through

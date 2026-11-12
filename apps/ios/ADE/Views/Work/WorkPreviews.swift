@@ -1456,6 +1456,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   case appleViewerControl = "apple-viewer-control"
   /// The lane's screen and App Control on the live stage, full screen, over
   /// drawn stand-ins. See `MacDesktopViewerPreview`, `AppControlViewerPreview`.
+  case linuxDesktopCard = "linux-desktop-card"
   case macDesktopViewer = "mac-desktop-viewer"
   case macDesktopViewerControl = "mac-desktop-viewer-control"
   case appControlViewer = "app-control-viewer"
@@ -1503,6 +1504,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   case chatInfo = "chat-info"
   /// The Lanes list across machines. See `LanesAcrossMachinesPreviewHost`.
   case lanesMachines = "lanes-machines"
+  /// The Archived filter's Recently deleted rows and the kept-work notice.
+  /// See `LanesRecentlyDeletedPreviewHost`.
+  case lanesRecentlyDeleted = "lanes-recently-deleted"
   /// The connected-machines card and MACHINES rows. See
   /// `SettingsMachinesPreviewHost`.
   case settingsMachines = "settings-machines"
@@ -1553,6 +1557,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// A Muse chat before anything is sent: the machine says Muse has no login,
   /// so the card shows before a send.
   case chatSignInBeforeSend = "chat-signin-before-send"
+  /// Settings › Account signed in, with three account machines. See
+  /// `SettingsAccountPreviewHost`.
+  case settingsAccount = "settings-account"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1622,6 +1629,21 @@ struct ADEPreviewScreenHost: View {
           mode: screen == .appleViewerControl ? .controlling : .watching
         )
       )
+    case .linuxDesktopCard:
+      ScrollView {
+        MacDesktopCard(
+          laneId: WorkProofPreviewData.laneId,
+          macDesktop: {
+            var state = MacDesktopViewerPreview.watching.desktop
+            state.linuxDesktop = LinuxDesktopHostFacts(missing: [], encoder: "x264", installCommand: nil)
+            state.windows = [WorkToolsMacDesktopWindow(id: 1, appName: "Terminal", title: "Linux lane")]
+            return state
+          }(),
+          refreshTick: 0, refreshLane: {},
+          macDesktopViewerPresented: .constant(false), macDesktopFrame: .constant(nil),
+          loadedMacDesktopFramePath: .constant(nil), isLiveMacDesktopMounted: .constant(false)
+        ).padding()
+      }.background(ADEColor.pageBackground.ignoresSafeArea())
     case .macDesktopViewer, .macDesktopViewerControl:
       MacDesktopViewer(
         laneId: WorkProofPreviewData.laneId,
@@ -1640,6 +1662,8 @@ struct ADEPreviewScreenHost: View {
       )
     case .lanesMachines:
       LanesAcrossMachinesPreviewHost()
+    case .lanesRecentlyDeleted:
+      LanesRecentlyDeletedPreviewHost()
     case .settingsMachines:
       SettingsMachinesPreviewHost()
     case .settingsMachinePage:
@@ -1784,7 +1808,69 @@ struct ADEPreviewScreenHost: View {
       WorkProviderSignInPreviewHost(recovered: true)
     case .chatSignInBeforeSend:
       WorkProviderSignInPreviewHost(beforeSend: true)
+    case .settingsAccount:
+      SettingsAccountPreviewHost()
     }
+  }
+}
+
+/// `settings-account`: seeds a signed-in account and three account machines
+/// (online, asleep, offline), then mounts the real Account page. The GitHub
+/// notice does not show: it needs a live machine with an open project.
+private struct SettingsAccountPreviewHost: View {
+  @EnvironmentObject private var fleet: MachineFleet
+  @StateObject private var machineController = SettingsMachineController()
+  @State private var seeded = false
+
+  var body: some View {
+    Group {
+      if seeded {
+        NavigationStack {
+          SettingsAccountPage(
+            syncService: WorkPreviewData.syncService,
+            machineController: machineController,
+            onSignIn: {},
+            machinesPage: { AnyView(Text("Machines")) },
+            integrationsPage: { AnyView(Text("Integrations")) }
+          )
+        }
+        .environmentObject(WorkPreviewData.syncService)
+      } else {
+        ADEColor.surfaceBackground.ignoresSafeArea()
+      }
+    }
+    .task {
+      SettingsAccountPreviewData.seed()
+      machineController.bind(syncService: WorkPreviewData.syncService, fleet: fleet)
+      seeded = true
+    }
+  }
+}
+
+private enum SettingsAccountPreviewData {
+  static let identity = AccountIdentity(
+    userId: "user_2pQx7Lm9RkVa4TfB8cZy1HnE",
+    displayName: "Sam Rivera",
+    email: "sam.rivera@example.com",
+    imageURL: nil,
+    providerLabel: "GitHub",
+    providerId: "github"
+  )
+
+  static var machines: [AccountMachine] {
+    let now = Date().timeIntervalSince1970 * 1000
+    let rows = [
+      #"{"machineKey":"preview-studio","deviceId":"preview-studio-device","name":"Mac Studio","channel":"stable","platform":"darwin","deviceType":"desktop","online":true,"lastSeenAt":\#(now),"power":{"onExternalPower":true}}"#,
+      #"{"machineKey":"preview-macbook","deviceId":"preview-macbook-device","name":"MacBook Pro","channel":"beta","platform":"darwin","deviceType":"laptop","online":false,"sleepState":"asleep","sleepStateAt":\#(now - 1_800_000),"lastSeenAt":\#(now - 1_800_000),"power":{"batteryPercent":64,"charging":false}}"#,
+      #"{"machineKey":"preview-linux","deviceId":"preview-linux-device","name":"build-box","platform":"linux","deviceType":"server","online":false,"lastSeenAt":\#(now - 259_200_000)}"#,
+    ]
+    return rows.map { try! JSONDecoder().decode(AccountMachine.self, from: Data($0.utf8)) }
+  }
+
+  @MainActor
+  static func seed() {
+    AccountService.shared.seedPreviewSignedIn(identity)
+    AccountService.shared.seedPreviewMachines(machines)
   }
 }
 

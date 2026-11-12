@@ -118,6 +118,11 @@
 /* Start from: the New lane dialog's branch menu beside its Remote / Local switch. */
 .ade-nl-start { display: grid; grid-template-columns: 240px 150px; gap: 8px; align-items: center; }
 
+/* Branch names: the same field as Start from, as wide as that row's two controls. */
+.ade-nl-pattern { width: calc(240px + 8px + 150px); max-width: 100%; }
+/* A branch or pattern inside the field and its menu, in the face branch names read in. */
+.ade-nl-mono { font-family: var(--font-mono); font-size: 11px; }
+
 /* Inside a row hint: a branch name, and a problem with one. */
 .ade-nl-code { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-fg); }
 .ade-nl-warn { color: var(--kit-warn); }

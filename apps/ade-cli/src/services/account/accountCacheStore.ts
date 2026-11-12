@@ -134,6 +134,13 @@ export type AccountCacheHealth = {
   pendingChanges: number;
   /** Local changes the account service refused; kept here and retried hourly. */
   parked: number;
+  /**
+   * The last sync in this process, for this account, finished ("ready"), even
+   * when `state` is "failing" only because some changes are parked. A reader
+   * that can live with a refused item of its own (an older relay that does not
+   * know a newer kind) reads this instead of `state`.
+   */
+  syncReady?: boolean;
   /** One plain sentence when not ok. Never a value or a key. */
   lastError: string | null;
 };
@@ -308,6 +315,8 @@ export type AccountCacheStore<
   syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus>;
   /** Cache keys of local writes that have not reached the Worker yet (parked ones included). */
   pendingKeys(): string[];
+  /** Cache keys of local writes the Worker refused for themselves (parked, retried hourly). */
+  parkedKeys(): string[];
   /** How this machine's sync is doing; reads the cache, never the network. */
   health(): AccountCacheHealth;
   /**
@@ -1120,6 +1129,10 @@ export function createAccountCacheStore<
       return readCache().pending.map((entry) => config.pendingKey(entry));
     },
 
+    parkedKeys(): string[] {
+      return readCache().pending.filter((entry) => entry.parked).map((entry) => config.pendingKey(entry));
+    },
+
     health(): AccountCacheHealth {
       const accountUserId = config.getAccountUserId();
       const pending = accountUserId ? readCache().pending : [];
@@ -1130,7 +1143,7 @@ export function createAccountCacheStore<
         && lastSyncedEpoch === epoch;
       const status = synced ? lastSyncStatus : null;
       const lastSyncedAt = synced && lastReadySyncAtMs > 0 ? new Date(lastReadySyncAtMs).toISOString() : null;
-      const base = { lastSyncedAt, pendingChanges, parked };
+      const base = { lastSyncedAt, pendingChanges, parked, syncReady: status === "ready" };
       if (!config.hasRelay()) {
         return { ...base, state: "unavailable", lastError: "This computer has no account service to sync with." };
       }
@@ -1168,9 +1181,9 @@ export function createAccountCacheStore<
      * only that caller's hold, so tearing one project down cannot silence the
      * beat for the projects still running.
      *
-     * The interval matches the account-directory heartbeat, so a machine that
-     * is awake and signed in converges within one beat and an idle one costs a
-     * single `since`-filtered query.
+     * The interval matches the 30 s activity heartbeat whose response carries
+     * the change marks, so a machine that is awake and signed in converges
+     * within one beat and an idle one sends nothing.
      */
     startPeriodicSync(
       intervalMs = config.defaultSyncIntervalMs,

@@ -4,8 +4,10 @@ import path from "node:path";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
+  adeWithheldAgentSkills,
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
+  setAgentSkillRootFilter,
   splitAdeAgentSkillRoots,
 } from "../../../shared/agentSkillRoots";
 import { adeHomeDir } from "./cursorAgentSkillShim";
@@ -43,6 +45,8 @@ export function adePromptAgentSkillRoots(options: {
   env?: NodeJS.ProcessEnv;
   resourcesPath?: string | null;
   cwd?: string | null;
+  /** The env builder: the variable keeps every root, and each launch filters what it passes on. */
+  includeWithheld?: boolean;
 } = {}): string[] {
   return getAdeAgentSkillRootsForPrompt({ ...options, exists: agentSkillRootExists });
 }
@@ -104,6 +108,7 @@ export function withoutAgentSkills(
   const withheldKey = [...withheldSet].sort().join(",");
   return roots.map((root) => {
     let staging: string | null = null;
+    let target: { key: string; mirror: string } | null = null;
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
       if (!entries.some((entry) => withheldSet.has(entry.name))) return root;
@@ -112,6 +117,7 @@ export function withoutAgentSkills(
       const cached = filteredSkillRootMirrors.get(key);
       if (cached && agentSkillRootExists(cached)) return cached;
       const mirror = path.join(mirrorParent, createHash("sha256").update(key).digest("hex").slice(0, 16));
+      target = { key, mirror };
       staging = `${mirror}.${process.pid}.${Date.now()}.tmp`;
       ensurePrivateMirrorParent(mirrorParent);
       fs.cpSync(canonical, staging, {
@@ -123,11 +129,19 @@ export function withoutAgentSkills(
       staging = null;
       filteredSkillRootMirrors.set(key, mirror);
       return mirror;
-    } catch {
+    } catch (error) {
+      // Most candidate roots don't exist; only a real copy failure is worth a line.
+      if (target || (error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+        console.warn("[skills] filtered skill mirror failed", error instanceof Error ? error.message : String(error));
+      }
       if (staging) {
         try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ }
       }
-      return root;
+      // A mirror held open (Windows) or rebuilt by another ADE process is still a good one.
+      const usable = target && agentSkillRootExists(target.mirror) ? target.mirror : root;
+      // Remembered either way: copying again on every prompt can't help.
+      if (target) filteredSkillRootMirrors.set(target.key, usable);
+      return usable;
     }
   });
 }
@@ -148,6 +162,18 @@ export function withoutAgentSkillsEnv(
   if (roots.length) next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(withoutAgentSkills(roots, withheld));
   if (bundled) next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = withoutAgentSkills([bundled], withheld)[0];
   return next;
+}
+
+/**
+ * The roots minus the skills held back from every agent right now (`ade-cloud`
+ * for an account not on the access list). Installed here because the shared
+ * root helpers are bundled into the renderer and cannot touch the disk.
+ */
+setAgentSkillRootFilter((roots) => withoutAgentSkills(roots, adeWithheldAgentSkills()));
+
+/** {@link withoutAgentSkillsEnv} for the skills no agent may see right now. */
+export function withoutWithheldAgentSkillsEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return withoutAgentSkillsEnv(env, adeWithheldAgentSkills());
 }
 
 export function claudeAgentSkillPluginRoots(env: NodeJS.ProcessEnv): string[] {

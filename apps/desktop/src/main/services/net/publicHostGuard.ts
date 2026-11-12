@@ -78,3 +78,8 @@ export function pinnedLookup(address: string, family: 4 | 6): NonNullable<http.R
     else callback(null, address, family);
   }) as unknown as NonNullable<http.RequestOptions["lookup"]>;
 }
+
+/** Names that only ever mean this computer or a local network, whatever they resolve to. */
+export function isLocalHostname(hostname: string): boolean {
+  return hostname === "localhost" || /\.(?:localhost|local|internal|intranet|lan|home\.arpa)$/i.test(hostname);
+}

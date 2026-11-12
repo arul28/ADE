@@ -469,6 +469,14 @@ export function createAccountVaultStore(args: {
         .map((split) => split.key);
     },
 
+    /** Keys in one scope and kind whose write the account service refused (parked, retried hourly). */
+    parkedKeys(scope: string, kind: AccountVaultItemKind): string[] {
+      return cache.parkedKeys()
+        .map(splitCacheKey)
+        .filter((split): split is NonNullable<typeof split> => split !== null && split.scope === scope && split.kind === kind)
+        .map((split) => split.key);
+    },
+
     /** Start (or join) the shared background sync. Refcounted; see the helper. */
     startPeriodicSync(intervalMs = DEFAULT_SYNC_INTERVAL_MS, onSync?: AccountCacheSyncListener): () => void {
       return cache.startPeriodicSync(intervalMs, onSync);

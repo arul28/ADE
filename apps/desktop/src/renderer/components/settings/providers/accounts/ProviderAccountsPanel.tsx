@@ -37,13 +37,16 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerOffersAutoStart } from "./accountPresentation";
 import { AccountCard, type CardState, type ClaudeAccountSettingPatch, type RowMenuAction } from "./AccountCard";
-import { useAccountSignInSheet } from "./AddProviderAccountSheet";
+import { useAccountSignInSheet } from "../AccountSignInSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { checkProviderSignIn } from "../../../../lib/providerSignInCheck";
 import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
+import { AdeCloudPassLink, passAccountLine, passAccountTitle, useComputerPassRows } from "../cloud/passAccounts";
+import { claudePassKeyOfAccountId, isClaudePassAccountId } from "../../../../../shared/types/providerLogins";
 
-const SMART_BALANCE_HINT =
+export const SMART_BALANCE_HINT =
   "On: each new chat goes to the account furthest behind the pace needed to use its weekly room before it resets, after counting the chats already running there, so no account's room expires unused and no account is stacked with more work than it can finish. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
 const AUTO_START_HINT =
   "When a 5-hour window ends, ADE sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.";
@@ -113,7 +116,7 @@ function HintDot({ label, text }: { label: string; text: string }) {
 }
 
 /** One routing switch in the strip: switch, name, (?). */
-function RoutingSwitch({
+export function RoutingSwitch({
   label,
   hint,
   checked,
@@ -189,7 +192,16 @@ export function ProviderAccountsPanel({
     useProviderInstances(provider);
   // The usage numbers come from the same machine as the accounts.
   const { snapshot } = useUsageSnapshot({ pin });
-  const signInSheet = useAccountSignInSheet({ provider, providerLabel, onChanged: () => void reload() });
+  const signInSheet = useAccountSignInSheet({
+    provider,
+    providerLabel,
+    onChanged: (signedIn) => {
+      void reload();
+      // A new login may be another account: the provider's own check on this
+      // machine, which also drops the caches the pickers and cards read.
+      if (signedIn) void checkProviderSignIn(provider, pin);
+    },
+  });
   const openSheet = signInSheet.open;
   const reducedMotion = usePrefersReducedMotion();
   const nowMs = Date.now();
@@ -208,6 +220,9 @@ export function ProviderAccountsPanel({
   const showSmartBalance = loginCount >= 2 || settings.smartBalance === true;
   const showAutoStart = providerOffersAutoStart(snapshot, provider);
   const nextPickId = snapshot?.balanceNext?.find((entry) => entry.provider === provider)?.instanceId ?? null;
+  // A cloud computer holds each Claude pass as an account; their state comes from its own status, read only then.
+  const hasPassAccounts = provider === "claude" && instances.some((instance) => isClaudePassAccountId(instance.id));
+  const passRows = useComputerPassRows(hasPassAccounts, pin);
 
   const run = useCallback(
     async (work: () => Promise<unknown>) => {
@@ -473,6 +488,12 @@ export function ProviderAccountsPanel({
                 onAction={onAction}
                 onSignIn={(target) => openSheet({ existing: target })}
                 replacedNote={replacedNote}
+                pass={isClaudePassAccountId(instance.id)
+                  ? {
+                    title: passAccountTitle(passRows.get(claudePassKeyOfAccountId(instance.id) ?? ""), nowMs),
+                    line: <AdeCloudPassLink state={passAccountLine(passRows.get(claudePassKeyOfAccountId(instance.id) ?? ""), nowMs)} />,
+                  }
+                  : null}
               />
             );
           })}

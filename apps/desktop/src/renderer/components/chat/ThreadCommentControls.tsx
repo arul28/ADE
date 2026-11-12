@@ -10,6 +10,7 @@ import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import {
   countCommentsForNextSend,
   isLocalThreadComment,
@@ -218,6 +219,9 @@ export function ThreadCommentListItem({
   // An image or video reads as its caption, not as the bracketed line the agent gets.
   const media = comment.anchor.kind === "media" ? comment.anchor : null;
   const MediaIcon = media?.mediaKind === "video" ? FilmStrip : ImageIcon;
+  // Lane sharing: a guest's comment names its author (set by the host).
+  const author = parseMessageAuthor(comment.author);
+  const guestName = author?.kind === "guest" ? (author.name?.trim() || "A guest") : null;
   return (
     <div
       className={cn(
@@ -250,6 +254,11 @@ export function ThreadCommentListItem({
           </button>
         </div>
       </div>
+      {guestName ? (
+        <div className="truncate pl-[11px] font-sans text-[10.5px] text-fg/50" data-testid="thread-comment-author" title={guestName}>
+          From {guestName}
+        </div>
+      ) : null}
       {editing ? (
         <ThreadCommentEditor initialBody={comment.body} saveLabel="Save" error={error} onSave={onSaveEdit} onCancel={onCancelEdit} />
       ) : (

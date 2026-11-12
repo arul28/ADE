@@ -4,6 +4,7 @@ import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
+import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
@@ -31,6 +32,8 @@ import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
+import { createWebCloudNamespace } from "./cloud";
+import { createWebProviderLoginsNamespace } from "./providerLogins";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
@@ -99,6 +102,25 @@ export function createAdeWebAdapter(
       }
     })
   );
+  // A reconnect can land on another host on the same machine (its project host
+  // taking over from the machine-wide one), whose answers no view has read:
+  // a cloud machine's lanes stayed "No lanes yet" until a reload. Everything
+  // is read again each time a restored connection is ready, never on the first.
+  let lastReadiness: string = client.getStatus().readiness;
+  let readyBefore = lastReadiness === "ready";
+  addDispose(client.subscribe((status) => {
+    if (status.readiness === lastReadiness) return;
+    lastReadiness = status.readiness;
+    if (status.readiness !== "ready") return;
+    if (readyBefore) {
+      events.emit("invalidation", {
+        tables: [],
+        domains: Object.keys(DOMAIN_EVENTS) as Array<keyof typeof DOMAIN_EVENTS>,
+        at: new Date().toISOString(),
+      });
+    }
+    readyBefore = true;
+  }));
 
   // Pushed new-lane launch updates. Guarded: test doubles and older sync
   // clients may not expose the listener.
@@ -142,6 +164,9 @@ export function createAdeWebAdapter(
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
+    cloudAccess: misc.cloudAccess,
+    // Settings › ADE Cloud and the machine lists read the account through the connected machine.
+    cloud: createWebCloudNamespace(infra),
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,
@@ -165,9 +190,15 @@ export function createAdeWebAdapter(
     // Live, read-only Mac Desktop view. The Electron namespace carries the
     // desktop-only members; this surface implements the live-view cut.
     macDesktop: createMacDesktopNamespace(infra),
+    // Music belongs to a physical desktop. Declared absent on purpose: the
+    // fallback proxy otherwise hands back a truthy stand-in, so
+    // `window.ade.music` checks would pass on web and offer a dead control.
+    music: undefined,
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
     providerInstances: misc.providerInstances,
+    // The account's sign-ins (Settings › Providers, the ADE Cloud page), through the connected machine.
+    providerLogins: createWebProviderLoginsNamespace(infra),
     automations: misc.automations,
     updateCheckForUpdates: async () => undefined,
     // The web app has no install of its own to move between tracks.
@@ -180,6 +211,27 @@ export function createAdeWebAdapter(
       ok: false as const,
       target,
       reason: "Switch update tracks in the ADE desktop app on that computer.",
+    }),
+    // The owner shares a lane from the desktop app on the account; the web
+    // client has no runtime action channel for the owner's lane_share verbs.
+    laneShare: {
+      list: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      create: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      updateRights: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      revoke: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      resendInvite: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      listReceived: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      // A move lands work through a machine's own runtime; the web client has no such channel.
+      move: async () => { throw new Error("lane_share_desktop_only: Move chats from the ADE desktop app."); },
+      onEvent: () => () => {},
+    },
+    // The guest's side of lane sharing needs no machine: this browser's own
+    // account session asks the account directory (the token goes nowhere
+    // else). The shared lane is reached by the guest connection with a ticket.
+    laneShareGuest: createLaneShareGuestDirectory({
+      send: (request) => accountClient.laneShareRequest(request),
+      trustedRelayBaseUrls: () => accountClient.getRelayBaseUrls(),
     }),
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {

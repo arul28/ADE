@@ -26,7 +26,7 @@ import {
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { showToast } from "./toast/toastStore";
-import { useBannerDismissals } from "../../lib/bannerDismiss";
+import { githubReminderKey, clearGithubAlarms, migrateGithubReminder, githubAccessWasWorking, rememberGithubWorkingAccess, useBannerDismissals } from "../../lib/bannerDismiss";
 import {
   APP_BANNER_PRIORITY,
   useAppBanners,
@@ -49,6 +49,7 @@ import {
 export type RelayRouteHealth = SyncRouteHealth["relay"];
 
 export type IntegrationBannersProps = {
+  machineId: string;
   currentProjectRoot: string | null;
   githubStatus: GitHubStatus | null;
   hasAnyAiProvider: boolean;
@@ -125,6 +126,7 @@ export function relayGraceRemainingMs(
 }
 
 export function IntegrationBanners({
+  machineId,
   currentProjectRoot,
   githubStatus,
   hasAnyAiProvider,
@@ -157,7 +159,8 @@ export function IntegrationBanners({
     if (!api?.getAppInstallationStatus) return;
     const seq = seqRef.current + 1;
     seqRef.current = seq;
-    const isCurrent = () => mountedRef.current && seqRef.current === seq;
+    const requestedRoot = currentRootRef.current;
+    const isCurrent = () => mountedRef.current && seqRef.current === seq && currentRootRef.current === requestedRoot;
     try {
       const install = await api.getAppInstallationStatus({ forceRefresh });
       if (!isCurrent()) return;
@@ -255,25 +258,31 @@ export function IntegrationBanners({
   const { clear: clearDismissal } = dismissals;
   useEffect(() => {
     if (!currentProjectRoot) return;
-    if (appStatusLoaded && loadedRoot === currentProjectRoot) {
-      const account = deriveGithubAccountAuthState(appAuth);
-      const repo = deriveGithubRepoConnectionState(appInstall, account);
-      if (account === "valid") clearDismissal("github-app-account");
-      if (repo === "connected") {
-        const repoKey = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : currentProjectRoot;
-        clearDismissal(`github-app-repo:${repoKey}`);
-      }
+    const repo = githubStatus?.repo ?? (loadedRoot === currentProjectRoot ? appInstall?.repo : null);
+    const repoName = repo ? `${repo.owner}/${repo.name}`.toLowerCase() : null;
+    if (repoName) migrateGithubReminder(repoName, currentProjectRoot, machineId);
+    const alarmScopes = (repoName ? [repoName, currentProjectRoot] : [currentProjectRoot])
+      .map((scope) => `${machineId}:${scope}`);
+    // API, App authorization and Git transport recover independently.
+    if (githubStatus?.connected && githubStatusHasWriteCredential(githubStatus)
+      && !githubStatus.credentialStoreUnreadable && !githubStatus.authFailure && !githubStatus.tokenDecryptionFailed) {
+      if (repoName) rememberGithubWorkingAccess(`${machineId}:${repoName}`);
+      for (const scope of alarmScopes) clearGithubAlarms(scope, "github-cli");
     }
-    if (githubStatus?.connected && githubStatusHasWriteCredential(githubStatus)) {
-      clearDismissal(`github-cli:${currentProjectRoot}`);
+    if (appStatusLoaded && loadedRoot === currentProjectRoot && deriveGithubAccountAuthState(appAuth) === "valid") {
+      for (const scope of alarmScopes) clearGithubAlarms(scope, "github-app-account");
     }
     if (githubStatus?.gitTransport?.state === "ok") {
-      clearDismissal(`github-git-transport:${currentProjectRoot}`);
+      for (const scope of alarmScopes) clearGithubAlarms(scope, "github-git-transport");
+    }
+    if (issueAccess?.writeSource) {
+      for (const scope of alarmScopes) clearGithubAlarms(scope, "github-app-issues-permission");
     }
     if (hasAnyAiProvider) clearDismissal(`ai-provider:${currentProjectRoot}`);
     if (relayOutage == null) clearDismissal("relay-offline");
     if (!describeGithubOutage(githubStatus)) clearDismissal("github-outage");
   }, [
+    machineId,
     currentProjectRoot,
     relayOutage,
     appStatusLoaded,
@@ -283,6 +292,7 @@ export function IntegrationBanners({
     hasAnyAiProvider,
     clearDismissal,
     loadedRoot,
+    issueAccess,
   ]);
 
   const models = useMemo<BannerModel[]>(() => {
@@ -357,9 +367,7 @@ export function IntegrationBanners({
               onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE),
             },
           ],
-          // Account (App user-token) auth is machine/account-wide, so its dismiss
-          // key is global — a per-project key would leave a stale dismissal in one
-          // project suppressing the same account warning after a cross-project regress.
+          // Repository setup snoozes and credential alarms are separated below.
           dismiss: { key: "github-app-account", fingerprint: block.account },
         });
       } else if (block?.kind === "repo") {
@@ -551,8 +559,27 @@ export function IntegrationBanners({
       });
     }
 
-    return list;
+    const repository = githubStatus?.repo ?? (loadedRoot === currentProjectRoot ? appInstall?.repo : null);
+    const repoName = repository ? `${repository.owner}/${repository.name}`.toLowerCase() : null;
+    return list.flatMap((model) => {
+      if (!model.id.startsWith("github-") || model.id === "github-outage") return [model];
+      if (!model.dismiss || !("fingerprint" in model.dismiss)) return [model];
+      const fingerprint = model.dismiss.fingerprint ?? "setup";
+      const alarm = model.id === "github-git-transport"
+        || (model.id === "github-cli" && (
+          githubStatus?.credentialStoreUnreadable || githubStatus?.authFailure || githubStatus?.tokenDecryptionFailed
+          || (repoName && githubAccessWasWorking(`${machineId}:${repoName}`)) || !["no-token", "no-write-credential"].includes(fingerprint)
+        ))
+        || (model.id === "github-app-account" && fingerprint === "needs_reauth")
+        || (model.id === "github-app-issues-permission" && !issueAccess?.writeSource);
+      // Optional reminders need a repository identity, never a worktree path.
+      if (!repoName && !alarm) return [];
+      return [{ ...model, dismiss: alarm
+        ? { key: `github-alarm:${machineId}:${repoName ?? currentProjectRoot}:${model.id}:${fingerprint}`, fingerprint }
+        : { key: githubReminderKey(repoName!), fingerprint: "setup" } }];
+    });
   }, [
+    machineId,
     issueAccess,
     relayOutage,
     relayHealth,

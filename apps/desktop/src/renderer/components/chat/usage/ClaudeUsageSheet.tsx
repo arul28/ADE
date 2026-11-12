@@ -25,6 +25,7 @@ import { extractError, formatDurationMs, formatSpend } from "../../../lib/format
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { useAgentChatApi } from "../agentChatApi";
+import { sendWithCloudWakeMark } from "../../../state/cloudSavedChatsSync";
 import { showToast } from "../../app/toast/toastStore";
 import { ClaudeLogo } from "../../terminals/ToolLogos";
 import { usageLeftLevel } from "../../usage/usageDesign";
@@ -197,7 +198,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
             throw new Error("This chat's queue is full. Send the rest when the queue clears.");
           }
         } else {
-          await api.send({ sessionId, text }, pinRef.current);
+          await sendWithCloudWakeMark(sessionId, pinRef.current, () => api.send({ sessionId, text }, pinRef.current));
         }
         queueBehindTurn = true;
       }

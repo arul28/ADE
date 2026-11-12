@@ -261,6 +261,19 @@ export function useDraftMachineRouting({
     () => derivedMachineOptions.filter((option) => option.targetId != null && !canCreateLaneOnMachine(option)),
     [derivedMachineOptions],
   );
+  const machineOrder = useMemo(() => derivedMachineOptions.map((option) => option.id), [derivedMachineOptions]);
+  const connections = useMemo(
+    () => (enabled ? connectionSnapshot?.connections ?? [] : []),
+    [connectionSnapshot, enabled],
+  );
+  const machineKeyByTargetId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const connection of connections) {
+      const key = connection.target.pairedMachine?.machineKey?.trim();
+      if (key) map.set(connection.target.id, key);
+    }
+    return map;
+  }, [connections]);
   /** Saved paired machines that are not connected now (an asleep cloud machine among them). */
   const offlineMachines = useMemo(
     () => (enabled ? connectionSnapshot?.connections ?? [] : [])
@@ -673,6 +686,12 @@ export function useDraftMachineRouting({
   return {
     machineOptions,
     cloneMachineOptions,
+    /** Every connected machine's id in list order, ready or not: the picker keeps a machine in its place when it changes group. */
+    machineOrder,
+    /** Account machine key by remote target id, for the connected and saved paired machines. */
+    machineKeyByTargetId,
+    /** The live connections, for a send that needs a machine's project binding. */
+    connections,
     offlineMachines,
     refreshMachineProjects,
     selectorMachines,

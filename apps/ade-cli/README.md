@@ -275,6 +275,16 @@ as unknown, never gone, so `prune` keeps it. `projects clone` without `--path`
 clones beside the other projects; a `--path` sent to another computer must be
 absolute there (a leading `~` means that computer's home).
 
+`ade projects remove` removes only the registry entry; the folder stays.
+Deleting a project's folder is the person's act: the desktop's **Remove
+project** dialog calls `projects.inspectRemoval` (a fresh read of changed
+files, unpushed commits, stashes and what runs) and then `projects.removeCopy`
+with `deleteFolder` and the `stateToken` it saw. `projects.removeCopy` refuses
+an agent caller and any caller below the cto role, so no `ade` command wraps
+it. A project with a git origin shows the account's shared name and icon
+(`project.name` / `project.icon` rows under `repo:<origin>` in the account
+settings store, or `.ade/project-record.json` with sync off) on every machine.
+
 …or call the same JSON-RPC methods directly:
 
 ```text
@@ -300,6 +310,7 @@ runtime/info     machineInfo.get   machine.updateAndRestart
 runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
+projects.inspectRemoval            projects.removeCopy
 projects.browseDirectories         projects.getDetail
 projects.getWorkSummary            projects.getDefaultParentDir
 projects.getHandoffStoragePreflight
@@ -563,6 +574,7 @@ ade lane drift --lane lane-id --text              # did someone `git checkout` i
 ade lane drift resolve --lane lane-id --switch-back        # put the worktree back on the lane's branch (refuses on a dirty tree)
 ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
+ade lanes create --machine cloud --size medium --name fix-login   # the lane alone, on its own new ADE Cloud computer (small, medium, large, xlarge); asks first; prints the launch id on stderr
 ade lanes rename lane-id --name "OAuth refactor"            # rename the lane; its branch keeps its name
 ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
 ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
@@ -570,6 +582,11 @@ ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane histo
 ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed. A recreated worktree re-runs the whole env init before returning; a plain unarchive returns immediately and restarts Docker in the background, so don't assume services are up when the command exits
 ade lanes action initEnv --arg laneId=lane-id              # re-run the full env init (env files, copies, deps, mounts, setup script, docker)
 ade lanes delete lane-id --force --delete-branch
+ade lanes deleted list --text                              # lanes whose unsaved work a delete kept, for 30 days
+ade lanes deleted restore <id>                             # bring one back with its uncommitted files; never pushes
+ade lanes share --lane lane-id --text                      # the lane's shares: person, state, preset, risk, end, made by
+ade lanes share --lane lane-id --add guest@example.com --ends 1w   # a Watch share (see, never act); the only kind the CLI, an agent or ADE MCP can make, at most 5 an hour
+ade lanes share --lane lane-id --remove guest@example.com  # stop a share of this lane (or pass its grant id)
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431
@@ -586,6 +603,8 @@ ade chat restart [<session>] [--stop | --after-turn]         # fresh provider pr
 ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
 ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
 ade chat wait --background --job <id>                        # wake me when my background job ends
+ade chat events <id> --since <cursor> --json                 # turn starts/ends, input needed, errors since a cursor; answers at once
+ade chat notify <id> --url https://… --token-stdin           # POST there when it goes idle, needs input or fails (--list, --cancel)
 ade chat send <B> --after <A> "start the review"             # send B this once A is idle
 ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
@@ -649,6 +668,7 @@ ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
+ade new chat --mode chat --lane lane-id --prompt-file brief.md   # a long or multi-line first message from a file, or stdin with -
 ade new chat --mode chat --lane lane-id --prompt "repro the flake"   # from an agent: a subagent that reports back (the default); --type peer for no report
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
@@ -886,10 +906,16 @@ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
 ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
-ade integrations status --text                    # GitHub, Linear, Jira, Agent 37: connected here or not, and as whom; never a credential
+ade integrations status --text                    # GitHub, Linear, Jira: connected here or not, and as whom; never a credential
 ade integrations connect linear --reason "…"      # connect card in the chat (browser sign-in or key); saved for the project on your machines, prints the outcome
-ade agent37 ready --json                          # Agent 37 ready machines per project: ready / preparing / in use / failed
-ade chat create --machine agent37:ready --prompt "…"  # start on this project's ready Agent 37 machine: wakes it, waits until it is online, then sends
+ade cloud status --text                         # the whole ADE Cloud account in one read: can a new lane start (the reason when not), plan, hours, disk, computers, each lane, sizes, default size, agent limits; `ade cloud` alone is the same
+ade chat create --machine cloud --size medium --prompt "…"  # a new lane on its own new ADE Cloud computer (small, medium, large, xlarge; default small); asks first; prints the launch id on stderr
+ade chat create --machine cloud --launch-id <id> --prompt "…"  # the same id again: follows that launch, or goes on from its failed step, never a second computer
+ade chat launch-status <id> --machine cloud        # an ADE Cloud lane launch: stages, the computer, the approval link while the join waits
+ade chat launch-cancel <id> --machine cloud        # stop it before the chat starts and delete its computer
+ade cloud work-state --json                       # ADE Cloud: the lanes of this cloud computer with uncommitted or unpushed work; pushes nothing
+ade cloud push-work --check --json                # the same check; without --check it commits and pushes every lane (ADE's server runs it before a free)
+ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account
@@ -1099,7 +1125,7 @@ renderer publishing what it has open for phones and the hosted web client to
 mirror; an agent that wants a pane open should open the tool it needs
 (`ade browser panel`) rather than claim one is open.
 
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
+Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. User-only domains, such as `lane_share` (sharing a lane with another account), are left out of `ade actions list` and refused by `ade actions run`: only the ADE desktop app, with no agent identity, reaches them. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 

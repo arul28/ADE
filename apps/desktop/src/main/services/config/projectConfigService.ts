@@ -1,4 +1,5 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -23,6 +24,8 @@ import type {
   AutomationRule,
   AutomationRuleOrigin,
   AutomationRuleScope,
+  AutomationRuleHome,
+  AutomationRuleLocalReason,
   AutomationReviewProfile,
   AutomationRunQueueStatus,
   AutomationToolFamily,
@@ -85,6 +88,8 @@ import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError"
 import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
+import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
+import { createAutomationRuleAccountSync, type AutomationRuleAccountSync } from "../automations/automationRuleAccountSync";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -672,10 +677,12 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   const laneNameTemplate = laneNamePreset === "custom"
     ? asString(value.laneNameTemplate)?.trim() || undefined
     : undefined;
+  const cloud = parseAutomationCloudTarget(value.cloud);
   const sharedLaneFields = {
     ...(laneMode ? { laneMode } : {}),
     ...(laneNamePreset ? { laneNamePreset } : {}),
     ...(laneNameTemplate ? { laneNameTemplate } : {}),
+    ...(cloud ? { cloud } : {}),
   };
 
   if (kind === "agent-session") {
@@ -888,6 +895,24 @@ function coerceAutomationRuleScope(value: unknown): AutomationRuleScope | undefi
   return { sessionId, sessionTitle: asString(value.sessionTitle)?.trim() ?? "" };
 }
 
+/** A rule's home computer, or undefined when the value is not a whole one. */
+export function coerceAutomationRuleHome(value: unknown): AutomationRuleHome | undefined {
+  if (!isRecord(value)) return undefined;
+  const deviceId = asString(value.deviceId)?.trim();
+  const name = asString(value.name)?.trim();
+  const chosenAt = asString(value.chosenAt)?.trim();
+  if (!deviceId || !name || !chosenAt) return undefined;
+  const checkout = asString(value.checkout)?.trim();
+  const previousDeviceId = asString(value.previousDeviceId)?.trim();
+  return {
+    deviceId,
+    name,
+    chosenAt,
+    checkout: checkout || null,
+    ...(previousDeviceId ? { previousDeviceId } : {}),
+  };
+}
+
 function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (!isRecord(value)) return null;
   const id = asString(value.id)?.trim() ?? "";
@@ -989,6 +1014,8 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (billingCode != null) out.billingCode = billingCode;
   if (queueStatus != null) out.queueStatus = queueStatus;
   if (includeProjectContext != null) out.includeProjectContext = includeProjectContext;
+  const home = coerceAutomationRuleHome(value.home);
+  if (home) out.home = home;
 
   return out;
 }
@@ -2537,6 +2564,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         } : {}),
       },
       enabled: entry.enabled ?? true,
+      ...(entry.home ? { home: entry.home } : {}),
     };
   });
 
@@ -3039,7 +3067,10 @@ function validateEffectiveConfig(
           const suiteId = (action.suiteId ?? "").trim();
           if (!suiteId) {
             issues.push({ path: `${ap}.suiteId`, message: "run-tests requires suiteId" });
-          } else if (!suiteIds.has(suiteId)) {
+          } else if (!suiteIds.has(suiteId) && !rule.home) {
+            // A rule that follows the account names its home's suites, which
+            // may not exist on this computer; its home reports a missing one
+            // (`homeGaps`) instead of failing every other computer's config.
             issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
           }
         }
@@ -3384,13 +3415,65 @@ export function createProjectConfigService({
     }
     const snapshot = buildSnapshotFromFiles(
       emptySharedConfig(),
-      structuredClone(cachedLocalFile.config),
+      withAccountRules(structuredClone(cachedLocalFile.config)),
       { sharedHash: hashContent(""), localHash: hashContent(cachedLocalFile.raw) },
       { persistSnapshots: persistedKey !== key },
     );
     if (snapshot.validation.ok) persistedKey = key;
+    stampRunsHere(snapshot);
     return snapshot;
   };
+
+  // ── Rules that follow the account ─────────────────────────────────────
+  //
+  // With a rule store attached (the brain, when it has the account settings
+  // store), rules live in the account under the repository, and
+  // `.ade/local.yaml` keeps only what cannot follow it (chat rules, a project
+  // with no remote, a rule too large, rules saved while signed out). The
+  // account side is `automationRuleAccountSync.ts`; this service merges its
+  // rules into `snapshot.local.automations` and routes every write through it.
+
+  let automationRuleSync: AutomationRuleAccountSync | null = null;
+  let automationNotes = new Map<string, { needsNewerAde?: true; localReason?: AutomationRuleLocalReason }>();
+
+  /** A rule's own problems, judged alone: one bad rule from another computer must not break this config. */
+  const automationRuleProblems = (rule: ConfigAutomationRule): string[] => {
+    const local = normalizeConfigFilePaths(
+      { version: VERSION, testSuites: [], laneOverlayPolicies: [], automations: [rule] },
+      projectRoot,
+    );
+    const shared = emptySharedConfig();
+    const validation = validateEffectiveConfig(resolveEffectiveConfig(shared, local), projectRoot, shared, local);
+    return validation.issues
+      .filter((issue) => issue.path.includes("automations"))
+      // Judged alone there are no suites; whether this computer has the
+      // rule's suite is a machine-local gap, not a problem with the rule.
+      .filter((issue) => !issue.message.startsWith("Unknown suiteId"))
+      .map((issue) => `${issue.path}: ${issue.message}`);
+  };
+
+  /** The file's rules plus the account's. */
+  const withAccountRules = (local: ProjectConfigFile): ProjectConfigFile => {
+    if (!automationRuleSync) return local;
+    const merged = automationRuleSync.merge(local.automations ?? []);
+    automationNotes = merged.notes;
+    return { ...local, automations: merged.rules };
+  };
+
+  /** Mark which rules this computer runs, and why a rule stays here. */
+  const stampRunsHere = (snapshot: ProjectConfigSnapshot): void => {
+    automationRuleSync?.stamp(snapshot.effective.automations, automationNotes);
+  };
+
+  const writeLocalFile = (local: ProjectConfigFile): void => {
+    initializeOrRepairAdeProject(projectRoot, { logger });
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    writeFileAtomicSync(localPath, toCanonicalYaml(local));
+    cachedLocalFile = null;
+  };
+
+  /** The file's own config, without the account's rules. */
+  const readLocalFileConfig = (): ProjectConfigFile => normalizeConfigFilePaths(readConfigFile(localPath).config, projectRoot);
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
     const sharedHash = hashContent(toCanonicalYaml(shared));
@@ -3399,16 +3482,20 @@ export function createProjectConfigService({
     return snapshot.validation;
   };
 
-  const saveCandidate = (candidate: ProjectConfigCandidate): ProjectConfigSnapshot => {
+  const saveCandidate = (candidate: ProjectConfigCandidate, options: { divert?: boolean } = {}): ProjectConfigSnapshot => {
     // `candidate.shared` is accepted and ignored. Callers round-trip the
     // snapshot's (always empty) shared layer; nothing is ever written back to
     // `.ade/ade.yaml`, which this service no longer reads.
     const shared = emptySharedConfig();
-    const local = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
-    const validation = validateCandidate(shared, local);
+    const candidateLocal = normalizeConfigFilePaths(coerceConfigFile(candidate.local), projectRoot);
+    const validation = validateCandidate(shared, candidateLocal);
     if (!validation.ok) {
       throw invalidConfigError(validation);
     }
+    // Account rules never land in the file; a new one is filed in the account.
+    const local = options.divert === false || !automationRuleSync
+      ? candidateLocal
+      : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
 
     const localYaml = toCanonicalYaml(local);
 
@@ -3438,6 +3525,126 @@ export function createProjectConfigService({
   };
 
   return {
+    /**
+     * Attach the account's rule store (the brain does, when it has the
+     * account settings store). Until then, and on hosts without one, rules
+     * live in `.ade/local.yaml` as before.
+     */
+    setAutomationRuleStore(store: AutomationRuleAccountStore | null): void {
+      automationRuleSync = store
+        ? createAutomationRuleAccountSync({
+          store,
+          coerceRule: coerceAutomationRule,
+          coerceHome: coerceAutomationRuleHome,
+          ruleProblems: automationRuleProblems,
+          readFileRules: () => readLocalFileConfig().automations ?? [],
+          writeFileRules: (rules) => writeLocalFile({ ...readLocalFileConfig(), automations: rules }),
+          logger,
+        })
+        : null;
+      automationNotes = new Map();
+      cachedLocalFile = null;
+    },
+
+    /** Changes when the account's rules for this repository do; null without a store or remote. */
+    accountAutomationRulesFingerprint(): string | null {
+      return automationRuleSync?.fingerprint() ?? null;
+    },
+
+    /** Move rules from `.ade/local.yaml` into the account; see `AutomationRuleAccountSync.migrate`. */
+    migrateAutomationRulesToAccount(): { moved: number; renamed: string[] } {
+      try {
+        return automationRuleSync?.migrate() ?? { moved: 0, renamed: [] };
+      } catch (error) {
+        logger.warn("projectConfig.automations_move_to_account_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { moved: 0, renamed: [] };
+      }
+    },
+
+    /** Claim rules homed here and settle raced writes; see `AutomationRuleAccountSync.reconcile`. */
+    reconcileAutomationRules(options: { confirmed: boolean }): { claimed: number; readded: string[] } {
+      try {
+        return automationRuleSync?.reconcile(options) ?? { claimed: 0, readded: [] };
+      } catch (error) {
+        logger.warn("projectConfig.automations_reconcile_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { claimed: 0, readded: [] };
+      }
+    },
+
+    /**
+     * Create or replace one rule. A rule that can follow the account is filed
+     * there (with the requested home, else the saved rule's, else this
+     * computer); otherwise it is saved in `.ade/local.yaml`, and a rule saved
+     * there while signed out moves on sign-in.
+     */
+    saveAutomationRule(
+      rule: ConfigAutomationRule,
+      options: { home?: AutomationRuleHome | "this-computer" | null } = {},
+    ): ProjectConfigSnapshot {
+      const id = rule.id.trim();
+      if (!id) throw new Error("Automation id is required");
+      const snapshot = readSnapshotFromDisk();
+      const { home: _ignored, ...ruleWithoutHome } = rule;
+      const next: ConfigAutomationRule = { ...ruleWithoutHome, id };
+      // Judged against the whole merged config, as a file save would be, and
+      // with its current home, so a synced rule is judged as one.
+      const currentHome = (snapshot.local.automations ?? []).find((entry) => entry.id === id)?.home;
+      const judged: ConfigAutomationRule = currentHome ? { ...next, home: currentHome } : next;
+      const candidate = { ...snapshot.local, automations: [...(snapshot.local.automations ?? []).filter((entry) => entry.id !== id), judged] };
+      const validation = validateCandidate(emptySharedConfig(), normalizeConfigFilePaths(coerceConfigFile(candidate), projectRoot));
+      if (!validation.ok) throw invalidConfigError(validation);
+      const outcome = automationRuleSync?.save(next, options) ?? { handled: false as const };
+      if (outcome.handled) {
+        logger.info("projectConfig.account_rule_saved", { automationId: id });
+        return readSnapshotFromDisk();
+      }
+      const file = readLocalFileConfig();
+      const keepHome = "keepHome" in outcome ? outcome.keepHome : undefined;
+      const stored: ConfigAutomationRule = keepHome ? { ...next, home: keepHome } : next;
+      const rules = [...(file.automations ?? [])];
+      const index = rules.findIndex((entry) => entry.id === id);
+      if (index >= 0) rules[index] = stored;
+      else rules.push(stored);
+      if (keepHome) logger.warn("projectConfig.account_rule_kept_locally", { automationId: id });
+      return saveCandidate({ shared: snapshot.shared, local: { ...file, automations: rules } }, { divert: false });
+    },
+
+    /** Record runs counted for a synced rule with a run limit; see `AutomationRuleAccountSync.recordRunCount`. */
+    recordAutomationRunCount(ruleId: string, count: number): void {
+      try {
+        automationRuleSync?.recordRunCount(ruleId, count);
+      } catch (error) {
+        logger.warn("projectConfig.automation_run_count_failed", {
+          automationId: ruleId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+
+    /**
+     * Delete one rule, on every computer when it follows the account. Throws
+     * when the account refuses the delete (signed out): the rule would
+     * otherwise come back on the next read.
+     */
+    deleteAutomationRule(ruleId: string): { deleted: boolean } {
+      const id = ruleId.trim();
+      const file = readLocalFileConfig();
+      const inFile = (file.automations ?? []).some((entry) => entry.id === id);
+      const inAccount = automationRuleSync?.remove(id) === true;
+      if (!inFile && !inAccount) return { deleted: false };
+      if (inFile) {
+        saveCandidate(
+          { shared: emptySharedConfig(), local: { ...file, automations: (file.automations ?? []).filter((entry) => entry.id !== id) } },
+          { divert: false },
+        );
+      }
+      return { deleted: true };
+    },
+
     get(): ProjectConfigSnapshot {
       const snapshot = readSnapshotFromDisk();
       lastSeenSharedHash = snapshot.trust.sharedHash;

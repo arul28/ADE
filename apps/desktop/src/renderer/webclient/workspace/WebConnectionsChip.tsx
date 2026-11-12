@@ -27,6 +27,14 @@ import {
   type WebMachineEntry,
 } from "./webWorkspaceModel";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import {
+  readWebCloudMachines,
+  wakeWebCloudMachine,
+  webCloudMachineStatusLine,
+  type WebCloudMachine,
+  type WebCloudMachines,
+} from "./webCloudMachines";
 
 // ---------------------------------------------------------------------------
 // The hosted client's connections list.
@@ -96,6 +104,37 @@ export function WebConnectionsChip() {
   useEffect(() => {
     if (!open) setError(null);
   }, [open]);
+  /**
+   * The account's cloud machines as the cloud reports them (awake, asleep,
+   * their size), read through a machine this tab is connected to each time the
+   * list opens. Null when no connected machine can read them.
+   */
+  const [cloud, setCloud] = useState<WebCloudMachines | null>(null);
+  const manager = workspace?.manager ?? null;
+  /** Only the newest read may answer: an older one would show a just-woken machine asleep. */
+  const cloudReadRef = useRef(0);
+  const cloudEnabled = useAdeCloudEnabled();
+  const refreshCloud = useCallback(async () => {
+    if (!manager) return;
+    if (!cloudEnabled) {
+      setCloud(null);
+      return;
+    }
+    const read = ++cloudReadRef.current;
+    const next = await readWebCloudMachines({
+      snapshot: manager.getSnapshot(),
+      getClient: (targetId) => manager.getClient(targetId),
+      storage: typeof window === "undefined" ? null : window.localStorage,
+    }).catch(() => null);
+    if (read === cloudReadRef.current) setCloud(next);
+  }, [cloudEnabled, manager]);
+  useEffect(() => {
+    if (!open) return;
+    void refreshCloud();
+    return () => {
+      cloudReadRef.current += 1;
+    };
+  }, [open, refreshCloud]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
 
@@ -248,6 +287,31 @@ export function WebConnectionsChip() {
     }
   };
 
+  const cloudFor = (machine: WebMachineEntry): WebCloudMachine | null => {
+    const machineKey = machine.accountMachine?.machineKey;
+    return machineKey ? cloud?.byMachineKey.get(machineKey) ?? null : null;
+  };
+  /** Gone from the cloud list, and the account has not heard from it either. */
+  const cloudDeleted = (machine: WebMachineEntry): boolean => {
+    const machineKey = machine.accountMachine?.machineKey;
+    return Boolean(machineKey && machine.accountMachine?.online !== true && cloud?.deletedMachineKeys.has(machineKey));
+  };
+  /** Wakes an asleep cloud machine through a machine this tab is connected to. */
+  const wake = (machine: WebMachineEntry) => {
+    const machineKey = machine.accountMachine?.machineKey;
+    if (!machineKey) return;
+    void run(machine, async () => {
+      await wakeWebCloudMachine({
+        snapshot: workspace.manager.getSnapshot(),
+        getClient: (targetId) => workspace.manager.getClient(targetId),
+        machineKey,
+      });
+      await refreshCloud();
+    });
+  };
+  const errorMachine = error ? machines.find((machine) => machine.key === error.machineKey) ?? null : null;
+  const errorMachineAsleep = errorMachine != null && cloudFor(errorMachine)?.state === "asleep";
+
   /**
    * Picking a machine connects it (bug-ledger C2d: a machine the account can
    * reach is never a dead end) and nothing more — no open tab is rebound. The
@@ -333,6 +397,9 @@ export function WebConnectionsChip() {
                 menuOpen={menuKey === machine.key}
                 renaming={renameKey === machine.key}
                 renameValue={renameValue}
+                cloudMachine={cloudFor(machine)}
+                cloudDeleted={cloudDeleted(machine)}
+                onWake={() => wake(machine)}
                 workspace={workspace}
                 run={run}
                 selectMachine={selectMachine}
@@ -347,7 +414,14 @@ export function WebConnectionsChip() {
             <Banner
               layout="inline"
               style={{ margin: "8px 12px" }}
-              model={{ id: "web-connections-error", tone: "error", title: `${error.label}: ${error.message}` }}
+              model={{
+                id: "web-connections-error",
+                tone: "error",
+                title: errorMachineAsleep ? `${error.label} is asleep.` : `${error.label}: ${error.message}`,
+                actions: errorMachineAsleep && errorMachine
+                  ? [{ label: "Wake", onClick: () => wake(errorMachine) }]
+                  : undefined,
+              }}
             />
           ) : null}
           <div
@@ -390,6 +464,9 @@ function WebMachineRow({
   menuOpen,
   renaming,
   renameValue,
+  cloudMachine,
+  cloudDeleted,
+  onWake,
   workspace,
   run,
   selectMachine,
@@ -402,6 +479,11 @@ function WebMachineRow({
   menuOpen: boolean;
   renaming: boolean;
   renameValue: string;
+  /** The cloud's own record for this machine, when it is one of the account's cloud machines. */
+  cloudMachine: WebCloudMachine | null;
+  /** A cloud machine this browser saw before that the cloud no longer lists. */
+  cloudDeleted: boolean;
+  onWake: () => void;
   workspace: WebWorkspaceContextValue;
   run: (machine: WebMachineEntry, operation: () => Promise<void>) => Promise<void>;
   selectMachine: (machine: WebMachineEntry) => void;
@@ -463,10 +545,26 @@ function WebMachineRow({
                 fontWeight: isLive ? 600 : undefined,
               }}
             >
-              {webMachineRowStatusLine(machine)}
+              {!isLive && cloudDeleted
+                ? "Deleted from your cloud machines"
+                : !isLive && cloudMachine
+                  ? webCloudMachineStatusLine(cloudMachine)
+                  : webMachineRowStatusLine(machine)}
             </span>
           </span>
         </button>
+        {!busy && !isLive && cloudMachine?.state === "asleep" ? (
+          <button
+            type="button"
+            className="ade-shell-control h-6 shrink-0 px-2 text-[10.5px]"
+            data-variant="ghost"
+            style={{ color: COLORS.accent, fontFamily: SANS_FONT }}
+            aria-label={`Wake ${machine.name}`}
+            onClick={onWake}
+          >
+            Wake
+          </button>
+        ) : null}
         {busy ? (
           <CircleNotch
             size={13}

@@ -21,6 +21,7 @@ import type {
   AgentChatRemoteWorkUse,
 } from "./chat";
 import type { ClaudePromptCache } from "../claudePromptCache";
+import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
@@ -328,6 +329,8 @@ export type SessionActiveGoal = {
 
 export type TerminalSessionSummary = {
   id: string;
+  /** A row built from an ADE Cloud computer's saved chats, because the computer isn't connected. */
+  cloudSavedCopy?: boolean;
   laneId: string;
   laneName: string;
   ptyId: string | null;
@@ -449,6 +452,8 @@ export type TerminalSessionSummary = {
   chatPromptCache?: ClaudePromptCache | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /** The chat's live PR watches, projected from the chat summary. Absent when none. */
+  activePrWatch?: SessionActivePrWatch;
   /** The chat's `awaitingOwnWorkAt`: its last reply said it waits on its own work. */
   awaitingOwnWorkAt?: string | null;
   /**
@@ -1049,4 +1054,10 @@ export type SessionDeltaSummary = {
 
 export type SessionLifecycleSettings = {
   autoSettleLaneSessionsOnPrMerge: boolean;
+  /**
+   * After a lane's chats have all been settled for five minutes, power off the
+   * simulators and emulators those chats started, stop their dev servers and
+   * give up the Mac Desktop control they held. One setting per machine, off by default.
+   */
+  releaseLaneResourcesOnSettle?: boolean;
 };

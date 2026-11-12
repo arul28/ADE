@@ -20,7 +20,7 @@ import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../..
 import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
 import { SubsectionTitle } from "./providerUi";
 import { AntigravitySignIn } from "./bodies/AntigravitySignIn";
-import { SettingsAgentCliSignIn } from "./AgentCliSignInSheet";
+import { SettingsAgentCliSignIn } from "./CliSignInSheet";
 import { isAgentCliLoginProvider } from "../../../../shared/types/agentCliLogin";
 import type {
   AcpSettingsProviderId,
@@ -32,6 +32,7 @@ import type {
 } from "./types";
 import { statusProbeFailed } from "./types";
 import { providerStatusConnected } from "./providerConnected";
+import { signInStatusView } from "./providerSignInView";
 
 type AcpProviderSpec = {
   id: AcpSettingsProviderId;
@@ -131,8 +132,8 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
   const spec = specFor(id);
   if (statusProbeFailed(ctx)) {
     return {
-      state: "attention",
-      label: "Needs attention",
+      state: "unknown",
+      label: "Unknown",
       message: `Could not load ${spec.label} status.`,
       errorLine: ctx.statusLoadError,
     };
@@ -154,31 +155,28 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
       message: `This machine did not report ${spec.label} status.`,
     };
   }
-  if (providerStatusConnected(id, ctx.status)) {
-    return { state: "connected", label: "Connected", message: "Connection verified." };
+  const connected = providerStatusConnected(id, ctx.status);
+  if (!connection.runtimeDetected) {
+    // ADE's copy is not on this machine yet; the host's sentence says whether
+    // it is downloading, failed, or has no build for this machine.
+    const blocker = connection.blocker
+      ?? `ADE downloads ${spec.label} for this machine the first time it is used.`;
+    return signInStatusView({ connected: false, connection, runtimeDetected: false, message: blocker, errorLine: connection.blocker ?? null });
   }
-  if (connection.runtimeDetected) {
-    return {
-      state: "sign-in",
-      label: "Sign in required",
-      message: id === "antigravity" && !connection.authAvailable
+  return signInStatusView({
+    connected,
+    connection,
+    runtimeDetected: true,
+    message: connected
+      // The status read sees the saved sign-in; Re-check asks the agent.
+      ? "Signed in. Re-check asks the agent itself."
+      : id === "antigravity" && !connection.authAvailable
         ? "Not signed in."
         : connection.blocker
-        ?? (spec.loginCommand
-          ? `${spec.label} is ready but no login was detected. Run \`${spec.loginCommand}\`.`
-          : `${spec.label} is ready but not signed in. Sign in below.`),
-    };
-  }
-  // ADE's copy is not on this machine yet; the host's sentence says whether it
-  // is downloading, failed, or has no build for this machine.
-  const blocker = connection.blocker
-    ?? `ADE downloads ${spec.label} for this machine the first time it is used.`;
-  return {
-    state: "not-installed",
-    label: "Not downloaded",
-    message: blocker,
-    errorLine: connection.blocker ?? null,
-  };
+          ?? (spec.loginCommand
+            ? `${spec.label} is ready but no login was detected. Run \`${spec.loginCommand}\`.`
+            : `${spec.label} is ready but not signed in. Sign in below.`),
+  });
 }
 
 /**
@@ -276,13 +274,13 @@ function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSetting
       <button
         type="button"
         style={outlineButton({ height: 28 })}
-        onClick={() => ctx.actions.openSignInTerminal(id)}
+        onClick={() => ctx.actions.openSignIn(id)}
       >
         Sign in
       </button>
       <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Opens a terminal on this machine and runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with
-        ADE's copy (downloading it first if needed). It closes itself once you are signed in.
+        Runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with ADE's copy in a terminal inside the
+        sign-in sheet (downloading it first if needed). The sheet closes once you are signed in.
       </div>
     </div>
   );

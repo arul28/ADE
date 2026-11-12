@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
+import { isInsideTempFolder } from "../../../../desktop/src/main/services/shared/pathCompare";
 import type {
   RemoteMcpActivityEntry,
   RemoteMcpActivityOutcome,
@@ -10,6 +11,7 @@ import type {
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
+import { adeWithheldAgentSkills } from "../../../../desktop/src/shared/agentSkillRoots";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
 import {
@@ -21,10 +23,12 @@ import {
 } from "./remoteMcpRunner";
 import {
   buildTypedToolResult,
+  explicitTargetRefusal,
   findTypedTool,
   MACHINES_TOOL_NAME,
   nonEmptyString,
   parseTypedRun,
+  printsAgentOutput,
   shapedToolResult,
   withToolImage,
   toolText,
@@ -44,6 +48,8 @@ import {
   type RemoteMcpToolResult,
 } from "./remoteMcpForward";
 import { adeAppResourceListing, readAdeAppResource, withAppUi } from "./remoteMcpApps";
+import { CHAT_ID_TOOL_NAMES, chatIdOf, createChatRouter, type ChatCall } from "./remoteMcpChatRouting";
+import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
 
 /**
  * ADE MCP's protocol: the JSON-RPC methods an authenticated connection may
@@ -81,27 +87,8 @@ const CATALOG_TTL_MS = 5 * 60_000;
 const EVERY_PROJECT_WINDOW_MS = 30 * 24 * 60 * 60_000;
 const EVERY_PROJECT_MAX = 6;
 const EVERY_PROJECT_PARALLEL = 2;
-/** Tools that act on one chat by id: without `machine`, the chat's own computer answers. */
-const CHAT_ID_TOOL_NAMES: ReadonlySet<string> = new Set(["chat_read", "chat_status", "chat_wait", "chat_send", "chat_respond"]);
-/** `ade chat locate` asks every computer at once, five seconds each. */
-const CHAT_LOCATE_TIMEOUT_MS = 20_000;
-
-const MAX_CHAT_HOMES = 500;
 /** A run longer than this is logged with where its time went (unless the tool waits on purpose). */
 const SLOW_RUN_MS = 20_000;
-
-/** A chat tool's answer that says this computer has no such chat. */
-function isChatMiss(tool: string, result: RemoteMcpToolResult): boolean {
-  if (result.isError) {
-    const text = result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text ?? "";
-    return /chat session '[^']*' was not found/i.test(text);
-  }
-  const value = asRecord(asRecord(result.structuredContent).result);
-  if (tool === "chat_wait") return value.error === "session_not_found";
-  // chat_status answers `{ result: null }` for a chat it does not have.
-  return tool === "chat_status"
-    && (asRecord(result.structuredContent).result === null || ("result" in value && value.result === null));
-}
 
 /** A call the HTTP layer said nothing about: no bearer to forward, not forwarded, the per-machine address. */
 const NO_CALL_CONTEXT: RemoteMcpCallContext = { bearer: null, via: null, protocolVersion: null, accountMount: false };
@@ -140,7 +127,7 @@ export function createRemoteMcpProtocol(deps: {
   listProjects: () => RemoteMcpProject[];
   record: (entry: Omit<RemoteMcpActivityEntry, "at">) => void;
   /** The provider and model this computer last launched a chat with, for chat_start. */
-  launchDefaults?: () => { provider: string; model: string } | null;
+  launchDefaults?: () => { provider: string; model: string; reasoningEffort?: string | null } | null;
   warn?: (event: string, data?: Record<string, unknown>) => void;
   /** The account's computers: every tool takes `machine`, and machines_list lists them. */
   machines: RemoteMcpMachineRouter;
@@ -224,7 +211,8 @@ export function createRemoteMcpProtocol(deps: {
     });
     const usable = usableProjects(ordered, stateOf);
     if (typeof requested !== "string" || !requested.trim()) {
-      const recent = usable[0];
+      // A throwaway test project must not become where an app's call lands.
+      const recent = usable.find((project) => !isInsideTempFolder(project.rootPath)) ?? usable[0];
       // No project at all: machine-wide commands (`projects list`, `doctor`) still work.
       return recent ? found(recent) : { cwd: os.homedir(), project: null };
     }
@@ -256,10 +244,8 @@ export function createRemoteMcpProtocol(deps: {
 
   // ── MCP ───────────────────────────────────────────────────────────────────
 
-  const PROJECT_INPUT = {
-    type: "string",
-    description: "Project name, id or path. Default: the last opened.",
-  };
+  // The default rule is stated once, in the instructions.
+  const PROJECT_INPUT = { type: "string", description: "Project id, name or path." };
 
   const toolDefinition = (scope: RemoteMcpScope) => ({
     name: TOOL_NAME,
@@ -313,7 +299,9 @@ export function createRemoteMcpProtocol(deps: {
     inputSchema: {
       type: "object",
       properties: tool.machineWide ? tool.properties : { ...tool.properties, project: PROJECT_INPUT },
-      ...(tool.required?.length ? { required: tool.required } : {}),
+      ...(tool.required?.length || tool.explicitTarget
+        ? { required: [...(tool.required ?? []), ...(tool.explicitTarget ? ["project"] : [])] }
+        : {}),
     },
     annotations: tool.write
       ? { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
@@ -327,7 +315,10 @@ export function createRemoteMcpProtocol(deps: {
   const instructions = (scope: RemoteMcpScope): string => [
     `ADE on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
     "Use the typed tools; `ade` runs anything else.",
-    "Calls run in `project` (default: the last opened); each result names it.",
+    "`project` defaults to the last opened, `machine` (a machines_list key) to this computer; each result names both. A chat id finds its own.",
+    "The `ade-mcp-client` prompt explains the workflow.",
+    // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
+    ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
   ].join(" ");
 
@@ -400,6 +391,10 @@ export function createRemoteMcpProtocol(deps: {
       const built = typed.build(defaults && typed.launchDefaults ? typed.launchDefaults(input, defaults) : input);
       if ("error" in built) return refuseHere("", built.error);
       words = built.argv;
+      stdin = typed.stdin?.(input) ?? null;
+      if (stdin !== null && Buffer.byteLength(stdin, "utf8") > MAX_STDIN_BYTES) {
+        return refuseHere("", `That is larger than ${MAX_STDIN_BYTES / 1024} KB. Send it in chunks with \`offset\`.`);
+      }
     } else {
       words = input.args;
       if (words === undefined && typeof input.command === "string") {
@@ -482,8 +477,10 @@ export function createRemoteMcpProtocol(deps: {
       // A picture is read only from inside an open project's folder.
       return typed.image && resolved.project ? await withToolImage(typed, raw, answer, resolved.project.rootPath) : answer;
     }
+    // What a shell or an agent printed: secrets in it are masked on the way out.
+    const shown = printsAgentOutput(verdict.args) ? { ...result, stdout: redactOutgoingChatText(result.stdout) } : result;
     return {
-      content: [{ type: "text", text: `${headLine}\n${toolText(result)}` }],
+      content: [{ type: "text", text: `${headLine}\n${toolText(shown)}` }],
       isError: result.timedOut || result.exitCode !== 0,
     };
   };
@@ -594,31 +591,21 @@ export function createRemoteMcpProtocol(deps: {
     if (name === MACHINES_TOOL_NAME) return await machinesListResult(logBase);
     const { machine: selector, ...rest } = input;
     const localParams = { ...params, arguments: rest };
-    if (selector === undefined || selector === null || selector === "") {
+    const noSelector = selector === undefined || selector === null || selector === "";
+    const chatCall = (sessionId: string): ChatCall => ({
+      connection, name, params, input: rest, sessionId, context, only, refuse: (reason) => refuse(logBase, reason),
+    });
+    if (findTypedTool(name)?.explicitTarget && !context.via) {
+      if (!nonEmptyString(rest.project)) {
+        return refuse(logBase, explicitTargetRefusal(name, await projectChoices()));
+      }
+      if (noSelector && context.accountMount && !only) return refuse(logBase, `${name} needs \`machine\`. ${await onlineMachinesSentence()}`);
+    }
+    if (noSelector) {
       if (onlyElsewhere) return await forwardToOnlyMachine(connection, name, rest, only, context, logBase);
-      // A chat id with no computer: the chat's own computer answers. A call
-      // forwarded here already went its one hop, so it is answered here.
-      const sessionId = CHAT_ID_TOOL_NAMES.has(name) && !context.via ? nonEmptyString(rest.session) : null;
-      // Remembered per connection: one app's lookups never steer another's.
-      const homeKey = sessionId ? `${connection.id}:${sessionId}` : null;
-      const rememberedKey = homeKey ? chatHomes.get(homeKey) : undefined;
-      if (homeKey && rememberedKey && (!only || only.machineKey === rememberedKey)) {
-        const remembered = await router.resolve(rememberedKey);
-        if (remembered.kind === "remote" && !router.unavailableReason(remembered.machine)) {
-          const result = await forwardTo(connection, name, rest, remembered.machine, context, forwardTimeoutMs(name, rest));
-          if (!isChatMiss(name, result)) return result;
-        }
-        chatHomes.delete(homeKey);
-      }
+      const sessionId = chatIdOf(name, rest);
+      if (sessionId) return await chats.callAnywhere(chatCall(sessionId), self);
       const result = await callTool(connection, params);
-      if (sessionId && homeKey && isChatMiss(name, result)) {
-        const elsewhere = await chatElsewhere(connection, sessionId, only, logBase);
-        if (elsewhere && "refusal" in elsewhere) return elsewhere.refusal;
-        if (elsewhere) {
-          rememberChatHome(homeKey, elsewhere.machine.machineKey);
-          return await forwardTo(connection, name, rest, elsewhere.machine, context, forwardTimeoutMs(name, rest));
-        }
-      }
       // On the account address any computer may answer: say which one did.
       return context.accountMount ? withMachineLabel(result, self) : result;
     }
@@ -634,7 +621,14 @@ export function createRemoteMcpProtocol(deps: {
     if (resolved.kind === "error") return refuse(logBase, resolved.message);
     const targetKey = resolved.kind === "here" ? resolved.machine.key : resolved.machine.machineKey;
     if (only && targetKey !== only.machineKey) return refuse(logBase, onlyMachineRefusal(only));
-    if (resolved.kind === "here") return withMachineLabel(await callTool(connection, localParams), resolved.machine);
+    if (resolved.kind === "here") {
+      const sessionId = chatIdOf(name, rest);
+      // Named this computer: its other projects count, other computers don't.
+      const answer = sessionId
+        ? await chats.callHere({ ...chatCall(sessionId), params: localParams })
+        : await callTool(connection, localParams);
+      return withMachineLabel(answer, resolved.machine);
+    }
     if (context.via) {
       return refuse(
         logBase,
@@ -642,57 +636,30 @@ export function createRemoteMcpProtocol(deps: {
       );
     }
     const reason = router.unavailableReason(resolved.machine);
-    if (reason) return refuse(logBase, reason);
+    if (reason) return refuse(logBase, `${reason} ${await onlineMachinesSentence()}`);
     return await forwardTo(connection, name, rest, resolved.machine, context, forwardTimeoutMs(name, rest));
   };
 
-  /** Connection and chat id → the computer that answered for it, so the next call goes straight there. */
-  const chatHomes = new Map<string, string>();
-  const rememberChatHome = (key: string, machineKey: string): void => {
-    chatHomes.delete(key);
-    chatHomes.set(key, machineKey);
-    // Oldest first: a long-lived brain keeps the most recent few hundred.
-    while (chatHomes.size > MAX_CHAT_HOMES) chatHomes.delete(chatHomes.keys().next().value!);
+  /** The projects to pick from, last opened first. */
+  const projectChoices = async (): Promise<RemoteMcpProject[]> => {
+    const { stateOf, ordered } = await projectsByState(deps.listProjects());
+    return usableProjects(ordered, stateOf).slice(0, 8);
   };
 
-  /**
-   * The other computer that has `sessionId` (`ade chat locate`: one read-only
-   * question to each online computer). Null when none does; a refusal when one
-   * does but this connection can't reach it.
-   */
-  const chatElsewhere = async (
-    connection: RemoteMcpConnectionSummary,
-    sessionId: string,
-    only: RemoteMcpConnectionSummary["onlyMachine"] | null,
-    logBase: ActivityBase,
-  ): Promise<{ machine: RemoteMcpRosterMachine } | { refusal: RemoteMcpToolResult } | null> => {
-    let located: unknown;
-    try {
-      const run = await runAdeForRemote({
-        argv: ["chat", "locate", sessionId, "--json"],
-        cwd: os.homedir(),
-        timeoutMs: CHAT_LOCATE_TIMEOUT_MS,
-        connectionId: connection.id,
-        connectionLabel: connection.label,
-        role: "agent",
-      });
-      located = run.exitCode === 0 ? JSON.parse(run.stdout) : null;
-    } catch (error) {
-      // The call still answers as "not found here"; the log says why no computer was asked.
-      deps.warn?.("remote_mcp.chat_locate_failed", { error: getErrorMessage(error) });
-      return null;
-    }
-    const machine = asRecord(asRecord(located).machine);
-    const key = nonEmptyString(machine.key);
-    if (!key || machine.isThisMachine === true) return null;
-    const resolved = await deps.machines.resolve(key);
-    if (resolved.kind !== "remote") return null;
-    if (only && only.machineKey !== key) {
-      return { refusal: refuse(logBase, `This chat is on ${resolved.machine.name}. ${onlyMachineRefusal(only)}`) };
-    }
-    const reason = deps.machines.unavailableReason(resolved.machine);
-    if (reason) return { refusal: refuse(logBase, `This chat is on ${resolved.machine.name}. ${reason}`) };
-    return { machine: resolved.machine };
+  const chats = createChatRouter({
+    callTool,
+    forwardTo: (call, input, machine) => forwardTo(call.connection, call.name, input, machine, call.context, forwardTimeoutMs(call.name, input)),
+    machines: deps.machines,
+    onlineMachinesSentence: () => onlineMachinesSentence(),
+    onlyMachineRefusal,
+    ...(deps.warn ? { warn: deps.warn } : {}),
+  });
+
+  const onlineMachinesSentence = async (): Promise<string> => {
+    const online = (await deps.machines.roster()).filter((machine) => machine.online === true && machine.serving && machine.included);
+    return online.length
+      ? `Online now: ${online.map((machine) => `${machine.name} (${machine.machineKey})`).join(", ")}.`
+      : "No computer is online and serving right now.";
   };
 
   /** A connection from before accounts, on the account address of another computer: its call goes to its own. */
@@ -806,6 +773,7 @@ export function createRemoteMcpProtocol(deps: {
       serving: servingStateKnown(machine) ? machine.serving : null,
       notServingReason: machine.notServingReason,
       reportedAt: machine.reportedAt,
+      lastSeenAt: machine.lastSeenAt ?? null,
       supported: machine.supported,
       isThisMachine: machine.isThisMachine,
     }));
@@ -822,14 +790,9 @@ export function createRemoteMcpProtocol(deps: {
     };
   };
 
-  const machineInput = (toolName: string) => ({
-    type: "string",
-    description: findTypedTool(toolName)?.fanOut
-      ? "Computer (machines_list) or \"all\". Default: this one."
-      : CHAT_ID_TOOL_NAMES.has(toolName)
-        ? "Computer (machines_list). Default: the chat's computer."
-        : "Computer (machines_list). Default: this one.",
-  });
+  const machineInput = (toolName: string) => (findTypedTool(toolName)?.fanOut
+    ? { type: "string", description: "Or \"all\"." }
+    : { type: "string" });
 
   const machinesToolDefinition = () => ({
     name: MACHINES_TOOL_NAME,

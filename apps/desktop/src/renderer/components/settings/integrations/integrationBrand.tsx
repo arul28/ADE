@@ -4,23 +4,22 @@
  * standing on it in 3D (`SolidLogo`, shared with the provider pages).
  */
 import type { CSSProperties } from "react";
-import { CONNECT_PROVIDER_IDS, isConnectProviderId, type ConnectProviderId } from "../../../../shared/integrationConnect";
+import { CONNECT_PROVIDER_IDS, type ConnectProviderId } from "../../../../shared/integrationConnect";
 import { JIRA_LOGO_PATH } from "../../lanes/jiraBrand";
 import { LINEAR_LOGO_PATH } from "../../lanes/linearBrand";
 import type { ProviderBrandLogo } from "../providers/providerBrand";
 import githubArt from "./banners/github.webp";
 import jiraArt from "./banners/jira.webp";
 import linearArt from "./banners/linear.webp";
-import agent37Art from "./banners/agent37.svg";
-import { Agent37Mark, AGENT37_NAME } from "../../remoteTargets/agent37Brand";
 
-/** The integrations are the ones an agent can ask to connect. */
+/** The integrations an agent can ask to connect. ADE Cloud has its own Settings tab (`ade-cloud`). */
 export type IntegrationId = ConnectProviderId;
 
-export const INTEGRATION_IDS: readonly IntegrationId[] = CONNECT_PROVIDER_IDS;
+/** The Integrations grid. */
+export const INTEGRATION_IDS: readonly IntegrationId[] = [...CONNECT_PROVIDER_IDS];
 
 export function isIntegrationId(value: string | null | undefined): value is IntegrationId {
-  return isConnectProviderId(value);
+  return (INTEGRATION_IDS as readonly unknown[]).includes(value);
 }
 
 /** Simple Icons' GitHub mark (viewBox 0 0 24 24). */
@@ -104,27 +103,6 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
     art: jiraArt,
     lightBanner: true,
     logo: { kind: "solid", mark: mark(JIRA_LOGO_PATH), face: "#2684FF", side: "#0B3F99", size: 76 },
-  },
-  agent37: {
-    id: "agent37",
-    label: AGENT37_NAME,
-    tagline: "Cloud Linux machines for your lanes.",
-    // Agent 37's brand is monochrome (agent37.com): white on black.
-    accent: "#E9E9E9",
-    banner: {
-      background: [
-        "radial-gradient(60% 130% at 100% 100%, rgba(255, 255, 255, 0.07), transparent 60%)",
-        "linear-gradient(90deg, #0A0A0A 0%, #111111 55%, #171717 100%)",
-      ].join(", "),
-    },
-    art: agent37Art,
-    logo: {
-      kind: "solid",
-      mark: (size: number) => <Agent37Mark size={size} strokeWidth={22} />,
-      face: "#FFFFFF",
-      side: "#3A3A3A",
-      size: 76,
-    },
   },
 };
 

@@ -1,3 +1,4 @@
+import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 // ---------------------------------------------------------------------------
 // ADE deeplinks — URL builder + parser shared across main / renderer / CLI.
 // ---------------------------------------------------------------------------
@@ -13,6 +14,7 @@
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
 //   ade://settings/<entry-id>[?machine=<machine-id>]
 //   ade://open/<place>
+//   ade://invite/<CODE>
 //
 //   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|settings>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
@@ -40,6 +42,7 @@
 
 import { isUuid } from "./uuid";
 import type { AppNavigationTarget } from "./types/core";
+import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
@@ -196,9 +199,36 @@ export type DeeplinkOpenPlaceTarget = {
   place: string;
 };
 
+/**
+ * An ADE Cloud invite (`ade://invite/<CODE>`), opened by the website's invite
+ * page: Settings › Account with the code filled in its box. Its https form is
+ * the invite page itself (`https://ade-app.dev/invite/<CODE>`).
+ */
+export type DeeplinkInviteTarget = {
+  kind: "invite";
+  code: string;
+};
+
+/** Where an invite opens: the Account card, which holds the code box. */
+export const INVITE_SETTINGS_ENTRY_ID = "account.profile";
+
+/**
+ * A lane another account shares with you (lane sharing). An address only:
+ * the grant id names the share, and the account directory decides whether
+ * this account may see it. `https://ade-app.dev/open?type=lane-share&id=<id>`
+ * is the invite link (`laneShareInviteLink`).
+ */
+export type DeeplinkLaneShareTarget = {
+  kind: "lane-share";
+  grantId: string;
+};
+
+
 export type DeeplinkTarget =
   | DeeplinkSettingsTarget
+  | DeeplinkLaneShareTarget
   | DeeplinkOpenPlaceTarget
+  | DeeplinkInviteTarget
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
   | DeeplinkFileTarget
@@ -402,6 +432,8 @@ export type BuildOptions = {
 export function buildDeeplink(target: DeeplinkTarget, options: BuildOptions = {}): string {
   // `open` has no https form: it must never run from outside a chat.
   if (target.kind === "open") return buildAdeUrl(target);
+  // An invite's https form is the website's invite page.
+  if (target.kind === "invite") return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : cloudInviteLink(target.code);
   return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : buildHttpsUrl(target);
 }
 
@@ -486,12 +518,16 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://settings/${encodeURIComponent(target.entryId)}`;
       return target.machineId ? `${base}?machine=${encodeURIComponent(target.machineId)}` : base;
     }
+    case "lane-share":
+      return `${ADE_DEEPLINK_SCHEME}://lane-share/${encodeURIComponent(target.grantId)}`;
     case "open":
       return `${ADE_DEEPLINK_SCHEME}://open/${encodeURIComponent(target.place)}`;
+    case "invite":
+      return `${ADE_DEEPLINK_SCHEME}://invite/${encodeURIComponent(target.code)}`;
   }
 }
 
-function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>): string {
+function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget | DeeplinkInviteTarget>): string {
   const params = new URLSearchParams();
   switch (target.kind) {
     case "lane":
@@ -550,6 +586,10 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>)
       params.set("type", "settings");
       params.set("id", target.entryId);
       if (target.machineId) params.set("machine", target.machineId);
+      break;
+    case "lane-share":
+      params.set("type", "lane-share");
+      params.set("id", target.grantId);
       break;
   }
   return `${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`;
@@ -686,6 +726,16 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     return buildSettingsTarget(safeDecode(pathSegments[0]), url.searchParams, rawUrl);
   }
 
+  if (host === "invite") {
+    const code = pathSegments.length === 1 ? parseCloudInviteCode(safeDecode(pathSegments[0])) : null;
+    if (!code) return { ok: false, error: { kind: "malformed", reason: "invalid invite code" }, rawUrl };
+    return { ok: true, target: { kind: "invite", code }, rawUrl };
+  }
+
+  if (host === "lane-share") {
+    return buildLaneShareTarget(pathSegments.length === 1 ? safeDecode(pathSegments[0]) : "", rawUrl);
+  }
+
   if (host === "open") {
     const place = pathSegments[0] ? safeDecode(pathSegments[0]).toLowerCase() : "";
     if (pathSegments.length !== 1 || !OPEN_PLACE_RE.test(place)) {
@@ -695,6 +745,14 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
   }
 
   return { ok: false, error: { kind: "unknown_type", type: host }, rawUrl };
+}
+
+function buildLaneShareTarget(grantIdRaw: string, rawUrl: string): ParseResult {
+  const grantId = grantIdRaw.trim();
+  if (!LANE_SHARE_GRANT_ID_PATTERN.test(grantId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid lane share id" }, rawUrl };
+  }
+  return { ok: true, target: { kind: "lane-share", grantId }, rawUrl };
 }
 
 function buildSettingsTarget(entryIdRaw: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
@@ -764,6 +822,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     };
   }
   if (type === "settings") return buildSettingsTarget(url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
+  if (type === "lane-share") return buildLaneShareTarget(url.searchParams.get("id") ?? "", rawUrl);
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
 }
 
@@ -970,8 +1029,12 @@ export function describeTarget(target: DeeplinkTarget): string {
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
     case "settings":
       return "ADE setting";
+    case "lane-share":
+      return "shared lane";
     case "open":
       return `ADE ${target.place}`;
+    case "invite":
+      return "ADE Cloud invite";
   }
 }
 
@@ -1046,7 +1109,11 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
       };
     case "settings":
       return { kind: "settings", entryId: target.entryId, machineId: target.machineId ?? null };
+    case "lane-share":
+      return { kind: "lane-share", grantId: target.grantId };
     case "open":
       return { kind: "open-place", place: target.place };
+    case "invite":
+      return { kind: "settings", entryId: INVITE_SETTINGS_ENTRY_ID, inviteCode: target.code };
   }
 }

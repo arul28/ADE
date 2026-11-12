@@ -118,7 +118,7 @@ export function LaneSidebarBulkCatchUpDialog({
     });
     void Promise.all(groups.map(async ({ pin, lanes }) => {
       const statuses = await window.ade.git
-        .getSyncStatuses({ laneIds: lanes.map((lane) => lane.laneId) }, pin)
+        .getSyncStatuses({ laneIds: lanes.map((lane) => lane.laneId), skipRecommendation: true }, pin)
         .catch((error) => {
           // Unknown means not pushed is unproven: those lanes get no rebase.
           console.warn("lane_catch_up.sync_statuses_failed", error);

@@ -44,6 +44,11 @@ export type ProjectTabGroup = {
   machines: ProjectTabMachine[];
   /** The machine this tab is currently bound to, when it is the active tab. */
   activeBindingKey: string | null;
+  /**
+   * The repository's normalized origin, also on a tab that stays apart from
+   * another open checkout of the same repository; null when it has none.
+   */
+  origin?: string | null;
 };
 
 /** The binding that opens a recent project on the machine it lives on. */
@@ -192,21 +197,22 @@ export function groupProjectTabs(args: {
   const groupByOrigin = new Map<string, ProjectTabGroup>();
   const claimedMachines = new Map<string, Set<string>>();
 
-  const standalone = (machine: ProjectTabMachine): ProjectTabGroup => ({
+  const standalone = (machine: ProjectTabMachine, origin: string | null): ProjectTabGroup => ({
     id: machine.bindingKey,
     displayName: machine.displayName,
     machines: [machine],
     activeBindingKey: machine.bindingKey === activeBindingKey ? machine.bindingKey : null,
+    origin,
   });
 
   for (const { machine, origin } of openEntries) {
     if (!origin) {
-      groups.push(standalone(machine));
+      groups.push(standalone(machine, null));
       continue;
     }
     const existing = groupByOrigin.get(origin);
     if (!existing) {
-      const group = { ...standalone(machine), id: origin };
+      const group = { ...standalone(machine, origin), id: origin };
       groupByOrigin.set(origin, group);
       claimedMachines.set(origin, new Set([machine.machineId]));
       groups.push(group);
@@ -217,7 +223,7 @@ export function groupProjectTabs(args: {
     // group — an open tab always keeps its own tab, and therefore its own
     // machine, no matter which tab is active.
     claimedMachines.get(origin)!.add(machine.machineId);
-    groups.push(standalone(machine));
+    groups.push(standalone(machine, origin));
   }
 
   // Attach discovered counterparts only after open entries establish the tab

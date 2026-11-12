@@ -18,6 +18,7 @@ import { sessionDateGroup } from "../terminals/importSessions/sessionPresentatio
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { SettingsColumn } from "./primitives";
 import { useDeletedChatTranscript } from "./useDeletedChatTranscript";
+import { DeletedLanesList } from "./DeletedLanesList";
 import "../terminals/importSessions/importSessions.css";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
@@ -414,7 +415,7 @@ export function RecentlyDeletedSection() {
           <header className="ade-ap-head" style={{ alignItems: "center" }}>
             <div style={{ minWidth: 0 }}>
               <h2>Recently deleted</h2>
-              <p>Chats you deleted. Open one to read it, or bring it back with Reopen.</p>
+              <p>Lanes and chats you deleted. Restore a lane with its unsaved work, or open a chat and Reopen it.</p>
             </div>
             {total > 0 ? (
               <label className="ade-rd-search">
@@ -455,6 +456,8 @@ export function RecentlyDeletedSection() {
             </div>
           ) : null}
 
+          <DeletedLanesList pin={pin} />
+
           {loadError && !chats ? (
             <Banner
               layout="inline"
@@ -472,7 +475,7 @@ export function RecentlyDeletedSection() {
           ) : total === 0 ? (
             <div className="ade-ar-empty">
               <ClockCounterClockwise size={22} weight="light" />
-              <div className="ade-ap-rowtitle">Nothing deleted recently</div>
+              <div className="ade-ap-rowtitle">No deleted chats</div>
               <p className="ade-modern-muted">Chats you delete show up here, so you can bring them back.</p>
             </div>
           ) : visible.length === 0 ? (

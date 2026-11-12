@@ -42,6 +42,20 @@ export const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
  */
 export const TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 5_000;
 
+/**
+ * Event reads and subscription acknowledgements fail fast enough to notice a
+ * peer that disappeared during sleep, while still allowing a cold remote
+ * runtime a reasonable response window.
+ */
+export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the paired runtime gets to answer `ade/initialize` and the first
+ * `projects.list`, once its socket is open and its hello came back. The hello
+ * proves the brain there is up, so this is the same window an event read gets.
+ */
+export const PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
+
 /** The shorter connect deadline for a direct route with another route behind it, or null. */
 export function pairedRouteConnectTimeoutMs(
   kind: PairedRuntimeEndpointCandidate["kind"],
@@ -119,6 +133,24 @@ export function createRouteAttemptRecorder(
   return recorder;
 }
 
+const TIMEOUT_MESSAGE = /timed? out|timeout/i;
+const NETWORK_ERRNOS = [
+  "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH", "ENETDOWN",
+  "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "EPROTO", "EADDRNOTAVAIL",
+] as const;
+const NETWORK_ERRNO_IN_MESSAGE = new RegExp(`\\b(${NETWORK_ERRNOS.join("|")})\\b`);
+
+/** The first value `pick` finds on an error or the errors that caused it. */
+export function findInErrorCauses<T>(error: unknown, pick: (candidate: object) => T | undefined): T | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const found = pick(current);
+    if (found !== undefined) return found;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 /** The relay's close when a newer link from the host took over (tunnel-relay `CLOSE_CONTROL_REPLACED`). */
 const RELAY_CLOSE_CONTROL_REPLACED = 4505;
 
@@ -128,15 +160,11 @@ const RELAY_CLOSE_CONTROL_REPLACED = 4505;
  * wakes, and the relay then closes every client that went to its old link.
  * The host is on the relay by then, so one more relay attempt at once
  * connects, where the next route (often a cloud box's private address) would
- * hold the connect for 10 s (2026-11-07, Agent 37 box after a sleep).
+ * hold the connect for 10 s (2026-11-07, cloud box after a sleep).
  */
 export function isRelayHostReplacedError(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
-    if ((current as { closeCode?: unknown }).closeCode === RELAY_CLOSE_CONTROL_REPLACED) return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return findInErrorCauses(error, (candidate) =>
+    (candidate as { closeCode?: unknown }).closeCode === RELAY_CLOSE_CONTROL_REPLACED || undefined) === true;
 }
 
 export function orderPairedCandidates(
@@ -353,6 +381,11 @@ const HELLO_CODE_FAILURES: Record<
   connection_attempt_superseded: "superseded",
   invalid_hello: "protocol",
   protocol_version_mismatch: "protocol",
+  // Lane sharing. A desktop runtime dial never sends a guest hello; mapped
+  // so the record stays total.
+  lane_share_refused: "authentication",
+  lane_share_unavailable: "unreachable",
+  lane_share_paused: "authentication",
 };
 
 export function classifyPairedRuntimeFailure(
@@ -372,7 +405,7 @@ export function classifyPairedRuntimeFailure(
     return mapped ?? "pairing";
   }
   const message = error instanceof Error ? error.message : String(error);
-  if (/timed? out|timeout/i.test(message)) return "timeout";
+  if (TIMEOUT_MESSAGE.test(message)) return "timeout";
   if (/ECONN|EHOST|ENET|\bunreach|\boffline\b|\bsocket (?:error|failed)|failed to connect/i.test(message)) {
     return "unreachable";
   }
@@ -390,6 +423,30 @@ export function classifyPairedRuntimeFailure(
   }
   if (/closed|socket|websocket/i.test(message)) return "unreachable";
   return "unknown";
+}
+
+/**
+ * The specific cause of a failed route as a token safe for telemetry. The
+ * error's own message can name the machine and the address it dialed, so only
+ * a known errno, a status or a close number is lifted out of it. Undefined when
+ * none of them is present.
+ */
+export function pairedRuntimeFailureCode(error: unknown): string | undefined {
+  const structured = findInErrorCauses(error, (candidate) => {
+    const { helloCode, closeCode, code } = candidate as { helloCode?: unknown; closeCode?: unknown; code?: unknown };
+    // Sent by the other machine, so only the codes this build knows are repeated.
+    if (typeof helloCode === "string" && Object.hasOwn(HELLO_CODE_FAILURES, helloCode)) return `hello_${helloCode}`;
+    if (typeof closeCode === "number") return `ws_close_${closeCode}`;
+    if (typeof code === "string" && NETWORK_ERRNOS.includes(code as (typeof NETWORK_ERRNOS)[number])) return code;
+    return undefined;
+  });
+  if (structured) return structured;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const errno = message.match(NETWORK_ERRNO_IN_MESSAGE);
+  if (errno) return errno[1];
+  const status = message.match(/Unexpected server response: (\d{3})/);
+  if (status) return `http_${status[1]}`;
+  return TIMEOUT_MESSAGE.test(message) ? "timeout" : undefined;
 }
 
 /**
@@ -432,6 +489,8 @@ export function pairedRuntimeFailureMessage(
   failure: RemoteRuntimeConnectionAttemptFailure,
   machineNameValue: string | null | undefined,
   accountHelloCode?: PairedRuntimeAccountHelloCode | null,
+  /** A route opened and said hello, then its runtime never answered `ade/initialize`. */
+  options: { handshakeTimedOut?: boolean } = {},
 ): string {
   const machine = machineNameValue?.trim() || "that computer";
   switch (failure) {
@@ -452,7 +511,16 @@ export function pairedRuntimeFailureMessage(
       return `${machine} is running an older ADE — update it there, then try again.`;
     case "superseded":
       return `Another connection to ${machine} took over — try again.`;
+    case "timeout":
+      if (options.handshakeTimedOut) {
+        return `Could not reach ${machine}: it did not answer the connection handshake. ADE there may be busy or stuck — try again, or restart ADE on that computer.`;
+      }
+      return pairedRuntimeUnreachableMessage(machine);
     default:
-      return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
+      return pairedRuntimeUnreachableMessage(machine);
   }
+}
+
+function pairedRuntimeUnreachableMessage(machine: string): string {
+  return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
 }

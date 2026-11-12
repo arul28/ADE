@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { automationCloudProblem, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
 import {
+  type ConfigAutomationRule,
   AUTOMATION_TRIGGER_TYPES,
   type AutomationAction,
   type AutomationActionType,
@@ -32,6 +34,8 @@ import {
   validateHandoffLaneTarget,
 } from "./automationService";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { codexConfigApprovalPolicy } from "../../../shared/codexApprovalPolicy";
+import type { AgentChatCodexApprovalPolicy } from "../../../shared/types/chat";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
 import {
@@ -48,6 +52,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import { customNotificationProblem } from "../../../shared/types/attention";
@@ -445,7 +450,7 @@ async function runCodexExec(args: {
   schema: Record<string, unknown>;
   logger: Logger;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
-  askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
+  askForApproval: AgentChatCodexApprovalPolicy;
   webSearch: boolean;
   additionalWritableDirs: string[];
   model?: string | null;
@@ -469,8 +474,10 @@ async function runCodexExec(args: {
     outPath,
     "--sandbox",
     args.sandbox,
-    "--ask-for-approval",
-    args.askForApproval,
+    // `codex exec` has neither `--ask-for-approval` nor `--search` (it exits
+    // with "unexpected argument"); both are config keys.
+    "-c",
+    `approval_policy=${codexConfigApprovalPolicy(args.askForApproval)}`,
     "--cd",
     args.cwd,
     "--skip-git-repo-check"
@@ -486,7 +493,7 @@ async function runCodexExec(args: {
     ...codexReasoningEffortFlags(resolvePlannerCodexReasoningEffort(args.model, args.reasoningEffort)),
   );
 
-  if (args.webSearch) cliArgs.push("--search");
+  if (args.webSearch) cliArgs.push("-c", "web_search=live");
   for (const dir of args.additionalWritableDirs) {
     const trimmed = dir.trim();
     if (trimmed) {
@@ -615,12 +622,13 @@ async function runClaudeHeadless(args: {
   const claudeExecutable = (await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable())).path;
   const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const env = {
+  // No account named: on a cloud computer, the "New chats" Claude pass.
+  const env = withClaudePassEnv({
     ...userProcessEnv(),
     ...providerSelfUpdateEnv("claude"),
     NO_COLOR: "1",
     TERM: "dumb"
-  };
+  });
   const invocation = resolveCliSpawnInvocation(claudeExecutable, cliArgs, env);
   const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
@@ -1032,7 +1040,9 @@ function normalizeDraft(args: {
   }
   // The PR's branch can be named like a created lane; other modes reuse a name.
   const namesLane = requestedLaneMode === "create" || requestedLaneMode === "pr-branch";
+  const requestedCloud = parseAutomationCloudTarget(requestedExecution?.cloud);
   const laneExecutionFields = {
+    ...(requestedCloud ? { cloud: requestedCloud } : {}),
     ...(requestedLaneMode ? { laneMode: requestedLaneMode } : {}),
     ...(namesLane && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
     ...(namesLane && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
@@ -1077,6 +1087,11 @@ function normalizeDraft(args: {
       path: "execution.builtIn.actions",
       message: "Built-in automations require at least one task.",
     });
+  }
+
+  const cloudProblem = automationCloudProblem(execution as AutomationRule["execution"]);
+  if (cloudProblem) {
+    issues.push({ level: "error", path: "execution.cloud", message: cloudProblem });
   }
 
   if (execution.kind !== "built-in" && !safeTrim(args.draft.prompt)) {
@@ -1260,6 +1275,7 @@ export function createAutomationPlannerService({
     list: () => { id: string }[];
     syncFromConfig: () => void;
     assertWebhookGatewayReadyForRule?: (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">) => void;
+    noteRunOnChanged?: () => void;
   };
 }) {
   const readSuites = (): TestSuiteDefinition[] => {
@@ -1474,7 +1490,18 @@ export function createAutomationPlannerService({
       }
 
       const normalized = validation.normalized;
-      if (normalized.enabled) {
+      // Only the computer that runs the rule needs its events delivered: an
+      // edit on another computer, or a move to one, is not checked here.
+      const draftHome = req.draft.home;
+      const savedRule = safeTrim(normalized.id)
+        ? projectConfigService.get().effective.automations.find((r) => r.id === safeTrim(normalized.id)) ?? null
+        : null;
+      const runsHereAfterSave = draftHome === "this-computer"
+        ? true
+        : draftHome && typeof draftHome === "object"
+          ? false
+          : savedRule?.runsHere !== false;
+      if (normalized.enabled && runsHereAfterSave) {
         automationService.assertWebhookGatewayReadyForRule?.({
           name: normalized.name,
           triggers: normalized.triggers,
@@ -1497,10 +1524,6 @@ export function createAutomationPlannerService({
         }
       }
 
-      const snapshot = projectConfigService.get();
-      const local = { ...(snapshot.local ?? {}) };
-      const rules = Array.isArray(local.automations) ? [...local.automations] : [];
-      const idx = rules.findIndex((r) => r?.id === id);
       const nextRule = {
         id,
         name: normalized.name,
@@ -1532,14 +1555,18 @@ export function createAutomationPlannerService({
         includeProjectContext: normalized.includeProjectContext,
         ...(execution.kind === "built-in" && normalized.actions.length ? { actions: normalized.actions } : {}),
       };
-      if (idx >= 0) rules[idx] = nextRule;
-      else rules.push(nextRule);
-      local.automations = rules;
-
-      projectConfigService.save({ shared: snapshot.shared, local });
+      // Filed in the account when the rule can follow it (keeping its home
+      // unless the draft names one), else in `.ade/local.yaml`.
+      const homeBefore = idRaw ? projectConfigService.get().effective.automations.find((r) => r.id === id)?.home?.deviceId ?? null : null;
+      projectConfigService.saveAutomationRule(nextRule as ConfigAutomationRule, {
+        home: req.draft.home,
+      });
       automationService.syncFromConfig();
 
       const effectiveRule = projectConfigService.get().effective.automations.find((r) => r.id === id) ?? null;
+      if (req.draft.home && idRaw && effectiveRule?.home && effectiveRule.home.deviceId !== homeBefore) {
+        automationService.noteRunOnChanged?.();
+      }
       if (!effectiveRule) {
         throw new Error("Failed to save automation rule");
       }

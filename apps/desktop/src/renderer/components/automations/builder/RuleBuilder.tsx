@@ -28,6 +28,8 @@ import { RuleSentence } from "../list/RuleSentence";
 import { TriggerCard } from "./TriggerCard";
 import { LaneTargeting } from "./LaneTargeting";
 import { ChatTargetField } from "./ChatTargetField";
+import { RuleCloudField } from "./RuleCloudField";
+import { automationCloudProblem } from "../../../../shared/automationCloud";
 import { StepStack } from "./StepStack";
 import { TestRunButton, type TestKind } from "./TestRunControls";
 import { applyStepsToDraft, draftToSteps, laneComesFromEvent, readLaneMode, type WorkflowStep } from "./draftBridge";
@@ -133,6 +135,7 @@ export function RuleBuilder({
   saveBlockedReason = null,
   saving,
   testBlockedReason = null,
+  runBlockedReason = null,
   running = false,
   dirty = false,
 }: {
@@ -160,6 +163,8 @@ export function RuleBuilder({
   saving: boolean;
   /** Why Test is unavailable now (a new automation that is not saved yet). */
   testBlockedReason?: string | null;
+  /** Why Run now can't run the rule from this window (it runs on another computer), or null. */
+  runBlockedReason?: string | null;
   running?: boolean;
   dirty?: boolean;
 }) {
@@ -253,7 +258,14 @@ export function RuleBuilder({
             {/* A count, not a control: plain muted text, no border. */}
             <span className="text-[11px] tabular-nums text-muted-fg">{steps.length} step{steps.length === 1 ? "" : "s"}</span>
             {onRunNow ? (
-              <Button size="sm" variant="outline" casing="sentence" disabled={running || saving || !draft.id} onClick={onRunNow} title={draft.id ? "Run this rule now" : "Save first to run"}>
+              <Button
+                size="sm"
+                variant="outline"
+                casing="sentence"
+                disabled={running || saving || !draft.id || Boolean(runBlockedReason)}
+                onClick={onRunNow}
+                title={runBlockedReason ?? (draft.id ? "Run this rule now" : "Save first to run")}
+              >
                 <Play size={12} weight="fill" className={cn(running && "animate-pulse")} />
                 Run now
               </Button>
@@ -315,6 +327,26 @@ export function RuleBuilder({
 
           <Section icon={meta.icon} title="Trigger" hint={meta.hint}>
             {machineField}
+            <RuleCloudField
+              value={draft.execution?.cloud ?? null}
+              problem={automationCloudProblem(draft.execution)}
+              disabled={saving}
+              onChange={(cloud) => {
+                const current = draft.execution ?? { kind: "agent-session" as const };
+                const next = { ...current };
+                if (cloud) {
+                  next.cloud = cloud;
+                  // A run on ADE Cloud needs a new lane: start from the closest lane choice.
+                  if (next.laneMode !== "create" && next.laneMode !== "pr-branch") {
+                    next.laneMode = "create";
+                    delete next.targetLaneId;
+                  }
+                } else {
+                  delete next.cloud;
+                }
+                setDraft({ ...draft, execution: next });
+              }}
+            />
             <TriggerCard
               trigger={primaryTrigger}
               ingressStatus={ingressStatus}

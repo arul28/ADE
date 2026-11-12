@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { isPathEscapeError, readFileWithinRootSecure } from "../../../../desktop/src/main/services/shared/utils";
 
 import {
+  adeWithheldAgentSkills,
   getAgentSkillRootsWithSource,
   type AgentSkillRootSource,
 } from "../../../../desktop/src/shared/agentSkillRoots";
@@ -219,8 +220,14 @@ function catalogFor({ cwd, includeUser, env, onError }: CatalogOptions): Catalog
   return skills;
 }
 
+/** The catalog minus skills this account may not see (`adeWithheldAgentSkills`), however they got here. */
+function visibleCatalogFor(options: CatalogOptions): CatalogSkill[] {
+  const withheld = new Set(adeWithheldAgentSkills());
+  return catalogFor(options).filter((skill) => !withheld.has(skill.entry.name));
+}
+
 export function listAgentSkills(options: CatalogOptions): AgentSkillEntry[] {
-  return catalogFor(options).map(({ entry }) => ({ ...entry }));
+  return visibleCatalogFor(options).map(({ entry }) => ({ ...entry }));
 }
 
 export function readAgentSkill(
@@ -229,7 +236,7 @@ export function readAgentSkill(
 ): { entry: AgentSkillEntry; body: string; content: string } | null {
   const nameKey = normalizedSkillName(name);
   if (!nameKey) return null;
-  const skill = catalogFor(options)
+  const skill = visibleCatalogFor(options)
     .find((candidate) => normalizedSkillName(candidate.entry.name) === nameKey);
   if (!skill) return null;
   return { entry: { ...skill.entry }, body: skill.body, content: skill.content };

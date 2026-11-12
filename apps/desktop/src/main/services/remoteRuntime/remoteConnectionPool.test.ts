@@ -32,10 +32,8 @@ vi.mock("./sshTransport", () => ({
   getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
 }));
 
-import {
-  REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
-  RemoteConnectionPool,
-} from "./remoteConnectionPool";
+import { RemoteConnectionPool } from "./remoteConnectionPool";
+import { REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS } from "./pairedRuntimeRoutes";
 import { RemoteConnectionService } from "./remoteConnectionService";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import {
@@ -277,7 +275,7 @@ describe("RemoteConnectionPool", () => {
     });
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await pool.connect(pairedTarget);
+    await pool.connect(pairedTarget, { initiatedBy: "user" });
     await expect(pool.ensureLocalPortForward(pairedTarget.id, {
       remotePort: 4173,
       label: "Preview",
@@ -318,7 +316,7 @@ describe("RemoteConnectionPool", () => {
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
     const heard: Array<{ targetId: string; wait: { path: string; reason: string } | null }> = [];
     pool.onHostStorageWait((targetId, wait) => heard.push({ targetId, wait }));
-    await pool.connect(pairedTarget);
+    await pool.connect(pairedTarget, { initiatedBy: "user" });
 
     // The same wait again is not news; the all-clear for the handshake's wait is.
     deliver({ type: "host_health", payload: { storageWait: { path: waitAtConnect.path, reason: "not_answering", sinceAgoMs: 5 } } });
@@ -374,7 +372,7 @@ describe("RemoteConnectionPool", () => {
         getAccountRelayProof: async () => ({ userId: "account-a", token: "account-token" }),
       },
     );
-    const connection = await pool.connect(pairedTarget);
+    const connection = await pool.connect(pairedTarget, { initiatedBy: "user" });
     expect(connection.route?.kind).toBe("relay");
 
     await expect(pool.ensureLocalPortForward(pairedTarget.id, {
@@ -442,7 +440,7 @@ describe("RemoteConnectionPool", () => {
           : null,
       },
     );
-    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+    await expect(pool.connect(pairedTarget, { initiatedBy: "user" })).resolves.toMatchObject({
       route: { kind: "relay" },
     });
     expect(pool.reconcileAccountRelayOwner("account-a")).toEqual([]);
@@ -455,7 +453,7 @@ describe("RemoteConnectionPool", () => {
       expect(relayDispose).toHaveBeenCalledWith(false);
     });
 
-    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+    await expect(pool.connect(pairedTarget, { initiatedBy: "user" })).resolves.toMatchObject({
       route: { kind: "lan" },
     });
     expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(2);
@@ -483,7 +481,7 @@ describe("RemoteConnectionPool", () => {
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
     const onEvicted = vi.fn();
     pool.onEntryEvicted(onEvicted);
-    await pool.connect(pairedTarget);
+    await pool.connect(pairedTarget, { initiatedBy: "user" });
 
     client.emitDisconnect(new Error("Remote ADE service connection failed: ECONNRESET"));
     await Promise.resolve();
@@ -512,7 +510,7 @@ describe("RemoteConnectionPool", () => {
     });
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+    await expect(pool.connect(pairedTarget, { initiatedBy: "user" })).resolves.toMatchObject({
       target: { id: pairedTarget.id },
       version: "1.0.0",
     });
@@ -529,7 +527,7 @@ describe("RemoteConnectionPool", () => {
     );
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(pairedWithoutSshRoutes)).rejects.toBeInstanceOf(
+    await expect(pool.connect(pairedWithoutSshRoutes, { initiatedBy: "user" })).rejects.toBeInstanceOf(
       PairedRuntimeCompatibilityError,
     );
     expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
@@ -564,7 +562,7 @@ describe("RemoteConnectionPool", () => {
     });
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(pairedWithSshRoutes)).resolves.toMatchObject({
+    await expect(pool.connect(pairedWithSshRoutes, { initiatedBy: "user" })).resolves.toMatchObject({
       target: { id: pairedWithSshRoutes.id },
     });
     expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(1);
@@ -594,7 +592,7 @@ describe("RemoteConnectionPool", () => {
     });
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+    await expect(pool.connect(pairedTarget, { initiatedBy: "user" })).resolves.toMatchObject({
       target: { id: pairedTarget.id },
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledWith(
@@ -624,7 +622,7 @@ describe("RemoteConnectionPool", () => {
     getSshHostKeyTrustForTargetMock.mockResolvedValueOnce(trustStatus);
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(pairedTarget)).rejects.toMatchObject({
+    await expect(pool.connect(pairedTarget, { initiatedBy: "user" })).rejects.toMatchObject({
       name: "PairedRuntimeSshTrustRequiredError",
       trustStatus,
     });
@@ -661,7 +659,7 @@ describe("RemoteConnectionPool", () => {
       "1.0.0",
       pairedStore as any,
     );
-    await expect(pool.connect(relayOnlyTarget)).rejects.toBe(pairedError);
+    await expect(pool.connect(relayOnlyTarget, { initiatedBy: "user" })).rejects.toBe(pairedError);
 
     expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
     expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
@@ -684,7 +682,7 @@ describe("RemoteConnectionPool", () => {
     bootstrapPairedRuntimeMock.mockRejectedValueOnce(pairedError);
 
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
-    await expect(pool.connect(discoveredTarget)).rejects.toBe(pairedError);
+    await expect(pool.connect(discoveredTarget, { initiatedBy: "user" })).rejects.toBe(pairedError);
 
     expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
     expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
@@ -706,10 +704,10 @@ describe("RemoteConnectionPool", () => {
     );
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(noSshTarget)).rejects.toBeInstanceOf(
+    await expect(pool.connect(noSshTarget, { initiatedBy: "user" })).rejects.toBeInstanceOf(
       PairedRuntimeRelayAuthRequiredError,
     );
-    await expect(pool.connect(noSshTarget)).rejects.toBeInstanceOf(
+    await expect(pool.connect(noSshTarget, { initiatedBy: "user" })).rejects.toBeInstanceOf(
       PairedRuntimeRelayAuthRequiredError,
     );
 
@@ -728,7 +726,7 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+    await expect(pool.connect(pairedTarget, { initiatedBy: "user" })).resolves.toMatchObject({
       target: { id: pairedTarget.id },
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
@@ -746,7 +744,7 @@ describe("RemoteConnectionPool", () => {
     const onEvicted = vi.fn();
     pool.onEntryEvicted(onEvicted);
 
-    await expect(pool.connect(target)).resolves.toMatchObject({
+    await expect(pool.connect(target, { initiatedBy: "user" })).resolves.toMatchObject({
       version: "1.0.0",
     });
     firstClient.emitDisconnect(new Error("stream closed"));
@@ -764,7 +762,7 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.1"),
     });
 
-    await expect(pool.connect(target)).resolves.toMatchObject({
+    await expect(pool.connect(target, { initiatedBy: "user" })).resolves.toMatchObject({
       version: "1.0.1",
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
@@ -786,7 +784,7 @@ describe("RemoteConnectionPool", () => {
     const onInvalidated = vi.fn();
     pool.onPortForwardsInvalidated(onInvalidated);
 
-    await pool.connect(target);
+    await pool.connect(target, { initiatedBy: "user" });
     await pool.disconnect(target.id);
     expect(onInvalidated).toHaveBeenCalledWith(target.id);
 
@@ -797,7 +795,7 @@ describe("RemoteConnectionPool", () => {
       ssh: createSsh(),
       result: connectResult("1.0.0"),
     });
-    await pool.connect(target);
+    await pool.connect(target, { initiatedBy: "user" });
     secondClient.emitDisconnect(new Error("stream closed"));
     await Promise.resolve();
     expect(onInvalidated).toHaveBeenCalledWith(target.id);
@@ -815,7 +813,7 @@ describe("RemoteConnectionPool", () => {
     const onEvicted = vi.fn();
     pool.onEntryEvicted(onEvicted);
 
-    await pool.connect(target);
+    await pool.connect(target, { initiatedBy: "user" });
     pool.disconnect(target.id);
     await Promise.resolve();
 
@@ -839,9 +837,9 @@ describe("RemoteConnectionPool", () => {
     }));
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    const firstConnect = pool.connect(target);
+    const firstConnect = pool.connect(target, { initiatedBy: "user" });
     pool.disconnect(target.id);
-    const secondConnect = pool.connect(target);
+    const secondConnect = pool.connect(target, { initiatedBy: "user" });
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
     const resolveBootstrapNow = resolveBootstrap as BootstrapResolve;
@@ -867,7 +865,7 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await pool.connect(target);
+    await pool.connect(target, { initiatedBy: "user" });
     firstSsh.emitOnce("close");
 
     expect(firstClient.close).toHaveBeenCalledTimes(1);
@@ -880,7 +878,7 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.1"),
     });
 
-    await expect(pool.connect(target)).resolves.toMatchObject({
+    await expect(pool.connect(target, { initiatedBy: "user" })).resolves.toMatchObject({
       version: "1.0.1",
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
@@ -903,7 +901,7 @@ describe("RemoteConnectionPool", () => {
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
     try {
-      await pool.connect(target);
+      await pool.connect(target, { initiatedBy: "user" });
       const [firstForward, secondForward] = await Promise.all([
         pool.ensureLocalPortForward(target.id, {
           remotePort: upstreamPort,
@@ -969,7 +967,7 @@ describe("RemoteConnectionPool", () => {
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
     try {
-      await pool.connect(target);
+      await pool.connect(target, { initiatedBy: "user" });
       const forward = await pool.ensureLocalPortForward(target.id, {
         remotePort: upstreamPort,
         label: "preview",
@@ -1216,8 +1214,9 @@ describe("RemoteConnectionPool", () => {
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(firstClient.call).toHaveBeenCalledWith("projects.list", {});
-    expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
+    // The same read, once on each connection.
+    expect(firstClient.call.mock.calls.map(([method]) => method)).toEqual(["projects.list"]);
+    expect(secondClient.call.mock.calls.map(([method]) => method)).toEqual(["projects.list"]);
   });
 
   it("propagates request timeouts without reconnecting or replaying retryable reads", async () => {
@@ -1237,8 +1236,7 @@ describe("RemoteConnectionPool", () => {
     await expect(pool.projectsForTarget(target)).rejects.toThrow(timeout.message);
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(client.call).toHaveBeenCalledTimes(1);
-    expect(client.call).toHaveBeenCalledWith("projects.list", {});
+    expect(client.call.mock.calls.map(([method]) => method)).toEqual(["projects.list"]);
     expect(client.close).not.toHaveBeenCalled();
     expect(ssh.end).not.toHaveBeenCalled();
   });
@@ -1249,10 +1247,10 @@ describe("RemoteConnectionPool", () => {
     );
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(target)).rejects.toThrow(
+    await expect(pool.connect(target, { initiatedBy: "user" })).rejects.toThrow(
       /kex_exchange_identification/i,
     );
-    await expect(pool.connect(target)).rejects.toThrow(/Retrying in \d+s/i);
+    await expect(pool.connect(target, { initiatedBy: "user" })).rejects.toThrow(/Retrying in \d+s/i);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
   });
 
@@ -1262,10 +1260,10 @@ describe("RemoteConnectionPool", () => {
     );
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(target)).rejects.toThrow(
+    await expect(pool.connect(target, { initiatedBy: "user" })).rejects.toThrow(
       /kex_exchange_identification/i,
     );
-    await expect(pool.connect(target)).rejects.toThrow(/Retrying in \d+s/i);
+    await expect(pool.connect(target, { initiatedBy: "user" })).rejects.toThrow(/Retrying in \d+s/i);
 
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: createClient(),
@@ -1274,7 +1272,7 @@ describe("RemoteConnectionPool", () => {
     });
 
     await expect(
-      pool.connect(target, { bypassFailureBackoff: true }),
+      pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" }),
     ).resolves.toMatchObject({ version: "1.0.1" });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
@@ -2028,7 +2026,7 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(target)).resolves.toMatchObject({
+    await expect(pool.connect(target, { initiatedBy: "user" })).resolves.toMatchObject({
       version: "1.0.0",
     });
     firstClient.emitDisconnect(new Error("lost"));

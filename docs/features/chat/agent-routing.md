@@ -48,7 +48,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, ADE's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.164.0 `codex app-server` subprocess, JSON-RPC protocol, shared by every chat whose process would launch identically (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); the shared process in `codexAppServerPool.ts`; executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.167.0 `codex app-server` subprocess, JSON-RPC protocol, shared by every chat whose process would launch identically (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); the shared process in `codexAppServerPool.ts`; executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `copilot` | ADE's pinned Copilot runtime (`copilot` tools-cache pin, version-paired with `@github/copilot-sdk`) driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
@@ -93,7 +93,13 @@ type ModelDescriptor = {
 Helpers (also re-exported through `shared/modelRegistry.ts`):
 
 - `getModelById(id)` -- exact id match.
-- `resolveModelAlias(alias)` -- resolves user-facing aliases.
+- `resolveModelAlias(alias)` -- resolves saved aliases and retired ids.
+- `shorthandModelNameRefusal(ref)` -- why a model name coming in now is
+  refused: requests through `run_ade_action`, `start_cli_session` and
+  `spawn_agent` (the CLI, MCP, agents) must name a model by its full name,
+  the registry id or the wire id. Short names (`opus`, `fable`, `sol`), old
+  spellings and retired ids are refused with the full name to use. Saved
+  chats, presets and automation rules still resolve through the aliases.
 - `getDefaultModelDescriptor()` -- default model.
 - `resolveModelDescriptorForProvider(provider, modelId?)` -- fallback
   resolution when an agent requests a model not available under a
@@ -170,13 +176,13 @@ Claude's global quick-pick vocabulary is `low | medium | high | max`
 (`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while model
 descriptors advertise their provider-native ladders to model-specific
 pickers. Opus 5.5 and Opus 5 expose `low|medium|high|xhigh|max`;
-Fable 5.1 adds `ultracode`; Sonnet 5.5 exposes `low|medium|high|xhigh|max`;
+Fable 5.2 and Fable 5.1 add `ultracode`; Sonnet 5.5 exposes `low|medium|high|xhigh|max`;
 Sonnet 5 exposes `low|medium|high|max`; Haiku 5.5 exposes
 `low|medium|high|xhigh|max` and defaults to `medium`. Haiku 4.5 is retired:
 every Haiku 4.5 id on the Claude route resolves to Haiku 5.5, while OpenCode,
 Droid and Copilot keep the Haiku rows their own catalogs serve.
-The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5,
-then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
+The Claude registry is ordered as Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5,
+Fable 5.1, then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
 whose default is not hoisted to the front of `listModelDescriptorsForProvider`,
 so the desktop picker catalog, Settings, and the CTO picker all show
 this same registry order.
@@ -186,6 +192,10 @@ Claude default and the app-wide default (set in `model-manifest.json`), so
 pickers list it first.
 Opus 5 selects provider model `claude-opus-5`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
+Fable 5.2 selects provider model `claude-fable-5-2`, defaults to `medium`
+effort (Anthropic's default), exposes `low|medium|high|xhigh|max|ultracode`
+plus Fast Mode, and prices at $8 / $40 per million input / output tokens.
+It has no short aliases. Mythos 5.2 is not listed.
 Fable 5.1 selects provider model `claude-fable-5-1`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max|ultracode` plus Fast Mode.
 Sonnet 5.5 selects provider model `claude-sonnet-5-5`, defaults to `high`
@@ -680,15 +690,15 @@ one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
 | Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread's config (`thread/start`, `thread/resume`), capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
 | OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
 | Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
-| Cursor | Yes | None ("This provider compacts by itself. ADE cannot change when.") | Not supported | The SDK's per-model window or the preCompact hook's `context_window_size` |
+| Cursor | Yes | Compact first only; Cursor has no setting for when it compacts | Local chats: `agent.summarize()`, run as a normal turn. Custom instructions are ignored with a notice. Cursor Cloud chats refuse it. | The SDK's per-model window or the preCompact hook's `context_window_size` |
 | Droid, ACP agents | Varies | None | Sent as a prompt where the agent accepts it | `contextStats.limit` / `usage_update` |
 
 Settings live in project config `ai.compaction.<provider>` (`shared/compactionSettings.ts`:
 `atTokens` (`null` = Auto, the harness default), `subagentAtTokens` (Claude), `reserveTokens`, `keepRecentTokens`,
-`idleMode`). `idleMode` is the Compact first offer: Claude, Codex, Pi and OpenCode — the providers whose
+`idleMode`). `idleMode` is the Compact first offer: Claude, Codex, Pi, OpenCode and local Cursor chats — the providers whose
 `/compact` ADE can run — each wait out their own prompt-cache window (`compactFirstIdleMs`: Claude's measured
-5m/1h, OpenAI's documented `30m`, or the window of the model's vendor for Pi/OpenCode) and then offer to
-compact before the next send. Claude defaults to `ask`; the other three default to `never`, so their offer
+5m/1h, OpenAI's documented `30m`, or the window of the model's vendor for Pi/OpenCode/Cursor) and then offer to
+compact before the next send. Claude defaults to `ask`; the others default to `never`, so their offer
 appears only once someone enables it on the provider page. Only Claude has the automatic warm timer. Compaction itself is always on: a chat that cannot compact only overflows, so there is no off switch,
 and an `enabled: false` saved before is dropped on read. `subagentAtTokens` reaches Claude as `autoCompactWindow` on
 every subagent definition. The SDK only lets it lower the window a subagent inherits, so Settings says "No effect"
@@ -1489,6 +1499,9 @@ send". Because that stop exists only to resend, it runs in `stop_only` mode with
 interrupted turn's own tail consumes it, so messages the user had already staged
 ride through the redirect instead of being cleared. `interrupt-replace` on
 OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
+A subagent result waiting in the cleared queue goes out inside the redirect
+message on Pi, Droid and ACP providers, so the replacement cannot lose it. A
+plain Stop still clears it.
 
 Inline is a *local*-run capability. A Cursor **Cloud** run implements
 `Run.steer` but refuses every call, so an inline send there would always degrade
@@ -1583,17 +1596,21 @@ payload's `trigger`, `context_tokens`, `context_window_size`,
 `PreCompactRequestQuery`). `cursorSdkEventMapper` turns that event into a
 `context_usage` snapshot (`origin: "live"`, context tokens over window size)
 followed by `context_compact` `started` with `provider: "cursor"`,
-`detection: "provider"`, and `preTokens`. Cursor has no public "done
-compacting" event. The SDK turns the summary it writes into a `task` message,
-and that message closes the compaction. If no summary arrives, the next
+`detection: "provider"`, and `preTokens`. Cursor's `summary` message (below)
+closes the compaction. If no summary message arrives, the next
 generation message (`assistant`, `thinking`, `tool_call`, `usage`) closes it.
 If neither arrives, the run ending closes it, as `failed`/`interrupted` when the
 run was cancelled or errored. The closing event carries `durationMs`, so the
 shared compaction emitter keeps it as sent. The first compaction in a turn uses
 the turn id as its `compactionId`, and later ones use `<turnId>:compact-<n>`.
-Once the hook fires in a run, the worker marks that run's `status` events, and
-the status-text match (`detectCompactionSignalText`) stays quiet. That text
-match now runs only for runs the hook did not report on, such as cloud runs.
+Since `@cursor/sdk` 1.2.0 the stream also carries `summary` messages (`running`,
+`completed`, `error`, and `fallback: true` when the model could not write a
+summary and Cursor kept a shortened copy of the chat). They are the real start and
+end of a compaction, on local and cloud runs. `createCursorSdkRunTelemetry` merges
+them with the hook into one compaction whichever arrives first, and an `error`
+ends it as `failed`/`provider_error`. Once either signal arrives in a run, the
+worker marks that run's `status` events, and the status-text match
+(`detectCompactionSignalText`) stays quiet.
 `ADE_CURSOR_PRECOMPACT_HOOK=0` in the worker environment, or
 `CursorSdkWorkerInit.preCompactHook: false`, removes the entry and turns the
 path off. `cursorSdkPreCompactContract.test.ts` reads the installed SDK's `cjs`

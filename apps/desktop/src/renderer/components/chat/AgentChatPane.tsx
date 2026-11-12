@@ -1,3 +1,4 @@
+import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
@@ -88,6 +89,7 @@ import {
   type AgentChatSendArgs,
   type ChatLaunchChatArgs,
   type ChatLaunchLaneConfig,
+  type ChatLaunchSnapshot,
   TerminalSessionChangedEvent,
   TerminalSessionSummary,
   ANDROID_CONTEXT_SURFACE,
@@ -189,6 +191,7 @@ import {
 } from "./AgentChatComposer";
 import {
   countCommentsForNextSend,
+  guestCommentsForNextSend,
   requestThreadCommentFocus,
   setThreadComments,
   useThreadComments,
@@ -215,7 +218,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { McpRefreshChip } from "./McpRefreshChip";
-import { resolveContextCompactControl } from "../../../shared/contextCompaction";
+import { manualCompactDependsOnChat, resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "../shared/ModelPicker/runtimeCatalogCache";
@@ -223,7 +226,7 @@ import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCur
 import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { useLaneGitRemote } from "./useLaneGitRemote";
-import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
+import { familiesFromStatus, familiesWithoutRuntime } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
   ChatInfoHostContext,
@@ -234,10 +237,16 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import {
+  markCloudWakeForSend,
+  savedChatAwareAgentChatApi,
+  sendWithCloudWakeMark,
+} from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -284,6 +293,8 @@ import {
   settingsHeldBesideEffortChange,
 } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip, noticeKindModel } from "../ui/notice";
+import { LaneShareComposerChip } from "../laneShare/LaneShareComposerChip";
+import { LaneShareOwnerMoveCard } from "../laneShare/LaneShareOwnerMove";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -343,7 +354,12 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
+import {
+  isCodexMemoryResetDraft,
+  parseCodexMemorySlashCommand,
+  parseCodexShellSlashCommand,
+  parseCodexUserShellDraft,
+} from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatAccountNote } from "./ChatAccountNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
@@ -370,13 +386,16 @@ import {
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
-import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { providerSettingsEntryId, providerSignInKnownBeforeSend, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { AccountSwitchRecoveryCard, ChatSignInCard } from "./ProviderLoginRecoveryCards";
+import { ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
-import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
+import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore, type WorkDraftCloudTarget } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
-import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
-import type { HarnessPreset } from "../../../shared/harnessPresets";
+import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { isDefaultProviderInstanceId } from "../../../shared/types/providerInstances";
+import { clampEffortToLadder, harnessEffortTiers, type HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -389,6 +408,7 @@ import {
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
 import { latestChatSignInFailure } from "../../lib/claudeAuthPrompt";
+import { latestOwnerOffNotice, latestSwitchThenFailure } from "../../lib/providerLoginNotices";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchComposerChip } from "../lanes/LaneBranchDrift";
@@ -398,10 +418,17 @@ import {
 } from "../lanes/CreateLaneDialogHost";
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
-import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
-import { AGENT37_CONNECT_ID, AGENT37_NEW_MACHINE_ID, AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
-import { useDraftMachineSetup } from "./useDraftMachineSetup";
-import { NewAgent37MachineDialog } from "../remoteTargets/NewAgent37MachineDialog";
+import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "../lanes/laneMachines";
+import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
+import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
+import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
+import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
+import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
+import type { CloudAccountState } from "../../../shared/adeCloud";
+import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
+import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { autoPickSummary } from "../lanes/machineLoadText";
 import { useMachinePlacement } from "../lanes/useMachinePlacement";
 import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
@@ -427,6 +454,7 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
+import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -487,7 +515,7 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
-import { recordStarPillMessageSent } from "../../lib/starPillActivity";
+import { recordNudgeMessageSent } from "../../lib/nudgePillActivity";
 import { noteChatSendForSuggestions } from "../app/suggestions/chatSendSignals";
 import {
   COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
@@ -509,6 +537,9 @@ import {
 } from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
+import { adeCloudStartBranchReady, startAdeCloudLaunch } from "./launch/adeCloudLaunch";
+import { cloudLaunchScope, laneOnLaunchMachine } from "./launch/cloudLaunchScope";
+import { useDraftCloudPick } from "./useDraftCloudPick";
 import {
   clearSubmittedDraftText,
   removeSubmittedDraftItems,
@@ -569,6 +600,7 @@ import {
 } from "../../lib/visualContextFormatting";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
+import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -624,6 +656,64 @@ const chatToolbarActionBase =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 const chatToolbarActionIdle =
   "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
+
+/** A command this window answers itself: nothing is sent to the provider. */
+type PaneLocalChatCommand = "claude-usage" | "claude-context" | "codex-memory-reset";
+
+/**
+ * The one rule for which drafts `submit` answers in this window. The sign-in
+ * exemption (`sendRunsWithoutSignIn`) calls it too, so a local command added
+ * here also runs while Send is off for a sign-in.
+ */
+function paneLocalChatCommand(args: {
+  text: string;
+  sessionId: string | null;
+  provider: string | null;
+  claudeUsageAvailable: boolean;
+  /** Attachments, context items or visual context ride the draft. */
+  hasExtras: boolean;
+}): PaneLocalChatCommand | null {
+  if (!args.sessionId || args.hasExtras) return null;
+  if (args.text === "/usage" && args.claudeUsageAvailable) return "claude-usage";
+  if (args.text === "/context" && args.provider === "claude") return "claude-context";
+  if (args.provider === "codex" && isCodexMemoryResetDraft(args.text)) return "codex-memory-reset";
+  return null;
+}
+
+/** The least time between two sign-in reads on window focus, for one machine. */
+const SIGN_IN_FOCUS_READ_MIN_INTERVAL_MS = 15_000;
+/** When the last focus read for each machine started, shared by every pane. */
+const signInFocusReadAtByScope = new Map<string, number>();
+
+/**
+ * Whose local login a run through a harness route needs: a stored key or a
+ * picked provider account brings its own credentials (null: no local login to
+ * check); a subscription run in another harness uses that subscription's
+ * provider login; OpenCode signs in its own providers.
+ */
+function routeLoginProvider(target: Pick<HarnessLaunchTarget, "harness" | "source">): string | null {
+  switch (target.source.kind) {
+    case "key":
+    case "account":
+      return null;
+    case "subscription":
+      return target.source.provider;
+    default:
+      return target.harness;
+  }
+}
+
+/**
+ * The provider is installed on the machine and only its login is missing.
+ * A login ADE cannot see but the machine still runs with (Muse keeps its own
+ * in the macOS Keychain) is not a missing one.
+ */
+function providerLoginMissing(provider: string, connection: AiProviderConnectionStatus | null | undefined): boolean {
+  return providerSignInKnownBeforeSend(provider)
+    && connection?.runtimeDetected === true
+    && connection.authAvailable === false
+    && connection.runtimeAvailable === false;
+}
 
 function handoffProviderDisplayName(provider: string | null | undefined): string {
   return providerDisplayLabel(provider, "this provider");
@@ -835,6 +925,7 @@ function claudeToolResultText(content: unknown): string {
       .map((block) => {
         if (typeof block === "string") return block;
         const record = subagentRecord(block);
+        if (record?.type === "image") return "[image]";
         return record && typeof record.text === "string" ? record.text : "";
       })
       .filter((value) => value.length > 0)
@@ -3903,6 +3994,11 @@ function isMissingParallelLaunchLaneError(error: unknown): boolean {
   return /not found|no such lane|does not exist/i.test(message);
 }
 
+/** Why a Run on row other than This computer is off in parallel models. */
+const PARALLEL_MODELS_HERE_ONLY = "Parallel models runs on this computer.";
+/** A second Send of the same ADE Cloud draft this soon after the first is the same launch. */
+const ADE_CLOUD_REPEAT_SEND_MS = 5_000;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -4267,8 +4363,8 @@ export function AgentChatPane({
   // The chat API this pane talks to. A ref so every callback below reads the
   // current one without joining its dependency list; the scope a pane is given
   // does not change over its life.
-  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? window.ade?.agentChat);
-  agentChatApiRef.current = chatScope?.agentChat ?? window.ade?.agentChat;
+  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat));
+  agentChatApiRef.current = chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat);
   const personalScope = chatScope?.kind === "personal" ? chatScope : null;
   // The boolean the pane's hooks gate on: stable for the pane's life, so it
   // joins a dependency list without re-running anything.
@@ -4590,6 +4686,10 @@ export function AgentChatPane({
      before the chat exists. Only read while there is no selected session; a
      running chat is named by its own `presetId`. */
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
+  /* A draft's pick of a stored API key (a provider card's key row), held as
+     state beside the launch ref so the sign-in check sees it: that run
+     authenticates with the key, not the provider's local login. */
+  const [draftCredentialId, setDraftCredentialId] = useState<string | null>(null);
   /* A running chat's model pick, held until Send applies it. It names the
      preset the pick came from, or none for a plain model. The trigger reads it
      so a pick shows at once instead of the chat's old preset, and Send reads
@@ -4756,6 +4856,11 @@ export function AgentChatPane({
   const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Opens the provider sign-in card for a typed `/login` while the chat needs
+   * one, and says whether it did. Set where that need is known (further down).
+   */
+  const openSignInForLoginCommandRef = useRef<(() => boolean) | null>(null);
   const composerDraftWriteTimerRef = useRef<number | null>(null);
   const pendingComposerDraftWriteRef = useRef<{
     storageKey: string;
@@ -4881,6 +4986,34 @@ export function AgentChatPane({
   // token gate is read once per pane mount — the same lazy cadence the
   // quick-view button uses — so a work tab never pays an auth probe at boot.
   const [devinCloudMode, setDevinCloudMode] = useState(false);
+  /**
+   * "Run on ADE Cloud": the draft goes to a lane on ADE Cloud, a new one
+   * (`adeCloudLaneId` null: Auto-create lane, or the "+" lane) or one this
+   * project already has there. The machine routing keeps the tab's machine
+   * meanwhile; ADE Cloud is its own target, as Cursor and Devin Cloud are.
+   *
+   * This is the pick; it is in effect (`adeCloudMode`, below where the
+   * account's access is known) only while ADE Cloud is available. Access
+   * unknown or refused never clears the pick, so a saved pick survives the
+   * startup moment before the access answer lands.
+   */
+  const [adeCloudPicked, setAdeCloudPicked] = useState(false);
+  const [adeCloudLaneId, setAdeCloudLaneId] = useState<string | null>(null);
+  /** The effective mode (pick and access), written where `adeCloudMode` is derived. */
+  const adeCloudModeRef = useRef(false);
+  const adeCloudLaneIdRef = useRef(adeCloudLaneId);
+  adeCloudLaneIdRef.current = adeCloudLaneId;
+  /**
+   * What a send to ADE Cloud needs, written each render below where the
+   * draft's ADE Cloud state exists (the send callback is defined earlier).
+   */
+  const adeCloudSendRef = useRef<AdeCloudSend | null>(null);
+  /** The last ADE Cloud launch this draft started, so a second press of Send in the same moment is the same launch. */
+  const adeCloudLastStartRef = useRef<{ key: string; at: number } | null>(null);
+  /** The open chat's lane kept without a computer, or null (written below, where the chat's binding exists). */
+  const freedChatLaneRef = useRef<CloudLaneWithoutComputer | null>(null);
+  /** The ADE Cloud account from the shared computers read, when the draft has read it. */
+  const adeCloudAccountRef = useRef<CloudAccountState | null>(null);
   // The cloud model (`devin_version`) and VM OS for the next Devin Cloud launch.
   const [devinCloudVersionSel, setDevinCloudVersionSel] = useState<string>(DEVIN_CLOUD_DEFAULT_VERSION);
   const [devinCloudPlatformSel, setDevinCloudPlatformSel] = useState("linux");
@@ -5258,6 +5391,13 @@ export function AgentChatPane({
    */
   const composerDriftLaneIdRef = useRef<string | null | undefined>(null);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  // The largest transcript this pane holds, read by the renderer's memory
+  // snapshot (`lib/rendererMemorySnapshot.ts`) twice a minute.
+  useEffect(() => registerTranscriptGauge(() => {
+    let largest = 0;
+    for (const events of Object.values(eventsBySessionRef.current)) largest = Math.max(largest, events.length);
+    return largest;
+  }), []);
   /** Live transcripts for the list, ahead of `eventsBySession` while a reply streams. */
   const liveEventsStore = useMemo(
     () => createChatLiveEventsStore((sessionId) => eventsBySessionRef.current[sessionId]),
@@ -5360,6 +5500,11 @@ export function AgentChatPane({
   const chatSelectionTransitioning = composerSessionId !== renderedSessionId;
   const renderedSessionIdRef = useRef<string | null>(renderedSessionId);
   renderedSessionIdRef.current = renderedSessionId;
+  // Set while a send wakes this chat's sleeping cloud computer (15–30 s), so
+  // the transcript shows the working indicator before any turn event arrives.
+  const cloudWakingSince = useRootAppStore((s) => (
+    renderedSessionId ? s.cloudWakingSinceBySessionId[renderedSessionId] ?? null : null
+  ));
   // A chat opened the instant a new-lane launch was sent: its session id is
   // reserved, but until the brain reports `sessionCreated` there is no summary
   // or transcript to read. The pane renders the launch instead (prompt bubble,
@@ -5482,6 +5627,10 @@ export function AgentChatPane({
   const shownNotice = shownChatNotice(
     chatNotice,
     (chatRuntimePin ?? projectBinding)?.kind === "remote",
+    // Read when the notice renders: the saved-chats read marks a chat whose
+    // cloud computer no longer exists (no connection, or gone from the list).
+    chatNotice != null && selectedSessionId != null
+      && savedChatComputerGone(chatRuntimePin, selectedSessionId),
   );
   // A project chat on another machine, shown here: this desktop runs its
   // agent's browser commands in the browser the user can see, wherever the
@@ -5512,6 +5661,9 @@ export function AgentChatPane({
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
+  // A guest's comment goes only when the owner ticked it: the send names it.
+  const threadCommentsRef = useRef(threadComments);
+  threadCommentsRef.current = threadComments;
   const threadCommentsSessionIdRef = useRef(threadCommentsSessionId);
   threadCommentsSessionIdRef.current = threadCommentsSessionId;
   const threadCommentsProp = useMemo(
@@ -5768,6 +5920,7 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   // A browser tab attached from the Browser panel, for the composer to insert
   // at its caret (the pane cannot see the caret, only the draft).
   const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
@@ -6739,7 +6892,9 @@ export function AgentChatPane({
   const sendClaudeGoalCommand = useCallback(async (sessionId: string, argument: string) => {
     setError(null);
     try {
-      await agentChatApiRef.current.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current);
+      await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => (
+        agentChatApiRef.current.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current)
+      ));
     } catch (goalError) {
       setError(errorMessage(goalError));
     }
@@ -7022,6 +7177,24 @@ export function AgentChatPane({
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
+  /* The exact preset the composer is showing: a running chat's own preset (or
+     the pick still waiting for Send), or the draft's. The launch must read its
+     source-model ladder, not the harness's ladder, or a picked level is lost
+     before the chat is created. */
+  const activeHarnessPresetId = useMemo(() => (!selectedSessionId
+    ? draftHarnessPresetId
+    : sessionRoutePick?.sessionId === selectedSessionId
+      ? sessionRoutePick.presetId
+      : selectedSession?.presetId ?? null), [
+    draftHarnessPresetId,
+    selectedSession?.presetId,
+    selectedSessionId,
+    sessionRoutePick,
+  ]);
+  const activeLaunchTarget = useMemo(
+    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
     ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
@@ -7033,7 +7206,22 @@ export function AgentChatPane({
       reasoningEffort: subagentViewSnapshot?.reasoningEffort,
     }))
     : null;
-  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
+  const presetReasoningDescriptor = activeLaunchTarget
+    ? resolveScopedModelDescriptor(
+        reasoningModelIdForLaunchTarget(activeLaunchTarget),
+        modelCatalogScopeKey,
+      )
+    : undefined;
+  const reasoningDescriptor = presetReasoningDescriptor ?? selectedModelDesc;
+  const reasoningTiers = useMemo(
+    () => harnessEffortTiers(
+      activeLaunchTarget?.harness,
+      activeLaunchTarget?.reasoningTiers?.length
+        ? activeLaunchTarget.reasoningTiers
+        : reasoningDescriptor?.reasoningTiers ?? [],
+    ) ?? EMPTY_REASONING_TIERS,
+    [activeLaunchTarget?.harness, activeLaunchTarget?.reasoningTiers, reasoningDescriptor?.reasoningTiers],
+  );
   /**
    * What the reasoning control is DISPLAYING, which is what a launch must send.
    *
@@ -7041,16 +7229,17 @@ export function AgentChatPane({
    * nothing explicit is set, but the launch used to read the unset state — so
    * the trigger said "High" while the request went out on the model default.
    * Resolving it here, at the owner of the value, keeps the two in step without
-   * a presentational component writing its parent's state on mount.
+   * a presentational component writing its parent's state on mount. A Custom
+   * pick reads the source model's ladder; a plain chat reads its own row.
    */
   const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
     tiers: reasoningTiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: selectedModelDesc?.family
-      ? getReasoningForFamily(selectedModelDesc.family) ?? null
+    rememberedForFamily: reasoningDescriptor?.family
+      ? getReasoningForFamily(reasoningDescriptor.family) ?? null
       : null,
-    modelDefault: selectedModelDesc?.defaultReasoningEffort ?? null,
-  }), [getReasoningForFamily, reasoningEffort, reasoningTiers, selectedModelDesc]);
+    modelDefault: reasoningDescriptor?.defaultReasoningEffort ?? null,
+  }), [getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -7285,6 +7474,16 @@ export function AgentChatPane({
   const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
   // The chat's last turn stopped on its provider being signed out.
   const chatSignInFailure = useMemo(() => latestChatSignInFailure({
+    provider: selectedSession?.provider ?? null,
+    events: selectedEventsForDisplay,
+    turnActive,
+  }), [selectedEventsForDisplay, selectedSession?.provider, turnActive]);
+  // The failed turn waited on ADE Cloud for another computer to renew the sign-in.
+  const chatSignInOwnerOff = useMemo(() => (chatSignInFailure
+    ? latestOwnerOffNotice({ provider: chatSignInFailure.provider, events: selectedEventsForDisplay })
+    : null), [chatSignInFailure, selectedEventsForDisplay]);
+  // The first turn after the chat's account changed failed.
+  const chatAccountSwitchFailure = useMemo(() => latestSwitchThenFailure({
     provider: selectedSession?.provider ?? null,
     events: selectedEventsForDisplay,
     turnActive,
@@ -7808,6 +8007,10 @@ export function AgentChatPane({
       : undefined),
     [aiStatus, workDraftKind],
   );
+  const modelPickerProviderRuntimeMissing = useMemo(
+    () => (aiStatus ? familiesWithoutRuntime(aiStatus) : undefined),
+    [aiStatus],
+  );
   const draftCursorModelSelectionError = useMemo(() => {
     if (!forceDraft || selectedSessionId || lockSessionId || initialSessionId || !modelId) return null;
     const descriptor = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
@@ -7923,6 +8126,8 @@ export function AgentChatPane({
     laneGitBranch,
     laneGitRemoteStatus,
     laneGitRemoteError,
+    // Same machine as the lane reads above.
+    pin: chatRuntimePin,
   });
   // Opening the machine picker is the retry affordance for both probes the
   // cloud row depends on: Cursor's repo list and this lane's git remote. Each
@@ -7933,23 +8138,23 @@ export function AgentChatPane({
   // appears without a reload.
   const refetchDevinCloudAuth = useCallback(() => {
     // Devin Cloud rides the Devin CLI's own login (`devin acp --cloud`), so a
-    // signed-in CLI is the whole gate.
-    void getAiStatusCached({ projectRoot: projectRoot ?? null })
+    // signed-in CLI is the whole gate. Asked of the chat's machine, the one
+    // that launches: with shared sign-ins any computer can.
+    void getAiStatusCached({ projectRoot: projectRoot ?? null, pin: chatRuntimePinRef.current })
       .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
       .catch(() => setDevinCloudAuthConfigured(false));
   }, [projectRoot]);
   useEffect(() => {
-    if (devinCloudAuthConfigured !== null) return;
+    // Once per pane, and again when the chat moves to another machine (the
+    // pin is read from its ref; its key says when the machine changed).
     refetchDevinCloudAuth();
-  }, [devinCloudAuthConfigured, refetchDevinCloudAuth]);
+  }, [chatRuntimePinKey, refetchDevinCloudAuth]);
   // "Least loaded" reads machine stats only once the machine menu has opened.
   const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
-  const [draftMachinePickerOpens, setDraftMachinePickerOpens] = useState(0);
   /** Set below, once the draft's machine routing exists: reads the machines' projects again. */
   const refreshDraftMachineProjectsRef = useRef<(() => void) | null>(null);
   const handleDraftMachinePickerOpen = useCallback(() => {
     setDraftMachinePickerOpened(true);
-    setDraftMachinePickerOpens((count) => count + 1);
     refreshDraftMachineProjectsRef.current?.();
     refetchCursorCloudRepos();
     if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
@@ -8240,8 +8445,8 @@ export function AgentChatPane({
   }, [isPersonalPane, projectBinding, projectRoot]);
 
   // The picker's "Sign in" opens that provider's Settings page on the machine
-  // the composer runs on, which is the machine the picker greyed it out for.
-  // A chat already signed out shows its sign-in card in the composer.
+  // the composer runs on, which is the machine the picker marked "Not signed in" for.
+  // A chat already signed out shows its sign-in card above the prompt box.
   const openProviderSignIn = useCallback((
     family?: ProviderFamily,
     signInTarget?: readonly unknown[] | OpenProjectBinding | null,
@@ -8270,8 +8475,16 @@ export function AgentChatPane({
       );
   }, [modelId, selectedSession?.provider, sessionProvider]);
 
-  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
-    ++availableModelsRefreshSeqRef.current;
+  /**
+   * `force` makes the brain re-probe every CLI and the login shell's PATH.
+   * `revalidate` skips only this window's cache: the brain answers from its
+   * own short caches, but rebuilds the logins from the credential files.
+   */
+  const refreshAvailableModels = useCallback(async (options?: { force?: boolean; revalidate?: boolean }) => {
+    // A newer refresh's answer wins: an older one that resolves later (a
+    // sign-in recheck after the card's own re-read) must not overwrite it.
+    const refreshSeq = ++availableModelsRefreshSeqRef.current;
+    const isStale = () => refreshSeq !== availableModelsRefreshSeqRef.current;
     const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
     const scope = resolveAiStatusRuntimeScope();
     if (!scope) {
@@ -8284,7 +8497,7 @@ export function AgentChatPane({
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
-    let revalidateStatus = false;
+    let revalidateStatus = options?.revalidate === true;
     // Unpinned IPC follows the bound tab. Two runtimes can share one project
     // root, so a tab switch must bypass the TTL instead of reusing the other
     // machine's Settings cache. Leave pin-scoped buckets alone. Bypassing the
@@ -8305,8 +8518,10 @@ export function AgentChatPane({
         revalidate: revalidateStatus,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
+      if (isStale()) return orderAvailableModelIds(deriveConfiguredModelIds(status, { includeDroid: true }));
       return applyAiStatusSnapshot(status);
     } catch {
+      if (isStale()) return [];
       setAiStatus(null);
       setProviderConnections(null);
       // Fall back to direct model discovery probes below.
@@ -8358,9 +8573,11 @@ export function AgentChatPane({
       }
 
       const allAvailable = orderAvailableModelIds(available);
+      if (isStale()) return allAvailable;
       setAvailableModelIds((prev) => reuseStructurallyEqualArray(allAvailable, prev));
       return allAvailable;
     } catch {
+      if (isStale()) return [];
       setAvailableModelIds(keepEmptyArray);
       return [];
     }
@@ -9593,6 +9810,9 @@ export function AgentChatPane({
     // custom Codex `config.toml` model, a model newer than this build. A
     // fallback here would switch the chat to another model on the next send.
     if (selectedSessionId && modelId === selectedSessionModelId) return;
+    // So does a launch whose chat does not exist yet (or never will: it
+    // failed): it shows the model it launches with, which Retry runs again.
+    if (launchAwaitingSession) return;
     // A model the person picked in this chat (a Custom preset's model this
     // catalog does not list) is kept until Send applies it.
     if (selectedSessionId && deferredComposerSessionIdRef.current === selectedSessionId) return;
@@ -9604,7 +9824,7 @@ export function AgentChatPane({
       return;
     }
     setModelId(pickFallbackChatModelId(selectableModelIds));
-  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, launchAwaitingSession, modelId, modelSelectionConstrained, modelCatalogScopeKey, selectedEvents.length, selectedSessionId, selectedSessionModelId]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -9937,6 +10157,13 @@ export function AgentChatPane({
     handoffModelAutoseedRef.current = false;
     setHandoffModelId(modelId);
   }, []);
+  // The cross-machine target was picked in its modal, so a catalog update must
+  // not swap it back to the source model or the first listed one.
+  const remoteHandoffModelPickedRef = useRef(false);
+  const chooseRemoteHandoffModel = useCallback((modelId: string) => {
+    remoteHandoffModelPickedRef.current = true;
+    setRemoteHandoffModelId(modelId);
+  }, []);
   useEffect(() => {
     if (!handoffFormActive) {
       handoffModelAutoseedRef.current = true;
@@ -9950,13 +10177,19 @@ export function AgentChatPane({
       : null;
     const preferredTargetId = sourceModelId ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
-      if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
+      // A model the person picked stays, also one whose provider is signed
+      // out (the picker offers it, but this machine's list does not hold it).
+      if (
+        !autoseed
+        && current
+        && (handoffAvailableModelIds.includes(current) || resolveScopedModelDescriptor(current, modelCatalogScopeKey))
+      ) return current;
       return preferredTargetId;
     });
     // Until the source model is in the catalog, a later catalog update may
     // still replace the fallback with it.
     if (sourceModelId) handoffModelAutoseedRef.current = false;
-  }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
+  }, [handoffFormActive, handoffAvailableModelIds, modelCatalogScopeKey, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
   useEffect(() => {
@@ -10008,6 +10241,7 @@ export function AgentChatPane({
       // model.
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
+      remoteHandoffModelPickedRef.current = false;
       setRemoteHandoffModelId(
         selectedSessionModelId
           || handoffAvailableModelIds[0]
@@ -10025,7 +10259,8 @@ export function AgentChatPane({
   useEffect(() => {
     if (!handoffFormActive || handoffAvailableModelIds.length === 0) return;
     setRemoteHandoffModelId((current) => {
-      if (current && handoffAvailableModelIds.includes(current)) return current;
+      // A picked model stays, also one whose provider is signed out.
+      if (current && (remoteHandoffModelPickedRef.current || handoffAvailableModelIds.includes(current))) return current;
       if (selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)) {
         return selectedSessionModelId;
       }
@@ -10041,6 +10276,9 @@ export function AgentChatPane({
     if (!localHandoffOpen || handoffLocalMode !== "fork" || !handoffForkSupported) return;
     if (handoffForkAvailableModelIds.length === 0) return;
     if (handoffForkAvailableModelIds.includes(handoffModelId)) return;
+    // A model the picker offers but this machine's list lacks is a pick whose
+    // provider is signed out. It stays.
+    if (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey)) return;
     const next = selectedSessionModelId && handoffForkAvailableModelIds.includes(selectedSessionModelId)
       ? selectedSessionModelId
       : handoffForkAvailableModelIds[0];
@@ -10052,6 +10290,7 @@ export function AgentChatPane({
     handoffLocalMode,
     handoffModelId,
     localHandoffOpen,
+    modelCatalogScopeKey,
     selectedSessionModelId,
   ]);
 
@@ -10109,11 +10348,30 @@ export function AgentChatPane({
     };
   }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, readableSessionId]);
 
+  // A launch this window started shows the whole pick it launched with
+  // (model, effort, Fast, permission mode), not the composer's defaults.
+  const seedComposerFromLaunch = useCallback((launch: ChatLaunchSnapshot): boolean => {
+    const picked = getChatLaunchLocalRecord(launch.launchId)?.draftSnapshot ?? null;
+    if (!picked?.modelId) return false;
+    applyLaunchConfigToComposer({
+      version: 1,
+      modelId: picked.modelId,
+      reasoningEffort: picked.reasoningEffort,
+      fastMode: picked.fastMode,
+      fastTier: picked.fastTier ?? null,
+      cursorCloudServiceTier: picked.cursorCloudServiceTier,
+      executionMode: picked.executionMode,
+      controls: picked.nativeControls,
+      updatedAt: new Date().toISOString(),
+    }, { preserveFast: true });
+    return true;
+  }, [applyLaunchConfigToComposer]);
   useChatLaunchPaneLifecycle({
     chatLaunch,
     launchAwaitingSession,
     refreshSessions,
     setModelId,
+    seedComposer: seedComposerFromLaunch,
     optimisticSessionIdsRef,
     knownSessionIdsRef,
   });
@@ -11474,7 +11732,9 @@ export function AgentChatPane({
       // for up to half a minute.
       if (options?.afterSignIn) await refreshAvailableModels({ force: true });
       try {
-        await agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current);
+        await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => (
+          agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current)
+        ));
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
         rejectAuthRetry(sessionId);
@@ -11857,6 +12117,12 @@ export function AgentChatPane({
     onRequest: ({ modelRequest }) => {
       setDraftLaunchTargetId(null);
       clearNewLaneConfig();
+      // The named lane runs on its own machine, not on a cloud picked earlier.
+      markDraftCloudChosen();
+      setCursorCloudMode(false);
+      setDevinCloudMode(false);
+      setAdeCloudPicked(false);
+      setAdeCloudLaneId(null);
       if (modelRequest) applyWorkDraftModelRequestRef.current(modelRequest);
     },
   });
@@ -13006,7 +13272,13 @@ export function AgentChatPane({
       });
       if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
       const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-      const reasoningEffort = prepared.reasoningEffort ?? launchTarget.reasoningEffort ?? null;
+      // A stale draft can carry a level the source no longer offers; the CLI
+      // must receive a level the harness can send, or no level at all.
+      const reasoningEffort = clampEffortToLadder(
+        prepared.reasoningEffort !== undefined ? prepared.reasoningEffort : launchTarget.reasoningEffort,
+        launchTarget.harness,
+        launchTarget.reasoningTiers,
+      ) ?? null;
       return {
         profile: provider,
         title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
@@ -13130,6 +13402,18 @@ export function AgentChatPane({
     launchBinding: OpenProjectBinding,
     configuredLane: NewLaneDraftConfig | null,
     onUnsupported: () => void,
+    /**
+     * ADE Cloud: main makes a new computer for this lane (`chatLaunch.start`
+     * with `cloud`). `launchBinding` is the tab's project; it only names the
+     * repository to clone there. `lane`: a lane kept without a computer
+     * gets the new computer, on its own id and its branch on GitHub.
+     */
+    cloud: {
+      sizeId: string;
+      originUrl: string | null;
+      launchId?: string;
+      lane?: { laneId: string; laneName: string; branchRef: string };
+    } | null = null,
   ): boolean => {
     const prepared = prepareDraftLaunch(snapshot);
     let cli: ChatLaunchCliParams | null = null;
@@ -13161,13 +13445,18 @@ export function AgentChatPane({
       return false;
     }
 
-    const launchId = crypto.randomUUID();
-    const newLaneId = crypto.randomUUID();
+    const launchId = cloud?.launchId ?? crypto.randomUUID();
+    const existingLane = cloud?.lane ?? null;
+    const newLaneId = existingLane?.laneId ?? crypto.randomUUID();
     // The configured name wins; otherwise derive one from the prompt.
-    const laneName = configuredLane?.name.trim()
+    const laneName = existingLane?.laneName
+      || configuredLane?.name.trim()
       || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
         genericSuffix: autoLaneGenericSuffix(),
       });
+    const laneConfig: ChatLaunchLaneConfig | null = existingLane
+      ? { mode: "existing", branchRef: existingLane.branchRef }
+      : configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null;
     const args = buildNewLaneLaunchArgs({
       kind,
       mode,
@@ -13178,7 +13467,7 @@ export function AgentChatPane({
       provider,
       cliTitle: cli?.title ?? null,
       chat,
-      ...(configuredLane ? { laneConfig: chatLaunchLaneConfigFromDraft(configuredLane) } : {}),
+      ...(laneConfig ? { laneConfig } : {}),
       originClientId: getChatLaunchOriginClientId(),
     });
     // Predict the stages the host will report so the card has its shape from
@@ -13190,15 +13479,30 @@ export function AgentChatPane({
       pin: newLaneDefaultsPin(launchBinding, useAppStore.getState().projectBinding),
     });
     const launchStart = chatLaunchLaneStart(
-      configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+      laneConfig,
       knownDefaults?.defaults.start ?? DEFAULT_LANE_START,
     );
     const includeFetch = launchStart?.on === "remote";
-    registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
-    insertOptimisticChatLaunch(
-      launchBinding,
-      buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
-    );
+    if (cloud) {
+      // ADE Cloud's card starts with the computer's own steps, in blue. Main
+      // owns every ADE Cloud launch; there is no renderer chain to fall back to.
+      const { cloud: _cloud, originClientId: _originClientId, ...cloudArgs } = args;
+      void startAdeCloudLaunch({
+        args: { ...cloudArgs, laneId: newLaneId, laneName },
+        sizeId: cloud.sizeId,
+        originUrl: cloud.originUrl,
+        binding: launchBinding,
+        draftSnapshot: snapshot,
+        cli,
+        onUnsupported,
+      });
+    } else {
+      registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
+      insertOptimisticChatLaunch(
+        launchBinding,
+        buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
+      );
+    }
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
     clearNewLaneConfig();
@@ -13214,6 +13518,7 @@ export function AgentChatPane({
     if (opensNow) {
       openLaunchedDraftSession({ laneId: newLaneId, laneName, sessionId: launchId, draftKind: "chat" });
     }
+    if (cloud) return true;
     // A runtime that predates brain-owned launches rejects the action; that one
     // launch then drops its card/row and runs the renderer-owned chain, which
     // consumes this recipe so it still builds the lane the user configured.
@@ -13239,6 +13544,49 @@ export function AgentChatPane({
     selectedSessionId,
   ]);
 
+  /**
+   * Send in the chat of a lane kept without a computer: ADE makes the lane a
+   * new computer on its branch on GitHub (same lane id) and starts a new chat
+   * there with this message. The old chat stays readable as its saved copy.
+   * A refusal this window can see keeps the message in the box; one main
+   * gives later shows on the launch card, whose Delete puts it back.
+   */
+  const startFreedLaneChat = useCallback((lane: CloudLaneWithoutComputer): void => {
+    const tabBinding = useAppStore.getState().projectBinding;
+    const originUrl = originUrlForBinding(tabBinding);
+    const account = adeCloudAccountRef.current;
+    const problem = cloudLaneRestartProblem(lane, tabBinding, originUrl)
+      ?? cloudLaneStartBlock(account, { newLane: true })?.message
+      ?? null;
+    if (problem || !tabBinding || !lane.branchRef) {
+      setError({ message: problem ?? "Open the lane's project in ADE to start it.", kind: "status" });
+      return;
+    }
+    if (!modelId) {
+      setError({ message: "Select a model first", kind: "hint" });
+      return;
+    }
+    const snapshot = buildDraftLaunchSnapshotForCurrentState();
+    if (!snapshot) {
+      setError({ message: "Add a message before sending.", kind: "hint" });
+      return;
+    }
+    void copyPromptForLaunch(snapshot.text);
+    launchDraftIntoNewLane(
+      "chat",
+      "foreground",
+      snapshot,
+      tabBinding,
+      null,
+      () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
+      {
+        sizeId: cloudLaneRestartTier(lane, account, rootAppStoreApi.getState().cloudDefaultTier),
+        originUrl,
+        lane: { laneId: lane.laneId, laneName: lane.laneName, branchRef: cloudLaneRestartBranchRef(lane.branchRef) },
+      },
+    );
+  }, [buildDraftLaunchSnapshotForCurrentState, copyPromptForLaunch, launchDraftIntoNewLane, modelId]);
+
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
     // Machine selection starts the store transition synchronously, before React
     // can publish a fresh `projectTransitionBlocksChat` render. Read the store
@@ -13251,11 +13599,15 @@ export function AgentChatPane({
     ) {
       return;
     }
-    if (draftMachineUnavailableRef.current) {
+    // ADE Cloud is its own target: the picked machine's state does not apply.
+    // A chat or a CLI session: a draft ADE Cloud can't run never falls through
+    // to another machine (`cloudSend.notice` below keeps Send off).
+    const cloudSend = adeCloudModeRef.current ? adeCloudSendRef.current : null;
+    if (!cloudSend && draftMachineUnavailableRef.current) {
       setError({ message: "The selected machine is not currently available.", kind: "status" });
       return;
     }
-    const draftLaneCatalogLoadingMessage = draftLaneCatalogLoadingMessageRef.current;
+    const draftLaneCatalogLoadingMessage = cloudSend ? null : draftLaneCatalogLoadingMessageRef.current;
     if (draftLaneCatalogLoadingMessage) {
       setError({ message: draftLaneCatalogLoadingMessage, kind: "status" });
       return;
@@ -13301,6 +13653,123 @@ export function AgentChatPane({
       setError({ message: kind === "cli"
         ? "Enter a prompt or attach context before launching a CLI session."
         : "Add a message before sending.", kind: "hint" });
+      return;
+    }
+    if (cloudSend) {
+      // Send is off while the label above the box shows; this is the guard.
+      if (cloudSend.notice) return;
+      const cloudLane = cloudSend.lane;
+      const cloudRequestKey = `ade-cloud:${cloudLane?.laneId ?? "new"}:${draftLaunchRequestKey({
+        kind,
+        mode,
+        autoCreate: cloudLane == null,
+        snapshot,
+      })}`;
+      // A second press of Send while the first is still on screen is the same
+      // launch: it never starts another one.
+      const lastStart = adeCloudLastStartRef.current;
+      if (
+        draftLaunchInFlightKeysRef.current.has(cloudRequestKey)
+        || (lastStart?.key === cloudRequestKey && Date.now() - lastStart.at < ADE_CLOUD_REPEAT_SEND_MS)
+      ) return;
+      draftLaunchInFlightKeysRef.current.add(cloudRequestKey);
+      if (!cloudLane) {
+        const tabBinding = cloudSend.tabBinding;
+        if (!tabBinding) {
+          draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+          setError({ message: "Open a project to start a lane on ADE Cloud.", kind: "status" });
+          return;
+        }
+        // A start from a branch the person picked: it must be on GitHub
+        // before the computer is made. Send waits here; the draft stays.
+        const branchReady = await adeCloudStartBranchReady(
+          draftNewLaneConfig ? chatLaunchLaneConfigFromDraft(draftNewLaneConfig) : null,
+        );
+        if (!branchReady.go) {
+          draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+          if (branchReady.error) setError({ message: branchReady.error, kind: "status" });
+          return;
+        }
+        if (!paneMountedRef.current) {
+          draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+          return;
+        }
+        await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId, { targetsAnotherMachine: true });
+        void copyPromptForLaunch(snapshot.text);
+        const started = launchDraftIntoNewLane(
+          kind,
+          mode,
+          snapshot,
+          tabBinding,
+          draftNewLaneConfig,
+          // Main owns every ADE Cloud launch; there is no older path to fall back to.
+          () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
+          { sizeId: cloudSend.tierId, originUrl: cloudSend.originUrl },
+        );
+        draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+        // The composer clears with the launch, so the same key can only come
+        // back from a press that landed before it did. No timer: the stamp ages.
+        if (started) adeCloudLastStartRef.current = { key: cloudRequestKey, at: Date.now() };
+        return;
+      }
+      // An ADE Cloud lane this project has: the chat starts on that lane's
+      // computer, through its pin. An asleep computer wakes for the send.
+      let laneBinding: OpenProjectBinding;
+      try {
+        laneBinding = await resolveAdeCloudLaneBinding({
+          lane: cloudLane,
+          originUrl: cloudSend.originUrl,
+          connections: cloudSend.connections,
+          knownBindingFor: (targetId) => rootAppStoreApi.getState().crossMachineLanesByMachineId[targetId]?.binding ?? null,
+          stillWanted: () => paneMountedRef.current,
+          onWaking: () => setError({ message: `Waking ${cloudLane.laneName}…`, kind: "status" }),
+        });
+      } catch (resolveError) {
+        draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+        setError({ message: errorMessage(resolveError), kind: "status" });
+        return;
+      }
+      setError(null);
+      await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId, { targetsAnotherMachine: true });
+      void copyPromptForLaunch(snapshot.text);
+      await runRendererOwnedDraftLaunch({
+        kind,
+        mode,
+        snapshot,
+        launchBinding: laneBinding,
+        requestKey: cloudRequestKey,
+        autoCreate: false,
+        paneLaneId: laneId,
+        jobId: createDraftLaunchJobId(),
+        jobTitle: buildDraftLaunchJobTitle(kind, snapshot),
+        latestForegroundJobIdRef: latestForegroundDraftLaunchJobIdRef,
+        inFlightKeysRef: draftLaunchInFlightKeysRef,
+        paneMountedRef,
+        captureHandoffOrigin: () => captureComposerHandoff(
+          findDraftComposerHandoffElement(shellRef.current),
+          { departingScope: draftDepartingScope(shellRef.current) },
+        ),
+        prepare: prepareDraftLaunch,
+        resolveLane: async () => ({
+          laneId: cloudLane.laneId,
+          laneName: cloudLane.laneName,
+          worktreePath: null,
+          autoCreated: false,
+        }),
+        startChat: startDraftChatLaunch,
+        startCli: startDraftCliLaunch,
+        clearPromptSuggestion: () => clearPromptSuggestionForSession(selectedSessionId),
+        setError,
+        setDraftLaunchJobs,
+        clearDraftLaunchComposer,
+        patchDraftLaunchJob,
+        draftLaunchJobExists,
+        canRefreshPinnedProject,
+        refreshSessions,
+        refreshLanes: refreshLanesStore,
+        openLaunchedDraftSession,
+        clearSelectedSession: () => setSelectedSessionId(null),
+      });
       return;
     }
     const launchBinding = draftExecutionBindingRef.current;
@@ -13417,7 +13886,11 @@ export function AgentChatPane({
    * caches a freshly created chat would have seeded, and hand it to the parent so a locked pane
    * (single chat tile) can follow the new session instead of snapping back to its lock id.
    */
-  const adoptCursorCloudChatSession = useCallback((result: CursorCloudOpenChatResult) => {
+  const adoptCursorCloudChatSession = useCallback((
+    result: CursorCloudOpenChatResult,
+    /** The machine that opened the chat, when it is not the tab's own. */
+    runtimePin: OpenProjectBinding | null = null,
+  ) => {
     const { sessionId, session } = result;
     if (!sessionId) return;
     loadedHistoryRef.current.delete(sessionId);
@@ -13426,14 +13899,18 @@ export function AgentChatPane({
     pendingSelectedSessionIdRef.current = sessionId;
     draftSelectionLockedRef.current = false;
     touchSession(sessionId);
-    if (session) notifySessionCreated(session);
+    if (session) notifySessionCreated(session, runtimePin ? { runtimePin } : undefined);
     setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
   }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
   // Identical adoption path for a Devin Cloud chat: select the session the
   // ACP relay is bound to and let the transcript hydrate.
-  const adoptDevinCloudChatSession = useCallback((result: { sessionId: string; session?: AgentChatSession | null }) => {
+  const adoptDevinCloudChatSession = useCallback((
+    result: { sessionId: string; session?: AgentChatSession | null },
+    /** The machine that opened the chat, when it is not the tab's own. */
+    runtimePin: OpenProjectBinding | null = null,
+  ) => {
     const { sessionId, session } = result;
     if (!sessionId) return;
     loadedHistoryRef.current.delete(sessionId);
@@ -13442,7 +13919,7 @@ export function AgentChatPane({
     pendingSelectedSessionIdRef.current = sessionId;
     draftSelectionLockedRef.current = false;
     touchSession(sessionId);
-    if (session) notifySessionCreated(session);
+    if (session) notifySessionCreated(session, runtimePin ? { runtimePin } : undefined);
     setSelectedSessionId(sessionId);
     void refreshSessions().catch(() => undefined);
   }, [notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
@@ -13595,10 +14072,8 @@ export function AgentChatPane({
       setError({ message: "The selected machine project is not available. Reconnect it or choose another machine.", kind: "status" });
       return false;
     }
-    if (launchBinding.key !== projectBinding?.key) {
-      setError({ message: "Cursor Cloud launches from this computer.", kind: "status" });
-      return false;
-    }
+    // The chat's machine launches it, through its own (shared) Cursor sign-in.
+    const { pin: cloudPin, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     if (cursorCloudLaunchInFlightRef.current) return false;
     cursorCloudLaunchInFlightRef.current = true;
     setError(null);
@@ -13665,16 +14140,16 @@ export function AgentChatPane({
         await pushAutoCreatedLaneOriginForCursorCloud({
           laneId: createdLane.laneId,
           branchHint: createdLane.laneName,
-          git: window.ade.git,
+          git: pinnedGit,
         });
       } else if (targetLaneId) {
         await ensureExistingLaneOriginReadyForCursorCloud({
           laneId: targetLaneId,
-          git: window.ade.git,
+          git: pinnedGit,
         });
       }
       if (!targetLaneId) throw new Error("Select a lane before sending.");
-      const info = await window.ade.git.getOriginRemote({ laneId: targetLaneId }).catch(() => null);
+      const info = await window.ade.git.getOriginRemote({ laneId: targetLaneId }, cloudPin).catch(() => null);
       const startingRef = info?.branch ?? null;
       if (!startingRef) {
         throw new Error("Could not read this lane's branch, so there is nothing for the cloud agent to work on.");
@@ -13683,7 +14158,7 @@ export function AgentChatPane({
       const openPr = await window.ade.git.getOpenPrForBranch({
         laneId: targetLaneId,
         branch: startingRef,
-      }).catch(() => null);
+      }, cloudPin).catch(() => null);
       const prFields = resolveCursorCloudPrCreateFields({
         existingPrUrl: openPr?.prUrl,
         autoCreatePR: cursorCloudAutoPr,
@@ -13709,15 +14184,15 @@ export function AgentChatPane({
         linearIssueId: pinnedLinearIssue?.identifier ?? null,
         secretNames: selectedSecretNames,
         rememberSecretNames,
-      });
+      }, cloudPin);
       // The lane now lives on Cursor Cloud: the agent works on its branch.
       {
-        const targetLane = lanes.find((lane) => lane.id === targetLaneId) ?? null;
+        const targetLane = laneOnLaunchMachine(targetLaneId, cloudPin, chatMachineLanes, lanes);
         if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("cursor"))) {
           void window.ade.lanes.updateAppearance({
             laneId: targetLaneId,
             tags: withCloudLaneTag(targetLane.tags, "cursor"),
-          }).then(() => refreshLanesStore()).catch(() => undefined);
+          }, cloudPin).then(() => refreshLanesStore()).catch(() => undefined);
         }
       }
       // The agent exists; leave the draft pane immediately. Hydrate/attach
@@ -13734,7 +14209,7 @@ export function AgentChatPane({
           ...(snapshot.cursorCloudServiceTier
             ? { serviceTier: snapshot.cursorCloudServiceTier }
             : {}),
-        });
+        }, cloudPin);
       } catch {
         opened = { sessionId };
       }
@@ -13768,7 +14243,7 @@ export function AgentChatPane({
       adoptCursorCloudChatSession({
         sessionId: openedSession.id,
         session: openedSession,
-      });
+      }, cloudPin);
       return true;
     } catch (cloudError) {
       let message = cursorCloudErrorMessage(cloudError);
@@ -13789,6 +14264,7 @@ export function AgentChatPane({
   }, [
     adoptCursorCloudChatSession,
     buildDraftLaunchSnapshotForCurrentState,
+    chatMachineLanes,
     cursorCloudAutoPr,
     cursorCloudModelIds,
     cursorCloudRepoUrl,
@@ -13860,6 +14336,14 @@ export function AgentChatPane({
       return false;
     }
     if (devinCloudLaunchInFlightRef.current) return false;
+    if (!selectedSessionId && draftMachineUnavailableRef.current) {
+      setError({ message: "The selected machine is not currently available.", kind: "status" });
+      return false;
+    }
+    // The chat's machine launches it, through its own (shared) Devin sign-in.
+    // A hand-off from an open chat goes from that chat's machine.
+    const launchBinding = selectedSessionId ? chatRuntimePinRef.current ?? projectBinding ?? null : draftExecutionBindingRef.current;
+    const { pin: cloudPin, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     devinCloudLaunchInFlightRef.current = true;
     setError(null);
 
@@ -13919,23 +14403,23 @@ export function AgentChatPane({
         await pushAutoCreatedLaneOriginForCursorCloud({
           laneId: createdLane.laneId,
           branchHint: createdLane.laneName,
-          git: window.ade.git,
+          git: pinnedGit,
         });
       } else if (targetLaneId) {
         await ensureExistingLaneOriginReadyForCursorCloud({
           laneId: targetLaneId,
-          git: window.ade.git,
+          git: pinnedGit,
         });
       }
       if (!targetLaneId) throw new Error("Select a lane before sending.");
       // The lane now lives on Devin Cloud: its branch is where the VM works,
       // and every chat in it is a Devin Cloud chat.
-      const targetLane = lanes.find((lane) => lane.id === targetLaneId) ?? null;
+      const targetLane = laneOnLaunchMachine(targetLaneId, cloudPin, chatMachineLanes, lanes);
       if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("devin"))) {
         await window.ade.lanes.updateAppearance({
           laneId: targetLaneId,
           tags: withCloudLaneTag(targetLane.tags, "devin"),
-        }).catch(() => undefined);
+        }, cloudPin).catch(() => undefined);
       }
       patchDraftLaunchJob(jobId, { status: "starting-session" });
       // One call does the rest: push the branch, open a chat over the Devin
@@ -13947,7 +14431,7 @@ export function AgentChatPane({
         model: devinCloudVersionSel,
         platform: devinCloudPlatformSel || null,
         laneId: targetLaneId,
-      });
+      }, cloudPin);
       const now = new Date().toISOString();
       const openedSession = {
         id: launched.chatSessionId,
@@ -13985,7 +14469,7 @@ export function AgentChatPane({
       adoptDevinCloudChatSession({
         sessionId: openedSession.id,
         session: openedSession,
-      });
+      }, cloudPin);
       return true;
     } catch (cloudError) {
       let message = devinCloudErrorMessage(cloudError);
@@ -14000,6 +14484,7 @@ export function AgentChatPane({
   }, [
     adoptDevinCloudChatSession,
     buildDraftLaunchSnapshotForCurrentState,
+    chatMachineLanes,
     currentNativeControls,
     cursorCloudServiceTier,
     devinCloudPlatformSel,
@@ -14014,9 +14499,11 @@ export function AgentChatPane({
     modelId,
     onLaneChange,
     patchDraftLaunchJob,
+    projectBinding,
     reasoningEffort,
     refreshLanesStore,
     resolveDraftLaunchLane,
+    selectedSessionId,
     setDraftLaunchJobs,
     setDraftLaunchTargetId,
   ]);
@@ -14481,7 +14968,7 @@ export function AgentChatPane({
           copied = false;
         }
       }
-      openChatOnOtherMachine(continuation.targetSessionId);
+      openChatOnOtherMachine(continuation.targetSessionId, continuation);
       const stays = attachments.length && contextCount
         ? "Attachments and attached context stay on this machine."
         : attachments.length
@@ -14509,7 +14996,7 @@ export function AgentChatPane({
         return true;
       }
       try {
-        await window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin);
+        await sendWithCloudWakeMark(continuation.targetSessionId, pin, () => window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin));
       } catch (sendError) {
         // ADE Web reaches one machine; a chat elsewhere gets the hand-over.
         if (isWebRuntimePinUnroutableError(sendError)) {
@@ -14523,7 +15010,7 @@ export function AgentChatPane({
         setDraft("");
         if (sentFromSessionId) draftsPerSessionRef.current.delete(sentFromSessionId);
       }
-      openChatOnOtherMachine(continuation.targetSessionId);
+      openChatOnOtherMachine(continuation.targetSessionId, continuation);
       showToast({ tone: "success", title: `Sent to the chat on ${where}` });
       return true;
     } catch (routeError) {
@@ -14615,6 +15102,13 @@ export function AgentChatPane({
       }
       return;
     }
+    // `/login` while the chat needs a sign-in is that sign-in: the card opens,
+    // and nothing is sent (Claude's SDK refuses `/login` as a turn).
+    if (draft.trim() === "/login" && openSignInForLoginCommandRef.current?.()) {
+      setDraft("");
+      if (selectedSessionId) draftsPerSessionRef.current.delete(selectedSessionId);
+      return;
+    }
     // In a subagent's transcript view, a runtime that can message its
     // subagents (Muse) sends the draft to that subagent, on the chat's own
     // machine (the chat's runtime pin), not as a new turn of the parent.
@@ -14687,7 +15181,9 @@ export function AgentChatPane({
       return;
     }
     clearPromptSuggestionForSession(selectedSessionId);
-    if (draft.trim().length || attachments.length) recordStarPillMessageSent();
+    if (draft.trim().length || attachments.length) {
+      recordNudgeMessageSent();
+    }
 
     if (launchRoutesSends && chatLaunch && selectedSessionId && selectedSessionId === chatLaunch.sessionId) {
       // The lane is still being set up (or earlier queued messages still wait
@@ -14730,6 +15226,18 @@ export function AgentChatPane({
         setAttachments((current) => mergeAttachments(current, queuedAttachments));
         setError(errorMessage(queueError));
       }
+      return;
+    }
+
+    // A chat whose lane has no computer now: Send gives the lane a new one
+    // and starts a new chat there (never a send to the deleted computer).
+    const freedLane = selectedSessionId && !subagentView ? freedChatLaneRef.current : null;
+    if (freedLane) {
+      if (pendingToDecline.length > 0) {
+        setError({ message: PENDING_INPUT_SEND_BLOCKED_MESSAGE, kind: "status" });
+        return;
+      }
+      startFreedLaneChat(freedLane);
       return;
     }
 
@@ -15076,14 +15584,14 @@ export function AgentChatPane({
       }
     }
     void copyPromptForLaunch(text);
-    if (
-      text === "/usage"
-      && selectedSessionId
-      && claudeUsageAvailable
-      && !attachments.length
-      && !contextAttachmentsSnapshot.length
-      && !visualContextPrefix.length
-    ) {
+    const localCommand = paneLocalChatCommand({
+      text,
+      sessionId: selectedSessionId,
+      provider: sessionProvider,
+      claudeUsageAvailable,
+      hasExtras: attachments.length > 0 || contextAttachmentsSnapshot.length > 0 || visualContextPrefix.length > 0,
+    });
+    if (localCommand === "claude-usage" && selectedSessionId) {
       // Claude Code's usage report as a sheet; nothing reaches the transcript.
       setError(null);
       setDraft("");
@@ -15091,14 +15599,7 @@ export function AgentChatPane({
       setClaudeUsageSheetOpen(true);
       return;
     }
-    if (
-      text === "/context"
-      && selectedSessionId
-      && sessionProvider === "claude"
-      && !attachments.length
-      && !contextAttachmentsSnapshot.length
-      && !visualContextPrefix.length
-    ) {
+    if (localCommand === "claude-context" && selectedSessionId) {
       setBusy(true);
       setError(null);
       setDraft("");
@@ -15128,11 +15629,11 @@ export function AgentChatPane({
       draftsPerSessionRef.current.delete(selectedSessionId);
       try {
         touchSession(selectedSessionId);
-        await agentChatApiRef.current.send({
+        await sendWithCloudWakeMark(selectedSessionId, chatRuntimePinRef.current, () => agentChatApiRef.current.send({
           sessionId: selectedSessionId,
           text,
           displayText: text,
-        }, chatRuntimePinRef.current);
+        }, chatRuntimePinRef.current));
         void refreshSessions().catch(() => {});
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
@@ -15142,14 +15643,7 @@ export function AgentChatPane({
       }
       return;
     }
-    if (
-      selectedSessionId
-      && sessionProvider === "codex"
-      && isCodexMemoryResetDraft(text)
-      && !attachments.length
-      && !contextAttachmentsSnapshot.length
-      && !visualContextPrefix.length
-    ) {
+    if (localCommand === "codex-memory-reset" && selectedSessionId) {
       const ok = await confirmDialog({
         title: "Reset Codex memory?",
         message: "Deletes every memory file under this Codex home, not just this chat.",
@@ -15211,6 +15705,10 @@ export function AgentChatPane({
     submitInFlightRef.current = true;
     setBusy(true);
     setError(null);
+    // A send to a saved chat wakes its sleeping cloud computer first. The pane
+    // and the Work row say so until the turn shows live or this submit
+    // settles (display only; `CloudWakeSendMark.settle`).
+    const cloudWake = selectedSessionId ? markCloudWakeForSend(selectedSessionId, chatRuntimePinRef.current) : null;
     if (!deferComposerClear) {
       setDraft("");
       draftsPerSessionRef.current.delete(selectedSessionId);
@@ -15269,7 +15767,10 @@ export function AgentChatPane({
           : contextAttachmentsSnapshot.length || !includeThreadComments
             ? "Attached issue context"
             : "");
-      const threadCommentSendFields = includeThreadComments ? { includeThreadComments: true as const } : {};
+      const guestCommentsForSend = includeThreadComments ? guestCommentsForNextSend(threadCommentsRef.current) : [];
+      const threadCommentSendFields = includeThreadComments
+        ? { includeThreadComments: true as const, ...(guestCommentsForSend.length ? { includeGuestComments: guestCommentsForSend } : {}) }
+        : {};
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -15337,7 +15838,14 @@ export function AgentChatPane({
         const fastModeUpdate = selectedFastModeChanged
           ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
           : {};
-        const reasoningUpdate = selectedReasoningChanged ? { reasoningEffort } : {};
+        const reasoningUpdate = selectedReasoningChanged
+          || (
+            selectedRouteChanged
+            && reasoningEffort !== null
+            && reasoningTiers.includes(reasoningEffort)
+          )
+          ? { reasoningEffort }
+          : {};
         const pendingNativeUpdate = selectedModelChanged
           ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
           : {};
@@ -15504,7 +16012,11 @@ export function AgentChatPane({
       setAppControlContextItems(keepEmptyArray);
       setBuiltInBrowserContextItems(keepEmptyArray);
     } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : String(submitError);
+      // A call that gave up after the message left keeps the mark: the wake usually still delivers it.
+      cloudWake?.settle(submitError, handedOff != null);
+      // One plain sentence: a pinned call's failure arrives inside Electron's
+      // "Error invoking remote method '…': <Class>Error:" wrapper.
+      const message = stripElectronErrorWrapper(submitError instanceof Error ? submitError.message : String(submitError));
       if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
         // The call gave up, not the send: the chat's machine usually still
         // delivers it. Put the text back only if it never shows up.
@@ -15572,12 +16084,14 @@ export function AgentChatPane({
         void refreshAvailableModels().catch(() => {});
       }
     } finally {
+      cloudWake?.settle();
       submitInFlightRef.current = false;
       setBusy(false);
     }
     return steerResult;
   }, [
     countSentMessages,
+    startFreedLaneChat,
     openSideChatFromComposer,
     isPersonalPane, attachments,
     claudeUsageAvailable,
@@ -15609,6 +16123,7 @@ export function AgentChatPane({
     patchSessionSummary,
     projectTransitionBlocksChat,
     reasoningEffort,
+    reasoningTiers,
     resolvedPendingInputsBySession,
     refreshAvailableModels,
     refreshSessions,
@@ -15658,7 +16173,7 @@ export function AgentChatPane({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",
       enabled: Boolean(selectedUsageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
       pendingInput: Boolean(pendingInput),
@@ -15672,10 +16187,10 @@ export function AgentChatPane({
     setBusy(true);
     setError(null);
     try {
-      await agentChatApiRef.current.send({
+      await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => agentChatApiRef.current.send({
         sessionId,
         text: "/compact",
-      }, chatRuntimePinRef.current);
+      }, chatRuntimePinRef.current));
     } catch (compactError) {
       const message = compactError instanceof Error ? compactError.message : String(compactError);
       setError(message);
@@ -16052,6 +16567,17 @@ export function AgentChatPane({
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    // A preset switch with the same model is still a pending route change: the
+    // picker is showing the NEW preset's ladder, so updating the old preset's
+    // session now can clear a level the new preset supports. Send carries the
+    // selected effort with the preset switch instead.
+    const pendingRoute = sessionRoutePickRef.current;
+    if (
+      pendingRoute?.sessionId === selectedSessionId
+      && pendingRoute.presetId !== (selectedSession?.presetId ?? null)
+    ) {
+      return;
+    }
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       selectedSessionModelRef.current.modelId,
@@ -16090,6 +16616,7 @@ export function AgentChatPane({
     patchSessionSummary,
     reasoningEffort,
     refreshSessions,
+    selectedSession?.presetId,
     selectedSessionId,
     sessionMutationKind,
     setFastModeState,
@@ -16277,8 +16804,11 @@ export function AgentChatPane({
     && !initialSessionId
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
   const {
-    machineOptions: laneMachineOptions,
-    cloneMachineOptions: draftCloneMachineOptions,
+    machineOptions: routedLaneMachineOptions,
+    cloneMachineOptions: routedCloneMachineOptions,
+    machineOrder: draftMachineOrder,
+    machineKeyByTargetId: draftMachineKeyByTargetId,
+    connections: draftConnections,
     offlineMachines: draftOfflineMachines,
     refreshMachineProjects: refreshDraftMachineProjects,
     selectorLanes: draftRoutedSelectorLanes,
@@ -16310,6 +16840,36 @@ export function AgentChatPane({
     setError,
   });
   refreshDraftMachineProjectsRef.current = refreshDraftMachineProjects;
+  // ADE Cloud: one Run on entry for every lane there, read from memory.
+  const adeCloud = useAdeCloudDraft({
+    enabled: showDraftLaunchControls,
+    originUrl: originUrlForBinding(projectBinding),
+  });
+  const chooseAdeCloudTier = adeCloud.chooseTier;
+  // Every reader (the Run on value, the lane list, the create-lane dialog,
+  // the send path) sees the pick only while ADE Cloud is available here.
+  const adeCloudMode = adeCloudPicked && adeCloud.available;
+  adeCloudModeRef.current = adeCloudMode;
+  adeCloudAccountRef.current = adeCloud.account;
+  const adeCloudLaneComputers = adeCloud.computers;
+  // A lane computer is a lane on ADE Cloud, not a computer to pick: it is
+  // listed under ADE Cloud (by host name or machine key, as every other
+  // picker matches it). The tab's own machine and the current pick stay.
+  const isHiddenLaneComputer = useCallback((option: { id: string; targetId: string | null; hostname: string | null; isBound?: boolean }) => {
+    if (!option.targetId || option.isBound || option.id === selectedDraftMachineId) return false;
+    return isAdeCloudLaneComputer(
+      { hostname: option.hostname, machineKey: draftMachineKeyByTargetId.get(option.targetId) ?? null },
+      adeCloudLaneComputers,
+    );
+  }, [adeCloudLaneComputers, draftMachineKeyByTargetId, selectedDraftMachineId]);
+  const laneMachineOptions = useMemo(
+    () => (adeCloudLaneComputers.length ? routedLaneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedLaneMachineOptions),
+    [adeCloudLaneComputers, isHiddenLaneComputer, routedLaneMachineOptions],
+  );
+  const draftCloneMachineOptions = useMemo(
+    () => (adeCloudLaneComputers.length ? routedCloneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedCloneMachineOptions),
+    [adeCloudLaneComputers, isHiddenLaneComputer, routedCloneMachineOptions],
+  );
   // The auto-create row says where a new lane would start ("from origin/main"),
   // read from the saved new-lane defaults of the machine the draft launches on.
   // The launch's predicted stages peek the same cache entry.
@@ -16437,9 +16997,43 @@ export function AgentChatPane({
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
+  const {
+    shelfLanes: adeCloudShelfLanes,
+    selectedLane: adeCloudSelectedLane,
+    newLane: adeCloudNewLane,
+    notice: adeCloudNotice,
+    openSettings: openAdeCloudSettings,
+  } = useAdeCloudComposer({
+    draft: adeCloud,
+    mode: adeCloudMode,
+    laneId: adeCloudLaneId,
+    setLaneId: setAdeCloudLaneId,
+    showControls: showDraftLaunchControls,
+    parallelChatMode,
+    isCliDraft: isWorkCliLaunchDraft,
+    attachments,
+    newLaneConfig: draftNewLaneConfig,
+    laneConfigOf: chatLaunchLaneConfigFromDraft,
+    selectorLanes: draftLaneSelectorLanes,
+    tabBinding: projectBinding ?? null,
+    connections: draftConnections,
+    sendRef: adeCloudSendRef,
+    navigate,
+  });
 
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
+    if (adeCloudModeRef.current) {
+      // ADE Cloud's lanes are not this machine's: the pick stays here and the
+      // pane's own lane does not move.
+      if (isAutoCreateLaneOptionId(nextLaneId)) {
+        setAdeCloudLaneId(null);
+        return;
+      }
+      clearNewLaneConfig();
+      setAdeCloudLaneId(nextLaneId);
+      return;
+    }
     // Picking "Auto-create lane" keeps a configured recipe (it is the same
     // pending-lane target); picking any real lane drops it — the user chose a
     // concrete destination instead.
@@ -16462,11 +17056,12 @@ export function AgentChatPane({
     handleDraftMachineChange(machineId);
   }, [handleDraftMachineChange, keepLaneOnMachine]);
   // Machines one step away: one without this repository (clone it there), or
-  // an Agent 37 machine that is asleep or not connected (wake and connect it).
+  // a cloud machine that is asleep or not connected (wake and connect it).
   const draftMachineSetup = useDraftMachineSetup({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
-    pickerOpens: draftMachinePickerOpens,
+    cloudMachines: adeCloud.machines,
+    laneComputers: adeCloudLaneComputers,
     cloneCandidates: draftCloneMachineOptions,
     offlineMachines: draftOfflineMachines,
     selectableMachineIds: laneMachineOptionIds,
@@ -16479,43 +17074,24 @@ export function AgentChatPane({
     choose: chooseDraftSetupRow,
     abandon: abandonDraftMachineSetup,
     busyRowId: draftSetupBusyRowId,
-    prepare: prepareDraftMachine,
   } = draftMachineSetup;
-  // A new Agent 37 machine never has the repository: it counts as ready once
-  // connected, and is cloned there before it is selected.
-  const agent37ReachableMachineIds = useMemo(
-    () => [...laneMachineOptionIds, ...draftCloneMachineOptions.flatMap((option) => (option.targetId ? [option.targetId] : []))],
-    [draftCloneMachineOptions, laneMachineOptionIds],
-  );
-  const selectOrPrepareMachine = useCallback((machineId: string) => {
-    if (laneMachineOptionIds.includes(machineId)) {
-      selectReadyMachine(machineId);
-      return;
-    }
-    const candidate = draftCloneMachineOptions.find((option) => option.targetId === machineId);
-    void prepareDraftMachine(machineId, candidate?.name ?? machineId);
-  }, [draftCloneMachineOptions, laneMachineOptionIds, prepareDraftMachine, selectReadyMachine]);
-  // This project's ready Agent 37 machine (prepared and asleep): picking it
-  // wakes it while the person types, then selects it like any machine.
-  const {
-    option: agent37ReadyOption,
-    choose: chooseAgent37ReadyMachine,
-    chooseNew: chooseNewAgent37Machine,
-    abandon: abandonAgent37ReadyMachine,
-    waking: agent37ReadyWaking,
-    create: agent37CreateDialog,
-  } = useAgent37ReadyDraftMachine({
-    enabled: showDraftLaunchControls,
-    originUrl: originUrlForBinding(projectBinding),
-    pickerOpened: draftMachinePickerOpened,
-    connectedMachineIds: agent37ReachableMachineIds,
-    onMachineReady: selectOrPrepareMachine,
-    onNotice: setError,
-  });
   /**
-   * Cursor Cloud rides in the machine picker because "where does this run" is one question. It
-   * appears whenever Cursor is connected and this draft could launch there; picking it is cloud
-   * mode, and picking any real machine leaves it.
+   * Why the ADE Cloud entry can't be picked now, or null. Parallel models
+   * start several lanes on this computer. A chat and a CLI session both run there.
+   */
+  const adeCloudUnavailableReason = adeCloudMode
+    // Picked already: the label above the box says why it can't run now, and
+    // the row stays the pick (a disabled pick reads as "unavailable, fallback").
+    ? null
+    : parallelChatMode
+      ? PARALLEL_MODELS_HERE_ONLY
+      : null;
+  /**
+   * The Run on menu. Its rows keep one order whatever loads when: the
+   * connected computers in connection order (a computer that gains the
+   * project stays in its place), then the computers that wake when picked,
+   * then ADE Cloud, then Cursor and Devin Cloud. ADE Cloud is always there
+   * with access, even with no lanes yet and before the account answers.
    */
   const draftShelfMachineOptions = useMemo<DraftMachineOption[]>(() => {
     const unavailableMachine = draftMachineRecoveryAvailable
@@ -16526,39 +17102,72 @@ export function AgentChatPane({
           unavailableReason: "This machine is disconnected. Choose This computer to continue.",
         }
       : null;
-    const readyOption = agent37ReadyOption
-      ? {
-          ...agent37ReadyOption,
-          unavailableReason: parallelChatMode ? "Parallel models runs locally." : agent37ReadyOption.unavailableReason,
-        }
-      : null;
+    const orderOf = (machineId: string) => {
+      const index = draftMachineOrder.indexOf(machineId);
+      return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+    };
+    const cloneRows = draftSetupMachineRows.filter((row) => draftCloneRowTargetId(row.id) != null);
+    const wakeRows = draftSetupMachineRows.filter((row) => draftCloneRowTargetId(row.id) == null);
+    const connected: Array<DraftMachineOption & { order: number }> = [
+      ...laneMachineOptions.map((option) => ({ id: option.id, name: option.name, order: orderOf(option.id) })),
+      ...cloneRows.map((row) => ({
+        ...(parallelChatMode ? { ...row, unavailableReason: PARALLEL_MODELS_HERE_ONLY } : row),
+        order: orderOf(draftCloneRowTargetId(row.id)!),
+      })),
+    ];
+    connected.sort((a, b) => a.order - b.order);
+    // This computer's own name as its second line, from the sync snapshot the
+    // app already read (no read of its own). Before that read it has none.
+    const thisComputerName = peekLocalSyncStatus()?.localDevice?.name?.trim() || null;
+    const withThisComputerName = (row: DraftMachineOption): DraftMachineOption => (
+      row.id === THIS_MACHINE_ID && !row.detail && thisComputerName && thisComputerName !== row.name
+        ? { ...row, detail: thisComputerName }
+        : row
+    );
     const machines: DraftMachineOption[] = [
       ...(unavailableMachine ? [unavailableMachine] : []),
-      ...laneMachineOptions.map((option) => ({
-        id: option.id,
-        name: option.name,
-      })),
-      ...draftSetupMachineRows.map((row) => (
-        parallelChatMode ? { ...row, unavailableReason: "Parallel models runs locally." } : row
+      ...connected.map(({ order: _order, ...row }) => withThisComputerName(row)),
+      ...wakeRows.map((row) => (
+        parallelChatMode ? { ...row, unavailableReason: PARALLEL_MODELS_HERE_ONLY } : row
       )),
-      ...(readyOption ? [readyOption] : []),
     ];
-    if (!cursorCloudCanLaunch && !devinCloudCanLaunch) return machines;
+    const adeCloudRow: DraftMachineOption[] = adeCloud.available
+      ? [{
+          id: ADE_CLOUD_MACHINE_ID,
+          name: ADE_CLOUD_NAME,
+          kind: "cloud",
+          cloudProvider: "cloud",
+          // The size a new lane gets and how long the hours left last at it
+          // ("Small · 43.8 h left at this size"). No claim before the first
+          // account answer: the line keeps its space, empty, and fills in place.
+          detail: adeCloud.runOnLine,
+          detailPending: adeCloud.runOnLine == null,
+          separatorBefore: true,
+          unavailableReason: adeCloudUnavailableReason,
+        }]
+      : [];
+    if (!cursorCloudCanLaunch && !devinCloudCanLaunch) {
+      return [
+        ...(machines.length || !adeCloudRow.length ? machines : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })]),
+        ...adeCloudRow,
+      ];
+    }
     const withLocal = machines.length
       ? machines
-      : [{ id: boundLaneMachineId, name: THIS_MACHINE_NAME }];
+      : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })];
+    // Cursor and Devin Cloud launch from whichever computer the chat is set
+    // to, through that computer's shared sign-in (the launch carries its pin).
+    // What still keeps a row from being picked (no lane, the git remote
+    // check) shows as its second line, not only on hover.
     const cloudUnavailableReason = parallelChatMode
-      ? "Parallel models runs locally."
-      : selectedDraftMachineId !== boundLaneMachineId
-        ? "Cursor Cloud launches from this computer."
-        : cursorCloudUnavailableReason;
+      ? PARALLEL_MODELS_HERE_ONLY
+      : cursorCloudUnavailableReason;
     const devinUnavailableReason = parallelChatMode
-      ? "Parallel models runs locally."
-      : selectedDraftMachineId !== boundLaneMachineId
-        ? "Devin Cloud launches from this computer."
-        : devinCloudUnavailableReason;
+      ? PARALLEL_MODELS_HERE_ONLY
+      : devinCloudUnavailableReason;
     return [
       ...withLocal,
+      ...adeCloudRow,
       ...(cursorCloudCanLaunch
         ? [{
             id: CURSOR_CLOUD_MACHINE_ID,
@@ -16566,6 +17175,7 @@ export function AgentChatPane({
             kind: "cloud" as const,
             cloudProvider: "cursor" as const,
             unavailableReason: cloudUnavailableReason,
+            separatorBefore: adeCloudRow.length === 0,
           }]
         : []),
       ...(devinCloudCanLaunch
@@ -16579,12 +17189,18 @@ export function AgentChatPane({
         : []),
     ];
   }, [
-    agent37ReadyOption,
+    adeCloud.available,
+    adeCloud.runOnLine,
+    adeCloudUnavailableReason,
     boundLaneMachineId,
     cursorCloudCanLaunch,
     cursorCloudUnavailableReason,
     devinCloudCanLaunch,
     devinCloudUnavailableReason,
+    draftMachineOrder,
+    // The first open reads this computer's name again, in case the app's
+    // own sync read had not come back when the list was first built.
+    draftMachinePickerOpened,
     draftMachineRecoveryAvailable,
     draftSetupMachineRows,
     laneMachineOptions,
@@ -16596,36 +17212,78 @@ export function AgentChatPane({
     const machine = autoLaneMachine(placedDraftMachines);
     return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
   }, [placedDraftMachines]);
-  const draftShelfMachineValue = agent37ReadyWaking
-    ? (agent37ReadyOption?.id ?? AGENT37_READY_MACHINE_ID)
-    : draftSetupBusyRowId
-      ? draftSetupBusyRowId
-    : cursorCloudMode
-      ? CURSOR_CLOUD_MACHINE_ID
-      : devinCloudMode
-        ? DEVIN_CLOUD_MACHINE_ID
-        : selectedDraftMachineId;
+  const draftShelfMachineValue = draftSetupBusyRowId
+    ? draftSetupBusyRowId
+    : adeCloudMode
+      ? ADE_CLOUD_MACHINE_ID
+      : cursorCloudMode
+        ? CURSOR_CLOUD_MACHINE_ID
+        : devinCloudMode
+          ? DEVIN_CLOUD_MACHINE_ID
+          : selectedDraftMachineId;
+  // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
+  // cloud: the lane has no other machine.
+  useEffect(() => {
+    if (selectedSession || !laneId || draftLaunchTargetIsAutoCreate) return;
+    const cloud = laneCloudById.get(laneId) ?? null;
+    if (cloud === "devin" && !devinCloudMode && devinCloudCanLaunch) {
+      setCursorCloudMode(false);
+      setAdeCloudPicked(false);
+      setDevinCloudMode(true);
+    } else if (cloud === "cursor" && !cursorCloudMode && cursorCloudCanLaunch) {
+      setDevinCloudMode(false);
+      setAdeCloudPicked(false);
+      setCursorCloudMode(true);
+    }
+  }, [
+    cursorCloudCanLaunch,
+    cursorCloudMode,
+    devinCloudCanLaunch,
+    devinCloudMode,
+    draftLaunchTargetIsAutoCreate,
+    laneCloudById,
+    laneId,
+    selectedSession,
+    setCursorCloudMode,
+  ]);
+  // The Run on pick, when a cloud, is kept with the draft's machine pick.
+  const applySavedDraftCloud = useCallback((saved: WorkDraftCloudTarget) => {
+    setCursorCloudMode(saved.provider === "cursor");
+    setDevinCloudMode(saved.provider === "devin");
+    setAdeCloudPicked(saved.provider === "ade");
+    if (saved.provider !== "ade") return;
+    setAdeCloudLaneId(saved.laneId);
+    if (saved.sizeId) chooseAdeCloudTier(saved.sizeId);
+  }, [chooseAdeCloudTier, setCursorCloudMode]);
+  const { markChosen: markDraftCloudChosen } = useDraftCloudPick({
+    projectKey: workDraftProjectStateKey,
+    keeps: Boolean(onDraftMachineChange) && !selectedSessionId && !lockSessionId,
+    adePicked: adeCloudPicked,
+    adeLaneId: adeCloudLaneId,
+    adeSizeId: adeCloud.pickedTier,
+    cursorPicked: cursorCloudMode,
+    devinPicked: devinCloudMode,
+    cursorCanLaunch: cursorCloudCanLaunch,
+    devinCanLaunch: devinCloudCanLaunch,
+    apply: applySavedDraftCloud,
+  });
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
+    markDraftCloudChosen();
     // A setup row starts its own attempt; any other pick ends the last one,
     // so a clone or wake that finishes later can't replace this choice.
     if (!draftSetupOwnsRow(nextMachineId)) abandonDraftMachineSetup();
-    if (nextMachineId === AGENT37_READY_MACHINE_ID) {
+    if (nextMachineId === ADE_CLOUD_MACHINE_ID) {
+      // The machine routing keeps the tab's machine; ADE Cloud lanes are
+      // picked in the lane list beside it.
+      setError(null);
       setCursorCloudMode(false);
       setDevinCloudMode(false);
-      void chooseAgent37ReadyMachine();
+      setAdeCloudPicked(true);
       return;
     }
-    if (nextMachineId === AGENT37_NEW_MACHINE_ID) {
-      // Opens the create form; the chat keeps its machine until the new one is connected.
-      chooseNewAgent37Machine();
-      return;
-    }
-    if (nextMachineId === AGENT37_CONNECT_ID) {
-      navigate(settingsRouteFor("integrations.agent37"));
-      return;
-    }
-    abandonAgent37ReadyMachine();
+    setAdeCloudPicked(false);
+    setAdeCloudLaneId(null);
     if (draftSetupOwnsRow(nextMachineId)) {
       // Waking, cloning, then selecting; the chat keeps its machine until then.
       setCursorCloudMode(false);
@@ -16651,36 +17309,16 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [abandonAgent37ReadyMachine, abandonDraftMachineSetup, chooseAgent37ReadyMachine, chooseDraftSetupRow, chooseNewAgent37Machine, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, navigate, setCursorCloudMode, workDraftProjectStateKey]);
-  // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
-  // cloud: the lane has no other machine.
-  useEffect(() => {
-    if (selectedSession || !laneId || draftLaunchTargetIsAutoCreate) return;
-    const cloud = laneCloudById.get(laneId) ?? null;
-    if (cloud === "devin" && !devinCloudMode && devinCloudCanLaunch) {
-      setCursorCloudMode(false);
-      setDevinCloudMode(true);
-    } else if (cloud === "cursor" && !cursorCloudMode && cursorCloudCanLaunch) {
-      setDevinCloudMode(false);
-      setCursorCloudMode(true);
-    }
-  }, [
-    cursorCloudCanLaunch,
-    cursorCloudMode,
-    devinCloudCanLaunch,
-    devinCloudMode,
-    draftLaunchTargetIsAutoCreate,
-    laneCloudById,
-    laneId,
-    selectedSession,
-    setCursorCloudMode,
-  ]);
+  }, [abandonDraftMachineSetup, chooseDraftSetupRow, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, markDraftCloudChosen, setCursorCloudMode, workDraftProjectStateKey]);
   const useThisComputerForDraft = useCallback(() => {
+    markDraftCloudChosen();
     setCursorCloudMode(false);
     setDevinCloudMode(false);
+    setAdeCloudPicked(false);
+    setAdeCloudLaneId(null);
     handleDraftMachineChange(THIS_MACHINE_ID);
     setError(null);
-  }, [handleDraftMachineChange, setCursorCloudMode, setError]);
+  }, [handleDraftMachineChange, markDraftCloudChosen, setCursorCloudMode, setError]);
   /**
    * The bound machine's own name. Reached only when the picked machine IS the
    * bound one, so it must never label a remote-bound tab "This computer".
@@ -16711,6 +17349,11 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
+  // The open chat ran on a lane kept without a computer: Send gives it a new one (`startFreedLaneChat`).
+  freedChatLaneRef.current = useCloudLaneWithoutComputerForChat(
+    activeComposerRuntimeBinding,
+    Boolean(selectedSessionId) && !personalScope && cursorRuntime !== "cloud",
+  );
   // A draft reads the launch defaults of the machine it will launch on, again
   // whenever that machine changes, a chat is created, or the window regains
   // focus (another client may have launched since).
@@ -16774,47 +17417,211 @@ export function AgentChatPane({
   // machine. Before a send, from the status the picker already reads for that
   // machine (no extra probe per send); after a turn stopped on its sign-in,
   // from that turn's error. It runs the sign-in on that machine
-  // (`composerRuntimePin`, null for the tab's own) and takes the composer's place.
-  const signInProvider = selectedSessionId ? (selectedSession?.provider ?? null) : sessionProvider;
-  const signInConnection = signInProvider
-    ? (aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined)?.[signInProvider] ?? null
-    : null;
+  // (`composerRuntimePin`, null for the tab's own) and shows above the prompt box.
+  const signInConnections = aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined;
+  // A parallel draft starts one chat for each model in its set, so the check
+  // follows the set: the first model whose provider has no login here, else
+  // the first model. The composer's own model may not be in the set.
+  const parallelDraftActive = parallelChatMode && !selectedSessionId;
+  // In an open chat it is the provider of the picked model (`sessionProvider`
+  // follows a pick that differs from the chat's own); a turn that failed on
+  // its sign-in matches only while that is still the chat's provider.
+  const signInProvider = useMemo<string | null>(() => {
+    if (selectedSessionId) return selectedSession ? sessionProvider : null;
+    if (!parallelDraftActive) return sessionProvider;
+    const providers = parallelModelSlots
+      .map((slot) => (slot.modelId?.trim()
+        ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(slot.modelId, modelCatalogScopeKey))
+        : null))
+      .filter((provider): provider is NonNullable<typeof provider> => Boolean(provider));
+    return providers.find((provider) => providerLoginMissing(provider, signInConnections?.[provider])) ?? providers[0] ?? null;
+  }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, signInConnections]);
+  /**
+   * The provider whose local login a send needs, or null when the composer's
+   * route brings its own credentials. A saved preset or Run-in route decides
+   * it (`routeLoginProvider`); so does a stored key picked for a draft, and an
+   * open chat's own key or provider account while its provider is unchanged
+   * (the status reads only the provider's default account). A parallel set
+   * carries no routes, so it checks its models' providers.
+   */
+  const signInLoginProvider = useMemo<string | null>(() => {
+    if (parallelDraftActive) return signInProvider;
+    if (selectedSessionId) {
+      if (!selectedSession) return null;
+      if (activeLaunchTarget) return routeLoginProvider(activeLaunchTarget);
+      // The chat keeps its key and its account through a model change inside
+      // the same provider (`launchRouteTransition` drops a key only on a
+      // provider change or a new preset; the account moves only with the
+      // provider), so only a move to another provider checks the login. The
+      // machine's own default account is the login the status reads, so a
+      // chat on it is still checked.
+      const ownAccount = selectedSession.instanceId && !isDefaultProviderInstanceId(selectedSession.instanceId);
+      if ((selectedSession.credentialId || ownAccount) && signInProvider === selectedSession.provider) {
+        return null;
+      }
+      return signInProvider;
+    }
+    if (draftLaunchTarget) return routeLoginProvider(draftLaunchTarget);
+    if (draftCredentialId) return null;
+    return signInProvider;
+  }, [activeLaunchTarget, draftCredentialId, draftLaunchTarget, parallelDraftActive, selectedSession, selectedSessionId, signInProvider]);
+  /**
+   * A draft bound for ADE Cloud, Cursor Cloud or Devin runs elsewhere, and a
+   * CLI draft signs in inside the CLI itself, so this computer's login check
+   * does not apply: no local sign-in strip or card, and Send is not held off
+   * for it.
+   */
+  // An ADE Cloud launch still being set up runs on its new computer, not here:
+  // no local sign-in to ask for, as for the draft that started it.
+  const launchRunsOnAdeCloud = launchAwaitingSession && chatLaunch?.cloud != null;
+  const draftSkipsLocalSignIn = launchRunsOnAdeCloud
+    || (!selectedSessionId && (adeCloudMode || cursorCloudMode || devinCloudMode || isWorkCliLaunchDraft));
+  // An open Cursor Cloud or Devin chat runs in its cloud too: this computer's
+  // missing login does not hold it off (a failed turn still shows its card).
+  const sessionRunsInACloud = Boolean(selectedSessionId) && composerCloudRuntime === "cloud";
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
-    if (!signInProvider || turnActive || subagentView || personalScope) return null;
+    if (!signInProvider || turnActive || subagentView || personalScope || draftSkipsLocalSignIn) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
-      return { provider: signInProvider, reason: "failed-turn", key: `${machineKey}:${chatSignInFailure.eventKey}` };
+      return {
+        provider: signInProvider,
+        reason: "failed-turn",
+        ownerLabel: chatSignInOwnerOff?.ownerLabel ?? null,
+        key: `${machineKey}:${chatSignInFailure.eventKey}`,
+      };
     }
     if (
-      providerSignInKnownBeforeSend(signInProvider)
-      && signInConnection?.runtimeDetected === true
-      && signInConnection.authAvailable === false
-      // A login ADE cannot see but the machine still runs with (Muse keeps its
-      // own in the macOS Keychain) is not a missing one.
-      && signInConnection.runtimeAvailable === false
+      !sessionRunsInACloud
+      && signInLoginProvider
+      && providerLoginMissing(signInLoginProvider, signInConnections?.[signInLoginProvider])
     ) {
-      return { provider: signInProvider, reason: "no-login", key: `${machineKey}:${signInProvider}:no-login` };
+      return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, personalScope, signInConnection, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, personalScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  // The connection of the provider the card signs in to.
+  const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
   // another machine) brings one back.
   const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);
+  // The need whose card the person opened from the strip. A failed turn opens
+  // its card at once; a missing login shows the one-line strip first.
+  const [signInCardKey, setSignInCardKey] = useState<string | null>(null);
   const providerSignInShown = providerSignInNeed && providerSignInNeed.key !== dismissedSignInKey
     ? providerSignInNeed
     : null;
+  /**
+   * The need the card just reported signed in. Send turns on with that report
+   * (same commit as the card's success), before the forced status re-read
+   * below answers; the re-read then decides, and clears this mark.
+   */
+  const [signedInNeedKey, setSignedInNeedKey] = useState<string | null>(null);
+  /**
+   * Send stays off while the picked model's provider has no login on the
+   * chat's computer: the same "no-login" need that shows the strip or card.
+   * A turn that failed on its sign-in keeps its own flow (card, resend after
+   * sign-in) and does not turn Send off. A cloud or CLI draft has no need at
+   * all (`draftSkipsLocalSignIn`).
+   */
+  const signInSendBlockReason = providerSignInNeed?.reason === "no-login"
+    && providerSignInNeed.key !== signedInNeedKey
+    ? `Sign in to ${providerSignInSpec(providerSignInNeed.provider)?.label ?? providerSignInNeed.provider} first`
+    : null;
+  const signInSendBlocked = signInSendBlockReason != null;
+  // One status read at a time for the sign-in checks below.
+  const signInRecheckInFlightRef = useRef(false);
+  /**
+   * Reads the composer machine's sign-in status again: the login may have
+   * changed outside ADE (another window, a terminal). Only runs while Send is
+   * off for a missing login. A press of Send forces a full re-probe. A window
+   * focus asks the brain without force (it reads the credential files again,
+   * but runs no CLI), at most once per interval for each machine, so several
+   * blocked panes share one read; the others take it from the status cache
+   * event.
+   */
+  const recheckProviderSignIn = useCallback((trigger: "press" | "focus") => {
+    if (signInRecheckInFlightRef.current) return;
+    if (trigger === "focus") {
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return;
+      const scopeKey = `${scope.runtimeProjectRoot ?? ""}::${scope.runtimePin?.key ?? ""}`;
+      const now = Date.now();
+      if (now - (signInFocusReadAtByScope.get(scopeKey) ?? 0) < SIGN_IN_FOCUS_READ_MIN_INTERVAL_MS) return;
+      signInFocusReadAtByScope.set(scopeKey, now);
+    }
+    signInRecheckInFlightRef.current = true;
+    void refreshAvailableModels(trigger === "press" ? { force: true } : { revalidate: true })
+      .catch(() => undefined)
+      .finally(() => { signInRecheckInFlightRef.current = false; });
+  }, [refreshAvailableModels, resolveAiStatusRuntimeScope]);
+  /** Send or Enter while the login is missing: bring back the strip (Not now hid it) and check again. */
+  const handleSendBlocked = useCallback(() => {
+    if (!signInSendBlocked) return;
+    // Back as the one-line strip, never the card: the card takes focus, and a
+    // second Enter would then start a provider sign-in. Focus stays in the box.
+    setSignInCardKey(null);
+    setDismissedSignInKey(null);
+    recheckProviderSignIn("press");
+  }, [recheckProviderSignIn, signInSendBlocked]);
+  /**
+   * Commands that need no login of the provider, or that are the login, still
+   * run while Send is off for the sign-in. Each one is answered without a
+   * provider turn: `/login` opens the sign-in card (`submit`); the commands
+   * `submit` answers in this window (`paneLocalChatCommand`); a Codex chat's
+   * `/memory`, `/memory-reset`, `/shell`, `!command`, and `/goal` shown or
+   * cleared are app-server requests with no `turn/start` (the brain's inline
+   * Codex commands). Everything else is sent to the provider as a turn
+   * and waits for the sign-in like a message.
+   */
+  const sendRunsWithoutSignIn = useCallback((text: string) => {
+    if (text === "/login") return providerSignInNeed != null;
+    const hasExtras = attachments.length > 0 || contextAttachments.length > 0
+      || iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
+    if (paneLocalChatCommand({ text, sessionId: selectedSessionId, provider: sessionProvider, claudeUsageAvailable, hasExtras })) return true;
+    if (!selectedSessionId || hasExtras) return false;
+    if (sessionProvider === "codex") {
+      return parseCodexMemorySlashCommand(text) != null
+        || parseCodexShellSlashCommand(text) != null
+        || parseCodexUserShellDraft(text) != null
+        // The brain's "show" and "clear" goal forms; a status change or an
+        // objective can start a turn.
+        || /^\/goal(?:\s+(?:show|status|clear|reset|none))?$/i.test(text);
+    }
+    return false;
+  }, [appControlContextItems.length, attachments.length, builtInBrowserContextItems.length, claudeUsageAvailable, contextAttachments.length, iosElementContextItems.length, providerSignInNeed, selectedSessionId, sessionProvider]);
+  useEffect(() => {
+    openSignInForLoginCommandRef.current = () => {
+      if (!providerSignInNeed) return false;
+      setDismissedSignInKey(null);
+      setSignInCardKey(providerSignInNeed.key);
+      return true;
+    };
+  }, [providerSignInNeed]);
+  // A sign-in done elsewhere (another window, an outside terminal, Settings on
+  // another computer) shows when the person comes back to this window. A
+  // listener, not a timer, and only while Send is off for it.
+  useEffect(() => {
+    if (!signInSendBlocked) return undefined;
+    const onFocus = () => recheckProviderSignIn("focus");
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [recheckProviderSignIn, signInSendBlocked]);
   const signInMachineName = selectedSessionId ? chatMachineName : draftMachineDisplayName;
   const signInRunsHere = !isWebClientMode()
     && machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null) === THIS_MACHINE_ID;
   const handleProviderSignedIn = useCallback(() => {
     const need = providerSignInShown;
     if (!need) return;
-    // Hide at once; the status re-read below confirms it.
+    // Hide at once, and turn Send on at once; the status re-read below confirms it.
     setDismissedSignInKey(need.key);
+    setSignedInNeedKey(need.key);
     void (async () => {
       // The forced re-read also clears the machine's signed-out mark, so the
       // turn that stopped on the sign-in sends again only after it.
       await refreshAvailableModels({ force: true }).catch(() => undefined);
+      // From here the status itself decides. A machine that still reads
+      // signed out turns Send off again; a press brings the strip back.
+      setSignedInNeedKey((current) => (current === need.key ? null : current));
       if (need.reason !== "failed-turn" || !selectedSessionId) return;
       const failure = await resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
       if (typeof failure === "string") setError({ message: `Signed in, but the message did not send again: ${failure}`, kind: "status" });
@@ -16828,33 +17635,139 @@ export function AgentChatPane({
       machineId: machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null),
     });
   }, [activeComposerRuntimeBinding, projectBinding, providerSignInShown]);
+  // The need is gone (signed in, another model): forget its Not now and its
+  // open card, so a later sign-out starts again from the strip.
   useEffect(() => {
-    if (!providerSignInNeed) setDismissedSignInKey(null);
+    if (providerSignInNeed) return;
+    setDismissedSignInKey(null);
+    setSignInCardKey(null);
   }, [providerSignInNeed]);
   const signInAccountEmail = signInConnection?.accountEmail?.trim() || null;
-  const providerSignInCard = useMemo(() => (providerSignInShown ? (
-    <ProviderSignInComposer
-      key={providerSignInShown.key}
-      need={providerSignInShown}
-      pin={composerRuntimePin}
-      runsHere={signInRunsHere}
-      machineName={signInMachineName}
-      instanceId={selectedSession?.instanceId ?? null}
-      accountEmail={signInAccountEmail}
-      onSignedIn={handleProviderSignedIn}
-      onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
-      onOpenSettings={openSignInSettings}
-    />
-  ) : null), [
+  const returnFocusToComposer = useCallback(() => setComposerFocusRequest((current) => current + 1), []);
+  // The failed first turn after an account change: a new thread or the old account.
+  const [dismissedSwitchKey, setDismissedSwitchKey] = useState<string | null>(null);
+  const accountSwitchShown = !providerSignInShown && selectedSessionId && !subagentView && !personalScope
+    && chatAccountSwitchFailure && chatAccountSwitchFailure.eventKey !== dismissedSwitchKey
+    ? chatAccountSwitchFailure
+    : null;
+  /** The chat's last message of the person, for the new thread. */
+  const lastParentUserText = useCallback((): string | null => {
+    const events = selectedEventsForDisplayRef.current;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const evt = events[index]?.event;
+      if (evt != null && isParentUserMessage(evt) && typeof evt.text === "string" && evt.text.trim()) return evt.text;
+    }
+    return null;
+  }, []);
+  const continueSwitchInNewThread = useCallback(async (): Promise<string | null> => {
+    if (!selectedSessionId || !selectedSessionModelId) return "ADE could not tell this chat's model.";
+    const note = lastParentUserText();
+    // A brief hand-off: the new chat gets the history as text, then the message.
+    const result = await agentChatApiRef.current.handoff({
+      sourceSessionId: selectedSessionId,
+      targetModelId: selectedSessionModelId,
+      mode: "brief",
+      ...(note ? { handoffNote: note } : {}),
+    }, chatRuntimePinRef.current);
+    notifySessionCreated(result.session, { source: "handoff" });
+    invalidateCurrentChatSessionList();
+    void refreshSessions({ force: true }).catch(() => {});
+    return null;
+  }, [invalidateCurrentChatSessionList, lastParentUserText, notifySessionCreated, refreshSessions, selectedSessionId, selectedSessionModelId]);
+  const changeSwitchBack = useCallback(async (): Promise<string | null> => {
+    const instanceId = accountSwitchShown?.notice.from?.instanceId;
+    if (!selectedSessionId || !instanceId) return "ADE could not tell the account to change back to.";
+    const result = await agentChatApiRef.current.switchAccount({ sessionId: selectedSessionId, instanceId }, chatRuntimePinRef.current);
+    if (!result.ok) return result.message;
+    const failure = await resendLastUserMessage(selectedSessionId, null);
+    return typeof failure === "string" ? failure : null;
+  }, [accountSwitchShown, resendLastUserMessage, selectedSessionId]);
+  // Sits above the prompt box, which stays mounted: typed text never hides.
+  const providerSignInSlot = useMemo(() => {
+    if (!providerSignInShown && accountSwitchShown) {
+      const { notice, eventKey } = accountSwitchShown;
+      return (
+        <ProviderSignInCardHolder key={`switch:${eventKey}`} openedFromStrip={false} onReturnFocus={returnFocusToComposer}>
+          <AccountSwitchRecoveryCard
+            provider={notice.provider}
+            fromLabel={notice.from?.label ?? "the old account"}
+            toLabel={notice.to.label}
+            canChangeBack={notice.place === "chat" && Boolean(notice.from?.instanceId)}
+            onNewThread={continueSwitchInNewThread}
+            onChangeBack={changeSwitchBack}
+            onDismiss={() => setDismissedSwitchKey(eventKey)}
+          />
+        </ProviderSignInCardHolder>
+      );
+    }
+    if (!providerSignInShown) return null;
+    const openedFromStrip = providerSignInShown.key === signInCardKey;
+    if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
+      return (
+        <ProviderSignInStrip
+          key={providerSignInShown.key}
+          provider={providerSignInShown.provider}
+          machineName={signInMachineName}
+          runsHere={signInRunsHere}
+          onSignIn={() => setSignInCardKey(providerSignInShown.key)}
+        />
+      );
+    }
+    return (
+      <ProviderSignInCardHolder
+        key={providerSignInShown.key}
+        openedFromStrip={openedFromStrip}
+        onReturnFocus={returnFocusToComposer}
+      >
+        <ChatSignInCard
+          need={providerSignInShown}
+          pin={composerRuntimePin}
+          runsHere={signInRunsHere}
+          machineName={signInMachineName}
+          instanceId={selectedSession?.instanceId ?? null}
+          accountEmail={signInAccountEmail}
+          onSignedIn={handleProviderSignedIn}
+          onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
+          onOpenSettings={openSignInSettings}
+        />
+      </ProviderSignInCardHolder>
+    );
+  }, [
+    accountSwitchShown,
+    changeSwitchBack,
     composerRuntimePin,
+    continueSwitchInNewThread,
     handleProviderSignedIn,
     openSignInSettings,
     providerSignInShown,
+    returnFocusToComposer,
     selectedSession?.instanceId,
     signInAccountEmail,
+    signInCardKey,
     signInMachineName,
     signInRunsHere,
   ]);
+  /**
+   * Above the box, stacked, never one in place of another: the sign-in or
+   * recovery card first (it blocks the send), then the ADE Cloud label, then
+   * a cloud lane's card. The first two rarely meet (a draft that runs in a
+   * cloud has no local sign-in to ask for, `draftSkipsLocalSignIn`), but a
+   * chat on a cloud lane can need a sign-in while its tier change runs.
+   */
+  // A chat on an ADE Cloud lane: a tier change's steps, or "no computer now", above the box. The chat's own binding.
+  const cloudLaneStatusBinding = selectedSessionId ? activeComposerRuntimeBinding : null;
+  const composerAboveSlot = useMemo(() => {
+    const cloudTray = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : null;
+    const laneStatus = cloudLaneStatusBinding?.kind === "remote" ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} /> : null;
+    if (!cloudTray && !laneStatus) return providerSignInSlot;
+    return (
+      <>
+        {providerSignInSlot}
+        {cloudTray}
+        {laneStatus}
+      </>
+    );
+  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -18359,10 +19272,10 @@ export function AgentChatPane({
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
-  // OpenCode only offers `/compact` when its server lists the command, so a
-  // chat without it has nothing the offer could run.
+  // OpenCode only offers `/compact` when its server lists the command, and
+  // Cursor only on local chats, so a chat without it has nothing to run.
   const compactionOfferable = compactionIdleMode != null
-    && (selectedProvider !== "opencode" || selectedSession?.manualCompactAvailable === true);
+    && (!manualCompactDependsOnChat(selectedProvider) || selectedSession?.manualCompactAvailable === true);
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat its cache window out, when no deltas stream.
@@ -18394,12 +19307,6 @@ export function AgentChatPane({
   const claudeModUi = claudeModUiSessionId
     ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
     : null;
-  // The pick shows on the trigger before it is sent; otherwise what the chat runs on.
-  const activeHarnessPresetId = !selectedSessionId
-    ? draftHarnessPresetId
-    : sessionRoutePick?.sessionId === selectedSessionId
-      ? sessionRoutePick.presetId
-      : selectedSession?.presetId ?? null;
   // The composer's model pick, also reachable from outside for a draft
   // (`draftModelSeam.ts`, the onboarding tour's first chat).
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
@@ -18434,6 +19341,7 @@ export function AgentChatPane({
     // back to the model's own provider in the trigger — naming a
     // provider the preset does not even run on.
     setDraftHarnessPresetId(options?.presetId ?? null);
+    setDraftCredentialId(options?.presetId ? null : options?.credentialId ?? null);
     // A new model starts on its default context tier unless the pick
     // came from its context chip.
     setCopilotContextTier(options?.copilotContextTier ?? "default");
@@ -18541,6 +19449,7 @@ export function AgentChatPane({
             draftStore={draftStore}
             scheduledSendContext={scheduledSendContext}
             caretToEndRequest={composerCaretToEndRequest}
+            focusRequest={composerFocusRequest}
             browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}
             threadCommentsSessionId={threadCommentsSessionId}
@@ -18577,6 +19486,7 @@ export function AgentChatPane({
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
+            {...(modelPickerProviderRuntimeMissing ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}
@@ -18688,7 +19598,10 @@ export function AgentChatPane({
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
-            replacementCard={providerSignInCard}
+            aboveComposerSlot={composerAboveSlot}
+            sendBlockedReason={signInSendBlockReason ?? adeCloudNotice?.message ?? null}
+            onSendBlocked={handleSendBlocked}
+            sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
@@ -18973,6 +19886,8 @@ export function AgentChatPane({
         {compactFirstChip}
         {mcpRefreshChip}
         {pendingSettingsChip}
+        {/* Lane sharing (owner view): who has access to this lane, who is here. Same machine as the chat. */}
+        {!forceDraft ? <LaneShareComposerChip pin={chatRuntimePin} laneId={composerDriftLaneId ?? null} laneName={laneDisplayLabel ?? null} sessionId={selectedSessionId ?? null} /> : null}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"
@@ -19051,6 +19966,16 @@ export function AgentChatPane({
       record={selectedSession?.crossMachineHandoff}
       runtimePin={chatRuntimePin}
       onRecord={(next) => applyCrossMachineHandoffRecord(selectedSessionId, next)}
+      style={composerBannerStyle}
+    />
+  ) : null;
+  // Lane sharing (owner view): a guest's request to move work here, and this chat's move to a guest.
+  const laneShareMoveCard = selectedSessionId && renderedSessionId === selectedSessionId && !personalScope && !forceDraft ? (
+    <LaneShareOwnerMoveCard
+      key={`lane-share-move:${selectedSessionId}`}
+      pin={chatRuntimePin}
+      laneId={composerDriftLaneId ?? null}
+      sessionId={selectedSessionId}
       style={composerBannerStyle}
     />
   ) : null;
@@ -19169,6 +20094,7 @@ export function AgentChatPane({
       {takeoverBanner}
       {stalledTurnBanner}
       {crossMachineMoveBanner}
+      {laneShareMoveCard}
       {crossMachineBatchApprovalBanner}
       {crossMachineArrivalBanner}
       {steeringPendingInput ? (
@@ -19184,6 +20110,7 @@ export function AgentChatPane({
             key={steeringPendingInput.itemId}
             request={steeringPendingInput.request}
             responding={respondingApprovalIds.has(steeringPendingInput.itemId)}
+            onFocusLost={() => setComposerFocusRequest((current) => current + 1)}
             onSubmit={(answers) => {
               void handleApproval(steeringPendingInput.itemId, "accept", null, answers);
             }}
@@ -19294,6 +20221,7 @@ export function AgentChatPane({
   return (
     <AgentChatApiProvider scope={chatScope}>
     <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
+    <ChatMachineWakeProvider>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <ComposerDraftPresencePublisher
@@ -19547,6 +20475,7 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        wakingSinceMs={!subagentView && cloudWakingSince ? Date.parse(cloudWakingSince) : null}
                         usageLimitResumeActive={usageLimitResume != null}
                         // Only a limit ADE is waiting out reads "Paused"; one with no
                         // reset or with auto-resume off reads "Usage limit".
@@ -19640,6 +20569,7 @@ export function AgentChatPane({
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
+                        {laneShareMoveCard}
                         {crossMachineBatchApprovalBanner}
                         {crossMachineArrivalBanner}
                                           {claudeModUi}
@@ -19745,6 +20675,10 @@ export function AgentChatPane({
                               {/* Machine first, then that machine's lanes. Splitting
                                   the two keeps the lane list flat and one machine
                                   long instead of growing with machine count. */}
+                              {/* Drops down, like the board's Run on menu: a
+                                  list that grows while open grows away from
+                                  the rows already on screen instead of
+                                  pushing every row up. */}
                               <DraftMachinePicker
                                 machines={draftShelfMachineOptions}
                                 selectedMachineId={draftShelfMachineValue}
@@ -19752,17 +20686,14 @@ export function AgentChatPane({
                                 disabled={shellLaunchBusy}
                                 onOpen={handleDraftMachinePickerOpen}
                                 autoPick={draftAutoMachine}
+                                autoPickUnavailableReason={adeCloudMode ? "Each ADE Cloud lane has its own computer." : null}
+                                onPointerClose={returnFocusToComposer}
+                                side="bottom"
+                                menuLabel="Run on"
                               />
-                              {agent37CreateDialog ? (
-                                <NewAgent37MachineDialog
-                                  status={agent37CreateDialog.status}
-                                  onCreated={(result) => void agent37CreateDialog.onCreated(result)}
-                                  onClose={agent37CreateDialog.onClose}
-                                />
-                              ) : null}
                               <LaneCombobox
-                                lanes={draftShelfLanes}
-                                value={draftShelfLaneValue}
+                                lanes={adeCloudMode ? adeCloudShelfLanes : draftShelfLanes}
+                                value={adeCloudMode ? (adeCloudSelectedLane?.laneId ?? AUTO_CREATE_LANE_OPTION.id) : draftShelfLaneValue}
                                 onChange={handleShelfLaneChange}
                                 onCreateLane={() => setNewLaneDialogOpen(true)}
                                 onboardingAnchor="lane-picker"
@@ -19773,9 +20704,20 @@ export function AgentChatPane({
                                 // A machine whose lanes have not been read yet
                                 // has no lane to show — say so rather than
                                 // leaving the previous machine's lane on screen.
-                                placeholder={draftLaneCatalogLoadingMessage ?? "Select lane..."}
+                                placeholder={adeCloudMode ? "Select lane..." : draftLaneCatalogLoadingMessage ?? "Select lane..."}
                                 aria-label="Select lane"
                               />
+                              {adeCloudNewLane && !parallelChatMode ? (
+                                <CloudSizeButton
+                                  tiers={adeCloud.tiers}
+                                  tierId={adeCloud.tierId}
+                                  defaultTier={adeCloud.defaultTier}
+                                  onChoose={adeCloud.chooseTier}
+                                  onSetDefault={adeCloud.setDefaultTier}
+                                  disabled={shellLaunchBusy}
+                                  hoursLeftMilli={adeCloud.hoursLeftMilli}
+                                />
+                              ) : null}
                               {cursorCloudMode && !parallelChatMode ? (
                                 <CursorCloudAdvancedMenu
                                   autoCreatePR={cursorCloudAutoPr}
@@ -19835,7 +20777,8 @@ export function AgentChatPane({
                                   </label>
                                 </div>
                               ) : null}
-                              {onOpenShellSession || onImportedSession ? (
+                              {/* Shell and Import act on a lane on this machine: not on ADE Cloud. */}
+                              {!adeCloudMode && (onOpenShellSession || onImportedSession) ? (
                                 <div className="ml-auto flex shrink-0 items-center gap-1">
                                   {onOpenShellSession ? (
                                     <SmartTooltip
@@ -19972,6 +20915,9 @@ export function AgentChatPane({
         onOpenChange={setNewLaneDialogOpen}
         behavior="configure-for-chat"
         onConfigured={handleNewLaneConfigured}
+        // A draft bound for ADE Cloud: no machine row, the size takes its place.
+        adeCloudTierId={adeCloudMode ? adeCloud.tierId : null}
+        onChooseAdeCloudTier={adeCloud.chooseTier}
       />
       <ChatHandoffDialogs
         localOpen={localHandoffOpen}
@@ -19988,7 +20934,7 @@ export function AgentChatPane({
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
-          onModelChange={setRemoteHandoffModelId}
+          onModelChange={chooseRemoteHandoffModel}
           availableModelIds={handoffAvailableModelIds}
           forkAvailableModelIds={handoffForkAvailableModelIds}
           reasoningEffort={handoffReasoningEffort}
@@ -20043,6 +20989,7 @@ export function AgentChatPane({
       ) : null}
     </>
     </ChatWorkspacePathProvider>
+    </ChatMachineWakeProvider>
     </ChatRuntimeScopeProvider>
     </AgentChatApiProvider>
   );

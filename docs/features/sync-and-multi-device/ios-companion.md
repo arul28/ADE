@@ -616,7 +616,12 @@ apps/ios/
 │   │   │                            # HubHeaderRow (the header row and its
 │   │   │                            #   tiers: on the Duo's outer display it
 │   │   │                            #   sits in the band beside the clock, with
-│   │   │                            #   the machines as one glyph). HubComponents
+│   │   │                            #   the machines as one glyph),
+│   │   │                            # HubStatusBand (finds that band: it
+│   │   │                            #   measures the status block, or uses the
+│   │   │                            #   display's shape when the phone reports
+│   │   │                            #   none; Settings › Advanced shows the
+│   │   │                            #   reading). HubComponents
 │   │   │                            #   gives the projectless Chats button a
 │   │   │                            #   small count badge for personal chats
 │   │   │                            #   awaiting input and an equivalent
@@ -839,13 +844,13 @@ apps/ios/
 │   │   │                            #   (github.* remote commands, menu shown only
 │   │   │                            #   when the repo has open issues; see
 │   │   │                            #   docs/features/issues).
-│   │   ├── Agent37/                  # Agent 37 page (Work ⋯ menu, shown once the
-│   │   │                            #   account has Agent 37): machines and their
-│   │   │                            #   actions, spending, ready machines, a new
+│   │   ├── Cloud/                    # ADE Cloud page (Work ⋯ menu, shown once the
+│   │   │                            #   account has ADE Cloud): machines and their
+│   │   │                            #   actions, spending, a new
 │   │   │                            #   machine approved here, what agents may
 │   │   │                            #   spend; Duo book and laptop layouts. Over
-│   │   │                            #   agent37.read / agent37.write (see
-│   │   │                            #   docs/features/remote-runtime/agent37.md).
+│   │   │                            #   cloud.read / cloud.write (see
+│   │   │                            #   docs/features/ade-cloud/README.md).
 │   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
 │   │   │                            #   (full-screen sheet mirroring the Linear
 │   │   │                            #   pane's presentation) +
@@ -1254,9 +1259,13 @@ iPhone are `compact` and use the same views stacked, never an older design.
   rows and page shell are in `ADEKitSettings.swift`. Each page shows its
   one-line description in the page, under the large title
   (`ADESettingsPageIntro`). The bar does not show it, because the bar cut it
-  off when the title collapsed. General shows "You" and "This machine" as
-  panels of rows. Each row opens the page that owns it: Account, Providers,
-  Usage, Machines.
+  off when the title collapsed. The list puts Machines first, above
+  General, and the split opens on Machines. General shows "You" and
+  "Primary machine" (the computer this phone works on) as panels of rows.
+  Each row opens the page that owns it: Account, Providers, Usage, Machines.
+  Account follows the desktop's Account page: who you are, "Your computers"
+  (with Manage connections), then Email, Account ID, a GitHub hint and
+  "Sign out of this iPhone"; signed out, the sign-in card.
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: list
   column and detail side by side when wide, the list behind the detail
   (with a Back chevron) on a phone.
@@ -2116,6 +2125,7 @@ Implemented envelope types on iOS:
 | `command_result` | Runtime → phone | Execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
 | `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data.offset` is the lifetime logical UTF-8 end offset (null only for untracked/no-transcript or failed-write streams), so physical transcript rollover does not rewind it. The phone drops duplicates, trims UTF-8 overlap, and on a gap launches one guarded resubscribe from its watermark instead of rendering out of order. `terminal_subscribe.sinceOffset` returns an append-only `delta: true` snapshot when the retained logical window still covers the request; otherwise a full snapshot replaces local state even when its end offset equals the watermark. The host's bounded snapshot barrier queues live data/exits during capture and recaptures rather than flushing a gap. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session so the phone shows a resume bar instead of accepting keystrokes |
+| `terminal_*` on a roster connection (`rosterTerminal`) | Phone ↔ runtime | A host that advertises `features.rosterTerminal: { enabled: true }` accepts `terminal_subscribe` / `terminal_unsubscribe` / `terminal_input` / `terminal_resize` / `terminal_history` for a session in any project that is open on that machine, on both the project host and the brain ingress. The envelope `projectId` names the project (the payload may add `projectRootPath`); the host never routes to a different project and never opens one. A refused subscribe answers with `terminal_snapshot { live: false, error: { code: "project_not_open" \| "session_not_found", message } }`. Input keeps the `terminalInputAck` contract; input for a session the socket has not subscribed in that project answers `not_subscribed` |
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns retained transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC and UTF-8 boundary; `atStart: true` means the oldest **retained logical offset**, which may be greater than zero after rollover). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_input_ack` / `terminal_resize` | Phone ↔ runtime | Input is queued in order only after the terminal snapshot is ready. ACK-capable hosts receive a stable `inputId`; the phone sends one item at a time, waits 8 seconds, and retries with 0.5/1/2-second backoff within the host-advertised lease (four total attempts). The host dedupes `(device, session, inputId)` before writing, so a lost ack cannot type twice. `not_subscribed` is the only retryable rejection: iOS re-subscribes through the snapshot barrier and resends the same id. Other errors fail that item and continue the queue. Legacy hosts receive one-shot input without an id or ambiguous retry. Mobile resizes are non-authoritative: the runtime restores the last desktop size when the final phone detaches |
 | `chat_subscribe` / `chat_event` / `chat_history` | Phone → runtime / runtime → phone | Agent chat transcript streaming and cursor-paged scrollback. `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. Explicit full-snapshot subscribes omit `sinceSeq`; rapid duplicates are coalesced for five seconds or until the snapshot ack arrives. A full-snapshot request starts a five-second acknowledgement watchdog; unanswered requests are resent twice regardless of project scope, then the chat renders an explicit error with Retry instead of an empty transcript. The initial tail is capped at 256 KiB and the ack carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`; near-top scroll requests continuous 256 KiB `chat_history` pages against the existing subscription until the transcript head, preserving the visible scroll anchor as pages prepend. Ordinary project-chat subscriptions stay warm for 120 seconds after leaving a detail screen (at most four pending inactive chats), and reopening synchronously cancels eviction even while offline. Personal and cross-project scopes still unsubscribe immediately so their routing scope can be cleared safely. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The chat's thread engine keeps the hint current from live `status` / `done` events and drops it when a full ack omits the flag (older host / no live summary). Chat frames never touch `SyncService`'s published state: they are decoded off the main actor and routed to `ChatThreadRegistry`, whose engines fold them and hand the view at most one frame per display frame (turn-state flips, pending-input changes and local echoes apply immediately). Cross-project transcript scope remains an additive protocol capability for controller reads, but Hub navigation always activates the tapped chat's owning project before opening it. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
@@ -2715,6 +2725,38 @@ project the machine refuses to open (for example one set to follow another
 machine) shows its reason as a Hub toast. Settings rows report the route each
 machine's link actually took, and each row tracks its own action, so one
 machine connecting never locks the others.
+
+A CLI or shell session on another live machine opens on the phone at once,
+over that machine's roster connection. The focused machine and the active
+project do not change. The row must come from a project that the machine's
+roster shows as open, and the machine's `hello_ok` must advertise
+`features.rosterTerminal`. `MachineConnection` then serves the terminal
+screen through the same `TerminalStreamTransport` contract as `SyncService`:
+
+- Every `terminal_*` envelope carries the session's project as the envelope
+  `projectId`, plus `projectRootPath` in the payload.
+- The host refuses a project that is not open (`project_not_open`) or a
+  session it does not know there (`session_not_found`). It sends the refusal
+  as a `terminal_snapshot` with `error` and `live: false`.
+- Input acks, gap recovery, `sinceOffset` resume and the token-owned handler
+  stack work as they do on the focused connection.
+- A new roster socket subscribes every open terminal again from its last
+  offset, then sends the last size again.
+- If that resubscribe (or one after a byte gap) fails, the screen shows the
+  error and Retry. It does not show a frozen terminal as live.
+- Resume (`work.resumeCliSession`) goes to the session's machine as a routed
+  command with the same project scope.
+
+When the link is down, the host is older, or the project is not open there,
+the tap falls back to the earlier flow: it focuses that machine, opens the
+project, and then opens the terminal. The phone layout, the Duo column, and
+deep links (`handleRequestedWorkSessionNavigation`) use the same rule.
+
+An open terminal screen remembers its session's machine when it opens. It is
+live only while its connection still serves that machine: the light link of
+that machine, or the focused connection while its socket is on that machine.
+Otherwise it shows offline and sends no resize, poll, resume or resubscribe to
+another machine. A refused subscribe shows its error and keeps what is painted.
 
 Roster connections renew their relay account proof the way the focused
 connection does (the hello advertises `relayReauthorizeV1`, and
@@ -4071,8 +4113,11 @@ bar, so `.searchable` never rendered), quick-filter chips with counts
 (`LaneQuickFilter`: Active, Running, Needs you, Changes, Archived), then the
 focused machine's lanes in stack order and each other machine's lanes under its
 name. Rows swipe to pin and to archive or restore; a machine without a live
-link shows its last roster dimmed, with no swipe actions. Opening a lane pushes
-`LaneRoute` on the tab's navigation path. Lane detail reads the cache and the
+link shows its last roster dimmed, with no swipe actions. The Archived filter
+also lists Recently deleted lanes for each live machine (`LaneRecentlyDeleted.swift`),
+each with Restore or Put back and a swipe to Drop; a delete that kept work shows
+a notice with Restore. Opening a lane pushes `LaneRoute` on the tab's navigation
+path. Lane detail reads the cache and the
 host once on open, and reads the cache again if a local revision landed during
 that host read.
 
@@ -4625,7 +4670,11 @@ the stats and shows update guidance.
   its range, extending the cached rows). Summary, session row and proof
   artifacts load in parallel and never gate rows. Older history pages from disk
   first, then `chat_history` (`beforeSequence`, or the byte cursor on older
-  hosts). The Work list warms engines for its top rows and every live turn, and
+  hosts). A host stand-in for a row too large to page (a `system_notice` with
+  `status: "history_row_omitted"` and no sequence) is kept in the engine's memory
+  only, placed by timestamp between its neighbours: never written to `ChatLogStore`,
+  never a paging cursor, never keyed by sequence, and cleared when the engine's
+  history is reset. The Work list warms engines for its top rows and every live turn, and
   launch warms the 5 most recently opened chats. The legacy fallback transcript
   fetch (`chat.getTranscript`), the terminal-buffer parse, the presentation
   cache, the `chatEventEnvelopesBySession` ring and its idle prune are gone.
@@ -5064,7 +5113,7 @@ the stats and shows update guidance.
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
   together; the phone's Claude fallback catalog leads with Opus 5.5 (its
-  positional default), then Fable 5.1, Sonnet 5.5, Sonnet 5, Haiku 5.5, Opus 5,
+  positional default), then Fable 5.2, Sonnet 5.5, Sonnet 5, Haiku 5.5, Fable 5.1, Opus 5,
   and legacy Sonnet 4.6 /
   Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
   appearing as rows, while the generic `opus` alias resolves to Opus 5.5 and the

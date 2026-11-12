@@ -43,6 +43,9 @@ case, provider storage formats, the import policy, lane attribution, CLI/chat
 import paths, the preview, mobile routing, authorization model, and current
 open items.
 
+A terminal retries a failed PTY resize after the connection recovers, so its
+grid can catch up with the pane.
+
 ## Source file map
 
 Service files. Same sources back the ADE runtime and the limited
@@ -1254,11 +1257,7 @@ Renderer surfaces:
   progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
-  organization modes. The bottom Add Lane button opens
-  `CreateLaneDialogHost` in `close-on-create` mode, so a new lane can
-  be created from Work without navigating away; once the lane record
-  exists, env setup continues detached and failures surface as a sticky
-  retry toast. It also builds parent-title and live-child indexes from the
+  organization modes. It also builds parent-title and live-child indexes from the
   unfiltered session list, so a lineage tooltip can name a parent hidden by
   the current lane/search filter. In Lane organization, the primary lane stays
   first and the remaining rows are ordered by the Work-only tiers pinned,
@@ -1543,8 +1542,14 @@ Renderer surfaces:
   back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
   images by saving the bytes as chat temp attachments on the session's machine
   (`agentChat.saveTempAttachment` with the session's `runtimePin`) and
-  bracketed-pasting a short path/type stub into the PTY, while standalone
-  terminals keep the native clipboard-image shortcut behavior. On a paired
+  bracketed-pasting a short path/type stub into the PTY. A standalone
+  terminal (a plain shell) on this computer keeps the native shortcut: it
+  gets `^V` and its program reads this machine's clipboard. A standalone
+  terminal whose session runs on another machine (a pinned session, a tab
+  bound to a remote machine, the web client) cannot use `^V`, because the
+  program would read that machine's clipboard and find no image; the image
+  is saved on the session's machine the same way and its path alone is
+  pasted, quoted for a shell and with no newline. On a paired
   machine that takes the streamed upload, preload sends the bytes through that
   upload, not the runtime command (see
   [Composer and UI](../chat/composer-and-ui.md), "Remote hosts"). A failed save
@@ -1699,6 +1704,10 @@ Renderer surfaces:
   rebinding still consults `isLivePin`. `useWorkSessions` owns the single
   instance and re-exports it as `machineRouter` / `resolveSessionRuntimePin`;
   nothing else in Work constructs one.
+- `apps/desktop/src/renderer/lib/firstLoadRetry.ts` — keeps a Work chat or
+  lane list's first load trying until it answers, at once when the tab's
+  machine reconnects, so a machine that was still restarting does not leave
+  an empty list. Nothing runs here unless a load fails.
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
@@ -3215,3 +3224,40 @@ section; the Work row only carries a mark with their count and worst state.
 - Storage and recovery: [../storage-and-recovery/](../storage-and-recovery/) —
   the disk-pressure gate that refuses new CLI/process launches, and the lossless
   history compression that transcript reads transparently reinflate.
+
+### Lane identity in session lists
+
+Work's Status and Time organizations show each session's lane name and lane
+color using the same compact identity as a singleton in the Lane view.
+They include already-loaded sessions from other machines, with their owner
+binding, machine marker, offline state, and lane identity intact. Duplicate
+session ids are shown once, preferring the bound machine. Foreign attached
+shells follow the same filing rules as local ones; Status and Time keep
+subagents flat. Pending handoffs also name their lane.
+
+Bulk settling in these mixed lists is labelled **Settle local** and acts only
+on the bound machine; individual foreign rows keep their machine-scoped actions.
+Apple, Android, screen, and tool markers reuse the lane data already in the pane.
+Kanban already shows lane identity, and both State and Stack organizations in
+the Lanes sidebar keep the lane name and color. None of these labels adds a
+fetch, effect, or subscription per row.
+
+## Releasing what settled chats were using
+
+Settings › Lanes › "Release what settled chats were using" (off by default, one
+setting for every project on the machine, kept in `<ADE home>/session-lifecycle.json`). Once every live chat in a lane has been settled for five minutes
+(`settledLaneReleaseService.ts`), ADE powers off the simulators and emulators
+those chats' agents booted, stops the dev servers they started, and gives up any
+Mac Desktop control they held (the screen itself closes on its own idle timer).
+Nothing a person started is touched: an agent's boot
+writes `ade-booted-by-chat` in the simulator's folder (cleared when it goes off),
+and an emulator's owner record names its chat. A device already on when an agent
+reached it stays unattributed. A chat waking cancels the release, "Keep running"
+pins are honored, and a device in use or a stream someone is viewing stays on. A step that
+fails is tried again on later sweeps, up to five passes, and every step first re-reads the lane
+so a chat that just woke keeps the rest. The
+wait is read from the chats' `settled_at` columns on a slow sweep (a board pin has none, so the
+first sweep that sees it stamps it), so it survives a brain
+restart and notices a chat settled from a phone. A quiet line in the last chat to
+settle says what was released. Built-in browser tabs are left alone: they belong
+to the project, not to a lane's chats.

@@ -4,6 +4,7 @@ import {
   MARKETING_CTA_LABELS,
   MARKETING_FEATURES,
   type MarketingAnalyticsClickTarget,
+  withoutInviteCode,
 } from "./marketingAnalytics";
 import { isMarketingAnalyticsEnabled } from "./marketingAnalyticsBrowser";
 
@@ -29,6 +30,10 @@ const DOWNLOAD_CTAS = new Set<string>([
   MARKETING_CTA_LABELS.DOWNLOAD_MAC_ARM64,
   MARKETING_CTA_LABELS.DOWNLOAD_MAC_X64,
   MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS_X64,
+  MARKETING_CTA_LABELS.DOWNLOAD_LINUX_X64_APPIMAGE,
+  MARKETING_CTA_LABELS.DOWNLOAD_LINUX_ARM64_APPIMAGE,
+  MARKETING_CTA_LABELS.DOWNLOAD_LINUX_X64_DEB,
+  MARKETING_CTA_LABELS.DOWNLOAD_LINUX_ARM64_DEB,
 ]);
 const DOWNLOAD_FEATURES = new Set<string>([
   MARKETING_FEATURES.DOWNLOAD_IOS,
@@ -38,9 +43,14 @@ const DOWNLOAD_FEATURES = new Set<string>([
   MARKETING_FEATURES.COPY_BREW_COMMAND,
 ]);
 
-/** Loads the pixel once, only while the visitor has not opted out of website analytics. */
+/**
+ * Loads the pixel once, only while the visitor has not opted out of website
+ * analytics. Never on an invite page: an outside script reads the address,
+ * and an invite's address carries its code.
+ */
 export function loadFreebuffPixel(): void {
   if (typeof window === "undefined" || !isMarketingAnalyticsEnabled()) return;
+  if (withoutInviteCode(window.location.pathname) === "/invite") return;
   if (document.getElementById(FREEBUFF_SCRIPT_ID)) return;
   // Queue stub first, so calls made before the async script arrives are kept.
   window.freebuff =

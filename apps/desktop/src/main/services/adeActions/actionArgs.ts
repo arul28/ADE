@@ -16,11 +16,14 @@
  */
 
 import type {
+  CloudStartBranchArgs,
   FilesWatchArgs,
   LaneBranchDriftResolution,
   SessionSettleOverride,
   SessionWakeReason,
 } from "../../../shared/types";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { normalizeLaneStart } from "../../../shared/laneStart";
 import {
   parseSettleOverrideArg,
   parseSnoozeDeadline,
@@ -35,19 +38,34 @@ export function readObjectActionArg(value: unknown, actionName: string): Record<
   throw new Error(`${actionName} expects an object input. Use --input-json '{...}' or see \`ade actions list --domain chat --text\`.`);
 }
 
+/**
+ * `lane.cloudStartBranch` / `lane.pushCloudStartBranch`: an optional branch
+ * (a string) and an optional lane start, which falls back to the project's
+ * default when it is not a start.
+ */
+export function readCloudStartBranchArgs(value: unknown, actionName: string): CloudStartBranchArgs {
+  const record = readObjectActionArg(value, actionName);
+  if (record.branchRef != null && typeof record.branchRef !== "string") {
+    throw new Error(`${actionName}: branchRef must be a branch name.`);
+  }
+  return { branchRef: optionalNonEmptyString(record.branchRef), start: normalizeLaneStart(record.start) };
+}
+
 export function optionalNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
 }
 
+/**
+ * A missing or empty required argument is the caller's input (a CLI or agent
+ * call without the field), so the caller gets the message and Sentry gets a
+ * log, not an issue.
+ */
 export function requireNonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== "string") {
-    throw new Error(`Expected '${field}' to be a non-empty string.`);
-  }
-  const trimmed = value.trim();
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed.length) {
-    throw new Error(`Expected '${field}' to be a non-empty string.`);
+    throw new AdeExpectedError(`Expected '${field}' to be a non-empty string.`, "user");
   }
   return trimmed;
 }

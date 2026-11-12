@@ -22,9 +22,10 @@ import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
-import type { ChatThreadComment } from "../threadComments";
+import type { ChatThreadComment, ChatThreadCommentSelection } from "../threadComments";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
+import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId, UpdateChatContinueHold } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -625,6 +626,8 @@ export type AgentChatAutomationRunMetadata = {
   runId?: string;
   /** The automation's name when it ran. */
   name: string;
+  /** Someone is there to answer this run's cards: a Linear delegator. */
+  attended?: true;
 };
 
 export type AgentChatHostContinuationMetadata = {
@@ -692,8 +695,35 @@ export type AgentChatVoiceSession = {
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
 };
 
+/**
+ * What a sign-in notice in a chat is about, for the card that reads it (P5,
+ * P7). Only names: provider ids, computer names, emails and vault key names
+ * (a key name never holds a token). A client that does not know the field
+ * ignores it, as it does `voiceSession`.
+ * - `owner_off`: on a cloud computer, the computer that renews the sign-in
+ *   did not send a fresh one in time, and the turn went ahead.
+ * - `renewing`: this cloud computer renews the sign-in for the turn.
+ * - `switched`: ADE Cloud's pick for the provider changed (`ade_cloud`), or
+ *   the person moved this chat to another account (`chat`).
+ * - `first_cloud_chat`: the first turn on this cloud computer after it took
+ *   sign-ins from the account; `origins` are the computers they came from.
+ */
+export type AgentChatProviderLoginNotice =
+  | { kind: "owner_off"; provider: string; ownerLabel: string }
+  | { kind: "renewing"; provider: string; byLabel: string }
+  | {
+    kind: "switched";
+    place: "ade_cloud" | "chat";
+    provider: string;
+    from: { key?: string | null; instanceId?: string | null; label: string } | null;
+    to: { key?: string | null; instanceId?: string | null; label: string };
+  }
+  | { kind: "first_cloud_chat"; origins: string[] };
+
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
+  /** `status: "lane_share_moved"`: the lane share move that took this chat to the other person's machine. */
+  laneShareMoveId?: string;
   /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *
@@ -706,6 +736,11 @@ export type AgentChatNoticeDetail = {
   reason?: AgentChatResumeFailureKind;
   originalThreadId?: string | null;
   reconstructedThreadId?: string;
+  /**
+   * "Try again" got the same thread back. Nothing resent the failed message,
+   * so that turn keeps its failure and Retry (a rebuild answers it instead).
+   */
+  originalThreadResumed?: boolean;
   supersededBySessionId?: string;
   /**
    * Continuity recovery that ADE runs by itself. `pending` while it rebuilds
@@ -1354,7 +1389,29 @@ export type AgentChatBoardMoveMetadata = {
   moveId: string;
 };
 
+/**
+ * Who wrote a person-side message, draft or thread comment (lane sharing).
+ * The host sets it from what it verified; a client value is always stripped
+ * (`messageAuthor.ts`). Absent means the host's own user: every row written
+ * before lane sharing reads that way. `name` is null when the host cannot
+ * know it without trusting the client.
+ */
+export type AdeMessageAuthor = {
+  kind: "host" | "guest";
+  userId: string;
+  name: string | null;
+};
+
 export type AgentChatEventMetadata = Record<string, unknown> & {
+  /** Set only by the host; see `AdeMessageAuthor`. Absent: the host's own user. */
+  author?: AdeMessageAuthor;
+  /**
+   * Set only by the host: a guest sent this over its share. A queued message
+   * with it passes the share check again as it starts.
+   */
+  laneShareGuestSend?: true;
+  /** A plain prompt with no guest author (`isPlainPromptMessage`). */
+  plainPrompt?: true;
   /** Identifies the outside app that sent this person-side message through ADE MCP. */
   remoteMcp?: { connectionId: string; label: string };
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
@@ -1625,6 +1682,8 @@ export type AgentChatEvent =
         files?: number;
         lines?: number;
       };
+      /** Grep or Glob hit its time limit, so more matches may exist. */
+      searchTimedOut?: boolean;
       runtime?: AgentChatRuntime;
     }
   | {
@@ -2149,6 +2208,8 @@ export type AgentChatEvent =
       failReason?: ContextCompactFailReason;
       failDetail?: string;
       summary?: string;
+      /** No summary could be written, so the provider kept a shortened copy of the chat. */
+      fallback?: boolean;
       accountLabel?: string;
       turnId?: string;
     }
@@ -2278,6 +2339,15 @@ export type AgentChatEvent =
       detail?: string | AgentChatNoticeDetail;
       /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
       voiceSession?: AgentChatVoiceSession;
+      /** A notice about a provider sign-in; see `AgentChatProviderLoginNotice`. */
+      providerLogin?: AgentChatProviderLoginNotice;
+      /**
+       * Present only on `status: "history_row_omitted"`: the transcript row
+       * this display-only stand-in replaces. `offset` (the row's byte offset)
+       * makes two stand-ins with the same text distinct; `eventType` is absent
+       * when the row was too large to parse.
+       */
+      omittedRow?: { offset: number; bytes: number; eventType?: string };
       steerId?: string;
       turnId?: string;
     }
@@ -2477,6 +2547,8 @@ export type AgentChatEvent =
        * older generation must drop it.
        */
       historyGeneration?: number;
+      /** A PR watch on this chat started or stopped, so its row must re-read. Not chat activity. */
+      prWatchChanged?: true;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -3402,6 +3474,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  /** The access mode a Claude chat in plan mode returns to when its plan is approved. */
+  claudePrePlanAccessMode?: Exclude<AgentChatClaudePermissionMode, "plan"> | null;
   claudeOutputStyle?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -3532,6 +3606,11 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   asyncQuestion?: boolean;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
+  /**
+   * The chat's live PR watches, from the machine that runs them. Absent when no
+   * watch is live, or from an older host; such a row reads as it did before.
+   */
+  activePrWatch?: SessionActivePrWatch;
   /**
    * When the turn-end check (Jev) read this chat's last reply as waiting on
    * its own work (subagents, CI, a watcher it started) rather than finished
@@ -5319,6 +5398,8 @@ export type AgentChatCrossMachineHandoffRecord = {
   reason: string | null;
   targetLaneId: string | null;
   targetSessionId: string | null;
+  /** The destination's project id, so a client can open the chat on that machine and project. */
+  targetProjectId?: string | null;
   /**
    * Where this chat last landed, kept across later move attempts: a second
    * move that is cancelled or fails must not erase that the work already
@@ -5349,6 +5430,8 @@ export type AgentChatCrossMachineContinuation = {
   targetMachineName: string;
   targetLaneId: string;
   targetSessionId: string;
+  /** Absent on a move made before ADE recorded it. */
+  targetProjectId?: string | null;
   continuedAt: string;
 };
 
@@ -5558,6 +5641,14 @@ export type AgentChatSendArgs = {
   /** Compact as a separate turn before this message; false overrides Always for this send. */
   compactFirst?: boolean;
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
@@ -5578,6 +5669,20 @@ export type AgentChatSendArgs = {
    * review the user has not sent.
    */
   includeThreadComments?: boolean;
+  /**
+   * Comments a lane-sharing guest wrote that go with this send too. A guest's
+   * comment never goes on its own: the owner names each one here, with the
+   * body revision the owner saw, and the agent reads it as written by another
+   * person. A comment whose body changed since then stays out.
+   */
+  includeGuestComments?: ChatThreadCommentSelection[];
+  /**
+   * Set once per send attempt by a client talking to another machine. A brain
+   * that froze or restarted mid-send may have already taken this message, so
+   * the client's retry after it wakes carries the same id and is dropped here
+   * rather than run twice.
+   */
+  clientSendId?: string;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
@@ -5799,6 +5904,14 @@ export function providerSupportsLiveRedirect(provider: string): boolean {
 
 export type AgentChatSteerArgs = {
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
@@ -5828,6 +5941,8 @@ export type AgentChatSteerArgs = {
   sentByUser?: boolean;
   /** See `AgentChatSendArgs.includeThreadComments`. */
   includeThreadComments?: boolean;
+  /** See `AgentChatSendArgs.includeGuestComments`. */
+  includeGuestComments?: ChatThreadCommentSelection[];
 };
 
 export type AgentChatSteerResult = {
@@ -6166,6 +6281,14 @@ export type AgentChatStopMode = CanonicalAgentChatStopMode;
 
 export type AgentChatInterruptArgs = {
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   /** Defaults to stop_and_clear for backward-compatible Stop-means-stop behavior. */
   mode?: AgentChatStopMode;
 };
@@ -6700,6 +6823,8 @@ export type DraftScheduledBy = "user" | "agent";
 export type DraftEntry = {
   id: string;
   text: string;
+  /** Set only by the host (lane sharing). Absent or null: the host's own user. */
+  author?: AdeMessageAuthor | null;
   /** Absent when talking to a pre-attachment ADE runtime. */
   attachments?: AgentChatFileRef[];
   /** Includes images that exist only on the originating ADE runtime. */
@@ -6835,3 +6960,25 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
+
+/** One turning point of a chat, for a caller that polls (`ade chat events`, ADE MCP's `chat_events`). */
+export type ChatLifecycleEvent = {
+  sequence: number;
+  at: string;
+  kind: "turn_started" | "turn_completed" | "turn_failed" | "turn_interrupted" | "input_needed" | "input_resolved" | "error";
+  turnId?: string;
+  message?: string;
+};
+
+/** `chat.getChatEvents`: what happened since a cursor. */
+export type ChatEventsResult = {
+  sessionId: string;
+  /** Pass back as `since`. */
+  cursor: number;
+  phase: string;
+  events: ChatLifecycleEvent[];
+  /** More events follow: call again with `cursor`. */
+  truncated: boolean;
+  /** Events between `since` and the first one returned were too far back to read. */
+  gap?: true;
+};

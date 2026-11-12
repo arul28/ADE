@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type Agent37Machine } from "../../../shared/agent37";
-import { AGENT37_READY_WAKE_WAIT_MS } from "../../../shared/agent37Ready";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { CLOUD_WAKE_WAIT_MS, type CloudMachine } from "../../../shared/adeCloud";
+import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import { ipcErrorMessage } from "../../lib/format";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { connectWithRetry } from "./connectWithRetry";
-import type { LaneMachineOption } from "../lanes/laneMachines";
+import { withoutAdeCloudLaneComputers, type LaneMachineOption } from "../lanes/laneMachines";
+import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import type { DraftMachineOption } from "./DraftMachinePicker";
 
 const CLONE_ROW_PREFIX = "__ade_clone__:";
@@ -15,14 +16,17 @@ const SELECT_WAIT_MS = 20_000;
 
 export type OfflineDraftMachine = { targetId: string; name: string; machineKey: string | null };
 
+/** The machine (remote target id) a clone row stands for, or null for any other row. */
+export function draftCloneRowTargetId(rowId: string): string | null {
+  return rowId.startsWith(CLONE_ROW_PREFIX) ? rowId.slice(CLONE_ROW_PREFIX.length) : null;
+}
+
 type Busy = { targetId: string; name: string; phase: "waking" | "cloning" | "selecting" };
 
 /** `https://github.com/owner/repo.git` for a GitHub origin, else null: only GitHub repositories are set up on another machine. */
 function githubCloneUrl(originUrl: string | null): { url: string; repo: string } | null {
-  const identity = normalizeGitRemoteIdentity(originUrl);
-  const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i.exec(identity) : null;
-  if (!match) return null;
-  return { url: `https://github.com/${match[1]}/${match[2]}.git`, repo: match[2]! };
+  const repo = githubRepoOf(originUrl);
+  return repo ? { url: `https://github.com/${repo.owner}/${repo.repo}.git`, repo: repo.repo } : null;
 }
 
 /**
@@ -32,17 +36,18 @@ function githubCloneUrl(originUrl: string | null): { url: string; repo: string }
  *   it): "Clone the project here". Picking it clones the repository there with
  *   that machine's own Git sign-in (nothing travels from this computer), then
  *   selects it.
- * - an Agent 37 machine of the account that is not connected (asleep, or not
+ * - a cloud machine of the account that is not connected (asleep, or not
  *   connected from this window): picking it wakes and connects it, clones the
  *   repository when it is missing, then selects it.
  *
  * Every call goes to the picked machine's own connection (its target id); the
- * Agent 37 list is account-level and takes no pin.
+ * the provider list is account-level and takes no pin.
  */
 export function useDraftMachineSetup({
   enabled,
   originUrl,
-  pickerOpens,
+  cloudMachines,
+  laneComputers,
   cloneCandidates,
   offlineMachines,
   selectableMachineIds,
@@ -51,8 +56,14 @@ export function useDraftMachineSetup({
 }: {
   enabled: boolean;
   originUrl: string | null;
-  /** How many times the person opened the picker: each open reads the Agent 37 list again (0: never read). */
-  pickerOpens: number;
+  /**
+   * The account's computers, from the shared read that runs while the draft
+   * shows (`useCloudMachines`). The wake rows come from it, so they are in
+   * the menu when it opens instead of arriving after.
+   */
+  cloudMachines: readonly CloudMachine[];
+  /** ADE Cloud lane computers: the picker lists them under ADE Cloud, so no row of their own here. */
+  laneComputers: readonly AdeCloudLaneComputer[];
   /** Connected machines without this repository. */
   cloneCandidates: readonly LaneMachineOption[];
   /** Saved paired machines that are not connected now. */
@@ -63,35 +74,22 @@ export function useDraftMachineSetup({
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
   // Stable for one origin, so the effects below don't restart on each render.
+  const cloudEnabled = useAdeCloudEnabled();
   const clone = useMemo(() => githubCloneUrl(originUrl), [originUrl]);
-  const [agent37Machines, setAgent37Machines] = useState<Agent37Machine[]>([]);
   const [busy, setBusy] = useState<Busy | null>(null);
   /** Prepared (connected, repository there): selected as soon as the picker lists it. */
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   const attemptRef = useRef(0);
-  const hasOffline = offlineMachines.length > 0;
-
-  useEffect(() => {
-    const listMachines = window.ade?.agent37?.listMachines;
-    if (!enabled || pickerOpens === 0 || !hasOffline || !listMachines) return;
-    let cancelled = false;
-    void listMachines().then(
-      (result) => { if (!cancelled) setAgent37Machines(result?.state === "ok" ? result.machines : []); },
-      (error: unknown) => console.warn("[agent37] machine list for the picker failed", ipcErrorMessage(error)),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, hasOffline, pickerOpens]);
 
   const cloudOffline = useMemo(() => {
-    const byKey = new Map(agent37Machines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));
-    return offlineMachines.flatMap((machine) => {
-      const agent37 = machine.machineKey ? byKey.get(machine.machineKey) : null;
-      if (!agent37 || agent37.state === "deleting" || agent37.state === "error") return [];
-      return [{ ...machine, asleep: agent37.state === "asleep" || agent37.state === "stopped" }];
+    if (!enabled || !cloudEnabled) return [];
+    const byKey = new Map(cloudMachines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));
+    return withoutAdeCloudLaneComputers(offlineMachines, laneComputers).flatMap((machine) => {
+      const cloud = machine.machineKey ? byKey.get(machine.machineKey) : null;
+      if (!cloud || cloud.state === "deleting" || cloud.state === "error") return [];
+      return [{ ...machine, asleep: cloud.state === "asleep" || cloud.state === "stopped" }];
     });
-  }, [agent37Machines, offlineMachines]);
+  }, [cloudEnabled, cloudMachines, enabled, laneComputers, offlineMachines]);
 
   const cloneRepository = useCallback(async (targetId: string, name: string, stillWanted: () => boolean) => {
     if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);
@@ -116,13 +114,13 @@ export function useDraftMachineSetup({
         return;
       }
       if (!cloneCandidates.some((option) => option.targetId === targetId)) {
-        // Not connected: connecting wakes an asleep Agent 37 machine first.
+        // Not connected: connecting wakes an asleep cloud machine first.
         setBusy({ targetId, name, phase: "waking" });
         onNotice({ message: `Waking ${name}…`, kind: "status" });
         const { value: connected, lastError } = await connectWithRetry({
           connect: () => window.ade.remoteRuntime.connect(targetId),
           stillWanted,
-          waitMs: AGENT37_READY_WAKE_WAIT_MS,
+          waitMs: CLOUD_WAKE_WAIT_MS,
           retryMs: CONNECT_RETRY_MS,
         });
         if (!stillWanted()) return;
@@ -201,7 +199,7 @@ export function useDraftMachineSetup({
         id: `${WAKE_ROW_PREFIX}${machine.targetId}`,
         name: machine.name,
         kind: "cloud" as const,
-        cloudProvider: "agent37" as const,
+        cloudProvider: "cloud" as const,
         detail: busyDetail(machine.targetId) ?? (machine.asleep ? "Asleep · wakes when picked" : "Connects when picked"),
       })),
     ];

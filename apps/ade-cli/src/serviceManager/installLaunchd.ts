@@ -706,6 +706,29 @@ export async function installLaunchdService(
   };
 }
 
+/**
+ * The ADE home the installed LaunchAgent serves. Null when no plist can be
+ * read, so an unreadable or absent unit stays removable. A plist with no
+ * `ADE_HOME` was installed from the machine's default home.
+ */
+export function readLaunchdServiceHome(homeDir = os.homedir()): string | null {
+  let plist: string;
+  try {
+    plist = fs.readFileSync(launchAgentPath(homeDir), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /<key>ADE_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(plist);
+  if (!match) return path.join(homeDir, ".ade");
+  return match[1]!
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&")
+    .trim() || path.join(homeDir, ".ade");
+}
+
 export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;

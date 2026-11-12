@@ -1,6 +1,6 @@
 import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { Brain, Check, ImageSquare, Lightning, Star } from "@phosphor-icons/react";
+import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
   modelSupportsServiceTier,
@@ -46,6 +46,17 @@ export type ModelListRowProps = {
   isActive: boolean;
   isFocused?: boolean;
   isAvailable: boolean;
+  /**
+   * The provider is not signed in on the picker's machine. The row still
+   * selects (when `isAvailable`) and looks normal; it carries a tag and keeps
+   * its "Sign in" button.
+   */
+  needsSignIn?: boolean;
+  /**
+   * Another row in the list has a Sign in button, so this row keeps an empty
+   * column of the same width and its capability and speed columns line up.
+   */
+  reservesSignInSlot?: boolean;
   onSelect: (modelId: string) => void;
   onToggleFavorite: (modelId: string) => void;
   onFocus?: () => void;
@@ -99,6 +110,8 @@ export const ModelListRow = memo(function ModelListRow({
   isActive,
   isFocused = false,
   isAvailable,
+  needsSignIn = false,
+  reservesSignInSlot = false,
   onSelect,
   onToggleFavorite,
   onFocus,
@@ -154,7 +167,10 @@ export const ModelListRow = memo(function ModelListRow({
   const seesImages = Boolean(model.capabilities?.vision);
   // The surface offers a speed control, so every row reserves its slot: the
   // capability column then lines up whether or not this model has the chip.
-  const reservesSpeedSlot = serviceTierMode ? Boolean(onServiceTierChange) : Boolean(onFastModeChange);
+  const reservesSpeedSlot = serviceTierMode
+    ? Boolean(onServiceTierChange)
+    : Boolean(onFastModeChange) || Boolean(onCopilotContextTierChange);
+  const showSignInButton = (!isAvailable || needsSignIn) && Boolean(onSignIn);
 
   const handleSelect = useCallback(() => {
     if (!isAvailable) {
@@ -304,7 +320,7 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : ""}${
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
             // This label replaces the descendants' accessible names, so the
             // badge beside the chip is otherwise invisible to a screen reader —
             // and "the server gave you a different tier" is exactly the kind of
@@ -320,7 +336,15 @@ export const ModelListRow = memo(function ModelListRow({
           className={cn(
             // Fixed height: the picker's virtual list sizes rows from
             // MODEL_ROW_HEIGHT instead of measuring each one as it opens.
-            "group flex h-12 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors duration-150",
+            "group flex h-12 w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors duration-150",
+            // Fixed columns after the name: Sign in (56), capabilities (50),
+            // speed (58, or 78 for the service tier), star. Every row has the
+            // same width, so a size query drops a column on every row at once
+            // and the columns stay lined up. Below the width where the name
+            // would get less than 120 px, the speed column goes first, then
+            // the capabilities, then Sign in becomes an icon. The name is cut
+            // last.
+            "@container/row",
             "outline-none focus-visible:bg-fg/[0.05]",
             isActive
               ? "bg-fg/[0.065] text-fg"
@@ -348,13 +372,26 @@ export const ModelListRow = memo(function ModelListRow({
               {isActive ? (
                 <Check size={12} weight="bold" className="shrink-0 text-fg/90" aria-hidden />
               ) : null}
+              {/* The name comes first: a row narrower than 480 px shows only
+                  the bolt, so the label is never cut to a few letters. */}
               {localBadge ? (
                 <span
                   className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-emerald-300/85"
                   title="Offline-ready"
                 >
-                  <Lightning size={8} weight="fill" />
-                  <span>Local</span>
+                  <Lightning size={8} weight="fill" className="shrink-0" aria-hidden />
+                  <span className="sr-only @[480px]/row:not-sr-only">Local</span>
+                </span>
+              ) : null}
+              {/* One sign-in control per row: the tag only when the row has no
+                  Sign in button of its own. */}
+              {needsSignIn && isAvailable && !showSignInButton ? (
+                <span
+                  data-model-picker-not-signed-in="true"
+                  title="Not signed in"
+                  className="inline-flex shrink-0 items-center rounded-full border border-fg/[0.10] px-1.5 py-px text-[9px] font-medium leading-none text-muted-fg/80"
+                >
+                  Not signed in
                 </span>
               ) : null}
               {maxModeBadge ? (
@@ -376,26 +413,32 @@ export const ModelListRow = memo(function ModelListRow({
             ) : null}
           </span>
 
-          {!isAvailable && onSignIn ? (
+          {showSignInButton ? (
             <button
               type="button"
               tabIndex={isFocused ? 0 : -1}
               onClick={handleSignInClick}
               onKeyDown={handleSignInKeyDown}
+              aria-label="Sign in"
+              title={needsSignIn && isAvailable ? "Not signed in. Sign in" : "Sign in"}
+              data-model-picker-not-signed-in={needsSignIn && isAvailable ? "true" : undefined}
               className={cn(
-                "shrink-0 self-center rounded-full border px-2 py-1 text-[9px] font-semibold uppercase tracking-wide hover:bg-amber-400/[0.16]",
+                "inline-flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-full border text-[9px] font-semibold uppercase tracking-wide hover:bg-amber-400/[0.16] @[236px]/row:w-[56px]",
                 MODEL_ROW_WARN_TONE,
               )}
             >
-              Sign in
+              <SignIn size={11} weight="bold" aria-hidden className="@[236px]/row:hidden" />
+              <span className="hidden @[236px]/row:inline">Sign in</span>
             </button>
+          ) : reservesSignInSlot ? (
+            <span aria-hidden className="w-6 shrink-0 @[236px]/row:w-[56px]" />
           ) : null}
 
-          {/* Two fixed slots, so the columns line up down the list. A missing
-              capability stays as a faint mark rather than a gap. */}
+          {/* A fixed column, so the capabilities line up down the list. A
+              missing capability stays as a faint mark rather than a gap. */}
           <span
             className={cn(
-              "inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5",
+              "hidden h-6 w-[50px] shrink-0 items-center justify-center gap-1 rounded-full @[294px]/row:inline-flex",
               thinks || seesImages ? "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]" : "invisible",
             )}
             data-model-capabilities="true"
@@ -457,8 +500,8 @@ export const ModelListRow = memo(function ModelListRow({
               onClick={showCopilotContextChip ? handleCopilotContextTierClick : showServiceTierChip ? handleServiceTierClick : handleFastChipClick}
               onKeyDown={showCopilotContextChip ? handleCopilotContextTierKeyDown : showServiceTierChip ? handleServiceTierKeyDown : handleFastChipKeyDown}
               className={cn(
-                "inline-flex h-6 shrink-0 items-center justify-center gap-1 self-center rounded-full border",
-                showServiceTierChip ? "w-[78px]" : "w-[58px]",
+                "hidden h-6 shrink-0 items-center justify-center gap-1 self-center rounded-full border",
+                serviceTierMode ? "w-[78px] @[380px]/row:inline-flex" : "w-[58px] @[360px]/row:inline-flex",
                 "text-[9px] font-semibold uppercase leading-none tracking-wide",
                 "disabled:cursor-not-allowed",
                 fastBlocked && "opacity-45",
@@ -477,7 +520,7 @@ export const ModelListRow = memo(function ModelListRow({
                 : showServiceTierChip ? (activeTier === "fast" ? "Fast" : activeTier === "standard" ? "Standard" : "Tier") : ultrafastOn ? "Ultra" : "Fast"}</span>
             </button>
           ) : reservesSpeedSlot ? (
-            <span aria-hidden className={cn("shrink-0", serviceTierMode ? "w-[78px]" : "w-[58px]")} />
+            <span aria-hidden className={cn("hidden shrink-0", serviceTierMode ? "w-[78px] @[380px]/row:block" : "w-[58px] @[360px]/row:block")} />
           ) : null}
 
           {/* What the server reported for this chat's Fast, next to the chip
@@ -496,7 +539,8 @@ export const ModelListRow = memo(function ModelListRow({
                 ? `The server is running ${effectiveFastLabel}, not the ${fastTierLabel(requestedFastTier)} this chat asked for.`
                 : `The server is running ${effectiveFastLabel}, as asked.`}
               className={cn(
-                "inline-flex h-6 shrink-0 items-center self-center rounded-full border px-1.5 text-[9px] font-semibold uppercase leading-none tracking-wide",
+                // It sits beside the speed column and goes with it.
+                "hidden h-6 shrink-0 items-center self-center rounded-full border px-1.5 text-[9px] font-semibold uppercase leading-none tracking-wide @[360px]/row:inline-flex",
                 fastTierDeclined ? MODEL_ROW_WARN_TONE : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55",
               )}
             >

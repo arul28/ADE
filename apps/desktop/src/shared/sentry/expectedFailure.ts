@@ -68,7 +68,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bfatal: not a git repository\b/,
   /\bgit_untrusted_folder:/,
   /Refusing to register the user home directory or filesystem root/,
-  /This chat already started — delete its lane/,
+  /This (chat|CLI session) already started\. Delete its lane|This lane is already set up\. Delete it/,
   // A screenshot or image attachment cleaned up while a chat still shows it.
   /\bPath does not exist: .+\.(png|jpe?g|gif|webp)$/i,
   // Answers to an agent driving a browser or a desktop: it fixes its call and retries.
@@ -173,6 +173,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // the re-login card), and a move refused until the user publishes or commits.
   /^Claude Code is detected, but ADE chat could not authenticate it\. /,
   /^(?:Lane '.+'|Chat '.+'|This chat) can't move yet:\n/,
+  // Added from Sentry traffic, 2026-11-09. Cursor refusing a Cloud Agent on a
+  // plan that has none ("upgrade to Pro"): the account's state, shown to the user.
+  /\[plan_required\]/,
 ];
 
 /**

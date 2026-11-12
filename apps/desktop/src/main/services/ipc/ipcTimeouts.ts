@@ -23,7 +23,7 @@ import {
   AI_STATUS_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS, AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS } from "../agent37/agent37Client";
+import { REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS } from "../remoteRuntime/remoteEventSetup";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -55,6 +55,11 @@ export function readRuntimeActionRequest(
   return { domain, ...(action ? { action } : {}) };
 }
 
+/** The longest provider call (a backup) plus a minute for the reads around it. */
+const CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS = 16 * 60_000;
+/** The machine list reads the machines, then the usage: two request budgets. */
+const CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS = 50_000;
+
 const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
     piLoginStart: IPC.aiPiLoginStart,
@@ -63,6 +68,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   lane: {
     create: IPC.lanesCreate,
     importBranch: IPC.lanesImportBranch,
+    restoreDeletedLane: IPC.lanesRestoreDeleted,
     switchBranch: IPC.lanesSwitchBranch,
     unarchive: IPC.lanesUnarchive,
     archiveAndReclaim: IPC.lanesArchiveAndReclaim,
@@ -212,8 +218,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return PI_LOGIN_IPC_TIMEOUT_MS;
     case IPC.aiCursorAuthLogin:
       return CURSOR_LOGIN_IPC_TIMEOUT_MS;
-    // A forced refresh waits on the ACP auth probes; see AI_STATUS_TIMEOUT_MS.
-    // A plain read keeps the default.
+    // A forced refresh on a remote ADE older than the disk-only status read
+    // still waits on its ACP auth probes; see AI_STATUS_TIMEOUT_MS. A plain
+    // read keeps the default.
     case IPC.aiGetStatus:
       return isRecord(args[0]) && args[0].force === true
         ? AI_STATUS_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS
@@ -242,25 +249,30 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeListActionRegistry:
     case IPC.remoteRuntimeCallSync:
     case IPC.remoteRuntimeEnsurePortForward:
-    case IPC.remoteRuntimeStreamEvents:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
+    // An event poll answers with a batch, or once its subscription is
+    // acknowledged; it never stays open for the stream. Its own ceiling
+    // (REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS) names the step that hung, and
+    // this sits just above it, like the local twin's poll budget.
+    case IPC.remoteRuntimeStreamEvents:
+      return REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS;
     case IPC.lanesArchive:
       return 4 * 60_000;
-    // A box's sleep, wake, resize, backup or delete answers once Agent37 is done.
-    case IPC.agent37MachineAction:
-      return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
-    case IPC.agent37ListMachines:
-      return AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS;
-    // A claim reads the pool, tags the machine and waits for its wake; a
-    // project change runs one pool pass (which may delete a machine).
-    case IPC.agent37ReadyClaim:
-    case IPC.agent37ReadyRelease:
-    case IPC.agent37ReadySetProject:
-    case IPC.agent37ReadyRemoveProject:
-    case IPC.agent37ReadyRetry:
-    case IPC.agent37ReadyStatus:
-    case IPC.agent37WakeMachine:
-      return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
+    // The state read runs git in every lane of the project; the removal can
+    // delete a large folder (another machine) or move it to the Trash.
+    case IPC.projectInspectRemoval:
+    case IPC.remoteRuntimeInspectProjectRemoval:
+      return 2 * 60_000;
+    case IPC.projectRemoveCopy:
+    case IPC.remoteRuntimeRemoveProjectCopy:
+      return 11 * 60_000;
+    // A box's sleep, wake, resize, backup or delete answers once the provider is done.
+    case IPC.cloudMachineAction:
+    // A wake, then every lane's commit and push on the computer.
+    case IPC.cloudPushAllWork:
+      return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
+    case IPC.cloudListMachines:
+      return CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see
@@ -269,6 +281,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return localRuntimeActionIpcTimeoutMs("lane", "create");
     case IPC.lanesImportBranch:
       return localRuntimeActionIpcTimeoutMs("lane", "importBranch");
+    case IPC.lanesRestoreDeleted:
+      return localRuntimeActionIpcTimeoutMs("lane", "restoreDeletedLane");
     case IPC.lanesSwitchBranch:
       return localRuntimeActionIpcTimeoutMs("lane", "switchBranch");
     // The lane branch picker's switch: the same checkout as lane.switchBranch.
@@ -313,12 +327,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 4 * 60_000;
     // Restart-to-update runs one transaction before it quits: a fresh feed
     // check, the prepare step (chat state, the service brain's uninstall),
-    // bounded by the install watchdog at 30s, and on Windows the owned brain's
-    // stop. The step answers `false` on its own watchdog, so on the 30s default
+    // bounded by the install watchdog at 30s (90s on Windows, where prepare
+    // removes the brain's service), and on Windows the owned brain's stop.
+    // The step answers `false` on its own watchdog, so on the 30s default
     // the two raced and the renderer got an opaque timeout while the install
     // carried on (ADE-DESKTOP-99: a Windows prepare ran 29.9s).
     case IPC.updateQuitAndInstall:
-      return 2 * 60_000;
+      return 3 * 60_000;
     // A project move copies the whole project before it answers; a few hundred
     // GB to a USB drive takes far more than the 30s default. Progress arrives
     // on its own channel meanwhile.

@@ -15,6 +15,8 @@ export const MARKETING_SCREENS = {
   DOWNLOAD: "download",
   OPEN_LINK: "open_link",
   PAIR: "pair",
+  /** `/invite/<code>`: the code is never part of the screen or the page address. */
+  INVITE: "invite",
   PRIVACY: "privacy",
   TERMS: "terms",
   NOT_FOUND: "not_found",
@@ -35,6 +37,9 @@ export const MARKETING_FEATURES = {
   GET_STARTED: "get_started",
   OPEN_IN_DESKTOP: "open_in_desktop",
   PAIR_IN_WEB_CLIENT: "pair_in_web_client",
+  // The invite page (`/invite/<code>`): "Open in ADE", and copying the code.
+  OPEN_INVITE_IN_ADE: "open_invite_in_ade",
+  COPY_INVITE_CODE: "copy_invite_code",
   // Install dialog. The dialog captures its own open event so every trigger
   // (hero, back cover, header, footer) reports the same feature regardless of
   // which CTA label it also carries.
@@ -66,6 +71,10 @@ export const MARKETING_CTA_LABELS = {
   DOWNLOAD_MAC_ARM64: "download_mac_arm64",
   DOWNLOAD_MAC_X64: "download_mac_x64",
   DOWNLOAD_WINDOWS_X64: "download_windows_x64",
+  DOWNLOAD_LINUX_X64_APPIMAGE: "download_linux_x64_appimage",
+  DOWNLOAD_LINUX_ARM64_APPIMAGE: "download_linux_arm64_appimage",
+  DOWNLOAD_LINUX_X64_DEB: "download_linux_x64_deb",
+  DOWNLOAD_LINUX_ARM64_DEB: "download_linux_arm64_deb",
   GET_STARTED_FREE: "get_started_free",
   OPEN_WEB_CLIENT: "open_web_client",
 } as const;
@@ -78,6 +87,7 @@ export const MARKETING_CTA_POSITIONS = {
   FOOTER: "footer",
   DOWNLOAD_PAGE: "download_page",
   INSTALL_DIALOG: "install_dialog",
+  INVITE_PAGE: "invite_page",
 } as const;
 
 export type MarketingCtaPosition =
@@ -136,7 +146,13 @@ const ALLOWED_FEATURES = new Set<string>(Object.values(MARKETING_FEATURES));
 const ALLOWED_CTA_LABELS = new Set<string>(Object.values(MARKETING_CTA_LABELS));
 const ALLOWED_CTA_POSITIONS = new Set<string>(Object.values(MARKETING_CTA_POSITIONS));
 
+/** An invite page's address without its code: `/invite/ABCD2345` is `/invite`. Never send a code. */
+export function withoutInviteCode(pathname: string): string {
+  return /^\/invite(\/|$)/i.test(pathname) ? "/invite" : pathname;
+}
+
 export function normalizeMarketingScreen(pathname: string): MarketingScreen | null {
+  if (withoutInviteCode(pathname) === "/invite") return MARKETING_SCREENS.INVITE;
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
   return Object.prototype.hasOwnProperty.call(SCREEN_BY_PATH, normalized)
     ? SCREEN_BY_PATH[normalized] ?? null
@@ -237,7 +253,7 @@ export function readMarketingLanding(href: string, referrer: string): MarketingL
     external = null;
   }
   return {
-    referrer: external ? boundedValue(`${external.origin}${external.pathname}`) : null,
+    referrer: external ? boundedValue(`${external.origin}${withoutInviteCode(external.pathname)}`) : null,
     referringDomain: external ? boundedValue(external.hostname) : null,
     utm,
   };
@@ -257,10 +273,11 @@ export function marketingCurrentUrl(href: string): { url: string; host: string; 
       if (value) kept.set(key, value);
     }
     const query = kept.toString();
+    const pathname = withoutInviteCode(url.pathname);
     return {
-      url: `${url.origin}${url.pathname}${query ? `?${query}` : ""}`.slice(0, 2 * ATTRIBUTION_VALUE_MAX),
+      url: `${url.origin}${pathname}${query ? `?${query}` : ""}`.slice(0, 2 * ATTRIBUTION_VALUE_MAX),
       host: url.hostname,
-      pathname: url.pathname.slice(0, ATTRIBUTION_VALUE_MAX),
+      pathname: pathname.slice(0, ATTRIBUTION_VALUE_MAX),
     };
   } catch {
     return null;

@@ -33,7 +33,7 @@ import type http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { isPublicFaviconAddress, pinnedLookup } from "../net/publicHostGuard";
+import { isLocalHostname, isPublicFaviconAddress, pinnedLookup } from "../net/publicHostGuard";
 
 export const SOURCE_FAVICON_LIMITS = {
   timeoutMs: 3_000,
@@ -123,7 +123,7 @@ function stripBrackets(hostname: string): string {
 
 function isBlockedHostname(hostname: string): boolean {
   if (!hostname || hostname.length > 253) return true;
-  if (hostname === "localhost" || /\.(?:localhost|local|internal|intranet|lan|home\.arpa)$/.test(hostname)) return true;
+  if (isLocalHostname(hostname)) return true;
   const literal = stripBrackets(hostname);
   if (net.isIP(literal)) return !isPublicFaviconAddress(literal);
   // A single-label name ("router", "nas") resolves through local search

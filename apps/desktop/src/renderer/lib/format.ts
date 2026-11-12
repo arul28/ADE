@@ -1,5 +1,7 @@
 /** Shared formatting utilities for the renderer. */
 
+import { stripElectronErrorWrapper } from "../../shared/codedError";
+
 // Lives in shared so main-process and renderer text can use the same sizes.
 export { formatBytes } from "../../shared/formatting";
 
@@ -204,13 +206,12 @@ export function extractError(err: unknown): string {
 
 /**
  * The message an IPC call failed with, without Electron's
- * "Error invoking remote method '<channel>': Error: " wrapper. Empty when the
- * thrown value carries no message, so the caller can show its own fallback.
+ * "Error invoking remote method '<channel>': <Class>Error: " wrapper. Empty
+ * when the thrown value carries no message, so the caller can show its own
+ * fallback.
  */
 export function ipcErrorMessage(err: unknown): string {
-  return err instanceof Error
-    ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim()
-    : "";
+  return err instanceof Error ? stripElectronErrorWrapper(err.message) : "";
 }
 
 /** Shorten a SHA-like hash to the first 8 characters. */
@@ -224,4 +225,15 @@ export function statusToneOperation(status: string): string {
   if (status === "failed") return "text-red-400 border-red-900";
   if (status === "running") return "text-amber-400 border-amber-900";
   return "text-muted-fg border-border";
+}
+
+/** "2 min ago", "3 h ago", "16 days ago". */
+export function formatAgo(ms: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - ms) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
 }

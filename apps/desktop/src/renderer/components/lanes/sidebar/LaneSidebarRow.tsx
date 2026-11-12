@@ -1,6 +1,6 @@
 import React from "react";
 import { CircleDashed, CircleNotch, UsersThree } from "@phosphor-icons/react";
-import type { LaneListSnapshot, LaneSummary } from "../../../../shared/types";
+import type { LaneListSnapshot, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
 import { ToolLogo } from "../../terminals/ToolLogos";
@@ -18,6 +18,7 @@ import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import { MachineChip } from "../../shared/MachineChip";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
+import { LaneShareMark } from "../../laneShare/LaneShareMark";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   laneAgentToolType,
@@ -71,6 +72,12 @@ export type LaneSidebarRowProps = {
    * page's own callbacks.
    */
   foreign?: boolean;
+  /**
+   * Where the lane's share mark reads: the lane's own id on its machine and
+   * that machine's pin. Omitted for a local row (its id, no pin). A foreign
+   * row without one shows no mark.
+   */
+  shareTarget?: { laneId: string; pin: OpenProjectBinding | null } | null;
   onSelect: (laneId: string, event: React.MouseEvent) => void;
   onContextMenu: (laneId: string, event: React.MouseEvent) => void;
   onOpenPr: (pr: LaneTabPrTag) => void;
@@ -222,11 +229,13 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     machineChip = null,
     disabledReason = null,
     foreign = false,
+    shareTarget = null,
     onSelect,
     onContextMenu,
     onOpenPr,
     onOpenAgent,
   } = props;
+  const share = shareTarget ?? (foreign ? null : { laneId: lane.id, pin: null });
   const deleting = deleteStatusLabel != null;
   const unreachable = disabledReason != null;
   const branch = laneBranchLabel(lane.branchRef);
@@ -314,6 +323,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           />
           <span className="min-w-0 truncate">{lane.name}</span>
         </span>
+        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={lane.name} pin={share.pin} /> : null}
         {deleting || creating ? (
           <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: deleting ? COLORS.textMuted : COLORS.accent }} />
         ) : (
@@ -343,18 +353,11 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           <>
             <span className="truncate">{deleteStatusLabel}</span>
             {onStopDelete ? (
-              <button
-                type="button"
-                className="ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+              <SidebarStopButton
                 title="Stop the delete. The lane stays, and part of its folder may already be gone."
-                data-testid="lane-sidebar-stop-delete"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onStopDelete();
-                }}
-              >
-                Stop
-              </button>
+                testId="lane-sidebar-stop-delete"
+                onStop={onStopDelete}
+              />
             ) : null}
           </>
         ) : creating ? (
@@ -396,8 +399,26 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   );
 });
 
-/** Placeholder for a lane a batch launch is still creating. */
-export function LaneSidebarCreatingRow({ name }: { name: string }) {
+/** Stops the delete or the create a row shows. Clickable inside an inert row. */
+function SidebarStopButton({ title, testId, onStop }: { title: string; testId: string; onStop: () => void }) {
+  return (
+    <button
+      type="button"
+      className="pointer-events-auto ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+      title={title}
+      data-testid={testId}
+      onClick={(event) => {
+        event.stopPropagation();
+        onStop();
+      }}
+    >
+      Stop
+    </button>
+  );
+}
+
+/** Placeholder for a lane that is still being created. `onStop` adds a Stop button. */
+export function LaneSidebarCreatingRow({ name, onStop }: { name: string; onStop?: () => void }) {
   return (
     <div
       aria-disabled
@@ -410,7 +431,12 @@ export function LaneSidebarCreatingRow({ name }: { name: string }) {
         <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: COLORS.accent }} />
         <span className="min-w-0 flex-1 truncate">{name}</span>
       </div>
-      <div className="h-4 text-[11px] leading-4 text-muted-fg/70">Creating…</div>
+      <div className="flex h-4 min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-fg/70">
+        <span className="truncate">Creating…</span>
+        {onStop ? (
+          <SidebarStopButton title="Stop creating this lane." testId="lane-sidebar-stop-create" onStop={onStop} />
+        ) : null}
+      </div>
     </div>
   );
 }

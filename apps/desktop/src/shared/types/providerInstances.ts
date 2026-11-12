@@ -61,6 +61,12 @@ export type ProviderInstance = {
   /** Read out of the config home by `refreshAccounts()`; absent until then. */
   account?: { email?: string; plan?: string };
   /**
+   * Claude only: when this account's stored claude.ai login ends, ISO 8601, as
+   * the last chat on this machine reported it. May be an estimate, and the
+   * real end can be a few days earlier. Absent when unknown or for an API key.
+   */
+  claudeLoginEndsAt?: string;
+  /**
    * True when the config home names an account (email or plan resolved) and
    * the usage poller has not found its saved login broken.
    */
@@ -325,10 +331,11 @@ export function isProviderLoginLive(login: Pick<ProviderLoginStatus, "state"> | 
 export type ProviderLoginStartArgs = {
   id: string;
   /**
-   * Sign in with a one-time code typed into the sign-in page (Codex
-   * `--device-auth`), for a machine other than the one with the browser:
-   * Codex's normal sign-in returns to a localhost port on the account's
-   * machine, which a browser on another computer cannot reach.
+   * The browser is not on the account's machine. Codex then signs in with a
+   * one-time code typed into the sign-in page (`--device-auth`): its normal
+   * sign-in returns to a localhost port on the account's machine, which a
+   * browser on another computer cannot reach. Claude keeps its printed link
+   * (which ends in a pasted code) and does not open a page on that machine.
    */
   deviceAuth?: boolean;
 };

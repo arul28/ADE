@@ -55,6 +55,7 @@ export type SpawnNestingSession = Pick<
   | "snoozedAt"
   | "backgroundWork"
   | "activeBackgroundTaskCount"
+  | "activePrWatch"
   | "startedAt"
   | "usageLimitResume"
   | "chatActivityMode"
@@ -119,6 +120,7 @@ export function spawnNestingPhase(session: SpawnNestingSession, nowMs: number = 
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     backgroundWork: backgroundWorkFromSummary(session),
+    prWatchActive: Boolean(session.activePrWatch),
     nowMs,
     isChatTool: isChatToolType,
   }).phase;

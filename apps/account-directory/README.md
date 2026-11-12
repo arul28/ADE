@@ -80,7 +80,7 @@ de-authorized machine's agents on every surface of the account. The handler:
 1. records a `revoked_machines` row (before dropping the machine row, so a
    half-completed removal fails closed) — `POST /account/machines/register` is
    refused with `403 machine_revoked` while it stands, which is what stops the
-   removed machine's 30-second heartbeat from re-registering itself;
+   removed machine's 60-second heartbeat from re-registering itself;
 2. deletes the machine row;
 3. forwards the removal to `DELETE /attention/account/machines/:machineKey` on
    the relay (`PUSH_RELAY_URL`, or the optional `ACTIVITY_RELAY` service
@@ -768,24 +768,274 @@ logged or stored. Failures that are ADE's to fix (no key, a refused key, the
 spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
 issues, one per reason.
 
-## Agent 37 timed wakes
+## ADE Cloud timed wakes
 
-A sleeping Agent 37 machine is frozen, so the timers ADE keeps on it (a chat's
+A sleeping ADE Cloud machine is frozen, so the timers ADE keeps on it (a chat's
 scheduled wake-up, an automation's cron) can't fire there. Before its ADE lets
 it sleep, it sends its next time here, and the minute cron wakes it two
-minutes early (`src/agent37Wake.ts`, table `agent37_wakes`):
+minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
 
-- `PUT /agent37/wake` `{instanceId, url, at}` with the account bearer records
+- `PUT /cloud/wake` `{instanceId, url, at}` with the account bearer records
   or replaces the account's one row for that machine. `url` must be an
   `https://<slug>.agent37.app` origin, the machine's own public address; `at`
   is a time within the next 32 days. Fifty machines per account at most.
-- `DELETE /agent37/wake` `{instanceId}` forgets it (nothing scheduled any more).
+- `DELETE /cloud/wake` `{instanceId}` forgets it (nothing scheduled any more).
 - The cron requests `url` with a plain GET. Any answer, a 502 included,
-  reaches the machine and wakes it, so this Worker never holds an Agent 37
+  reaches the machine and wakes it, so this Worker never holds an ADE Cloud
   key. A woken row is deleted; one that didn't answer is retried each minute
   and dropped 30 minutes after its time.
 
 Nothing else about the machine is stored, and no request body is logged.
+
+## ADE Cloud account
+
+The server holds the provider key and owns every ADE Cloud computer
+(`src/cloud/`, migration `0018_cloud_account.sql`, secrets `AGENT37_API_KEY`
+and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
+their shapes for a client to mirror. Every route takes the account bearer.
+
+- `CLOUD_ACCESS_ACCOUNTS` is a comma list of Clerk user ids, or `*`. Unset means
+  nobody. `GET /cloud/access` answers `{ enabled }` for the bearer; every other
+  `/cloud/*` route, including `/cloud/wake`, answers 404 `not_found` to a caller
+  not on the list.
+- `cloud_computers` records each computer's owner. Every call by instance id
+  checks it, and not yours or unknown is 404. Provider errors become one plain
+  sentence.
+- A create ignores any template from the client and uses `template_version` in
+  `cloud_settings` (an exact `ade@N`; unset refuses with a log line). Sizes are
+  the eight in `src/cloud/plans.ts`. Disk is 4 GB on create. Limits on create and
+  copy: free 3 computers, paid 10. Free computers stay at 4 GB; paid accounts
+  share 40 GB and grow in 4 GB steps, while the computer is idle.
+- Every delete, automatic ones included, writes `cloud_delete_log`, with the
+  provider's start and sleep history read first. Every power change writes
+  `cloud_power_log`.
+- `POST /cloud/instances/:id/idle` is the computer asking to be slept.
+
+The minute cron reads the provider's list once, and only when a computer
+exists. It writes only on change: hours settle when a stretch of awake time
+ends, and live hours are the settled figure plus the open stretches. Hours
+are integer thousandths of a Small-hour. Free accounts reset on the 1st UTC;
+paid accounts wait for Stripe to move `period_end`
+(`applyCloudPlanChange` in `store.ts` is the one place a plan changes).
+
+At 0 hours with extra hours off, the cron runs
+`ade cloud prepare-stop --timeout 40` on each awake computer, treating a failure
+as "stop anyway", then stops it, because a sleeping computer wakes on any
+request. A stop answering 409 retries; a stop answering 400 is cold storage and
+is left alone until something wakes it. Starts and creates are refused, except
+`POST .../start` with `{ "reason": "push_work" }`: a free 15-minute wake, once a
+day per computer. Timed wakes are dropped while an account is at 0 hours.
+
+An awake computer with no check-in for 10 minutes (`machines.last_seen_at`) is
+slept. Daily after 02:00 UTC, the cron compares each computer-day with the
+provider's `awake_minutes`, corrects the account to the provider's number, and
+alerts the owner to minutes the power log can't explain. Every 10 minutes it
+checks the wallet (`$15` floor, automatic top-up) and awake computers against
+the provider's limit (80%). A computer not awake for 30 days is deleted after
+7-day and 1-day warnings; the clock waits for an hours reset.
+
+### Payments
+
+`src/cloud/billing.ts` sells the plan through Stripe Managed Payments (secrets
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
+`STRIPE_EXTRA_HOURS_PRICE_ID` (read before the older `STRIPE_EXTRA_PRICE_ID`),
+`STRIPE_METER_EVENT`, from `scripts/stripe-setup.mjs`). Plus, Pro, extra hours
+and extra disk are four products, so Checkout names each line and shows its
+one-line description (Managed Payments refuses `custom_text`); the customer
+is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
+a URL for the person's browser, which comes back to `/billing/return`.
+`POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
+
+`POST /webhooks/stripe` is outside the access list and is checked with the
+signature instead. `cloud_stripe_events` makes each event run once. A handler
+uses its event only to find the subscription and re-reads it from Stripe, so
+late or reordered events land in the same place. Checkout completing sets the
+plan, then adds the $5 threshold, which Stripe refuses at Checkout. `invoice.paid`
+for a renewal starts fresh hours; a subscription that is `active` again restores
+from `past_due`. A failure moves the account to free rules and turns extra hours
+off, with an email each way and `billing.notice` for the banner.
+
+Each tick reports every whole extra Small-hour as one meter event (the rest
+waits). The identifier is the hour's place in the billing period, so a retry
+can't count one twice. Only accounts with extra hours on and past their plan's
+hours are reported.
+
+## Saved chats
+
+ADE Cloud computers can't serve their chats while asleep, stopped, out of hours
+or deleted, so after each chat turn the computer saves the new part of the chat
+here (`src/cloud/chats.ts`, routes in `contract.ts`).
+
+- Parts live in R2 (`CLOUD_CHATS`), one object per part, AES-GCM with one random
+  key per user. That key is sealed with `CLOUD_CHAT_MASTER_KEY` and kept in D1,
+  apart from the chats. Platform encryption, not end-to-end.
+- The list row's text (title, lane name, status, model) is sealed the same way;
+  only ids the list filters on are plain.
+- Parts append by sequence and every upload can be replayed: the same part
+  answers 200, the newest part may be resent with more text, anything else is
+  `409 sequence_conflict` and the computer starts that chat over. A part over
+  8 MiB is refused; an account past 2 GiB is refused and logged
+  (`cloud.chat_account_full`).
+- Every read checks the owner: another account's chat answers 404.
+- Deleting a computer keeps its chats. Deleting a chat, a lane, or the account
+  (Clerk `user.deleted`) removes them; deleting the account also removes the key.
+- Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
+  `wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments.
+
+## Lane sharing
+
+One account (the giver) gives another account (the receiver) limited access
+to one lane on one of the giver's machines (`src/laneShares/routes.ts`, table
+in migration 0023, tickets in migration 0024, the receiver's name in
+migration 0025, routes and shapes in
+`src/laneShares/contract.ts`). This Worker is only the index and the
+revocation list. It holds no detailed rights and a grant here never opens a
+machine: the host machine keeps the rights and redeems the guest's ticket on
+every guest connection.
+
+Trust: a guest's account token goes only to the directory; a host sees a
+one-use ticket. No sign-in or credential moves to another machine.
+
+On the host machine, a guest's input reaches services that ADE wrote for the
+owner. So the host turns off each interpretation it does for the owner, and
+these rules apply under any rights:
+
+- A guest's text is a plain prompt. The host runs no slash command of any
+  provider, no `!` shell line, no `/side` or `/memory`, no custom command or
+  skill, and no `@chat:`, `@term:`, `@lane:` or `@mac:` expansion on it. A
+  provider CLI can read a leading `/` or `!` itself, so the host refuses a
+  guest message that starts with one (`lane_share_plain_text_only`). The rule
+  applies to a send, a steer, a guest's draft and each edit of it (also when
+  the owner sends it), a guest's answer to a card, and the first input of a
+  CLI session. A guest's draft goes only to an existing chat.
+- Only the owner answers a card that is a permission or a secret: a project
+  secret, an MCP server to add or remove, an integration connect, the Mac
+  real-input lease, a shared-desktop consent, an MCP App call. The host
+  refuses a guest's answer or dismissal of such a card, and a guest sees only
+  "Waiting for the owner" in place of its text. A card kind with no mapped
+  right (such as a model choice) is refused too. With a Decide right, a guest
+  cannot choose "for the whole session" (that saves rules in the provider's
+  settings), and approves a plan only when the mode the plan returns to is
+  one the owner allowed.
+- A guest's thread comment never goes with the owner's next send on its own.
+  The owner includes it by name, and the agent reads it as written by
+  another person. Its `@chat:`-style chips stay plain text.
+- Typing into a CLI session gives the same reach as a shell on the host. Only
+  the typing right allows it. Each submitted line counts as one message. The
+  host refuses guest typing when it runs Windows, where a shell stays after
+  the CLI exits.
+- A guest reads no file that git ignores (such as `.env`) and nothing under
+  `.ade/`, through a file read or a diff read, also through a link.
+- The mode lock holds the mode a turn really runs in, read from the
+  provider's own settings (for a plan, also the mode its approval returns
+  to). A mode the host cannot map is refused. A guest changes the settings
+  only of a chat it started. With no model in the lock, a guest starts no
+  chat and no CLI session.
+- The host keeps the share's end date in its own rights and enforces it on
+  every action and every outgoing message. When a share ends, is revoked
+  (here or on another device), is left, or loses its send and steer rights,
+  the host removes the messages its guest queued that have not started.
+- The host admits a guest only when its rights row names the same lane as
+  the directory's grant. Message and draft limits are counted in one step,
+  so two requests at once cannot both take the last place.
+- With "hide machines" on, a guest sees no device or machine name, id or
+  platform in any payload. With "history before the share" off, previews,
+  summaries, goals, thread comments and subagents from before the share are
+  removed from every read, not only from the transcript.
+- `lane_share.*` actions are user-only, except three: only an RPC caller
+  that names itself as an ADE desktop client and carries no agent identity
+  reaches the rest. A guest never reaches any of them: its commands are
+  limited to a fixed list, and its connection has no runtime RPC channel.
+- An agent (the `ade` CLI, an agent's shell, ADE MCP) can only list shares,
+  make a Watch share (it sees, it cannot act), at most 5 an hour per machine,
+  and stop a share of that machine. The host machine enforces it, from the
+  caller its RPC server knows; this Worker has no part in it.
+
+- Every route takes the account bearer and checks the caller's user id against
+  the row. A pending invite matches a caller only through an address Clerk has
+  VERIFIED for that caller, read on each call with `CLERK_SECRET_KEY`. Without
+  that key, invite, accept and open by the invitee answer 503.
+- A grant the caller may not see answers 404, the same as an id that does not
+  exist. The routes ask Clerk before they decide that 404.
+- At most 5 guests (pending and active) per lane. An invite lasts 24 h, on the
+  server clock. A second invite to the same address refreshes the pending one.
+- Limits against spam: 20 invites and re-sends per giver per UTC day, 5 invite
+  emails per address per UTC day, 2,000 invite emails per UTC day from all
+  accounts together, one email per invite per 10 minutes and 5 in its life
+  (`lane_share_invite_days`, as in the Jev bonus). The per-address cap counts
+  a canonical form of the address (lowercase, no `+tag`, no dots at Gmail);
+  the invite keeps the exact address.
+- Each account may cause 120 Clerk Backend API reads per UTC hour through these
+  routes. Past that, the routes that need Clerk answer 429, and the
+  "Shared with me" list leaves out pending invites.
+- The invite email goes through Resend (`RESEND_API_KEY`). Without the key, or
+  when the send fails, the invite still succeeds and says `emailSent: false`.
+  The email names the giver (cleaned: no link-like or host-like words, no `@`)
+  and carries no project or lane label. Its only link is ADE's invite link.
+- The host read lists every live grant of the machine. A host drops any cached
+  grant that is not in the list, so a revoke counts at the next connection.
+  Each grant carries `createdAt` (the host hides chat history from before it)
+  and, once active, `acceptedAt` and `receiverName`: the receiver's Clerk name,
+  stored at accept (`receiver_label`, migration 0025) and cleaned like the
+  invite email's sender name. The host shows only this name as the author of
+  the guest's messages and in a guest turn's commit trailer; the guest never
+  chooses it. `closed` lists the machine's final grants, so the host can
+  delete their rights and counters.
+- `POST /lane-shares/:id/connect` gives the receiver of an ACTIVE grant the
+  ADE Relay address the host machine published (`wss://…/connect/<machineKey>`),
+  whether the host reported in recently, and a one-use ticket. Nobody else may
+  read it, not even the giver (404); a closed grant answers 410. LAN and
+  tailnet addresses are never given out. The body names the guest's DPoP key
+  (`dpopThumbprint`, RFC 7638). The ticket is 32 random bytes, lives 2
+  minutes, and D1 keeps only its hash. A grant may mint 30 tickets an hour.
+- `POST /lane-shares/host/redeem` is for a machine of the giver only (owner
+  token, no browser Origin). One conditional UPDATE uses the ticket once,
+  and only while it is unexpired, minted for that machine, and its grant is
+  still active with the caller as the giver. The answer names the receiver,
+  the lane and the DPoP key, with the machine's full grant list. Every
+  failure answers the same 404. The host admits the user id from this answer
+  and only for a hello signed by that DPoP key, so a copied ticket is useless.
+- A guest keeps the relay address after a revoke, so a revoked guest can still
+  reach the host's hello step (and use one of the relay's 16 sockets for that
+  machine). The host drops a guest hello without a well-formed ticket and a
+  valid DPoP proof before it calls the directory, and a revoked guest gets no
+  new ticket.
+- Clerk `user.deleted` closes every live grant given by or to the account.
+- The cron writes the clock-derived states, deletes rows closed 90 days ago,
+  drops budget rows older than a week, and deletes tickets older than an hour.
+
+### Moving a chat to the other person
+
+The owner, or a guest with Collaborate (send and start chats), can move a chat
+of the shared lane, with its unpushed work, to a computer of the other person.
+The directory carries none of it: the move goes only over the guest
+connection (the `laneShare.move` guest command) and the machines' own runtime
+actions. `POST /lane-shares/:id/move` is a different thing: it moves the
+owner's grants to another machine of the same account.
+
+- The person who must consent does it on their own machine. A consent refuses
+  by default, ends after 15 minutes, works once, and ends with a revoke, a
+  leave, the end of the share or a pause. One move at a time per share; a
+  second one gets "A move is already waiting".
+- The host binds each step to the guest's grant and lane (from its own role,
+  never from the client), to the move id and to the consent state. It sends no
+  chunk and takes no chunk without an accepted consent for that move id.
+- What moves is a fixed list of fields: the move id, chat title, lane name,
+  branch name, head commit, repository key, a model hint, the handoff brief,
+  the continuation note, the artifact summary, Linear issue references, and
+  the bundle's size, checksum and chunk count. The receiver refuses any other
+  field. No sign-in, token, credential, provider session, environment, MCP
+  configuration or secret moves.
+- The bundle goes in 384 KiB chunks, in order, with its SHA-256 checked at the
+  end, at most 50 MiB. The receiver runs `git bundle verify`, accepts only the
+  one expected ref, fetches with hooks off and no submodule fetch, and lands
+  the work in a NEW lane on a branch that did not exist there. It never
+  touches the shared lane's worktree or an existing branch.
+- The chat on the receiving computer uses only that computer's sign-ins and
+  starts in plan mode. The new lane is shared back to the other person by the
+  receiving computer's own account, with the rights its person chose.
+- When the owner starts a move, the owner's account email goes to the guest,
+  so the guest's computer can share the new lane back.
 
 ## Sign-up analytics
 
@@ -888,4 +1138,4 @@ deployment:
    `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` only for a trusted
    self-hosted override.
 
-`ONLINE_WINDOW_MS` defaults to 90 seconds and can be adjusted as a Worker var.
+`ONLINE_WINDOW_MS` defaults to 150 seconds and can be adjusted as a Worker var.

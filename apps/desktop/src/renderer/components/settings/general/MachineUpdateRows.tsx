@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowRight, CircleNotch } from "@phosphor-icons/react";
 import type { ProjectMachine } from "../../../state/projectMachines";
+import { openExternalUrl } from "../../../lib/openExternal";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "../../app/autoUpdateInstallAction";
 import { updateRestartAction } from "../../app/updateRestartAction";
@@ -12,6 +13,7 @@ import {
   requestMachineUpdates,
   useKnownAdeVersions,
   useMachineUpdates,
+  machineUpdateIsManual,
 } from "../../remoteTargets/machineUpdates";
 import {
   describeMachineUpdateAttempt,
@@ -20,6 +22,7 @@ import {
   newestKnownVersionOnTrack,
 } from "../../remoteTargets/remoteMachineModel";
 import { Banner } from "../../ui/notice";
+import { useCloudSelfUpdates } from "../../remoteTargets/useCloudSelfUpdates";
 import { useMachineFacts, type MachineFacts } from "../machines/machineFacts";
 import { useSettingsMachines } from "../machines/settingsMachinesContext";
 
@@ -29,6 +32,7 @@ import { useSettingsMachines } from "../machines/settingsMachinesContext";
  * there. This computer's row restarts into a downloaded build; another
  * machine's row sends it an update (each on its own track, never the other).
  * Replaces the separate "Update other machines" list on this page.
+ * A cloud computer updates itself, so its row shows that line instead.
  */
 export function MachineUpdateRows() {
   const { machines, thisMachineName, openMachine } = useSettingsMachines();
@@ -37,13 +41,16 @@ export function MachineUpdateRows() {
   const updates = useMachineUpdates();
   const known = useKnownAdeVersions();
   const remoteUpdates = canUpdateOtherMachines();
+  const cloud = useCloudSelfUpdates(machines.length > 0);
   const connectedBehind = machinesBehindOnTheirTrack(
     machines.flatMap((machine) => {
-      const connected = facts.get(machine.machineId)?.connected;
-      return connected && machine.online ? [connected] : [];
+      const fact = facts.get(machine.machineId);
+      const connected = fact?.connected;
+      // Cloud computers keep themselves current, so they are never in "Update all".
+      return connected && machine.online && !cloud.boxFor(fact?.colorKey ?? machine.machineId) ? [connected] : [];
     }),
     known,
-  );
+  ).filter((machine) => !machineUpdateIsManual(machine, updates.attempts[machine.id]));
   const anyBusy = connectedBehind.some((machine) => isMachineUpdateBusy(updates, machine, updates.nowMs));
 
   if (machines.length === 0) return null;
@@ -74,6 +81,7 @@ export function MachineUpdateRows() {
             fact={facts.get(machine.machineId)}
             known={known}
             remoteUpdates={remoteUpdates}
+            cloud={cloud}
             onOpen={() => openMachine(machine.machineId)}
           />
         ))}
@@ -87,6 +95,7 @@ export function SingleMachineUpdateRow({ machine, name }: { machine: ProjectMach
   const snapshot = useAutoUpdateSnapshot();
   const facts = useMachineFacts([machine], snapshot.currentVersion || null);
   const known = useKnownAdeVersions();
+  const cloud = useCloudSelfUpdates(!machine.isThisMachine);
   return (
     <MachineUpdateRow
       machine={machine}
@@ -94,6 +103,7 @@ export function SingleMachineUpdateRow({ machine, name }: { machine: ProjectMach
       fact={facts.get(machine.machineId)}
       known={known}
       remoteUpdates={canUpdateOtherMachines()}
+      cloud={cloud}
       bare
     />
   );
@@ -105,6 +115,7 @@ function MachineUpdateRow({
   fact,
   known,
   remoteUpdates,
+  cloud,
   onOpen,
   bare = false,
 }: {
@@ -113,6 +124,7 @@ function MachineUpdateRow({
   fact: MachineFacts | undefined;
   known: readonly string[];
   remoteUpdates: boolean;
+  cloud: ReturnType<typeof useCloudSelfUpdates>;
   /** Absent on the machine's own page, where the row is not a link. */
   onOpen?: () => void;
   /** Version and action only, for a row on the machine's own page. */
@@ -129,14 +141,23 @@ function MachineUpdateRow({
   let target: string | null = null;
   let action: ReactNode = null;
   let status: { ok: boolean; message: string } | null = null;
-  if (machine.isThisMachine) {
+  const cloudBox = machine.isThisMachine ? null : cloud.boxFor(fact?.colorKey ?? machine.machineId);
+  if (cloudBox) {
+    // It updates itself when idle or asleep: the line, not an Update button.
+    action = cloud.lineFor(cloudBox, name);
+    const error = cloud.errorFor(cloudBox);
+    status = error ? { ok: false, message: error.message } : null;
+  } else if (machine.isThisMachine) {
     const restartAction = updateRestartAction(snapshot);
     const ready = snapshot.status === "ready" && Boolean(snapshot.version) && snapshot.version !== snapshot.currentVersion;
     if (ready && !bare) {
       // The ADE card's head carries this computer's restart; the list says
       // where it stands rather than offering the same button twice.
       target = snapshot.version;
-      action = <span className="kit-tag" data-tone="ok">Downloaded</span>;
+      action = <span className="kit-tag" data-tone="ok">{snapshot.installMode === "manual" ? "Available" : "Downloaded"}</span>;
+    } else if (ready && snapshot.installMode === "manual") {
+      target = snapshot.version;
+      action = <button type="button" className="ade-modern-btn" data-size="sm" disabled={!snapshot.downloadUrl} onClick={() => openExternalUrl(snapshot.downloadUrl)}>Download update</button>;
     } else if (ready) {
       target = snapshot.version;
       action = (
@@ -170,7 +191,10 @@ function MachineUpdateRow({
     const updating = updates.updatingIds.has(machine.machineId) || described?.inFlight === true;
     const checking = updates.checkingIds.has(machine.machineId);
     target = updating && attempt?.pendingVersion ? attempt.pendingVersion : machineUpdateTargetVersion(connected, known);
-    if (target && remoteUpdates) {
+    if (target && machineUpdateIsManual(connected, attempt)) {
+      const url = connected.downloadUrl ?? attempt?.downloadUrl;
+      action = <button type="button" className="ade-modern-btn" data-size="sm" disabled={!url} onClick={() => openExternalUrl(url)}>Download update</button>;
+    } else if (target && remoteUpdates) {
       action = (
         <button
           type="button"

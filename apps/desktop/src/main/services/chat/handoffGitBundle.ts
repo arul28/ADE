@@ -119,7 +119,8 @@ export async function readHandoffWorkingTreeSha(args: { worktreePath: string }):
     const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: indexPath };
     if (fs.existsSync(realIndex)) fs.copyFileSync(realIndex, indexPath);
     else await gitOut(topLevel, ["read-tree", "HEAD"], env);
-    await gitOut(topLevel, ["add", "--all", "--", "."], env);
+    // A personal `core.safecrlf` must not refuse a file ADE only snapshots.
+    await gitOut(topLevel, ["-c", "core.safecrlf=false", "-c", "core.sparseCheckout=false", "add", "--all", "--", "."], env);
     return await gitOut(topLevel, ["write-tree"], env);
   } finally {
     removeTempDir(tempDir);
@@ -134,6 +135,8 @@ async function precheckUntrackedSize(cwd: string): Promise<void> {
     maxOutputBytes: 16 * 1024 * 1024,
   });
   if (listed.exitCode !== 0) return; // The real pack reports a git failure.
+  // A list too long to read back is already more than a handoff can carry.
+  if (listed.stdoutTruncated) throw new Error(HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE);
   let total = 0;
   for (const relative of listed.stdout.split("\0")) {
     if (!relative) continue;
@@ -365,8 +368,19 @@ export async function applyHandoffGitBundle(args: {
   target: HandoffGitBundleTarget;
   /** Env for `git fetch origin` (destination credentials, no prompts). */
   fetchEnv?: NodeJS.ProcessEnv;
+  /**
+   * The bundle comes from another person (a lane share move). Every git call
+   * here then runs with hooks off (an empty `core.hooksPath`, so a hook the
+   * arriving tree carries, such as `.husky/_/post-checkout`, never runs) and
+   * without submodule recursion. Only the `attach` target is allowed: the
+   * work lands in a new lane, never in an existing checkout.
+   */
+  untrusted?: boolean;
 }): Promise<void> {
   const { projectRoot, bundle } = args;
+  if (args.untrusted && args.target.kind !== "attach") {
+    throw new Error("Work from another person lands only in a new lane.");
+  }
   const branch = args.branchRef.replace(/^refs\/heads\//, "");
   const tip = bundle.branchHeadSha;
   const snapshot = bundle.snapshotSha;
@@ -380,6 +394,14 @@ export async function applyHandoffGitBundle(args: {
 
   const tempRef = `${handoffRefPrefix(args.handoffId)}/head`;
   const tempDir = makeTempDir();
+  // Untrusted: hooks point at an empty folder; no submodule is fetched or checked out.
+  let hardening: string[] = [];
+  if (args.untrusted) {
+    const noHooks = path.join(tempDir, "no-hooks");
+    fs.mkdirSync(noHooks);
+    hardening = ["-c", `core.hooksPath=${noHooks}`, "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false"];
+  }
+  const g = (gitArgs: string[]): string[] => [...hardening, ...gitArgs];
   const undo: Array<() => Promise<void>> = [];
   const ignore = async (fn: () => Promise<unknown>): Promise<void> => {
     try {
@@ -393,19 +415,19 @@ export async function applyHandoffGitBundle(args: {
     fs.writeFileSync(bundlePath, content);
 
     // The bundle builds on commits origin has; fetch them when missing here.
-    if (!(await gitOk(projectRoot, ["bundle", "verify", bundlePath]))) {
-      await runGitWithGithubAuthFallback(["fetch", "--quiet", "origin"], {
+    if (!(await gitOk(projectRoot, g(["bundle", "verify", bundlePath])))) {
+      await runGitWithGithubAuthFallback(g(["fetch", "--quiet", "--no-recurse-submodules", "origin"]), {
         cwd: projectRoot,
         timeoutMs: GIT_TIMEOUT_MS,
         ...(args.fetchEnv ? { env: args.fetchEnv } : {}),
       });
-      if (!(await gitOk(projectRoot, ["bundle", "verify", bundlePath]))) {
+      if (!(await gitOk(projectRoot, g(["bundle", "verify", bundlePath])))) {
         throw new Error(
           "This machine lacks the commits the handed-off changes build on, even after fetching origin. Push the branch on the source machine, then hand off again.",
         );
       }
     }
-    const heads = (await gitOut(projectRoot, ["bundle", "list-heads", bundlePath]))
+    const heads = (await gitOut(projectRoot, g(["bundle", "list-heads", bundlePath])))
       .split(/\r?\n/)
       .map((line) => line.trim().split(/\s+/))
       .filter((parts) => parts.length === 2 && SHA_PATTERN.test(parts[0]!));
@@ -413,8 +435,12 @@ export async function applyHandoffGitBundle(args: {
     if (heads.length !== 1 || heads[0]![0] !== expectedHead) {
       throw new Error("The handed-off changes don't match what was sent.");
     }
+    // From another person: the one head must be the handoff ref the packer writes, nothing else.
+    if (args.untrusted && !/^refs\/ade-handoff\/[0-9a-f]{32}\/head$/.test(heads[0]![1] ?? "")) {
+      throw new Error("The moved work carries a branch ADE did not expect.");
+    }
     // Deleted in `finally`, success or not.
-    await gitOut(projectRoot, ["fetch", "--quiet", "--no-tags", bundlePath, `+${heads[0]![1]}:${tempRef}`]);
+    await gitOut(projectRoot, g(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `+${heads[0]![1]}:${tempRef}`]));
     if ((await resolveCommit(projectRoot, tempRef)) !== expectedHead) {
       throw new Error("The handed-off changes don't match what was sent.");
     }
@@ -472,6 +498,10 @@ export async function applyHandoffGitBundle(args: {
     } else {
       const ref = `refs/heads/${branch}`;
       const existing = await resolveCommit(projectRoot, ref);
+      // From another person: never move a branch this machine already has.
+      if (existing && args.untrusted) {
+        throw new Error(`'${branch}' already exists on this machine. Move again to land on a new branch.`);
+      }
       if (existing) {
         const worktrees = await gitOut(projectRoot, ["worktree", "list", "--porcelain"]);
         if (worktrees.split(/\r?\n/).some((line) => line.trim() === `branch ${ref}`)) {
@@ -528,8 +558,8 @@ export async function applyHandoffGitBundle(args: {
       }
       // The working tree as it was, then the index back on the tip so every
       // change shows as uncommitted.
-      await gitOut(worktreePath, ["checkout", "--no-overlay", snapshot, "--", "."]);
-      await gitOut(worktreePath, ["reset", "--quiet", tip]);
+      await gitOut(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]));
+      await gitOut(worktreePath, g(["reset", "--quiet", tip]));
     }
     undo.length = 0;
   } catch (error) {
@@ -593,6 +623,8 @@ type LandHandoffGitBundleArgs<Lane extends HandoffBundleLane> = {
   branchRef: string;
   existingLane: Lane | null;
   fetchEnv?: NodeJS.ProcessEnv;
+  /** From another person: hooks off, new lane only (see `applyHandoffGitBundle`). */
+  untrusted?: boolean;
   importLane: (input: { branchRef: string; name: string; description: string }) => Promise<Lane>;
   deleteLane: (laneId: string) => Promise<void>;
   /**
@@ -610,6 +642,9 @@ async function landHandoffGitBundleNow<Lane extends HandoffBundleLane>(
   if (!bundle) throw new Error("The handoff carries no branch changes to land.");
   if (args.existingLane?.laneType === "primary") {
     throw new Error("Handed-off changes never land in this machine's primary checkout.");
+  }
+  if (args.untrusted && args.existingLane) {
+    throw new Error("Work from another person lands only in a new lane.");
   }
   if (args.existingLane) {
     args.onLaneImported(args.existingLane.id);
@@ -630,6 +665,7 @@ async function landHandoffGitBundleNow<Lane extends HandoffBundleLane>(
     branchRef: args.branchRef,
     bundle,
     ...(args.fetchEnv ? { fetchEnv: args.fetchEnv } : {}),
+    ...(args.untrusted ? { untrusted: true } : {}),
     target: {
       kind: "attach",
       attach: async (branch) => {

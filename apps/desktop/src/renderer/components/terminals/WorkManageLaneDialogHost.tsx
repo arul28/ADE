@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import type {
   DeleteLaneArgs,
@@ -24,6 +24,7 @@ import {
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
+import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 
 /**
  * How long a deleted lane on another machine keeps its deleting state while that
@@ -140,10 +141,24 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     }, "Archiving lane…");
   }, [lane, runLaneAction, runtimePin]);
 
+  // A lane on its own ADE Cloud computer gets the cloud delete.
+  const cloud = useCloudLaneDelete();
   const handleDelete = useCallback(() => {
     if (!lane || lane.laneType === "primary") return;
-    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
+    // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
+    if (cloud.deleteIfCloudLane({
+      pin: runtimePin,
+      laneId: lane.id,
+      laneName: lane.name,
+      machineId: runtimePin ? machineIdForBinding(runtimePin) : null,
+    })) {
+      setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+      onClose();
+      return;
+    }
 
+    // A local lane deletes only what was picked.
+    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
     const args: DeleteLaneArgs = {
       laneId: lane.id,
       force: deleteForce,
@@ -201,7 +216,13 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         if (machineId) requestCrossMachineLanesForMachine(machineId);
       },
     );
-  }, [deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
+  }, [cloud, deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
+
+  // A lane on its own ADE Cloud computer gets the cloud delete: nothing to pick, no Force gate.
+  const cloudLaneIds = useMemo(
+    () => (lane && cloud.isCloudLane(runtimePin, lane.id) ? new Set([lane.id]) : null),
+    [cloud, lane, runtimePin],
+  );
 
   if (!laneId || !lane) return null;
 
@@ -212,6 +233,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       managedLane={lane}
       allLanes={allLanes}
       runtimePin={runtimePin}
+      cloudLaneIds={cloudLaneIds}
       deleteSelection={deleteSelection}
       setDeleteSelection={setDeleteSelection}
       deleteForce={deleteForce}

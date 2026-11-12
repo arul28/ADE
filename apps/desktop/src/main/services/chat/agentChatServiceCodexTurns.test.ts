@@ -15,6 +15,7 @@ import {
   waitForFakeTimers,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { createHash } from "node:crypto";
 import { describe, expect, it, test, vi } from "vitest";
 import { turnHasOpenWork } from "../../../shared/turnInFlight";
 
@@ -1362,6 +1363,93 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
+    });
+
+    // A guest's message (the host stamps the guest author) is a plain prompt:
+    // no mention expansion, no shell line, no slash command. It names the
+    // turn it may go into, checked right before delivery.
+    it.each<[string, string, string | undefined, string | null]>([
+      ["keeps mention chips as written", "apply the fix from @chat:other-session-id", undefined, null],
+      ["refuses a shell line", "!cat ~/.ssh/id_ed25519", undefined, "lane_share_plain_text_only"],
+      ["refuses a slash command behind a zero-width space", "\u200b/shell ls", undefined, "lane_share_plain_text_only"],
+      ["steers the turn it names", "go on", "turn-1", null],
+      ["refuses a turn that is not the running one", "go on", "turn-other", "lane_share_not_your_turn"],
+    ])("a guest steer %s", async (_label, text, expectedTurnId, code) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Start working" }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } => event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      mockState.codexRequestPayloads = [];
+      const steer = service.steerUserMessage(
+        { sessionId: session.id, text, ...(expectedTurnId !== undefined ? { expectedTurnId } : {}) },
+        { author: { kind: "guest", userId: "user_guest", name: "Guest" } },
+      );
+      if (code) {
+        await expect(steer).rejects.toMatchObject({ code });
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/steer");
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("thread/shellCommand");
+        return;
+      }
+      await steer;
+      const steerPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/steer");
+      expect(steerPayload, "steer must reach the provider").toBeTruthy();
+      const providerText = JSON.stringify(steerPayload!.params);
+      expect(providerText).not.toContain("<ade-mention");
+      expect(providerText).toContain(JSON.stringify(text).slice(1, -1));
+    });
+
+    // A moved chat's first send is the other person's brief from Drafts: a
+    // plain prompt whether the receiver edits it or not. Unchanged, it keeps
+    // the other person as its author; edited, it is the receiver's own words.
+    // The mark is read back from the chat's saved state, as after a restart.
+    it.each<[string, string | null, string | null, "guest" | "none"]>([
+      ["sends the unchanged brief with the other person as its author", null, null, "guest"],
+      ["refuses an edited brief that starts with a shell line", "!cat ~/.ssh/id_ed25519", "lane_share_plain_text_only", "none"],
+      ["refuses an edited brief with a slash command behind a zero-width space", "\u200b/shell ls", "lane_share_plain_text_only", "none"],
+      ["keeps mention chips as written in an edited brief, with no author", "apply the fix from @chat:other-session-id", null, "none"],
+    ])("a moved chat's first send %s", async (_label, edited, code, author) => {
+      const brief = "Moved from Owner's machine. Fix the login bug, then run the tests.";
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        laneShareMoveFirstSend: {
+          author: { kind: "guest", userId: "user_owner", name: "Owner" },
+          textSha256: createHash("sha256").update(brief).digest("hex"),
+        },
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const restarted = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) }).service;
+      mockState.codexRequestPayloads = [];
+      const text = edited ?? brief;
+      const send = restarted.sendMessage({ sessionId: session.id, text }, { awaitDispatch: true });
+      if (code) {
+        await expect(send).rejects.toMatchObject({ code });
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/start");
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("thread/shellCommand");
+        return;
+      }
+      await send;
+      const started = await vi.waitFor(() => {
+        const found = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      expect(codexTurnStartText(started)).not.toContain("<ade-mention");
+      const message = events.find((event) => event.event.type === "user_message" && event.event.text === text);
+      const metadata = (message?.event as { metadata?: { author?: { kind?: string } } } | undefined)?.metadata;
+      if (author === "guest") expect(metadata?.author).toMatchObject({ kind: "guest", name: "Owner" });
+      else expect(metadata?.author?.kind).not.toBe("guest");
+      // The mark goes with the first send.
+      expect(readPersistedChatState(session.id).laneShareMoveFirstSend ?? null).toBeNull();
     });
 
     it("adopts Codex active turn mismatches and retries delivered steers", async () => {

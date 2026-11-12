@@ -344,11 +344,17 @@ export async function findByUserCode(env: DeviceAuthorizationEnv, userCode: stri
     .first<DeviceAuthorizationRow>();
 }
 
-async function checkDeviceRateLimit(
+/**
+ * Counts one attempt from the request's client against `scope`'s budget of
+ * `maxAttempts` a minute, and says whether it is within it. One row per
+ * client and scope in `device_approval_rate_limits`; the device sign-in uses
+ * `approval` and `issuance`, the public invite lookup `invite_lookup`.
+ */
+export async function checkDeviceRateLimit(
   request: Request,
-  env: DeviceAuthorizationEnv,
+  env: Pick<DeviceAuthorizationEnv, "DB">,
   now: number,
-  scope: "approval" | "issuance",
+  scope: string,
   maxAttempts: number,
 ): Promise<boolean> {
   const clientIdentity = request.headers.get("cf-connecting-ip")?.trim()

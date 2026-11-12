@@ -63,6 +63,7 @@ import {
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
+  type TerminalInputDedupeLedger,
 } from "./syncHostService";
 import { createSyncArtifactReads, runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -98,14 +99,23 @@ import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
-import type { AccountAuthService } from "../account/accountAuthService";
+import { requireSignedInAccountAccessToken, type AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { ProxyService } from "../proxy/proxyService";
 import {
   getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   type AccountAttestationConfig,
 } from "../account/sharedAccountAuthService";
+import { createLaneShareGrantService } from "./laneShareGrantService";
+import { createLaneShareAgentRate, createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareMoveService } from "./laneShareMoveService";
+import { createLaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { LANE_SHARE_DEFAULT_RIGHTS_KEY } from "../../../../desktop/src/shared/laneShareRights";
+import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
+import type { LaneShareHostEvent } from "./syncHostService";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
 import {
   isLoopbackShadowedError,
@@ -158,8 +168,8 @@ type SyncServiceArgs = {
   agentChatService: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  /** The `agent37` action domain (the phone's Agent 37 page); null with no project runtime yet. */
-  agent37Actions?: () => Record<string, unknown> | null;
+  /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
+  cloudActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
@@ -242,10 +252,16 @@ type SyncServiceArgs = {
     & Partial<Pick<SyncTunnelClientService, "runSelfProbe">>
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
+  onRemoteFileWrite?: () => void;
+  /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
+  onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
-  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  projectScopes?: {
+    getIfBooted(projectId: string): Promise<unknown> | null;
+    terminalInputDedupeLedger?: TerminalInputDedupeLedger;
+  };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop; the
@@ -618,6 +634,12 @@ function createInactiveTailnetDiscoveryStatus(
   };
 }
 
+/**
+ * One agent share counter for this brain process: a brain serves every open
+ * project with its own sync service, and the limit is per machine.
+ */
+const brainLaneShareAgentRate = createLaneShareAgentRate();
+
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const artifactReads = createSyncArtifactReads({
@@ -673,6 +695,82 @@ export function createSyncService(args: SyncServiceArgs) {
   });
   const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => [args.projectRoot],
+    logger: args.logger,
+  });
+  // Lane sharing: this machine's grants, read with the owner's own token. One
+  // instance per sync service, so a hosted-project switch keeps the last good
+  // list. It sends nothing until a guest connects.
+  const laneShareGrants = createLaneShareGrantService({
+    getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
+    getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
+    getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    logger: args.logger,
+  });
+  // The rights and counters of each share this machine serves: a local table
+  // of this project's database, never synced.
+  const laneShareRights = createLaneShareRightsStore({ db: args.db });
+  let laneShareRepoKey: { value: string | null } | null = null;
+  // Read once: the origin of a project does not change while it is open.
+  const readLaneShareRepoKey = (): string | null => {
+    laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
+    return laneShareRepoKey.value;
+  };
+  const laneShareService = createLaneShareHostService({
+    access: {
+      getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
+      getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
+    },
+    getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    store: laneShareRights,
+    getHost: () => hostService,
+    getRepoKey: readLaneShareRepoKey,
+    getProjectLabel: () => path.basename(args.projectRoot) || null,
+    getLaneLabel: (laneId) => args.laneService.findLaneIdentity(laneId)?.name ?? null,
+    refreshGrants: () => laneShareGrants.refresh(),
+    onEvent: (event) => args.onLaneShareEvent?.(event),
+    agentRate: brainLaneShareAgentRate,
+    readDefaultRights: () => {
+      const settings = args.accountSettingsStore;
+      if (!settings) throw new Error("Account settings are not available on this runtime.");
+      return settings.get(ACCOUNT_SCOPE_ALL, LANE_SHARE_DEFAULT_RIGHTS_KEY);
+    },
+    logger: args.logger,
+  });
+  // Moving a chat to the other person of a share (plan Part C). Uses this
+  // machine's own chats, rights and account; the guest side is reached only
+  // through the sync host's guest connection.
+  const laneShareMoves = createLaneShareMoveService({
+    chat: () => {
+      const chat = args.agentChatService;
+      if (!chat) return null;
+      return {
+        getSessionSummary: async (sessionId) => {
+          const summary = await chat.getSessionSummary(sessionId);
+          return summary ? { laneId: summary.laneId, title: summary.title ?? null, modelId: summary.modelId ?? null } : null;
+        },
+        prepareLaneShareMove: (moveArgs) => chat.prepareLaneShareMove(moveArgs),
+        checkLaneShareMoveDestination: (moveArgs) => chat.checkLaneShareMoveDestination(moveArgs),
+        acceptLaneShareMove: (moveArgs) => chat.acceptLaneShareMove(moveArgs),
+        markLaneShareMoved: (moveArgs) => chat.markLaneShareMoved(moveArgs),
+        discardLaneShareMoveLane: (laneId) => chat.discardLaneShareMoveLane(laneId),
+      };
+    },
+    rightsStore: laneShareRights,
+    // The share back and its undo run inside a move that the person who
+    // receives the work accepted in the ADE app (`moveRespond` and
+    // `moveReceiveLand` are person-only), so they act as that person.
+    share: () => ({
+      create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs, "person")).grantId }),
+      shareBackParty: (grantId) => laneShareService.shareBackParty(grantId),
+      acceptShareBack: (acceptArgs) => laneShareService.acceptShareBack(acceptArgs),
+      revoke: async (grantId) => {
+        await laneShareService.revoke({ grantId }, "person");
+      },
+    }),
+    getRepoKey: readLaneShareRepoKey,
+    getAccountEmail: () => accountAuthService.getStatus().email?.trim() || null,
+    notifyGuests: (grantId) => hostService?.notifyLaneShareGuestState(grantId),
+    onEvent: (event) => args.onLaneShareEvent?.(event),
     logger: args.logger,
   });
   const isRelayAccountSignedIn = (): boolean => {
@@ -983,7 +1081,7 @@ export function createSyncService(args: SyncServiceArgs) {
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
-    agent37Actions: args.agent37Actions,
+    cloudActions: args.cloudActions,
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
@@ -1203,7 +1301,7 @@ export function createSyncService(args: SyncServiceArgs) {
       agentChatService: args.agentChatService,
       chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
-      agent37Actions: args.agent37Actions,
+      cloudActions: args.cloudActions,
       cloudAgentsService: args.cloudAgentsService,
       aiIntegrationService: args.aiIntegrationService,
       jevService: args.jevService,
@@ -1237,6 +1335,11 @@ export function createSyncService(args: SyncServiceArgs) {
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
       pinStore,
       accountAuthService,
+      laneShareGrants,
+      laneShareRights,
+      getLaneShareRepoKey: readLaneShareRepoKey,
+      laneShareMoves,
+      onLaneShareEvent: args.onLaneShareEvent,
       getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
         getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
       runtimeNameStore,
@@ -1249,6 +1352,7 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
       projectScopes: args.projectScopes,
+      onRemoteFileWrite: args.onRemoteFileWrite,
       rosterProvider: args.rosterProvider,
       foreignChatProvider: args.foreignChatProvider,
       personalChatScope: args.personalChatScope,
@@ -2351,6 +2455,16 @@ export function createSyncService(args: SyncServiceArgs) {
       return deviceRegistryService;
     },
 
+    /** The owner's lane sharing actions for lanes on this machine (`lane_share` action domain). */
+    getLaneShareService() {
+      return laneShareService;
+    },
+
+    /** Moves of a chat to or from the other person of a share (`lane_share.move*` actions). */
+    getLaneShareMoveService() {
+      return laneShareMoves;
+    },
+
     getRegisteredPeerCount(): number | null {
       return pairingStore.countPairingRecords();
     },
@@ -2364,6 +2478,8 @@ export function createSyncService(args: SyncServiceArgs) {
       // After the host stops, so no pushed record can outlive its socket.
       macDesktopSyncStream?.dispose();
       appControlSyncStream?.dispose();
+      // Temp bundles of unfinished moves go with the runtime.
+      laneShareMoves.dispose();
       await syncPeerService.dispose();
     },
   };

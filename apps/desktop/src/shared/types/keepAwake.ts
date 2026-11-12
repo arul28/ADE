@@ -33,7 +33,7 @@ export type KeepAwakePreferences = {
   level: KeepAwakeLevel;
 };
 
-export type KeepAwakePlatform = "mac" | "windows" | "other";
+export type KeepAwakePlatform = "mac" | "windows" | "linux" | "other";
 
 /** Off. ADE never holds power awake until the user asks it to. */
 export const DEFAULT_KEEP_AWAKE_PREFERENCES: KeepAwakePreferences = {

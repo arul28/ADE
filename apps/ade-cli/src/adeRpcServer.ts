@@ -6,8 +6,10 @@ import {
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
+import { CHAT_HAS_NO_PROOF_YET } from "../../desktop/src/shared/proofProvenance";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
+import { cloudDomainEnabled } from "../../desktop/src/shared/adeCloud";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import { localLinkOwnership } from "./services/projects/localLinkOwnership";
 import { reviewProofFile, type ProofReviewWindow } from "../../desktop/src/main/services/demoVideo/proofReview";
@@ -15,6 +17,7 @@ import { SHEET_MAX_FRAMES } from "../../desktop/src/main/services/demoVideo/shee
 import { resolveStoredProofFile } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { LANE_SHARE_DEFAULT_RIGHTS_KEY, LANE_SHARE_PERSON_ONLY_MESSAGE } from "../../desktop/src/shared/laneShareRights";
 import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
@@ -96,6 +99,7 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import { thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../../desktop/src/shared/adeActionAccess";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
 import {
   SCENE_PREVIEW_MAX_SOURCE_BYTES,
@@ -176,6 +180,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { assertActionModelNames, assertFullModelName, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -192,6 +197,7 @@ import {
   isDesktopClientName,
 } from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { isRunningRemoteRun } from "./services/remoteMcp/remoteMcpRunner";
 import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_CAPTURE_ACTIONS,
@@ -372,6 +378,15 @@ function isUserClientSession(session: SessionState): boolean {
  */
 function mayUseUserOnlyActions(session: SessionState): boolean {
   return isUserClientSession(session) && isDesktopClientName(session.clientName);
+}
+
+/**
+ * Whether a caller may use a this-desktop-only action (`thisDesktopOnlyRefusal`):
+ * only the desktop app of this computer, never a desktop that drives this
+ * computer from another one (`ade-desktop-remote`).
+ */
+function mayUseThisDesktopOnlyActions(session: SessionState): boolean {
+  return isUserClientSession(session) && session.clientName === DESKTOP_CLIENT_NAMES.local;
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -856,6 +871,9 @@ const TOOL_SPECS: ToolSpec[] = [
         from: { type: "number", minimum: 0 },
         to: { type: "number", minimum: 0 },
         frames: { type: "integer", minimum: 1, maximum: SHEET_MAX_FRAMES },
+        page: { type: "integer", minimum: 1 },
+        yFrom: { type: "integer", minimum: 0 },
+        yTo: { type: "integer", minimum: 1 },
       }
     }
   },
@@ -1783,6 +1801,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** The model names the rule an `automations.saveRule` edit replaces already holds. */
+function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+  const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
+  if (!id || typeof service.get !== "function") return new Set();
+  try {
+    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+  } catch (error) {
+    // The save itself reports a missing or unreadable rule; without the saved
+    // names an unchanged old name is refused, which the caller can correct.
+    captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
+    return new Set();
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1899,7 +1932,22 @@ function proofReviewWindow(toolArgs: Record<string, unknown>): ProofReviewWindow
   if (frames != null && (typeof frames !== "number" || !Number.isInteger(frames) || frames < 1 || frames > SHEET_MAX_FRAMES)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`frames\` is a whole number from 1 to ${SHEET_MAX_FRAMES}.`);
   }
-  return { from, to, frames: typeof frames === "number" ? frames : null };
+  const pixel = (key: "page" | "yFrom" | "yTo", minimum: number): number | null => {
+    const value = toolArgs[key];
+    if (value == null) return null;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`${key}\` is a whole number, ${minimum} or more.`);
+    }
+    return value;
+  };
+  return {
+    from,
+    to,
+    frames: typeof frames === "number" ? frames : null,
+    page: pixel("page", 1),
+    yFrom: pixel("yFrom", 0),
+    yTo: pixel("yTo", 1),
+  };
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -2489,7 +2537,9 @@ function emptyLinearQuickView(connection: LinearConnectionStatus): CtoLinearQuic
 }
 
 async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
-  await runtime.laneService.ensurePrimaryLane().catch(() => {});
+  await runtime.laneService.ensurePrimaryLane().catch((err) => {
+    console.warn(`[adeRpcServer] ensurePrimaryLane failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
   // Every CTO operator action (chat status, list, transcript, create, send)
   // asks this. The primary lane's row answers it; a lane list also runs git
   // and the worktree reconcile, about 80 ms per call on Windows, so it is
@@ -3866,12 +3916,19 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
 };
 
 /**
- * The `agent37` actions that spend money or delete something. The RPC server
+ * The `cloud` actions that spend money or delete something. The RPC server
  * stamps who is asking on them (see runTool), and each asks for approval
  * unless a person's own client is asking.
  */
-const AGENT37_APPROVED_ACTIONS = new Set([
-  "create", "resize", "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_retry", "set_limits",
+const CLOUD_APPROVED_ACTIONS = new Set([
+  "create", "resize", "update", "copy", "move", "delete", "set_limits",
+  "lane_launch", "lane_launch_cancel",
+  // Clears a computer's caches: the person's dashboard, or an agent that asks with a card.
+  "clear_caches",
+  // The card goes to the stamped chat, never one the caller names.
+  "tier_request",
+  // A launch's approval link and starting chat go only to who started it.
+  "lane_launch_status",
 ]);
 
 /**
@@ -4359,6 +4416,8 @@ function scopeWorkToolsAdeActionArgs(
       laneId: resolveChatSessionLaneId(runtime, session) ?? null,
     };
   }
+  // The desktop's once-a-minute "still watching" for a cloud computer; carries no lane.
+  if (action === "noteWatching") return workToolsArgs;
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -5842,6 +5901,13 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
   return callerCtx.role === "cto" || callerCtx.role === "agent";
 }
 
+/** The account's ADE Cloud answer, or false when it can't be read. Cached for 10 minutes behind it. */
+function cloudActionsEnabled(runtime: AdeRuntime, services: ReturnType<typeof getAdeActionDomainServices>): Promise<boolean> {
+  return cloudDomainEnabled(services.cloud, (error) => {
+    runtime.logger.warn("cloud.domain_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+}
+
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
@@ -6349,7 +6415,9 @@ async function runTool(args: {
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
-    const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
+    const cloudHidden = domains.includes("cloud") && !(await cloudActionsEnabled(runtime, services));
+    const exposedDomains = domains.filter((entry) =>
+      !DISABLED_ADE_ACTION_DOMAINS.has(entry) && !(cloudHidden && entry === "cloud"));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
     const remoteBrainCaller = isRemoteBrainCallerClientName(session.clientName);
@@ -6359,6 +6427,7 @@ async function runTool(args: {
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
+        .filter((action) => !thisDesktopOnlyRefusal(entry, action) || mayUseThisDesktopOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .filter((action) => !remoteBrainCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
@@ -6388,7 +6457,8 @@ async function runTool(args: {
     }
     const services = getAdeActionDomainServices(runtime);
     const service = services[domain];
-    if (!service) {
+    // No ADE Cloud for this account: the domain answers as if it weren't here.
+    if (!service || (domain === "cloud" && !(await cloudActionsEnabled(runtime, services)))) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
     }
     let callable = service[action];
@@ -6425,6 +6495,15 @@ async function runTool(args: {
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
+    // A name typed now must be a full model name. The desktop app is left out:
+    // it sends names from its own picker, or saved ones (a preset, a rule, a
+    // last-used model) that may predate this rule and must keep working.
+    if (!mayUseUserOnlyActions(session)) {
+      // The input the action receives: the first positional argument, a scalar
+      // `arg` (an object there reaches the action too), or `args`.
+      const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
+      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
+    }
     if (
       domain === "cto_state"
       && action === "updateIdentity"
@@ -6437,6 +6516,18 @@ async function runTool(args: {
         JsonRpcErrorCode.policyDenied,
         "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
       );
+    }
+    if (
+      domain === "account_settings"
+      && (action === "set" || action === "remove")
+      && typeof argsList?.[1] === "string"
+      && argsList[1].trim() === LANE_SHARE_DEFAULT_RIGHTS_KEY
+      && !mayUseUserOnlyActions(session)
+    ) {
+      // The start rights of every new lane share (Settings › Sharing) are the
+      // person's: an agent that raised them would widen the next share a
+      // person makes without looking.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, LANE_SHARE_PERSON_ONLY_MESSAGE);
     }
     if (domain === "project_config" && action === "save" && !userAtControls) {
       // An agent may change the setup of the work (tests, automations, lane
@@ -6524,6 +6615,11 @@ async function runTool(args: {
         `run_ade_action:${domain}.${action}`,
       );
     }
+    const thisDesktopOnly = thisDesktopOnlyRefusalFor(domain, action, argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args);
+    if (thisDesktopOnly && !mayUseThisDesktopOnlyActions(session)) {
+      // It acts on this computer's screen (a macOS prompt): never for a desktop on another computer.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, thisDesktopOnly);
+    }
     if (
       domain === "chat"
       && (action === "respondToInput" || action === "approveToolUse")
@@ -6601,9 +6697,9 @@ async function runTool(args: {
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
     }
-    if (domain === "agent37" && AGENT37_APPROVED_ACTIONS.has(action)) {
+    if (domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) {
       if (argsList || hasScalarArg) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `agent37.${action} requires object arguments.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `cloud.${action} requires object arguments.`);
       }
       // Who may say yes to spending or deleting: a person's own client (the
       // desktop, the CTO thread) already decided; anyone else is an agent and
@@ -6612,16 +6708,35 @@ async function runTool(args: {
       // (the same rule as answering a card, above).
       const callerIsPerson = mayUseUserOnlyActions(session)
         || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
-      const { approval: _ignoredApproval, ...agent37Args } = rawObjectArgs;
+      // An outside app on an ADE MCP connection with write access (the runner
+      // gives it the operator role) has no chat: it is an unattended agent,
+      // held to the agent limits. Read only runs as `agent` and stays a
+      // chatless agent, which is refused. The connection id is only an
+      // environment claim, so the caller's process must also be one the
+      // runner started and still runs; otherwise it stays a chatless agent.
+      // A caller with a chat is that chat's agent, asked in its chat: it never
+      // takes the unattended ADE MCP path. The run, and the connection it was
+      // started for, are this brain's own records.
+      const stampedChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId)
+        ?? null;
+      const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
+      const claimedConnection = asOptionalTrimmedString(session.identity.remoteMcpConnectionId);
+      const viaAdeMcp = !stampedChatSessionId
+        && Boolean(claimedConnection)
+        && callerHasRoleAtLeast(session.identity.role, "cto")
+        && isSyntheticCallerId(session.identity.callerId)
+        && Number.isInteger(callerPid)
+        && isRunningRemoteRun(callerPid, claimedConnection);
+      const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
-        ...agent37Args,
+        ...cloudArgs,
         approval: callerIsPerson
           ? { by: "person" }
           : {
               by: "agent",
-              chatSessionId: asOptionalTrimmedString(callerCtx.chatSessionId)
-                ?? asOptionalTrimmedString(session.identity.chatSessionId)
-                ?? null,
+              chatSessionId: stampedChatSessionId,
+              ...(viaAdeMcp ? { viaAdeMcp: true } : {}),
             },
       };
     }
@@ -7123,6 +7238,28 @@ async function runTool(args: {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
     }
+    if (domain === "lane_share") {
+      // Only the runtime says who calls (`laneShareCallerOf` in the action
+      // registry): a person at the desktop, by the same test as user-only
+      // actions, or an agent (the `ade` CLI, an agent's shell, ADE MCP,
+      // another machine's brain). Any value the caller sent is dropped.
+      // Positional arguments would skip the stamp, so the domain takes one
+      // object argument from every caller.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `lane_share.${action} takes one object argument.`);
+      }
+      // A read-only ADE MCP connection runs the CLI as role agent, full
+      // access as cto (remoteMcpRunner). The command policy refuses its
+      // writes first; this holds even if a flag gets past that parse.
+      if (session.identity.remoteMcpConnectionId && session.identity.role !== "cto" && action !== "list") {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "This ADE MCP connection is read-only, so it can list a lane's shares but not make or stop one. Ask the person for full access in ADE Settings → ADE MCP.",
+        );
+      }
+      const { callerClass: _callerSent, ...shareArgs } = scopedObjectArgs;
+      scopedObjectArgs = { ...shareArgs, callerClass: mayUseUserOnlyActions(session) ? "person" : "agent" };
+    }
     if (domain === "chat" && RUNTIME_ACTOR_CHAT_ACTIONS.has(action)) {
       // Only the runtime says who is calling (`AgentChatRuntimeActor`): any
       // value the caller sent is dropped. An agent's create, update or fork is
@@ -7398,6 +7535,7 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
+    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
@@ -7413,7 +7551,12 @@ async function runTool(args: {
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
-    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId);
+    // A named account wins; otherwise a new CLI session starts where a new
+    // chat would. A preset or a stored key brings its own sign-in.
+    const pickedInstanceId = !instanceId && !presetId && !credentialId && provider !== "shell"
+      ? runtime.agentChatService?.pickNewCliSessionAccount(provider, model ?? null) ?? null
+      : null;
+    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId || pickedInstanceId);
     await prepareHarnessLaunch({ provider, presetId, credentialId });
     const trackedPreset = resolveTrackedCliPreset(provider, { presetId, credentialId });
     const userMcp = await resolveTrackedCliUserMcp({
@@ -8490,7 +8633,7 @@ async function runTool(args: {
       const chatProof = listChatProof();
       artifact = reviewable("video_recording") ?? reviewable("screenshot");
       if (!artifact) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} has no video or picture to review yet. Wait for it to finish (chat wait), or ask it to record one.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} ${CHAT_HAS_NO_PROOF_YET}. Wait for it to finish (chat wait), or ask it to record one.`);
       }
       const shown = artifact.id;
       otherProof = chatProof
@@ -9141,6 +9284,7 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
+    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
     const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
     const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
     const permissionMode = spawnCeiling
@@ -9223,8 +9367,9 @@ async function runTool(args: {
         commandArgs.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
         commandPreviewParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
       } else {
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
+        // The CLI flag refuses `untrusted` and exits (see `codexApprovalPolicy.ts`).
+        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
       }
     } else {
       let claudePermission: string;
@@ -9923,7 +10068,14 @@ export function createAdeRpcRequestHandler(args: {
     }
 
     if (method === "exit") {
-      process.nextTick(() => process.exit(0));
+      process.nextTick(() => {
+        try {
+          handler.dispose();
+        } catch {
+          // Best-effort cleanup before exit.
+        }
+        process.exit(0);
+      });
       return {};
     }
 

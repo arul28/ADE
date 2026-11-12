@@ -1048,6 +1048,14 @@ can be sensitive.
   `work.startCliSession`, `work.sendToSession`, and `work.stopRuntime`. The controller
   invokes the command, then sends `terminal_subscribe` with the
   returned session id to stream output and enable input/resize control.
+  A host that advertises `features.rosterTerminal` also streams a terminal of
+  any other open project when the envelope `projectId` names that project
+  (`apps/ade-cli/src/services/sync/syncTerminalStreams.ts`, shared by the
+  project host and the brain ingress). This is how the phone opens a terminal
+  on a machine it is not focused on.
+  The brain and its project hosts share one terminal input ledger, so input
+  that a phone resends after it reconnects to the other ingress is a
+  duplicate, not a second keystroke.
 - **Chat sub-protocol** pairs with `chat.create` / `chat.send` +
   `chat_subscribe`. Same pattern: create / send the message through
   a command, subscribe to the transcript stream for incremental

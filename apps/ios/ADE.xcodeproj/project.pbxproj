@@ -52,6 +52,7 @@
 		E20000000000000000000F31 /* SettingsMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F31 /* SettingsMachines.swift */; };
 		E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */; };
 		E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */; };
+		E5C0000000000000000C5001 /* SettingsProviderSignIns.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */; };
 		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
 		E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */; };
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
@@ -159,8 +160,15 @@
 		B90000000000000000000002 /* SyncTransportSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* SyncTransportSelectionTests.swift */; };
 		B80000000000000000000002 /* SyncConnectionRace.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* SyncConnectionRace.swift */; };
 		B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000007 /* SyncService+MachineWake.swift */; };
-		A37A0000000000000000B001 /* SyncService+Agent37.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A001 /* SyncService+Agent37.swift */; };
-		A37A0000000000000000B002 /* Agent37PaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A002 /* Agent37PaneSheet.swift */; };
+		A37A0000000000000000B001 /* SyncService+Cloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A001 /* SyncService+Cloud.swift */; };
+		A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A002 /* CloudPaneSheet.swift */; };
+		A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A0F1 /* CloudPreviews.swift */; };
+		C10D000000000000000B0001 /* CloudDashboardCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0001 /* CloudDashboardCards.swift */; };
+		C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0002 /* CloudMachineScreen.swift */; };
+		C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0003 /* CloudLimitsScreen.swift */; };
+		C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0004 /* CloudPhoneFormat.swift */; };
+		C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0005 /* CloudSignInsCard.swift */; };
+		C10D000000000000000B0006 /* ProviderLoginsPhoneStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */; };
 		B80000000000000000000006 /* SyncMachineWake.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000005 /* SyncMachineWake.swift */; };
 		B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* SyncTerminalInputQueue.swift */; };
 		A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11700000000000000000001 /* MobileUsageQuotaStore.swift */; };
@@ -183,6 +191,7 @@
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */; };
 		E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */; };
+		E5C0000000000000000C5002 /* WorkProviderSignInSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
 		E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */; };
 		F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */; };
@@ -290,6 +299,7 @@
 		AC8100000000000000000002 /* ProjectHostRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */; };
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
 		5E77000000000000000B0009 /* HubHeaderRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0009 /* HubHeaderRow.swift */; };
+		5E77000000000000000B000A /* HubStatusBand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A000A /* HubStatusBand.swift */; };
 		E20000000000000000000054 /* HubActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000054 /* HubActivityState.swift */; };
 		E20000000000000000000055 /* HubRosterFilterBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000055 /* HubRosterFilterBar.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
@@ -377,6 +387,7 @@
 		5E77000000000000000B0001 /* SettingsRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0001 /* SettingsRoute.swift */; };
 		5E77000000000000000B0002 /* SettingsGeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0002 /* SettingsGeneralPage.swift */; };
 		5E77000000000000000B0003 /* SettingsChatPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0003 /* SettingsChatPage.swift */; };
+		E2000000000000000000DE06 /* SettingsAccountPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE06 /* SettingsAccountPage.swift */; };
 		5E77000000000000000B0004 /* SettingsProvidersPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0004 /* SettingsProvidersPage.swift */; };
 		5E77000000000000000B0005 /* SettingsIntegrationsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */; };
 		5E77000000000000000B0006 /* SettingsLanesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0006 /* SettingsLanesPage.swift */; };
@@ -403,6 +414,7 @@
 		B10000000000000000000017 /* LaneTreeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeRow.swift */; };
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
+		E20000000000000000000F2D /* LaneRecentlyDeleted.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F2D /* LaneRecentlyDeleted.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B1000000000000000000001A /* ADEHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* ADEHaptics.swift */; };
 		B1000000000000000000001B /* LaneConnectionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001B /* LaneConnectionPresentation.swift */; };
@@ -471,6 +483,8 @@
 		C5B00000000000000000000D /* SSHPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000D /* SSHPairingView.swift */; };
 		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
 		E20000000000000000000F01 /* MachineConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F01 /* MachineConnection.swift */; };
+		E2000000000000000000DE05 /* MachineConnection+Terminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE05 /* MachineConnection+Terminal.swift */; };
+		E2000000000000000000DE04 /* TerminalStreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE04 /* TerminalStreamClient.swift */; };
 		E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F07 /* SyncService+Fleet.swift */; };
 		E20000000000000000000F7A /* SyncService+Artifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F7A /* SyncService+Artifacts.swift */; };
 		7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */; };
@@ -562,6 +576,7 @@
 		D20000000000000000000F31 /* SettingsMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachines.swift; path = ADE/Views/Settings/SettingsMachines.swift; sourceTree = "<group>"; };
 		D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountsPreviews.swift; path = ADE/Views/Settings/SettingsProviderAccountsPreviews.swift; sourceTree = "<group>"; };
 		D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSignIn.swift; path = ADE/Views/Settings/SettingsProviderAccountSignIn.swift; sourceTree = "<group>"; };
+		D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderSignIns.swift; path = ADE/Views/Settings/SettingsProviderSignIns.swift; sourceTree = "<group>"; };
 		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
 		D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSettings.swift; path = ADE/Views/Settings/SettingsProviderAccountSettings.swift; sourceTree = "<group>"; };
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
@@ -651,6 +666,7 @@
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAccountNote.swift; path = ADE/Views/Work/WorkChatAccountNote.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignIn.swift; path = ADE/Views/Work/WorkProviderSignIn.swift; sourceTree = "<group>"; };
+		D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignInSteps.swift; path = ADE/Views/Work/WorkProviderSignInSteps.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
 		D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTurnWorkDisclosure.swift; path = ADE/Views/Work/WorkTurnWorkDisclosure.swift; sourceTree = "<group>"; };
 		F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteToolResultAffordance.swift; path = ADE/Views/Work/WorkRemoteToolResultAffordance.swift; sourceTree = "<group>"; };
@@ -789,6 +805,7 @@
 		AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectHostRecoveryTests.swift; path = ADETests/ProjectHostRecoveryTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0009 /* HubHeaderRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubHeaderRow.swift; path = ADE/Views/Hub/HubHeaderRow.swift; sourceTree = "<group>"; };
+		5E77000000000000000A000A /* HubStatusBand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubStatusBand.swift; path = ADE/Views/Hub/HubStatusBand.swift; sourceTree = "<group>"; };
 		D20000000000000000000054 /* HubActivityState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubActivityState.swift; path = ADE/Views/Hub/HubActivityState.swift; sourceTree = "<group>"; };
 		D20000000000000000000055 /* HubRosterFilterBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubRosterFilterBar.swift; path = ADE/Views/Hub/HubRosterFilterBar.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
@@ -861,8 +878,15 @@
 		B90000000000000000000001 /* SyncTransportSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTransportSelectionTests.swift; path = ADETests/SyncTransportSelectionTests.swift; sourceTree = "<group>"; };
 		B80000000000000000000001 /* SyncConnectionRace.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncConnectionRace.swift; path = ADE/Services/SyncConnectionRace.swift; sourceTree = "<group>"; };
 		B80000000000000000000007 /* SyncService+MachineWake.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+MachineWake.swift"; path = "ADE/Services/SyncService+MachineWake.swift"; sourceTree = "<group>"; };
-		A37A0000000000000000A001 /* SyncService+Agent37.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Agent37.swift"; path = "ADE/Services/SyncService+Agent37.swift"; sourceTree = "<group>"; };
-		A37A0000000000000000A002 /* Agent37PaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Agent37PaneSheet.swift; path = ADE/Views/Agent37/Agent37PaneSheet.swift; sourceTree = "<group>"; };
+		A37A0000000000000000A001 /* SyncService+Cloud.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Cloud.swift"; path = "ADE/Services/SyncService+Cloud.swift"; sourceTree = "<group>"; };
+		A37A0000000000000000A002 /* CloudPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPaneSheet.swift; path = ADE/Views/Cloud/CloudPaneSheet.swift; sourceTree = "<group>"; };
+		A37A0000000000000000A0F1 /* CloudPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPreviews.swift; path = ADE/Views/Cloud/CloudPreviews.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0001 /* CloudDashboardCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudDashboardCards.swift; path = ADE/Views/Cloud/CloudDashboardCards.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0002 /* CloudMachineScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudMachineScreen.swift; path = ADE/Views/Cloud/CloudMachineScreen.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0003 /* CloudLimitsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudLimitsScreen.swift; path = ADE/Views/Cloud/CloudLimitsScreen.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0004 /* CloudPhoneFormat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPhoneFormat.swift; path = ADE/Views/Cloud/CloudPhoneFormat.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0005 /* CloudSignInsCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSignInsCard.swift; path = ADE/Views/Cloud/CloudSignInsCard.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderLoginsPhoneStatus.swift; path = ADE/Services/ProviderLoginsPhoneStatus.swift; sourceTree = "<group>"; };
 		B80000000000000000000005 /* SyncMachineWake.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncMachineWake.swift"; path = "ADE/Services/SyncMachineWake.swift"; sourceTree = "<group>"; };
 		B80000000000000000000003 /* SyncTerminalInputQueue.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTerminalInputQueue.swift; path = ADE/Services/SyncTerminalInputQueue.swift; sourceTree = "<group>"; };
 		A11700000000000000000001 /* MobileUsageQuotaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileUsageQuotaStore.swift; path = ADE/Services/MobileUsageQuotaStore.swift; sourceTree = "<group>"; };
@@ -907,6 +931,7 @@
 		5E77000000000000000A0001 /* SettingsRoute.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsRoute.swift; path = ADE/Views/Settings/SettingsRoute.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0002 /* SettingsGeneralPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsGeneralPage.swift; path = ADE/Views/Settings/SettingsGeneralPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0003 /* SettingsChatPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsChatPage.swift; path = ADE/Views/Settings/SettingsChatPage.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE06 /* SettingsAccountPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAccountPage.swift; path = ADE/Views/Settings/SettingsAccountPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0004 /* SettingsProvidersPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProvidersPage.swift; path = ADE/Views/Settings/SettingsProvidersPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsIntegrationsPage.swift; path = ADE/Views/Settings/SettingsIntegrationsPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0006 /* SettingsLanesPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsLanesPage.swift; path = ADE/Views/Settings/SettingsLanesPage.swift; sourceTree = "<group>"; };
@@ -933,6 +958,7 @@
 		A10000000000000000000017 /* LaneTreeRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeRow.swift; path = ADE/Views/Lanes/LaneTreeRow.swift; sourceTree = "<group>"; };
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
+		D20000000000000000000F2D /* LaneRecentlyDeleted.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRecentlyDeleted.swift; path = ADE/Views/Lanes/LaneRecentlyDeleted.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A1000000000000000000001A /* ADEHaptics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEHaptics.swift; path = ADE/Views/Components/ADEHaptics.swift; sourceTree = "<group>"; };
 		A1000000000000000000001B /* LaneConnectionPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneConnectionPresentation.swift; path = ADE/Views/Lanes/LaneConnectionPresentation.swift; sourceTree = "<group>"; };
@@ -979,6 +1005,8 @@
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000F01 /* MachineConnection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineConnection.swift; path = ADE/Services/MachineConnection.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE05 /* MachineConnection+Terminal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "MachineConnection+Terminal.swift"; path = "ADE/Services/MachineConnection+Terminal.swift"; sourceTree = "<group>"; };
+		D2000000000000000000DE04 /* TerminalStreamClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TerminalStreamClient.swift; path = ADE/Services/TerminalStreamClient.swift; sourceTree = "<group>"; };
 		D20000000000000000000F07 /* SyncService+Fleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Fleet.swift"; path = "ADE/Services/SyncService+Fleet.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F7A /* SyncService+Artifacts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Artifacts.swift"; path = "ADE/Services/SyncService+Artifacts.swift"; sourceTree = "<group>"; };
 		7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ThreadComments.swift"; path = "ADE/Services/SyncService+ThreadComments.swift"; sourceTree = "<group>"; };
@@ -1066,12 +1094,18 @@
 			name = Duo;
 			sourceTree = "<group>";
 		};
-		A37A0000000000000000C001 /* Agent37 */ = {
+		A37A0000000000000000C001 /* Cloud */ = {
 			isa = PBXGroup;
 			children = (
-				A37A0000000000000000A002 /* Agent37PaneSheet.swift */,
+				A37A0000000000000000A002 /* CloudPaneSheet.swift */,
+				A37A0000000000000000A0F1 /* CloudPreviews.swift */,
+				C10D000000000000000A0001 /* CloudDashboardCards.swift */,
+				C10D000000000000000A0002 /* CloudMachineScreen.swift */,
+				C10D000000000000000A0003 /* CloudLimitsScreen.swift */,
+				C10D000000000000000A0004 /* CloudPhoneFormat.swift */,
+				C10D000000000000000A0005 /* CloudSignInsCard.swift */,
 			);
-			name = Agent37;
+			name = Cloud;
 			sourceTree = "<group>";
 		};
 		D2A00000000000000000CA /* CursorCloud */ = {
@@ -1160,6 +1194,7 @@
 				A10000000000000000000017 /* LaneTreeRow.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
 				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
+				D20000000000000000000F2D /* LaneRecentlyDeleted.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
 				A10000000000000000000107 /* LaneEnvInitProgressView.swift */,
 				A10000000000000000000109 /* LaneBranchPickerSheet.swift */,
@@ -1180,7 +1215,7 @@
 				H10000000000000000000020 /* Cto */,
 				D2000000000000000000009F /* Linear */,
 				D2A00000000000000000CA /* CursorCloud */,
-				A37A0000000000000000C001 /* Agent37 */,
+				A37A0000000000000000C001 /* Cloud */,
 				D2A00000000000000000DA /* GitHubIssues */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
@@ -1201,6 +1236,7 @@
 				AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
 				5E77000000000000000A0009 /* HubHeaderRow.swift */,
+				5E77000000000000000A000A /* HubStatusBand.swift */,
 				D20000000000000000000054 /* HubActivityState.swift */,
 				D20000000000000000000055 /* HubRosterFilterBar.swift */,
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
@@ -1371,6 +1407,7 @@
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */,
 				D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */,
+				D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */,
 				F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */,
@@ -1459,6 +1496,7 @@
 				D20000000000000000000F31 /* SettingsMachines.swift */,
 				D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */,
 				D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */,
+				D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */,
 				D2000000000000000000A610 /* SettingsProviderAccounts.swift */,
 				D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */,
 				D2000000000000000000A600 /* ProviderAccountsStore.swift */,
@@ -1473,6 +1511,7 @@
 				5E77000000000000000A0001 /* SettingsRoute.swift */,
 				5E77000000000000000A0002 /* SettingsGeneralPage.swift */,
 				5E77000000000000000A0003 /* SettingsChatPage.swift */,
+				D2000000000000000000DE06 /* SettingsAccountPage.swift */,
 				5E77000000000000000A0004 /* SettingsProvidersPage.swift */,
 				5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */,
 				5E77000000000000000A0006 /* SettingsLanesPage.swift */,
@@ -1503,6 +1542,8 @@
 				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
+				D2000000000000000000DE05 /* MachineConnection+Terminal.swift */,
+				D2000000000000000000DE04 /* TerminalStreamClient.swift */,
 				D20000000000000000000F07 /* SyncService+Fleet.swift */,
 				D20000000000000000000F7A /* SyncService+Artifacts.swift */,
 				7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */,
@@ -1515,7 +1556,8 @@
 				B7000000000000000000009E /* PendingAttentionClearStates.swift */,
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
-				A37A0000000000000000A001 /* SyncService+Agent37.swift */,
+				A37A0000000000000000A001 /* SyncService+Cloud.swift */,
+				C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */,
 				5E77000000000000000A0007 /* SyncService+SettingsPages.swift */,
 				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
 				CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */,
@@ -2151,6 +2193,8 @@
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
 				E20000000000000000000F02 /* MachineFleet.swift in Sources */,
 				E20000000000000000000F01 /* MachineConnection.swift in Sources */,
+				E2000000000000000000DE05 /* MachineConnection+Terminal.swift in Sources */,
+				E2000000000000000000DE04 /* TerminalStreamClient.swift in Sources */,
 				E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */,
 				E20000000000000000000F7A /* SyncService+Artifacts.swift in Sources */,
 				7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */,
@@ -2178,8 +2222,15 @@
 				B7000000000000000000009F /* PendingAttentionClearStates.swift in Sources */,
 				B80000000000000000000002 /* SyncConnectionRace.swift in Sources */,
 				B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */,
-				A37A0000000000000000B001 /* SyncService+Agent37.swift in Sources */,
-				A37A0000000000000000B002 /* Agent37PaneSheet.swift in Sources */,
+				A37A0000000000000000B001 /* SyncService+Cloud.swift in Sources */,
+				A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */,
+				A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */,
+				C10D000000000000000B0001 /* CloudDashboardCards.swift in Sources */,
+				C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */,
+				C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */,
+				C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */,
+				C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */,
+				C10D000000000000000B0006 /* ProviderLoginsPhoneStatus.swift in Sources */,
 				CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */,
 				CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */,
 				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
@@ -2208,6 +2259,7 @@
 				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				5E77000000000000000B0009 /* HubHeaderRow.swift in Sources */,
+				5E77000000000000000B000A /* HubStatusBand.swift in Sources */,
 				E20000000000000000000054 /* HubActivityState.swift in Sources */,
 				E20000000000000000000055 /* HubRosterFilterBar.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
@@ -2241,6 +2293,7 @@
 				E20000000000000000000F31 /* SettingsMachines.swift in Sources */,
 				E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */,
 				E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */,
+				E5C0000000000000000C5001 /* SettingsProviderSignIns.swift in Sources */,
 				E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */,
 				E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */,
 				E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */,
@@ -2266,6 +2319,7 @@
 				5E77000000000000000B0001 /* SettingsRoute.swift in Sources */,
 				5E77000000000000000B0002 /* SettingsGeneralPage.swift in Sources */,
 				5E77000000000000000B0003 /* SettingsChatPage.swift in Sources */,
+				E2000000000000000000DE06 /* SettingsAccountPage.swift in Sources */,
 				5E77000000000000000B0004 /* SettingsProvidersPage.swift in Sources */,
 				5E77000000000000000B0005 /* SettingsIntegrationsPage.swift in Sources */,
 				5E77000000000000000B0006 /* SettingsLanesPage.swift in Sources */,
@@ -2293,6 +2347,7 @@
 				B10000000000000000000017 /* LaneTreeRow.swift in Sources */,
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
 				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
+				E20000000000000000000F2D /* LaneRecentlyDeleted.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,
 				E20000000000000000000F30 /* ADEFlat.swift in Sources */,
@@ -2370,6 +2425,7 @@
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */,
 				E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */,
+				E5C0000000000000000C5002 /* WorkProviderSignInSteps.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */,
 				F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */,

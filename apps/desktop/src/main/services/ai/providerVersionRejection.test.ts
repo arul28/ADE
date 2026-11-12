@@ -109,6 +109,7 @@ describe("detectCodexVersionRejection*", () => {
     ["app-server error notification", () => detectCodexVersionRejection({ message: CODEX_FLOOR_TEXT, requestedModel: "gpt-5.6-sol" })],
     ["wrapped backend body (bad request)", () => detectCodexVersionRejection({ message: `unexpected status 400 Bad Request: {"detail":"${CODEX_FLOOR_TEXT}"}`, errorInfo: "badRequest" })],
     ["remote compact task error", () => detectCodexVersionRejection({ message: `Error running remote compact task: {"detail":"${CODEX_FLOOR_TEXT}"}`, errorInfo: { other: null } })],
+    ["model-not-found kind", () => detectCodexVersionRejection({ message: CODEX_FLOOR_TEXT, errorInfo: "modelNotFound" })],
     ["sentence in additionalDetails", () => detectCodexVersionRejection({ message: "Request failed", detail: CODEX_FLOOR_TEXT })],
     ["one-shot exec, exit 1", () => detectCodexVersionRejectionInOutput({ exitCode: 1, stderr: `ERROR: ${CODEX_FLOOR_TEXT}`, requestedModel: "gpt-5.6-sol" })],
     ["exec --json turn.failed", () => detectCodexVersionRejectionInExecEvents(`{"type":"turn.started"}\n{"type":"turn.failed","error":{"message":${JSON.stringify(CODEX_FLOOR_TEXT)}}}`)],

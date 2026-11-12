@@ -5,15 +5,10 @@ import { revealLabel } from "../../../../lib/platform";
 import { isWebClientMode } from "../../../../lib/webClientMode";
 import { playableVideoMime } from "../../../../lib/playableMedia";
 import { streamFileBytes } from "../streamBytes";
+import { formatBytes } from "../../../../../shared/formatting";
 import type { ViewerProps } from "./types";
 
 const MAX_MEDIA_STREAM_BYTES = 250 * 1024 * 1024;
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }: ViewerProps & { kind: "audio" | "video" }) {
   const [src, setSrc] = useState<string | null>(null);

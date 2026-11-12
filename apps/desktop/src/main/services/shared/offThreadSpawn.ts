@@ -154,6 +154,9 @@ export class OffThreadChild extends EventEmitter {
  * to completion and `child.kill()` after it. Here the guard reads the real
  * ChildProcess, so it is exact rather than one message behind.
  */
+/** After a timeout kill, how long the pipes get to close before the answer goes out anyway. */
+const KILLED_CHILD_CLOSE_GRACE_MS = 1_500;
+
 const WORKER_SOURCE = String.raw`
   const { spawn, spawnSync } = require("node:child_process");
   const { parentPort, workerData } = require("node:worker_threads");
@@ -450,6 +453,10 @@ export function execFileOffThread(
     const kill = (error: Error) => {
       failure ??= error;
       child.killTree("SIGTERM");
+      // `close` waits for every holder of the output pipes, so a child that
+      // ignores the kill or left a grandchild behind would hold this open.
+      const giveUp = setTimeout(() => finish(null, failure), KILLED_CHILD_CLOSE_GRACE_MS);
+      giveUp.unref?.();
     };
     const onAbort = () => kill(new Error(`${command} was cancelled`));
     const timer = setTimeout(() => {

@@ -17,6 +17,7 @@ ade lanes list --machine "Mac mini" --project Versic --text
 ade chat read <id> --machine "Mac mini" --text
 ade chat create --machine "Mac mini" --lane <lane there> --type subagent \
   --provider claude --model anthropic/claude-opus-5 --prompt "build and test the iOS app"
+                                                  # no --lane: the project's primary lane there
 ade chat create --machine "Mac mini" --clone …    # set the repo up there first (GitHub only)
 ade chat create --machine "Mac mini,Linux box" …  # one child per machine
 ade chat launch "fix the flaky test" --machine "Mac mini"   # new lane there

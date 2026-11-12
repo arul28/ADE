@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -22,6 +22,7 @@ import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
+import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import {
   MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
@@ -107,6 +108,7 @@ import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { LaneShareGuestShelfRows, useLaneShareGuestShelfShares } from "../laneShare/guest/LaneShareGuestShelf";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { bindingChipLabel, fireBinding, getEffectiveBinding } from "../../lib/keybindings";
@@ -132,6 +134,7 @@ import {
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
+import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -411,9 +414,14 @@ function partitionQuietSessions(
   return { active, snoozed, settled };
 }
 
-function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
+function HandoffSessionPlaceholderCard({ job, lane, showLaneIdentity }: {
+  job: HandoffLaunchJob;
+  lane: LaneSummary | null;
+  showLaneIdentity: boolean;
+}) {
   const title = handoffLaunchTitle(job);
   const status = handoffLaunchStatusMessage(job.status);
+  const laneAccent = lane ? resolveLaneAccentColor(lane) : null;
   return (
     <motion.div
       key={job.id}
@@ -447,6 +455,13 @@ function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
             <ToolLogo toolType={job.targetToolType} size={26} className="opacity-90" />
           </div>
           <div className="min-w-0 flex-1">
+            {showLaneIdentity ? (
+              <span className="inline-flex max-w-full items-center gap-1.5 text-[12px] font-semibold"
+                style={{ color: laneAccent ? toneText(laneAccent) : undefined }}>
+                <LaneIcon size={12} weight="regular" className="shrink-0" />
+                <span className="min-w-0 truncate"><LaneNamingLabel laneName={lane?.name ?? job.laneName} naming={false} /></span>
+              </span>
+            ) : null}
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-fg/90" title={title}>
                 {title}
@@ -1024,6 +1039,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   activeItemId = null,
   handoffJobs = [],
   crossMachineSyncActive = true,
+  firstLoadRetrying = false,
   resolveSessionRuntimePin,
 }: {
   lanes: LaneSummary[];
@@ -1163,6 +1179,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   }) => void;
   handoffJobs?: HandoffLaunchJob[];
   crossMachineSyncActive?: boolean;
+  /** The list has never loaded and is still trying, so an empty list says nothing yet. */
+  firstLoadRetrying?: boolean;
   /**
    * The machine a chat runs on: `null` is the project tab's own machine. Asks
    * which machine owns a chat whose lane is missing, so the archived-lane read
@@ -1319,6 +1337,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // True when the board takes this pane's own list area. With a `boardHost`
   // the board draws elsewhere and this pane keeps behaving as a list.
   const boardReplacesList = isBoard && boardHost === undefined;
+  const guestShares = useLaneShareGuestShelfShares();
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
@@ -1328,10 +1347,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   // reports this repo contributes union rows. Those are the machine choices.
   const activeMachineId = machineIdForBinding(projectBinding);
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>" in the machine filter.
+  const machineLabelOf = useAdeCloudMachineLabel();
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     const others = Object.values(crossMachineEntries)
       .filter((entry) => entry.machineId !== activeMachineId)
-      .map((entry) => ({ id: entry.machineId, name: entry.machineName, online: entry.online }))
+      // A sleeping cloud computer is not listed as offline: a send wakes it.
+      .map((entry) => ({ id: entry.machineId, name: machineLabelOf({ machineId: entry.machineId, binding: entry.binding, name: entry.machineName }), online: machineShowsConnected(entry) }))
       .sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
@@ -1341,7 +1363,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       },
       ...others,
     ];
-  }, [activeMachineId, crossMachineEntries, projectBinding]);
+  }, [activeMachineId, crossMachineEntries, machineLabelOf, projectBinding]);
   // A machine that answers the connection but refuses the chat read would
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are
@@ -1541,10 +1563,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return map;
   }, [allSessionsUnfiltered]);
-  const timeBuckets = useMemo(
-    () => bucketByTime(allSessions.filter((session) => !quietIdSet.has(session.id))),
-    [allSessions, quietIdSet],
-  );
   const handoffTimeBuckets = useMemo(() => bucketHandoffJobsByTime(filteredHandoffJobs), [filteredHandoffJobs]);
   const selectedCount = selectedSessionIds?.size ?? 0;
   const selectedSessions = useMemo(
@@ -1813,6 +1831,49 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return rows.length > 0 ? rows : EMPTY_FOREIGN_ROWS;
   }, [chipFiltersActive, filingBucketsForForeignSessions, foreignFilingNowMs, foreignRows, laneFilterActive, normalizedFilterLaneId, q, workSessionFilters]);
+
+  // Flat organizations use the same loaded roster as the lane view. Keep
+  // each foreign row's owner so selection and actions remain machine-scoped.
+  const flatLists = useMemo(() => {
+    const rows = new Map<string, CrossMachineLaneRow>();
+    const result = {
+      running: [...runningFiltered], awaiting: [...awaitingInputFiltered], ended: [...endedFiltered],
+      snoozed: [...visibleSnoozed], settled: [...visibleSettled], rows,
+    };
+    if (isByLane) return result;
+    const seen = new Set(allSessionsUnfiltered.map((session) => session.id));
+    const fullRows = new Map(foreignRows.map((row) => [foreignLaneKey(row.machineId, row.lane.id), row]));
+    for (const row of visibleForeignRows) {
+      const key = foreignLaneKey(row.machineId, row.lane.id);
+      const fullRow = fullRows.get(key) ?? row;
+      const fullNesting = unfilteredForeignNestingByCompositeId.get(key);
+      const nesting = row.sessions === fullRow.sessions && fullNesting
+        ? fullNesting
+        : buildWorkNesting(row.sessions, { nestSubagents: false, nowMs: foreignFilingNowMs });
+      // File against the complete roster even when search hides a parent;
+      // attached shells stay in that chat's actions pane while it is visible.
+      const quiet = partitionQuietSessions(row.sessions, filingBucketsForForeignSessions(fullRow.sessions));
+      for (const [bucket, sessions] of [["active", quiet.active], ["snoozed", quiet.snoozed], ["settled", quiet.settled]] as const) {
+        for (const session of sessions) {
+          if (seen.has(session.id) || nesting.excludedTopLevelIds.has(session.id)) continue;
+          seen.add(session.id);
+          rows.set(session.id, row);
+          if (bucket !== "active") result[bucket].push(session);
+          else {
+            const status = sessionStatusBucket(canonicalInputFromSummary(session));
+            result[status === "running" ? "running" : status === "awaiting-input" ? "awaiting" : "ended"].push(session);
+          }
+        }
+      }
+    }
+    return result;
+  }, [runningFiltered, awaitingInputFiltered, endedFiltered, visibleSnoozed, visibleSettled,
+    isByLane, allSessionsUnfiltered, foreignRows, visibleForeignRows, unfilteredForeignNestingByCompositeId,
+    foreignFilingNowMs, filingBucketsForForeignSessions]);
+  const timeBuckets = useMemo(
+    () => bucketByTime([...flatLists.running, ...flatLists.awaiting, ...flatLists.ended]),
+    [flatLists],
+  );
 
   /**
    * The board shows the same union the sidebar does. The hook's buckets stay
@@ -2200,7 +2261,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       // no toggle and is always open — and "that machine is gone" is precisely
       // when its work should stop occupying a prime row. Same shape of exemption
       // as a pinned lane: an explicit reason to keep the header wins.
-      if (!row.online) continue;
+      if (!rowShowsConnected(row)) continue;
       // Both pin keys, for the same reason `foreignLaneShelving` checks both:
       // this pane addresses a foreign lane by its composite id while the pin
       // store only ever writes bare lane ids.
@@ -2414,23 +2475,23 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (!workCollapsedSectionIds.includes("time:today")) ids.push(...collectVisibleIds(timeBuckets.today));
       if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...collectVisibleIds(timeBuckets.yesterday));
       if (!workCollapsedSectionIds.includes("time:older")) ids.push(...collectVisibleIds(timeBuckets.older));
-      if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:snoozed")) ids.push(...collectVisibleIds(visibleSnoozed));
-      if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:settled")) ids.push(...collectVisibleIds(visibleSettled));
+      if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:snoozed")) ids.push(...collectVisibleIds(flatLists.snoozed));
+      if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:settled")) ids.push(...collectVisibleIds(flatLists.settled));
       return ids;
     }
     const ids: string[] = [];
-    if (!workCollapsedSectionIds.includes("status:running")) ids.push(...collectVisibleIds(runningFiltered));
-    if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...collectVisibleIds(awaitingInputFiltered));
-    if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...collectVisibleIds(endedFiltered));
-    if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:snoozed")) ids.push(...collectVisibleIds(visibleSnoozed));
-    if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:settled")) ids.push(...collectVisibleIds(visibleSettled));
+    if (!workCollapsedSectionIds.includes("status:running")) ids.push(...collectVisibleIds(flatLists.running));
+    if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...collectVisibleIds(flatLists.awaiting));
+    if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...collectVisibleIds(flatLists.ended));
+    if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:snoozed")) ids.push(...collectVisibleIds(flatLists.snoozed));
+    if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:settled")) ids.push(...collectVisibleIds(flatLists.settled));
     return ids;
   }, [
-    awaitingInputFiltered,
+    flatLists.awaiting,
     boardReplacesList,
     boardSessionIds,
     collectVisibleIds,
-    endedFiltered,
+    flatLists.ended,
     headerlessLaneIds,
     isByLane,
     isByTime,
@@ -2439,15 +2500,15 @@ export const SessionListPane = React.memo(function SessionListPane({
     orderedLanes,
     quietIdSet,
     sharedBranchInboxKeepIds,
-    runningFiltered,
+    flatLists.running,
     sessionsGroupedByLane,
     settledIdSet,
     snoozedIdSet,
     timeBuckets.older,
     timeBuckets.today,
     timeBuckets.yesterday,
-    visibleSettled,
-    visibleSnoozed,
+    flatLists.settled,
+    flatLists.snoozed,
     workCollapsedLaneIds,
     workCollapsedSectionIds,
   ]);
@@ -2544,7 +2605,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   const renderCardCore = (session: TerminalSessionSummary, options?: RenderCardOptions) => {
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
-    const foreignRow = options?.foreignRow;
+    const foreignRow = options?.foreignRow ?? flatLists.rows.get(session.id);
+    const showLaneIdentity = options?.showLaneIdentity ?? !isByLane;
     const sessionLane = foreignRow?.lane ?? laneById.get(session.laneId) ?? null;
     // A PR belongs to the lane, and the lane belongs to a machine — so the PR
     // is read from that machine and filed under its composite key. A foreign
@@ -2562,7 +2624,9 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    const disabledReason = (foreignRow
+    // A saved chat on a computer that isn't connected can still be read.
+    const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
+    const disabledReason = (foreignRow && !savedCopyReadable
       ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
       : null)
       ?? (laneDeleteProgress ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane` : null);
@@ -2599,14 +2663,14 @@ export const SessionListPane = React.memo(function SessionListPane({
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
           }
           if (isChatToolType(session.toolType)) {
-            return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? [], foreignRow.binding);
+            return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds, foreignRow.binding);
           }
           if (foreignRow.binding && onSelectForeignRuntimeSession) {
             return onSelectForeignRuntimeSession(
               session,
               foreignRow.binding,
               event,
-              rangeIds ?? options?.visibleSessionIds ?? [],
+              rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds,
             );
           }
           return undefined;
@@ -2631,7 +2695,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           );
         }}
         compact={options?.compact}
-        showLaneIdentity={options?.showLaneIdentity}
+        showLaneIdentity={showLaneIdentity}
         lanePr={options?.lanePr}
         lanePrs={options?.lanePrs}
         onOpenLanePrs={options?.onOpenLanePrs}
@@ -2640,14 +2704,14 @@ export const SessionListPane = React.memo(function SessionListPane({
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         focusMark={focusMarks?.get(session.id) ?? null}
         runtimePin={foreignRow?.binding}
-        machineMarker={options?.machineMarker ?? null}
-        laneAppleDevice={options?.laneAppleDevice ?? null}
-        laneAndroidDevice={options?.laneAndroidDevice ?? null}
-        laneDesktop={options?.laneDesktop ?? null}
+        machineMarker={options?.machineMarker ?? (showLaneIdentity ? markersByLaneId.get(foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId) : null) ?? null}
+        laneAppleDevice={options?.laneAppleDevice ?? (showLaneIdentity && !foreignRow ? laneAppleDevices.get(session.laneId) : null) ?? null}
+        laneAndroidDevice={options?.laneAndroidDevice ?? (showLaneIdentity && !foreignRow ? laneAndroidDevices.get(session.laneId) : null) ?? null}
+        laneDesktop={options?.laneDesktop ?? (showLaneIdentity && !foreignRow ? laneDesktopSeat(laneDesktopSeats, session.laneId) : null) ?? null}
         // A card that names its lane also says the lane lives on a cloud.
-        laneCloud={options?.laneCloud ?? (options?.showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
-        laneAppControl={options?.laneAppControl ?? false}
-        laneBrowserTabs={options?.laneBrowserTabs ?? 0}
+        laneCloud={options?.laneCloud ?? (showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
+        laneAppControl={options?.laneAppControl ?? (showLaneIdentity && !foreignRow && laneToolUse.appControl.has(session.laneId))}
+        laneBrowserTabs={options?.laneBrowserTabs ?? (showLaneIdentity && !foreignRow ? laneToolUse.browserTabs.get(session.laneId) : 0) ?? 0}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
         subagentMark={options?.subagentMark ?? null}
@@ -2888,7 +2952,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (
     <AnimatePresence initial={false}>
       {jobs.map((job) => (
-        <HandoffSessionPlaceholderCard key={job.id} job={job} />
+        <HandoffSessionPlaceholderCard key={job.id} job={job} lane={laneById.get(job.laneId) ?? null} showLaneIdentity={!isByLane} />
       ))}
     </AnimatePresence>
   );
@@ -3056,7 +3120,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   ) : null);
 
   // Snoozed sits directly ABOVE Settled: hidden-for-now ranks above done.
-  const snoozedStatusSection = visibleSnoozed.length > 0 ? (
+  const snoozedStatusSection = flatLists.snoozed.length > 0 ? (
     <StickyGroupHeader
       sectionId="status:snoozed"
       icon={snoozedSectionIcon}
@@ -3064,27 +3128,27 @@ export const SessionListPane = React.memo(function SessionListPane({
       variant="quiet-shelf"
       tone="snoozed"
       heading
-      count={visibleSnoozed.length}
+      count={flatLists.snoozed.length}
       // Collapsed unless explicitly opened — see `quietShelfOpenMarker`.
       collapsed={isQuietShelfCollapsed(workCollapsedSectionIds, "status:snoozed")}
       onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("status:snoozed"))}
     >
-      {renderCards(visibleSnoozed)}
+      {renderCards(flatLists.snoozed)}
     </StickyGroupHeader>
   ) : null;
 
-  const settledStatusSection = visibleSettled.length > 0 ? (
+  const settledStatusSection = flatLists.settled.length > 0 ? (
     <StickyGroupHeader
       sectionId="status:settled"
       icon={settledSectionIcon}
       label="Settled"
       variant="quiet-shelf"
       tone="settled"
-      count={visibleSettled.length}
+      count={flatLists.settled.length}
       collapsed={isQuietShelfCollapsed(workCollapsedSectionIds, "status:settled")}
       onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("status:settled"))}
     >
-      {renderCards(visibleSettled)}
+      {renderCards(flatLists.settled)}
     </StickyGroupHeader>
   ) : null;
 
@@ -3097,18 +3161,18 @@ export const SessionListPane = React.memo(function SessionListPane({
         sectionId="status:running"
         icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-success)" }} />}
         label="Running"
-        count={runningFiltered.length + filteredHandoffJobs.length}
+        count={flatLists.running.length + filteredHandoffJobs.length}
         collapsed={workCollapsedSectionIds.includes("status:running")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:running")}
       >
         {renderHandoffCards(filteredHandoffJobs)}
-        {renderCards(runningFiltered)}
+        {renderCards(flatLists.running)}
       </StickyGroupHeader>
       <StickyGroupHeader
         sectionId="status:awaiting"
         icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-warning)" }} />}
         label="Your move"
-        count={awaitingInputFiltered.length}
+        count={flatLists.awaiting.length}
         collapsed={workCollapsedSectionIds.includes("status:awaiting")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:awaiting")}
         headerAction={quietlyAwaitingSessions.length > 0 ? (
@@ -3120,20 +3184,20 @@ export const SessionListPane = React.memo(function SessionListPane({
               void settleSessions(quietlyAwaitingSessions.map((session) => session.id));
             }}
           >
-            Settle all
+            {flatLists.rows.size ? "Settle local" : "Settle all"}
           </button>
         ) : null}
       >
-        {renderCards(awaitingInputFiltered)}
+        {renderCards(flatLists.awaiting)}
       </StickyGroupHeader>
       <StickyGroupHeader
         sectionId="status:ended"
         icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-error)" }} />}
         label="Ended"
-        count={endedFiltered.length}
+        count={flatLists.ended.length}
         collapsed={workCollapsedSectionIds.includes("status:ended")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:ended")}
-        headerAction={(
+        headerAction={endedFiltered.length > 0 ? (
           <button
             type="button"
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
@@ -3142,13 +3206,13 @@ export const SessionListPane = React.memo(function SessionListPane({
               void settleSessions(endedFiltered.map((session) => session.id));
             }}
           >
-            Settle all
+            {flatLists.rows.size ? "Settle local" : "Settle all"}
           </button>
-        )}
+        ) : null}
       >
-        {renderCards(endedFiltered)}
+        {renderCards(flatLists.ended)}
       </StickyGroupHeader>
-      {renderQuietZone(visibleSnoozed.length + visibleSettled.length > 0, (
+      {renderQuietZone(flatLists.snoozed.length + flatLists.settled.length > 0, (
         <>
           {snoozedStatusSection}
           {settledStatusSection}
@@ -3453,7 +3517,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               settled: quietTop.settled.length,
             }
           : null}
-        dimmed={!row.online}
+        // A sleeping cloud computer's lane looks like any other: a send wakes it.
+        dimmed={!rowShowsConnected(row)}
         onToggleCollapsed={() => {
           if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
           else toggleWorkLaneCollapsed(compositeLaneId);
@@ -3930,7 +3995,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         {renderHandoffCards(handoffTimeBuckets.older)}
         {renderCards(timeBuckets.older)}
       </StickyGroupHeader>
-      {renderQuietZone(visibleSnoozed.length + visibleSettled.length > 0, (
+      {renderQuietZone(flatLists.snoozed.length + flatLists.settled.length > 0, (
         <>
           {snoozedStatusSection}
           {settledStatusSection}
@@ -4256,15 +4321,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : !hasAnySessions && !hasForeignSessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
-            <div className="text-[12px] font-medium text-fg/70">No chats yet</div>
-            <div className="mt-1 text-[11px] text-muted-fg/60">Start one from the prompt box</div>
-          </div>
-        ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
-          <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">
-            <Desktop size={16} weight="regular" className="mb-2 text-muted-fg/30" />
-            <div className="text-[11px] font-medium text-fg/70">Sessions are active on another machine</div>
-            <div className="mt-1 max-w-[210px] text-[10px] leading-relaxed text-muted-fg/45">
-              Group by lane to open cross-machine sessions.
+            <div className="text-[12px] font-medium text-fg/70">
+              {firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
+            </div>
+            <div className="mt-1 text-[11px] text-muted-fg/60">
+              {firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
           </div>
         ) : isByTime ? (
@@ -4274,6 +4335,24 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : (
           groupedByStatusList
         )}
+        {/* Lanes other accounts share with this one. Their own group, keyed by
+            grant, never mixed with this project's lanes. Absent with no share. */}
+        {!boardReplacesList && guestShares.length > 0 ? (
+          <div className={cn(SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
+            <StickyGroupHeader
+              sectionId="lane-shelf:shared-with-me"
+              icon={<UsersThree size={12} weight="bold" aria-hidden className="shrink-0" />}
+              label="Shared with me"
+              variant="quiet-shelf"
+              heading
+              count={guestShares.length}
+              collapsed={isQuietShelfCollapsed(workCollapsedSectionIds, "lane-shelf:shared-with-me")}
+              onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:shared-with-me"))}
+            >
+              <LaneShareGuestShelfRows shares={guestShares} />
+            </StickyGroupHeader>
+          </div>
+        ) : null}
       </div>
 
       {settleUndo ? (

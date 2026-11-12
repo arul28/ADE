@@ -33,6 +33,7 @@ import type {
   LaneSummary,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LinearMark } from "./linearBrand";
 import { showToast } from "../app/toast/toastStore";
@@ -42,6 +43,7 @@ import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { isImeComposing } from "../../lib/imeComposition";
+import { formatBytes } from "../../../shared/formatting";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -58,19 +60,6 @@ export const EMPTY_LANE_DELETE_SELECTION: LaneDeleteSelection = {
 
 function laneDeleteSelectionHasAny(selection: LaneDeleteSelection): boolean {
   return selection.worktree || selection.localBranch || selection.remoteBranch;
-}
-
-function formatBytesCompact(bytes: number): string {
-  const safe = Math.max(0, bytes);
-  if (safe < 1024) return `${safe} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = safe / 1024;
-  let unit = units[0];
-  for (let index = 1; index < units.length && value >= 1024; index += 1) {
-    value /= 1024;
-    unit = units[index];
-  }
-  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
 }
 
 const STEP_LABELS: Record<LaneDeleteStepName, string> = {
@@ -426,6 +415,15 @@ function ManageLaneTabBar({
   );
 }
 
+/**
+ * The lanes a delete acts on. Never the primary lane, and without Force a
+ * batch skips lanes with uncommitted work: one box ticked for the rest must
+ * not take theirs.
+ */
+export function lanesToDelete<T extends Pick<LaneSummary, "laneType" | "status">>(lanes: T[], force: boolean): T[] {
+  return lanes.filter((lane) => lane.laneType !== "primary" && (force || lanes.length === 1 || !lane.status.dirty));
+}
+
 export function ManageLaneDialog({
   open,
   onOpenChange,
@@ -446,6 +444,7 @@ export function ManageLaneDialog({
   onAppearanceChanged,
   runtimePin,
   initialTab,
+  cloudLaneIds,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -468,12 +467,29 @@ export function ManageLaneDialog({
   runtimePin?: OpenProjectBinding | null;
   /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
   initialTab?: ManageLaneTab | null;
+  /**
+   * The lanes here that live on their own ADE Cloud computer. A cloud lane
+   * goes with its computer (no worktree or branch to pick, no 30-day copy,
+   * no Force delete): the caller's delete warns once, only when work isn't
+   * on GitHub. The local form applies to the other lanes only.
+   */
+  cloudLaneIds?: ReadonlySet<string> | null;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
   const allPrimary = lanes.length > 0 && lanes.every((l) => l.laneType === "primary");
-  const hasAnyDirty = lanes.some((l) => l.status.dirty);
+  const cloudLanes = cloudLaneIds?.size ? lanes.filter((l) => cloudLaneIds.has(l.id) && l.laneType !== "primary") : [];
+  const localLanes = cloudLanes.length ? lanes.filter((l) => !cloudLaneIds?.has(l.id)) : lanes;
+  const onlyCloud = cloudLanes.length > 0 && localLanes.every((l) => l.laneType === "primary");
+  const hasAnyDirty = localLanes.some((l) => l.status.dirty);
+  // A batch never takes a lane's uncommitted work because one box was ticked
+  // for the rest: without Force it deletes the clean lanes and skips these.
+  const dirtyLanes = localLanes.filter((l) => l.status.dirty && l.laneType !== "primary");
+  const skippedDirtyCount = isBatch && !deleteForce ? dirtyLanes.length : 0;
+  const localDeleteCount = lanesToDelete(localLanes, deleteForce).length;
+  const deleteCount = localDeleteCount + cloudLanes.length;
   const singleLane = !isBatch ? lanes[0] ?? null : null;
+  const singleCloud = singleLane != null && cloudLanes.length === 1;
 
   const singleLaneId = singleLane?.id ?? null;
   const singleLaneType = singleLane?.laneType ?? null;
@@ -545,7 +561,7 @@ export function ManageLaneDialog({
 
   // Fetch pre-flight risk for the single-lane case.
   useEffect(() => {
-    if (!open || !singleLaneId || singleLaneType === "primary") {
+    if (!open || !singleLaneId || singleLaneType === "primary" || singleCloud) {
       setDeleteRisk(null);
       return;
     }
@@ -576,7 +592,7 @@ export function ManageLaneDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, runtimePin, singleLaneId, singleLaneType]);
+  }, [open, runtimePin, singleCloud, singleLaneId, singleLaneType]);
 
   // Stream live delete progress for the active lane.
   useEffect(() => {
@@ -593,15 +609,21 @@ export function ManageLaneDialog({
     };
   }, [open, runtimePin, singleLaneId]);
 
-  const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
-  // A lane with uncommitted work only deletes with Force on; say so at the button.
-  const needsForce = hasAnyDirty && !deleteForce;
-  const deleteDisabledReason = !hasDeleteSelection
+  // Cloud lanes need no pick: the lane and its computer go together.
+  const hasDeleteSelection = onlyCloud || laneDeleteSelectionHasAny(deleteSelection);
+  // A lane with uncommitted work only deletes with Force on; say so at the
+  // button. A batch deletes its clean lanes without it.
+  const needsForce = onlyCloud
+    ? false
+    : isBatch ? deleteCount === 0 && dirtyLanes.length > 0 && !deleteForce : hasAnyDirty && !deleteForce;
+  const deleteHint = !hasDeleteSelection
     ? "Pick what to delete"
     : needsForce
-      ? "Tick Force delete to discard uncommitted work"
-      : null;
-  const deleteDisabled = laneActionBusy || deleteDisabledReason != null;
+      ? "Every lane here has uncommitted work. Tick the box above to delete them."
+      : skippedDirtyCount > 0
+        ? `Skips ${skippedDirtyCount === 1 ? "1 lane" : `${skippedDirtyCount} lanes`} with uncommitted work`
+        : null;
+  const deleteDisabled = laneActionBusy || !hasDeleteSelection || needsForce;
   const showStaticBusy = laneActionBusy && !deleteProgress;
   const reclaimBlocked = reclaimRisk?.blockedReasons.some((reason) => reason.disposition === "blocked") ?? false;
 
@@ -797,7 +819,7 @@ export function ManageLaneDialog({
                         Archive &amp; reclaim
                       </div>
                       <span className="text-xs font-semibold tabular-nums text-muted-fg">
-                        {reclaimRisk ? formatBytesCompact(reclaimRisk.reclaimableBytes) : "Measuring…"}
+                        {reclaimRisk ? formatBytes(reclaimRisk.reclaimableBytes) : "Measuring…"}
                       </span>
                     </div>
                     <p className="mt-1.5 text-xs leading-relaxed text-muted-fg/70">
@@ -820,7 +842,7 @@ export function ManageLaneDialog({
                           disabled={reclaimBusy || laneActionBusy}
                           className="mt-0.5"
                         />
-                        <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+                        <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Settings › Storage › Recently deleted.</span>
                       </label>
                     ) : null}
                     <label className="mt-3 block text-[11px] text-muted-fg/80">
@@ -862,7 +884,7 @@ export function ManageLaneDialog({
                               ? "Cannot reclaim this folder"
                               : reclaimRisk.dirty && !discardDirtyConfirmed
                                 ? "Confirm discarded changes"
-                                : `Reclaim ${formatBytesCompact(reclaimRisk.reclaimableBytes)}`}
+                                : `Reclaim ${formatBytes(reclaimRisk.reclaimableBytes)}`}
                       </Button>
                     </div>
                   </div>
@@ -873,12 +895,21 @@ export function ManageLaneDialog({
 
           {activeTab === "delete" ? (
             <ManageLaneTabPanel tone="delete">
-              <p className="whitespace-nowrap text-xs text-red-200/70">
-                Stops lane activity and removes what you pick. Cannot be undone.
+              {onlyCloud ? (
+                <CloudLaneDeleteNote count={cloudLanes.length} />
+              ) : (
+              <>
+              <p className="text-xs text-red-200/70">
+                Stops lane activity and removes what you pick. Work that only this lane holds is kept for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.
                 {!isBatch && reclaimRisk && reclaimRisk.reclaimableBytes > 0 ? (
-                  <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytesCompact(reclaimRisk.reclaimableBytes)}</strong>.</span>
+                  <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytes(reclaimRisk.reclaimableBytes)}</strong>.</span>
                 ) : null}
               </p>
+              {cloudLanes.length ? (
+                <p className="mt-2 text-xs text-muted-fg/80">
+                  {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
+                </p>
+              ) : null}
 
               {/* Uncommitted changes are named once, by the header chip; the
                   Force delete row and the button's reason carry the rest. */}
@@ -901,11 +932,19 @@ export function ManageLaneDialog({
                 />
               ) : null}
 
-              <label className="mt-3 flex items-center gap-2 whitespace-nowrap text-xs text-muted-fg/80 cursor-pointer select-none">
-                <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="rounded accent-red-400" />
-                Force delete
-                <span className="text-muted-fg/50">· discards uncommitted work</span>
-              </label>
+              {isBatch && dirtyLanes.length === 0 ? null : (
+                <label className="mt-3 flex items-start gap-2 text-xs text-muted-fg/80 cursor-pointer select-none">
+                  <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="mt-0.5 rounded accent-red-400" />
+                  <span className="min-w-0">
+                    {isBatch
+                      ? `Also delete ${dirtyLanes.length === 1 ? "the lane" : `the ${dirtyLanes.length} lanes`} with uncommitted work: ${dirtyLanes.map((lane) => lane.name).join(", ")}`
+                      : "Force delete: remove the uncommitted work too"}
+                    <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Storage › Recently deleted.</span>
+                  </span>
+                </label>
+              )}
+              </>
+              )}
 
               {deleteProgress ? (
                 <DeleteProgressStrip progress={deleteProgress} />
@@ -948,11 +987,11 @@ export function ManageLaneDialog({
                   {laneActionBusy && laneActionKind === "delete"
                     ? "Deleting..."
                     : isBatch
-                      ? `Delete ${lanes.length} lanes`
+                      ? `Delete ${deleteCount === 1 ? "1 lane" : `${deleteCount} lanes`}`
                       : "Delete lane"}
                 </Button>
-                {deleteDisabledReason && !laneActionBusy ? (
-                  <span className="whitespace-nowrap text-xs text-muted-fg/70">{deleteDisabledReason}</span>
+                {deleteHint && !laneActionBusy ? (
+                  <span className="whitespace-nowrap text-xs text-muted-fg/70">{deleteHint}</span>
                 ) : null}
               </div>
             </ManageLaneTabPanel>
@@ -960,6 +999,25 @@ export function ManageLaneDialog({
         </div>
       )}
     </LaneDialogShell>
+  );
+}
+
+/**
+ * The delete tab for ADE Cloud lanes only: nothing to pick, no 30-day copy
+ * (the computer goes), no Force delete. The delete itself warns once, only
+ * when work on the computer isn't on GitHub.
+ */
+function CloudLaneDeleteNote({ count }: { count: number }) {
+  const one = count === 1;
+  return (
+    <div className="space-y-1.5 text-xs leading-relaxed">
+      <p className="text-red-200/80">
+        {one ? "Deletes the lane and its ADE Cloud computer." : `Deletes the ${count} lanes and their ADE Cloud computers.`} Everything on {one ? "that computer" : "those computers"} goes for good.
+      </p>
+      <p className="text-muted-fg/80">
+        If work there isn&apos;t on GitHub, ADE shows it first and offers to push it. {one ? "The lane's chats stay" : "Their chats stay"} readable.
+      </p>
+    </div>
   );
 }
 

@@ -34,6 +34,8 @@ export type FreshUsageProviderPollResult = {
   source?: UsageProviderSource;
   errors: string[];
   errorKind?: UsageProviderErrorKind;
+  /** What the user must do when the generic "reconnect" would be wrong. */
+  authMessage?: string;
   retryAfterMs?: number;
   extraUsage?: ExtraUsage | null;
   dailyUsage7d?: number[];
@@ -51,6 +53,7 @@ type PreserveUsageProviderPollResult = {
   source?: UsageProviderSource;
   spendControlReached?: never;
   errorKind?: never;
+  authMessage?: never;
   retryAfterMs?: never;
   extraUsage?: never;
   dailyUsage7d?: never;
@@ -70,6 +73,7 @@ type AbsentUsageProviderPollResult = {
   source?: never;
   spendControlReached?: never;
   errorKind?: never;
+  authMessage?: never;
   retryAfterMs?: never;
   extraUsage?: never;
   dailyUsage7d?: never;

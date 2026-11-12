@@ -223,9 +223,18 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // limited.
   "ai.cursorCloudFleet",
   "ai.getCursorCloudFleet",
-  // The phone's Agent 37 page; optional so an older brain simply omits it.
-  "agent37.read",
-  "agent37.write",
+  // The phone's ADE Cloud page; optional so an older brain simply omits it.
+  "cloud.read",
+  "cloud.write",
+  // The account's sign-ins (Settings › Providers and the ADE Cloud page on the
+  // phone and the web app); optional so an older brain simply omits them.
+  "providerLogins.status",
+  "providerLogins.captureNow",
+  "providerLogins.use",
+  "providerLogins.setCloud",
+  "providerLogins.setCloudAll",
+  "providerLogins.setCloudBalance",
+  "providerLogins.remove",
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",

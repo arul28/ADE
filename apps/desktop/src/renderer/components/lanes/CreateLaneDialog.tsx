@@ -3,11 +3,8 @@ import {
   ArrowSquareIn,
   Info,
   CaretUpDown,
-  CheckCircle,
-  Circle,
   GitBranch,
   Palette,
-  SpinnerGap,
   X,
 } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice/Banner";
@@ -15,7 +12,6 @@ import type {
   BranchPullRequest,
   LaneLinearIssue,
   LaneSummary,
-  LaneEnvInitProgress,
   LaneTemplate,
   NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
@@ -27,7 +23,6 @@ import {
   type LaneStart,
 } from "../../../shared/laneStart";
 import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
-import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
@@ -42,17 +37,14 @@ import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { laneHoldingBranch, startSourceBranch } from "./laneStartOptions";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import type { LaneMachineOption } from "./laneMachines";
-import { ComposerPopover, LaneMachineChip, LaneTemplateChip } from "./createLaneComposerChips";
+import { ComposerPopover, LaneCloudSizeChip, LaneMachineChip, LaneTemplateChip } from "./createLaneComposerChips";
+import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
+import type { CloudTier, CloudTierId } from "../../../shared/cloudTiers";
 import { LaneStartBranchField, LaneStartOnSwitch } from "./LaneStartPicker";
 import "./createLaneComposer.css";
 import { isImeComposing } from "../../lib/imeComposition";
 
 export type CreateLaneMode = "new" | "existing";
-export type CreateLaneSetupStep = {
-  label: string;
-  detail: string;
-  state: "pending" | "active" | "done";
-};
 
 const MODE_LABEL: Record<CreateLaneMode, string> = {
   new: "Create new branch",
@@ -76,19 +68,44 @@ const MODE_TOUR: Record<CreateLaneMode, string> = {
 
 const MODE_ORDER: readonly CreateLaneMode[] = ["new", "existing"];
 
+/**
+ * The new lane goes to ADE Cloud, or may: what the dialog needs to show it.
+ * The size takes the machine's place when the place is fixed (the "+" of a
+ * draft already bound for ADE Cloud).
+ */
+export type CreateLaneAdeCloud = {
+  /** Listed in the machine chip; null where the place can't change. */
+  choice: AdeCloudLaneChoice | null;
+  /** ADE Cloud is the lane's place now. */
+  picked: boolean;
+  /** The place is ADE Cloud and can't change: no machine row. */
+  fixed: boolean;
+  tiers: readonly CloudTier[];
+  tierId: CloudTierId;
+  defaultTier: CloudTierId;
+  onChooseTier: (tier: CloudTierId) => void;
+  onSetDefaultTier: (tier: CloudTierId) => void;
+  /** Why the lane can't start on ADE Cloud now (a fact of the account), or null. */
+  problem: string | null;
+};
+
+/** A branch the new computer can find: a remote branch, or a local one with a remote copy. */
+function branchIsPushed(branchName: string, branches: LaneBranchOption[]): boolean {
+  const branch = branches.find((candidate) => candidate.name === branchName);
+  if (!branch) return true;
+  if (branch.isRemote) return true;
+  const plain = stripRemotePrefix(branch.name);
+  return branches.some((candidate) => candidate.isRemote && stripRemotePrefix(candidate.name) === plain);
+}
+
 function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranchOption[]): string {
   const branch = branches.find((candidate) => candidate.name === branchName);
   if (branch?.isRemote) return stripRemotePrefix(branch.name);
   return branchName;
 }
 
-function submitLabel(
-  busy: boolean | undefined,
-  mode: CreateLaneMode,
-  laneCreated: boolean | undefined,
-): string {
-  if (busy) return "Setting up…";
-  if (laneCreated) return "Retry setup";
+function submitLabel(mode: CreateLaneMode, onAdeCloud: boolean): string {
+  if (onAdeCloud) return "Create lane on ADE Cloud";
   return mode === "existing" ? "Create lane on this branch" : "Create lane";
 }
 
@@ -112,13 +129,7 @@ export function CreateLaneDialog({
   createBranches,
   lanes,
   onSubmit,
-  busy,
-  onCancelBusy,
   error,
-  envInitProgress,
-  laneCreated,
-  setupStatus,
-  setupSteps = [],
   submitLabelOverride,
   templates,
   selectedTemplateId,
@@ -142,6 +153,7 @@ export function CreateLaneDialog({
   onSelectMachine,
   onConnectMachine,
   machineRequired = false,
+  adeCloud = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -168,15 +180,7 @@ export function CreateLaneDialog({
   createBranches: LaneBranchOption[];
   lanes: LaneSummary[];
   onSubmit: () => void;
-  busy?: boolean;
-  /** Set while busy work can be stopped; the Cancel button then stops it instead of staying disabled. */
-  onCancelBusy?: () => void;
   error?: string | null;
-  envInitProgress?: LaneEnvInitProgress | null;
-  /** When true, the lane has already been created and the CTA only retries env setup. */
-  laneCreated?: boolean;
-  setupStatus?: string | null;
-  setupSteps?: CreateLaneSetupStep[];
   /** Overrides the primary CTA label (e.g. "Use this setup" when configuring a draft). */
   submitLabelOverride?: string | null;
   templates: LaneTemplate[];
@@ -213,6 +217,8 @@ export function CreateLaneDialog({
    * The host pre-selects the only eligible machine; otherwise the user picks.
    */
   machineRequired?: boolean;
+  /** ADE Cloud as the lane's place (picked, or fixed by the draft); null without access. */
+  adeCloud?: CreateLaneAdeCloud | null;
 }) {
   const usedColors = React.useMemo(() => colorsInUse(lanes), [lanes]);
   const usedColorOwners = React.useMemo(() => {
@@ -224,9 +230,14 @@ export function CreateLaneDialog({
     return map;
   }, [lanes]);
 
-  // One machine: no selector, no extra chrome.
+  // One machine and no ADE Cloud: no selector, no extra chrome. A place fixed
+  // to ADE Cloud shows its size instead.
   const machineOptions = machines ?? [];
-  const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
+  const onAdeCloud = adeCloud?.picked === true;
+  const cloudChoice = adeCloud?.fixed ? null : adeCloud?.choice ?? null;
+  const showMachineSelector = !adeCloud?.fixed
+    && (machineOptions.length > 1 || (machineOptions.length > 0 && cloudChoice != null))
+    && !!onSelectMachine;
 
   const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
   const importBranchAutoNameRef = React.useRef<string | null>(null);
@@ -296,15 +307,18 @@ export function CreateLaneDialog({
   const uncommittedBlocked = !startHolder;
   // The copy is offered only for a branch open in a lane; a new source without
   // one drops back to its local copy instead of leaving a hidden choice set.
+  // A lane on ADE Cloud starts from the pushed copy: uncommitted changes stay here.
   React.useEffect(() => {
-    if (createMode === "new" && createStart.on === "uncommitted" && uncommittedBlocked && lanes.length > 0) {
+    if (createMode !== "new" || createStart.on !== "uncommitted") return;
+    if (onAdeCloud || (uncommittedBlocked && lanes.length > 0)) {
       setCreateStart({ ...createStart, on: "local" });
     }
-  }, [createMode, createStart, lanes.length, setCreateStart, uncommittedBlocked]);
+  }, [createMode, createStart, lanes.length, onAdeCloud, setCreateStart, uncommittedBlocked]);
   const startIsDefault = newLaneDefaults ? sameLaneStart(createStart, newLaneDefaults.defaults.start) : false;
 
-  // Existing branch: a branch already open in a lane is that lane.
-  const importHolder = createMode === "existing" && createImportBranch
+  // Existing branch: a branch already open in a lane here is that lane. A
+  // new ADE Cloud computer checks out its own copy, so a lane here holds nothing.
+  const importHolder = createMode === "existing" && createImportBranch && !onAdeCloud
     ? laneHoldingBranch(plainLaneStartBranch(createImportBranch), lanes)
     : null;
 
@@ -321,27 +335,29 @@ export function CreateLaneDialog({
     if (open && selectedColor === null) setSelectedColor(nextAvailableColor(lanes));
   }, [open, lanes, selectedColor, setSelectedColor]);
 
-  const machineMissing = Boolean(machineRequired) && !laneCreated && !selectedMachineId;
+  // An existing branch the new computer can't fetch: it was never pushed.
+  const cloudBranchUnpushed = onAdeCloud && createMode === "existing" && Boolean(createImportBranch)
+    && !branchIsPushed(createImportBranch, createBranches);
+  const cloudProblem = onAdeCloud ? adeCloud?.problem ?? null : null;
+  const machineMissing = Boolean(machineRequired) && !selectedMachineId && !onAdeCloud;
   const machineHint = !machineMissing
     ? null
     : showMachineSelector
       ? "Choose the machine this lane will live on."
       : "No connected machine has this repository open.";
-  const isSubmitDisabled = laneCreated
-    ? !!busy
-    : (busy
-      || machineMissing
-      || !createLaneName.trim()
-      || (createMode === "new" && (startBranchMissing || startMissing || (createStart.on === "uncommitted" && uncommittedBlocked) || Boolean(createBranchProblem)))
-      || (createMode === "existing" && (!createImportBranch || Boolean(importHolder)))
-      || selectedLinearBranchConflict);
+  const isSubmitDisabled = machineMissing
+    || Boolean(cloudProblem)
+    || cloudBranchUnpushed
+    || !createLaneName.trim()
+    || (createMode === "new" && (startBranchMissing || startMissing || (createStart.on === "uncommitted" && uncommittedBlocked) || Boolean(createBranchProblem)))
+    || (createMode === "existing" && (!createImportBranch || Boolean(importHolder)))
+    || selectedLinearBranchConflict;
 
-  const locked = Boolean(busy || laneCreated);
-  const [openChip, setOpenChip] = React.useState<null | "color" | "machine" | "source" | "template">(null);
+  const [openChip, setOpenChip] = React.useState<null | "color" | "machine" | "size" | "source" | "template">(null);
   const chipProps = (chip: NonNullable<typeof openChip>) => ({
     open: openChip === chip,
     mode: createMode,
-    onOpenChange: (next: boolean) => setOpenChip(next && !locked ? chip : null),
+    onOpenChange: (next: boolean) => setOpenChip(next ? chip : null),
   });
   React.useEffect(() => {
     if (!open) setOpenChip(null);
@@ -370,7 +386,6 @@ export function CreateLaneDialog({
       onOpenChange={onOpenChange}
       title="New lane"
       width="min(580px, calc(100vw - 24px))"
-      busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
         const target = document.querySelector<HTMLElement>(
@@ -384,7 +399,11 @@ export function CreateLaneDialog({
             <Banner model={{ id: "create-lane-error", tone: "error", title: error }} layout="inline" />
           ) : null}
           <div className="cl-foot">
-            {machineHint ? (
+            {cloudProblem ? (
+              <span className="cl-foot-hint" data-tone="warn" data-testid="create-lane-cloud-hint" title={cloudProblem}>
+                {cloudProblem}
+              </span>
+            ) : machineHint ? (
               <span className="cl-foot-hint" data-tone="warn" data-testid="create-lane-machine-hint" title={machineHint}>
                 {showMachineSelector ? "Pick a machine first" : "No machine has this repo open"}
               </span>
@@ -395,8 +414,7 @@ export function CreateLaneDialog({
               <button
                 type="button"
                 className="kit-btn kit-btn-ghost"
-                disabled={busy && !onCancelBusy}
-                onClick={busy && onCancelBusy ? onCancelBusy : () => onOpenChange(false)}
+                onClick={() => onOpenChange(false)}
               >
                 Cancel
               </button>
@@ -407,7 +425,7 @@ export function CreateLaneDialog({
                 disabled={isSubmitDisabled}
                 onClick={submit}
               >
-                {submitLabelOverride ?? submitLabel(busy, createMode, laneCreated)}
+                {submitLabelOverride ?? submitLabel(createMode, onAdeCloud)}
               </button>
             </div>
           </div>
@@ -431,11 +449,10 @@ export function CreateLaneDialog({
           data-colored={selectedColor ? "true" : undefined}
           style={selectedColor ? ({ "--cl-lane": selectedColor } as React.CSSProperties) : undefined}
         >
-          {showEmojiControl ? (
+          {showEmojiControl && !onAdeCloud ? (
             <LaneEmojiPicker
               value={selectedEmoji}
               onChange={setSelectedEmoji}
-              disabled={locked}
               label="Lane emoji"
               trigger={(
                 <button
@@ -443,7 +460,6 @@ export function CreateLaneDialog({
                   className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-base transition hover:bg-fg/[0.08] focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent disabled:opacity-45 ${suggestedEmoji && !selectedEmoji ? "text-fg/40" : "text-fg"}`}
                   aria-label={selectedEmoji ? `Change lane emoji, current ${selectedEmoji}` : suggestedEmoji ? `Accept Jev's suggested emoji ${suggestedEmoji} and open picker` : "Choose lane emoji"}
                   title={suggestedEmoji && !selectedEmoji ? "Suggested by Jev · click to accept and choose" : "Choose lane emoji"}
-                  disabled={locked}
                   onClick={() => {
                     if (suggestedEmoji && !selectedEmoji) onAcceptSuggestedEmoji?.();
                   }}
@@ -471,7 +487,6 @@ export function CreateLaneDialog({
             aria-label="Lane name"
             spellCheck={false}
             autoFocus
-            disabled={locked}
             data-tour="lanes.createDialog.name"
           />
           <ComposerPopover
@@ -481,7 +496,6 @@ export function CreateLaneDialog({
               <button
                 type="button"
                 className="cl-dot"
-                disabled={locked}
                 aria-label={selectedColor ? `Lane colour: ${laneColorName(selectedColor) ?? selectedColor}` : "Lane colour: none"}
                 title="Lane colour"
               >
@@ -518,7 +532,7 @@ export function CreateLaneDialog({
                 className="cl-mode"
                 data-mode={mode}
                 aria-checked={createMode === mode}
-                disabled={locked || blockedByIssue}
+                disabled={blockedByIssue}
                 title={blockedByIssue ? "Detach the Linear issue before using an existing branch." : undefined}
                 data-tour={MODE_TOUR[mode]}
                 onClick={() => chooseMode(mode)}
@@ -558,7 +572,6 @@ export function CreateLaneDialog({
                     spellCheck={false}
                     autoCapitalize="off"
                     autoCorrect="off"
-                    disabled={locked}
                     data-tour="lanes.createDialog.branchName"
                   />
                 </label>
@@ -577,20 +590,19 @@ export function CreateLaneDialog({
                   pullRequests={branchPullRequests}
                   currentUserName={currentGitUserName}
                   loading={loadingBranches}
-                  disabled={locked}
                 />
               </div>
 
               <span className="cl-label">On</span>
               <div className="cl-cell">
-                <LaneStartOnSwitch start={createStart} onChange={setCreateStart} disabled={locked} />
-                {startHolder ? (
-                  // Only a branch open in a lane has uncommitted changes to bring.
+                <LaneStartOnSwitch start={createStart} onChange={setCreateStart} />
+                {startHolder && !onAdeCloud ? (
+                  // Only a branch open in a lane has uncommitted changes to bring;
+                  // a new ADE Cloud computer starts from the pushed copy.
                   <label className="cl-check">
                     <input
                       type="checkbox"
                       checked={createStart.on === "uncommitted"}
-                      disabled={locked}
                       onChange={(event) => setCreateStart({ ...createStart, on: event.target.checked ? "uncommitted" : "local" })}
                     />
                     <span>
@@ -608,7 +620,7 @@ export function CreateLaneDialog({
                     <span className="cl-default" title="Auto-create lane and ade lanes create start this way too. Change it in Settings › Lanes › New lanes.">
                       Project default
                     </span>
-                  ) : newLaneDefaults && onMakeStartDefault && startSource && isSavableDefaultLaneStart(createStart) && !locked ? (
+                  ) : newLaneDefaults && onMakeStartDefault && startSource && isSavableDefaultLaneStart(createStart) ? (
                     <button
                       type="button"
                       className="cl-default"
@@ -635,7 +647,7 @@ export function CreateLaneDialog({
                     <button
                       type="button"
                       className="cl-field"
-                      disabled={locked || (loadingBranches && createBranches.length === 0)}
+                      disabled={loadingBranches && createBranches.length === 0}
                       data-empty={selectedBranchMeta.branch ? undefined : "true"}
                       aria-label="Existing branch"
                       data-tone={importHolder ? "warn" : undefined}
@@ -669,7 +681,11 @@ export function CreateLaneDialog({
                     }}
                   />
                 </ComposerPopover>
-                {importHolder ? (
+                {cloudBranchUnpushed ? (
+                  <span className="cl-hint" data-tone="warn">
+                    <b>{plainLaneStartBranch(createImportBranch)}</b> is only on this computer. Push it first: the new ADE Cloud computer gets the branch from GitHub.
+                  </span>
+                ) : importHolder ? (
                   <span className="cl-hint" data-tone="warn">
                     <b>{createImportBranch}</b> is already open in {importHolder.laneType === "primary" ? "Primary" : <b>{importHolder.name}</b>}.
                     {" "}A branch can only be open in one lane at a time.
@@ -696,8 +712,30 @@ export function CreateLaneDialog({
                   selectedMachineId={selectedMachineId ?? ""}
                   onSelectMachine={onSelectMachine}
                   onConnectMachine={onConnectMachine}
-                  disabled={locked}
+                  adeCloud={cloudChoice}
                 />
+              </div>
+            </>
+          ) : null}
+
+          {/* ADE Cloud: the size of the lane's new computer */}
+          {onAdeCloud && adeCloud ? (
+            <>
+              <span className="cl-label">Size</span>
+              <div className="cl-cell">
+                <LaneCloudSizeChip
+                  popover={chipProps("size")}
+                  tiers={adeCloud.tiers}
+                  tierId={adeCloud.tierId}
+                  defaultTier={adeCloud.defaultTier}
+                  onChoose={adeCloud.onChooseTier}
+                  onSetDefault={adeCloud.onSetDefaultTier}
+                />
+                <span className="cl-hint">
+                  {adeCloud.fixed
+                    ? "The lane gets its own ADE Cloud computer when you send."
+                    : "The lane gets its own ADE Cloud computer. It starts from the pushed copy of its branch."}
+                </span>
               </div>
             </>
           ) : null}
@@ -711,7 +749,6 @@ export function CreateLaneDialog({
               <button
                 type="button"
                 className="cl-extra-text"
-                disabled={locked}
                 onClick={() => setIssuePickerOpen(true)}
                 aria-label="Change Linear issue"
               >
@@ -727,7 +764,6 @@ export function CreateLaneDialog({
               <button
                 type="button"
                 className="cl-x"
-                disabled={locked}
                 onClick={() => setSelectedLinearIssue(null)}
                 aria-label="Detach Linear issue"
                 title="Detach Linear issue"
@@ -739,7 +775,6 @@ export function CreateLaneDialog({
             <button
               type="button"
               className="cl-extra"
-              disabled={locked}
               onClick={() => setIssuePickerOpen(true)}
               title="Names the branch after the issue and links the lane to it"
             >
@@ -762,34 +797,10 @@ export function CreateLaneDialog({
                   onNavigateToTemplates();
                 }
                 : undefined}
-              disabled={locked}
             />
           ) : null}
         </div>
 
-        {setupStatus || setupSteps.length > 0 ? (
-          <section className="cl-setup">
-            {setupStatus ? <div className="cl-setup-title">{setupStatus}</div> : null}
-            {setupSteps.map((step) => {
-              const icon = step.state === "done"
-                ? <CheckCircle size={14} weight="fill" style={{ color: "var(--kit-ok)" }} />
-                : step.state === "active"
-                  ? <SpinnerGap size={14} className="animate-spin" style={{ color: "var(--color-accent)" }} />
-                  : <Circle size={14} />;
-              return (
-                <div key={step.label} className="cl-step" data-state={step.state}>
-                  {icon}
-                  <div className="min-w-0">
-                    <div>{step.label}</div>
-                    <div className="cl-step-detail">{step.detail}</div>
-                  </div>
-                </div>
-              );
-            })}
-          </section>
-        ) : null}
-
-        {envInitProgress ? <LaneEnvInitProgressPanel progress={envInitProgress} /> : null}
       </div>
     </LaneDialogShell>
     <LinearIssueSelectModal
@@ -799,7 +810,6 @@ export function CreateLaneDialog({
       selectedIssue={selectedLinearIssue}
       actionLabel="Attach issue"
       actionBusyLabel="Attaching issue"
-      actionDisabled={busy || laneCreated}
       onOpenChange={setIssuePickerOpen}
       onSelectIssue={setSelectedLinearIssue}
       onOpenLinearSettings={onOpenLinearSettings}

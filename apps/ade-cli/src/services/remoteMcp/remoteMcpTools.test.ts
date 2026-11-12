@@ -6,14 +6,22 @@ import { buildCliPlan } from "../../cli";
 import { findTypedTool, TYPED_TOOLS, withToolImage, type TypedTool } from "./remoteMcpTools";
 
 /** One value for every input a tool declares, so each flag it can emit is emitted. */
+/** Inputs a tool refuses together: the test fills the other side. */
+const EXCLUSIVE_INPUTS: Readonly<Record<string, readonly string[]>> = {
+  chat_start: ["lane", "dry_run"],
+  lanes_create: ["existing_branch"],
+};
+
 function everyInput(tool: TypedTool): Record<string, unknown> {
   const input: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(tool.properties)) {
+    if (EXCLUSIVE_INPUTS[tool.name]?.includes(name)) continue;
     const spec = schema as { type?: string; enum?: unknown[]; minimum?: number };
     if (spec.enum?.length) input[name] = spec.enum[0];
     else if (spec.type === "integer") input[name] = spec.minimum ?? 1;
     else if (spec.type === "boolean") input[name] = true;
     else if (spec.type === "object") input[name] = { 1: "yes" };
+    else if (name.endsWith("_url")) input[name] = "https://example.com/hook";
     else input[name] = name === "provider" ? "codex" : name === "model" ? "openai/gpt-5.5" : `${name}-1`;
   }
   return input;
@@ -25,7 +33,9 @@ describe("ADE MCP typed tools", () => {
   it.each(TYPED_TOOLS.map((tool) => [tool.name, tool] as const))("%s builds argv the CLI accepts", (_name, tool) => {
     const built = tool.build(everyInput(tool));
     if (!("argv" in built)) throw new Error(`${tool.name} did not build: ${built.error}`);
-    expect(() => buildCliPlan(built.argv)).not.toThrow();
+    // The CLI reads `--stdin` while it builds the plan; the runner pipes the text, so stand it in here.
+    const argv = built.argv.map((word) => (word === "--stdin" ? "--text=x" : word === "--notify-token-stdin" ? "--notify-token=x" : word));
+    expect(() => buildCliPlan(argv)).not.toThrow();
   });
 });
 

@@ -1,0 +1,36 @@
+---
+title: "Android Development"
+description: "Run an Android emulator for each lane in the Work tab, on macOS, Windows, and Linux, and let agents build, drive, and record your app."
+icon: "android"
+---
+
+**Android Development** is a tool in the Work tools pane. Each lane has its own emulator on the machine that runs the lane. ADE starts it without a window and shows it in the pane, so it stays out of your way.
+
+It works on macOS, Windows, and Linux. If the Android SDK is missing, the tool shows a setup card that installs what it needs.
+
+## What the tool does
+
+<CardGroup cols={2}>
+  <Card title="Emulators per lane" icon="mobile">
+    Pick a device for the lane, or add extra devices beside it. ADE checks the machine's memory before it starts one, and stops emulators nobody is using.
+  </Card>
+  <Card title="Live view and controls" icon="display">
+    Watch the emulator in the pane, use Back, Home, and Recents, and tap or type into the running app.
+  </Card>
+  <Card title="Inspect and record" icon="crosshairs">
+    Select an element as chat context, read logs, and record a video of the session.
+  </Card>
+  <Card title="From another machine" icon="network-wired">
+    Watch and drive a lane's emulator from another computer, the web client, or your phone.
+  </Card>
+</CardGroup>
+
+## Agents
+
+Agents use the `ade android` command. They can start the lane's emulator, build and install the app, drive it by element, read logcat, and capture proof. Run `ade help android` to see every command.
+
+Each emulator takes several gigabytes of memory, so start them through ADE rather than with the `emulator` binary. ADE refuses a start that would make the machine swap.
+
+<Card title="iOS Simulator" icon="mobile" href="/tools/ios-simulator" horizontal>
+  The same idea for Apple devices, on macOS.
+</Card>

@@ -95,6 +95,7 @@ export const IPC = {
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
+  appReportRendererMemory: "ade.app.reportRendererMemory",
   captureGestureUpdateSettings: "ade.captureGesture.updateSettings",
   captureGestureGetHealth: "ade.captureGesture.getHealth",
   captureGestureRetry: "ade.captureGesture.retry",
@@ -207,6 +208,8 @@ export const IPC = {
    */
   diagnosticsAckAutoSent: "ade.diagnostics.ackAutoSent",
   projectForgetRecent: "ade.project.forgetRecent",
+  projectInspectRemoval: "ade.project.inspectRemoval",
+  projectRemoveCopy: "ade.project.removeCopy",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",
   projectMissing: "ade.project.missing",
@@ -236,6 +239,8 @@ export const IPC = {
   remoteRuntimeGetProjectDetail: "ade.remoteRuntime.getProjectDetail",
   remoteRuntimeChooseProjectIcon: "ade.remoteRuntime.chooseProjectIcon",
   remoteRuntimeRemoveProjectIcon: "ade.remoteRuntime.removeProjectIcon",
+  remoteRuntimeInspectProjectRemoval: "ade.remoteRuntime.inspectProjectRemoval",
+  remoteRuntimeRemoveProjectCopy: "ade.remoteRuntime.removeProjectCopy",
   remoteRuntimeGetDefaultParentDir: "ade.remoteRuntime.getDefaultParentDir",
   remoteRuntimeGetHandoffStoragePreflight: "ade.remoteRuntime.getHandoffStoragePreflight",
   remoteRuntimeCreateProject: "ade.remoteRuntime.createProject",
@@ -302,6 +307,9 @@ export const IPC = {
   lanesDeleteEvent: "ade.lanes.delete.event",
   lanesLifecycleEvent: "ade.lanes.lifecycle.event",
   lanesListDeleteProgress: "ade.lanes.delete.progress.list",
+  lanesListDeleted: "ade.lanes.deleted.list",
+  lanesRestoreDeleted: "ade.lanes.deleted.restore",
+  lanesRemoveDeleted: "ade.lanes.deleted.remove",
   lanesGetDeleteRisk: "ade.lanes.delete.risk",
   lanesGetReclaimRisk: "ade.lanes.reclaim.risk",
   lanesAttachLinearIssueToSession: "ade.lanes.attachLinearIssueToSession",
@@ -983,6 +991,7 @@ export const IPC = {
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
+  aiVerifyProviderSignIn: "ade.ai.verifyProviderSignIn",
   aiUpdateConfig: "ade.ai.updateConfig",
   aiGetContinueAfterRestart: "ade.ai.getContinueAfterRestart",
   aiSetContinueAfterRestart: "ade.ai.setContinueAfterRestart",
@@ -1120,6 +1129,11 @@ export const IPC = {
   accountCancelDeviceLogin: "ade.account.cancelDeviceLogin",
   accountSignOut: "ade.account.signOut",
   accountListMachines: "ade.account.listMachines",
+  laneShareGuestListReceived: "ade.laneShareGuest.listReceived",
+  laneShareGuestOpen: "ade.laneShareGuest.open",
+  laneShareGuestAccept: "ade.laneShareGuest.accept",
+  laneShareGuestLeave: "ade.laneShareGuest.leave",
+  laneShareGuestConnect: "ade.laneShareGuest.connect",
   accountGetMachineInventory: "ade.account.getMachineInventory",
   accountGetConnectionRoutes: "ade.account.getConnectionRoutes",
   accountGetAvatarDataUrl: "ade.account.getAvatarDataUrl",
@@ -1133,40 +1147,50 @@ export const IPC = {
   accountStartSyncHost: "ade.account.startSyncHost",
   accountRepairSession: "ade.account.repairSession",
 
-  /** Agent37: the account-wide key, and new machines made on it. */
-  agent37GetStatus: "ade.agent37.getStatus",
-  agent37SaveKey: "ade.agent37.saveKey",
-  agent37RemoveKey: "ade.agent37.removeKey",
-  agent37CreateMachine: "ade.agent37.createMachine",
-  agent37CreateProgress: "agent37:createProgress",
-  agent37CancelCreate: "ade.agent37.cancelCreate",
-  agent37GetTemplateStatus: "ade.agent37.getTemplateStatus",
-  agent37RetryTemplate: "ade.agent37.retryTemplate",
-  agent37TemplateStatus: "agent37:templateStatus",
-  agent37StatusChanged: "agent37:statusChanged",
-  agent37ListMachines: "ade.agent37.listMachines",
-  agent37MachineAction: "ade.agent37.machineAction",
-  agent37ReadyStatus: "ade.agent37.readyStatus",
-  agent37ReadySetProject: "ade.agent37.readySetProject",
-  agent37ReadyRemoveProject: "ade.agent37.readyRemoveProject",
-  agent37ReadyRetry: "ade.agent37.readyRetry",
-  agent37ReadyClaim: "ade.agent37.readyClaim",
-  agent37ReadyRelease: "ade.agent37.readyRelease",
-  agent37ReadyStatusChanged: "agent37:readyStatusChanged",
-  agent37GetBudget: "ade.agent37.getBudget",
-  agent37SetBudget: "ade.agent37.setBudget",
-  agent37WakeMachine: "ade.agent37.wakeMachine",
-  agent37CopyMachine: "ade.agent37.copyMachine",
-  agent37MoveMachine: "ade.agent37.moveMachine",
-  agent37ReconnectMachine: "ade.agent37.reconnectMachine",
-  /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new Agent 37 machine. */
-  agent37CloudSignInStatus: "ade.agent37.cloudSignInStatus",
-  agent37CloudSignInClaudeStart: "ade.agent37.cloudSignInClaudeStart",
-  agent37CloudSignInClaudeCode: "ade.agent37.cloudSignInClaudeCode",
-  agent37CloudSignInClaudeCancel: "ade.agent37.cloudSignInClaudeCancel",
-  agent37CloudSignInSaveKey: "ade.agent37.cloudSignInSaveKey",
-  agent37CloudSignInRemove: "ade.agent37.cloudSignInRemove",
-  agent37CloudSignInChanged: "agent37:cloudSignInChanged",
+  /** the provider: the account-wide key, and new machines made on it. */
+  cloudGetAccess: "ade.cloud.getAccess",
+  cloudGetStatus: "ade.cloud.getStatus",
+  cloudCreateProgress: "cloud:createProgress",
+  cloudCancelCreate: "ade.cloud.cancelCreate",
+  cloudStatusChanged: "cloud:statusChanged",
+  /**
+   * ADE Cloud lane launches: one call for every `chatLaunch` method, answered
+   * by this app while it owns the launch (`cloudLaneLaunchService.ts`), and
+   * their snapshots to every window.
+   */
+  cloudLaneLaunchCall: "ade.cloud.laneLaunch.call",
+  cloudLaneLaunchEvent: "cloud:laneLaunchEvent",
+  cloudSavedChatsList: "ade.cloud.savedChats.list",
+  cloudSavedChatsRead: "ade.cloud.savedChats.read",
+  cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
+  cloudListMachines: "ade.cloud.listMachines",
+  cloudMachineAction: "ade.cloud.machineAction",
+  cloudGetAgentLimits: "ade.cloud.getAgentLimits",
+  cloudSetAgentLimits: "ade.cloud.setAgentLimits",
+  cloudSetExtraHours: "ade.cloud.setExtraHours",
+  cloudOpenCheckout: "ade.cloud.openCheckout",
+  cloudSetExtraDisk: "ade.cloud.setExtraDisk",
+  /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
+  cloudRedeemInvite: "ade.cloud.redeemInvite",
+  cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
+  cloudPersonIsHere: "ade.cloud.personIsHere",
+  cloudPushAllWork: "ade.cloud.pushAllWork",
+  /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
+  cloudLaneLifeCall: "ade.cloud.laneLife.call",
+  /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
+  cloudLaneJobEvent: "cloud:laneJobEvent",
+  cloudCopyMachine: "ade.cloud.copyMachine",
+  cloudMoveMachine: "ade.cloud.moveMachine",
+  cloudReconnectMachine: "ade.cloud.reconnectMachine",
+  /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new cloud machine. */
+  cloudSignInStatus: "ade.cloud.cloudSignInStatus",
+  cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",
+  cloudSignInClaudeCode: "ade.cloud.cloudSignInClaudeCode",
+  cloudSignInClaudeKeep: "ade.cloud.cloudSignInClaudeKeep",
+  cloudSignInClaudeCancel: "ade.cloud.cloudSignInClaudeCancel",
+  cloudSignInSaveKey: "ade.cloud.cloudSignInSaveKey",
+  cloudSignInRemove: "ade.cloud.cloudSignInRemove",
+  cloudSignInChanged: "cloud:cloudSignInChanged",
 
   /**
    * The account settings store, reached through the brain's `account_settings`
@@ -1177,7 +1201,14 @@ export const IPC = {
   accountSettingsList: "ade.accountSettings.list",
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
+  accountSettingsRemove: "ade.accountSettings.remove",
   accountSettingsSync: "ade.accountSettings.sync",
+  /**
+   * The account's provider sign-ins (P5) on this computer's brain, with no
+   * project bound: `{ action, args }` through the brain's `providerLogins.call`.
+   * A bound or pinned window calls the `provider_logins` action domain instead.
+   */
+  providerLoginsCall: "ade.providerLogins.call",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and
@@ -1211,6 +1242,8 @@ export const IPC = {
   prsGetReviews: "ade.prs.getReviews",
   prsGetReviewThreads: "ade.prs.getReviewThreads",
   prsUpdateDescription: "ade.prs.updateDescription",
+  prsSearchMentionables: "ade.prs.searchMentionables",
+  prsGetRepoReferences: "ade.prs.getRepoReferences",
   prsDelete: "ade.prs.delete",
   prsLand: "ade.prs.land",
   prsUpdateBranch: "ade.prs.updateBranch",

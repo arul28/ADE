@@ -1,0 +1,237 @@
+/*
+ * ADE Cloud's look ("Night sky"): one own color, deep blue to soft sky blue,
+ * on ADE's own surfaces. Every ADE Cloud surface reads these tokens, so a
+ * light theme changes them here once.
+ */
+:root {
+  --adec-950: #081128;
+  --adec-900: #0d1b42;
+  --adec-800: #142d66;
+  --adec-700: #1d4594;
+  --adec-600: #2a62c8;
+  --adec-500: #4482ee;
+  --adec-400: #6fa3fa;
+  --adec-300: #9dc4ff;
+  --adec-200: #c8ddff;
+  --adec-100: #e9f2ff;
+  --adec-lamp: #ffe0a8;
+  --adec-lamp-hot: #fff4da;
+  --adec-asleep: #27304d;
+
+  /* The mark, and ADE Cloud's text on a chip (the lane chip, the size change). */
+  --adec-mark: var(--adec-300);
+  --adec-pill-fg: var(--adec-100);
+  /* A lit-window figure in text (the hero's earned hours). */
+  --adec-lamp-text: var(--adec-lamp);
+
+  /* The size icon. */
+  --adec-size-on: var(--adec-300);
+  --adec-size-off: color-mix(in srgb, var(--color-fg, #f5f5f7) 19%, transparent);
+  --adec-size-line: color-mix(in srgb, var(--adec-300) 58%, transparent);
+
+  /* The step card while a computer is made. */
+  --adec-tile-fg: var(--adec-200);
+  --adec-tile-border: color-mix(in srgb, var(--adec-400) 30%, transparent);
+  --adec-tile-bg: color-mix(in srgb, var(--adec-400) 13%, transparent);
+  --adec-puff: color-mix(in srgb, var(--adec-300) 20%, transparent);
+}
+
+[data-theme="light"] {
+  --adec-mark: #2a62c8;
+  --adec-pill-fg: #1d4594;
+  --adec-lamp-text: #b26b00;
+  --adec-size-on: #2a62c8;
+  --adec-size-off: rgba(26, 26, 30, 0.16);
+  --adec-size-line: rgba(42, 98, 200, 0.55);
+  --adec-tile-fg: #1d4594;
+  --adec-tile-border: rgba(42, 98, 200, 0.3);
+  --adec-tile-bg: rgba(68, 130, 238, 0.1);
+  --adec-puff: rgba(68, 130, 238, 0.16);
+}
+
+.adec-mark {
+  color: var(--adec-mark);
+}
+
+/* The size icon (owner's pick, "rising fill"): the cloud fills 1/4 to full. */
+.adec-size-empty {
+  fill: var(--adec-size-off);
+  opacity: 0.55;
+}
+.adec-size-fill {
+  fill: var(--adec-size-on);
+  transition: transform 380ms cubic-bezier(0.3, 1.45, 0.5, 1);
+}
+.adec-size-line {
+  fill: none;
+  stroke: var(--adec-size-line);
+  stroke-linejoin: round;
+}
+
+/* The size menu and the Run on menu share these rows. */
+.adec-menu-label {
+  padding: 6px 8px 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-muted-fg, #a1a1aa) 70%, transparent);
+}
+.adec-check {
+  color: var(--adec-mark);
+}
+
+/*
+ * The label above the prompt box when ADE Cloud can't start a lane. It sits
+ * on the box like a tab: the composer frame is inset 12px, the tray 14px more,
+ * and its bottom margin cancels the slot's 6px gap so it touches the box.
+ */
+.adec-tray {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* One line, the same height, padding and type as the sign-in strip
+     (providerSignInSlot.css .ade-psi-strip), so the tab does not change size
+     when the pick changes. */
+  height: 34px;
+  min-width: 0;
+  /* A tab on the prompt box: the same inset as the sign-in strip, touching
+     the box (the slot's 6px gap plus the box's 1px edge). */
+  margin: 0 var(--composer-tab-inset, 26px) -7px;
+  text-align: left;
+  padding: 0 4px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--adec-400) 24%, transparent);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  /* Opaque: the prompt box's own panel color with the tint, so the text reads
+     over any wallpaper and the tab reads as one piece with the box. */
+  background: color-mix(in srgb, var(--adec-600) 9%, var(--chat-panel-bg-strong, var(--color-card, #15151c)));
+  font-size: calc(var(--chat-font-size, 14px) * 12 / 14);
+  line-height: 1;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--color-fg, #f5f5f7) 86%, var(--chat-panel-bg-strong, var(--color-card, #15151c)));
+}
+.adec-tray[data-tone="blocked"] {
+  border-color: color-mix(in srgb, #f87171 28%, transparent);
+  background: color-mix(in srgb, #f87171 7%, var(--chat-panel-bg-strong, var(--color-card, #15151c)));
+}
+.adec-tray-icon {
+  flex: none;
+  color: var(--adec-mark);
+}
+.adec-tray[data-tone="blocked"] .adec-tray-icon {
+  color: #fca5a5;
+}
+[data-theme="light"] .adec-tray[data-tone="blocked"] .adec-tray-icon {
+  color: #b91c1c;
+}
+.adec-tray-text {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+/*
+ * The long sentence while it fits on one line with every action, else the
+ * short form and only the first action. `--adec-tray-need` is the width the
+ * long line needs (AdeCloudTray measures it once per notice, the sentence in
+ * em so it follows the chat text size). 100cqi is the tray's width, so the
+ * switch follows every resize with no script. A positive difference times a
+ * large number is a max-width no text reaches; a negative one clamps to 0.
+ */
+.adec-tray-long,
+.adec-tray-short,
+.adec-tray-more {
+  overflow: hidden;
+}
+.adec-tray-long {
+  max-width: max(0px, calc((100cqi - var(--adec-tray-need, 0px)) * 100000));
+}
+.adec-tray-short {
+  max-width: max(0px, calc((var(--adec-tray-need, 0px) - 100cqi) * 100000));
+  text-overflow: ellipsis;
+}
+.adec-tray-more {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  /* Cancels the tray's gap, so a hidden group leaves no space. */
+  margin-left: -8px;
+  padding-left: 8px;
+  max-width: max(8px, calc((100cqi - var(--adec-tray-need, 0px)) * 100000));
+}
+.adec-tray-action {
+  flex: none;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-fg, #f5f5f7) 80%, transparent);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.adec-tray-action:hover {
+  color: var(--color-fg, #f5f5f7);
+  background: color-mix(in srgb, var(--color-fg, #f5f5f7) 7%, transparent);
+}
+.adec-tray-action[data-primary="true"] {
+  border: 1px solid color-mix(in srgb, var(--color-fg, #f5f5f7) 16%, transparent);
+}
+/* "Upgrade" is the way out of a plan limit: the filled Night sky button. */
+.adec-tray-action[data-upgrade="true"] {
+  border: 1px solid color-mix(in srgb, var(--adec-400) 55%, transparent);
+  background: var(--adec-500);
+  color: #fff;
+}
+.adec-tray-action[data-upgrade="true"]:hover {
+  background: var(--adec-400);
+  color: #fff;
+}
+
+/* The running step of an ADE Cloud launch: rail and percent in the blue. */
+.adec-rail-track {
+  background-color: color-mix(in srgb, var(--adec-400) 16%, transparent);
+}
+.adec-rail-fill {
+  background-color: color-mix(in srgb, var(--adec-400) 80%, transparent);
+}
+.adec-percent {
+  color: var(--adec-tile-fg);
+}
+
+/* The step card tile and the drift of cloud behind its header, once. */
+.adec-tile {
+  color: var(--adec-tile-fg);
+  border-color: var(--adec-tile-border);
+  background-color: var(--adec-tile-bg);
+}
+.adec-drift {
+  position: absolute;
+  left: -14px;
+  right: -14px;
+  top: -12px;
+  height: 64px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.adec-puff {
+  position: absolute;
+  border-radius: 999px;
+  background: radial-gradient(closest-side, var(--adec-puff), transparent);
+  opacity: 0;
+  animation: adec-puff 2.8s cubic-bezier(0.25, 0.6, 0.3, 1) forwards;
+}
+@keyframes adec-puff {
+  0% { opacity: 0; transform: translate(0, 6px) scale(0.6); }
+  25% { opacity: 1; }
+  70% { opacity: 0.7; }
+  100% { opacity: 0; transform: translate(var(--adec-dx, 160px), -4px) scale(1.25); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adec-size-fill { transition: none; }
+  .adec-puff { animation: none; display: none; }
+}
+html[data-motion="reduced"] .adec-size-fill { transition: none; }
+html[data-motion="reduced"] .adec-puff { animation: none; display: none; }

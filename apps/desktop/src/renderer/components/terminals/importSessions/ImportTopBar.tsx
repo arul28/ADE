@@ -5,7 +5,7 @@ import { DraftMachinePicker } from "../../chat/DraftMachinePicker";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
 import type { ExternalSessionSource } from "./contract";
 
-/** One row of 28px controls: lane, search, computer, refresh. */
+/** One row of 28px controls: lane and computer side by side, then search and refresh. */
 export function ImportTopBar({
   laneOptions,
   laneFilter,
@@ -47,17 +47,6 @@ export function ImportTopBar({
         size="compact"
         aria-label="Filter by lane"
       />
-      <label className="import-search">
-        <MagnifyingGlass size={12} aria-hidden="true" />
-        <input
-          ref={searchRef}
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search sessions"
-          aria-label="Search sessions"
-          data-import-search=""
-        />
-      </label>
       <DraftMachinePicker
         machines={sources.map((source) => ({
           id: source.machineId,
@@ -70,7 +59,19 @@ export function ImportTopBar({
         tooltipLabel="Import from"
         triggerLabel="Choose import source"
         tooltipDescription="The computer to scan. The list and actions follow it."
+        side="bottom"
       />
+      <label className="import-search">
+        <MagnifyingGlass size={12} aria-hidden="true" />
+        <input
+          ref={searchRef}
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Search sessions"
+          aria-label="Search sessions"
+          data-import-search=""
+        />
+      </label>
       <SmartTooltip content={{ label: "Refresh", description: "Scan again for sessions." }}>
         <button
           type="button"

@@ -1,8 +1,31 @@
+import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
-import type { Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus } from "../shared/agent37Ready";
-import type { Agent37CloudSignInId, Agent37CloudSignInStatus } from "../shared/agent37CloudSignIns";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../shared/projectRemoval";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type {
+  LaneShareGuestBridge,
+  LaneShareCreateArgs,
+  LaneShareCreateResult,
+  LaneShareEvent,
+  LaneShareLeaveResult,
+  LaneShareMoveAction,
+  LaneShareListArgs,
+  LaneShareListResult,
+  LaneShareReceivedResult,
+  LaneShareResendResult,
+  LaneShareRevokeResult,
+  LaneShareUpdateRightsArgs,
+  LaneShareUpdateRightsResult,
+} from "../shared/types/laneShare";
+import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
@@ -508,6 +531,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeOAuthStartResult,
@@ -649,7 +674,7 @@ import type {
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -762,6 +787,10 @@ import type {
   SetPrDraftArgs,
   RerunPrChecksArgs,
   UpdatePrDescriptionArgs,
+  GetPrRepoReferencesArgs,
+  PrRepoReference,
+  SearchPrMentionablesArgs,
+  SearchPrMentionablesResult,
   ListOverlapsArgs,
   LaneGitHubIssue,
   LaneLinearIssue,
@@ -797,6 +826,7 @@ import type {
   ListMyGitHubReposResult,
   PublishProjectInput,
   PublishProjectResult,
+  ProjectFindForRepoResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -844,6 +874,10 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  DeletedLaneSnapshot,
+  RemoveDeletedLaneArgs,
+  RestoreDeletedLaneArgs,
+  RestoreDeletedLaneResult,
   LaneReclaimRisk,
   RestoreLaneResult,
   LaneEnvInitProgress,
@@ -1381,6 +1415,8 @@ declare global {
           event: string,
           payload?: Record<string, unknown>,
         ) => void;
+        /** This window's memory snapshot (`renderer/lib/rendererMemorySnapshot.ts`). */
+        reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void;
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
@@ -1441,9 +1477,13 @@ declare global {
         findForRepo: (args: {
           repoOwner: string;
           repoName: string;
-        }) => Promise<{ rootPath: string; displayName: string } | null>;
+        }) => Promise<ProjectFindForRepoResult>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
+        /** The state of this computer's copy, for the remove dialog. */
+        inspectRemoval?: (rootPath: string) => Promise<ProjectRemovalReport>;
+        /** Removes this computer's entry for a project and, when asked, moves its folder to the Trash. */
+        removeCopy?: (rootPath: string, request: ProjectRemovalRequest) => Promise<ProjectRemovalOutcome>;
         forgetRecent: (keyOrRootPath: string) => Promise<RecentProjectSummary[]>;
         reorderRecent: (
           orderedKeys: string[],
@@ -1626,6 +1666,17 @@ declare global {
           id: string,
           rootPath: string,
         ) => Promise<ProjectIcon | null>;
+        /** The state of the host's copy, for the remove dialog. Only for a connected machine; never wakes one. */
+        inspectProjectRemoval?: (
+          id: string,
+          projectId: string,
+        ) => Promise<RemoteProjectRemovalInspection>;
+        /** Removes the host's entry for a project and, when asked, deletes its folder there for good. */
+        removeProjectCopy?: (
+          id: string,
+          projectId: string,
+          request: ProjectRemovalRequest,
+        ) => Promise<ProjectRemovalOutcome>;
         getDefaultParentDir: (id: string) => Promise<string>;
         getHandoffStoragePreflight: (
           id: string,
@@ -1770,6 +1821,12 @@ declare global {
         deleteApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<void>;
         listApiKeys: (pin?: OpenProjectBinding | null) => Promise<string[]>;
         verifyApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<AiApiKeyVerificationResult>;
+        /**
+         * Runs one provider's own sign-in check (up to 20 s): right after a
+         * sign-in and on Re-check only. A remote ADE older than this action
+         * rejects it; callers read that as "unknown".
+         */
+        verifyProviderSignIn: (args: AiVerifyProviderSignInArgs, pin?: OpenProjectBinding | null) => Promise<AiProviderSignInCheck>;
         updateConfig: (config: Partial<AiConfig>, pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * Optional: shipped after this group did, so an older preload will not
@@ -1837,7 +1894,7 @@ declare global {
         cursorAuthCancel: (pin?: OpenProjectBinding | null) => Promise<void>;
         onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         /** `refresh` skips the host's few-minute cache (Retry). */
-        cursorCloudListRepositories: (args?: { refresh?: boolean }) => Promise<CursorCloudRepository[]>;
+        cursorCloudListRepositories: (args?: { refresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
           limit?: number;
@@ -1850,8 +1907,9 @@ declare global {
         }) => Promise<CursorCloudListRunsResult>;
         cursorCloudCreateRun: (
           args: CursorCloudCreateRunRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CursorCloudCreateRunResult>;
-        cursorCloudGetLaneSecretNames: (laneId: string) => Promise<string[]>;
+        cursorCloudGetLaneSecretNames: (laneId: string, pin?: OpenProjectBinding | null) => Promise<string[]>;
         cursorCloudArchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudUnarchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudDeleteAgent: (agentId: string) => Promise<void>;
@@ -1880,6 +1938,7 @@ declare global {
         }) => Promise<CursorCloudArtifactDownload>;
         cursorCloudOpenChat: (
           args: CursorCloudOpenChatRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CursorCloudOpenChatResult>;
         cursorCloudWatchMirror: (
           args: CursorCloudWatchMirrorRequest,
@@ -1982,7 +2041,7 @@ declare global {
         open: (args: CloudAgentRef) => Promise<CloudAgentOpenResult>;
         stop: (args: CloudAgentRef) => Promise<{ stopped: true }>;
         archive: (args: CloudAgentArchiveArgs) => Promise<{ archived: boolean }>;
-        launch: (args: CloudAgentLaunchArgs) => Promise<CloudAgentOpenResult>;
+        launch: (args: CloudAgentLaunchArgs, pin?: OpenProjectBinding | null) => Promise<CloudAgentOpenResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -2320,6 +2379,22 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<CancelLaneGitWriteResult>;
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
+        /** Deleted lanes whose unsaved work ADE kept (30 days), newest first. */
+        listDeleted: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneSnapshot[]>;
+        /** Brings a deleted lane back as a new lane, with its uncommitted files. */
+        restoreDeleted: (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreDeletedLaneResult>;
+        /** Drops a deleted lane's saved work for good. */
+        removeDeleted: (args: RemoveDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
+        /** "Push this branch?" before an ADE Cloud launch: is the start branch on GitHub? Runs on the pin's machine. */
+        cloudStartBranch?: (
+          args: import("../shared/types").CloudStartBranchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CloudStartBranchCheck>;
+        /** Pushes that start branch to origin, then answers the check again. */
+        pushCloudStartBranch?: (
+          args: import("../shared/types").CloudStartBranchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CloudStartBranchCheck>;
         getDeleteRisk: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -4142,6 +4217,37 @@ declare global {
         signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
         setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
       };
+      /**
+       * The account's provider sign-ins for ADE Cloud (P5). `status` reads (any
+       * caller); the rest are the person's, and the brain refuses them to
+       * anything but this desktop. Pass the machine's pin from
+       * `useSettingsMachineScope().pin` for its "this computer" part; the
+       * account part is the same from any brain of the person's.
+       */
+      providerLogins: {
+        status: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        captureNow: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /**
+         * Copy Antigravity's sign-in from this Mac's Keychain, once (macOS asks first).
+         * Refused off macOS and for another computer's pin or binding ("Run this on that Mac").
+         */
+        allowKeychain: (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /**
+         * Copilot's GitHub CLI login (github.com) for ADE Cloud on one computer, off at the start.
+         * `on: true` runs one `gh auth token` there at once and returns what it found in
+         * `providers[copilot].ghCli`; refused for another computer's pin or binding.
+         * `on: false` removes that computer's copy from the account; pass the computer's pin.
+         */
+        allowGitHubCli: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /** Claude's smart balance on ADE Cloud: one switch for ADE Cloud, apart from each computer's own. */
+        setCloudBalance: (args: { provider: "claude"; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        remove: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /** A capture, an apply or a setting change on the bound or pinned brain. */
+        onChanged: (cb: () => void) => () => void;
+      };
       providerInstances: {
         list: (
           args?: ProviderInstanceListArgs,
@@ -4541,7 +4647,7 @@ declare global {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
           forceRefresh?: boolean;
-        }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
+        }) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
@@ -4681,76 +4787,106 @@ declare global {
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
       /**
-       * Agent37, account-wide: the workspace key (in the account vault) and
+       * Whether ADE Cloud exists for this account: the desktop's own answer, or
+       * on the web, a connected machine's through `cloud.read`. No answer yet
+       * reads as no. Account-wide, so no pin.
+       */
+      cloudAccess?: {
+        /** `signInEnd`: the sign-in the end warning names (a Claude pass or a key), only while ADE Cloud is on (desktop only). */
+        read: () => Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }>;
+        onChanged: (cb: () => void) => () => void;
+      };
+      /**
+       * ADE Cloud, account-wide: the machines and
        * new machines made on it. No pin: nothing here acts on a lane, chat or
        * another machine. Optional because the web client does not expose it.
        */
-      agent37?: {
-        getStatus: () => Promise<Agent37Status | null>;
-        saveKey: (apiKey: string) => Promise<Agent37Status | null>;
-        removeKey: () => Promise<Agent37Status | null>;
-        /** Returns at once; the create reports through `onCreateProgress`, ending in `done` or `failed`. */
-        createMachine: (requestId: string, machine: Agent37CreateMachineArgs) => Promise<{ started: boolean }>;
-        onCreateProgress: (cb: (progress: Agent37CreateProgress) => void) => () => void;
+      cloud?: {
+        /** Saved chats: account-level. Reads a computer's copy while it can't answer. */
+        savedChats?: {
+          list: (args: CloudSavedChatsListArgs) => Promise<CloudSavedChatList | null>;
+          read: (args: CloudSavedChatReadArgs) => Promise<CloudSavedChatPage | null>;
+          delete: (args: CloudSavedChatDeleteArgs) => Promise<void>;
+        };
+        getStatus: () => Promise<CloudStatus | null>;
+        /** A copy or move reports through `onCreateProgress`, ending in `done` or `failed`. */
+        onCreateProgress: (cb: (progress: CloudCreateProgress) => void) => () => void;
         /** Stops a create and deletes the box it made, unless it already signed in. */
         cancelCreate: (requestId: string) => Promise<{ cancelled: boolean }>;
-        /** ADE's template in the Agent37 workspace; asking also starts a check when none ran yet. */
-        getTemplateStatus: () => Promise<Agent37TemplateStatus | null>;
-        retryTemplate: () => Promise<Agent37TemplateStatus | null>;
         /**
-         * The workspace's boxes with state, size, price and spend. Account-level
-         * (the Agent37 key is the account's), so no pin: it answers the same on
+         * The account's boxes with state, size, price and spend. Account-level
+         * (cloud access is the account's), so no pin: it answers the same on
          * every computer.
          */
-        listMachines?: () => Promise<Agent37MachinesResult | null>;
-        /** Sleep, wake, resize, back up or delete one box, on Agent37. No pin, as above. */
-        machineAction?: (args: Agent37MachineActionArgs) => Promise<Agent37MachineActionResult | null>;
+        listMachines?: () => Promise<CloudMachinesResult | null>;
+        /** Sleep, wake, resize, back up or delete one box, on the provider. No pin, as above. */
+        machineAction?: (args: CloudMachineActionArgs) => Promise<CloudMachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
-        onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void) => () => void;
         /**
-         * Sign-ins for cloud machines: the provider sign-ins every new Agent
-         * 37 machine starts with. Kept in the account vault and run on this
+         * Sign-ins for cloud machines: the provider sign-ins every new cloud
+         * machine starts with. Kept in the account vault and run on this
          * computer's brain, so no pin: every computer answers the same.
          */
-        cloudSignInStatus?: () => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInClaudeStart?: () => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInClaudeCode?: (code: string) => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInClaudeCancel?: () => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInSaveKey?: (id: Agent37CloudSignInId, key: string) => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInRemove?: (id: Agent37CloudSignInId) => Promise<Agent37CloudSignInStatus | null>;
+        cloudSignInStatus?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeStart?: (args?: CloudSignInClaudeStartArgs) => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeKeep?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeCode?: (code: string) => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeCancel?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;
+        cloudSignInRemove?: (id: CloudSignInId) => Promise<CloudSignInStatus | null>;
         onCloudSignInChanged?: (cb: () => void) => () => void;
+        /** What unattended agents may do on ADE Cloud (account vault; no pin). */
+        getAgentLimits?: () => Promise<CloudAgentLimits | null>;
+        setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
+        /** The account's plan (no pin): extra hours and extra disk for paid accounts, and Stripe's pages in the browser. */
+        setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
+        /** Extra disk on with a monthly limit in whole dollars (1 to 1,000), or off. */
+        setExtraDisk?: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }) => Promise<CloudAccountState | null>;
         /**
-         * Ready machines: per project, one machine prepared and kept asleep
-         * for the next chat. The choice is in the account vault and the pool
-         * on Agent37, so no pin: every computer answers the same.
+         * Enters a friend's invite: the pasted link (https or ade://) or the bare
+         * code (no pin: account level). Once per account, never changed, within
+         * `CLOUD_REFERRAL_ENTER_DAYS` of making it. The account read
+         * (`CloudAccountState.referral`) carries the invite link and what it earned.
+         * A refusal is `{ ok: false, reason, message }` (show `message`); after a
+         * success ADE Cloud's status changes, so the account reads again.
+         * Optional: the web client has no code box.
          */
-        readyStatus?: () => Promise<Agent37ReadyStatus | null>;
-        readySetProject?: (settings: Partial<Agent37ReadyProjectSettings>) => Promise<Agent37ReadyStatus | null>;
-        readyRemoveProject?: (identity: string) => Promise<Agent37ReadyStatus | null>;
-        readyRetry?: (identity: string) => Promise<Agent37ReadyStatus | null>;
-        /** Takes the project's ready machine and wakes it; the chat then goes to `machineKey` like any machine. */
-        readyClaim?: (originUrl: string) => Promise<Agent37ReadyClaim | null>;
-        /** Gives back a claim no chat used yet: ready again, and asleep. */
-        readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
-        onReadyStatus?: (cb: (status: Agent37ReadyStatus) => void) => () => void;
-        /** The account's monthly cap and agent limits for Agent 37 machines (account vault; no pin). */
-        getBudget?: () => Promise<Agent37Budget | null>;
-        setBudget?: (budget: Partial<Agent37Budget>) => Promise<Agent37Budget | null>;
+        redeemInvite?: (code: string) => Promise<CloudInviteRedeemOutcome>;
+        /**
+         * Checkout for Plus (the default) or Pro. A paid account asking for its
+         * other plan changes it in place: nothing opens and `change` says when
+         * it applies (`now` for Pro, `next_period` for Plus).
+         */
+        openCheckout?: (plan?: CloudPaidPlanId) => Promise<CloudOpenCheckoutResult>;
+        openBillingPortal?: () => Promise<{ opened: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
-         * level (they act on the Agent 37 workspace), so no pin.
+         * level (they act on the account's cloud machines), so no pin.
          */
         copyMachine?: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }) => Promise<{ started: boolean }>;
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
         /** Signs a box that was removed from the account ("Not in ADE") back in, as the same machine. Reports like a copy. */
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
+        personIsHere?: () => Promise<boolean>;
+        pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
         /**
-         * Wakes the Agent 37 box behind an account machine because the person
-         * is about to use it (opening one of its lanes). It acts on the Agent
-         * 37 workspace with the account's key, not on the machine, so no pin.
+         * The life of a lane's computer: work check, delete lane, keep the
+         * lane on a fresh computer, lanes without a computer, tier changes
+         * (`shared/cloudLaneLife.ts` has each method's args and answer).
+         * Account level: it names a computer of the account, so no pin.
          */
-        wakeMachine?: (machine: { machineKey: string; hostname?: string | null }) => Promise<Agent37WakeForUseResult | null>;
+        laneLife?: <M extends import("../shared/cloudLaneLife").CloudLaneLifeMethod>(
+          request: import("../shared/cloudLaneLife").CloudLaneLifeCallRequest<M>,
+        ) => Promise<import("../shared/cloudLaneLife").CloudLaneLifeResults[M]>;
+        /** A tier change's steps as they move. */
+        onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
+        /**
+         * Clears a lane computer's caches (`cloud.clear_caches`) on THAT
+         * computer: `pin` is the lane's machine binding, `instanceId` its
+         * ADE Cloud id (the brain refuses a call that reached another one).
+         */
+        clearCaches?: (pin: OpenProjectBinding, instanceId: string) => Promise<{ freedGb: number }>;
       };
       /**
        * The account settings store (the `account_settings` action domain),
@@ -4766,6 +4902,10 @@ declare global {
         get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
         set: (
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+        ) => Promise<AccountSettingsResult<null>>;
+        /** Deletes a key on every machine of the account; a reader then sees it as never set. */
+        remove?: (
+          args: { scope: string; key: string } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
         onChanged?: (listener: () => void) => () => void;
@@ -4856,7 +4996,9 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<PrReview[]>;
         getReviewThreads: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrReviewThread[]>;
-        updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
+        updateDescription: (args: UpdatePrDescriptionArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        searchMentionables: (args: SearchPrMentionablesArgs, pin?: OpenProjectBinding | null) => Promise<SearchPrMentionablesResult>;
+        getRepoReferences: (args: GetPrRepoReferencesArgs, pin?: OpenProjectBinding | null) => Promise<PrRepoReference[]>;
         delete: (args: DeletePrArgs, pin?: OpenProjectBinding | null) => Promise<DeletePrResult>;
         land: (args: LandPrArgs, pin?: OpenProjectBinding | null) => Promise<LandResult>;
         updateBranch: (args: UpdateBranchArgs, pin?: OpenProjectBinding | null) => Promise<UpdateBranchResult>;
@@ -5005,6 +5147,7 @@ declare global {
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
         getLaneState: (laneId: string) => Promise<WorkToolsLaneState | null>;
+        noteWatching?: (pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * `openTools` is the pane's whole tab strip in order; `tool` is the one
          * on screen. Defaulted so an older caller still publishes coherently.
@@ -5151,6 +5294,30 @@ declare global {
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
+      /**
+       * The owner's lane sharing (`lane_share` runtime actions, user-only).
+       * A share lives on the lane's own machine: pass that machine's pin.
+       * No pin: the machine the project tab is bound to.
+       */
+      laneShare: {
+        list: (args?: LaneShareListArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareListResult>;
+        create: (args: LaneShareCreateArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareCreateResult>;
+        updateRights: (args: LaneShareUpdateRightsArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareUpdateRightsResult>;
+        revoke: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareRevokeResult>;
+        resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareResendResult>;
+        listReceived: (pin?: OpenProjectBinding | null) => Promise<LaneShareReceivedResult>;
+        leave: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareLeaveResult>;
+        /** A step of a chat move (`LaneShareMoveAction`), on the pinned machine. */
+        move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin?: OpenProjectBinding | null) => Promise<T>;
+        /** `lane_share_event` from the pinned machine, else the bound one. */
+        onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+      };
+      /**
+       * Lane sharing, the guest's side: this account's calls to the account
+       * directory (shares given TO it). Account scope, no pin: desktop asks
+       * from main with its own token, the web client from its account session.
+       */
+      laneShareGuest: LaneShareGuestBridge;
       remoteMcpCall: <T = unknown>(
         action: RemoteMcpAction,
         args?: Record<string, unknown>,

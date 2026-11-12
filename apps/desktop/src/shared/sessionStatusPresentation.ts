@@ -1,7 +1,8 @@
 import { resolveUsageLimitResumeState } from "./usageLimitResumeState";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
-import type { SessionActivityReport } from "./types/sessions";
+import type { SessionActivityReport, TerminalSessionSummary } from "./types/sessions";
+import { prWatchHint, type SessionActivePrWatch } from "./prWatch";
 import { isReportFromTurn } from "./sessionActivity";
 import type {
   CanonicalSessionPhase,
@@ -103,6 +104,8 @@ export type SessionStatusPresentation = {
   activitySource?: SessionActivityReport["source"];
   /** When the session entered this activity — the row's elapsed counts from here. */
   activityUpdatedAt?: string;
+  /** Hover text that names what the status is about, e.g. "PR #2130". */
+  hint?: string;
 };
 
 /** Nested compact rows keep the word only for Needs you / Failed. */
@@ -171,6 +174,8 @@ export type SessionStatusActivityContext = {
   liveness?: SessionLiveness | null;
   /** Live background work, for the "×N" suffix. */
   backgroundWork?: SessionBackgroundWork | null;
+  /** The chat's live PR watches, for the "Shipping" label's count and hover. */
+  activePrWatch?: SessionActivePrWatch | null;
   nextWakeAt?: string | null;
   /**
    * A nested subagent still keeps this chat busy (`subagentKeepsParentBusy`).
@@ -248,6 +253,9 @@ export function sessionStatusPresentation(
   }
 
   const liveness = activity.liveness ?? "turn";
+  // Between turns, whatever a PR watch promoted the phase to. A chat waiting on
+  // its PR is still at rest for anything that has to interrupt it.
+  const prWatchAtRest = phase === "running" && liveness === "pr_watch";
 
   // A typed activity (detected or agent-reported) refines a live turn only.
   // When the turn ends, host-observed background work (especially Monitoring)
@@ -255,8 +263,10 @@ export function sessionStatusPresentation(
   // It never changes the phase; Needs you, snooze, and woke remain
   // higher-priority signals.
   // A failed compaction stays visible after its turn, but only while the chat is
-  // still open (ready or idle); an ended or stopped chat says so instead.
-  const compactionFailedShows = activity.activityStatus?.value === "compaction_failed" && (phase === "ready" || phase === "idle");
+  // still open (ready or idle, or waiting on its PR); an ended or stopped chat
+  // says so instead.
+  const compactionFailedShows = activity.activityStatus?.value === "compaction_failed"
+    && (phase === "ready" || phase === "idle" || prWatchAtRest);
   const reportedActivity = (phase === "running" && liveness === "turn") || compactionFailedShows
     ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
     : null;
@@ -300,7 +310,7 @@ export function sessionStatusPresentation(
   // single job's runtime: a second job joining a live set counts from the
   // first one's start. `showsElapsed` also re-enables the breathing
   // animation, which is intended — background work genuinely is a live state.
-  if (phase === "running" && liveness !== "turn") {
+  if (phase === "running" && liveness !== "turn" && liveness !== "pr_watch") {
     const work = activity.backgroundWork;
     // "Monitoring" earns its own word because it answers a different question.
     // Background work might finish on its own; a watch loop will not, so the
@@ -334,7 +344,10 @@ export function sessionStatusPresentation(
   //
   // `opted_out`/`no_reset` read "Usage limit" in amber: nothing will restart
   // the chat on its own, but it is stopped on a limit, not broken.
-  if (phase === "ready" || phase === "idle" || phase === "failed") {
+  //
+  // A chat waiting on its PR is here too: its wake cannot run until the limit
+  // lifts, so "Shipping" would promise work that is not coming.
+  if (phase === "ready" || phase === "idle" || phase === "failed" || prWatchAtRest) {
     const nowMs = activity.nowMs ?? Date.now();
     const resume = resolveUsageLimitResumeState(activity.usageLimitResume, nowMs);
     const rowStatus = usageLimitResumeRowStatus(resume, nowMs);
@@ -356,6 +369,16 @@ export function sessionStatusPresentation(
         prominent: rowStatus.tone === "attention",
       };
     }
+  }
+
+  if (prWatchAtRest) {
+    const watch = activity.activePrWatch;
+    const hint = watch ? prWatchHint(watch) : null;
+    return {
+      ...REPORTED_ACTIVITY_PRESENTATION.shipping,
+      label: `Shipping${countSuffix(watch?.count ?? 0)}`,
+      ...(hint ? { hint } : {}),
+    };
   }
 
   if (phase === "ready" || phase === "idle") {
@@ -380,13 +403,14 @@ export function sessionStatusPresentation(
  * The ONE elapsed anchor, shared by the desktop status slot and
  * `ade session show` so the two cannot report different durations for the same row.
  *
- * Four anchors, one per kind of "how long":
+ * One anchor per kind of "how long":
  *   • a live turn showing an activity ("Testing") counts from when the session
  *     entered that activity. It used to count from the turn start, so a turn
  *     that tested for two minutes after an hour of work read "Testing 1h". The
  *     turn's own total is the chat's "Working…" timer,
  *   • any other live turn counts from `currentTurnStartedAt` — immutable for
  *     the turn, so a CLI repainting its TUI cannot reset it every few seconds,
+ *   • a PR watch counts from when the watch started,
  *   • background work counts from when that work STARTED. It used to count
  *     from `lastActivityAt`, which every provider frame refreshes: a job that
  *     had been running two hours read "Background work ×2 3s", which is the
@@ -405,6 +429,7 @@ export type SessionElapsedAnchors = {
   startedAt?: string | null;
   backgroundWorkSince?: string | null;
   activityStatus?: SessionActivityReport | null;
+  activePrWatch?: Pick<SessionActivePrWatch, "startedAt"> | null;
 };
 
 export function sessionElapsedAnchor(
@@ -414,6 +439,7 @@ export function sessionElapsedAnchor(
 ): string | null {
   const lastActivity = session.lastActivityAt ?? session.startedAt ?? null;
   if (phase !== "running") return lastActivity;
+  if (liveness === "pr_watch") return session.activePrWatch?.startedAt ?? lastActivity;
   if (liveness && liveness !== "turn") return session.backgroundWorkSince ?? lastActivity;
   const activity = currentActivityReport(session.activityStatus, session.currentTurnStartedAt);
   return activity?.updatedAt ?? session.currentTurnStartedAt ?? lastActivity;
@@ -647,4 +673,47 @@ export function formatFutureDuration(timestampMs: number, nowMs: number): string
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
   return hours ? `${days}d ${hours}h` : `${days}d`;
+}
+
+/** A send is waking the row's sleeping cloud computer: the working look, with its own word. */
+export const WAKING_STATUS_PRESENTATION: SessionStatusPresentation = {
+  label: "Waking",
+  tone: "blue",
+  glyph: "working",
+  showsElapsed: true,
+  prominent: false,
+  // A board card keeps the word: its column says Done, the card says why not.
+  activityDetail: true,
+};
+
+/**
+ * The chat's own machine reports a turn running: a live row (not a saved
+ * copy) with a turn started and not idle since. A waking mark gives way to it.
+ */
+export function sessionTurnLive(
+  session: Pick<TerminalSessionSummary, "cloudSavedCopy" | "currentTurnStartedAt" | "chatIdleSinceAt" | "endedAt">,
+): boolean {
+  return session.cloudSavedCopy !== true && Boolean(session.currentTurnStartedAt) && !session.chatIdleSinceAt && session.endedAt == null;
+}
+
+/**
+ * The row while a send wakes its computer: a live turn since the wake started,
+ * so the status, its elapsed and the settle controls read as working, not as
+ * the saved copy's Done.
+ */
+export function wakingSessionView(session: TerminalSessionSummary, since: string): TerminalSessionSummary {
+  return {
+    ...session,
+    status: "running",
+    runtimeState: "running",
+    endedAt: null,
+    exitCode: null,
+    currentTurnStartedAt: since,
+    lastActivityAt: since,
+    chatIdleSinceAt: null,
+    activityStatus: null,
+    settledAt: null,
+    settleOverride: null,
+    lastTurnFailedAt: null,
+  };
 }

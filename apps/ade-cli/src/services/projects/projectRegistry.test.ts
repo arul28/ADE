@@ -260,6 +260,14 @@ describe("ProjectRegistry", () => {
 
     expect(isDisallowedProjectRoot(homeDir)).toBe(true);
     expect(() => registry.add(homeDir)).toThrow(/Refusing to register/);
+
+    // A Windows profile seen from WSL looks like a project with a `.ade` folder.
+    const otherInstall = path.join(path.dirname(homeDir), `${path.basename(homeDir)}-windows-profile`);
+    fs.mkdirSync(path.join(otherInstall, ".ade"), { recursive: true });
+    fs.writeFileSync(path.join(otherInstall, ".ade", "projects.json"), "{}\n");
+    expect(() => registry.add(otherInstall)).toThrow(/Refusing to register/);
+    expect(fs.readdirSync(path.join(otherInstall, ".ade"))).toEqual(["projects.json"]);
+    fs.rmSync(otherInstall, { recursive: true, force: true });
   });
 
   // Two brains with different device ids writing one project database corrupt
@@ -461,6 +469,42 @@ describe("ProjectRegistry", () => {
 
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     expect(updated.gitOriginUrl).toBe("git@github.com:arul28/ADE.git");
+  });
+
+  it("lists the origin of a project that was saved without one, from the config file alone", () => {
+    // Other machines learn which repository a project is from this list, so a
+    // record saved before the origin existed must not answer "none" forever.
+    const homeDir = makeTempRoot("ade-project-registry-list-origin-");
+    const projectRoot = path.join(homeDir, "ADE");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+    const registered = registry.add(projectRoot);
+    expect(registry.get(registered.projectId)?.gitOriginUrl ?? null).toBeNull();
+
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".git", "config"), [
+      "[core]",
+      "\trepositoryformatversion = 0",
+      "[remote \"origin\"]",
+      "\turl = https://github.com/arul28/ADE.git",
+      "[extensions]",
+      "\tworktreeConfig = true",
+      "",
+    ].join("\n"));
+    spawnSyncMock.mockClear();
+
+    expect(registry.get(registered.projectId)?.gitOriginUrl).toBe("https://github.com/arul28/ADE.git");
+    expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
   describe("writers in other processes", () => {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LaneDiffMode } from "../../../shared/types";
+import type { LaneDiffMode, OpenProjectBinding } from "../../../shared/types";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
+  selectLanesLoadError,
   useAppStore,
   useAppStoreApi,
   type LaneInspectorTab,
@@ -24,7 +25,9 @@ import {
   type CreatingIssuePlaceholder,
 } from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
-import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
+import { CreateLaneDialogHost, type CreateLanePrefill, type LaneCreatedHandler } from "./CreateLaneDialogHost";
+import { laneCreatedToastId, stopPendingLaneCreate, usePendingLaneCreates } from "../../lib/pendingLaneCreates";
+import { useActiveRef } from "../../lib/useActiveRef";
 import {
   ManageLaneDialog,
   EMPTY_LANE_DELETE_SELECTION,
@@ -32,6 +35,7 @@ import {
   type LaneActionError,
   type LaneDeleteSelection,
   type ManageLaneTab,
+  lanesToDelete,
 } from "./ManageLaneDialog";
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -85,6 +89,9 @@ import {
 import { useLanesPageMachines } from "./useLanesPageMachines";
 import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
+import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
+import { originUrlForBinding } from "./laneMachines";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -212,6 +219,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
+  const lanesLoadError = useAppStore(selectLanesLoadError);
 
   const urlLaneDeeplinks = useMemo(() => {
     const p = new URLSearchParams(location.search);
@@ -341,13 +349,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [manageInitialTab, setManageInitialTab] = useState<ManageLaneTab | null>(null);
   // Lanes the Behind group's "Rebase all" confirm step lists.
   const [bulkCatchUpLaneIds, setBulkCatchUpLaneIds] = useState<string[] | null>(null);
-  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form,
-  // submit and env-setup state. The page tracks only whether it is open, the
-  // prefill, and (via a ref) whether a create is in flight so a forced close
-  // from the dialog bus can be blocked.
+  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form
+  // and the submit. The page tracks only whether it is open and the prefill.
+  // The create itself runs in the background once submitted.
   const [createOpen, setCreateOpen] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<CreateLanePrefill | null>(null);
-  const createBusyRef = useRef(false);
+  const pendingLaneCreates = usePendingLaneCreates(activeProjectStateKey);
+  const pageActiveRef = useActiveRef(active);
   const canCreateLane = Boolean(activeProjectRoot);
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
   const [deleteForce, setDeleteForce] = useState(false);
@@ -566,6 +574,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [selectedLaneId, lanesById, deletingLaneIds, effectiveMachineFilter, filteredLanes, laneFilter, selectableFilteredLaneIds, sortedSelectableLaneIds]);
   const detailLane = detailLaneId ? lanesById.get(detailLaneId) ?? null : null;
   const detailForeignRow = detailLaneId ? foreignRowByKey.get(detailLaneId) ?? null : null;
+  // A foreign row's share mark reads its own machine's share list, by its real lane id.
+  const shareTargetByLaneId = useMemo(() => {
+    const map = new Map<string, { laneId: string; pin: OpenProjectBinding | null }>();
+    for (const [key, row] of foreignRowByKey) {
+      if (row.pin) map.set(key, { laneId: row.lane.id, pin: row.pin });
+    }
+    return map;
+  }, [foreignRowByKey]);
   // Presence and PR refreshes talk to the tab's machine; a foreign detail lane
   // has no id there, so it contributes nothing to them.
   const detailLaneIds = useMemo(
@@ -625,6 +641,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     () => managedLaneIds.map((id) => lanesById.get(id)).filter((l): l is LaneSummary => l != null && l.laneType !== "primary"),
     [managedLaneIds, lanesById],
   );
+  // The managed lanes that live on their own ADE Cloud computer: the dialog shows them the cloud delete.
+  const cloud = useCloudLaneDelete();
+  const managedCloudLaneIds = useMemo(() => {
+    const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
+    const ids = new Set<string>();
+    for (const lane of targets) {
+      const target = resolveLaneTarget(lane.id);
+      if (target.ok && cloud.isCloudLane(target.pin, target.laneId)) ids.add(lane.id);
+    }
+    return ids.size ? ids : null;
+  }, [cloud, managedLane, managedLanes, resolveLaneTarget]);
   const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
@@ -1312,7 +1339,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
-    const actionable = targets.filter((l) => l.laneType !== "primary");
+    // ADE Cloud lanes go with their computers (one account-level delete each, warned only when
+    // work isn't on GitHub), split off before the local rules: no Force gate, no branch picks.
+    const cloudDeletes = targets.flatMap((lane) => {
+      if (lane.laneType === "primary") return [];
+      const target = resolveLaneTarget(lane.id);
+      const cloudLane = target.ok ? cloud.computerOf(target.pin, target.laneId) : null;
+      return cloudLane && target.ok ? [{ lane, cloudLane, machineId: target.machineId }] : [];
+    });
+    const cloudLaneIds = new Set(cloudDeletes.map((entry) => entry.lane.id));
+    // The brain still refuses a lane that turned dirty since the dialog.
+    const actionable = lanesToDelete(targets.filter((lane) => !cloudLaneIds.has(lane.id)), deleteForce);
 
     // Close the dialog and reset the transient delete UI before any async work.
     // The delete itself runs in the background: each lane's row shows the live
@@ -1325,6 +1362,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLaneActionError(null);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
+    if (cloudDeletes.length) {
+      void (async () => {
+        // One at a time: each may ask about its own unpushed work.
+        for (const entry of cloudDeletes) {
+          await deleteCloudLaneWithCheck({
+            instanceId: entry.cloudLane.instanceId,
+            laneName: entry.lane.name,
+            askFirst: false,
+            onDeleted: () => {
+              if (entry.machineId) requestCrossMachineLanesForMachine(entry.machineId);
+            },
+          });
+        }
+      })();
+    }
     if (actionable.length === 0) return;
 
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
@@ -1839,21 +1891,59 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateOpen(open);
   }, []);
 
-  // Blocked by the dialog bus while a create/setup is in flight; the host owns
-  // the busy state and mirrors it into the ref.
   const handleCreateDialogBusClose = useCallback(() => {
-    if (createBusyRef.current) return;
     setCreateOpen(false);
   }, []);
 
-  // After the lane record exists and the list is refreshed, select the new
-  // lane (the host keeps streaming env-setup progress in the dialog).
-  const handleLaneCreated = useCallback((lane: LaneSummary, machine?: { machineId: string; pin: unknown }) => {
-    // A lane created on another machine is selected through its machine, so
-    // the bare id cannot pick a same-id lane on this tab's machine.
-    const machineParam = machine?.pin ? `&machineId=${encodeURIComponent(machine.machineId)}` : "";
-    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`);
-  }, [navigate]);
+  // The create runs in the background and can end long after the user moved
+  // on. Select the new lane only when they are still on this page with the
+  // selection they had at submit; otherwise it waits in the list.
+  const handleLaneCreateStarted = useCallback((): LaneCreatedHandler => {
+    const selectionAtStart = selectedLaneIdRef.current;
+    return (lane, machine) => {
+      // A lane created on another machine is selected through its machine, so
+      // the bare id cannot pick a same-id lane on this tab's machine.
+      const machineParam = machine.pin ? `&machineId=${encodeURIComponent(machine.machineId)}` : "";
+      const lanePath = `/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`;
+      if (pageActiveRef.current && selectedLaneIdRef.current === selectionAtStart) {
+        navigate(lanePath);
+        return;
+      }
+      // The "Lane created" toast comes from this tab's own machine only; a
+      // lane made on another machine would otherwise finish without a word.
+      if (!machine.pin) return;
+      showToast({
+        id: laneCreatedToastId(lane.id),
+        title: lane.name,
+        message: "Lane created",
+        replayMask: { title: true },
+        tone: "success",
+        colorDot: lane.color ?? undefined,
+        actions: [{ label: "View", onClick: () => navigate(lanePath) }],
+      });
+    };
+  }, [navigate, pageActiveRef]);
+
+  // Rows of lanes whose setup still runs, by row key (the lane's id and machine).
+  const settingUpLaneIds = useMemo(() => {
+    if (creatingLaneIds.size === 0 && pendingLaneCreates.length === 0) return creatingLaneIds;
+    const next = new Set(creatingLaneIds);
+    for (const entry of pendingLaneCreates) {
+      if (entry.phase !== "setup" || !entry.laneId) continue;
+      next.add(entry.machineId ? foreignLaneKey(entry.machineId, entry.laneId) : entry.laneId);
+    }
+    return next;
+  }, [creatingLaneIds, pendingLaneCreates]);
+  // The placeholder stays until the lane's own row is in the list: the list
+  // is re-read after the create ends, and for another machine that takes a while.
+  const pendingCreatingLanes = useMemo(
+    () => pendingLaneCreates.filter((entry) => (
+      entry.phase === "creating"
+      || !entry.laneId
+      || !lanesById.has(entry.machineId ? foreignLaneKey(entry.machineId, entry.laneId) : entry.laneId)
+    )),
+    [lanesById, pendingLaneCreates],
+  );
 
   const openManageDialog = useCallback((laneId: string) => {
     if (deletingLaneIds.has(laneId)) return;
@@ -1951,6 +2041,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return;
     }
     const target = { ...row, pin: row.pin };
+    // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
+    if (cloud.deleteIfCloudLane({
+      pin: target.pin,
+      laneId: target.lane.id,
+      laneName: target.lane.name,
+      machineId: target.machineId,
+      onDeleted: () => clearForeignSelection(target.key),
+    })) {
+      setForeignManageKey(null);
+      setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+      setLaneActionError(null);
+      return;
+    }
     const args: DeleteLaneArgs = {
       laneId: target.lane.id,
       force: deleteForce,
@@ -2002,6 +2105,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       });
   }, [
     clearForeignSelection,
+    cloud,
     deleteForce,
     deleteSelection,
     foreignManageKey,
@@ -2057,13 +2161,20 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Machine chips ---- */
 
-  const machineFilterToolbar = multiMachine ? (
+  const machineFilterChipsNode = multiMachine ? (
     <LaneMachineFilterChips
       machines={[...machineFilterChips.values()]}
       value={effectiveMachineFilter}
       onChange={setMachineFilter}
     />
   ) : null;
+  // This project's ADE Cloud lanes whose computer was freed or removed: each says so and offers a new one.
+  const machineFilterToolbar = (
+    <>
+      {machineFilterChipsNode}
+      <CloudLanesWithoutComputerList originUrl={originUrlForBinding(projectBinding)} />
+    </>
+  );
 
   /* ---- Render ---- */
 
@@ -2083,6 +2194,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       canCreateLane={canCreateLane}
       onCreateLane={() => openCreateDialog()}
       loading={lanesLoading}
+      loadError={lanesLoadError}
       totalLaneCount={visibleLanes.length}
       laneRuntimeById={laneRuntimeById}
       rebaseLineByLaneId={rebaseLineByLaneId}
@@ -2091,8 +2203,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       lanePrTagsByLaneId={lanePrTagsByLaneId}
       deleteProgressByLaneId={deleteProgressByLaneId}
       onStopDelete={handleStopDelete}
-      creatingLaneIds={creatingLaneIds}
+      settingUpLaneIds={settingUpLaneIds}
       pendingCreatingIssues={pendingCreatingIssues}
+      pendingCreatingLanes={pendingCreatingLanes}
+      onStopCreate={stopPendingLaneCreate}
       pulsingLaneId={pulsingLaneId}
       onSelectRow={handleRowSelect}
       onStepSelection={stepLaneSelection}
@@ -2103,6 +2217,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       onOpenAgent={handleOpenAgent}
       onClearMultiSelection={clearMultiSelection}
       machineChipByLaneId={machineChipByLaneId}
+      shareTargetByLaneId={shareTargetByLaneId}
       disabledReasonByLaneId={disabledReasonByLaneId}
       foreignLaneIds={foreignLaneIdSet}
       toolbar={machineFilterToolbar}
@@ -2247,7 +2362,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               {lanesLoading && visibleLanes.length === 0
                 ? "Loading lanes…"
                 : visibleLanes.length === 0
-                  ? "No lanes yet."
+                  ? (lanesLoadError ? `Couldn't load lanes. ${lanesLoadError}` : "No lanes yet.")
                   : "No lane matches the filter."}
             </div>
             {!lanesLoading || visibleLanes.length > 0 ? (
@@ -2325,6 +2440,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
         onAppearanceChanged={refreshLaneAppearance}
         initialTab={manageInitialTab}
+        cloudLaneIds={managedCloudLaneIds}
       />
 
       {foreignManageRow?.pin ? (
@@ -2348,6 +2464,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
           initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
+          cloudLaneIds={cloud.isCloudLane(foreignManageRow.pin, foreignManageRow.lane.id) ? new Set([foreignManageRow.lane.id]) : null}
         />
       ) : null}
 
@@ -2360,10 +2477,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       <CreateLaneDialogHost
         open={createOpen}
         onOpenChange={handleCreateDialogOpenChange}
-        behavior="stay-open-setup"
+        behavior="create"
         prefill={createPrefill}
-        onCreated={handleLaneCreated}
-        onBusyChange={(busy) => { createBusyRef.current = busy; }}
+        onCreateStarted={handleLaneCreateStarted}
         onOpenLinearSettings={() => navigate(settingsRouteFor("integrations.linear"))}
         onNavigateToTemplates={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
       />

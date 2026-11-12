@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
 import {
+  ArrowSquareOut,
   CaretRight,
   FileCode,
   FilePlus,
@@ -19,6 +20,7 @@ import { cn } from "../ui/cn";
 import { useAgentChatApi } from "./agentChatApi";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useChatWorkspacePathOpener } from "./chatWorkspacePaths";
 import {
   CHAT_CARD_WIDTH_CLASS,
   ChatCardDiffStat,
@@ -202,6 +204,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   maxHeight = 400,
 }: FileChangesBrowserProps) {
   const scope = useChatRuntimeScope();
+  const openWorkspacePath = useChatWorkspacePathOpener();
   // The pane's chat API. A scope without turn diffs (a personal chat) lists
   // the changed files but offers no diff.
   const agentChatApi = useAgentChatApi();
@@ -286,12 +289,13 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
         {shownFiles.map((file) => {
           const isSelected = selectedPath === file.path;
           return (
+            <div key={file.path} className="group/file relative">
             <button
-              key={file.path}
               type="button"
               disabled={!diffAvailable}
               className={cn(
                 "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors",
+                openWorkspacePath ? "group-hover/file:pr-8 group-focus-within/file:pr-8" : null,
                 isSelected ? "bg-fg/[0.05]" : diffAvailable ? "hover:bg-fg/[0.03]" : "cursor-default",
               )}
               onClick={() => void handleSelectFile(file.path)}
@@ -314,6 +318,18 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
                 {statusBadge(file.status)}
               </div>
             </button>
+            {openWorkspacePath ? (
+              <button
+                type="button"
+                aria-label={`Open ${file.path}`}
+                title={`Open ${file.path}`}
+                onClick={() => openWorkspacePath(file.path)}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-fg/40 opacity-0 transition-opacity hover:text-accent focus-visible:opacity-100 group-hover/file:opacity-100"
+              >
+                <ArrowSquareOut size={12} />
+              </button>
+            ) : null}
+            </div>
           );
         })}
         {shownFiles.length < files.length ? (

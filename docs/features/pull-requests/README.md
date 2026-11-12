@@ -135,6 +135,10 @@ pin through `assertWebRuntimePinRoutable`. A pin naming the host and project
 this adapter is already bound to is a no-op and proceeds unpinned; anything
 else throws rather than silently answering from the only host they have.
 
+Review status uses GitHub’s review decision, including its required-review rules.
+Moderator-hidden comments and reviews are excluded from the timeline and counts
+within the newest 100 of each; older items can still appear.
+
 ## Source file map
 
 Services. The canonical implementations run inside the runtime
@@ -1766,6 +1770,30 @@ keeps the last one we had. A pull request that is already failing on the first
 poll after start is not announced. A failed checks fetch does not store the
 new head SHA, so the old red result stays paired with the commit it belongs to.
 
+`review_requested` and `changes_requested` fire once per review round. A dip
+to `none` does not end the round: `none` is also what an unknown verdict looks
+like — a failed GraphQL read, a failed reviews read, or a lane backfill mapping
+a PR from a pull list that carries no verdict — and re-announcing on its return
+produced a toast that came back every few seconds no matter how often it was
+dismissed. A review request belongs to the pull request, not to a commit, so
+pushing does not start a new round. A round ends when a reviewer reaches a
+verdict (`approved`), and a verdict that moves between `requested` and
+`changes_requested` announces the new one. A PR already waiting on the first
+poll after start is remembered, not announced.
+
+While the verdict cannot be read, a saved `changes_requested` block is kept
+unless a reviews read that worked shows no visible blocking review; a pending
+reviewer or team request alone does not clear it. Otherwise a failed read could
+downgrade the block to `requested` and the recovery could announce the block
+again.
+
+The lane backfill in `getGitHubSnapshot` is a mapping step, not a status read.
+For a PR that already has a live row it keeps `checks_status`, `review_status`,
+the checks reason and the sync time, and it opens a hot-refresh window only for
+rows it created. Writing the pull list's `none` defaults over live verdicts was
+the other half of that re-announcement loop, and it also reset a lane's checks
+and review chips until the next poll.
+
 `prService.ingestGithubWebhook` does not emit one `prs-updated` for each
 delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a
 CI run delivers dozens of `check_run` webhooks in a few seconds. Each delivery
@@ -2242,13 +2270,33 @@ transcript; iOS `WorkPrWatchWakeLine`).
   links the chat to the PR, even over an earlier unlink; unlinking it stops
   the watch. Every change emits the PR event `pr-chat-watch-changed`, with
   `watch: null` once it has stopped.
+- **On the Work row.** Between wakes no turn is running, so a chat with a live
+  watch would otherwise read Done. The chat summary carries `activePrWatch`
+  (`SessionActivePrWatch`), built by the machine that runs the watch from one
+  query per chat listing (`prChatWatchStore.activeBySession`) and projected onto
+  the session row, so a row listed from another machine reads the same and an
+  older host simply sends nothing. `canonicalSessionState` promotes such a
+  resting chat to `running` with liveness `pr_watch`: blue **Shipping** (for
+  Watch and Ship alike) with the time since the watch began and the PR number
+  on hover, filed under Working on the board and the running section of the
+  list, its lane folding in Focus with no tile. Needs you, snooze, woke, a live
+  turn's own activity, a failed turn, a usage limit, and running background jobs
+  all outrank it, and a missed scheduled wake still holds the lane out. Unlike
+  background work it is never Stale, because the reactor polls the PR every
+  minute, and a chat a brain restart detached still reads Shipping, because the
+  watch survives and its next wake brings the chat back. Settling is the user's call and stops nothing, so a settled chat stays
+  settled while its watch runs until a wake's turn brings it back. A chat moved
+  to another machine claims no watch here. `pr-chat-watch-changed` nudges the
+  session list through a `session_meta_updated` event marked `prWatchChanged`,
+  which refreshes the row without moving the chat up the list. iOS mirrors the
+  rule in `WorkSessionCanonicalState.swift`.
 - **What wakes the agent.** Each check as soon as it fails (failure, cancelled,
   timed out, action required); the required checks passing (`checksStatus`
   turning `passing`); new comments, inline comments, and submitted reviews from
   people and agent reviewers (deploy, CI, and dependency bots are ignored); a
   review bot's edit of its old comment, which is how such a bot reports a new
   review of a push (a person's edit does not wake the agent); the
-  branch starting to conflict; the PR merging or closing. A head that no CI
+  branch starting to conflict or a new head that remains conflicted; the PR merging or closing. A head that no CI
   check reported on for 10 minutes (`PR_WATCH_NO_CHECKS_GRACE_MS`; a docs-only
   push whose workflows skip it), told once per head and never as a pass —
   review bots and deploy previews do not count as CI, and a head where CI
@@ -2291,10 +2339,10 @@ transcript; iOS `WorkPrWatchWakeLine`).
   the agent got. It is never a user bubble.
 - **Stopping.** The PR merging or closing (one last wake, which still carries
   remarks left on the way out), the user or agent
-  turning it off, the chat being archived or deleted, 10 comment-only wakes in
-  a row (a bot loop), or 15 minutes of GitHub being unreadable (one last wake
-  with the reason). A settled chat keeps its watch and is still woken (settle stops
-  nothing); the wake's turn takes it out of settled. GitHub rate-limit pauses pause the reactor too.
+  turning it off, the chat being archived or deleted, or GitHub confirming the PR
+  or repository is gone or access is lost. Transient failures, rate limits,
+  expired sign-in and offline periods leave the watch armed for recovery. A settled
+  chat keeps its watch and is still woken; the wake takes it out of settled.
 - **Machine-local.** Both tables are excluded from CRR sync: the watch wakes
   the chat on the machine that runs it, and a synced row would let a second
   machine wake its own copy of the chat as well.
@@ -2809,3 +2857,39 @@ markdown layout cost for offscreen or folded content.
   `Accept: application/vnd.github.merge-info-preview+json`; without it
   GitHub errors with "field requires preview header" and the merge box
   silently falls back to the REST heuristic (logged at `warn`).
+
+### GitHub access and reminders
+
+A working GitHub CLI login supplies ADE's GitHub access without a personal
+access token. [GitHub settings](ade://settings/integrations.github) identifies
+the active read and write credentials, including the CLI login.
+The ADE GitHub App adds optional real-time updates independently of that access.
+
+Dismissing setup reminders applies to the lower-cased repository (`owner/name`)
+across worktrees. The dismissal has no expiry and survives equivalent setup
+states and healthy reads. GitHub settings shows the reminder state and offers
+**Dismiss setup reminders** and **Show reminders again**. Older repo/path
+reminders migrate when that repository is opened.
+
+Credential failures, unreadable credential stores, and Git transport failures
+use separate alarm dismissals scoped to the owning machine and repository (or
+project path before repository discovery); setup snoozes never hide them. Each alarm can be
+dismissed until its failing access recovers, at which point a later failure can
+warn again. API access, App authorization, and Git transport recover independently:
+a successful API read does not re-arm a still-broken push alarm. Missing App
+issue-write permission is a setup reminder when another credential covers issue
+edits, and an alarm when none does. Recovery never clears the setup snooze.
+GitHub outage notices retain their existing incident handling.
+
+## Writing in a PR
+
+Comments, reviews, replies and the new-PR description share `PrWritingTextarea`:
+`@` suggests people who can be mentioned (`searchMentionables`, a debounced
+GraphQL read cached per repo and query) and `#` suggests issues and pull requests
+(`getRepoReferences`, cached per repo). The reviewer card searches people a
+review can be requested from (`assignableUsers`, the same action with
+`includeTeams`) and teams, so it reaches past GitHub's first page. Task-list boxes in the
+description are clickable for its author and anyone with write access: the box
+changes at once, saves go to GitHub in click order, and a failed save returns to
+GitHub's text. Boxes are found with the renderer's markdown grammar, so look-alikes
+in code and HTML blocks do not count, and a CRLF body keeps its line endings.

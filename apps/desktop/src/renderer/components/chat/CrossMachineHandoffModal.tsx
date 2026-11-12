@@ -364,10 +364,19 @@ export function CrossMachineHandoffModal({
     setMode(next);
     setForkFallbackReason(null);
     setError(null);
-    if (next === "fork" && modelId && forkModelIds && forkModelIds.length > 0 && !forkModelIds.includes(modelId)) {
+    // Snap only a model that brief offers and fork does not. A model in
+    // neither list is a signed-out pick, and that pick stays.
+    if (
+      next === "fork"
+      && modelId
+      && forkModelIds
+      && forkModelIds.length > 0
+      && !forkModelIds.includes(modelId)
+      && availableModelIds?.includes(modelId)
+    ) {
       onModelChange?.(forkModelIds[0]!);
     }
-  }, [forkModelIds, modelId, onModelChange]);
+  }, [availableModelIds, forkModelIds, modelId, onModelChange]);
 
   /**
    * The brain runs the move from here (pack, destination checks, fast-forward,

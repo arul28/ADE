@@ -12,7 +12,7 @@ import { ProjectSection } from "../ProjectSection";
 import { NewLaneSettingsSection } from "../NewLaneSettingsSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
 import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
-import { HealthCleanups } from "../health/HealthCleanups";
+import { HealthCleanupHistory, HealthCleanupRules } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
@@ -48,7 +48,7 @@ const LANES_VIEWS: readonly View[] = [
 ];
 
 const STORAGE_VIEWS: readonly View[] = [
-  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups"] },
+  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups", "project"] },
   { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
     id: "recently-deleted",
@@ -60,7 +60,7 @@ const STORAGE_VIEWS: readonly View[] = [
     id: "cleanup-rules",
     label: "Rules",
     icon: <SlidersHorizontal size={13} weight="duotone" />,
-    anchors: ["lane-storage-rules", "archived-lanes", "lane-build-output", "session-lifecycle", "project"],
+    anchors: ["lane-storage-rules", "archived-lanes", "lane-build-output", "session-lifecycle"],
   },
 ];
 
@@ -138,11 +138,13 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
     };
   }, [hashAnchor, view, settled, views]);
 
-  // A search with no match in this view moves to the first view that has one.
+  // A search shows the view that holds its best match (the anchors come best
+  // first), so "settle" opens the chat rule rather than a card that only
+  // mentions settled chats.
   React.useEffect(() => {
     if (!searchAnchors || searchAnchors.length === 0) return;
-    const holds = (id: ViewId) => views.find((entry) => entry.id === id)!.anchors.some((anchor) => searchAnchors.includes(anchor));
-    setView((current) => (holds(current) ? current : views.find((entry) => holds(entry.id))?.id ?? current));
+    const best = searchAnchors.map((anchor) => viewForAnchor(views, anchor)).find((id): id is ViewId => id != null);
+    if (best) setView(best);
   }, [searchAnchors, views]);
 
   const { report, loading: reportLoading, checking, error: reportError, available } = data.report;
@@ -225,7 +227,8 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
         return (
           <>
             <HealthSpace data={data} />
-            <HealthCleanups data={data} show="history" />
+            <HealthCleanupHistory data={data} />
+            {isAdeAvailable(window.ade.project?.getSnapshot) ? <ProjectSection /> : null}
           </>
         );
       case "archive":
@@ -240,13 +243,18 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
           </div>
         );
       case "cleanup-rules":
-        return (
-          <>
-            {web ? null : <HealthCleanups data={data} show="rules" />}
+        // The hosted web client cannot reach the lane rules (they live in the
+        // project's files); it keeps the chat row, which each machine stores.
+        return web ? (
+          <ModernSection group="Cleanups" title="Automatic cleanup">
             <SessionLifecycleSection />
-            {/* The hosted web client cannot read the project folder; a card that can only say "Loading" is worse than none. */}
-            {isAdeAvailable(window.ade.project?.getSnapshot) ? <ProjectSection /> : null}
-          </>
+          </ModernSection>
+        ) : (
+          <HealthCleanupRules
+            data={data}
+            chats={<SessionLifecycleSection />}
+            onOpenArchive={() => setView("archive")}
+          />
         );
       default:
         return null;

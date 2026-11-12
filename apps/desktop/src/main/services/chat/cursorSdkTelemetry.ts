@@ -1,6 +1,6 @@
 import {
   CURSOR_SDK_COMPACTION_EVENT,
-  CURSOR_SDK_PRECOMPACT_HOOK_MARK,
+  CURSOR_SDK_COMPACTION_SIGNAL_MARK,
   type CursorSdkCompactionWireEvent,
   type CursorSdkTurnTelemetry,
 } from "./cursorSdkProtocol";
@@ -79,22 +79,29 @@ type PendingCompaction = {
   trigger: "manual" | "auto";
   contextTokens: number | null;
   startedAtMs: number;
+  /**
+   * What has reported this compaction. Once a `summary` message has, only its
+   * end may close it. While it is `summary` alone, a hook that lands joins it.
+   */
+  source: "hook" | "summary" | "both";
 };
 
 /**
- * Worker-side state for the local run in flight: the compaction the
- * `preCompact` hook opened, and the account/model facts hook payloads carry.
+ * Worker-side state for the local run in flight: the compaction under way, and
+ * the account/model facts hook payloads carry.
  *
- * Cursor has no public "compaction finished" signal. The SDK turns the
- * summary it writes into a `task` message, so that closes the compaction; the
- * first message that proves generation resumed closes it otherwise, and the run
- * ending closes whatever is left, so a divider can never spin forever.
+ * Since `@cursor/sdk` 1.2.0 the stream carries `summary` messages (running,
+ * completed, error), which are the real start and end of a compaction. The
+ * `preCompact` hook still supplies the sizes. If no `summary` message arrives,
+ * the first message that proves generation resumed closes the compaction, and
+ * the run ending closes whatever is left, so a divider can never spin forever.
  */
 export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
   let requestedModel: string | null = null;
   let compactions = 0;
   let pending: PendingCompaction | null = null;
-  let hookFiredThisRun = false;
+  let compactionSignalThisRun = false;
+  let runTrigger: "manual" | "auto" = "auto";
   let hookModel: string | null = null;
   // Worker lifetime: the login does not change under a running worker.
   let hookEmail: string | null = null;
@@ -102,6 +109,7 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
   const close = (
     phase: "completed" | "failed",
     closedBy: NonNullable<CursorSdkCompactionWireEvent["closedBy"]>,
+    detail: { failReason?: "provider_error"; fallback?: boolean } = {},
   ): CursorSdkCompactionWireEvent | null => {
     if (!pending) return null;
     const open = pending;
@@ -113,17 +121,40 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
       trigger: open.trigger,
       ...(open.contextTokens != null ? { contextTokens: open.contextTokens } : {}),
       durationMs: Math.max(0, now() - open.startedAtMs),
-      ...(phase === "failed" ? { failReason: "interrupted" as const } : {}),
+      ...(phase === "failed" ? { failReason: detail.failReason ?? "interrupted" as const } : {}),
+      ...(detail.fallback ? { fallback: true } : {}),
       closedBy,
     };
   };
 
+  const fromSummaryMessage = (record: Record<string, unknown> | null): CursorSdkCompactionWireEvent | null => {
+    const status = record?.status;
+    if (status === "completed") return close("completed", "summary", { fallback: record?.fallback === true });
+    if (status === "error") return close("failed", "summary", { failReason: "provider_error" });
+    if (status !== "running") return null;
+    compactionSignalThisRun = true;
+    if (pending) {
+      if (pending.source === "hook") pending.source = "both";
+      return null;
+    }
+    compactions += 1;
+    pending = {
+      seq: compactions,
+      trigger: runTrigger,
+      contextTokens: null,
+      startedAtMs: now(),
+      source: "summary",
+    };
+    return { type: CURSOR_SDK_COMPACTION_EVENT, phase: "started", seq: compactions, trigger: runTrigger };
+  };
+
   return {
-    beginRun(modelSdkId: string | null | undefined): void {
+    beginRun(modelSdkId: string | null | undefined, trigger: "manual" | "auto" = "auto"): void {
       requestedModel = modelSdkId?.trim() || null;
+      runTrigger = trigger;
       compactions = 0;
       pending = null;
-      hookFiredThisRun = false;
+      compactionSignalThisRun = false;
       hookModel = null;
     },
 
@@ -138,19 +169,27 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
     },
 
     preCompactStarted(payload: CursorPreCompactHookPayload): CursorSdkCompactionWireEvent {
-      hookFiredThisRun = true;
-      compactions += 1;
-      pending = {
-        seq: compactions,
-        trigger: payload.trigger,
-        contextTokens: payload.contextTokens,
-        startedAtMs: now(),
-      };
+      compactionSignalThisRun = true;
+      const trigger = runTrigger === "manual" ? "manual" : payload.trigger;
+      if (pending?.source === "summary") {
+        // The `summary` message got here first: same compaction, now with sizes.
+        pending.contextTokens = payload.contextTokens;
+        pending.source = "both";
+      } else {
+        compactions += 1;
+        pending = {
+          seq: compactions,
+          trigger,
+          contextTokens: payload.contextTokens,
+          startedAtMs: now(),
+          source: "hook",
+        };
+      }
       return {
         type: CURSOR_SDK_COMPACTION_EVENT,
         phase: "started",
-        seq: compactions,
-        trigger: payload.trigger,
+        seq: pending.seq,
+        trigger: pending.trigger,
         ...(payload.contextTokens != null ? { contextTokens: payload.contextTokens } : {}),
         ...(payload.contextWindowSize != null ? { contextWindowSize: payload.contextWindowSize } : {}),
         ...(payload.contextUsagePercent != null ? { contextUsagePercent: payload.contextUsagePercent } : {}),
@@ -159,22 +198,23 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
     },
 
     /**
-     * Call before forwarding a local stream message. Returns the completion to
-     * post first (if this message closes an open compaction) and the message to
-     * forward, marked when the hook already fired so the text fallback is quiet.
+     * Call before forwarding a stream message. Returns the compaction event to
+     * post first, if this message starts or ends one, and the message to forward.
+     * A status message is marked once a provider signal has been seen, so the
+     * text fallback is quiet. A `summary` message is fully consumed here, so
+     * `event` is null and nothing is forwarded.
      */
-    beforeStreamEvent(event: unknown): { completion: CursorSdkCompactionWireEvent | null; event: unknown } {
+    beforeStreamEvent(event: unknown): { compaction: CursorSdkCompactionWireEvent | null; event: unknown } {
       const record = asRecord(event);
       const type = typeof record?.type === "string" ? record.type : "";
-      const completion = type === "task"
-        ? close("completed", "summary")
-        : POST_COMPACTION_STREAM_TYPES.has(type)
-          ? close("completed", "next_event")
-          : null;
-      const forwarded = hookFiredThisRun && type === "status"
-        ? { ...record, [CURSOR_SDK_PRECOMPACT_HOOK_MARK]: true }
+      if (type === "summary") return { compaction: fromSummaryMessage(record), event: null };
+      const compaction = POST_COMPACTION_STREAM_TYPES.has(type) && pending?.source === "hook"
+        ? close("completed", "next_event")
+        : null;
+      const forwarded = compactionSignalThisRun && type === "status"
+        ? { ...record, [CURSOR_SDK_COMPACTION_SIGNAL_MARK]: true }
         : event;
-      return { completion, event: forwarded };
+      return { compaction, event: forwarded };
     },
 
     endRun(status: string | null | undefined): CursorSdkCompactionWireEvent | null {

@@ -49,6 +49,15 @@ export default function SurveyCard({
   const texts = useRef<Record<string, string>>({});
   const otherTexts = useRef<Record<string, string>>({});
   const shownRef = useRef(false);
+  // Time on screen only: a suggestion with a higher priority can take the
+  // corner for a while, and that time is not time the person had the card.
+  const onScreenSinceRef = useRef<number | null>(null);
+  const onScreenMsRef = useRef(0);
+  const shownForMs = (): number | undefined => {
+    if (!shownRef.current) return undefined;
+    const current = onScreenSinceRef.current == null ? 0 : performance.now() - onScreenSinceRef.current;
+    return Math.round(onScreenMsRef.current + current);
+  };
   const doneRef = useRef(false);
   const sendingRef = useRef(false);
   const question = survey.questions[step];
@@ -57,9 +66,16 @@ export default function SurveyCard({
   const visible = useVisibleAppSuggestion();
   const onScreen = visible?.model.id === BANNER_ID;
   useEffect(() => {
-    if (!onScreen || shownRef.current) return;
-    shownRef.current = true;
-    void bridge?.record({ kind: "shown", surveyId: survey.id }).catch(() => undefined);
+    if (!onScreen) return undefined;
+    onScreenSinceRef.current = performance.now();
+    if (!shownRef.current) {
+      shownRef.current = true;
+      void bridge?.record({ kind: "shown", surveyId: survey.id }).catch(() => undefined);
+    }
+    return () => {
+      if (onScreenSinceRef.current != null) onScreenMsRef.current += performance.now() - onScreenSinceRef.current;
+      onScreenSinceRef.current = null;
+    };
   }, [bridge, onScreen, survey.id]);
 
   const setFilledFor = useCallback((id: string, value: boolean) => {
@@ -95,7 +111,7 @@ export default function SurveyCard({
   const dismiss = useCallback(() => {
     if (doneRef.current) return;
     const partiallyCompleted = step > 0 || Object.values(filled).some(Boolean);
-    void bridge?.record({ kind: "dismissed", surveyId: survey.id, partiallyCompleted }).catch(() => undefined);
+    void bridge?.record({ kind: "dismissed", surveyId: survey.id, partiallyCompleted, shownForMs: shownForMs() }).catch(() => undefined);
     finish();
   }, [bridge, filled, finish, step, survey.id]);
 
@@ -122,7 +138,7 @@ export default function SurveyCard({
     }
     Object.assign(answers, override);
     sendingRef.current = true;
-    const result = await bridge?.record({ kind: "sent", surveyId: survey.id, answers }).catch(() => null);
+    const result = await bridge?.record({ kind: "sent", surveyId: survey.id, answers, shownForMs: shownForMs() }).catch(() => null);
     sendingRef.current = false;
     // Thank the person only for an answer that left; otherwise keep the card so they can try again.
     if (!result?.accepted) {

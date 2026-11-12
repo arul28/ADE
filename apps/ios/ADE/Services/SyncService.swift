@@ -887,7 +887,8 @@ enum SyncRequestTimeout {
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
-    case "lanes.delete":
+    case "lanes.delete", "lanes.restoreDeleted":
+      // A restore checks the branch out into a new worktree on the host.
       return laneDeleteTimeoutNanoseconds
     case "chat.cancelLaunch":
       // Waits out an in-flight checkout, then deletes the lane (worktree,
@@ -918,11 +919,22 @@ private struct LaneDeletionFailure: Equatable {
   let message: String
 }
 
+/// A lane delete that kept work, for the Lanes tab's "Kept … Restore" notice.
+struct LaneDeletionKept: Equatable, Identifiable {
+  /// The project on screen when the delete started: where the notice shows.
+  let shownInProjectId: String?
+  /// Where the save lives, which is another machine's project for its lanes.
+  let projectId: String?
+  let projectRootPath: String?
+  let snapshot: DeletedLaneSnapshot
+  var id: String { snapshot.id }
+}
+
 private let syncTerminalSubscriptionMaxBytes = 240_000
 /// Snapshot budget for the full-screen SwiftTerm session view, which renders
 /// real scrollback instead of a trimmed preview string.
-private let syncTerminalStreamMaxBytes = 512_000
-private let syncTerminalHistoryMaxBytes = 262_144
+let syncTerminalStreamMaxBytes = 512_000
+let syncTerminalHistoryMaxBytes = 262_144
 let syncChatSubscriptionMaxBytes = 256 * 1024
 let syncChatHistoryTailPageMaxBytes = 600_000
 // A bounded tail keeps chat switches instant on constrained routes. Complete
@@ -3886,20 +3898,7 @@ enum SyncChatCommandScope: Equatable {
   case personal
 }
 
-/// Delivery events for the full-screen terminal. The active screen attaches a
-/// handler per session id and receives hydration snapshots, ordered live
-/// chunks, and process exit without polling `terminalBuffers`.
-enum TerminalStreamEvent {
-  /// Snapshot payload from `terminal_subscribe`. `replacing == false` means a
-  /// delta resume (bytes from the requested `sinceOffset` to the end) that
-  /// must be appended, not re-rendered from scratch. `paintFromScreen` means
-  /// `text` is SerializeAddon CSI, not the transcript window — do not page
-  /// history through it.
-  case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?, paintFromScreen: Bool)
-  case chunk(text: String, endOffset: Int?)
-  case exit(code: Int?)
-  case inputFailure(message: String)
-}
+extension SyncService: TerminalStreamTransport {}
 
 struct WorkStartShellSessionRequest: Equatable {
   var laneId: String
@@ -4043,6 +4042,7 @@ func syncRelayReauthorizationPayload(
   stillCurrent: () -> Bool = { true }
 ) async throws -> [String: Any] {
   let relaySession = try await AccountService.shared.freshRelaySession()
+  await DpopKeyService.shared.warmKey()
   guard !Task.isCancelled, stillCurrent() else { throw CancellationError() }
   guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
     deviceId: deviceId,
@@ -4200,6 +4200,10 @@ final class SyncService: ObservableObject {
         // the 25s budget from an attempt that has already succeeded.
         connectAttemptIsWakingMachine = false
         connectAttemptBudget = .standard
+      } else {
+        // ADE Cloud access is the connected machine's answer: off the machine
+        // it is unknown, and unknown is hidden until the next read answers.
+        if cloudAvailable { cloudAvailable = false }
       }
     }
   }
@@ -4249,7 +4253,12 @@ final class SyncService: ObservableObject {
   /// Whether this phone currently holds a Tailscale-assigned address on a
   /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
   @Published private(set) var phoneHasTailnetInterface = false
-  @Published private(set) var activeHostProfile: HostConnectionProfile?
+  @Published private(set) var activeHostProfile: HostConnectionProfile? {
+    didSet {
+      // Another machine may be another account: its ADE Cloud access is unknown.
+      if cloudAvailable, activeHostProfile?.hostIdentity != oldValue?.hostIdentity { cloudAvailable = false }
+    }
+  }
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
   @Published private(set) var activeProjectRootPath: String?
@@ -4346,6 +4355,7 @@ final class SyncService: ObservableObject {
   /// `macDesktop.streamEnded`, keyed by the subscription id the phone minted.
   /// Main-actor because every consumer is a view; the receive path decodes the
   /// record's bytes off the main actor before landing here.
+  private var macDesktopStreamMachineKeys: [String: String] = [:]
   private var macDesktopStreamRecordHandlers: [String: (MacDesktopStreamRecord) -> Void] = [:]
   private var macDesktopStreamEndedHandlers: [String: (MacDesktopStreamEnded) -> Void] = [:]
   /// Serializes each subscription's record decodes so delivery stays in the
@@ -4366,6 +4376,7 @@ final class SyncService: ObservableObject {
   /// the pending ids so lane-bound UI can stop presenting stale controls.
   @Published private(set) var pendingLaneDeletionIds: Set<String> = []
   @Published private var laneDeletionFailure: LaneDeletionFailure?
+  @Published private(set) var laneDeletionsKept: [LaneDeletionKept] = []
   @Published private(set) var laneDetailProjectionRevision = 0
   /// Per-lane detail revisions bumped only for local `lane_detail_snapshots`
   /// writes with a known lane id, so an open lane detail stops reloading when an
@@ -4468,9 +4479,9 @@ final class SyncService: ObservableObject {
   @Published var linearPanePresented = false
   @Published var cursorCloudPanePresented = false
   @Published var githubIssuesPanePresented = false
-  /// The Agent 37 page (Work ⋯ menu), and whether the account has Agent 37 set up.
-  @Published var agent37PanePresented = false
-  @Published var agent37Available = false
+  /// The provider page (Work ⋯ menu), and whether the account has the provider set up.
+  @Published var cloudPanePresented = false
+  @Published var cloudAvailable = false
   /// Projects whose Work ⋯ menu offers GitHub Issues (see `GitHubIssuesMenuAvailability`).
   @Published var githubIssuesMenuProjectIds: Set<String> = []
   /// When set, the Linear pane attaches the chosen issue to this chat session
@@ -4551,18 +4562,29 @@ final class SyncService: ObservableObject {
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
   private(set) var terminalBufferRevisionsBySessionId: [String: Int] = [:]
-  /// Transcript END byte offset (UTF-8) confirmed per terminal session, fed by
-  /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
-  /// emit offsets; all gap/dedupe logic disables itself in that case.
-  private(set) var terminalEndOffsets: [String: Int] = [:]
-  private var terminalStreamHandlers: [String: (TerminalStreamEvent) -> Void] = [:]
-  private var desiredTerminalSessionIds: Set<String> = []
-  private var supportsTerminalInputAcknowledgements = false
-  private var terminalInputAcknowledgementRetryWindowMilliseconds: TimeInterval = 0
-  private var terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-  private var terminalInputQueues: [String: SyncTerminalInputQueue] = [:]
-  private var terminalInputTimeoutTasks: [String: Task<Void, Never>] = [:]
-  private var terminalGapRecoveryInFlight: Set<String> = []
+  /// The shared terminal stream state: subscriptions, transcript offsets,
+  /// handlers and queued input. The client runs the input acks and the resend.
+  private(set) lazy var terminalStream: TerminalStreamClient = {
+    let client = TerminalStreamClient(hooks: TerminalStreamClientHooks(
+      isLive: { [weak self] in self?.canSendLiveRequests() ?? false },
+      generation: { [weak self] in self?.connectionGeneration ?? 0 },
+      sendEnvelope: { [weak self] type, sessionId, payload in
+        _ = self?.sendEnvelope(type: type, requestId: nil, payload: payload)
+      },
+      resubscribe: { [weak self] sessionId, sinceOffset in
+        guard let self else { return }
+        try await self.refreshTerminalSnapshot(
+          sessionId: sessionId,
+          maxBytes: syncTerminalStreamMaxBytes,
+          sinceOffset: sinceOffset
+        )
+      }
+    ))
+    client.onSubscribedChange = { [weak self] sessionIds in
+      self?.subscribedTerminalSessionIds = sessionIds
+    }
+    return client
+  }()
   private struct TerminalSnapshotRecoveryScope: Equatable {
     let connectionGeneration: UInt64
     let hostIdentity: String?
@@ -4577,7 +4599,6 @@ final class SyncService: ObservableObject {
   private let terminalSnapshotRecoveryInitialDelayNanoseconds: UInt64 = 500_000_000
   private let terminalSnapshotRecoveryMaximumDelayNanoseconds: UInt64 = 8_000_000_000
   private var terminalSnapshotRecoveryJobs: [String: TerminalSnapshotRecoveryJob] = [:]
-  private var terminalSnapshotRequestTokens: [String: UUID] = [:]
   #if DEBUG
   private var terminalSnapshotRecoveryDelayOverrideForTesting: UInt64?
   #endif
@@ -5207,7 +5228,7 @@ final class SyncService: ObservableObject {
 
   /// A pane is up over the Hub. A Hub notice waits until it closes.
   var hubIsCoveredBySheet: Bool {
-    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented || agent37PanePresented
+    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented || cloudPanePresented
   }
 
   /// Starts (or stops) the timer for the current session request. Only an
@@ -5713,9 +5734,11 @@ final class SyncService: ObservableObject {
   /// an in-place project activation has actually loaded data.
   private func awaitFreshActiveProjectWorkHydration(
     selectionGeneration: UInt64,
+    // A caller that started earlier passes its own baseline. Nil means now.
+    baselineHydratedAt callerBaseline: Date?? = nil,
     timeout: TimeInterval = 6
   ) async {
-    let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
+    let baselineHydratedAt = callerBaseline ?? domainStatuses[.work]?.lastHydratedAt
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       guard isCurrentProjectSelection(selectionGeneration) else { return }
@@ -6498,7 +6521,7 @@ final class SyncService: ObservableObject {
       resetPendingSessionSettleStates()
       resetPendingAttentionClearStates()
       cancelAllTerminalSnapshotRecovery()
-      terminalSnapshotRequestTokens.removeAll()
+      terminalStream.requestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
       resetLanePayloadSignatures()
       // A pane belongs to the old project. Callers that intentionally open a
@@ -8017,6 +8040,7 @@ final class SyncService: ObservableObject {
     let relaySession = try await AccountService.shared.freshRelaySession(
       expectedAuthorization: authorization
     )
+    await DpopKeyService.shared.warmKey()
     guard isCurrentCandidate() else {
       throw AccountPairingConnectionSupersededError()
     }
@@ -9191,9 +9215,9 @@ final class SyncService: ObservableObject {
         stage: stage
       )
       guard wake else { return false }
-      // An Agent 37 box asleep is woken through the machine the phone is on;
+      // a cloud box asleep is woken through the machine the phone is on;
       // its ADE answers a few seconds later, which the pairing waits out.
-      _ = await wakeAgent37MachineIfNeeded(machineKey: machine.machineKey)
+      _ = await wakeCloudMachineIfNeeded(machineKey: machine.machineKey)
       if await pairWithAccountMachine(machine, authorization: authorization) {
         pendingMachineWake = nil
         return true
@@ -10101,6 +10125,11 @@ final class SyncService: ObservableObject {
         } catch {
           syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(error), privacy: .public)")
           lastOpenError = error
+          // A newer attempt may own the socket by now (`openSocket` waits
+          // before it opens one): only the current attempt may close it.
+          guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+            throw CancellationError()
+          }
           teardownSocket()
           continue
         }
@@ -13165,20 +13194,23 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Preview subscribe (artifact cards, the Work list): the smaller
+  /// subscription budget, and no request when a buffer is already live.
+  /// The full-screen terminal uses `subscribeTerminalStream`.
   func subscribeTerminal(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    if subscribedTerminalSessionIds.contains(trimmedSessionId), terminalBuffers[trimmedSessionId] != nil {
+    if terminalStream.subscribed.contains(trimmedSessionId), terminalBuffers[trimmedSessionId] != nil {
       return
     }
-    desiredTerminalSessionIds.insert(trimmedSessionId)
+    terminalStream.desired.insert(trimmedSessionId)
     try await refreshTerminalSnapshot(sessionId: trimmedSessionId)
   }
 
   func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes, sinceOffset: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    desiredTerminalSessionIds.insert(trimmedSessionId)
+    terminalStream.desired.insert(trimmedSessionId)
     cancelTerminalSnapshotRecovery(sessionId: trimmedSessionId)
     let scope = currentTerminalSnapshotRecoveryScope()
     do {
@@ -13209,7 +13241,7 @@ final class SyncService: ObservableObject {
   ) async throws {
     let requestId = makeRequestId()
     let requestToken = UUID()
-    terminalSnapshotRequestTokens[sessionId] = requestToken
+    terminalStream.requestTokens[sessionId] = requestToken
     var payload: [String: Any] = [
       "sessionId": sessionId,
       "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
@@ -13226,28 +13258,34 @@ final class SyncService: ObservableObject {
         requestId: requestId,
         disconnectOnTimeout: false,
         acceptResponse: { raw in
+          // A refused subscribe (`rosterTerminal` error) must not hydrate an empty screen.
+          if let error = (raw as? [String: Any])?["error"] as? [String: Any] {
+            self.terminalStream.refuseSnapshot(sessionId: sessionId, requestToken: requestToken)
+            throw NSError(domain: "ADE", code: 7, userInfo: [
+              NSLocalizedDescriptionKey: (error["message"] as? String) ?? "That computer could not open this terminal.",
+            ])
+          }
           let snapshot = try self.decode(raw, as: TerminalSnapshot.self)
-          guard self.terminalSnapshotRequestTokens[sessionId] == requestToken,
-                self.desiredTerminalSessionIds.contains(sessionId),
-                self.isCurrentTerminalSnapshotRecoveryScope(scope)
-          else { return }
-          self.terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
           // Acceptance is the terminal state for any retry job serving this
           // session. Clear its ownership in the same actor turn as the
           // subscription barrier; otherwise callers can observe a live stream
           // alongside a stale recovery marker until the awaiting retry task's
           // defer gets scheduled.
-          self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId)
-          self.applyTerminalSnapshot(snapshot, sessionId: sessionId)
-          self.subscribedTerminalSessionIds.insert(sessionId)
-          self.flushTerminalInputQueue(sessionId: sessionId)
+          self.terminalStream.acceptSnapshot(
+            snapshot,
+            sessionId: sessionId,
+            requestToken: requestToken,
+            isCurrent: { self.isCurrentTerminalSnapshotRecoveryScope(scope) },
+            beforeApply: { _ = self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId) },
+            bufferUpdate: { self.applyTerminalBuffer($0, sessionId: sessionId) }
+          )
         }
       ) {
         self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
       }
     } catch {
-      if terminalSnapshotRequestTokens[sessionId] == requestToken {
-        terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
+      if terminalStream.requestTokens[sessionId] == requestToken {
+        terminalStream.requestTokens.removeValue(forKey: sessionId)
       }
       throw error
     }
@@ -13289,7 +13327,7 @@ final class SyncService: ObservableObject {
     scope: TerminalSnapshotRecoveryScope
   ) {
     guard terminalSnapshotRecoveryJobs[sessionId] == nil,
-          desiredTerminalSessionIds.contains(sessionId),
+          terminalStream.desired.contains(sessionId),
           isCurrentTerminalSnapshotRecoveryScope(scope)
     else { return }
 
@@ -13310,7 +13348,7 @@ final class SyncService: ObservableObject {
           return
         }
         guard self.terminalSnapshotRecoveryJobs[sessionId]?.id == jobId,
-              self.desiredTerminalSessionIds.contains(sessionId),
+              self.terminalStream.desired.contains(sessionId),
               self.isCurrentTerminalSnapshotRecoveryScope(scope)
         else { return }
         do {
@@ -13348,16 +13386,21 @@ final class SyncService: ObservableObject {
 
   /// Registers the active full-screen terminal as the live delivery target for
   /// `sessionId`. One handler per session; the screen detaches on disappear.
-  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) {
+  /// The last attach receives the events. The caller keeps the returned
+  /// token and gives it back to `detachTerminalStream`.
+  @discardableResult
+  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID? {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedSessionId.isEmpty else { return }
-    terminalStreamHandlers[trimmedSessionId] = handler
+    guard !trimmedSessionId.isEmpty else { return nil }
+    return terminalStream.handlers.attach(sessionId: trimmedSessionId, handler: handler)
   }
 
-  func detachTerminalStream(sessionId: String) {
+  /// Removes only the handler that `token` attached. A screen that leaves
+  /// while another screen of the same session stays keeps that screen live.
+  func detachTerminalStream(sessionId: String, token: UUID?) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedSessionId.isEmpty else { return }
-    terminalStreamHandlers.removeValue(forKey: trimmedSessionId)
+    guard !trimmedSessionId.isEmpty, let token else { return }
+    terminalStream.handlers.detach(sessionId: trimmedSessionId, token: token)
   }
 
   /// Fetches transcript bytes ending at/before `beforeOffset` for on-demand
@@ -13367,7 +13410,7 @@ final class SyncService: ObservableObject {
     guard !trimmedSessionId.isEmpty else {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "Missing terminal session id."])
     }
-    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else {
+    guard terminalStream.subscribed.contains(trimmedSessionId) else {
       throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: "Terminal stream is not subscribed."])
     }
     let requestId = makeRequestId()
@@ -13386,35 +13429,7 @@ final class SyncService: ObservableObject {
   /// Applies a live `terminal_data` chunk with offset-based ordering. `endOffset`
   /// is the transcript END byte offset after this chunk (nil on older hosts).
   private func handleTerminalDataChunk(sessionId: String, chunk: String, endOffset: Int?) {
-    var deliverableChunk: String? = chunk
-    if let endOffset {
-      if let lastEnd = terminalEndOffsets[sessionId] {
-        let chunkStart = endOffset - chunk.utf8.count
-        if endOffset <= lastEnd {
-          // Replay of bytes a snapshot/delta already covered — drop entirely.
-          deliverableChunk = nil
-        } else if chunkStart > lastEnd {
-          // Missed bytes between lastEnd and this chunk. Drop the chunk and
-          // let a delta resubscribe (sinceOffset = lastEnd) deliver the full
-          // contiguous range; feeding it now would render out of order.
-          deliverableChunk = nil
-          recoverTerminalGap(sessionId: sessionId, sinceOffset: lastEnd)
-        } else {
-          if chunkStart < lastEnd {
-            // Partial overlap: trim the already-applied UTF-8 prefix.
-            let bytes = Array(chunk.utf8)
-            var overlap = min(max(0, lastEnd - chunkStart), bytes.count)
-            while overlap < bytes.count, bytes[overlap] & 0xC0 == 0x80 {
-              overlap += 1
-            }
-            deliverableChunk = String(decoding: bytes.dropFirst(overlap), as: UTF8.self)
-          }
-          terminalEndOffsets[sessionId] = endOffset
-        }
-      } else {
-        terminalEndOffsets[sessionId] = endOffset
-      }
-    }
+    let deliverableChunk = terminalStream.orderedChunk(sessionId: sessionId, chunk: chunk, endOffset: endOffset)
     guard let deliverableChunk, !deliverableChunk.isEmpty else {
       terminalBufferUpdatedAt[sessionId] = Date()
       return
@@ -13422,58 +13437,22 @@ final class SyncService: ObservableObject {
     terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
     terminalBufferUpdatedAt[sessionId] = Date()
     markTerminalBufferChanged(sessionId: sessionId)
-    terminalStreamHandlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
+    terminalStream.handlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
   }
 
-  private func recoverTerminalGap(sessionId: String, sinceOffset: Int) {
-    guard !terminalGapRecoveryInFlight.contains(sessionId) else { return }
-    terminalGapRecoveryInFlight.insert(sessionId)
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      defer { self.terminalGapRecoveryInFlight.remove(sessionId) }
-      try? await self.refreshTerminalSnapshot(
-        sessionId: sessionId,
-        maxBytes: syncTerminalStreamMaxBytes,
-        sinceOffset: sinceOffset
-      )
-    }
-  }
-
-  private func applyTerminalSnapshot(_ snapshot: TerminalSnapshot, sessionId: String) {
-    if let endOffset = snapshot.endOffset {
-      terminalEndOffsets[sessionId] = endOffset
-    }
+  /// Writes an accepted snapshot into the transcript buffer. The client calls
+  /// this before it sends the snapshot to the stream handler.
+  private func applyTerminalBuffer(_ snapshot: TerminalSnapshot, sessionId: String) {
     if snapshot.delta == true {
       // Delta resume: payload covers exactly [sinceOffset, end). Append —
       // replacing would drop everything the screen already rendered.
       if !snapshot.transcript.isEmpty {
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
-        terminalStreamHandlers[sessionId]?(.hydrate(
-          text: snapshot.transcript,
-          replacing: false,
-          startOffset: snapshot.startOffset,
-          endOffset: snapshot.endOffset,
-          paintFromScreen: false
-        ))
       }
       terminalBufferUpdatedAt[sessionId] = Date()
     } else {
-      let hydrateText = snapshot.replacingHydrateText
       updateTerminalBuffer(sessionId: sessionId, transcript: snapshot.transcript, immediate: true)
-      terminalStreamHandlers[sessionId]?(.hydrate(
-        text: hydrateText,
-        replacing: true,
-        startOffset: snapshot.startOffset,
-        endOffset: snapshot.endOffset,
-        paintFromScreen: snapshot.hasScreenPaint
-      ))
-    }
-    if snapshot.live == false {
-      // No PTY behind the session (ended, or orphaned by a brain restart even
-      // though status still says running) — typing would go nowhere. Surface
-      // the exited/resume state instead of a live prompt.
-      terminalStreamHandlers[sessionId]?(.exit(code: nil))
     }
   }
 
@@ -13482,7 +13461,7 @@ final class SyncService: ObservableObject {
   func hasTerminalStream(sessionId: String) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return false }
-    return terminalStreamHandlers[trimmedSessionId] != nil
+    return terminalStream.handlers[trimmedSessionId] != nil
   }
 
   /// Relaunches an ended/orphaned agent CLI session's runtime on the host
@@ -13632,22 +13611,17 @@ final class SyncService: ObservableObject {
   func unsubscribeTerminal(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    guard desiredTerminalSessionIds.contains(trimmedSessionId) else { return }
-    desiredTerminalSessionIds.remove(trimmedSessionId)
-    subscribedTerminalSessionIds.remove(trimmedSessionId)
+    guard terminalStream.desired.contains(trimmedSessionId) else { return }
     cancelTerminalSnapshotRecovery(sessionId: trimmedSessionId)
-    terminalSnapshotRequestTokens.removeValue(forKey: trimmedSessionId)
-    terminalInputTimeoutTasks.removeValue(forKey: trimmedSessionId)?.cancel()
-    terminalInputQueues.removeValue(forKey: trimmedSessionId)
-    if canSendLiveRequests() {
-      sendEnvelope(type: "terminal_unsubscribe", requestId: nil, payload: [
-        "sessionId": trimmedSessionId,
-      ])
-    }
+    terminalStream.unsubscribe(sessionId: trimmedSessionId)
   }
 
+  /// A refused subscribe removes the session from `hydrated`, so input is
+  /// refused there too and does not wait in the queue.
   func canAcceptTerminalInput(sessionId: String) -> Bool {
-    desiredTerminalSessionIds.contains(sessionId) && terminalBuffers[sessionId] != nil
+    terminalStream.desired.contains(sessionId)
+      && terminalStream.hydrated.contains(sessionId)
+      && terminalBuffers[sessionId] != nil
   }
 
   /// Queue terminal input in order. ACK-capable hosts keep the exact input id
@@ -13657,169 +13631,11 @@ final class SyncService: ObservableObject {
   @discardableResult
   func sendTerminalInput(sessionId: String, data: String) -> SyncTerminalInputSubmission {
     let sessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !sessionId.isEmpty, !data.isEmpty else {
-      return .rejected(message: "Terminal input is empty.")
-    }
-    guard canAcceptTerminalInput(sessionId: sessionId) else {
-      let message = "Terminal input is waiting for the terminal snapshot."
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-      return .rejected(message: message)
-    }
-    do {
-      var queue = terminalInputQueues[sessionId] ?? SyncTerminalInputQueue(
-        maximumItemCount: terminalInputMaximumOutstanding
-      )
-      let item = try queue.enqueue(data: Data(data.utf8))
-      terminalInputQueues[sessionId] = queue
-      let ready = canSendLiveRequests() && subscribedTerminalSessionIds.contains(sessionId)
-      if ready {
-        flushTerminalInputQueue(sessionId: sessionId)
-      }
-      if supportsTerminalInputAcknowledgements {
-        return ready
-          ? .awaitingAcknowledgement(inputId: item.inputId)
-          : .queuedUntilReady(inputId: item.inputId)
-      }
-      return ready ? .sentToLegacyHost : .queuedUntilReady(inputId: item.inputId)
-    } catch {
-      let message = error.localizedDescription
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-      return .rejected(message: message)
-    }
-  }
-
-  private func flushTerminalInputQueue(sessionId: String) {
-    guard canSendLiveRequests(), subscribedTerminalSessionIds.contains(sessionId),
-          var queue = terminalInputQueues[sessionId],
-          let item = queue.nextSendableItem(
-            reliableAcknowledgements: supportsTerminalInputAcknowledgements
-          ) else { return }
-    guard let data = String(data: item.data, encoding: .utf8) else {
-      _ = queue.acknowledge(inputId: item.inputId)
-      terminalInputQueues[sessionId] = queue
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: "Terminal input could not be encoded."))
-      flushTerminalInputQueue(sessionId: sessionId)
-      return
-    }
-    var payload: [String: Any] = ["sessionId": sessionId, "data": data]
-    if supportsTerminalInputAcknowledgements {
-      payload["inputId"] = item.inputId
-      queue.markSent(
-        inputId: item.inputId,
-        generation: connectionGeneration,
-        sentUptime: ProcessInfo.processInfo.systemUptime
-      )
-      terminalInputQueues[sessionId] = queue
-      scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
-    } else {
-      _ = queue.removeLegacyDelivery(inputId: item.inputId)
-      terminalInputQueues[sessionId] = queue
-    }
-    sendEnvelope(type: "terminal_input", requestId: nil, payload: payload)
-    if !supportsTerminalInputAcknowledgements {
-      flushTerminalInputQueue(sessionId: sessionId)
-    }
-  }
-
-  private func scheduleTerminalInputAcknowledgementTimeout(sessionId: String) {
-    terminalInputTimeoutTasks[sessionId]?.cancel()
-    let generation = connectionGeneration
-    terminalInputTimeoutTasks[sessionId] = Task { @MainActor [weak self] in
-      try? await Task.sleep(
-        nanoseconds: UInt64((SyncTerminalInputQueue.defaultAcknowledgementTimeout * 1_000_000_000).rounded())
-      )
-      guard let self, !Task.isCancelled,
-            var queue = self.terminalInputQueues[sessionId],
-            let inputId = queue.timedOutInputId(
-              nowUptime: ProcessInfo.processInfo.systemUptime,
-              generation: generation
-            ),
-            let item = queue.item(inputId: inputId) else { return }
-      switch syncTerminalInputRetryDecision(
-        item: item,
-        nowUptime: ProcessInfo.processInfo.systemUptime,
-        retryWindowMilliseconds: self.terminalInputAcknowledgementRetryWindowMilliseconds
-      ) {
-      case .retry(let afterNanoseconds):
-        try? await Task.sleep(nanoseconds: afterNanoseconds)
-        guard !Task.isCancelled,
-              self.connectionGeneration == generation,
-              self.subscribedTerminalSessionIds.contains(sessionId) else { return }
-        self.terminalInputTimeoutTasks[sessionId] = nil
-        self.resendTerminalInput(sessionId: sessionId, inputId: inputId)
-      case .attemptsExhausted, .retryWindowExpired:
-        _ = queue.acknowledge(inputId: inputId)
-        self.terminalInputQueues[sessionId] = queue
-        self.terminalInputTimeoutTasks[sessionId] = nil
-        self.terminalStreamHandlers[sessionId]?(.inputFailure(
-          message: "The computer did not confirm whether that terminal input was applied. It was not retried again."
-        ))
-        self.flushTerminalInputQueue(sessionId: sessionId)
-      }
-    }
-  }
-
-  private func resendTerminalInput(sessionId: String, inputId: String) {
-    guard canSendLiveRequests(), subscribedTerminalSessionIds.contains(sessionId),
-          var queue = terminalInputQueues[sessionId],
-          let item = queue.item(inputId: inputId),
-          let data = String(data: item.data, encoding: .utf8) else { return }
-    queue.markSent(
-      inputId: inputId,
-      generation: connectionGeneration,
-      sentUptime: ProcessInfo.processInfo.systemUptime
+    return terminalStream.submitInput(
+      sessionId: sessionId,
+      data: data,
+      accepting: canAcceptTerminalInput(sessionId: sessionId)
     )
-    terminalInputQueues[sessionId] = queue
-    sendEnvelope(type: "terminal_input", requestId: nil, payload: [
-      "sessionId": sessionId,
-      "data": data,
-      "inputId": inputId,
-    ])
-    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
-  }
-
-  private func handleTerminalInputAcknowledgement(_ payload: [String: Any]) {
-    guard let acknowledgement = syncTerminalInputAcknowledgement(from: payload) else { return }
-    switch acknowledgement {
-    case .success(let sessionId, let inputId, _):
-      guard var queue = terminalInputQueues[sessionId],
-            queue.inFlightItem(inputId: inputId, generation: connectionGeneration) != nil else {
-        return
-      }
-      terminalInputTimeoutTasks.removeValue(forKey: sessionId)?.cancel()
-      _ = queue.acknowledge(inputId: inputId)
-      terminalInputQueues[sessionId] = queue
-      flushTerminalInputQueue(sessionId: sessionId)
-    case .failure(let sessionId, let inputId, _, let message, let retryableSubscription):
-      guard let sessionId, let inputId,
-            var queue = terminalInputQueues[sessionId],
-            queue.inFlightItem(inputId: inputId, generation: connectionGeneration) != nil else {
-        return
-      }
-      terminalInputTimeoutTasks.removeValue(forKey: sessionId)?.cancel()
-      if retryableSubscription {
-        queue.prepareForReconnect()
-        terminalInputQueues[sessionId] = queue
-        subscribedTerminalSessionIds.remove(sessionId)
-        Task { @MainActor [weak self] in
-          guard let self, self.desiredTerminalSessionIds.contains(sessionId) else { return }
-          do {
-            try await self.refreshTerminalSnapshot(
-              sessionId: sessionId,
-              maxBytes: syncTerminalStreamMaxBytes,
-              sinceOffset: self.terminalEndOffsets[sessionId]
-            )
-          } catch {
-            self.terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-          }
-        }
-        return
-      }
-      _ = queue.acknowledge(inputId: inputId)
-      terminalInputQueues[sessionId] = queue
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-      flushTerminalInputQueue(sessionId: sessionId)
-    }
   }
 
   /// Tell the host to reshape the active PTY for `sessionId` to a new
@@ -13827,14 +13643,7 @@ final class SyncService: ObservableObject {
   /// split view, font-size). Cheap and idempotent; the host clamps to a
   /// sane dimension range internally.
   func sendTerminalResize(sessionId: String, cols: Int, rows: Int) {
-    guard !sessionId.isEmpty else { return }
-    guard cols > 0, rows > 0 else { return }
-    guard canSendLiveRequests() else { return }
-    sendEnvelope(type: "terminal_resize", requestId: nil, payload: [
-      "sessionId": sessionId,
-      "cols": cols,
-      "rows": rows,
-    ])
+    terminalStream.sendResize(sessionId: sessionId, cols: cols, rows: rows)
   }
 
   /// Registers a chat session as living in a FOREIGN project (cross-project
@@ -14644,6 +14453,8 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.unarchive", args: ["laneId": laneId])
   }
 
+  /// Work the host kept (Recently deleted) goes to `laneDeletionsKept`, which
+  /// the Lanes tab offers to restore.
   func deleteLane(
     _ laneId: String,
     deleteBranch: Bool = true,
@@ -14653,13 +14464,86 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws {
-    _ = try await sendCommand(action: "lanes.delete", args: [
+    // Deletes run in the background; the project may change before this answers.
+    let shownInProjectId = activeProjectId
+    var keptProjectId = targetProjectId ?? activeProjectId
+    var keptRootPath = targetProjectRootPath ?? (targetProjectId == nil ? activeProjectRootPath : nil)
+    if let laneTarget = try? syncRemoteLaneTarget(args: ["laneId": laneId]),
+       laneTarget.machineKey != focusedMachineKey,
+       let repo = try? requireRemoteLaneRepo(machineKey: laneTarget.machineKey) {
+      keptProjectId = repo.markedProjectId
+      keptRootPath = repo.rootPath
+    }
+    let response = try await sendCommand(action: "lanes.delete", args: [
       "laneId": laneId,
       "deleteBranch": deleteBranch,
       "deleteRemoteBranch": deleteRemoteBranch,
       "remoteName": remoteName,
       "force": force,
     ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
+    // A queued delete or an older host answers without it.
+    guard let payload = response as? [String: Any], let savedWork = payload["savedWork"], !(savedWork is NSNull) else { return }
+    let snapshot: DeletedLaneSnapshot
+    do {
+      snapshot = try decode(savedWork, as: DeletedLaneSnapshot.self)
+    } catch {
+      // The work is still in Recently deleted; only the notice is lost.
+      CrashReporting.capture(error, context: ["area": "sync.lane_delete_saved_work"])
+      return
+    }
+    laneDeletionsKept.removeAll { $0.id == snapshot.id }
+    laneDeletionsKept.append(LaneDeletionKept(
+      shownInProjectId: shownInProjectId,
+      projectId: keptProjectId,
+      projectRootPath: keptRootPath,
+      snapshot: snapshot
+    ))
+  }
+
+  /// Deleted lanes whose work the machine kept, newest first.
+  func listDeletedLanes(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> [DeletedLaneSnapshot] {
+    try await sendDecodableCommand(
+      action: "lanes.listDeleted",
+      args: [:],
+      disconnectOnTimeout: false,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: [DeletedLaneSnapshot].self
+    )
+  }
+
+  /// Brings a deleted lane back (or puts a freed lane's files back) from its
+  /// saved work. Never pushes.
+  func restoreDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> RestoreDeletedLaneResult {
+    let result = try await sendDecodableCommand(
+      action: "lanes.restoreDeleted",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: RestoreDeletedLaneResult.self
+    )
+    if result.restoredUncommitted { laneDeletionsKept.removeAll { $0.id == id } }
+    return result
+  }
+
+  /// Drops a deleted lane's saved work for good.
+  func removeDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws {
+    _ = try await sendCommand(
+      action: "lanes.removeDeleted",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+    laneDeletionsKept.removeAll { $0.id == id }
+  }
+
+  /// Kept-work notices for the project on screen.
+  var activeLaneDeletionsKept: [LaneDeletionKept] {
+    laneDeletionsKept.filter { $0.shownInProjectId == activeProjectId }
+  }
+
+  func dismissLaneDeletionKept(_ id: String) {
+    laneDeletionsKept.removeAll { $0.id == id }
   }
 
   /// Starts a destructive lane cleanup without keeping the caller's sheet or
@@ -16983,7 +16867,9 @@ final class SyncService: ObservableObject {
   /// read-only disclosure drop the user's whole sync connection on one slow
   /// cellular round trip.
   func fetchWorkToolsLaneState(laneId: String) async throws -> WorkToolsLaneState {
-    try requireWorkToolsAction("workTools.getLaneState")
+    guard supportsWorkToolsState(laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.", "ADEErrorCode": "unsupported_action"])
+    }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     // Project-scoped, resolved from the active project binding: a lane only
     // exists inside the project the phone is already looking at.
@@ -16998,34 +16884,24 @@ final class SyncService: ObservableObject {
     )
   }
 
-  /// Refuses a Work-tools read the connected host never advertised, rather than
-  /// putting an unknown action on the wire every poll. Older brains and
-  /// chat-only runtimes simply omit these commands.
-  private func requireWorkToolsAction(_ action: String) throws {
-    guard supportsRemoteAction(action) else {
-      throw NSError(
-        domain: "ADE",
-        code: 17,
-        userInfo: [
-          NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.",
-          "ADEErrorCode": "unsupported_action",
-        ]
-      )
-    }
-  }
-
   /// Bytes for one observation, fetched by the path the state handed us.
   ///
   /// Frames are never pushed with the state: a tools-pane refresh that carried
   /// a screenshot would put a megabyte on the wire every few seconds for a
   /// picture nobody may be looking at.
-  func readWorkToolsObservationPreview(path: String) async throws -> WorkToolsObservationPreview? {
-    try requireWorkToolsAction("workTools.readObservationPreview")
+  func supportsWorkToolsObservationPreview(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.readObservationPreview", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  func readWorkToolsObservationPreview(path: String, laneId: String) async throws -> WorkToolsObservationPreview? {
+    guard supportsWorkToolsObservationPreview(laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools preview is not available on this machine version.", "ADEErrorCode": "unsupported_action"])
+    }
     let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     let result = try await sendCommand(
       action: "workTools.readObservationPreview",
-      args: ["path": trimmed],
+      args: ["path": trimmed, "laneId": laneId],
       disconnectOnTimeout: false,
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
     )
@@ -17089,15 +16965,30 @@ final class SyncService: ObservableObject {
   /// advertisement would mount a live view whose first RPC the host answers
   /// with an error. Either half missing falls back to today's still image,
   /// which is the safe direction.
-  var supportsMacDesktopStream: Bool {
-    advertisesMacDesktopStream && supportsRemoteAction("macDesktop.streamSubscribe")
+  func supportsMacDesktopStream(laneId: String) -> Bool {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: remote.machineKey), connection.isLive else { return false }
+      return connection.supportsMacDesktopStream && connection.commandDescriptor(for: "macDesktop.streamSubscribe")?.policy.allowsPhone == true
+    }
+    return advertisesMacDesktopStream && supportsRemoteAction("macDesktop.streamSubscribe")
+  }
+
+  func isLaneMachineConnected(laneId: String) -> Bool {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      return machineFleet?.connection(for: remote.machineKey)?.isLive == true
+    }
+    return connectionState == .connected
+  }
+
+  func supportsWorkToolsState(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.getLaneState", laneId: laneId)?.policy.allowsPhone == true
   }
 
   /// The lane's redacted Mac Desktop status, over the same view-only read the
   /// desktop calls. Never carries the stream token: only `startStream` does,
   /// and the phone does not call it.
   func macDesktopGetStatus(laneId: String) async throws -> MacDesktopStatus {
-    try requireMacDesktopStreamAction("macDesktop.getStatus")
+    try requireMacDesktopStreamAction("macDesktop.getStatus", laneId: laneId)
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     return try decode(
       try await sendCommand(
@@ -17124,12 +17015,12 @@ final class SyncService: ObservableObject {
   /// this: watching never starts a display. The host is idempotent per lane and
   /// finds the lane's name itself, so a second press is safe.
   func macDesktopStart(laneId: String, hostIsWindows: Bool = false) async throws {
-    guard supportsMacDesktopStart else {
+    guard laneCommandDescriptor("macDesktop.start", laneId: laneId)?.policy.allowsPhone == true else {
       throw NSError(
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Start the macOS desktop in ADE on your Mac. This machine version can't start it from here.",
+          NSLocalizedDescriptionKey: "This machine version cannot start the lane screen from here.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -17139,7 +17030,7 @@ final class SyncService: ObservableObject {
       action: "macDesktop.start",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
-      timeoutMessage: hostIsWindows ? "Windows sign-in is taking too long." : "The macOS desktop is taking too long to start.",
+      timeoutMessage: hostIsWindows ? "Windows sign-in is taking too long." : "The lane screen is taking too long to start.",
       timeoutNanoseconds: hostIsWindows ? 160_000_000_000 : Self.macDesktopStartTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
@@ -17149,17 +17040,22 @@ final class SyncService: ObservableObject {
   /// this separately from controller-only desktop actions: `stopSeat` stops
   /// either seat (private, or the user's main desktop); an older host has only
   /// `stopPrivate`, for the private screen. A Mac lane is never a viewer's to stop.
-  func canStopWindowsDesktop(seat: String?) -> Bool {
+  func canStopWindowsDesktop(seat: String?, laneId: String) -> Bool {
+    let stopSeat = laneAllowsViewer("macDesktop.stopSeat", laneId: laneId)
     switch seat {
-    case "shared": return supportsViewerRemoteAction("macDesktop.stopSeat")
-    case "private":
-      return supportsViewerRemoteAction("macDesktop.stopSeat") || supportsViewerRemoteAction("macDesktop.stopPrivate")
+    case "shared": return stopSeat
+    case "private": return stopSeat || laneAllowsViewer("macDesktop.stopPrivate", laneId: laneId)
     default: return false
     }
   }
 
+  /// Asked of the machine that owns the lane, which may not be the focused one.
+  private func laneAllowsViewer(_ action: String, laneId: String) -> Bool {
+    laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true
+  }
+
   func windowsDesktopStop(laneId: String, seat: String?) async throws {
-    guard canStopWindowsDesktop(seat: seat) else {
+    guard canStopWindowsDesktop(seat: seat, laneId: laneId) else {
       throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the Windows screen from here."])
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17167,12 +17063,35 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No lane was selected."])
     }
     _ = try await sendCommand(
-      action: supportsViewerRemoteAction("macDesktop.stopSeat") ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
+      action: laneAllowsViewer("macDesktop.stopSeat", laneId: trimmed) ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
+  }
+
+  /// Linux screen actions are negotiated with the lane's owning machine.
+  func canManageLinuxDesktop(_ action: String, laneId: String) -> Bool {
+    laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  func linuxDesktopStop(laneId: String) async throws {
+    guard canManageLinuxDesktop("macDesktop.stopSeat", laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot stop the Linux screen from here.", "ADEErrorCode": "unsupported_action"])
+    }
+    _ = try await sendCommand(action: "macDesktop.stopSeat", args: ["laneId": laneId],
+      disconnectOnTimeout: false, timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry)
+  }
+
+  func linuxDesktopCloseWindow(laneId: String, windowId: Int) async throws {
+    guard canManageLinuxDesktop("macDesktop.closeWindow", laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot close the window from here.", "ADEErrorCode": "unsupported_action"])
+    }
+    _ = try await sendCommand(action: "macDesktop.closeWindow", args: ["laneId": laneId, "windowId": windowId],
+      disconnectOnTimeout: false, timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry)
   }
 
   /// Asks the host to attach this viewer to the lane's stream.
@@ -17186,7 +17105,7 @@ final class SyncService: ObservableObject {
     subscriptionId: String,
     viewerLabel: String? = nil
   ) async throws -> MacDesktopStreamSubscribeResult {
-    try requireMacDesktopStreamAction("macDesktop.streamSubscribe")
+    try requireMacDesktopStreamAction("macDesktop.streamSubscribe", laneId: laneId)
     let trimmedLane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedSubscription = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedLane.isEmpty, !trimmedSubscription.isEmpty else {
@@ -17213,13 +17132,15 @@ final class SyncService: ObservableObject {
 
   /// Drops this viewer's subscription. Best-effort: a dead socket has already
   /// released it on the host, so a failure needs no retry.
-  func macDesktopStreamUnsubscribe(subscriptionId: String) async throws {
-    try requireMacDesktopStreamAction("macDesktop.streamUnsubscribe")
+  func macDesktopStreamUnsubscribe(laneId: String, subscriptionId: String) async throws {
+    // Best effort: with the lane's machine gone there is no one to tell, and
+    // its socket closing ends the subscription.
+    guard laneCommandDescriptor("macDesktop.streamUnsubscribe", laneId: laneId) != nil else { return }
     let trimmed = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     _ = try await sendCommand(
       action: "macDesktop.streamUnsubscribe",
-      args: ["subscriptionId": trimmed],
+      args: ["laneId": laneId, "subscriptionId": trimmed],
       disconnectOnTimeout: false,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
@@ -17229,40 +17150,69 @@ final class SyncService: ObservableObject {
   /// registration for the same id replaces the first, so a rebuilt view cannot
   /// leave a stale closure receiving frames for a subscription it abandoned.
   func registerMacDesktopStream(
+    laneId: String,
     subscriptionId: String,
     onRecord: @escaping (MacDesktopStreamRecord) -> Void,
     onEnded: @escaping (MacDesktopStreamEnded) -> Void
   ) {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      macDesktopStreamMachineKeys[subscriptionId] = remote.machineKey
+    } else {
+      macDesktopStreamMachineKeys.removeValue(forKey: subscriptionId)
+    }
     macDesktopStreamRecordHandlers[subscriptionId] = onRecord
     macDesktopStreamEndedHandlers[subscriptionId] = onEnded
   }
 
   func unregisterMacDesktopStream(subscriptionId: String) {
+    macDesktopStreamMachineKeys.removeValue(forKey: subscriptionId)
     macDesktopStreamRecordHandlers.removeValue(forKey: subscriptionId)
     macDesktopStreamEndedHandlers.removeValue(forKey: subscriptionId)
     macDesktopStreamDecodeQueue.forget(subscriptionId: subscriptionId)
   }
 
   private func resetMacDesktopStreamHandlers() {
-    macDesktopStreamRecordHandlers.removeAll()
-    macDesktopStreamEndedHandlers.removeAll()
-    macDesktopStreamDecodeQueue.removeAll()
+    // A stream on another machine rides that machine's own socket, so it
+    // outlives this one. Without its key, its records would be dropped.
+    for subscriptionId in macDesktopStreamRecordHandlers.keys
+    where macDesktopStreamMachineKeys[subscriptionId] == nil {
+      unregisterMacDesktopStream(subscriptionId: subscriptionId)
+    }
   }
 
   /// Refuses a live-stream call the connected host never advertised, rather
   /// than putting an unknown action on the wire. Older brains and chat-only
   /// runtimes simply omit these commands.
-  private func requireMacDesktopStreamAction(_ action: String) throws {
-    guard supportsMacDesktopStream, supportsViewerRemoteAction(action) else {
+  private func requireMacDesktopStreamAction(_ action: String, laneId: String) throws {
+    guard supportsMacDesktopStream(laneId: laneId),
+          laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true else {
       throw NSError(
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Live macOS desktop video is not available on this machine version.",
+          NSLocalizedDescriptionKey: "Live desktop video is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
     }
+  }
+
+  /// Records on a roster socket belong only to subscriptions on that machine.
+  func receiveRemoteMacDesktopRecord(_ payload: Any, machineKey: String, isCurrent: () -> Bool) async {
+    guard let dict = payload as? [String: Any], let envelope = MacDesktopStreamRecordEnvelope(dict),
+          macDesktopStreamMachineKeys[envelope.subscriptionId] == machineKey else { return }
+    let task = macDesktopStreamDecodeQueue.decode(subscriptionId: envelope.subscriptionId) {
+      Data(base64Encoded: envelope.base64Data).map { MacDesktopStreamRecord(envelope: envelope, data: $0) }
+    }
+    guard let record = await task.value, isCurrent(),
+          macDesktopStreamMachineKeys[record.subscriptionId] == machineKey else { return }
+    macDesktopStreamRecordHandlers[record.subscriptionId]?(record)
+  }
+
+  func receiveRemoteMacDesktopEnded(_ payload: Any, machineKey: String) {
+    guard let dict = payload as? [String: Any], let ended = MacDesktopStreamEnded(dict),
+          macDesktopStreamMachineKeys[ended.subscriptionId] == machineKey else { return }
+    macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
   }
 
   // MARK: - App Control live view
@@ -17381,10 +17331,16 @@ final class SyncService: ObservableObject {
   /// the phone cannot use, and take without return leaves the Mac held until
   /// the TTL. The feature bit is the contract's support signal; a bit without
   /// the commands would show a button whose first RPC the host rejects.
-  var supportsMacDesktopControl: Bool {
-    guard advertisesMacDesktopControl else { return false }
-    return ["macDesktop.takeControl", "macDesktop.returnControl", "macDesktop.renewLease", "macDesktop.input"]
-      .allSatisfy(supportsViewerRemoteAction)
+  func supportsMacDesktopControl(laneId: String) -> Bool {
+    let advertised: Bool
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: remote.machineKey), connection.isLive else { return false }
+      advertised = connection.supportsMacDesktopControl
+    } else {
+      advertised = advertisesMacDesktopControl
+    }
+    return advertised && ["macDesktop.takeControl", "macDesktop.returnControl", "macDesktop.renewLease", "macDesktop.input"]
+      .allSatisfy { laneCommandDescriptor($0, laneId: laneId)?.policy.allowsPhone == true }
   }
 
   func macDesktopTakeControl(
@@ -17392,7 +17348,7 @@ final class SyncService: ObservableObject {
     controllerId: String,
     controllerLabel: String
   ) async throws -> MacDesktopControlLease {
-    try requireMacDesktopControlAction("macDesktop.takeControl")
+    try requireMacDesktopControlAction("macDesktop.takeControl", laneId: laneId)
     return try decode(
       try await sendMacDesktopControl(
         action: "macDesktop.takeControl",
@@ -17410,7 +17366,7 @@ final class SyncService: ObservableObject {
   /// is a refusal, and the caller still drops its local "I have control" line
   /// because the TTL is the backstop.
   func macDesktopReturnControl(laneId: String, controllerId: String) async throws -> MacDesktopControlLease? {
-    try requireMacDesktopControlAction("macDesktop.returnControl")
+    try requireMacDesktopControlAction("macDesktop.returnControl", laneId: laneId)
     return try decodeMacDesktopControlLease(
       try await sendMacDesktopControl(
         action: "macDesktop.returnControl",
@@ -17420,7 +17376,7 @@ final class SyncService: ObservableObject {
   }
 
   func macDesktopRenewLease(laneId: String, controllerId: String) async throws -> MacDesktopControlLease? {
-    try requireMacDesktopControlAction("macDesktop.renewLease")
+    try requireMacDesktopControlAction("macDesktop.renewLease", laneId: laneId)
     return try decodeMacDesktopControlLease(
       try await sendMacDesktopControl(
         action: "macDesktop.renewLease",
@@ -17430,7 +17386,7 @@ final class SyncService: ObservableObject {
   }
 
   func macDesktopInput(laneId: String, call: [String: Any]) async throws {
-    try requireMacDesktopControlAction("macDesktop.input")
+    try requireMacDesktopControlAction("macDesktop.input", laneId: laneId)
     _ = try await sendMacDesktopControl(
       action: "macDesktop.input",
       args: ["laneId": laneId, "call": call]
@@ -17453,13 +17409,14 @@ final class SyncService: ObservableObject {
     return try decode(result, as: MacDesktopControlLease.self)
   }
 
-  private func requireMacDesktopControlAction(_ action: String) throws {
-    guard supportsMacDesktopControl, supportsViewerRemoteAction(action) else {
+  private func requireMacDesktopControlAction(_ action: String, laneId: String) throws {
+    guard supportsMacDesktopControl(laneId: laneId),
+          laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true else {
       throw NSError(
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Controlling this macOS desktop is not available on this machine version.",
+          NSLocalizedDescriptionKey: "Controlling this lane screen is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -19708,6 +19665,11 @@ final class SyncService: ObservableObject {
     defer {
       if let dialKey, let dialToken { relayDialRegistry.release(dialKey, token: dialToken) }
     }
+    // The hello below signs with the device key; read it off the main thread.
+    await DpopKeyService.shared.warmKey()
+    guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
+      throw CancellationError()
+    }
     // Direct routes send the hello with the upgrade request as well
     // (`X-ADE-Hello`): a host that reads it answers hello_ok as the first
     // frame after the 101, one round trip sooner. The same hello still goes
@@ -20596,6 +20558,14 @@ final class SyncService: ObservableObject {
     connectAttemptGeneration: UInt64,
     publishConnecting: Bool = true
   ) async throws {
+    // Every hello and pairing request on this socket signs with the device
+    // key; read it off the main thread before any of them needs it. The wait
+    // is a suspension, so a newer attempt may have started meanwhile: check
+    // before this one tears down a socket that is no longer its own.
+    await DpopKeyService.shared.warmKey()
+    guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+      throw CancellationError()
+    }
     teardownSocket(closeCode: .goingAway)
     let endpoint = syncParseRouteEndpoint(host)
     let socketHost = endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -21283,8 +21253,9 @@ final class SyncService: ObservableObject {
   }
 
   func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
-    desiredTerminalSessionIds.insert(sessionId)
-    subscribedTerminalSessionIds.insert(sessionId)
+    terminalStream.desired.insert(sessionId)
+    terminalStream.subscribed.insert(sessionId)
+    terminalStream.hydrated.insert(sessionId)
     terminalBuffers[sessionId] = transcript
     terminalBufferUpdatedAt[sessionId] = Date()
     terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
@@ -21297,8 +21268,8 @@ final class SyncService: ObservableObject {
     data: Data
   ) throws {
     seedTerminalBufferForTesting(sessionId: sessionId, transcript: "ready")
-    supportsTerminalInputAcknowledgements = true
-    terminalInputAcknowledgementRetryWindowMilliseconds = 30_000
+    terminalStream.acknowledgementsEnabled = true
+    terminalStream.retryWindowMilliseconds = 30_000
     var queue = SyncTerminalInputQueue()
     _ = try queue.enqueue(data: data, inputId: inputId)
     queue.markSent(
@@ -21306,16 +21277,16 @@ final class SyncService: ObservableObject {
       generation: connectionGeneration,
       sentUptime: ProcessInfo.processInfo.systemUptime
     )
-    terminalInputQueues[sessionId] = queue
-    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
+    terminalStream.inputQueues[sessionId] = queue
+    terminalStream.scheduleAcknowledgementTimeout(sessionId: sessionId)
   }
 
   func terminalInputQueueForTesting(sessionId: String) -> SyncTerminalInputQueue? {
-    terminalInputQueues[sessionId]
+    terminalStream.inputQueues[sessionId]
   }
 
   func desiredTerminalSessionIdsForTesting() -> Set<String> {
-    desiredTerminalSessionIds
+    terminalStream.desired
   }
 
   func setTerminalSnapshotRecoveryDelayForTesting(_ nanoseconds: UInt64?) {
@@ -21347,20 +21318,20 @@ final class SyncService: ObservableObject {
   }
 
   func handleTerminalDataChunkForTesting(sessionId: String, chunk: String, endOffset: Int?) {
-    guard subscribedTerminalSessionIds.contains(sessionId) else { return }
+    guard terminalStream.subscribed.contains(sessionId) else { return }
     handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: endOffset)
   }
 
   func hasTerminalInputTimeoutForTesting(sessionId: String) -> Bool {
-    terminalInputTimeoutTasks[sessionId] != nil
+    terminalStream.inputTimeouts[sessionId] != nil
   }
 
   func supportsTerminalInputAcknowledgementsForTesting() -> Bool {
-    supportsTerminalInputAcknowledgements
+    terminalStream.acknowledgementsEnabled
   }
 
   func handleTerminalInputAcknowledgementForTesting(_ payload: [String: Any]) {
-    handleTerminalInputAcknowledgement(payload)
+    terminalStream.handleAcknowledgement(payload)
   }
 
   func scheduleLanePresenceHeartbeatForTesting() {
@@ -21817,25 +21788,16 @@ final class SyncService: ObservableObject {
     supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
     supportsStackLayeredBypass = featureEnabled("prsStackLayeredBypass", "prs_stack_layered_bypass")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
-    supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
+    terminalStream.acknowledgementsEnabled = featureEnabled("terminalInputAck", "terminal_input_ack")
     supportsChunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
     negotiatedMaxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
     negotiatedCompressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
     negotiatedCompressionThresholdBytes = negotiation.deflateThresholdBytes ?? syncApplicationCompressionThresholdBytes
-    if supportsTerminalInputAcknowledgements,
-       let terminalInputAck = features?["terminalInputAck"] as? [String: Any] {
-      terminalInputAcknowledgementRetryWindowMilliseconds = max(
-        1_000,
-        (terminalInputAck["retryWindowMs"] as? NSNumber)?.doubleValue ?? 60_000
-      )
-      terminalInputMaximumOutstanding = min(
-        SyncTerminalInputQueue.defaultMaximumItemCount,
-        max(1, (terminalInputAck["maxOutstanding"] as? NSNumber)?.intValue ?? 64)
-      )
-    } else {
-      terminalInputAcknowledgementRetryWindowMilliseconds = 0
-      terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-    }
+    terminalStream.applyInputAckFeature(
+      enabled: terminalStream.acknowledgementsEnabled,
+      config: features?["terminalInputAck"] as? [String: Any],
+      retryWindowWithoutConfig: 0
+    )
     relayAuthorizationLease = syncIsFullWebSocketRoute(connectedHost)
       ? (payload["relayAuthorization"] as? [String: Any]).flatMap(SyncRelayAuthorizationLease.init)
       : nil
@@ -22467,10 +22429,12 @@ final class SyncService: ObservableObject {
       }
       let record = await decodeTask.value
       guard isCurrentConnectionGeneration(generation), let record else { break }
+      guard macDesktopStreamMachineKeys[record.subscriptionId] == nil else { break }
       macDesktopStreamRecordHandlers[record.subscriptionId]?(record)
     case "macDesktop.streamEnded":
       guard let dict = payload as? [String: Any],
             let ended = MacDesktopStreamEnded(dict) else { break }
+      guard macDesktopStreamMachineKeys[ended.subscriptionId] == nil else { break }
       macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
     case "appControl.streamFrame":
       // A JPEG, not a video stream: each frame stands alone. The decode runs
@@ -22639,21 +22603,21 @@ final class SyncService: ObservableObject {
       }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
-        guard subscribedTerminalSessionIds.contains(sessionId) else { break }
+        guard terminalStream.subscribed.contains(sessionId) else { break }
         handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: (dict["offset"] as? NSNumber)?.intValue)
       }
     case "terminal_input_ack":
       if let dict = payload as? [String: Any] {
-        handleTerminalInputAcknowledgement(dict)
+        terminalStream.handleAcknowledgement(dict)
       }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
-        guard subscribedTerminalSessionIds.contains(sessionId) else { break }
+        guard terminalStream.subscribed.contains(sessionId) else { break }
         let exitCode = dict["exitCode"] as? Int
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
-        terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
+        terminalStream.handlers[sessionId]?(.exit(code: exitCode))
       }
     case "roster_snapshot":
       // A roster carries every chat of every project; decoding it on the main
@@ -23446,16 +23410,8 @@ final class SyncService: ObservableObject {
 
   private func resetTerminalTransportStateForReconnect() {
     cancelAllTerminalSnapshotRecovery()
-    terminalSnapshotRequestTokens.removeAll()
-    subscribedTerminalSessionIds.removeAll()
-    supportsTerminalInputAcknowledgements = false
-    terminalInputAcknowledgementRetryWindowMilliseconds = 0
-    terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-    for task in terminalInputTimeoutTasks.values { task.cancel() }
-    terminalInputTimeoutTasks.removeAll()
-    for sessionId in Array(terminalInputQueues.keys) {
-      terminalInputQueues[sessionId]?.prepareForReconnect()
-    }
+    terminalStream.resetForNewSocket()
+    terminalStream.applyInputAckFeature(enabled: false, config: nil, retryWindowWithoutConfig: 0)
   }
 
   private func beginAutomaticTransportRecovery(
@@ -24401,19 +24357,30 @@ final class SyncService: ObservableObject {
 
   private func restoreTerminalSubscriptions() {
     guard canSendLiveRequests() else { return }
-    let sessionIds = desiredTerminalSessionIds.sorted()
+    let sessionIds = terminalStream.desired.sorted()
     guard !sessionIds.isEmpty else { return }
+    let generation = connectionGeneration
     Task { @MainActor [weak self] in
       guard let self else { return }
       for sessionId in sessionIds {
-        if self.terminalStreamHandlers[sessionId] != nil {
+        // Each subscribe awaits. A newer socket runs its own restore, and a
+        // screen closed in the meantime must not be subscribed again.
+        guard self.connectionGeneration == generation else { return }
+        guard self.terminalStream.desired.contains(sessionId) else { continue }
+        if self.terminalStream.handlers[sessionId] != nil {
           // Active full-screen terminal: resume exactly after the last byte we
           // applied so the reconnect back-fills as an append, not a re-render.
-          try? await self.subscribeTerminalStream(
-            sessionId: sessionId,
-            sinceOffset: self.terminalEndOffsets[sessionId]
-          )
+          do {
+            try await self.subscribeTerminalStream(
+              sessionId: sessionId,
+              sinceOffset: self.terminalStream.endOffsets[sessionId]
+            )
+          } catch {
+            // The screen shows the error and Retry, not a frozen terminal.
+            self.terminalStream.reportSubscribeFailure(sessionId: sessionId, error: error)
+          }
         } else {
+          // A preview row: no screen to tell; the next open subscribes again.
           try? await self.subscribeTerminal(sessionId: sessionId)
         }
       }
@@ -24497,14 +24464,7 @@ final class SyncService: ObservableObject {
 
   private func resetTerminalSubscriptionState(clearHistory: Bool) {
     cancelAllTerminalSnapshotRecovery()
-    terminalSnapshotRequestTokens.removeAll()
-    desiredTerminalSessionIds.removeAll()
-    subscribedTerminalSessionIds.removeAll()
-    for task in terminalInputTimeoutTasks.values { task.cancel() }
-    terminalInputTimeoutTasks.removeAll()
-    terminalInputQueues.removeAll()
-    terminalEndOffsets.removeAll()
-    terminalGapRecoveryInFlight.removeAll()
+    terminalStream.forgetAllSessions()
     if clearHistory {
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
@@ -25294,11 +25254,14 @@ extension SyncService {
 
       let runtime = session.runtimeState.lowercased()
       let isRunningRuntime = runtime == "running"
+      // A chat resting on a PR watch is working, so Activity must not file it as
+      // Done, but its turn is over, so it stays out of the streaming-only list.
+      let isWorking = isRunningRuntime || canonical.restingOnPrWatch
       let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
-      if isRunningRuntime && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
+      if isWorking && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
 
       let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -25334,7 +25297,7 @@ extension SyncService {
         title: session.title.isEmpty ? session.goal : session.title,
         status: isFailedStatus
           ? "failed"
-          : (isAwaiting ? "awaiting-input" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status))),
+          : (isAwaiting ? "awaiting-input" : (isWorking ? "running" : (isIdleRuntime ? "idle" : status))),
         awaitingInput: isAwaiting,
         lastActivityAt: lastActivity,
         elapsedSeconds: elapsed,
@@ -27950,8 +27913,13 @@ extension SyncService {
   /// Make another paired machine the focused one (full sync). Returns true
   /// when the phone attached to that machine.
   @discardableResult
+  /// The machine is already primary and live, so a focus switch to it is a no-op.
+  private func isFocusedAndLive(_ machineKey: String) -> Bool {
+    machineKey == focusedMachineKey && connectionState == .connected
+  }
+
   func switchFocus(toMachineKey machineKey: String) async -> Bool {
-    if machineKey == focusedMachineKey, connectionState == .connected { return true }
+    if isFocusedAndLive(machineKey) { return true }
     guard let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
           let host = discoveredHost(fromSavedProfile: entry.profile)
     else {
@@ -28157,6 +28125,40 @@ extension SyncService {
         || (root != nil && normalizedProjectRoot(candidate.rootPath) == root)
     }
     selectProject(match ?? project)
+  }
+
+  /// Focus another machine, open a project there, and wait until it is ready
+  /// for a session to open: the project is active and its work rows are
+  /// fresh for the new connection. A terminal that subscribes earlier loses
+  /// its snapshot while the project scope still changes. Returns false when
+  /// the focus switch or the project switch fails. Leaves the Hub open.
+  func openProjectAndWait(_ project: MobileProjectSummary, onMachine machineKey: String) async -> Bool {
+    // The last work hydration before the switch. Only a newer one belongs to
+    // the new connection.
+    let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
+    // Already focused and live: the switch does not reconnect, so no fresh
+    // hydration comes and there is nothing to wait for.
+    let wasAlreadyAttached = isFocusedAndLive(machineKey)
+    guard await switchFocusKeepingPrevious(toMachineKey: machineKey) else { return false }
+    let root = normalizedProjectRoot(project.rootPath)
+    let target = projects.first { candidate in
+      candidate.id == project.id
+        || (root != nil && normalizedProjectRoot(candidate.rootPath) == root)
+    } ?? project
+    let wasActive = isActiveProject(target)
+    // Awaits the project switch and its fresh hydration. It returns at once
+    // when the project is already active.
+    await openProjectForHubChat(target)
+    guard focusedMachineKey == machineKey, isActiveProject(target) else { return false }
+    if wasActive && !wasAlreadyAttached {
+      // Already active after the focus switch, so nothing waited for the new
+      // connection's work rows yet.
+      await awaitFreshActiveProjectWorkHydration(
+        selectionGeneration: projectSelectionGeneration,
+        baselineHydratedAt: baselineHydratedAt
+      )
+    }
+    return focusedMachineKey == machineKey && isActiveProject(target)
   }
 
   /// Archive / unarchive / delete a chat on another machine from the Hub.

@@ -5,6 +5,7 @@ import type {
 import { isTrackedAgentCliToolType } from "../../../../desktop/src/shared/types";
 import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
 import type { AdeRuntime } from "../../bootstrap";
+import type { CloudBusyFacts } from "../power/cloudKeepAwake";
 
 // What one ADE runtime is doing right now, read from memory: the activity a
 // keep-awake or idle check needs, and what a restart for an update would stop.
@@ -33,6 +34,24 @@ export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCo
     activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
     activeWorkSessions: activeWorkSessions.length,
     ...(activeAgentCliSessions > 0 ? { activeAgentCliSessions } : {}),
+  };
+}
+
+/** What the cloud busy list reads from this runtime (`decideCloudBusy`). */
+export function readRuntimeBusyFacts(runtime: AdeRuntime): Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups"> {
+  let laneSetups = 0;
+  try {
+    // A launch's fetch, checkout and setup run outside any turn or terminal.
+    laneSetups = runtime.chatLaunchService?.list().filter((launch) => launch.phase === "running").length ?? 0;
+  } catch (error) {
+    // Unknown is busy, as for every other busy fact: never sleep under a setup.
+    laneSetups = 1;
+    runtime.logger?.warn("cloud.lane_setups_read_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return {
+    chats: runtime.agentChatService?.listBusyFacts?.() ?? [],
+    terminals: runtime.ptyService.listBusyFacts?.() ?? [],
+    ...(laneSetups > 0 ? { laneSetups } : {}),
   };
 }
 

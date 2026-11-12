@@ -11,6 +11,7 @@ import {
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { laneShareGuestPath } from "../laneShare/guest/laneShareGuestRoute";
 import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
@@ -32,6 +33,7 @@ import {
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { LaneShareSheetHost } from "../laneShare/LaneShareSheetHost";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
 import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
@@ -62,6 +64,7 @@ import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { AppearanceRoot } from "./AppearanceRoot";
+import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
 
 function createPreloadableRoute<TProps extends object>(
@@ -117,6 +120,9 @@ const AutomationsPage = React.lazy(() =>
 );
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
+const LaneShareGuestPage = React.lazy(() =>
+  import("../laneShare/guest/LaneShareGuestPage").then((m) => ({ default: m.LaneShareGuestPage }))
 );
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
@@ -174,6 +180,7 @@ import {
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { BootSplashReveal, useBootSplashHold } from "./BootSplashReveal";
 import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
@@ -181,6 +188,7 @@ import type {
   AppNavigationRequest,
   AppNavigationTarget,
   OpenProjectBinding,
+  ProjectFindForRepoResult,
   ProjectInfo,
 } from "../../../shared/types";
 
@@ -210,13 +218,11 @@ const StartupSplashScreen = (
   </div>
 );
 
-/** Used by React.lazy Suspense boundaries while route chunks load. */
-const GuardLoadingFallback = StartupSplashScreen;
-
 const RouteLoadingFallback = (
   <div
     className="flex h-full min-h-0 w-full flex-col"
     style={{ background: "var(--color-bg)" }}
+    role="status"
     aria-label="Loading tab"
   >
     <div
@@ -249,6 +255,13 @@ const RouteLoadingFallback = (
     </div>
   </div>
 );
+
+/**
+ * Used by React.lazy Suspense boundaries while route chunks load. The web
+ * client has its own start screens, so the logo reveal (and its "local
+ * workspace" line) never plays there.
+ */
+const GuardLoadingFallback = isWebClientMode() ? RouteLoadingFallback : StartupSplashScreen;
 
 const LazyFallback = RouteLoadingFallback;
 
@@ -444,6 +457,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [heldRoute, setHeldRoute] = React.useState<string>(() => overlayOpen ? defaultHeldRouteForOverlay(pathname) : route);
   const pageRoute = overlayOpen ? heldRoute : route;
   const pagePath = pageRoute ? pageRoute.split(/[?#]/, 1)[0] || "/work" : null;
+  // `<Routes location="…">` gives every page under it a location built from
+  // that string: no `state`, and the key "default". A navigation's `state` (the
+  // file a click wants open, a draft to show) only reaches the page when the
+  // real location goes in, so it does whenever it is the route on screen.
+  const liveLocation = useLocation();
+  const pageLocation = pageRoute && serializeProjectRoute(liveLocation) === pageRoute ? liveLocation : pageRoute;
   const heldWork = overlayOpen && pagePath != null && isWorkRoutePath(pagePath);
   const heldLanes = overlayOpen && pagePath != null && isLanesRoutePath(pagePath);
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
@@ -594,7 +613,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
               {...parkedSurfaceProps(overlayOpen)}
             >
               <ProjectSidebarHold held={overlayOpen}>
-                <Routes location={pageRoute}>
+                <Routes location={pageLocation ?? undefined}>
                   <Route path="/" element={<Navigate to="/work" replace />} />
                   <Route path="/onboarding" element={<Navigate to="/work" replace />} />
                   <Route path="/files" element={
@@ -689,6 +708,7 @@ const ProjectSurface = React.memo(function ProjectSurface({
   store: AppStoreApi;
 }) {
   const surfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const remoteTargetId = projectBinding.kind === "remote" ? projectBinding.targetId : null;
 
   React.useEffect(() => {
     hydrateProjectAppStore(store, {
@@ -716,10 +736,14 @@ const ProjectSurface = React.memo(function ProjectSurface({
   React.useEffect(() => {
     if (!active) return;
     const state = store.getState();
-    if (
-      projectBinding.kind === "remote"
-      || (state.lanes.length === 0 && !state.lanesLoading)
-    ) {
+    let cancelLaneRetry: (() => void) | undefined;
+    if (state.lanes.length === 0) {
+      cancelLaneRetry = runFirstLoadWithRetry({
+        surface: "lanes",
+        targetId: remoteTargetId,
+        load: () => store.getState().refreshLanes({ includeStatus: false }),
+      });
+    } else if (projectBinding.kind === "remote") {
       void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
     // A surface seeded from the lane cache shows whatever status that cache
@@ -728,7 +752,8 @@ const ProjectSurface = React.memo(function ProjectSurface({
     // Cheap (a local read); keeps a surface created before a save in step.
     void state.refreshKeybindings().catch(() => {});
     void state.refreshProviderMode().catch(() => {});
-  }, [active, projectBinding.kind, store]);
+    return cancelLaneRetry;
+  }, [active, projectBinding.kind, remoteTargetId, store]);
 
   useParkedSurfaceFocus(surfaceRef, !active);
 
@@ -834,7 +859,9 @@ function ProjectTabHost() {
   const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
   // Music is machine-level too: Apple Music has nothing to do with a project.
   const isMusicRoute = !webMode && isMusicTabRoute(location.pathname);
-  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
+  // Lanes other accounts share with me: an account page, not a project's.
+  const isSharedLanesRoute = location.pathname === "/shared";
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute || isSharedLanesRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -1174,6 +1201,13 @@ function ProjectTabHost() {
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
+      {isSharedLanesRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <LaneShareGuestPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
       {isAccountRoute && !accountOpensInSettings ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
@@ -1283,16 +1317,15 @@ function AppNavigationBridge() {
     }
 
     const projectApi = window.ade?.project as typeof window.ade.project & {
-      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<{
-        rootPath: string;
-        displayName: string;
-      } | null>;
+      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<ProjectFindForRepoResult>;
     };
     const match = await projectApi?.findForRepo?.({
       repoOwner: envelope.repoOwner,
       repoName: envelope.repoName,
     }).catch(() => null);
-    if (match?.rootPath && match.rootPath !== projectRootRef.current) {
+    // The active project is another repository (checked above), so a copy on
+    // another machine is always a switch, even at the same path string.
+    if (match?.rootPath && (match.remote || match.rootPath !== projectRootRef.current)) {
       setInboundTarget({ kind: "switch-project", entity, project: match, original });
       return true;
     }
@@ -1447,12 +1480,21 @@ function AppNavigationBridge() {
       if (tab) params.set("tab", tab);
       const machineId = target.machineId?.trim();
       if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSelectableSettingsTab(tab)) params.set("machine", machineId);
+      // `ade://invite/<CODE>`: Settings › Account reads `invite` and fills its code box.
+      const inviteCode = target.inviteCode?.trim();
+      if (inviteCode) params.set("invite", inviteCode);
       const search = params.toString();
       navigate({
         pathname: "/settings",
         search: search ? `?${search}` : "",
         hash: anchor ? `#${anchor}` : "",
       });
+      return true;
+    }
+
+    if (target.kind === "lane-share") {
+      // An invite link: the shared lanes page opens it (sign in, accept or open).
+      navigate(laneShareGuestPath(target.grantId));
       return true;
     }
 
@@ -1700,6 +1742,8 @@ export function App() {
             isWebClientMode() ? "selection:bg-accent/30" : "ade-app-selection",
           )}
         >
+          {/* Switches the whole look at the times set in Appearance › Schedule. */}
+          <AppearanceScheduleHost />
           <OnboardingBootstrap />
           <AppNavigationBridge />
           <CrossRepoPrBanner />
@@ -1711,6 +1755,8 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* The lane share sheet, opened from any lane menu or mark. */}
+          <LaneShareSheetHost />
           {/* The guided tour after first-run setup, then contextual hints; both
               render nothing unless onboarding is on. */}
           <OnboardingTourHost />

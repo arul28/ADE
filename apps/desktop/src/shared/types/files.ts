@@ -134,6 +134,11 @@ export type FileContent = {
 export type FilesReadFileRangeArgs = {
   workspaceId: string;
   path: string;
+  /**
+   * Refuse a file git ignores, a file under `.ade/`, or a link to one. The
+   * lane-sharing host sets it for every guest read.
+   */
+  refuseIgnored?: boolean;
   /** Byte offset to start reading from. */
   offset: number;
   /** Bytes to read, clamped to [1, 512KB]. Defaults to 256KB. */
@@ -179,6 +184,11 @@ export type FilesGitBlameResult = {
 export type FilesReadFileArgs = {
   workspaceId: string;
   path: string; // relative to workspace root
+  /**
+   * Refuse a file git ignores, a file under `.ade/`, or a link to one. The
+   * lane-sharing host sets it for every guest read.
+   */
+  refuseIgnored?: boolean;
 };
 
 export type FilesOpenExternalPathArgs = {
@@ -197,7 +207,13 @@ export type FilesWriteTextArgs = {
   workspaceId: string;
   path: string; // relative to workspace root
   text: string;
+  /** `base64`: `text` holds the file's bytes. Default utf8. */
+  encoding?: "utf8" | "base64";
+  /** Write this chunk at this byte. It must equal the file's current size, so a chunk sent twice can't corrupt it. Default 0: replace the file. */
+  offset?: number;
 };
+
+export type FilesWriteReceipt = { path: string; bytes: number; sha256: string };
 
 export type FilesCreateFileArgs = {
   workspaceId: string;
@@ -246,6 +262,8 @@ export type FilesQuickOpenArgs = {
   query: string;
   limit?: number;
   includeIgnored?: boolean;
+  /** Re-walk the workspace first: one click on a name the index did not know. */
+  refreshIndex?: boolean;
   /** Allow the composer-only path-prefix match for trailing prose. */
   allowComposerPrefixFallback?: boolean;
   /**

@@ -20,6 +20,7 @@ import { shouldIsolateEmbeddedProviderLogins } from "../../../shared/providerLog
 import { getCachedCliAuthStatuses, parseJsonAuthStatus } from "./authDetector";
 import { getCursorSdkAuthSnapshot } from "./cursorSdkAuth";
 import { inspectMuseCredentials } from "./museAuth";
+import { claudePassSignedInHere } from "../claudePass/claudePassLaunch";
 import { readClaudeCredentials, readCodexCredentials } from "./providerCredentialSources";
 import {
   PROVIDER_AUTH_STATUS_TIMEOUT_MS,
@@ -152,9 +153,14 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
       return { authenticated: true, authMethod: "api-key" };
     }
     // A long-lived subscription token (`claude setup-token`) in the
-    // environment, the way a cloud machine signs Claude in: ADE gives every
-    // new Agent 37 machine the person's token as instance env.
+    // environment: a person's own setup, or a cloud machine an older ADE made
+    // with the token as instance env (new machines get passes from the vault).
     if (envKeyPresent(context.env, "CLAUDE_CODE_OAUTH_TOKEN")) {
+      return { authenticated: true, authMethod: "subscription" };
+    }
+    // A Claude pass of the ADE account signs Claude in here (a cloud computer);
+    // its token is added at each spawn, never kept in this env.
+    if (claudePassSignedInHere()) {
       return { authenticated: true, authMethod: "subscription" };
     }
     if (claudeConfigOauthAccountPresent(context)) {

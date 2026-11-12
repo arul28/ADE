@@ -1,3 +1,4 @@
+import { GIT_ENGLISH_MESSAGES_ENV } from "./gitReadEnv";
 import type { GitHubGitTransportStatus } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { gitCommonDirFor, gitStdoutOrThrow, runGit, runGitOrThrow, type GitRunOptions, type GitRunResult } from "./git";
@@ -112,6 +113,15 @@ export function isGithubHttpsRemote(url: string | null | undefined): boolean {
   }
 }
 
+/**
+ * Push, pull and fetch failures are read by their wording, so they come back
+ * in English whatever the user's language. Only the message language changes:
+ * hooks these commands run keep the rest of the user's locale.
+ */
+function withEnglishGitMessages<T extends GitRunOptions>(opts: T): T {
+  return { ...opts, env: { ...GIT_ENGLISH_MESSAGES_ENV, ...opts.env } };
+}
+
 /** How long a known-broken machine credential is skipped before git's own is tried again. */
 const SYSTEM_CREDENTIAL_FAILED_TTL_MS = 10 * 60_000;
 /** How long a check is trusted: long while healthy (or unknowable), short while broken. */
@@ -219,7 +229,8 @@ export async function runGitWithGithubAuthFallback(
   args: string[],
   opts: GitAuthFallbackOptions,
 ): Promise<GitRunResult> {
-  const { readToken: explicitReader, ...runOpts } = opts;
+  const { readToken: explicitReader, ...callerOpts } = opts;
+  const runOpts = withEnglishGitMessages(callerOpts);
   const readToken = explicitReader === undefined ? registeredTokenReader : explicitReader;
   if (!readToken) return await runGit(args, runOpts);
   const key = await repoKey(runOpts.cwd);
@@ -303,7 +314,8 @@ export async function runGitWithGithubAuthFallbackOrThrow(
   args: string[],
   opts: GitAuthFallbackOptions,
 ): Promise<string> {
-  const { readToken: explicitReader, ...runOpts } = opts;
+  const { readToken: explicitReader, ...callerOpts } = opts;
+  const runOpts = withEnglishGitMessages(callerOpts);
   if ((explicitReader === undefined ? registeredTokenReader : explicitReader) == null) {
     return await runGitOrThrow(args, runOpts);
   }

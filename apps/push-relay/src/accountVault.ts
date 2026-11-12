@@ -20,10 +20,12 @@
  * must never appear in a list, a log line, or a diagnostic. One table would put
  * both one query and one permission away from each other.
  *
- * What is deliberately NOT here: vendor CLI logins for Claude, Codex, and
- * Cursor. Those rotate their refresh tokens and their issuers rate-limit
- * refresh storms — ADE already carries a 24-hour rejection cooldown because of
- * it. The small set of account credentials that ARE safe to share has an
+ * Provider sign-ins (`provider_login`) are opaque here like every other value.
+ * Some of them rotate their refresh tokens, and two machines that spend one
+ * refresh token sign each other out, so this Worker never refreshes one and the
+ * renewal owner is chosen by the clients, not here: the stale-write check below
+ * keeps an old copy from replacing a newer one, and `refresh_owner` is stored
+ * and returned for the clients to read, never enforced. Each kind has an
  * explicit owner in the item-kind allowlist below.
  */
 import {
@@ -132,6 +134,16 @@ function vaultUnavailable(): Response {
  */
 const MAX_VALUE_CHARS = 6_000;
 
+/**
+ * Kinds that need more room than `MAX_VALUE_CHARS`. A provider sign-in is a
+ * whole login file (or a few), not one token: the largest measured one is
+ * about 4 KB before the client wraps it. Sealed, the largest value is at most
+ * about 4 × 16,000 + 44 characters (UTF-8 then base64), so one row stays far
+ * under D1's limits and one item fits a single request under the 256 KiB body
+ * limit.
+ */
+const MAX_VALUE_CHARS_BY_KIND: ReadonlyMap<string, number> = new Map([["provider_login", 16_000]]);
+
 const MAX_ITEMS_PER_ACCOUNT = 2_000;
 const MAX_ITEMS_PER_WRITE = 100;
 export const MAX_ITEMS_PER_READ = 500;
@@ -155,6 +167,10 @@ const ITEM_KINDS = new Set([
   "project_secret",
   // ADE MCP's account secret and its connections (token hashes, never tokens).
   "ade_mcp",
+  // A provider sign-in: the login a provider's CLI keeps on disk, carried to
+  // the account's other computers and ADE Cloud. The brain's sign-in sync owns
+  // the payload and the renewal rules.
+  "provider_login",
 ]);
 
 export type AccountVaultRow = {
@@ -217,7 +233,9 @@ function checkWriteItem(value: unknown): ItemVerdict {
   if (!key) return { ok: false, reason: "invalid key" };
   const plaintext = typeof value.value === "string" ? value.value : "";
   if (!plaintext) return { ok: false, reason: "empty value" };
-  if (plaintext.length > MAX_VALUE_CHARS) return { ok: false, reason: "value too large" };
+  if (plaintext.length > (MAX_VALUE_CHARS_BY_KIND.get(kind) ?? MAX_VALUE_CHARS)) {
+    return { ok: false, reason: "value too large" };
+  }
   const refreshOwner = requiredString(value.refreshOwner, 128);
   return { ok: true, write: { scope, kind, key, value: plaintext, refreshOwner, writtenAt: value.writtenAt } };
 }

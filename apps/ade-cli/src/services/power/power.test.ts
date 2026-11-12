@@ -3,12 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, execFileOverride } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  execFileOverride: { current: null as ((...args: any[]) => unknown) | null },
+}));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: (...args: unknown[]) => spawnMock(...args),
+    execFile: (...args: unknown[]) =>
+      (execFileOverride.current ?? (actual.execFile as (...forwarded: unknown[]) => unknown))(...args),
   };
 });
 
@@ -30,7 +35,7 @@ import {
   type SuspendGapDetector,
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
-import { agent37KeepAwakePaths, createAgent37KeepAwake } from "./agent37KeepAwake";
+import { cloudKeepAwakePaths, createCloudKeepAwake } from "./cloudKeepAwake";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -701,6 +706,7 @@ describe("createBrainKeepAwakeService", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
     spawnMock.mockReset();
+    execFileOverride.current = null;
     vi.useRealTimers();
   });
 
@@ -714,24 +720,61 @@ describe("createBrainKeepAwakeService", () => {
     return service;
   }
 
-  function makeService(readActiveAgentWork: () => Promise<boolean | number>) {
+  function makeService(
+    readActiveAgentWork: () => Promise<boolean | number>,
+    options: { platform?: NodeJS.Platform; level?: "never" | "while-away" } = {},
+  ) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "brain-keep-awake-test-"));
     temporaryDirectories.push(directory);
     const statePath = path.join(directory, "keep-awake.json");
     fs.writeFileSync(statePath, JSON.stringify({
       version: 1,
-      preferences: { level: "while-away" },
+      preferences: { level: options.level ?? "while-away" },
       legacyMigrationComplete: true,
     }));
     const service = createBrainKeepAwakeService({
       statePath,
-      platform: "darwin",
+      platform: options.platform ?? "darwin",
       pollMs: 5_000,
       readActiveAgentWork,
     });
     services.push(service);
-    return service;
+    return Object.assign(service, {
+      savedLevel: () => JSON.parse(fs.readFileSync(statePath, "utf8")).preferences.level as string,
+    });
   }
+
+  type ExecDone = (error: Error | null, stdout: string, stderr: string) => void;
+
+  it.each([
+    { name: "keeps the choice when Linux grants the lock", failure: null, level: "while-away", reportsError: false },
+    { name: "reports a refused Linux lock as soon as the choice is saved", failure: new Error("Access denied"), level: "never", reportsError: true },
+  ])("$name", async ({ failure, level, reportsError }) => {
+    execFileOverride.current = (_file, _args, _options, done: ExecDone) => done(failure, "", "");
+    const service = makeService(async () => false, { platform: "linux", level: "never" });
+
+    const snapshot = await service.setLevel("while-away");
+
+    expect(snapshot.preferences.level).toBe(level);
+    expect(service.savedLevel()).toBe(level);
+    expect(Boolean(snapshot.levelError)).toBe(reportsError);
+  });
+
+  it("does not let a slow Linux lock check overwrite a newer choice", async () => {
+    const checks: ExecDone[] = [];
+    execFileOverride.current = (_file, _args, _options, done: ExecDone) => checks.push(done);
+    const service = makeService(async () => false, { platform: "linux", level: "never" });
+
+    const enabling = service.setLevel("while-away");
+    expect(checks).toHaveLength(1);
+    await service.setLevel("never");
+    checks[0]!(null, "", "");
+    const snapshot = await enabling;
+
+    expect(snapshot.preferences.level).toBe("never");
+    expect(service.savedLevel()).toBe("never");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 
   it("holds one caffeinate child through repeated active polls, releases it when idle, and starts again with work", async () => {
     let active = true;
@@ -802,21 +845,24 @@ describe("createBrainKeepAwakeService", () => {
   });
 });
 
-describe("agent37 keep awake", () => {
-  // Agent 37 sleeps a machine after its idle timer; the brain keeps it awake
+describe("cloud keep awake", () => {
+  // the provider sleeps a machine after its idle timer; the brain keeps it awake
   // only by reaching the machine's own wake URL. A missed ping while work runs
   // freezes that work; a ping for the wrong machine keeps another one billing.
-  it("pings this machine's wake URL while work runs, never a copied disk's, and counts an unreadable state as busy", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-a37-keepawake-"));
-    const paths = agent37KeepAwakePaths(home);
+  it("pings this machine's wake URL while work runs or another machine just did work here, never a copied disk's, and counts an unreadable state as busy", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-keepawake-"));
+    const paths = cloudKeepAwakePaths(home);
     fs.mkdirSync(paths.dir, { recursive: true });
     const writeWake = (instanceId: string) =>
       fs.writeFileSync(paths.wakeUrl, JSON.stringify({ instanceId, url: "https://wake-abc.agent37.app" }));
     const pinged: string[] = [];
     let busy: boolean | "throws" = true;
-    const keepAwake = createAgent37KeepAwake({
-      env: { AGENT37_INSTANCE_ID: "thisbox001" },
+    let clock = 1_000_000;
+    const keepAwake = createCloudKeepAwake({
+      env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
       adeHome: home,
+      intervalMs: 60_000,
+      now: () => clock,
       readBusy: async () => {
         if (busy === "throws") throw new Error("activity read failed");
         return { busy, reasons: busy ? ["chat"] : [] };
@@ -840,9 +886,24 @@ describe("agent37 keep awake", () => {
       await keepAwake.tick();
       expect(pinged).toHaveLength(1);
 
-      busy = "throws";
+      // A command another machine ran here keeps it awake until the next
+      // ping, and only that long: an idle box still sleeps.
+      await keepAwake.noteUse();
       await keepAwake.tick();
       expect(pinged).toHaveLength(2);
+      clock += 61_000;
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(2);
+
+      // No ping for a while: work near the sleep timer pings at once, not at the next tick.
+      await keepAwake.noteUse();
+      expect(pinged).toHaveLength(3);
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(3);
+
+      busy = "throws";
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(4);
     } finally {
       keepAwake.dispose();
       fs.rmSync(home, { recursive: true, force: true });

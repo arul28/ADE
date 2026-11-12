@@ -16,6 +16,7 @@ import type {
   AutomationRule,
   AutomationRuleOrigin,
   AutomationRuleScope,
+  AutomationRuleHome,
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
@@ -132,7 +133,14 @@ export type AutomationRuleSummary = AutomationRule & {
   lastRunStatus: AutomationRunStatus | null;
   running: boolean;
   confidence: AutomationConfidenceScore | null;
-  source: "local" | "shared" | "merged";
+  /**
+   * For a rule that follows the account and runs on this computer: what it
+   * needs here and does not find (a lane, a test suite, a webhook gateway made
+   * on another computer), in plain words. Empty when nothing is missing.
+   */
+  homeGaps?: string[];
+  /** `account`: the rule follows the account (every computer with the repository sees it). */
+  source: "local" | "shared" | "merged" | "account";
 };
 
 export type AutomationDeleteRuleRequest = {
@@ -605,6 +613,13 @@ export type AutomationRuleDraft = {
   /** @deprecated Legacy planner/editor compatibility field. */
   actions: AutomationDraftAction[];
   legacyActions?: AutomationDraftAction[];
+  /**
+   * Which computer runs the rule ("Run on"). `"this-computer"` is the computer
+   * whose ADE saves the draft. Absent keeps a saved rule's home; a new rule's
+   * home is the computer that saves it. Ignored for a rule kept on this
+   * computer only.
+   */
+  home?: AutomationRuleHome | "this-computer" | null;
 };
 
 export type AutomationRuleDraftNormalized = Omit<AutomationRule, "id" | "legacy"> & {

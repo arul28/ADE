@@ -20,10 +20,25 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 ## Source file map
 
-- `apps/desktop/src/main/services/agent37/` — the Agent 37 integration
-  (client, key, template builder, New Agent 37 machine, half-made box
-  cleanup); see [Agent 37 machines](agent37.md).
+- `apps/desktop/src/main/services/adeCloud/` — ADE Cloud
+  (the provider seam, New ADE Cloud machine, half-made box cleanup); see [ADE Cloud](../ade-cloud/README.md).
 
+- `apps/desktop/src/main/services/remoteRuntime/remoteBrainStart.ts` — who asked
+  for a connect (`user` or `background`), the `ade brain start` command for a
+  POSIX or Windows remote, and the start-then-retry loop; plus the plain
+  messages for a brain that is not running and an SSH server that refuses a
+  command.
+- `apps/desktop/src/main/services/remoteRuntime/remoteEventSetup.ts` — the
+  2-minute ceiling on an event read or subscribe setup and
+  `REMOTE_EVENT_SETUP_TIMEOUT`, naming the step it was on.
+- `apps/ade-cli/src/lib/brainConnectionLoss.ts` and
+  `apps/desktop/src/shared/brainConnectionLoss.ts` — the relay's
+  `brain_connection_lost` answer and the desktop's field-by-field validation
+  of it.
+- `apps/desktop/src/main/services/remoteRuntime/remoteDialTelemetry.ts` — one
+  record per outage of why a dial failed: each route's kind, result, fixed
+  error token and duration, matched to the other machine's report by hashed
+  device ids. See [Logging](../../logging.md#error-tracking-sentry).
 - `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
   `updateViaRemoteTerminal`, the terminal-driven `ade brain update` for a
   connected Windows machine on a build that cannot self-install.
@@ -1051,7 +1066,36 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   project's `.ade/project-icons` folder, and both methods answer with the icon
   the host now resolves. Older hosts advertise `machineProjects.setIcon:
   false`, so the desktop asks the user to update that machine instead of
-  calling. It also serves
+  calling. A project with a git origin takes its name and icon from the
+  shared project record first (`shared/projectRecord.ts`: rows `project.icon`
+  and `project.name` in the account settings store under `repo:<origin>`,
+  or `.ade/project-record.json` on a brain with sync off), so every machine of
+  the account shows the same ones; a record icon is already a small data URL
+  and costs no worker. `projects.setIcon` writes the record too, and
+  `projects.removeIcon` writes its "no custom icon" value, after which every
+  machine drops its own override and shows the detected icon. A record write
+  the store cannot take (signed out, brain down) stays pending in
+  `.ade/project-record.json`; that machine shows it, and the next record read
+  or write that reaches the store sends it first. `projects.inspectRemoval`
+  reports the state of the host's copy of a project for the remove dialog
+  (changed files and commits no remote has in the main folder and every
+  lane worktree, stashes, ignored `.env` files by name, live chats and
+  terminals). `projects.removeCopy` (cto role, never an agent; another
+  machine reaches it only over the runtime channel, which needs
+  `runtimeHostGranted`) removes the entry and, with `deleteFolder`, the
+  folder: it reads the state again, refuses when it no longer matches the
+  `stateToken` the person saw (or shows work the person did not accept, or
+  something runs). The token covers the work itself, not only its counts:
+  each checkout's HEAD and git status, every branch tip and stash, and the
+  size and time of each changed, untracked and ignored secret file. Over
+  5,000 changed paths in one checkout the token never matches, so a delete
+  of accepted work there is refused. It then checks that the folder is exactly a registered root that
+  holds no home folder, ADE home, other project or running ADE, stops the
+  project, moves the folder aside in one rename and deletes it for good, then
+  drops the entry. Lane worktrees outside the project folder stay. The
+  desktop's own computer asks with `folderMode: "caller"` and moves the folder
+  to the Trash itself. Older hosts lack `machineProjects.removeCopy`; the
+  desktop then offers only entry removal through `projects.remove`. It also serves
   `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
@@ -1389,6 +1433,66 @@ still probes the isolated Stable and other channel homes and accepts the first
 runtime whose initialization and machine-project capabilities are compatible;
 the selected home is then used consistently for follow-up commands such as the
 SSH-to-paired upgrade.
+
+### A remote machine whose brain is not running
+
+The SSH relay on a POSIX remote runs `ade --socket ... rpc --stdio`, and an
+explicit `--socket` turns off the CLI's own spawn and service repair, so a
+machine with no brain answers with `ENOENT` or `ECONNREFUSED` on its socket.
+Who asked for the connect decides what happens next
+(`remoteBrainStart.ts`; `initiatedBy` on `RemoteConnectionPool.connect`):
+
+- A connect the person asked for (`"user"`: Add machine, Test, Connect, Try
+  again, opening or switching to a project on that machine) runs
+  `ade brain start --text` over SSH, which installs the login service (or ADE's
+  own supervised process where no service manager answers) and waits for the
+  handover, then dials again every 2 seconds for up to 90 seconds
+  (`REMOTE_BRAIN_SOCKET_WAIT_MS`). Disconnecting or removing the target
+  abandons the wait.
+- A background reconnect, the event pump and autoconnect (`"background"`) never
+  start a brain: one the person stopped stays stopped. Neither does a layout
+  whose service install is disabled (`ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`,
+  and the alpha channel) or a fallback to another channel home.
+- A user connect that joined a background dial which failed because the brain
+  was not running dials once more as its own, so the person's click is not
+  answered with the background dial's refusal.
+
+When the brain still is not running, the error is expected (environment) and
+names the exact command to run on that machine, then asks the person to press
+Try again; when `brain start` ran, it says whether it failed or the brain did
+not accept connections within 90 seconds, with the command's first lines. A
+Windows remote already starts a brain from the relay (no `--socket`), so the
+desktop never runs a start there; the message shows the PowerShell command
+(`$env:ADE_HOME = ...; & '<binary>' brain start`). An SSH server that opened
+the connection but refuses to run a command ("Unable to exec", often
+`MaxSessions` or a forced command) gets a plain message naming the step ADE was
+on and the check to run (`ssh <user>@<host> true`).
+
+Each step of a connect has its own time limit, and an event read or
+subscription has a ceiling over all of them:
+
+| Step | Limit |
+| --- | --- |
+| Paired runtime `ade/initialize` and first `projects.list`, after the hello | 30 s (`PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS`) |
+| SSH runtime `ade/initialize` and first `projects.list` | 90 s (`RUNTIME_SERVICE_START_WAIT_MS`) |
+| A `projects.list` read on an open connection | 30 s |
+| Event read or subscribe setup, including a dial it starts or joins | 2 min (`REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS`) |
+
+Past the ceiling the call fails with `REMOTE_EVENT_SETUP_TIMEOUT`, whose message
+names the step that hung (account check, connect, project list, read,
+subscribe, liveness probe, reconnect). The dial itself keeps going for the next
+poll to join, and the pump polls again two seconds later. The IPC budget for
+`ade.remoteRuntime.streamEvents` is 2.5 minutes, just above the ceiling, so
+main always answers with the step before the generic IPC deadline fires.
+
+When the brain's socket drops under an `ade rpc --stdio` relay, the relay
+passes the brain's own typed errors through unchanged and answers calls in
+flight with `brain_connection_lost`. Its `data` is structured only: brain state
+(`alive`, `exited`, `exited_and_replaced`, `unknown`), heartbeat age, the
+socket's errno, and up to six of the brain log's last lines as level, event
+name and error code. Free text never crosses. The desktop re-validates every
+field and reports `remote.brain_connection_lost`
+(see [Logging](../../logging.md#error-tracking-sentry)).
 
 ### When the connect fails, the user reads one sentence
 
@@ -2115,7 +2219,7 @@ tailnet routes to a paired device never consulted account state at all.
 ## Related docs
 
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.
-- [Agent 37 machines](./agent37.md) — cloud Linux boxes made from ADE: the key, the template built in the person's workspace, zero-touch sign-in, half-made box cleanup, and the copied-home guard a forked box needs.
+- [ADE Cloud](../ade-cloud/README.md): Linux machines ADE runs for the person, and the provider seam behind them.
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
 - [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same runtime).
 - [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md) — route, repository, Git, capsule, and retry contract for continuing a Work chat on another connected machine.

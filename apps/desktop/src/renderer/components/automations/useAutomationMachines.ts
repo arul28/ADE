@@ -15,6 +15,7 @@ import {
   type MachineReadLoad,
 } from "../../state/foreignMachineReads";
 import type { RuleMachineView } from "./list/RuleList";
+import { followsAccount, ruleElsewhereReason } from "./ruleSync";
 
 /**
  * One rule on one machine. Rules come from every machine that holds the
@@ -30,6 +31,15 @@ export type MachineRule = {
 
 export function machineRuleKey(machine: LaneMachine, ruleId: string): string {
   return machine.isActiveBinding ? ruleId : machineScopedId(machine.machineId, ruleId);
+}
+
+/**
+ * The list key of a rule. A rule that follows the account has one key on
+ * every machine (its bare id), so the selection holds while the machine that
+ * runs it answers later than the others.
+ */
+export function ruleListKey(machine: LaneMachine, rule: Pick<AutomationRuleSummary, "id" | "source" | "home">): string {
+  return followsAccount(rule) ? rule.id : machineRuleKey(machine, rule.id);
 }
 
 const NO_RULES: readonly AutomationRuleSummary[] = [];
@@ -64,16 +74,36 @@ export function useAutomationMachines({
   const foreign = useForeignMachineReads<AutomationRuleSummary[]>(machines, readRules, active);
   const foreignRules = foreign.dataByMachine;
 
+  const rulesOfMachine = useCallback(
+    (machine: LaneMachine): readonly AutomationRuleSummary[] =>
+      machine.isActiveBinding ? rules : foreignRules[machine.machineId] ?? NO_RULES,
+    [foreignRules, rules],
+  );
   const entries = useMemo<MachineRule[]>(() => {
     const next: MachineRule[] = [];
+    // A rule that follows the account comes back from every machine with the
+    // repository. It is listed once, on the machine that runs it, so Run now,
+    // History and Delete go there. Until that machine answers (or when it is
+    // not connected), the first copy stands in: the tab machine's.
+    const accountIndex = new Map<string, number>();
     for (const machine of machines) {
-      const machineRules = machine.isActiveBinding ? rules : foreignRules[machine.machineId] ?? NO_RULES;
-      for (const rule of machineRules) {
-        next.push({ key: machineRuleKey(machine, rule.id), rule, machine });
+      for (const rule of rulesOfMachine(machine)) {
+        const entry: MachineRule = { key: ruleListKey(machine, rule), rule, machine };
+        if (!followsAccount(rule)) {
+          next.push(entry);
+          continue;
+        }
+        const at = accountIndex.get(rule.id);
+        if (at === undefined) {
+          accountIndex.set(rule.id, next.length);
+          next.push(entry);
+        } else if (rule.runsHere === true && next[at]!.rule.runsHere !== true) {
+          next[at] = entry;
+        }
       }
     }
     return next;
-  }, [foreignRules, machines, rules]);
+  }, [machines, rulesOfMachine]);
   const entryByKey = useMemo(() => new Map(entries.map((entry) => [entry.key, entry])), [entries]);
   const entryByRule = useMemo(() => {
     const map = new WeakMap<AutomationRuleSummary, MachineRule>();
@@ -87,8 +117,14 @@ export function useAutomationMachines({
   const machineOfRule = useCallback((rule: AutomationRuleSummary): RuleMachineView | null => {
     const entry = entryByRule.get(rule);
     if (!entry) return null;
+    // A rule that follows the account is listed under the machine that runs
+    // it. When that machine is not among the ones this window reaches, the
+    // copy shown is another machine's: its chip would name the wrong
+    // computer, so the row names the home itself (see `ruleSyncLine`).
+    const homeUnreached = followsAccount(rule) && rule.runsHere === false;
     return {
-      chip: showChips ? machineChipFor(entry.machine) : null,
+      elsewhereReason: ruleElsewhereReason(rule),
+      chip: showChips && !homeUnreached ? machineChipFor(entry.machine) : null,
       offlineMessage: machineBlockedReason(entry.machine),
       isActiveBinding: entry.machine.isActiveBinding,
     };
@@ -140,9 +176,25 @@ export function useAutomationMachines({
     [all.lanesByMachineId, lanes],
   );
 
+  /** A machine's own copy of an account rule, or null when it does not list it. */
+  const machineAccountRule = useCallback(
+    (machine: LaneMachine, ruleId: string): AutomationRuleSummary | null =>
+      rulesOfMachine(machine).find((rule) => rule.id === ruleId && followsAccount(rule)) ?? null,
+    [rulesOfMachine],
+  );
+
+  /** Whether a machine's ADE lists this account rule, i.e. can run it once it is its home. */
+  const machineListsAccountRule = useCallback(
+    (machine: LaneMachine, ruleId: string): boolean =>
+      rulesOfMachine(machine).some((rule) => rule.id === ruleId && followsAccount(rule)),
+    [rulesOfMachine],
+  );
+
   return {
     machines,
     boundMachine,
+    machineListsAccountRule,
+    machineAccountRule,
     entries,
     entryByKey,
     entryByRule,

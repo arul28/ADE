@@ -207,6 +207,11 @@ export const WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS = BUILT_IN_BROWSER_PRESENCE_EXP
 export type WorkToolsStateService = {
   setActiveTool(args: WorkToolsSetActiveToolArgs): { ok: true };
   /**
+   * A person is watching a tool on a cloud computer (Linux Desktop, a preview),
+   * once a minute. A plain answer here: the keep-awake counts the call itself.
+   */
+  noteWatching(): { ok: true };
+  /**
    * An agent-authenticated browser command just passed through this daemon.
    *
    * Event scheduling only — it publishes nothing. The presence STATE is the
@@ -501,6 +506,7 @@ function summarizeMacDesktop(
     // Windows-only host facts; null on a Mac host. A mirror uses this to render
     // the held/locked/setup cards for a Windows-held lane.
     windowsDesktop: status.windowsDesktop ?? null,
+    linuxDesktop: status.linuxDesktop ?? null,
     // A frame captured before the display went away describes a screen that no
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,
@@ -889,6 +895,10 @@ export function createWorkToolsStateService(
       // clients re-read the desktop's presence, which the bridge has by now
       // rolled back for the same failed call.
       emitStateChanged(laneId);
+    },
+
+    noteWatching() {
+      return { ok: true };
     },
 
     setActiveTool(input) {

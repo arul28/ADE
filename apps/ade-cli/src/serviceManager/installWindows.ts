@@ -489,6 +489,12 @@ export function parseWindowsRunKeyValues(
   return values;
 }
 
+/** The launcher script a Run value's command starts, or null. */
+function windowsRunCommandLauncherPath(command: string): string | null {
+  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
+  return fileArg ? fileArg[1] ?? fileArg[2] ?? null : null;
+}
+
 /** True when a Run value's command launches this exact launcher script. */
 export function windowsRunCommandNamesLauncher(
   command: string,
@@ -496,8 +502,8 @@ export function windowsRunCommandNamesLauncher(
 ): boolean {
   const normalizedLauncher = normalizeWindowsPathText(launcherPath);
   if (!normalizedLauncher) return false;
-  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
-  return fileArg != null && normalizeWindowsPathText(fileArg[1] ?? fileArg[2] ?? "") === normalizedLauncher;
+  const fileArg = windowsRunCommandLauncherPath(command);
+  return fileArg != null && normalizeWindowsPathText(fileArg) === normalizedLauncher;
 }
 
 /**
@@ -939,6 +945,36 @@ function readLauncherBrainCommand(launcherPath: string): AdeServiceCommand | nul
   return { command, args: parseCommandLine(fields.Arguments, { platform: "win32" }) };
 }
 
+/**
+ * The ADE home the installed Windows service serves. The launcher sits under
+ * that home, so the shell's `ADE_HOME` cannot find it: the startup entry names
+ * it. Null when no launcher can be read, so an unreadable or absent one stays
+ * removable. A launcher that sets no `ADE_HOME` serves the default home.
+ */
+export function readWindowsServiceHome(
+  env: NodeJS.ProcessEnv = process.env,
+  run: ServiceManagerSpawnSync = spawnSync,
+): string | null {
+  const launcherEnv = { ...env, ADE_HOME: "" };
+  const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(resolveWindowsTaskName()), {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  const registered = query.status === 0
+    ? parseWindowsRunKeyValues(query.stdout).map((value) => windowsRunCommandLauncherPath(value.command)).find(Boolean)
+    : null;
+  let script: string;
+  try {
+    script = fs.readFileSync(registered ?? resolveWindowsServiceLauncherPath({ env: launcherEnv }), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /SetEnvironmentVariable\('ADE_HOME',\s*'((?:[^']|'')*)'/.exec(script);
+  const value = match?.[1]?.replace(/''/g, "'").trim();
+  return value || resolveWindowsAdeDir(launcherEnv);
+}
+
 /** The brain command this channel's installed Windows service runs, or null when none is installed. */
 export function readWindowsServiceBrainCommand(env: NodeJS.ProcessEnv = process.env): AdeServiceCommand | null {
   return readLauncherBrainCommand(resolveWindowsServiceLauncherPath({ env }));
@@ -1233,17 +1269,30 @@ function buildWindowsPredecessorQueryArgs(launcherPath: string): string[] {
     "$escaped = [Regex]::Escape($launcher)",
     `$pattern = '(?i)(?:^|\\s)-File\\s+(?:"' + $escaped + '"|' + $escaped + ')(?=\\s|$)'`,
     "$lines = [System.Collections.Generic.List[string]]::new()",
+    // A process that exits between the listing and this call makes CIM answer
+    // "Not found". Under `Stop` that failed the whole check, and the update it
+    // guarded was abandoned ("Unable to verify the existing ADE supervisors:
+    // Invoke-CimMethod : Not found", 1.2.123). A process that is gone is not a
+    // supervisor to stop: it is skipped. Any other failure still stops the
+    // check, so nothing is stopped on a guess.
+    "function Get-OwnerSidIfAlive($row) {",
+    "  try { return Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid }",
+    "  catch [Microsoft.Management.Infrastructure.CimException] {",
+    "    if ($_.Exception.NativeErrorCode -eq [Microsoft.Management.Infrastructure.NativeErrorCode]::NotFound) { return $null }",
+    "    throw",
+    "  }",
+    "}",
     "function Format-ProcessLine([string]$kind, $row) {",
     "  \"$kind`t$($row.ProcessId)`t$($row.ParentProcessId)`t$(([datetime]$row.CreationDate).ToUniversalTime().ToString('o'))`t$($row.ExecutablePath)`t$($row.CommandLine)\"",
     "}",
     "foreach ($row in @(Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\")) {",
     "  if (-not $row.CommandLine -or $row.CommandLine -notmatch $pattern) { continue }",
-    "  $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid",
-    "  if ($owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { continue }",
+    "  $owner = Get-OwnerSidIfAlive $row",
+    "  if ($null -eq $owner -or $owner.ReturnValue -ne 0 -or $owner.Sid -ne $sid) { continue }",
     "  $lines.Add((Format-ProcessLine 'S' $row))",
     "  foreach ($childRow in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $row.ProcessId))) {",
-    "    $childOwner = Invoke-CimMethod -InputObject $childRow -MethodName GetOwnerSid",
-    "    if ($childOwner.ReturnValue -ne 0 -or $childOwner.Sid -ne $sid) { continue }",
+    "    $childOwner = Get-OwnerSidIfAlive $childRow",
+    "    if ($null -eq $childOwner -or $childOwner.ReturnValue -ne 0 -or $childOwner.Sid -ne $sid) { continue }",
     // A child born before its parent cannot be its child: the parent's pid was reused.
     "    if (([datetime]$childRow.CreationDate) -lt ([datetime]$row.CreationDate)) { continue }",
     "    $lines.Add((Format-ProcessLine 'C' $childRow))",

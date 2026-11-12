@@ -5,7 +5,7 @@
 // fork inherits the thread's model, config and whole history, so the model
 // already knows the conversation and ADE does not resend a transcript
 // excerpt. The source thread is never changed. Codex's rules
-// (app-server/src/thread_sample.rs at rust-v0.164.0):
+// (app-server/src/thread_sample.rs at rust-v0.167.0):
 //
 // - the source must be an idle, persistent, root thread, and `expectedTurnId`
 //   its latest finished turn; a turn that starts while the sample runs makes

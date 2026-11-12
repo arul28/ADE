@@ -205,7 +205,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
         ? IPC.remoteRuntimeStreamEvents
         : IPC.localRuntimeStreamEvents,
       pin.kind === "remote"
-        ? { id: pin.targetId, projectId: pin.projectId, request }
+        ? { id: pin.targetId, projectId: pin.projectId, projectRootPath: pin.rootPath || null, request }
         : { rootPath: pin.rootPath, request },
     ) as Promise<RemoteRuntimeStreamEventsResult>;
 

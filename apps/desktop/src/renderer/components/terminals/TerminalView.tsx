@@ -22,12 +22,16 @@ import {
   clipboardImageBlobFromEvent,
   pasteClipboardImageBlob,
   pasteRuntimeClipboardImageAttachment,
+  type TerminalImagePasteForm,
   type TerminalImagePasteIo,
 } from "./terminalImagePaste";
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
 import { endsInsideOsc52, parseOsc52Payload } from "./osc52";
 import { showToast } from "../app/toast/toastStore";
+import { useInRouterContext } from "react-router-dom";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { TerminalPathLinkBridge, type TerminalPathLinkHandle } from "./terminalPathLinkBridge";
+import { createTerminalPathLinkProvider, readOsc7Cwd, type TerminalPathLinkContext } from "./terminalPathLinks";
 import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
@@ -108,6 +112,8 @@ type CachedRuntime = {
   lastDims: TerminalDims | null;
   lastPtyResizeDims: TerminalDims | null;
   ptyResizeInFlight: boolean;
+  /** Resizes lost in a row, which sets how long the next retry waits. */
+  ptyResizeFailedAttempts: number;
   inFlightPtyResizeDims: TerminalDims | null;
   queuedPtyResizeDims: TerminalDims | null;
   pendingForceResize: boolean;
@@ -193,6 +199,8 @@ type CachedRuntime = {
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
   linkProviderSub: { dispose: () => void } | null;
+  pathLinkProviderSub: { dispose: () => void } | null;
+  pathLinks: TerminalPathLinkContext;
   /** Drives the DOM renderer's cursor blink; null while WebGL draws the cursor. */
   cursorBlinkClock: { dispose: () => void } | null;
   rendererInitStarted: boolean;
@@ -216,6 +224,9 @@ type CachedRuntime = {
   replayLoadedBytes: number | null;
 };
 
+const PTY_RESIZE_RETRY_MIN_MS = 1_000;
+const PTY_RESIZE_RETRY_MAX_MS = 15_000;
+const PTY_RESIZE_MAX_RETRIES = 8;
 const HYDRATE_TAIL_BYTES = 2_000_000;
 // Maximum transcript bytes loaded when replaying a disposed chat-CLI session.
 // Keep this small enough that reopening a noisy terminal cannot balloon the
@@ -280,7 +291,7 @@ const TERMINAL_CTRL_V = "\x16";
 const TERMINAL_BRACKETED_PASTE_MODE = 2004;
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
-type TerminalImagePasteMode = "native-shortcut" | "runtime-attachment";
+type TerminalImagePasteMode = "shell" | "agent-cli";
 const runtimeCache = new Map<string, CachedRuntime>();
 const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
@@ -839,6 +850,22 @@ function reportTerminalDimsMismatch(
   logTerminalDiag("warn", describeTerminalDims(runtime, extra));
 }
 
+/**
+ * A resize lost to a dropped connection is sent again until it lands, or the
+ * pane is resized to something else, so the PTY does not stay at the old width
+ * until the next focus. It goes through `requestPtyResize`, which keeps sends
+ * in order with any newer size.
+ */
+function scheduleFailedPtyResizeRetry(runtime: CachedRuntime, dims: TerminalDims): void {
+  const attempt = runtime.ptyResizeFailedAttempts;
+  runtime.ptyResizeFailedAttempts += 1;
+  if (runtime.disposed || attempt >= PTY_RESIZE_MAX_RETRIES) return;
+  window.setTimeout(() => {
+    if (runtime.disposed || !sameDims(runtime.lastDims, dims) || sameDims(runtime.lastPtyResizeDims, dims)) return;
+    requestPtyResize(runtime, dims);
+  }, Math.min(PTY_RESIZE_RETRY_MAX_MS, PTY_RESIZE_RETRY_MIN_MS * 2 ** attempt));
+}
+
 function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
   if (runtime.disposed) return;
   runtime.ptyResizeInFlight = true;
@@ -854,6 +881,7 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
     .then(
       () => {
         runtime.lastPtyResizeDims = dims;
+        runtime.ptyResizeFailedAttempts = 0;
         // The round trip is not instant, and the PTY repaints at the size it
         // was given. If the grid moved while this was in flight, the repaint
         // now landing was produced for a width xterm no longer has — the
@@ -866,6 +894,7 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
           runtime.lastPtyResizeDims = null;
         }
         logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "pty-resize-failed", sentResize: dims }));
+        scheduleFailedPtyResizeRetry(runtime, dims);
       },
     )
     .finally(() => {
@@ -1501,12 +1530,38 @@ function imagePasteIo(runtime: CachedRuntime): TerminalImagePasteIo {
   return {
     notify: () => notifyRuntime(runtime),
     writeInput: (data) => writePtyInput(runtime, data),
+    pasteText: (text) => void writeTextPasteForTerminal(runtime, text),
   };
 }
 
-function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImagePasteMode): Promise<boolean> {
-  return mode === "runtime-attachment"
-    ? pasteRuntimeClipboardImageAttachment(runtime, imagePasteIo(runtime))
+/**
+ * Does the terminal's program run on the computer whose clipboard this is?
+ *
+ * Only then can `^V` work: the program reads the clipboard of its own machine.
+ * A session pinned to another machine, a tab bound to a remote machine, and
+ * the web client all type here and run there.
+ */
+function terminalRunsOnThisComputer(runtime: CachedRuntime): boolean {
+  if (isWebClientMode()) return false;
+  const binding = runtime.runtimePin ?? useAppStore.getState().projectBinding;
+  return binding?.kind !== "remote";
+}
+
+/**
+ * How this terminal takes a clipboard image, or null to hand `^V` to its
+ * program. A tracked agent CLI always gets the saved file as a stub. A plain
+ * shell gets `^V` on this computer; on another machine `^V` would read that
+ * machine's clipboard and find nothing, so it gets the saved file's path.
+ */
+function imagePasteForm(runtime: CachedRuntime): TerminalImagePasteForm | null {
+  if (runtime.imagePasteMode === "agent-cli") return "agent-stub";
+  return terminalRunsOnThisComputer(runtime) ? null : "path";
+}
+
+function pasteClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
+  const form = imagePasteForm(runtime);
+  return form
+    ? pasteRuntimeClipboardImageAttachment(runtime, imagePasteIo(runtime), form)
     : pasteNativeClipboardImageShortcut(runtime);
 }
 
@@ -1625,6 +1680,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   }
   try {
     runtime.linkProviderSub?.dispose();
+    runtime.pathLinkProviderSub?.dispose();
   } catch {
     // ignore
   }
@@ -3110,6 +3166,16 @@ function createRuntime(args: {
   const linkProviderSub = typeof term.registerLinkProvider === "function"
     ? term.registerLinkProvider(createTerminalLinkProvider(term, args.runtimePin))
     : null;
+  const pathLinks: TerminalPathLinkContext = {
+    runtimePin: args.runtimePin,
+    laneId: null,
+    cwd: null,
+    openWorkspacePath: null,
+    ensureLaneId: null,
+  };
+  const pathLinkProviderSub = typeof term.registerLinkProvider === "function"
+    ? term.registerLinkProvider(createTerminalPathLinkProvider(term, pathLinks))
+    : null;
 
   const runtime: CachedRuntime = {
     key: terminalRuntimeKey(args),
@@ -3132,6 +3198,7 @@ function createRuntime(args: {
     health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0, fitRecoveries: 0 },
     lastDims: null,
     lastPtyResizeDims: null,
+    ptyResizeFailedAttempts: 0,
     ptyResizeInFlight: false,
     inFlightPtyResizeDims: null,
     queuedPtyResizeDims: null,
@@ -3182,6 +3249,8 @@ function createRuntime(args: {
     ptyExitUnsub: null,
     termDataSub: null,
     linkProviderSub,
+    pathLinkProviderSub,
+    pathLinks,
     cursorBlinkClock: null,
     rendererInitStarted: false,
     webglReleaseTimer: null,
@@ -3205,6 +3274,12 @@ function createRuntime(args: {
   // frames the sequence across chunks and terminators; the handler decides.
   // Disposed with the terminal.
   term.parser.registerOscHandler(52, (data) => handleTerminalOsc52(runtime, data));
+  // The shell's working directory, when it reports one: where a relative path
+  // printed in this terminal is relative to.
+  term.parser.registerOscHandler(7, (data) => {
+    runtime.pathLinks.cwd = readOsc7Cwd(data);
+    return true;
+  });
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
   // Electron default-menu Edit→Paste, right-click, middle-click) before xterm
@@ -3219,23 +3294,22 @@ function createRuntime(args: {
       void writeTextPasteForTerminal(runtime, text);
       return;
     }
-    // native-shortcut mode deliberately hands ^V to the CLI so it reads the
-    // machine's own clipboard; only the attachment mode uploads bytes.
-    const imageBlob = runtime.imagePasteMode === "runtime-attachment" && !runtime.disposed
-      ? clipboardImageBlobFromEvent(ev.clipboardData)
-      : null;
-    if (imageBlob) {
+    // A plain shell on this computer deliberately gets ^V so its program reads
+    // this machine's own clipboard; every other terminal uploads the bytes.
+    const form = runtime.disposed ? null : imagePasteForm(runtime);
+    const imageBlob = form ? clipboardImageBlobFromEvent(ev.clipboardData) : null;
+    if (form && imageBlob) {
       // A blob whose mime is not in the extension table (or that fails to read)
       // answers false, and dropping the paste there is silent — the user sees a
       // paste that did nothing at all. Fall through to the shortcut path, which
       // reads the clipboard itself and can still handle it.
-      void pasteClipboardImageBlob(runtime, imagePasteIo(runtime), imageBlob).then((handled) => {
+      void pasteClipboardImageBlob(runtime, imagePasteIo(runtime), imageBlob, form).then((handled) => {
         if (handled || runtime.disposed) return;
-        void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+        void pasteClipboardImageShortcut(runtime);
       });
       return;
     }
-    void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+    void pasteClipboardImageShortcut(runtime);
   }, true);
   runtime.macShiftSelectionCleanup = installMacShiftSelectionBridge({
     host,
@@ -3269,7 +3343,7 @@ function createRuntime(args: {
         if (lastPasteEventAt !== before || runtime.disposed) return;
         const readText = navigator.clipboard?.readText;
         if (typeof readText !== "function") {
-          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+          void pasteClipboardImageShortcut(runtime);
           return;
         }
         readText.call(navigator.clipboard).then((text) => {
@@ -3277,9 +3351,9 @@ function createRuntime(args: {
             void writeTextPasteForTerminal(runtime, text);
             return;
           }
-          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+          void pasteClipboardImageShortcut(runtime);
         }).catch(() => {
-          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+          void pasteClipboardImageShortcut(runtime);
         });
       }, 120);
       return false;
@@ -3469,7 +3543,7 @@ export function TerminalView({
   className,
   isActive,
   isVisible = isActive,
-  imagePasteMode = "native-shortcut",
+  imagePasteMode = "shell",
   toolType = null,
 }: {
   ptyId: string;
@@ -3527,6 +3601,8 @@ export function TerminalView({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
+  const pathLinkHandleRef = useRef<TerminalPathLinkHandle | null>(null);
+  const inRouter = useInRouterContext();
   const [exited, setExited] = useState<number | null>(null);
   const [imagePasteNotice, setImagePasteNotice] = useState<string | null>(null);
 
@@ -3572,6 +3648,10 @@ export function TerminalView({
       imagePasteMode,
     });
     runtimeRef.current = runtime;
+    if (pathLinkHandleRef.current) {
+      runtime.pathLinks.openWorkspacePath = pathLinkHandleRef.current.openWorkspacePath;
+      runtime.pathLinks.ensureLaneId = pathLinkHandleRef.current.ensureLaneId;
+    }
     const wasReceivingBeforeRef = shouldRuntimeReceivePtyData(runtime);
     runtime.refs += 1;
     syncRuntimePtyDataStreaming(runtime, wasReceivingBeforeRef);
@@ -3653,6 +3733,8 @@ export function TerminalView({
     };
     const onWheel = (ev: WheelEvent) => {
       if (runtime.disposed) return;
+      // A sideways swipe is not a scroll: taking it here moved the buffer a line.
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) return;
       if (!(ev.target instanceof Node)) return;
       if (!runtime.term.element || !runtime.term.element.contains(ev.target)) return;
       const viewport = runtime.term.element.querySelector<HTMLElement>(".xterm-viewport");
@@ -3671,9 +3753,9 @@ export function TerminalView({
         return;
       }
 
-      const viewportScrollable = viewport.scrollHeight > viewport.clientHeight + 1;
-      const hasScrollback = runtime.term.buffer.active.baseY > 0;
-      if (!hasScrollback || viewportScrollable) return;
+      // xterm 6 scrolls its own viewport, so the DOM element never reports
+      // overflow and the buffer is the only source of truth.
+      if (runtime.term.buffer.active.baseY <= 0) return;
       scrollLocally(ev);
     };
     el.addEventListener("wheel", onWheel, { passive: false, capture: true });
@@ -4016,6 +4098,14 @@ export function TerminalView({
       )}
     >
       <div ref={containerRef} className="ade-terminal-host h-full w-full m-0 p-0 border-0 overflow-hidden" />
+      {inRouter ? (
+        <TerminalPathLinkBridge
+          handleRef={pathLinkHandleRef}
+          runtimeRef={runtimeRef}
+          sessionId={sessionId}
+          runtimePin={runtimeRuntimePin}
+        />
+      ) : null}
       {exited != null ? (
         <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DeeplinkTarget } from "../../../shared/deeplinks";
+import { parseDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
 import { WebClientEnvStore } from "../sync";
 import {
@@ -40,6 +40,7 @@ async function loadFederatedAdapter(
   accountClient: BrowserAccountClient,
   accountKey: string,
   fallbackClient: AdeSyncClient,
+  openOwnedDeeplink: (url: string) => Promise<boolean>,
 ): Promise<FederatedWebAdapter> {
   const module = await import("../adapter/federated");
   return module.createFederatedWebAdapter({
@@ -47,6 +48,7 @@ async function loadFederatedAdapter(
     accountClient,
     accountKey,
     fallbackClient,
+    openOwnedDeeplink,
   });
 }
 
@@ -123,6 +125,8 @@ const APP_ROUTE_ROOTS = [
   "/cto",
   "/settings",
   "/chats",
+  // Lanes other accounts share with me: works with no machine of my own.
+  "/shared",
 ];
 
 function isAppRoute(pathname: string): boolean {
@@ -167,7 +171,8 @@ function relayAccessFromAccount(
 
 type Phase =
   | { kind: "signing-in" }
-  | { kind: "booting"; message: string }
+  /** `done` lists the finished steps of a link that is opening, oldest first. */
+  | { kind: "booting"; message: string; title?: string; done?: readonly string[] }
   | { kind: "signed-out"; SignIn: React.ComponentType }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string };
@@ -338,19 +343,26 @@ export function WebClientRoot({
         // Unpinned on purpose: the owning project was just opened, so the
         // displayed adapter is that machine's. Authoritative, so null is "gone"
         // and a host that cannot answer rejects instead.
-        const detail = await adapter.ade.sessions.get(sessionId, undefined, { authoritative: true });
-        return detail != null;
+        return await answerWithin(
+          adapter.ade.sessions.get(sessionId, undefined, { authoritative: true }).then((detail) => detail != null),
+        );
       },
       laneExists: async (laneId) => {
-        const lanes = await adapter.ade.lanes.list({ includeArchived: true, includeStatus: false });
-        // A project always has its primary lane; an empty list is a read that
-        // fell back, not an answer.
-        if (!Array.isArray(lanes) || lanes.length === 0) return null;
-        return lanes.some((lane) => lane.id === laneId);
+        return await answerWithin(
+          adapter.ade.lanes.list({ includeArchived: true, includeStatus: false }).then((lanes) => {
+            // A project always has its primary lane; an empty list is a read
+            // that fell back, not an answer.
+            if (!Array.isArray(lanes) || lanes.length === 0) return null;
+            return lanes.some((lane) => lane.id === laneId);
+          }),
+        );
       },
       onStage: (stage) => onStage(ownedLinkStageText(stage)),
     });
   }, [accountClient, connectMachineEntry, currentMachines, sessionManager]);
+
+  /** Filled once `retryOwnedLink` exists; the adapter is built before it is. */
+  const openOwnedDeeplinkRef = useRef<(url: string) => Promise<boolean>>(async () => false);
 
   const reconnectLastActiveMachine = useCallback(async () => {
     const machineKey = sessionManager.getLastActiveMachineKey();
@@ -395,6 +407,7 @@ export function WebClientRoot({
       accountClient,
       accountKey,
       client,
+      (url) => openOwnedDeeplinkRef.current(url),
     );
     if (federatedAdapterGenerationRef.current !== generation) {
       adapter.dispose();
@@ -566,8 +579,13 @@ export function WebClientRoot({
         // A chat, lane or PR link names its machine and project: go there, not
         // to whatever this browser had open last.
         const runId = ++ownedLinkRunRef.current;
+        // Each step stays on screen, ticked, so a slow one is plain to see.
+        const steps: string[] = [];
         const result = await resolveOwnedTarget(ownedLinkTarget, installed.adapter, (message) => {
-          if (!disposed && ownedLinkRunRef.current === runId) setPhase({ kind: "booting", message });
+          if (disposed || ownedLinkRunRef.current !== runId) return;
+          const done = [...steps];
+          steps.push(finishedStepText(message));
+          setPhase({ kind: "booting", title: "Opening your link", message, done });
         });
         if (disposed) return;
         const landing = result ? settleOwnedLink(result) : null;
@@ -582,14 +600,16 @@ export function WebClientRoot({
         }
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
-        initialPath = restored
+        // A lane shared with this account needs no machine of its own.
+        const machineFreeTarget = restoredTarget?.kind === "lane-share";
+        initialPath = restored || machineFreeTarget
           ? restoredTarget
             ? targetToWebPath(restoredTarget)
             : isAppRoute(path)
               ? `${path}${window.location.search}`
               : WELCOME_PATH
           : WELCOME_PATH;
-        if (restored) clearPendingTarget();
+        if (restored || machineFreeTarget) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();
@@ -698,6 +718,19 @@ export function WebClientRoot({
       });
     });
   }, [accountClient, resolveOwnedTarget, sessionManager, settleOwnedLink]);
+
+  // A link inside the app (a moved chat's "Open on …") takes the same route as
+  // one the visitor arrived with; progress and failure ride the app banner.
+  useEffect(() => {
+    openOwnedDeeplinkRef.current = async (url) => {
+      const parsed = parseDeeplink(url);
+      if (!parsed.ok || !ownershipOfTarget(parsed.target)) return false;
+      pendingTargetRef.current = parsed.target;
+      stashPendingTarget(parsed.target);
+      retryOwnedLink();
+      return true;
+    };
+  }, [retryOwnedLink]);
 
   const signIn = useCallback(() => {
     void accountClient.startSignIn().catch((error) => {
@@ -827,7 +860,7 @@ export function WebClientRoot({
     case "signing-in":
       return <ProgressScreen title="Signing in…" message="Completing secure sign-in…" />;
     case "booting":
-      return <ProgressScreen title="Starting ADE" message={phase.message} />;
+      return <ProgressScreen title={phase.title ?? "Starting ADE"} message={phase.message} done={phase.done} />;
     case "error":
       return (
         <ScreenShell title="ADE Web couldn't start" subtitle={phase.message}>
@@ -858,31 +891,76 @@ export function WebClientRoot({
   }
 }
 
-function ProgressScreen({ title, message }: { title: string; message: string }) {
+/**
+ * How long an owned link waits to learn whether its chat or lane still exists.
+ * The check only decides between "open it" and "it is gone"; with no answer
+ * the link opens anyway, so a project that is still starting on the computer
+ * must not hold the page for the full request timeout.
+ */
+const OWNED_LINK_CHECK_MS = 6_000;
+
+/** The check's answer, or null (could not say) when it takes too long. */
+function answerWithin(check: Promise<boolean | null>): Promise<boolean | null> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      console.warn("[ade-web] the link's chat or lane check got no answer in time; opening the link anyway");
+      resolve(null);
+    }, OWNED_LINK_CHECK_MS);
+    check.then(
+      (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** "Connecting to Studio…" once it is over: "Connecting to Studio". */
+function finishedStepText(message: string): string {
+  return message.replace(/…$/, "");
+}
+
+function ProgressScreen({ title, message, done = [] }: { title: string; message: string; done?: readonly string[] }) {
+  const row: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    fontFamily: SANS_FONT,
+    fontSize: 13,
+    lineHeight: 1.4,
+  };
   return (
-    <ScreenShell title={title} subtitle={message}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          color: COLORS.textSecondary,
-          fontFamily: SANS_FONT,
-          fontSize: 13,
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 14,
-            height: 14,
-            borderRadius: "50%",
-            border: "2px solid color-mix(in srgb, var(--color-fg) 20%, transparent)",
-            borderTopColor: "var(--color-accent)",
-            animation: "ade-web-spin 0.8s steps(24) infinite",
-          }}
-        />
-        {message}
+    <ScreenShell title={title}>
+      <div role="status" aria-live="polite" style={{ display: "grid", gap: 12 }}>
+        {done.map((step, index) => (
+          // The list only grows, so the position is a stable key.
+          <div key={index} style={{ ...row, color: COLORS.textMuted }}>
+            <svg aria-hidden width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
+              <path d="M3 7.4l2.6 2.6L11 4.4" stroke={COLORS.success} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {step}
+          </div>
+        ))}
+        <div style={{ ...row, color: COLORS.textPrimary }}>
+          <span
+            aria-hidden
+            style={{
+              flexShrink: 0,
+              width: 14,
+              height: 14,
+              boxSizing: "border-box",
+              borderRadius: "50%",
+              border: "2px solid color-mix(in srgb, var(--color-fg) 20%, transparent)",
+              borderTopColor: "var(--color-accent)",
+              animation: "ade-web-spin 0.8s steps(24) infinite",
+            }}
+          />
+          {message}
+        </div>
         <style>{"@keyframes ade-web-spin { to { transform: rotate(360deg); } }"}</style>
       </div>
     </ScreenShell>

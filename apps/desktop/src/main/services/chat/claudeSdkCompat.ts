@@ -79,7 +79,7 @@ export function normalizeClaudeSdkSessionMessageModel(value: unknown): string | 
 
 /**
  * Send a control request the SDK types but gives no method for (`get_usage`,
- * `mcp_call` as of 0.3.310) over `request`, the channel its typed methods
+ * `mcp_call` as of 0.3.321) over `request`, the channel its typed methods
  * use. Recheck on an SDK bump: null means this build has no such channel, and
  * the caller says what is unavailable.
  */

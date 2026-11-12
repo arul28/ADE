@@ -67,6 +67,24 @@ export async function sha256Hex(value: string): Promise<string> {
     .join("");
 }
 
+/**
+ * The id every ADE client identifies an account with (`identifyAccount` in
+ * productAnalyticsService.ts and ProductAnalytics.swift; the reconcile script
+ * `scripts/analytics/reconcile-signups.mjs` copies it). Keep them in step.
+ */
+export async function accountDistinctId(userId: string): Promise<string> {
+  return `ade_user_${(await sha256Hex(`ade-product-analytics-account-v1:${userId}`)).slice(0, 32)}`;
+}
+
+/** A stable v4-shaped uuid from a seed string, so a retried event keeps one uuid. */
+export async function uuidFromSeed(seed: string): Promise<string> {
+  const chars = (await sha256Hex(seed)).slice(0, 32).split("");
+  chars[12] = "4";
+  chars[16] = "8";
+  const value = chars.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
 export function utcDayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }

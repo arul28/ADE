@@ -109,9 +109,10 @@ final class MacDesktopLiveSession: ObservableObject {
     generation += 1
     isStarting = false
     service.unregisterMacDesktopStream(subscriptionId: subscriptionId)
-    if service.connectionState == .connected, service.supportsMacDesktopStream {
+    if service.isLaneMachineConnected(laneId: laneId), service.supportsMacDesktopStream(laneId: laneId) {
       let id = subscriptionId
-      Task { try? await service.macDesktopStreamUnsubscribe(subscriptionId: id) }
+      let lane = laneId
+      Task { try? await service.macDesktopStreamUnsubscribe(laneId: lane, subscriptionId: id) }
     }
     phase = .idle
     hasFrame = false
@@ -670,7 +671,7 @@ private struct MacDesktopControlPictureBody: View {
 
   @ViewBuilder
   private var controls: some View {
-    if syncService.supportsMacDesktopControl {
+    if syncService.supportsMacDesktopControl(laneId: laneId) {
       if geometry == nil {
         Text(macDesktopNoGeometryMessage)
           .font(.caption)

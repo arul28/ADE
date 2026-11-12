@@ -1,5 +1,5 @@
 {
-  "$comment": "Plain-English notes per model registry family, for the model sheet (modelSheet.ts). Written 2026-10-20 from the registry snapshot of that day (gpt-6-1-terra added 2026-10-26 from launch-day Artificial Analysis and OpenAI figures); each claim's benchmark is in `basis`. Families: every family runnable on the owner's machine plus the 40 current families with the highest Intelligence Index. Scores refresh with each snapshot; these words do not, so re-check them when a family's numbers move.",
+  "$comment": "Plain-English notes per model registry family, for the model sheet (modelSheet.ts). Written 2026-10-20 from the registry snapshot of that day (gpt-6-1-terra added 2026-10-26 and claude-fable-5-2 added 2026-11-09 from launch-day Artificial Analysis and vendor figures); each claim's benchmark is in `basis`. Families: every family runnable on the owner's machine plus the 40 current families with the highest Intelligence Index. Scores refresh with each snapshot; these words do not, so re-check them when a family's numbers move.",
   "families": {
     "claude-opus-5-5": {
       "summary": "The strongest all-round model you can run: top-tier at hard coding, debugging, refactors and research, at a premium price.",
@@ -136,6 +136,54 @@
         "$0.32 per index task at high"
       ]
     },
+    "claude-fable-5-2": {
+      "summary": "Anthropic's newest Fable: the strongest agentic coder and researcher you can run, cheaper per token than Fable 5.1 but very costly at high effort.",
+      "strengths": [
+        "Hard agentic coding and long multi-step features",
+        "Research with tools",
+        "Computer and office automation"
+      ],
+      "weaknesses": [
+        "Most expensive per task at xhigh and max effort",
+        "No long-context, GPQA or speed scores published yet"
+      ],
+      "bestFor": [
+        {
+          "kind": "feature",
+          "why": "FrontierSWE v2 0.70 and FrontierCode 2.0 0.49 at xhigh, the best Anthropic tested"
+        },
+        {
+          "kind": "research",
+          "why": "Humanity's Last Exam with tools 0.74"
+        },
+        {
+          "kind": "debugging",
+          "why": "Terminal-Bench-Science 0.75, up from 0.53 on Fable 5.1"
+        }
+      ],
+      "avoidFor": [
+        {
+          "kind": "small_edit",
+          "why": "far too costly for small changes"
+        },
+        {
+          "kind": "question",
+          "why": "costly for quick answers; medium effort or a cheaper model does them"
+        }
+      ],
+      "notes": [
+        "Medium effort is the default and the value point: Intelligence Index 56 at $3.80 per task, against 65 at $26.54 at max.",
+        "Up to 30% faster than Fable 5.1, per Anthropic.",
+        "Launch-day figures (2026-11-09) from Anthropic and Artificial Analysis; refresh when the registry snapshot lists it."
+      ],
+      "basis": [
+        "Artificial Analysis Intelligence Index 54 (low), 56 (medium), 62 (high), 62 (xhigh), 65 (max)",
+        "$3.10 / $3.80 / $9.08 / $14.83 / $26.54 per index task, low to max",
+        "FrontierSWE v2 0.70, FrontierCode 2.0 0.49 (xhigh), 0.45 (high)",
+        "Humanity's Last Exam with tools 0.74, Terminal-Bench-Science 0.1 0.75",
+        "$8 / $40 per million input / output tokens"
+      ]
+    },
     "claude-fable-5-1": {
       "summary": "Anthropic's top-tier Fable model: superb at research and refactors, strong at coding, but the most expensive per task.",
       "strengths": [
@@ -172,7 +220,8 @@
         }
       ],
       "notes": [
-        "No image-understanding score published."
+        "No image-understanding score published.",
+        "Superseded by Claude Fable 5.2."
       ],
       "basis": [
         "HLE 0.56, AA-LCR 0.84 (high)",

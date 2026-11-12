@@ -1,5 +1,7 @@
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { Dialog as AppDialog } from "../ui/dialog/Dialog";
-import { CloneProjectForm } from "./CloneProjectForm";
+import { AddProjectForm } from "./AddProjectForm";
+import type { CopyOpenTarget } from "./projectCopies";
 
 export type CloneLocallyTarget = {
   displayName: string;
@@ -10,18 +12,21 @@ export type CloneLocallyTarget = {
   remoteKey: string;
 };
 
+const LOCAL_ONLY: readonly string[] = [THIS_MACHINE_ID];
+
 /**
- * Clones a project that runs only on another machine onto this one. The form
- * starts with the project's git origin filled in; the user picks the folder.
+ * Adds a copy of a project that is on another machine. The Add project form
+ * starts with the project's git origin filled in and this computer ticked;
+ * the other machines are there too, each with its own state.
  */
 export function CloneLocallyDialog({
   target,
   onClose,
-  onCloned,
+  onOpenProject,
 }: {
   target: CloneLocallyTarget | null;
   onClose: () => void;
-  onCloned: (result: { rootPath: string; displayName: string }) => void;
+  onOpenProject: (target: CopyOpenTarget) => Promise<void>;
 }) {
   return (
     <AppDialog
@@ -29,10 +34,10 @@ export function CloneLocallyDialog({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      title={target ? `Clone ${target.displayName} to this machine` : "Clone to this machine"}
+      title={target ? `Add a copy of ${target.displayName}` : "Add a copy"}
       description={
         target
-          ? `${target.displayName} runs on ${target.machineName}. A local copy lets you work on it here too.`
+          ? `${target.displayName} is on ${target.machineName}. A copy on this computer lets you work on it here too.`
           : undefined
       }
       size="lg"
@@ -40,14 +45,13 @@ export function CloneLocallyDialog({
       stopClickPropagation
     >
       {target ? (
-        <CloneProjectForm
+        <AddProjectForm
           key={target.gitOriginUrl}
           initialUrl={target.gitOriginUrl}
+          initialMachineIds={LOCAL_ONLY}
           onCancel={onClose}
-          onCloned={(result) => {
-            onClose();
-            onCloned(result);
-          }}
+          onClose={onClose}
+          onOpenProject={onOpenProject}
         />
       ) : null}
     </AppDialog>

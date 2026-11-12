@@ -64,8 +64,19 @@ import {
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
 import {
+  dueSlot,
+  lookFromState,
+  markSlotApplied,
+  readAppearanceSchedule,
+  type ActiveSlot,
+  type ScheduledLook,
+} from "../theme/appearanceSchedule";
+import { captureError } from "../../shared/sentry/capture";
+import { isCloudTierId, type CloudTierId } from "../../shared/cloudTiers";
+import {
   AppearanceStoreContext,
   USER_PREFERENCES_STORAGE_KEY,
+  patchStoredLook,
   coerceTheme,
   coerceThemeId,
   effectiveThemeId,
@@ -251,6 +262,16 @@ export type WorkGridSet = {
   layoutId: string;
   sessionIds: string[];
 };
+/**
+ * The Work draft's Run on pick when it is a cloud, not a computer: ADE Cloud
+ * (with its lane, null for a new one, and the size picked for this draft, null
+ * for the saved default), Cursor Cloud or Devin Cloud.
+ */
+export type WorkDraftCloudTarget =
+  | { provider: "ade"; laneId: string | null; sizeId: CloudTierId | null }
+  | { provider: "cursor" }
+  | { provider: "devin" };
+
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
@@ -263,6 +284,8 @@ export type WorkProjectViewState = {
   draftLaneId: string | null;
   /** Machine that owns `draftLaneId`; null means the project tab's bound machine. */
   draftMachineId: string | null;
+  /** A cloud picked in the draft's Run on menu, kept like `draftMachineId`; null for a computer. */
+  draftCloudTarget: WorkDraftCloudTarget | null;
   laneFilter: string;
   search: string;
   /** Session list grouping mode. */
@@ -412,6 +435,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     draftKind: "chat",
     draftLaneId: null,
     draftMachineId: null,
+    draftCloudTarget: null,
     laneFilter: "all",
     search: "",
     sessionListOrganization: "by-lane",
@@ -514,6 +538,19 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
   return Math.max(26, Math.min(55, n));
 }
 
+function normalizeWorkDraftCloudTarget(value: unknown): WorkDraftCloudTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { provider?: unknown; laneId?: unknown; sizeId?: unknown };
+  if (candidate.provider === "cursor" || candidate.provider === "devin") return { provider: candidate.provider };
+  if (candidate.provider !== "ade") return null;
+  return {
+    provider: "ade",
+    laneId: normalizeOptionalString(candidate.laneId),
+    // A size this build doesn't know reads as the saved default.
+    sizeId: isCloudTierId(candidate.sizeId) ? candidate.sizeId : null,
+  };
+}
+
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
@@ -530,6 +567,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     draftMachineId: normalizeOptionalString(candidate.draftMachineId),
+    // Additive like `workViewMode`: an older blob has none and reads as a computer.
+    draftCloudTarget: normalizeWorkDraftCloudTarget(candidate.draftCloudTarget),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:
@@ -901,6 +940,12 @@ export function projectStateKeyForBinding(
   return normalizeProjectKey(binding?.rootPath ?? fallbackRoot);
 }
 
+/** Why this project's lanes could not be read, or null. Another project's failure never shows here. */
+export function selectLanesLoadError(state: AppState): string | null {
+  const failure = state.lanesLoadError;
+  return failure && failure.projectKey === normalizeProjectKey(selectActiveProjectStateKey(state)) ? failure.message : null;
+}
+
 export function selectActiveProjectStateKey(
   state: Pick<AppState, "project" | "projectBinding">,
 ): string | null {
@@ -1093,6 +1138,12 @@ type PersistedUserPreferences = {
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
   /**
+   * The size a new ADE Cloud lane starts with (the composer's size button).
+   * Small until the person changes it. An account preference: it follows
+   * the person to every computer they sign in on.
+   */
+  cloudDefaultTier: CloudTierId;
+  /**
    * Saved harness presets — a body (the harness) plus a brain (the model
    * source), named and given a logo. They live in the preferences blob rather
    * than in their own store because they are an account preference like any
@@ -1143,6 +1194,13 @@ export type ActiveDictationTarget = {
   focus: () => void;
 };
 
+/** A new ADE Cloud lane starts Small until the person picks another default. */
+const DEFAULT_CLOUD_TIER: CloudTierId = "small";
+
+function normalizeCloudDefaultTier(value: unknown): CloudTierId {
+  return isCloudTierId(value) ? value : DEFAULT_CLOUD_TIER;
+}
+
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
@@ -1168,6 +1226,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      cloudDefaultTier: normalizeCloudDefaultTier(parsed.cloudDefaultTier),
       harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
@@ -1224,6 +1283,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    cloudDefaultTier: DEFAULT_CLOUD_TIER,
     harnessPresets: [],
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     androidDevice: { ...DEFAULT_ANDROID_DEVICE_PREFERENCES },
@@ -1267,6 +1327,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  cloudDefaultTier: CloudTierId;
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
   androidDevice: AndroidDevicePreferences;
@@ -1294,6 +1355,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    cloudDefaultTier: state.cloudDefaultTier,
     // Stored with the rows this build cannot read; the loader normalizes and
     // sets those aside again, so only storage ever holds them.
     // `PersistedUserPreferences` types the list as read back (normalized), so
@@ -1336,10 +1398,49 @@ function persistStarPillPrefs(prefs: StarPillPrefs): void {
 
 function readInitialUserPreferences(): PersistedUserPreferences {
   const unified = readUnifiedUserPreferences();
-  if (unified) return unified;
+  if (unified) return withDueScheduledLook(unified);
   const legacy = readLegacyUserPreferences();
   persistUserPreferences(legacy);
-  return legacy;
+  return withDueScheduledLook(legacy);
+}
+
+/** The appearance values a scheduled look sets; everything else is left as it is. */
+function withScheduledLook<T extends Pick<PersistedUserPreferences, "theme" | "themeId" | "customThemes" | "themeFollowsSystem" | "interfacePreferences">>(
+  prefs: T,
+  look: ScheduledLook,
+  systemColorScheme: ThemeId,
+): T {
+  const themeId = coerceThemeId(look.themeId);
+  const interfacePreferences = normalizeInterfacePreferences({
+    ...prefs.interfacePreferences,
+    sansFont: look.sansFont,
+    monoFont: look.monoFont,
+    scene: { ...look.scene, choiceMade: true },
+  });
+  const theme = baseModeForThemeId(
+    effectiveThemeId(themeId, look.followsSystem, systemColorScheme),
+    prefs.customThemes,
+  );
+  return { ...prefs, theme, themeId, themeFollowsSystem: look.followsSystem, interfacePreferences };
+}
+
+/**
+ * A slot of the appearance schedule that began while ADE was closed is
+ * applied before the first paint, so the app does not open on the old look
+ * and then switch.
+ */
+function withDueScheduledLook(prefs: PersistedUserPreferences): PersistedUserPreferences {
+  try {
+    const due = dueSlot(readAppearanceSchedule(), Date.now());
+    if (!due) return prefs;
+    const next = withScheduledLook(prefs, due.slot.look, readSystemColorScheme());
+    persistUserPreferencesFrom(next);
+    markSlotApplied(due);
+    return next;
+  } catch (error) {
+    captureError(error, { tags: { area: "appearance-schedule.launch" }, handled: true });
+    return prefs;
+  }
 }
 
 const initialPersistedWorkViews = readPersistedWorkViewState();
@@ -1460,6 +1561,11 @@ export type CrossMachineMachineLanes = {
   /** Complete call-routing target for this checkout, even without a project tab. */
   binding?: OpenProjectBinding | null;
   online: boolean;
+  /**
+   * An ADE Cloud computer that was deleted, while its connection target is
+   * still kept: the saved-chats read sets it. Its rows look deleted, not asleep.
+   */
+  computerGone?: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
   /**
@@ -1542,6 +1648,8 @@ export type AppState = {
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
+  /** Why the last lane read of a project failed while it showed no lanes; read through `selectLanesLoadError`. */
+  lanesLoadError: { projectKey: string | null; message: string } | null;
   /**
    * True when the git status in `lanes` (ahead/behind, dirty) was not
    * measured on this machine within the freshness window: a read for it is
@@ -1592,6 +1700,7 @@ export type AppState = {
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
+  cloudDefaultTier: CloudTierId;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -1652,8 +1761,21 @@ export type AppState = {
    * own subscription or fetch.
    */
   crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
+  /**
+   * Chats whose send is waking their sleeping cloud computer: session id →
+   * when the wake started (ISO). Display only. The chat pane shows its working
+   * indicator and the Work row reads "Waking" until the turn shows live or the
+   * send settles. Only the
+   * root store holds entries (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
+   */
+  cloudWakingSinceBySessionId: Readonly<Record<string, string>>;
 
-  setProject: (project: ProjectInfo | null) => void;
+  /**
+   * `replaceBinding`: the project is this computer's folder, opened on
+   * purpose, so a remote binding with the same root path does not carry over
+   * (the same path can exist on two machines).
+   */
+  setProject: (project: ProjectInfo | null, opts?: { replaceBinding?: boolean }) => void;
   setOpenRemoteProjectTabs: (
     next:
       | Extract<OpenProjectBinding, { kind: "remote" }>[]
@@ -1701,6 +1823,7 @@ export type AppState = {
     projectId?: string | null;
     binding?: OpenProjectBinding | null;
     online?: boolean;
+    computerGone?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
     prs?: PrSummary[];
@@ -1717,6 +1840,8 @@ export type AppState = {
    * unreachable long enough that its last-known work is no longer worth showing.
    */
   dropCrossMachineLanes: (machineIds: readonly string[]) => void;
+  /** `since` starts the chat's waking mark; null ends it. */
+  setCloudSessionWaking: (sessionId: string, since: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
@@ -1759,6 +1884,8 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
+  /** Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`. */
+  setCloudDefaultTier: (tier: CloudTierId) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -2017,6 +2144,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   let remoteProjectSwitchGeneration = 0;
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
+  let activeLaneRefreshToken = 0;
   let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
   let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
   /**
@@ -2101,7 +2229,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       set({ projectTransition: null, lanesLoading: false });
       return null;
     }
-    get().setProject(project);
+    get().setProject(project, { replaceBinding: true });
     set((prev) => {
       const restoredSelection =
         prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
@@ -2118,6 +2246,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanes: cachedLanes?.lanes ?? [],
         laneStatusStale: true,
         lanesLoading: !cachedLanes,
+        lanesLoadError: null,
         laneDeleteProgressByLaneId: {},
         selectedLaneId: restoredSelection.laneId,
         focusedSessionId: restoredSelection.sessionId,
@@ -2144,10 +2273,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     extras: { trustGitOwnership?: boolean },
   ): Promise<ProjectInfo | null> => {
     ++laneRefreshVersion;
+    // The binding stays on the open project until the new one replaces it
+    // (see openPickedRepo): a failed open leaves the window where it was, and
+    // a project on another machine never reads as this computer's meanwhile.
     set({
       projectTransition: { kind: "opening", rootPath, startedAtMs: Date.now() },
       projectTransitionError: null,
-      projectBinding: null,
     });
     try {
       return await openPickedRepo(rootPath, extras);
@@ -2181,6 +2312,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
+  lanesLoadError: null,
   // Nothing has been measured yet: whatever lanes arrive first (a cache, an
   // identity read) carry a status of unknown age.
   laneStatusStale: true,
@@ -2219,6 +2351,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
+  cloudDefaultTier: initialUserPreferences.cloudDefaultTier,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
@@ -2238,8 +2371,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLaneScopeKey: null,
   crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
+  cloudWakingSinceBySessionId: {},
 
-  setProject: (incomingProject) =>
+  setProject: (incomingProject, opts) =>
     set((prev) => {
       // A warm switch sets the cached project and then the one the host
       // reports, which is a new object that reads the same. The stored object
@@ -2252,6 +2386,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const nextProjectRoot = project?.rootPath ?? null;
       const matchingRemoteBinding =
         project &&
+        !opts?.replaceBinding &&
         prev.projectBinding?.kind === "remote" &&
         prev.projectBinding.rootPath === project.rootPath
           ? prev.projectBinding
@@ -2569,6 +2704,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const reconnected = previous?.online === false && online;
       const priorError = reconnected ? null : previous?.error ?? null;
       const priorFailedReads = reconnected ? 0 : previous?.failedReads ?? 0;
+      const computerGone = entry.computerGone !== undefined ? entry.computerGone : previous?.computerGone === true;
       const next: CrossMachineMachineLanes = {
         machineId,
         machineName: entry.machineName.trim() || previous?.machineName || machineId,
@@ -2576,6 +2712,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
         binding,
         online,
+        ...(computerGone ? { computerGone: true } : {}),
         // Retention, stated explicitly rather than left to accident: a read that
         // returned nothing must not erase what the machine last reported.
         lanes: lanes ?? previous?.lanes ?? [],
@@ -2606,6 +2743,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.projectId === next.projectId
         && previous.binding === next.binding
         && previous.online === next.online
+        && (previous.computerGone === true) === (next.computerGone === true)
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
@@ -2677,6 +2815,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               : {}),
           }
         : {};
+    }),
+
+  setCloudSessionWaking: (sessionId, since) =>
+    set((prev) => {
+      const current = prev.cloudWakingSinceBySessionId[sessionId];
+      if (since ? current === since : current === undefined) return {};
+      const next = { ...prev.cloudWakingSinceBySessionId };
+      if (since) next[sessionId] = since;
+      else delete next[sessionId];
+      return { cloudWakingSinceBySessionId: next };
     }),
 
   setLaneInspectorTab: (laneId, tab) =>
@@ -2889,6 +3037,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
       return { draftsButtonEnabled: enabled };
     }),
+  // The person's pick is counted where it's made (`lib/cloudDefaultTier.ts`), not here: sync calls this too.
+  setCloudDefaultTier: (tier) => {
+    const next = normalizeCloudDefaultTier(tier);
+    if (get().cloudDefaultTier === next) return;
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
+      return { cloudDefaultTier: next };
+    });
+  },
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
@@ -3049,6 +3206,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const requestedProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
+      activeLaneRefreshToken = token;
       const previousLanesById = new Map(get().lanes.map((lane) => [lane.id, lane] as const));
       const previousSnapshotsById = new Map(get().laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const));
       const snapshotArgs = {
@@ -3145,6 +3303,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneSnapshots: nextSnapshots,
           lanes,
           lanesLoading: false,
+          lanesLoadError: null,
           // A measured read replaces the numbers and their flag together. A
           // status-less one only carries numbers forward: they stay as fresh
           // as they were, unless they have aged out or a lane arrived with
@@ -3171,8 +3330,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // already have cached lanes (stale-while-revalidate after a project
     // switch), keep `lanesLoading: false` so the chat pane + lane list stay
     // visually stable while we refresh silently in the background.
+    // A retry after a failed first read keeps the reason on screen. A spinner
+    // there would hide it for as long as each attempt takes, and a machine
+    // that never answers would look like a load that never ends.
     if (get().lanes.length === 0) {
-      set({ lanesLoading: true });
+      const failed = get().lanesLoadError;
+      const retryOfFailedRead = failed != null
+        && failed.projectKey === normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // Also clears a flag that a reopen of the same project set.
+      set({ lanesLoading: !retryOfFailedRead });
     }
 
     if (laneRefreshInFlight) {
@@ -3199,7 +3365,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       while (nextRequest) {
         activeLaneRefreshRequest = nextRequest;
         pendingLaneRefreshRequest = null;
-        await runRefresh(nextRequest);
+        try {
+          await runRefresh(nextRequest);
+        } catch (error) {
+          // Shown where the empty list would read "No lanes yet". Only this
+          // project's newest read may say so: the same rule as a success.
+          const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+          if (activeLaneRefreshToken === laneRefreshVersion && projectKey === activeLaneRefreshProjectKey && get().lanes.length === 0) {
+            set({
+              lanesLoadError: {
+                projectKey,
+                message: error instanceof Error && error.message.trim() ? error.message.trim() : "Couldn't read this project's lanes.",
+              },
+            });
+          }
+          throw error;
+        }
         nextRequest = pendingLaneRefreshRequest;
       }
     })().finally(() => {
@@ -3268,7 +3449,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
-      projectBinding: null,
+      // The binding stays on the open project: a cancelled pick, the worktree
+      // prompt or a failed open leave it as it was, and openPickedRepo
+      // replaces it together with the project.
     });
     let picked: string | null = null;
     try {
@@ -3353,7 +3536,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const isWarmTabSwitch =
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
-      get().setProject(cachedProject);
+      get().setProject(cachedProject, { replaceBinding: true });
     }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
@@ -3370,9 +3553,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             startedAtMs: Date.now(),
           },
       projectTransitionError: null,
-      projectBinding: isWarmTabSwitch && cachedProject
-        ? createLocalProjectBinding(cachedProject)
-        : null,
+      // A cold switch keeps the open project's binding until the new project
+      // replaces both together: nulling it here left the old project (perhaps
+      // one on another machine) reading as local, and a failure kept it so.
       ...(isWarmTabSwitch
         ? {
             projectHydrated: true,
@@ -3407,7 +3590,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
-      get().setProject(project);
+      get().setProject(project, { replaceBinding: true });
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination
@@ -3731,6 +3914,36 @@ const rootAppStore = createStore<AppState>()(createAppState);
 // value put in it is a full app store.
 const AppStoreContext = AppearanceStoreContext as unknown as React.Context<AppStoreApi | null>;
 registerRootAppearanceStore(rootAppStore);
+
+/**
+ * Put a scheduled look on screen: theme, mode, background and fonts. Only the
+ * look is saved, into the stored record, because another window may hold newer
+ * values of every other preference. `persist: false` only paints this window,
+ * for a slot another window already applied and saved.
+ */
+export function applyScheduledLook(look: ScheduledLook, options: { persist?: boolean } = {}): void {
+  rootAppStore.setState((prev) => {
+    const next = withScheduledLook(prev, look, prev.systemColorScheme);
+    if (options.persist !== false && !patchStoredLook(next)) persistUserPreferencesFrom(next);
+    return {
+      theme: next.theme,
+      themeId: next.themeId,
+      themeFollowsSystem: next.themeFollowsSystem,
+      interfacePreferences: next.interfacePreferences,
+    };
+  });
+}
+
+/** Put the slot in charge on screen and record it, so a change by hand afterwards holds until the next slot. */
+export function applyScheduleSlot(active: ActiveSlot): void {
+  applyScheduledLook(active.slot.look);
+  markSlotApplied(active);
+}
+
+/** The look on screen now, as a schedule slot stores it. */
+export function captureCurrentLook(): ScheduledLook {
+  return lookFromState(rootAppStore.getState());
+}
 
 /** `previous` when it is the same local binding as `next`, field for field. */
 function reuseSameLocalBinding(previous: OpenProjectBinding | null, next: OpenProjectBinding): OpenProjectBinding {

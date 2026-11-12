@@ -293,10 +293,19 @@ export function scrubSecretsValue(value: unknown, depth = 0, key?: string): unkn
   return output;
 }
 
+/** `"key":"value"` in text that is not whole JSON; the value may run to the end of the line. */
+const JSON_TEXT_STRING_ENTRY = /"([^"\\]{1,80})"(\s*:\s*)"(?:[^"\\]|\\.)*"?/g;
+
+function redactSecretKeysInJsonText(line: string): string {
+  return line.replace(JSON_TEXT_STRING_ENTRY, (entry, key: string, separator: string) =>
+    (SECRET_KEY.test(key) ? `"${key}"${separator}"${REDACTED}"` : entry));
+}
+
 /**
  * Remove secrets from a diagnostic file line by line. A JSON line is scrubbed
- * by key (`accessToken`, `pushToken`, `secret`) as well as by shape; any other
- * line, including a JSON line cut short, by shape only.
+ * by key (`accessToken`, `pushToken`, `secret`) as well as by shape. A JSON
+ * line cut short keeps that for its string values; any other line is scrubbed
+ * by shape only.
  */
 export function scrubDiagnosticText(text: string, maxLineLength = MAX_STRING_LENGTH): string {
   if (!text) return text;
@@ -306,7 +315,10 @@ export function scrubDiagnosticText(text: string, maxLineLength = MAX_STRING_LEN
       try {
         return JSON.stringify(scrubSecretsValue(JSON.parse(trimmed)));
       } catch {
-        // Not JSON after all; scrub it as text.
+        // A JSON line cut short or torn (a process died during the write and
+        // the next one appended to it). It cannot be read by key as JSON, so
+        // its string values under a secret key are taken out as text first.
+        return scrubString(redactSecretKeysInJsonText(line), { maxLength: maxLineLength });
       }
     }
     return scrubString(line, { maxLength: maxLineLength });

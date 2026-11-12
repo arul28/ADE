@@ -133,6 +133,8 @@ function installGitStub(args: {
       fs.mkdirSync(target, { recursive: true });
       await args.onAdd?.(target);
     }
+    // The save a forced discard writes; these answer with text.
+    if (["add", "diff", "write-tree", "commit-tree", "update-ref"].includes(command[0]!)) return "saved\n" as never;
     return gitResult(0) as never;
   });
 }
@@ -302,6 +304,8 @@ describe("lane storage lifecycle", () => {
     });
     expect(retry.worktreeRemoved).toBe(true);
     expect(fs.existsSync(worktreePath)).toBe(false);
+    // What the override discarded was kept first.
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([command]) => command[0] === "update-ref" && command[1]!.startsWith("refs/ade/deleted-lanes/"))).toBe(true);
     db.close();
   });
 

@@ -28,10 +28,17 @@ export function claudeApprovalOptionsOfferSession(
  * session-wide allow rule broader than the ask's own action, so the SDK forbids
  * the persistent choice. Either one removes the session-wide option; both can
  * be set at once.
+ *
+ * `askRuleForced` says the user's own `permissions.ask` rule raised this ask:
+ * `decisionReasonType: "rule"`, or `matchedAskRule` when the ask keeps the
+ * tool's own reason (measured on 2.1.319). The SDK tells hosts to treat that as
+ * a request for a human answer, so outside full-auto nothing answers it
+ * automatically, and no session-wide choice is offered. Present only when true.
  */
 export type ClaudeToolApprovalFlags = {
   defaultToNo: boolean;
   suppressAlwaysAllowRule: boolean;
+  askRuleForced?: true;
 };
 
 /**
@@ -48,15 +55,19 @@ export function claudeToolApprovalFlags(sdkOptions: unknown): ClaudeToolApproval
     return { defaultToNo: false, suppressAlwaysAllowRule: false };
   }
   const record = sdkOptions as Record<string, unknown>;
+  const askRuleForced = Boolean(record.matchedAskRule ?? record.matched_ask_rule)
+    || record.decisionReasonType === "rule"
+    || record.decision_reason_type === "rule";
   return {
     defaultToNo: record.defaultToNo === true || record.default_to_no === true,
     suppressAlwaysAllowRule:
       record.suppressAlwaysAllowRule === true || record.suppress_always_allow_rule === true,
+    ...(askRuleForced ? { askRuleForced: true as const } : {}),
   };
 }
 
 export function buildClaudeToolApprovalOptions(args: ClaudeToolApprovalFlags): PendingInputOption[] {
-  if (args.defaultToNo || args.suppressAlwaysAllowRule) {
+  if (args.defaultToNo || args.suppressAlwaysAllowRule || args.askRuleForced) {
     return [
       { label: "Allow", value: CLAUDE_APPROVAL_ALLOW_VALUE },
       { label: "Deny", value: CLAUDE_APPROVAL_DENY_VALUE },

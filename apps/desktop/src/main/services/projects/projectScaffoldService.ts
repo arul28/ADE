@@ -12,10 +12,16 @@ import type {
   MyGitHubRepoSummary,
 } from "../../../shared/types/core";
 import { codedError } from "../../../shared/codedError";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { isFsAccessRefusal } from "../../../shared/fsAccessRefusal";
 import { gitCommandError, runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
-import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
+import { canonicalGitOriginUrl, resolveGithubRemoteRepo } from "../github/githubSshAlias";
+import { githubRepoSlugsEqual, parseGithubRemoteUrl, type GithubRepoSlug } from "../../../shared/githubRemote";
+import { pathKey } from "../shared/pathCompare";
+import { readGitConfigOriginUrl } from "./recentProjectSummary";
+import { resolveGitMetadataDirectory } from "./worktreeParent";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
 import { ensureProjectLocalDatabase } from "./projectLocalDatabase";
 import { redactGitOutput } from "../../utils/redaction";
@@ -61,7 +67,123 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
     return entries.length > 0;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (isFsAccessRefusal(error)) {
+      throw new AdeExpectedError(`ADE can't read the folder ${dirPath}. Choose a folder you can open.`, "user", { cause: error });
+    }
     throw error;
+  }
+}
+
+function isExistingDirectory(dirPath: string): boolean {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure `dirPath` is a folder, creating it and its parents when it is not.
+ * On Windows, Node's recursive mkdir of a drive root that is there (`D:\`)
+ * fails with EPERM, so a folder that exists is never made again; a folder this
+ * account may not create is a plain answer naming it.
+ */
+function ensureDirectory(dirPath: string): void {
+  if (isExistingDirectory(dirPath)) return;
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+  } catch (error) {
+    // Made meanwhile by someone else, or a root Node refused to make: it is there.
+    if (isExistingDirectory(dirPath)) return;
+    if (isFsAccessRefusal(error)) throw new AdeExpectedError(folderRefusalMessage(dirPath, error), "user", { cause: error });
+    throw error;
+  }
+}
+
+/**
+ * Name the folder the refusal was about: the deepest one that is there, where
+ * the new folder would have gone. A drive that is not there (`D:\projects` with
+ * no `D:`) is named as missing.
+ */
+function folderRefusalMessage(dirPath: string, error: unknown): string {
+  let existing = path.resolve((error as NodeJS.ErrnoException | null)?.path || dirPath);
+  while (!isExistingDirectory(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return `ADE can't find ${existing} on this computer. Pick another location.`;
+    existing = parent;
+  }
+  return `ADE can't create a folder in ${existing}. Pick another location.`;
+}
+
+type CloneTarget = {
+  url: string;
+  repo: GithubRepoSlug;
+  parentDir: string;
+  rootPath: string;
+};
+
+/** Where a clone of `input` lands, with the same checks and coded errors as the clone itself. */
+async function resolveCloneTarget(input: CloneProjectInput): Promise<CloneTarget> {
+  const url = (input.url ?? "").trim();
+  if (!url) {
+    throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
+  }
+  const repo = await resolveGithubRemoteRepo(url);
+  if (!repo) {
+    throw codedError("Only GitHub repository URLs are supported.", "invalid_github_url");
+  }
+  const parentDir = (input.parentDir ?? "").trim();
+  if (!parentDir.length) {
+    throw new Error("Parent directory is required.");
+  }
+  const explicitName = (input.name ?? "").trim();
+  const name = validateProjectName(explicitName.length > 0 ? explicitName : repo.repo);
+  return { url, repo, parentDir, rootPath: path.join(parentDir, name) };
+}
+
+export type CloneRepositoryOptions = {
+  /**
+   * A folder that already holds a complete checkout of this repository is
+   * the answer, with no clone. Without it, any folder there is `target_exists`.
+   */
+  reuseExistingCheckout?: boolean;
+  /** Runs before a real clone only (not before a reuse or a join): a storage preflight. */
+  beforeClone?: () => Promise<void>;
+  /** Wraps a real clone only: a keep-awake hold. */
+  wrapClone?: <T>(run: () => Promise<T>) => Promise<T>;
+};
+
+/**
+ * Clones running in this process, by target folder. Module-wide because every
+ * caller (desktop IPC, phone, CLI, brain RPC) makes its own service, and two
+ * clones into one folder would race: the loser's rollback deletes the
+ * winner's folder mid-clone.
+ */
+const clonesInFlight = new Map<string, { repo: GithubRepoSlug; result: Promise<CloneProjectResult> }>();
+
+/**
+ * True when `rootPath` is itself a complete checkout whose `origin` is `repo`
+ * (https, ssh or an alias, any case). A clone killed part-way is not one.
+ */
+async function isCompleteCheckoutOf(rootPath: string, repo: GithubRepoSlug, logger: Logger): Promise<boolean> {
+  // Reads `rootPath/.git` only, so a plain folder inside another checkout never
+  // answers with that checkout's origin.
+  const origin = readGitConfigOriginUrl(rootPath);
+  if (!githubRepoSlugsEqual(parseGithubRemoteUrl(canonicalGitOriginUrl(origin)), repo)) return false;
+  // `git clone` writes HEAD before it checks files out; the index appears only
+  // when the checkout finishes, and `index.lock` is there while it runs.
+  const gitDir = resolveGitMetadataDirectory(rootPath);
+  if (!gitDir || !fs.existsSync(path.join(gitDir, "index")) || fs.existsSync(path.join(gitDir, "index.lock"))) return false;
+  try {
+    const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: rootPath, timeoutMs: 10_000 });
+    return head.exitCode === 0;
+  } catch (error) {
+    // A real checkout then answers target_exists; say why.
+    logger.warn("project_scaffold.clone_reuse_check_failed", {
+      rootPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
 }
 
@@ -106,7 +228,7 @@ export function createProjectScaffoldService({
     // Without this, a partial scaffold (git init or README write) leaves a
     // non-empty dir that the `target_exists` guard rejects on retry.
     const preexisted = fs.existsSync(rootPath);
-    fs.mkdirSync(rootPath, { recursive: true });
+    ensureDirectory(rootPath);
 
     try {
       const initRes = await runGit(["init", "--initial-branch=main"], { cwd: rootPath, timeoutMs: 15_000 });
@@ -149,30 +271,77 @@ export function createProjectScaffoldService({
     }
   };
 
-  const cloneRepository = async (input: CloneProjectInput): Promise<CloneProjectResult> => {
-    const url = (input.url ?? "").trim();
-    if (!url) {
-      throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
-    }
-    const repoRef = await resolveGithubRemoteRepo(url);
-    if (!repoRef) {
-      throw codedError("Only GitHub repository URLs are supported.", "invalid_github_url");
-    }
+  /**
+   * Clone `input` into its folder. A second clone into a folder whose clone
+   * is still running waits for that one and gets the same folder (another
+   * repository there is `target_exists`). `options` say what a real clone
+   * needs; a join uses the running clone's.
+   */
+  const cloneRepository = async (
+    input: CloneProjectInput,
+    options: CloneRepositoryOptions = {},
+  ): Promise<CloneProjectResult> => {
+    const target = await resolveCloneTarget(input);
+    return await joinOrClone(input, target, options, true);
+  };
 
-    const parentDir = (input.parentDir ?? "").trim();
-    if (!parentDir.length) {
-      throw new Error("Parent directory is required.");
+  const joinOrClone = async (
+    input: CloneProjectInput,
+    target: CloneTarget,
+    options: CloneRepositoryOptions,
+    retryAfterFailedJoin: boolean,
+  ): Promise<CloneProjectResult> => {
+    const key = pathKey(path.resolve(target.rootPath));
+    const running = clonesInFlight.get(key);
+    if (running) {
+      if (!githubRepoSlugsEqual(running.repo, target.repo)) {
+        throw codedError("A folder already exists at that path.", "target_exists");
+      }
+      if (!retryAfterFailedJoin) return await running.result;
+      try {
+        return await running.result;
+      } catch (error) {
+        // The joined clone failed with its own settings (another GitHub
+        // sign-in, say). This request runs once with its own, and never again.
+        logger.info("project_scaffold.clone_join_failed_retrying", {
+          rootPath: target.rootPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (clonesInFlight.get(key) === running) clonesInFlight.delete(key);
+        return await joinOrClone(input, target, options, false);
+      }
     }
+    const wrapClone = options.wrapClone ?? (<T,>(run: () => Promise<T>) => run());
+    // No await between the lookup above and the set below, so two clones can't both start.
+    const entry = {
+      repo: target.repo,
+      result: (async (): Promise<CloneProjectResult> => {
+        if (options.reuseExistingCheckout && await isCompleteCheckoutOf(target.rootPath, target.repo, logger)) {
+          return { rootPath: target.rootPath };
+        }
+        return await wrapClone(async () => {
+          await options.beforeClone?.();
+          return await cloneIntoTarget(input, target);
+        });
+      })(),
+    };
+    clonesInFlight.set(key, entry);
+    try {
+      return await entry.result;
+    } finally {
+      // A failure is shared with whoever joined, then forgotten, so a retry clones again.
+      if (clonesInFlight.get(key) === entry) clonesInFlight.delete(key);
+    }
+  };
 
-    const explicitName = (input.name ?? "").trim();
-    const name = validateProjectName(explicitName.length > 0 ? explicitName : repoRef.repo);
-    const rootPath = path.join(parentDir, name);
+  const cloneIntoTarget = async (input: CloneProjectInput, target: CloneTarget): Promise<CloneProjectResult> => {
+    const { url, parentDir, rootPath } = target;
 
     if (fs.existsSync(rootPath) && isDirectoryNonEmpty(rootPath)) {
       throw codedError("A folder already exists at that path.", "target_exists");
     }
 
-    fs.mkdirSync(parentDir, { recursive: true });
+    ensureDirectory(parentDir);
 
     // `git clone` may create rootPath and partially populate it before failing
     // (auth prompt aborted, network drop, signature check). Without rollback,

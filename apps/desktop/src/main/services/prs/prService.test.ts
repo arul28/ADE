@@ -25,6 +25,9 @@ vi.mock("../git/git", async (importOriginal) => ({
   runGitMergeTree: (...args: unknown[]) => mockGit.runGitMergeTree(...args),
 }));
 
+// The worktree check runs git in a real folder; these lanes have none.
+vi.mock("../git/gitWorktreeRoot", () => ({ isGitWorktreeRoot: vi.fn(async () => true) }));
+
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: (...args: unknown[]) => mockChildProcess.spawn(...args),
@@ -519,6 +522,10 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+const VISIBILITY_NOTHING_HIDDEN = {
+  data: { data: { repository: { pullRequest: { reviewDecision: null, comments: { nodes: [] }, reviews: { nodes: [] } } } } },
+};
 
 describe("prService.getForLane", () => {
   beforeEach(() => {
@@ -2735,6 +2742,10 @@ describe("prService.getGithubSnapshot", () => {
       lane_id: LANE_ID,
       github_pr_number: 134,
       head_branch: "old-feature",
+      checks_status: "passing",
+      checks_reason: "required checks passed",
+      review_status: "requested",
+      last_synced_at: "2026-01-02T00:00:00.000Z",
     });
     db.get.mockImplementation((sql: string, params: unknown[]) => {
       const text = String(sql);
@@ -2752,6 +2763,14 @@ describe("prService.getGithubSnapshot", () => {
       expect.stringContaining("update pull_requests"),
       expect.arrayContaining(["existing-pr", "proj-1"]),
     );
+    // The pull list only carries state and branch. Mapping its row onto an
+    // already-tracked PR must keep the live verdicts; resetting them to "none"
+    // is what re-announced the same review request on every poll.
+    const update = db.run.mock.calls.find(
+      ([sql, params]: [unknown, unknown[]]) =>
+        String(sql).includes("update pull_requests") && params.includes("existing-pr"),
+    );
+    expect(update?.[1]).toEqual(expect.arrayContaining(["passing", "requested"]));
     expect(db.run).not.toHaveBeenCalledWith(
       expect.stringContaining("insert into pull_requests("),
       expect.anything(),
@@ -3950,6 +3969,7 @@ describe("prService.getStatus", () => {
         }
         if (args.method === "POST" && args.path === "/graphql") {
           const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+          if (query.includes("AdePullRequestVisibility")) return VISIBILITY_NOTHING_HIDDEN;
           graphqlQueries.push(query);
           if (query.includes("stack { baseRefName }")) {
             throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
@@ -4023,6 +4043,9 @@ describe("prService.getStatus", () => {
           return { data: { behind_by: 0 } };
         }
         if (args.method === "POST" && args.path === "/graphql") {
+          if (String((args.body as { query?: unknown } | undefined)?.query ?? "").includes("AdePullRequestVisibility")) {
+            return VISIBILITY_NOTHING_HIDDEN;
+          }
           graphqlCalls += 1;
           if (graphqlCalls === 1) {
             return {
@@ -8388,7 +8411,12 @@ describe("computeStatus merge-box GraphQL brake", () => {
     return null;
   }
 
+  /** The merge box's own requests; the review-visibility read has its own count. */
   function graphqlCalls(githubService: any): Array<{ query: string }> {
+    return allGraphqlCalls(githubService).filter((call) => !call.query.includes("AdePullRequestVisibility"));
+  }
+
+  function allGraphqlCalls(githubService: any): Array<{ query: string }> {
     return githubService.apiRequest.mock.calls
       .filter(([args]: [{ method?: string; path: string }]) =>
         args.method === "POST" && args.path === "/graphql")
@@ -8419,7 +8447,9 @@ describe("computeStatus merge-box GraphQL brake", () => {
 
     // One attempt total: the first arms the cooldown, the other 24 never reach
     // GitHub. Without the brake this is 25 attempts (50 with the old fallback).
-    expect(graphqlCalls(githubService)).toHaveLength(1);
+    // The merge box and the visibility read share the brake, so the first
+    // poll's concurrent reads are the only ones that ever reach GitHub.
+    expect(allGraphqlCalls(githubService).length).toBeLessThanOrEqual(2);
     const warnEvents: string[] = logger.warn.mock.calls.map(([event]: [string]) => event);
     expect(warnEvents.filter((event) => event === "prs.computeStatus.graphql_rate_limited"))
       .toHaveLength(1);

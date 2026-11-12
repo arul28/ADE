@@ -10,11 +10,12 @@
  *
  * ## Where this may run
  *
- * NEVER on the catalog read path. Spawning CLIs to answer "which models
- * exist" is exactly the mistake `claudeRuntimeProbe` exists to avoid, and it is
- * why `getAvailableModels` reads `detectCliAuthStatuses({ skipAuthProbe: true })`
- * instead. Call `probeAcpProviderAuth` from a force refresh, from a settings
- * diagnostics action, or from the chat runtime after a real failure.
+ * NEVER on a status or catalog read, forced or not. Spawning CLIs to answer
+ * "which models exist" or "is this signed in" is exactly the mistake
+ * `claudeRuntimeProbe` exists to avoid. Call `probeAcpProviderAuth` from the
+ * one-provider sign-in check (`ai.verifyProviderSignIn`: right after a sign-in,
+ * or on Re-check), from a settings diagnostics action, or from the chat
+ * runtime after a real failure.
  *
  * Results are cached per `{provider, cwd}` with the same four beats as
  * `claudeRuntimeProbe`: TTL short-circuit that still republishes health,
@@ -22,6 +23,7 @@
  * entry cleared in `finally`.
  */
 
+import { boundedAgentReason } from "../../../shared/chatErrorPresentation";
 import type { AcpChatProvider } from "../../../shared/types/chat";
 import {
   AcpRequestTimeoutError,
@@ -47,6 +49,7 @@ import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
+  type ProviderRuntimeFailureDetail,
 } from "./providerRuntimeHealth";
 
 /**
@@ -156,7 +159,11 @@ function loginBlocker(provider: AcpChatProvider): string {
   return `${dialect.displayName} is not signed in. Run \`${dialect.authProbe.loginCommand}\` in a terminal${keyHint}, then refresh AI settings.`;
 }
 
-function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult, stderrTail?: string | null): void {
+function publishResult(
+  provider: AcpChatProvider,
+  result: AcpAuthProbeResult,
+  detail?: ProviderRuntimeFailureDetail,
+): void {
   // A sign-in that changed state may now be a different account, whose models differ.
   const before = getProviderRuntimeHealth(provider)?.state ?? null;
   if (before !== null && before !== result.state && (before === "ready" || result.state === "ready")) {
@@ -173,13 +180,20 @@ function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult, st
       reportProviderRuntimeAuthFailure(provider, result.message);
       return;
     case "runtime-failed":
-      reportProviderRuntimeFailure(provider, result.message, stderrTail ? { stderrTail } : undefined);
+      reportProviderRuntimeFailure(provider, result.message, detail);
       return;
   }
 }
 
-export function resetAcpAuthProbeCache(): void {
-  probeCache.clear();
+/** Drop cached verdicts: one provider's after its sign-in changed, or all. */
+export function resetAcpAuthProbeCache(provider?: AcpChatProvider): void {
+  if (!provider) {
+    probeCache.clear();
+    return;
+  }
+  for (const key of [...probeCache.keys()]) {
+    if (key.startsWith(`${provider}:`)) probeCache.delete(key);
+  }
 }
 
 /** Read a cached verdict without spawning anything. */
@@ -212,9 +226,23 @@ export type ProbeAcpProviderAuthArgs = {
   env?: NodeJS.ProcessEnv;
   logger?: Pick<Logger, "info" | "warn">;
   force?: boolean;
+  /**
+   * The person's Re-check: every request answers within this many ms, and the
+   * probe does not wait for a download. A timeout under this limit says
+   * nothing about the sign-in, so it is neither cached nor published.
+   */
+  limitMs?: number;
   /** Test seam, forwarded to `createAcpConnection`. */
   spawnOverride?: Parameters<typeof createAcpConnection>[0]["spawnOverride"];
 };
+
+/** A limited probe ran out of time, so it proved nothing about the sign-in. */
+export class AcpProbeLimitError extends Error {
+  constructor(provider: AcpChatProvider) {
+    super(`${acpDialectFor(provider).displayName} did not answer in time.`);
+    this.name = "AcpProbeLimitError";
+  }
+}
 
 /**
  * Ask one ACP agent whether it can authenticate.
@@ -248,9 +276,19 @@ export async function probeAcpProviderAuth(
   // The probe runs ADE's pinned copy, so it waits for that copy's download.
   // A miss is neither cached nor published as runtime health: it is a
   // download state, and the next probe after the download lands must run.
+  // A limited probe does not wait: a download is not a sign-in answer.
   const baseEnv = args.env ?? process.env;
   const tool = pinnedToolForProvider(provider);
-  if (tool) await awaitPinnedToolDownload(tool.tool);
+  if (tool && args.limitMs == null) await awaitPinnedToolDownload(tool.tool);
+  const deadline = args.limitMs != null ? Date.now() + args.limitMs : null;
+  const within = (defaultMs: number): number =>
+    deadline == null ? defaultMs : Math.max(1, Math.min(defaultMs, deadline - Date.now()));
+  let limitedTimeout = false;
+  const ranOutOfLimit = (error: unknown): boolean => {
+    if (deadline == null || !(error instanceof AcpRequestTimeoutError)) return false;
+    limitedTimeout = true;
+    return true;
+  };
   const executable = resolveAcpExecutable(provider, { env: baseEnv });
   if (executable.source === "fallback-command" && !args.spawnOverride) {
     return {
@@ -263,7 +301,7 @@ export async function probeAcpProviderAuth(
 
   // What the agent wrote to stderr before the probe gave up: the only account
   // of an agent that never answered `initialize` (Antigravity on Windows).
-  const probeOutput: { stderrTail: string | null } = { stderrTail: null };
+  const probeOutput: ProviderRuntimeFailureDetail = {};
   const probe = (async (): Promise<AcpAuthProbeResult> => {
     const dialect = acpDialectFor(provider);
     let connection: ReturnType<typeof createAcpConnection> | null = null;
@@ -285,7 +323,7 @@ export async function probeAcpProviderAuth(
       const response = await initializeAcpConnection({
         connection,
         dialect,
-        timeoutMs: ACP_HANDSHAKE_TIMEOUT_MS,
+        timeoutMs: within(ACP_HANDSHAKE_TIMEOUT_MS),
       });
 
       const advertised = response.authMethods ?? [];
@@ -299,10 +337,13 @@ export async function probeAcpProviderAuth(
         await connection.request(
           ACP_METHOD.sessionNew,
           { cwd, mcpServers: [] },
-          { timeoutMs: ACP_DEFAULT_REQUEST_TIMEOUT_MS },
+          { timeoutMs: within(ACP_DEFAULT_REQUEST_TIMEOUT_MS) },
         );
         return { state: "ready", message: null };
       } catch (error) {
+        if (ranOutOfLimit(error)) {
+          return { state: "runtime-failed", message: error instanceof Error ? error.message : String(error) };
+        }
         if (!isAcpAuthError(error)) {
           return {
             state: "runtime-failed",
@@ -322,10 +363,15 @@ export async function probeAcpProviderAuth(
         return { state: "auth-failed", message: loginBlocker(provider) };
       }
 
+      const authWaitMs = within(PROBE_TIMEOUT_MS);
       try {
-        await connection.request(ACP_METHOD.authenticate, { methodId }, { timeoutMs: PROBE_TIMEOUT_MS });
+        await connection.request(ACP_METHOD.authenticate, { methodId }, { timeoutMs: authWaitMs });
         return { state: "ready", message: null };
       } catch (error) {
+        // The shared limit cut this wait short: no answer yet, not "signed out".
+        if (authWaitMs < PROBE_TIMEOUT_MS && ranOutOfLimit(error)) {
+          return { state: "runtime-failed", message: error instanceof Error ? error.message : String(error) };
+        }
         if (error instanceof AcpRpcError && error.isMethodNotFound) {
           // No `authenticate` on this agent. session/new already failed as
           // auth, so this is still a sign-in problem.
@@ -335,7 +381,11 @@ export async function probeAcpProviderAuth(
         // login the user has to do (Grok's), and session/new already failed
         // as sign-in: still not signed in, not a broken agent.
         if (isAcpAuthError(error) || error instanceof AcpRequestTimeoutError) {
-          return { state: "auth-failed", message: loginBlocker(provider) };
+          // The agent's own reason (not entitled, key expired) beats a generic hint.
+          const reason = !(error instanceof AcpRequestTimeoutError) && error instanceof Error
+            ? boundedAgentReason(error.message)
+            : "";
+          return { state: "auth-failed", message: reason ? `${loginBlocker(provider)} The agent said: ${reason}` : loginBlocker(provider) };
         }
         return {
           state: "runtime-failed",
@@ -343,6 +393,9 @@ export async function probeAcpProviderAuth(
         };
       }
     } catch (error) {
+      if (ranOutOfLimit(error)) {
+        return { state: "runtime-failed", message: error instanceof Error ? error.message : String(error) };
+      }
       if (isAcpAuthError(error)) {
         return { state: "auth-failed", message: loginBlocker(provider) };
       }
@@ -353,18 +406,27 @@ export async function probeAcpProviderAuth(
       };
     } finally {
       probeOutput.stderrTail = connection?.readStderrTail().trim() || null;
+      // Before the dispose below, which would read as the process's own exit.
+      const startup = connection?.readStartupTrace();
+      probeOutput.startup = startup ? { ...startup, platform: process.platform } : null;
       connection?.dispose("auth probe finished");
     }
   })().then((result) => {
-    probeCache.set(key, { checkedAtMs: Date.now(), result });
+    if (!limitedTimeout) probeCache.set(key, { checkedAtMs: Date.now(), result });
     return result;
   });
 
-  inFlightProbes.set(key, probe);
+  // A limited probe is not shared: a caller that joined it would publish a
+  // timeout that proves nothing.
+  if (deadline == null) inFlightProbes.set(key, probe);
   try {
     const result = await probe;
-    const stderrTail = result.state === "runtime-failed" ? probeOutput.stderrTail : null;
-    publishResult(provider, result, stderrTail);
+    if (limitedTimeout) {
+      args.logger?.info?.("ai.acp_auth_probe.limited_timeout", { provider, limitMs: args.limitMs });
+      throw new AcpProbeLimitError(provider);
+    }
+    const { stderrTail, startup } = result.state === "runtime-failed" ? probeOutput : ({} as ProviderRuntimeFailureDetail);
+    publishResult(provider, result, { stderrTail, startup });
     if (result.state === "ready") {
       args.logger?.info?.("ai.acp_auth_probe.ready", { provider, cwd });
     } else {
@@ -374,39 +436,11 @@ export async function probeAcpProviderAuth(
         state: result.state,
         message: result.message,
         ...(stderrTail ? { stderrTail: stderrTail.slice(-1_000) } : {}),
+        ...(startup ? { startup } : {}),
       });
     }
     return result;
   } finally {
-    inFlightProbes.delete(key);
+    if (inFlightProbes.get(key) === probe) inFlightProbes.delete(key);
   }
-}
-
-/** Probe every ACP provider whose pinned copy is on this machine. Used by the force-refresh path. */
-export async function probeAllAcpProviderAuth(args: {
-  providers: readonly AcpChatProvider[];
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  logger?: Pick<Logger, "info" | "warn">;
-  force?: boolean;
-}): Promise<Partial<Record<AcpChatProvider, AcpAuthProbeResult>>> {
-  const entries = await Promise.all(
-    args.providers.map(async (provider) => {
-      try {
-        return [provider, await probeAcpProviderAuth({ ...args, provider })] as const;
-      } catch (error) {
-        // A probe must never take the refresh down with it.
-        args.logger?.warn?.("ai.acp_auth_probe.threw", {
-          provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return [provider, null] as const;
-      }
-    }),
-  );
-  const out: Partial<Record<AcpChatProvider, AcpAuthProbeResult>> = {};
-  for (const [provider, result] of entries) {
-    if (result) out[provider] = result;
-  }
-  return out;
 }

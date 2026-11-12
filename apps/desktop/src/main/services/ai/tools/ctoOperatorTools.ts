@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
@@ -15,7 +16,8 @@ import {
   summarizeLane,
   withSpawnWarnings,
 } from "./ctoCrossMachineTools";
-import { DEFAULT_ADE_TOOL_BUDGET_MS } from "./toolDeadline";
+import { DEFAULT_ADE_TOOL_BUDGET_MS, REMOTE_CALL_ALLOWANCE_MS } from "./toolDeadline";
+import { CLOUD_TIER_IDS, type CloudTierId } from "../../../../shared/cloudTiers";
 import type { ArmChatWaitArgs, ChatWaiter } from "../../../../shared/chatWait";
 import { z } from "zod";
 import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
@@ -309,6 +311,26 @@ const machineArgSchema = z
     "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
     + "Lane and chat ids belong to one machine: pass the same machine you created or listed them on.",
   );
+
+/** `createLane` and `spawnChat` also take "cloud": a new lane on its own new ADE Cloud computer. */
+const laneMachineArgSchema = machineArgSchema.describe(
+  "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
+  + "Or \"cloud\": a new lane on its own new ADE Cloud computer (pick size, or the person's saved size). "
+  + "The person approves it in this chat, with the size and its hours rate.",
+);
+
+const cloudSizeArgSchema = z
+  .enum(CLOUD_TIER_IDS as unknown as [CloudTierId, ...CloudTierId[]])
+  .optional()
+  .describe("machine \"cloud\" only: the computer's size. Omit for the person's saved size. Large or X-Large only for Android or Docker.");
+
+/** The home machine's own clamp on one action call: the approval card can outlast it, and the launch goes on. */
+const CLOUD_LANE_START_TIMEOUT_MS = 180_000;
+const CLOUD_LANE_START_BUDGET_MS = CLOUD_LANE_START_TIMEOUT_MS + REMOTE_CALL_ALLOWANCE_MS;
+
+function isCloudLaneMachine(machine: string | undefined): boolean {
+  return machine?.trim().toLowerCase() === "cloud";
+}
 
 /**
  * The closed tag vocabulary, mirrored from `ctoMemoryService`. Facts and
@@ -758,6 +780,47 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
   const { remoteMachine, onMachine, runRemote } = crossMachine;
 
+  /**
+   * `machine: "cloud"`: one new ADE Cloud computer for one new lane, through
+   * the home brain's `cloud.lane_launch` under this CTO chat's identity, so
+   * the approval card (or the agent limits, unattended) decides. Returns as
+   * soon as the launch starts; the computer, the clone and the chat follow.
+   */
+  const startCloudLane = async (launch: Record<string, unknown>, size: CloudTierId | undefined) => {
+    const cross = deps.crossMachine;
+    if (!cross) {
+      throw new Error("A lane on ADE Cloud starts where ADE runs in the background. Ask the person to start it in the ADE app (Run on: ADE Cloud).");
+    }
+    const launchId = randomUUID();
+    let status: unknown;
+    try {
+      status = await cross.runAction(cross.homeMachine(), {
+        domain: "cloud",
+        action: "lane_launch",
+        args: { launch: { ...launch, mode: "background", launchId, ...(size ? { cloud: { sizeId: size } } : {}) } },
+        timeoutMs: CLOUD_LANE_START_TIMEOUT_MS,
+      });
+    } catch (error) {
+      throw new Error(`${getErrorMessage(error).replace(/[.\s]+$/, "")}. If the person approves later, follow it: runMachineAction cloud.lane_launch_status { launchId: "${launchId}" }.`);
+    }
+    const record = status && typeof status === "object" ? status as Record<string, unknown> : {};
+    const snapshot = record.launch && typeof record.launch === "object" ? record.launch as Record<string, unknown> : {};
+    const machine = record.machine && typeof record.machine === "object" ? record.machine as Record<string, unknown> : {};
+    return {
+      success: snapshot.phase !== "failed" && snapshot.phase !== "cancelled",
+      adeCloud: true,
+      launchId,
+      phase: snapshot.phase ?? null,
+      laneName: snapshot.laneName ?? null,
+      // A chat launch's chat id is its launch id, on the new computer.
+      sessionId: snapshot.kind === "chat" ? launchId : null,
+      machine: { name: machine.name ?? null, instanceId: machine.instanceId ?? null },
+      ...(snapshot.error ? { error: snapshot.error } : {}),
+      ...(record.approvalUrl ? { approvalUrl: record.approvalUrl } : {}),
+      next: `It keeps starting on ADE Cloud. Follow it: runMachineAction cloud.lane_launch_status { launchId: "${launchId}" }. Once it runs, use machine set to its computer's name.`,
+    };
+  };
+
   defineLazyTool(tools, "listMachines", () => core(crossMachine.tools.listMachines));
 
   defineLazyTool(tools, "listLanes", () => core({
@@ -833,13 +896,26 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         + "on: remote (fetch, then start from origin), local (the local tip, unpushed commits included) or uncommitted (the local tip plus a copy of its uncommitted changes). "
         + "Omit to use the project's new-lane defaults.",
       ),
-      machine: machineArgSchema,
+      machine: laneMachineArgSchema,
+      size: cloudSizeArgSchema,
     }),
-    budgetMs: ({ machine }) => (machine ? CREATE_REMOTE_LANE_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
-    execute: async ({ name, description, start: rawStart, machine }) => {
+    budgetMs: ({ machine }) => (isCloudLaneMachine(machine) ? CLOUD_LANE_START_BUDGET_MS : machine ? CREATE_REMOTE_LANE_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
+    execute: async ({ name, description, start: rawStart, machine, size }) => {
       try {
         const start = rawStart ? normalizeLaneStart(rawStart) : null;
         if (rawStart && !start) throw new Error("start.from \"branch\" needs start.branch.");
+        if (isCloudLaneMachine(machine)) {
+          if (start && start.on !== "remote") throw new Error("A lane on ADE Cloud starts from the pushed branch: use start.on \"remote\".");
+          if (description !== undefined) throw new Error("A lane on ADE Cloud takes no description yet. Leave it out.");
+          return await startCloudLane({
+            kind: "lane",
+            prompt: "",
+            laneName: name,
+            title: name,
+            laneConfig: { mode: "new", ...(start ? { start } : {}) },
+          }, size);
+        }
+        if (size) throw new Error("size is for machine \"cloud\" only.");
         const target = await remoteMachine(machine);
         if (target) {
           const lane = await runRemote(target, {
@@ -978,7 +1054,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .min(1)
         .optional()
         .describe("A stored API credential to run the chat on instead of a signed-in account. Rarely needed."),
-      machine: machineArgSchema,
+      machine: laneMachineArgSchema,
+      size: cloudSizeArgSchema,
       checkBackMinutes: z
         .number()
         .int()
@@ -987,14 +1064,43 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .optional()
         .describe("Another machine only: minutes until your scheduled check-in on this chat. Default 15; 0 schedules none."),
     }),
-    budgetMs: ({ machine }) => (machine ? SPAWN_REMOTE_CHAT_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
-    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, instanceId, credentialId, machine, checkBackMinutes }) => {
+    budgetMs: ({ machine }) => (isCloudLaneMachine(machine) ? CLOUD_LANE_START_BUDGET_MS : machine ? SPAWN_REMOTE_CHAT_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
+    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, instanceId, credentialId, machine, size, checkBackMinutes }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
         const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
         const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
+        if (isCloudLaneMachine(machine)) {
+          if (laneId?.trim()) throw new Error("machine \"cloud\" makes a new lane for the chat: leave out laneId.");
+          if (instanceId || credentialId) throw new Error("instanceId and credentialId name this machine's accounts. Leave them out for machine \"cloud\".");
+          const prompt = initialPrompt?.trim();
+          if (!prompt) throw new Error("A chat on ADE Cloud starts with its first message: pass initialPrompt.");
+          // A chat on another computer can't report back here: it starts as its own chat.
+          return await startCloudLane({
+            kind: "chat",
+            prompt,
+            ...(title?.trim() ? { title: title.trim() } : {}),
+            provider: resolved.provider,
+            ...(selectedModelId ? { modelId: selectedModelId } : {}),
+            chat: {
+              create: {
+                provider: resolved.provider,
+                model: resolved.model ?? "",
+                ...(selectedModelId ? { modelId: selectedModelId } : {}),
+                reasoningEffort: reasoningEffort ?? deps.defaultReasoningEffort ?? null,
+                ...(permissionMode !== undefined ? { permissionMode } : {}),
+                ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+                ...(title?.trim() ? { title: title.trim() } : {}),
+                surface: "work",
+                sessionProfile: "workflow",
+              },
+              message: { text: prompt },
+            },
+          }, size);
+        }
+        if (size) throw new Error("size is for machine \"cloud\" only.");
         const target = await remoteMachine(machine);
         if (target) {
           return await crossMachine.spawnRemoteChat(target, {

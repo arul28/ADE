@@ -24,6 +24,7 @@ import {
 } from "./crsqlExport";
 import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import { noteDbClosed, noteDbOpened, noteDbWrite } from "./dbActivity";
+import { ensureLaneShareRightsSchema, LANE_SHARE_GUEST_ITEMS_TABLE, LANE_SHARE_RIGHTS_TABLE } from "../lanes/laneShareRightsStore";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
@@ -1439,6 +1440,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // deliveries a different host made, and the host would then trust a value it
   // did not author. It exists precisely to distrust peer-authored cursors.
   "sync_peer_changeset_watermarks",
+  // Lane sharing: the rights and message counters of each share this machine
+  // serves. The host is the only authority over a guest; a replicated row
+  // would let another replica widen what a guest may do.
+  LANE_SHARE_RIGHTS_TABLE,
+  LANE_SHARE_GUEST_ITEMS_TABLE,
   // Compact local interaction ledger used by Stats. Phones and browsers read
   // its aggregation over the runtime command surface; shipping every raw click
   // as a CRR row would add sync churn without giving controllers useful data.
@@ -4336,6 +4342,12 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // delivers a send that names no machine, so two synced machines holding the
   // same row cannot both fire it.
   safeAddColumn(db, "alter table prompt_stashes add column armed_by_site_id text");
+  // Lane sharing: who wrote the draft, as `AdeMessageAuthor` JSON. Set only by
+  // the host; null on every older row, which reads as the host's own user. A
+  // nullable column, so an older peer defers it like the columns above.
+  safeAddColumn(db, "alter table prompt_stashes add column author_json text");
+  // Local-only (LOCAL_ONLY_CRR_EXCLUDED_TABLES): the host's own lane share rights.
+  ensureLaneShareRightsSchema(db);
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
   db.run("create index if not exists idx_prompt_stashes_scheduled on prompt_stashes(scheduled_at)");
 

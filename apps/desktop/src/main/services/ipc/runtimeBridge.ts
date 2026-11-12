@@ -1,11 +1,18 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
-import { agent37UpdateBlocker, agent37WakeForUse } from "../agent37/agent37WakeHook";
+import { app, BrowserWindow, powerMonitor, type WebContents } from "electron";
+import { createTrustedIpcHandle } from "./trustedRendererSender";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../../../shared/projectRemoval";
 import { describeReportForMachine, type HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
@@ -99,6 +106,7 @@ import {
 } from "./runtimeEventSubscriptionRegistry";
 
 type RuntimeBridgeArgs = {
+  productAnalyticsService?: Pick<ProductAnalyticsService, "capture">;
   appVersion: string;
   /**
    * Retained for callers; the bridge itself no longer reads global state — the
@@ -517,6 +525,12 @@ export type RuntimeBridgeRegistration = {
   isTargetConnected(targetId: string): boolean;
   /** Display name for the paired machine, for user-facing failure copy. */
   resolveTargetNameForMachineKey(machineKey: string): string | null;
+  /**
+   * Removes the saved targets of one machine that no longer exists: by its
+   * account machine key, or by its hostname (a cloud computer's instance id).
+   * Returns the removed target ids.
+   */
+  removeTargetsForMachine(machine: { machineKey: string | null; hostname: string | null }): string[];
   /** One chunk of a proof file on a paired computer, for the media server. */
   readRemoteArtifactRange: RemoteArtifactRangeReader;
   /**
@@ -542,6 +556,35 @@ export type RuntimeBridgeRegistration = {
     rootPath?: string | null;
     windowId: number | null;
   }): Promise<OpenProjectBinding & { kind: "remote" }>;
+  /**
+   * Main-process access to a paired computer for work no window owns: an ADE
+   * Cloud lane launch (`cloudLaneLaunchService.ts`) sets up its computer and
+   * hands the launch to that computer's brain with the window closed.
+   */
+  remoteForMain: {
+    /**
+     * Connects (waking a sleeping cloud computer). Resolves once connected,
+     * with the launch kinds its brain advertised (`chatLaunchKinds`; empty
+     * from an older brain); throws otherwise.
+     */
+    connect(targetId: string): Promise<{ chatLaunchKinds: string[] }>;
+    projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]>;
+    defaultParentDir(targetId: string): Promise<string>;
+    /** Clones with the computer's own Git sign-in; no credential from here goes with it. */
+    cloneProject(targetId: string, input: CloneProjectInput): Promise<RemoteRuntimeProjectRecord>;
+    resolveBinding(targetId: string, projectId: string, rootPath: string): Promise<OpenProjectBinding & { kind: "remote" }>;
+    /** One runtime action through a pin; the action's own result. */
+    callAction(binding: OpenProjectBinding & { kind: "remote" }, request: RemoteRuntimeActionRequest): Promise<unknown>;
+    /** Streams one file from this computer to the pin's project there; the path there. */
+    uploadAttachment(binding: OpenProjectBinding & { kind: "remote" }, input: { sourcePath: string; filename: string }): Promise<{ path: string }>;
+    /** The pin's runtime events of one category; `onEnded` when the stream stops by itself. */
+    subscribeEvents(
+      binding: OpenProjectBinding & { kind: "remote" },
+      category: RemoteRuntimeEventCategory,
+      onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+      onEnded: () => void,
+    ): Promise<() => void>;
+  };
 };
 
 /**
@@ -552,6 +595,7 @@ export type RuntimeBridgeRegistration = {
 export { getOrCreateLocalAccountMachineIdentity };
 
 export function registerRuntimeBridge({
+  productAnalyticsService,
   appVersion,
   authorizeLocalRuntimeRoot,
   bindRemoteProject,
@@ -560,6 +604,9 @@ export function registerRuntimeBridge({
   getWindowSession,
   localRuntimeConnectionPool,
 }: RuntimeBridgeArgs): RuntimeBridgeRegistration {
+  // Registered from inside registerIpc, so these channels sit behind the same
+  // deny-by-default sender check as the rest of the app's IPC surface.
+  const handle = createTrustedIpcHandle(getMachineMainLogger());
   const remoteTargetRegistry = new RemoteTargetRegistry();
   const pairedMachineStore = new DesktopPairedMachineStore();
   const accountAuthService = getSharedAccountAuthService({
@@ -596,17 +643,39 @@ export function registerRuntimeBridge({
     remoteConnectionPool,
     {
       appVersion,
+      logger: getMachineMainLogger(),
+      onDialOutcome: (outcome) => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: {
+            feature: "connections",
+            action: "remote_connect",
+            outcome: outcome === "failed" ? "failed" : "completed",
+          },
+          projectId: null,
+          dedupeKey: `remote_connect:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      },
       getAccountRelayProof,
       getAuthorizedAccountOwnerId,
       // A dev desktop shares this computer's machine pairing with the installed
       // ADE; reconnecting saved machines on its own would take them away from it.
       // ADE_DEV_REMOTE_AUTOCONNECT=1 opts a dev app in on purpose.
       explicitConnectOnly: !app.isPackaged && process.env.ADE_DEV_REMOTE_AUTOCONNECT !== "1",
-      // A sleeping Agent 37 box wakes when the person uses it (registerAgent37Ipc).
-      wakeForUse: agent37WakeForUse,
+      // A sleeping cloud box wakes when the person uses it (registerCloudIpc).
+      wakeForUse: cloudWakeForUse,
+      // A sleeping one is shown as not connected, not as a failed connection.
+      asleepForUse: cloudAsleepForUse,
+      // A rest that starts or ends tells the windows (registerCloudIpc).
+      onCloudRestChanged: cloudRestChanged,
     },
     pairedMachineStore,
   );
+  /** The folder a pinned remote call sends with its project id, or null. */
+  const pinFolder = (value: unknown): string | null =>
+    typeof value === "string" ? value.trim() || null : null;
   /** A saved remote target by id. One that is gone (removed, or never saved here) is the caller's to fix. */
   const requireRemoteTarget = (id: string | null | undefined) => {
     const target = id ? remoteConnectionService.getTarget(id) : null;
@@ -735,6 +804,16 @@ export function registerRuntimeBridge({
       const target = targetForMachineKey(machineKey);
       return target?.name?.trim() || target?.hostname?.trim() || null;
     },
+    removeTargetsForMachine: ({ machineKey, hostname }) => {
+      const key = machineKey?.trim() || null;
+      const host = hostname?.trim().toLowerCase() || null;
+      const ids = remoteConnectionService.listTargets()
+        .filter((target) => (key && target.pairedMachine?.machineKey?.trim() === key)
+          || (host && target.hostname?.trim().toLowerCase() === host))
+        .map((target) => target.id);
+      for (const id of ids) remoteConnectionService.removeTarget(id);
+      return ids;
+    },
     readRemoteArtifactRange,
     callMachineMethod: <T,>(
       targetId: string,
@@ -746,6 +825,38 @@ export function registerRuntimeBridge({
       const binding = await resolveRemoteProjectBinding(targetId, projectId, rootPath);
       bindRemoteProject?.(windowId, binding);
       return binding;
+    },
+    remoteForMain: {
+      connect: async (targetId) => {
+        // Resolves only once connected; a failure throws.
+        const connected = await remoteConnectionService.connect(requireRemoteTarget(targetId).id, { explicit: true });
+        return { chatLaunchKinds: connected.capabilities?.chatLaunchKinds ?? [] };
+      },
+      projects: (targetId) => remoteConnectionService.projects(requireRemoteTarget(targetId).id),
+      defaultParentDir: (targetId) => remoteConnectionService.getDefaultParentDir(requireRemoteTarget(targetId).id),
+      cloneProject: (targetId, input) => remoteConnectionService.cloneProject(requireRemoteTarget(targetId).id, stripCloneAuthHeader(input)),
+      resolveBinding: (targetId, projectId, rootPath) => resolveRemoteProjectBinding(targetId, projectId, rootPath),
+      callAction: async (binding, request) => (await remoteConnectionService.callAction(
+        requireRemoteTarget(binding.targetId).id,
+        binding.projectId,
+        request,
+        { projectRootPath: binding.rootPath },
+      )).result,
+      uploadAttachment: (binding, input) => remoteConnectionService.uploadChatAttachment({
+        targetId: requireRemoteTarget(binding.targetId).id,
+        projectId: binding.projectId,
+        sourcePath: input.sourcePath,
+        filename: input.filename,
+      }),
+      subscribeEvents: (binding, category, onEvent, onEnded) => remoteConnectionService.subscribeEvents(
+        requireRemoteTarget(binding.targetId).id,
+        binding.projectId,
+        { category },
+        (event) => onEvent(event),
+        onEnded,
+        undefined,
+        { projectRootPath: binding.rootPath },
+      ),
     },
   };
 
@@ -968,7 +1079,7 @@ export function registerRuntimeBridge({
     return binding?.kind === "remote" ? binding.targetId : null;
   };
 
-  ipcMain.handle(
+  handle(
     IPC.personalChatsCall,
     async (
       event,
@@ -996,7 +1107,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.personalChatsStreamEvents,
     async (
       event,
@@ -1035,7 +1146,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListTargets,
     async (): Promise<RemoteRuntimeTarget[]> => {
       return remoteConnectionService.listTargets();
@@ -1047,7 +1158,7 @@ export function registerRuntimeBridge({
   // host (the paired machine's account key) and that host's canonical project
   // id; a local one, this computer and the canonical id of its root. Answered
   // here from what this desktop already knows, without a call to the host.
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeLinkOwnership,
     async (_event, args: { binding?: OpenProjectBinding | null } | null): Promise<DeeplinkOwnership | null> => {
       const binding = args?.binding ?? null;
@@ -1065,21 +1176,21 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetConnectionSnapshot,
     async (): Promise<RemoteRuntimeConnectionSnapshot> => {
       return remoteConnectionService.snapshot();
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListDiscoveredMachines,
     async (): Promise<RemoteRuntimeDiscoveryResult> => {
       return await refreshLanDiscovery();
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeParsePairingInput,
     async (_event, arg: { text?: string }): Promise<RemoteRuntimeParsedPairingInput> => {
       return parseRemoteRuntimePairingInput(
@@ -1088,7 +1199,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimePairWithMachine,
     async (
       _event,
@@ -1102,7 +1213,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetLocalPairingInfo,
     async (): Promise<RemoteRuntimeLocalPairingInfo> => {
       if (!localRuntimeConnectionPool) {
@@ -1129,7 +1240,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRunDoctor,
     async (_event, arg: { id?: string }): Promise<RemoteRuntimeDoctorResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1144,7 +1255,7 @@ export function registerRuntimeBridge({
 
   // "Can my other devices reach that computer?", asked of the connected
   // machine's own brain: the same check as the This computer card, run there.
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCheckReachability,
     async (_event, arg: { id?: string }): Promise<HostReachabilityReport> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1174,7 +1285,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeSaveTarget,
     async (
       _event,
@@ -1188,7 +1299,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeSetAutoConnect,
     async (
       _event,
@@ -1200,7 +1311,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRemoveTarget,
     async (_event, arg: { id: string }): Promise<{ removed: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1209,7 +1320,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetSshHostKeyTrust,
     async (
       _event,
@@ -1221,7 +1332,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeTrustSshHostKey,
     async (
       _event,
@@ -1242,7 +1353,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeConnect,
     async (
       _event,
@@ -1253,7 +1364,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListProjects,
     async (
       _event,
@@ -1265,7 +1376,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeAddProject,
     async (
       _event,
@@ -1279,7 +1390,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeBrowseDirectories,
     async (
       _event,
@@ -1293,7 +1404,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetProjectDetail,
     async (
       _event,
@@ -1309,7 +1420,7 @@ export function registerRuntimeBridge({
 
   // Pick an image on THIS machine and store it as the icon of a project that
   // lives on the remote host, so every device listing that host sees it.
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeChooseProjectIcon,
     async (
       event,
@@ -1337,7 +1448,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRemoveProjectIcon,
     async (
       _event,
@@ -1351,7 +1462,38 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
+    IPC.remoteRuntimeInspectProjectRemoval,
+    async (
+      _event,
+      arg: { id: string; projectId: string },
+    ): Promise<RemoteProjectRemovalInspection> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      if (!projectId) throw new Error("Remote project id is required.");
+      return await remoteConnectionService.inspectProjectRemoval(id, projectId);
+    },
+  );
+
+  handle(
+    IPC.remoteRuntimeRemoveProjectCopy,
+    async (
+      _event,
+      arg: { id: string; projectId: string; request?: Partial<ProjectRemovalRequest> },
+    ): Promise<ProjectRemovalOutcome> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      if (!projectId) throw new Error("Remote project id is required.");
+      const request = arg?.request ?? {};
+      return await remoteConnectionService.removeProjectCopy(id, projectId, {
+        deleteFolder: request.deleteFolder === true,
+        stateToken: typeof request.stateToken === "string" ? request.stateToken : null,
+        acceptWork: request.acceptWork === true,
+      });
+    },
+  );
+
+  handle(
     IPC.remoteRuntimeGetDefaultParentDir,
     async (_event, arg: { id: string }): Promise<string> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1359,7 +1501,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetHandoffStoragePreflight,
     async (
       _event,
@@ -1370,7 +1512,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCreateProject,
     async (
       _event,
@@ -1384,7 +1526,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCloneProject,
     async (
       _event,
@@ -1418,7 +1560,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListMyGitHubRepos,
     async (
       _event,
@@ -1432,7 +1574,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeOpenProject,
     async (
       event,
@@ -1468,7 +1610,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListActionRegistry,
     async (
       _event,
@@ -1486,19 +1628,22 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCallAction,
     async (
       event,
       arg: {
         id: string;
         projectId: string;
+        /** The pin's folder: finds the project when the machine doesn't list the pin's id. */
+        projectRootPath?: string | null;
         request: RemoteRuntimeActionRequest;
       },
     ): Promise<RemoteRuntimeActionResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const projectRootPath = pinFolder(arg?.projectRootPath);
       const request =
         arg?.request &&
         typeof arg.request === "object" &&
@@ -1521,14 +1666,15 @@ export function registerRuntimeBridge({
         target.id,
         projectId,
         actionRequest,
+        { projectRootPath },
       );
       trackPageFileWatch(event.sender, remoteFileWatchRuntimeKey(target.id, projectId), actionRequest, (fileRequest) =>
-        remoteConnectionService.callAction(target.id, projectId, fileRequest));
+        remoteConnectionService.callAction(target.id, projectId, fileRequest, { projectRootPath }));
       return result;
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeAttachmentUploadCapability,
     async (
       _event,
@@ -1542,7 +1688,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeUploadChatAttachment,
     async (
       _event,
@@ -1580,7 +1726,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeEnsurePortForward,
     async (
       _event,
@@ -1626,7 +1772,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCallSync,
     async (
       _event,
@@ -1655,7 +1801,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeUpdateAndRestart,
     async (
       _event,
@@ -1671,9 +1817,9 @@ export function registerRuntimeBridge({
       // then abort, so it gets its updater run in a terminal instead.
       const status = remoteConnectionService.snapshot().connections
         .find((connection) => connection.target.id === target.id);
-      // An Agent 37 box from an older template would install the update and
+      // a cloud box from an older template would install the update and
       // keep running the old ADE, so it says why before anything is sent.
-      const blocked = await agent37UpdateBlocker(target);
+      const blocked = await cloudUpdateBlocker(target);
       if (blocked) {
         return {
           ok: false,
@@ -1715,7 +1861,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetUpdateImpact,
     async (_event, arg: { id: string }): Promise<UpdateImpact> => {
       // Never rejects: the caller is a confirmation dialog, and a machine that
@@ -1751,7 +1897,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeListActionRegistry,
     async (
       event,
@@ -1776,7 +1922,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeCallAction,
     async (
       event,
@@ -1825,7 +1971,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeCallSync,
     async (
       event,
@@ -1859,7 +2005,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeStreamEvents,
     async (
       event,
@@ -1926,23 +2072,28 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeStreamEvents,
     async (
       event,
       arg: {
         id: string;
         projectId: string;
+        /** The pin's folder, as for `remoteRuntimeCallAction`. */
+        projectRootPath?: string | null;
         request?: RemoteRuntimeStreamEventsRequest;
       },
     ): Promise<RemoteRuntimeStreamEventsResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const projectRootPath = pinFolder(arg?.projectRootPath);
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project id is required.");
       const target = requireRemoteTarget(id);
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
+      // Keys stay on the pin's own id, so a release names the same stream; only
+      // the machine is asked by the id it lists, found at each (re)subscribe.
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);
       const subscribe = (
@@ -1962,6 +2113,7 @@ export function registerRuntimeBridge({
           onEvent,
           onEnded,
           onSubscribed,
+          { projectRootPath },
         );
       if (request.replay === false) {
         const subscriptionInit = await ensureRuntimeEventSubscription(
@@ -1981,7 +2133,7 @@ export function registerRuntimeBridge({
         };
       }
       const result = withRendererVisibleEvents(
-        await remoteConnectionService.streamEvents(target.id, projectId, request),
+        await remoteConnectionService.streamEvents(target.id, projectId, request, { projectRootPath }),
       );
       // A pump that started live already has a push stream for this binding and
       // category. A second, replaying one would send every event over the wire
@@ -2005,7 +2157,7 @@ export function registerRuntimeBridge({
   // stops reading says so explicitly; expiry stays as the backstop for renderers
   // that die without one. The argument mirrors the subscribe call so main can
   // re-derive the same request key rather than trust one the renderer guessed.
-  ipcMain.handle(
+  handle(
     IPC.runtimeEventsRelease,
     async (
       event,
@@ -2055,7 +2207,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeDisconnect,
     async (
       event,

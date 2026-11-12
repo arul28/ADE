@@ -61,8 +61,11 @@ const EMPTY_PAGE: TranscriptHistoryPageRead = {
  *   line is dropped and `startOffset` points at the byte right AFTER its
  *   terminating newline, so pages never overlap or skip lines.
  * - If the boundary lands inside one oversized row, the read expands up to
- *   the service's 2 MB page ceiling. Rows beyond that fail explicitly instead
- *   of silently advancing the cursor past content the client never received.
+ *   the service's 2 MB page ceiling. A row larger than that is never loaded:
+ *   the page is that one row, `startOffset` is the row's own start, and in
+ *   its place the page carries a `system_notice` with status
+ *   `HISTORY_ROW_OMITTED_NOTICE_STATUS` (see `readOmittedRowPage`). The
+ *   cursor still never moves past a row without telling the client.
  *
  * Throws on filesystem errors (missing file, etc.) — callers decide how to
  * surface that.
@@ -74,6 +77,24 @@ export async function readTranscriptHistoryPage(args: {
   maxBytes?: number | null;
   signal?: AbortSignal;
 }): Promise<TranscriptHistoryPageRead> {
+  return await readHistoryPage(args, { parseOmittedRow: true });
+}
+
+/**
+ * `readTranscriptHistoryPage`, plus whether an oversized row is parsed for
+ * its stand-in. A sequence-cursor read stepping over a run of oversized rows
+ * passes false: each later row only needs its start found.
+ */
+async function readHistoryPage(
+  args: {
+    transcriptPath: string;
+    sessionId: string;
+    beforeOffset: number;
+    maxBytes?: number | null;
+    signal?: AbortSignal;
+  },
+  options: { parseOmittedRow: boolean },
+): Promise<TranscriptHistoryPageRead> {
   const { transcriptPath, sessionId } = args;
   const beforeOffset = Number.isFinite(args.beforeOffset) ? Math.floor(args.beforeOffset) : 0;
   if (beforeOffset <= 0) return { ...EMPTY_PAGE };
@@ -108,7 +129,14 @@ export async function readTranscriptHistoryPage(args: {
       break;
     }
     if (readBytes >= CHAT_EVENT_HISTORY_PAGE_MAX_BYTES) {
-      throw new Error("chat_history_row_too_large");
+      return await readOmittedRowPage({
+        transcriptPath,
+        sessionId,
+        searchBefore: readStart,
+        end,
+        parse: options.parseOmittedRow,
+        ...(args.signal ? { signal: args.signal } : {}),
+      });
     }
     readBytes = Math.min(CHAT_EVENT_HISTORY_PAGE_MAX_BYTES, readBytes * 2);
   }
@@ -154,26 +182,236 @@ export async function readTranscriptHistoryPage(args: {
   };
 }
 
+/**
+ * `system_notice.status` of the stand-in for a row too large to page. Every
+ * client already draws a `system_notice` (a quiet info line), so an older
+ * desktop, the web client or the phone shows it without knowing this status.
+ */
+const HISTORY_ROW_OMITTED_NOTICE_STATUS = "history_row_omitted";
+
+/** True for the display-only stand-in a page carries for a row too large to page. */
+export function isOmittedHistoryRowNotice(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.event.type === "system_notice"
+    && envelope.event.status === HISTORY_ROW_OMITTED_NOTICE_STATUS
+    && envelope.sequence === undefined;
+}
+
+/**
+ * True for a stand-in whose row may have been a message (a user message or
+ * a reply), or whose kind is unknown (too large to parse). A reader that
+ * returns messages must report such a row as missing.
+ */
+export function omittedHistoryRowMayHoldMessage(envelope: AgentChatEventEnvelope): boolean {
+  if (!isOmittedHistoryRowNotice(envelope) || envelope.event.type !== "system_notice") return false;
+  const eventType = envelope.event.omittedRow?.eventType;
+  return eventType === undefined || eventType === "user_message" || eventType === "text";
+}
+
+/** Chunk size of the backward scan for an oversized row's start. */
+const OMITTED_ROW_SCAN_CHUNK_BYTES = 1024 * 1024;
+/**
+ * The largest transcript row this module materializes and parses. A sequence
+ * probe skips larger rows; resume counts an omitted row at most this much.
+ */
+export const SEQUENCE_PROBE_MAX_ROW_BYTES = 8 * 1024 * 1024;
+/**
+ * An oversized row up to this size is read whole and parsed for its own
+ * session, timestamp, event type and provenance: the probe's bound, and the
+ * same transient cost.
+ */
+const OMITTED_ROW_PARSE_MAX_BYTES = SEQUENCE_PROBE_MAX_ROW_BYTES;
+
+/**
+ * Thrown when the file shrank under an oversized-row read (rewritten or
+ * truncated mid-scan). Retryable: the caller's cursor has not moved.
+ */
+const HISTORY_CHANGED_DURING_READ = "chat_history_changed_during_read";
+
+/**
+ * The usual start of a transcript row: the chat service builds its envelopes
+ * as `{ sessionId, timestamp, event, ... }` and the writer serializes them
+ * with `JSON.stringify`, which keeps that key order. Not guaranteed for every
+ * row, so it is only a best effort, used for a row too large to parse: its
+ * chat (to drop another chat's row) and its timestamp (to date the stand-in).
+ */
+const LEADING_ENVELOPE_FIELDS = /^\s*\{"sessionId":"((?:[^"\\]|\\.)*)","timestamp":"([^"\\]{1,64})"(?:,"event":\{"type":"([A-Za-z0-9_.-]{1,64})")?/;
+
+type OmittedRowFields = {
+  timestamp?: string;
+  eventType?: string;
+  targetKind?: string;
+};
+
+/**
+ * One JSONL row as an envelope of `sessionId` with an object event, or null
+ * (blank, malformed, another chat's, or no event): the rows the transcript
+ * parser keeps.
+ */
+function parseSessionEnvelope(
+  raw: string,
+  sessionId: string,
+): (Partial<AgentChatEventEnvelope> & Pick<AgentChatEventEnvelope, "event">) | null {
+  const trimmed = raw.trim();
+  if (!trimmed.length) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<AgentChatEventEnvelope> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.sessionId !== "string" || parsed.sessionId.trim() !== sessionId) return null;
+    if (!parsed.event || typeof parsed.event !== "object") return null;
+    return parsed as Partial<AgentChatEventEnvelope> & Pick<AgentChatEventEnvelope, "event">;
+  } catch {
+    return null;
+  }
+}
+
+/** The stand-in's fields from a row of at most `OMITTED_ROW_PARSE_MAX_BYTES`. */
+function parseOmittedRowFields(raw: string, sessionId: string): OmittedRowFields | null {
+  const parsed = parseSessionEnvelope(raw, sessionId);
+  if (!parsed) return null;
+  return {
+    ...(typeof parsed.timestamp === "string" ? { timestamp: parsed.timestamp } : {}),
+    ...(typeof parsed.event.type === "string" ? { eventType: parsed.event.type } : {}),
+    ...(typeof parsed.provenance?.targetKind === "string" ? { targetKind: parsed.provenance.targetKind } : {}),
+  };
+}
+
+/** A JSON string literal's body, decoded; null when it is not one. */
+function decodeJsonStringBody(body: string): string | null {
+  try {
+    const decoded: unknown = JSON.parse(`"${body}"`);
+    return typeof decoded === "string" ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatOmittedRowSize(bytes: number): string {
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+/** Plain words for the kinds of row that grow this large. */
+const OMITTED_ROW_KIND_LABELS: Readonly<Record<string, string>> = {
+  tool_result: "a tool result",
+  tool_call: "a tool call",
+  user_message: "a message",
+  text: "a reply",
+};
+
+/**
+ * The page for a row too large to page (`readTranscriptHistoryPage` found no
+ * line start in its largest window). Nothing older than the row is skipped:
+ * the page is exactly the row, `[rowStart, end)`, and the next page continues
+ * from `rowStart`.
+ *
+ * 1. Scan backward from `searchBefore` in bounded chunks for the newline that
+ *    ends the previous row; none before offset 0 means the row starts at 0.
+ * 2. A row up to `OMITTED_ROW_PARSE_MAX_BYTES` is read and parsed for its
+ *    session, timestamp, event type and provenance. A row of another chat, or
+ *    a torn/malformed one, is dropped, as the normal parse drops it.
+ * 3. A larger row (or one stepped over unparsed) is not parsed. Its usual
+ *    `{"sessionId":…,"timestamp":…` start names its chat (another chat's row
+ *    is dropped) and dates the stand-in. Without that start it is taken to be
+ *    this chat's, since transcript files are keyed by chat id
+ *    (`<sessionId>.jsonl`, `<sessionId>.chat.jsonl`), and dated at the epoch
+ *    (stable across reads, so repeated pages stay identical).
+ * 4. The stand-in is a `system_notice` with NO `sequence`. It is
+ *    display-only: a durable log keyed on sequence (the phone's chat log,
+ *    sync resume, delivery keys) never stores it as row N, so it can never
+ *    take the real row's place, and a later full copy of row N is never
+ *    deduped against it.
+ *
+ * Cost: the row's bytes minus the window already read, backward in 1 MB
+ * reads, plus one read of the row (at most 8 MB, or 1 KB for a larger row).
+ * Terminates for any input: the backward scan only moves toward offset 0.
+ * A read that comes back short (the file shrank meanwhile) throws
+ * `chat_history_changed_during_read` instead of reporting the head of the
+ * chat; the caller's cursor has not moved, so a retry is safe.
+ */
+async function readOmittedRowPage(args: {
+  transcriptPath: string;
+  sessionId: string;
+  /** No newline lies in `[searchBefore, end - 1)`. */
+  searchBefore: number;
+  end: number;
+  /** False: stand in without parsing, as for a row past the parse bound. */
+  parse: boolean;
+  signal?: AbortSignal;
+}): Promise<TranscriptHistoryPageRead> {
+  const { transcriptPath, sessionId, end, signal } = args;
+  let rowStart = 0;
+  let scan = args.searchBefore;
+  while (scan > 0) {
+    signal?.throwIfAborted();
+    const chunkStart = Math.max(0, scan - OMITTED_ROW_SCAN_CHUNK_BYTES);
+    const chunk = await readHistoryFileRange(transcriptPath, chunkStart, scan - chunkStart, signal);
+    if (chunk.length < scan - chunkStart) throw new Error(HISTORY_CHANGED_DURING_READ);
+    const newline = chunk.lastIndexOf(0x0a);
+    if (newline >= 0) {
+      rowStart = chunkStart + newline + 1;
+      break;
+    }
+    scan = chunkStart;
+  }
+
+  const rowBytes = end - rowStart;
+  const page: TranscriptHistoryPageRead = {
+    envelopes: [],
+    envelopeStartOffsets: [],
+    startOffset: rowStart,
+    hasMore: rowStart > 0,
+  };
+  let fields: OmittedRowFields;
+  if (args.parse && rowBytes <= OMITTED_ROW_PARSE_MAX_BYTES) {
+    const row = await readHistoryFileRange(transcriptPath, rowStart, rowBytes, signal);
+    if (row.length < rowBytes) throw new Error(HISTORY_CHANGED_DURING_READ);
+    const parsed = parseOmittedRowFields(row.toString("utf8"), sessionId);
+    if (!parsed) return page;
+    fields = parsed;
+  } else {
+    const head = await readHistoryFileRange(transcriptPath, rowStart, 1024, signal);
+    const leading = LEADING_ENVELOPE_FIELDS.exec(head.toString("utf8"));
+    const rowSessionId = leading ? decodeJsonStringBody(leading[1]!) : null;
+    // A row that names another chat is dropped, as a parsed one would be.
+    if (rowSessionId !== null && rowSessionId.trim() !== sessionId) return page;
+    // The event's type, when the row starts `"event":{"type":…` as usual, so a
+    // huge tool result is not reported as a possible missing message; else
+    // left unknown (treated as possibly a message).
+    fields = leading ? { timestamp: leading[2]!, ...(leading[3] ? { eventType: leading[3] } : {}) } : {};
+  }
+
+  const kindLabel = fields.eventType ? OMITTED_ROW_KIND_LABELS[fields.eventType] : undefined;
+  const stoodInFor = kindLabel ? ` (${kindLabel})` : "";
+  page.envelopes.push({
+    sessionId,
+    timestamp: fields.timestamp ?? new Date(0).toISOString(),
+    event: {
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      status: HISTORY_ROW_OMITTED_NOTICE_STATUS,
+      message: "One very large entry was left out of this chat's history.",
+      detail: `The entry${stoodInFor} is ${formatOmittedRowSize(rowBytes)}, more than chat history loads at once (${formatOmittedRowSize(CHAT_EVENT_HISTORY_PAGE_MAX_BYTES)}). It is still saved in the chat's transcript file.`,
+      omittedRow: {
+        offset: rowStart,
+        bytes: rowBytes,
+        ...(fields.eventType ? { eventType: fields.eventType } : {}),
+      },
+    },
+    ...(fields.targetKind ? { provenance: { targetKind: fields.targetKind } } : {}),
+  });
+  page.envelopeStartOffsets.push(rowStart);
+  return page;
+}
+
 const SEQUENCE_PROBE_CHUNK_BYTES = 64 * 1024;
-/** A probe never materializes a row larger than this; such rows are skipped. */
-const SEQUENCE_PROBE_MAX_ROW_BYTES = 8 * 1024 * 1024;
 
 type SequencedRowProbe = { lineStart: number; sequence: number };
 
 function parseSequencedRow(raw: string, sessionId: string): number | null {
-  const trimmed = raw.trim();
-  if (!trimmed.length) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as Partial<AgentChatEventEnvelope>;
-    if (typeof parsed.sessionId !== "string" || parsed.sessionId.trim() !== sessionId) return null;
-    if (!parsed.event || typeof parsed.event !== "object") return null;
-    const sequence = parsed.sequence;
-    return typeof sequence === "number" && Number.isFinite(sequence) && sequence > 0
-      ? Math.floor(sequence)
-      : null;
-  } catch {
-    return null;
-  }
+  const sequence = parseSessionEnvelope(raw, sessionId)?.sequence;
+  return typeof sequence === "number" && Number.isFinite(sequence) && sequence > 0
+    ? Math.floor(sequence)
+    : null;
 }
 
 /**
@@ -308,6 +546,11 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
   beforeSequence: number;
   maxBytes?: number | null;
   signal?: AbortSignal;
+  /**
+   * Rows the caller will show the client; the rest (filtered after this
+   * read) cannot serve as the client's next cursor. Default: every row.
+   */
+  isVisible?: (envelope: AgentChatEventEnvelope) => boolean;
 }): Promise<TranscriptHistoryPageRead> {
   const beforeSequence = Math.floor(args.beforeSequence);
   if (!Number.isFinite(beforeSequence) || beforeSequence <= 1) return { ...EMPTY_PAGE };
@@ -317,13 +560,36 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
     sequence: beforeSequence,
     ...(args.signal ? { signal: args.signal } : {}),
   });
-  const page = await readTranscriptHistoryPage({
+  const pageArgs = {
     transcriptPath: args.transcriptPath,
     sessionId: args.sessionId,
-    beforeOffset,
     maxBytes: args.maxBytes,
     ...(args.signal ? { signal: args.signal } : {}),
-  });
+  };
+  let page = await readTranscriptHistoryPage({ ...pageArgs, beforeOffset });
+  // Invariant: the reply holds a row the client can use as its next cursor
+  // (sequenced, older than the cursor, visible), or `hasMore: false`; else the
+  // client asks for this page forever. Until then, older pages are read and
+  // only their visible sequenced rows and stand-ins are kept. Cost: oversized
+  // rows are stepped over unparsed; at worst one request scans back to the
+  // head, which ends paging, so it is paid once.
+  const isVisible = args.isVisible ?? (() => true);
+  const hasUsableRow = (read: TranscriptHistoryPageRead) => read.envelopes.some((envelope) =>
+    typeof envelope.sequence === "number" && envelope.sequence < beforeSequence && isVisible(envelope));
+  while (page.hasMore && !hasUsableRow(page)) {
+    const older = await readHistoryPage({ ...pageArgs, beforeOffset: page.startOffset }, { parseOmittedRow: false });
+    const keep = older.envelopes.map((envelope) =>
+      (typeof envelope.sequence === "number" && isVisible(envelope)) || isOmittedHistoryRowNotice(envelope));
+    page = {
+      envelopes: [...older.envelopes.filter((_, index) => keep[index]), ...page.envelopes],
+      envelopeStartOffsets: [
+        ...older.envelopeStartOffsets.filter((_, index) => keep[index]),
+        ...page.envelopeStartOffsets,
+      ],
+      startOffset: older.startOffset,
+      hasMore: older.hasMore,
+    };
+  }
   // Defensive: a legacy file whose numbering restarted can put a newer
   // sequence below the cut. Never hand those back as "older".
   const keep = page.envelopes.map((envelope) =>
@@ -334,4 +600,49 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
     envelopes: page.envelopes.filter((_, index) => keep[index]),
     envelopeStartOffsets: page.envelopeStartOffsets.filter((_, index) => keep[index]),
   };
+}
+
+/**
+ * The chat's events exactly as written, newest pages first, back to the first
+ * one at or before `since` (or just the newest two pages without one).
+ * `reachedSince` is false when the cursor lies further back than the pages
+ * read. The lossy reader behind `readTranscript` swaps non-conversation rows
+ * for stand-ins, so lifecycle events need this one.
+ */
+export async function readEnvelopesBackToSequence(args: {
+  transcriptPath: string;
+  sessionId: string;
+  since: number | null;
+  onPageError: (error: unknown) => void;
+}): Promise<{ envelopes: AgentChatEventEnvelope[]; reachedSince: boolean }> {
+  const { since } = args;
+  const pages: AgentChatEventEnvelope[][] = [];
+  let cursor = await readHistoryFileSize(args.transcriptPath);
+  let reachedSince = since === null;
+  const maxPages = since === null ? 2 : 16;
+  for (let count = 0; cursor > 0 && count < maxPages; count += 1) {
+    let page: TranscriptHistoryPageRead;
+    try {
+      page = await readTranscriptHistoryPage({
+        transcriptPath: args.transcriptPath,
+        sessionId: args.sessionId,
+        beforeOffset: cursor,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+      });
+    } catch (error) {
+      args.onPageError(error);
+      break;
+    }
+    cursor = page.startOffset;
+    pages.unshift(page.envelopes);
+    if (since !== null && page.envelopes.some((entry) => (entry.sequence ?? Number.POSITIVE_INFINITY) <= since)) {
+      reachedSince = true;
+      break;
+    }
+    if (!page.hasMore) {
+      reachedSince = true;
+      break;
+    }
+  }
+  return { envelopes: pages.flat(), reachedSince };
 }

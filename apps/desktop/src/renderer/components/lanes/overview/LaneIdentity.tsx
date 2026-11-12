@@ -27,6 +27,7 @@ import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 import { cssZoomOf } from "../../../lib/webZoom";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
+import { LaneShareMark } from "../../laneShare/LaneShareMark";
 
 function Sep() {
   return <span aria-hidden className="text-muted-fg/35">·</span>;
@@ -165,7 +166,14 @@ export function LaneIdentity({
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="lane-identity">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex min-w-0 items-center gap-3">
+        <div
+          className="flex min-w-0 items-center gap-3"
+          // Right-click on the header opens the lane menu (share options included) at the cursor.
+          onContextMenu={(event) => {
+            event.preventDefault();
+            onOpenMenu(new DOMRect(event.clientX, event.clientY - 4, 0, 0));
+          }}
+        >
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <span className="flex shrink-0" style={{ color: toneText(accent) }}>
               <LaneEmojiGlyph
@@ -178,6 +186,7 @@ export function LaneIdentity({
             <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={lane.name}>
               {lane.name}
             </h1>
+            <LaneShareMark laneId={lane.id} laneName={lane.name} pin={pin} size={14} />
           </div>
           <div className="-mr-1.5 flex shrink-0 items-center gap-0.5" data-testid="lane-identity-actions">
             {onStartChat ? (

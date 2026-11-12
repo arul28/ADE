@@ -3,6 +3,8 @@ import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import { syntheticCallerId } from "../../../shared/syntheticCallerId";
 import { carryExpected, markExpectedFromWire } from "../../../shared/expectedError";
 import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { readBrainConnectionLossData, type BrainConnectionLossData } from "../../../shared/brainConnectionLoss";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
@@ -45,6 +47,18 @@ const MAX_RPC_TIMEOUT_MS = 2_147_483_647;
 type RuntimeRpcCallOptions = {
   timeoutMs?: number;
 };
+
+function reportBrainConnectionLoss(method: string, data: BrainConnectionLossData): void {
+  forwardSignalToSentry("remote.brain_connection_lost", {
+    method,
+    brainState: data.brainState,
+    socketError: data.socketError,
+    heartbeatAgeSec: data.heartbeatAgeSec,
+    brainLogTail: data.brainLogTail
+      .map((entry) => [entry.level, entry.event, entry.code].filter(Boolean).join(" "))
+      .join("\n"),
+  }, `remote.brain_connection_lost:${data.brainState}`);
+}
 
 function formatRpcErrorData(data: unknown): string {
   if (data && typeof data === "object") return JSON.stringify(data);
@@ -351,6 +365,17 @@ export class RuntimeRpcClient {
       const rpcError = error as { code?: unknown; message?: unknown; data?: unknown; expected?: unknown };
       const message = String(rpcError.message ?? "Remote ADE service request failed.");
       const code = typeof rpcError.code === "number" ? ` (code ${rpcError.code})` : "";
+      const brainLoss = readBrainConnectionLossData(rpcError.data);
+      if (brainLoss) {
+        // The other machine's relay lost its brain. What it saw goes to Sentry
+        // from here (that machine may have no route to Sentry); the message
+        // stays a sentence a person can read.
+        reportBrainConnectionLoss(pending.label, brainLoss);
+        pending.reject(markExpectedFromWire(Object.assign(new Error(
+          `Remote ADE service method ${pending.method} failed${code}: ${message}`,
+        ), { remoteDiagnostics: brainLoss }), rpcError.expected));
+        return;
+      }
       const data = formatRpcErrorData(rpcError.data);
       pending.reject(markExpectedFromWire(new Error(
         `Remote ADE service method ${pending.method} failed${code}: ${message}${data ? ` Details: ${data}` : ""}`,

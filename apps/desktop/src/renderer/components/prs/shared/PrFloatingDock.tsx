@@ -37,11 +37,13 @@ import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignToke
 import { Banner } from "../../ui/notice";
 import { PrAgentAvatar } from "./PrAgentAvatar";
 import { PrMarkdownEditor } from "./PrMarkdownEditor";
+import { PrReviewerPicker } from "./PrReviewerPicker";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
 import { PrShippedSummary } from "./PrShippedSummary";
 import { MERGE_METHODS, mergeMethodShortLabel, readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
+import { modifierChordLabel } from "../../../lib/platform";
 import { isImeComposing } from "../../../lib/imeComposition";
 
 /* ══════════════════ The dock ══════════════════ */
@@ -761,7 +763,7 @@ export function PrCommentCard({
           }}
         />
         <div className="flex items-center gap-2 px-3 py-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-          <span className="text-[11px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>Markdown supported · ⌘↩ to send</span>
+          <span className="text-[11px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>Markdown supported · {modifierChordLabel("↩")} to send</span>
           <span className="flex-1" />
           <button
             type="button"
@@ -891,19 +893,9 @@ export function PrReviewersCard({
   onRequestReviewers: (request: ReviewerRequest) => void;
   onClose: () => void;
 }) {
-  const [input, setInput] = React.useState("");
   const entries = collectPrReviewers(detail, reviews);
   const people = entries.filter((entry) => !entry.isBot);
   const agents = entries.filter((entry) => entry.isBot);
-  const submit = () => {
-    const logins = input.split(",").map((value) => value.trim().replace(/^@/, "")).filter(Boolean);
-    const teamReviewers = logins.filter((value) => value.startsWith("team:") || value.includes("/")).map((value) => value.replace(/^team:/, "").split("/").pop() ?? value);
-    const reviewers = logins.filter((value) => !value.startsWith("team:") && !value.includes("/"));
-    if (reviewers.length || teamReviewers.length) {
-      onRequestReviewers({ reviewers, teamReviewers });
-      setInput("");
-    }
-  };
   return (
     <div data-testid="pr-reviewers-card">
       <CardHeader icon={Users} title="Reviewers" onClose={onClose} />
@@ -912,7 +904,7 @@ export function PrReviewersCard({
       ) : null}
       <ReviewerRows title="People" entries={people} />
       <ReviewerRows title="Agents" entries={agents} />
-      <InlineInput value={input} onChange={setInput} onSubmit={submit} placeholder="Request: alice, team:platform" />
+      <PrReviewerPicker entries={entries} authorLogin={detail?.author?.login ?? null} onRequestReviewers={onRequestReviewers} />
     </div>
   );
 }

@@ -20,6 +20,7 @@ import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/
 import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { peerGitRemoteIdentity } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
+import { readChatLaunchKindsCapability } from "../../../../desktop/src/shared/chatLaunch";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import type { ContainmentPlatform } from "../../../../desktop/src/shared/pathCase";
 import {
@@ -162,7 +163,7 @@ export type AgentMachineBridgeOptions = {
   projectRoots: () => string[];
   logger?: MachineBridgeLogger | null;
   /**
-   * Wakes a sleeping cloud machine (an Agent 37 box) a call names. True when
+   * Wakes a sleeping cloud machine (a cloud box) a call names. True when
    * it woke one; throws with the reason when it may not (the monthly cap).
    */
   wakeForUse?: (machine: AdeAccountMachine) => Promise<boolean>;
@@ -171,8 +172,11 @@ export type AgentMachineBridgeOptions = {
 /** How long a woken machine gets to show online in the account before the call fails as offline. */
 const WOKEN_MACHINE_ONLINE_WAIT_MS = 60_000;
 const WOKEN_MACHINE_POLL_MS = 1_000;
-/** How long connects to a just-woken machine are retried. */
-const WOKEN_MACHINE_CONNECT_RETRY_MS = 45_000;
+/**
+ * How long connects to a just-woken machine are retried. Measured on a box
+ * (2026-11-07): 20 s after a short sleep, more than 45 s after its own idle sleep.
+ */
+const WOKEN_MACHINE_CONNECT_RETRY_MS = 90_000;
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
@@ -319,15 +323,43 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     if (woke) machine = woke;
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
 
-    const entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    let entry: Awaited<ReturnType<typeof pool.acquire>>;
+    try {
+      entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    } catch (error) {
+      // The account still lists a cloud machine online for a few minutes after
+      // it falls asleep, so the first dial times out. Wake it then, once.
+      const late = woke ? null : await wakeIfSleepingCloudMachine(machine);
+      if (!late) throw error;
+      machine = late;
+      entry = await acquireWokenMachine(machine);
+    }
     let project: RemoteProjectRecord | null = null;
     if (PROJECT_SCOPED_METHODS.has(method)) {
       if (input.scope.kind === "personal" || input.scope.kind === "machine") {
         throw new Error(`${method} runs in a project; pass --project, or use --personal commands.`);
       }
       let records = await pool.listProjects(entry);
+      const setUpThere = () => pool.request(
+        machine,
+        entry,
+        "machines.cloneForAgent",
+        "machines.cloneForAgent",
+        { originUrl: input.scope.kind === "repo" ? input.scope.originUrl : undefined },
+        MACHINE_CLONE_TIMEOUT_MS,
+      );
       try {
         project = resolveProject(machine, records, input.scope);
+        // An explicit --clone of a checkout an earlier agent clone left hidden
+        // from the machine's project list: the same call lists it.
+        if (input.clone && input.scope.kind === "repo" && project.catalogVisibility === "system") {
+          await setUpThere().catch((error) => {
+            options.logger?.warn("agent_cross_machine.clone_promote_failed", {
+              machineKey: machine.machineKey,
+              error: errorMessage(error),
+            });
+          });
+        }
       } catch (error) {
         // A project opened there in the last minute is not in the cache yet.
         records = await pool.listProjects(entry, true);
@@ -335,14 +367,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
           project = resolveProject(machine, records, input.scope);
         } catch {
           if (!input.clone || input.scope.kind !== "repo") throw error;
-          await pool.request(
-            machine,
-            entry,
-            "machines.cloneForAgent",
-            "machines.cloneForAgent",
-            { originUrl: input.scope.originUrl },
-            MACHINE_CLONE_TIMEOUT_MS,
-          );
+          await setUpThere();
           records = await pool.listProjects(entry, true);
           project = resolveProject(machine, records, input.scope);
         }
@@ -535,8 +560,47 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     );
   };
 
+  /**
+   * Set a GitHub repository up on a machine (`machines.cloneForAgent` there:
+   * its own Git sign-in, its projects folder; a checkout already there wins).
+   * Answers that machine's project record. For an ADE Cloud lane's new
+   * computer, which this brain made and the account just listed.
+   */
+  const setUpRepository = async (input: { machine: string; originUrl: string }): Promise<unknown> => {
+    let machine = await pool.selectMachine(input.machine);
+    if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
+    const woke = !machine.online ? await wakeIfSleepingCloudMachine(machine) : null;
+    if (woke) machine = woke;
+    if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
+    const entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    return await pool.request(
+      machine,
+      entry,
+      "machines.cloneForAgent",
+      "machines.cloneForAgent",
+      { originUrl: input.originUrl },
+      MACHINE_CLONE_TIMEOUT_MS,
+    );
+  };
+
+  /**
+   * The chat launch kinds a machine's brain advertised in its `ade/initialize`
+   * capabilities (`chatLaunchKinds`); empty from an older brain. Read from
+   * the open connection, no call. Not an agent method: only this brain's own
+   * ADE Cloud lane hand-off asks, to refuse a kind an older brain can't run.
+   */
+  const chatLaunchKinds = async (machineKey: string): Promise<string[]> => {
+    const machine = await pool.selectMachine(machineKey);
+    if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
+    if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
+    const entry = await pool.acquire(machine);
+    return readChatLaunchKindsCapability(entry.capabilities);
+  };
+
   return {
     call,
+    setUpRepository,
+    chatLaunchKinds,
     listMachines,
     deliverWake,
     locateChat,

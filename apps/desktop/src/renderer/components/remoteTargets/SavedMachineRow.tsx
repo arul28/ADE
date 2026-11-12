@@ -97,6 +97,8 @@ type SavedMachineRowProps = {
    * is behind and can be offered "Update & restart"; null hides the button.
    */
   updateTargetVersion?: string | null;
+  /** Undefined means in-place; null means manual download is unavailable. */
+  manualDownloadUrl?: string | null;
   updating?: boolean;
   /** ADE is asking the machine what an update would stop, before it confirms. */
   checkingUpdate?: boolean;
@@ -131,7 +133,7 @@ type SavedMachineRowProps = {
   footer?: ReactNode;
   /**
    * A cloud box that is asleep or stopped: the line that replaces the row's
-   * presence ("Asleep on Agent 37") and the button that replaces Connect
+   * presence ("Asleep on the provider") and the button that replaces Connect
    * (Wake). A sleeping box can't take a connection, so the row never offers one.
    */
   parked?: { label: string; action: ReactNode } | null;
@@ -151,6 +153,7 @@ export function SavedMachineRow({
   stageLabel = null,
   transientStatus = null,
   updateTargetVersion = null,
+  manualDownloadUrl,
   updating = false,
   checkingUpdate = false,
   updatePhase = null,
@@ -309,7 +312,7 @@ export function SavedMachineRow({
             {behind && onUpdateAndRestart && !updatePhase ? (
               <button
                 type="button"
-                disabled={busy || updating || checkingUpdate}
+                disabled={busy || updating || checkingUpdate || (manualDownloadUrl !== undefined && !manualDownloadUrl)}
                 onClick={() => onUpdateAndRestart(updateTargetVersion)}
                 style={{
                   ...outlineButton({ height: 28, padding: "0 11px", fontSize: 11.5 }),
@@ -319,7 +322,7 @@ export function SavedMachineRow({
                 }}
               >
                 <ArrowClockwise size={13} weight="bold" />
-                Update
+                {manualDownloadUrl !== undefined ? "Download update" : "Update"}
               </button>
             ) : null}
             {!row.connected && targetConnecting && !updatePhase ? (

@@ -28,11 +28,12 @@ import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { TerminalShellSection } from "./TerminalShellSection";
 import { AdeMcpPage } from "./AdeMcpPage";
+import { SharingSettingsPage } from "../laneShare/SharingSettingsPage";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { JiraSection } from "./JiraSection";
-import { Agent37Section } from "./Agent37Section";
+import { CloudSection } from "./CloudSection";
 import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
@@ -62,7 +63,7 @@ import {
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
@@ -72,7 +73,7 @@ import {
 } from "./settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
-import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
+import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -130,6 +131,7 @@ function AgentsTabContent() {
   const providerId = requested && providerDescriptor(requested) ? requested : null;
   const harnessesOpen =
     searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
+  const place = useProvidersPlace();
 
   const handleProviderChange = useCallback((next: string | null) => {
     const nextParams = new URLSearchParams(searchParams);
@@ -157,7 +159,7 @@ function AgentsTabContent() {
   if (providerId) {
     return (
       <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
-        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
+        <ProvidersSection providerParam={providerId} onProviderChange={handleProviderChange} />
       </WebSettingsSection>
     );
   }
@@ -166,17 +168,19 @@ function AgentsTabContent() {
     <ModernPage>
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection
-          forceRefreshOnMount
           providerParam={null}
           onProviderChange={handleProviderChange}
           // `#ai-harnesses` deeplinks scroll to the Custom section of this page.
           harnessesParam={harnessesOpen}
         />
       </WebSettingsSection>
-      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime. */}
-      <WebSettingsSection entryIds={["agents.budget"]}>
-        <BudgetCapSettings />
-      </WebSettingsSection>
+      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime;
+          ADE Cloud is not a machine, so it has none. */}
+      {place.kind === "machine" ? (
+        <WebSettingsSection entryIds={["agents.budget"]}>
+          <BudgetCapSettings />
+        </WebSettingsSection>
+      ) : null}
     </ModernPage>
   );
 }
@@ -220,7 +224,7 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
   const { pin } = useSettingsMachineScope();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
   const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
-    // No project: only the account's pages (Agent 37, MCP servers) can load.
+    // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
   const section = requested ? sections.find((entry) => entry.group === requested) : undefined;
@@ -367,10 +371,10 @@ const TAB_GROUPS = {
     icon: <JiraMark size={15} />,
     tone: "blue",
   },
-  agent37: {
-    title: AGENT37_NAME,
-    description: "Cloud Linux machines, made and signed in from ADE.",
-    icon: <Agent37Mark size={15} strokeWidth={26} />,
+  cloud: {
+    title: ADE_CLOUD_NAME,
+    description: "Cloud computers for your lanes, made and signed in from ADE.",
+    icon: <CloudMark size={15} bold />,
     tone: "slate",
   },
   mcp: {
@@ -539,16 +543,20 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
-    // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
-    { entryIds: ["integrations.agent37", "integrations.agent37-sign-ins", "integrations.agent37-ready", "integrations.agent37-spending", "integrations.agent37-agent-limits"], render: () => <Agent37Section />, title: AGENT37_NAME, group: "agent37" },
     { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
+  // Account-wide: the plan, hours and computers are the account's, so the page
+  // asks this desktop's own main process with no pin and carries no machine kind.
+  "ade-cloud": [{ entryIds: "tab", render: () => <SettingsColumn wide><CloudSection /></SettingsColumn>, title: ADE_CLOUD_NAME }],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in
   // the account (settings store and vault), so the page asks this desktop's own
   // brain with no pin and carries no machine kind. Any brain on the account
   // answers for all of them; only the Activity log is this computer's.
   "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn wide><AdeMcpPage /></SettingsColumn> }],
+  // Account-wide lists read through the tab's bound runtime (it asks the
+  // account directory); edits of a share go to the machine that holds it.
+  sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };

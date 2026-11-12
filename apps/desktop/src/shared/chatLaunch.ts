@@ -1,7 +1,9 @@
 import type { AdeCardIcon, AdeCardPayload, AdeCardRow } from "./adeCard";
+import { stripElectronErrorWrapper } from "./codedError";
 import type { LaneStart } from "./laneStart";
 import type {
   ChatLaunchArgs,
+  ChatLaunchCloudStageId,
   ChatLaunchKind,
   ChatLaunchLaneConfig,
   ChatLaunchPhase,
@@ -20,7 +22,64 @@ import type {
  * (`WorkChatLaunchPresentation.swift`). Keep the two in step.
  */
 
-export const CHAT_LAUNCH_STAGE_ORDER: readonly ChatLaunchStageId[] = ["fetch", "checkout", "environment", "agent"];
+export const CHAT_LAUNCH_STAGE_ORDER: readonly ChatLaunchStageId[] = [
+  "computer",
+  "join",
+  "clone",
+  "fetch",
+  "checkout",
+  "environment",
+  "agent",
+];
+
+/** The stages an ADE Cloud launch runs on the desktop, in order (see `ChatLaunchCloudStageId`). */
+export const CHAT_LAUNCH_CLOUD_STAGE_IDS: readonly ChatLaunchCloudStageId[] = ["computer", "join", "clone"];
+
+export function isChatLaunchCloudStageId(id: unknown): id is ChatLaunchCloudStageId {
+  return (CHAT_LAUNCH_CLOUD_STAGE_IDS as readonly unknown[]).includes(id);
+}
+
+const FINISHED_STAGE_STATUSES: readonly ChatLaunchStageStatus[] = ["done", "skipped", "warning"];
+
+function optionalIso(value: unknown): string | null {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function optionalText(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, max) : null;
+}
+
+/**
+ * The stages an ADE Cloud launch finished before its computer's brain got it,
+ * from untrusted input. Keeps only `computer`, `join` and `clone`, only when
+ * finished, once each, in their order; anything else is dropped, because a
+ * brain must never show a stage it can't account for.
+ */
+export function normalizeChatLaunchPriorStages(value: unknown): ChatLaunchStage[] {
+  if (!Array.isArray(value)) return [];
+  const byId = new Map<ChatLaunchCloudStageId, ChatLaunchStage>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    if (!isChatLaunchCloudStageId(record.id) || byId.has(record.id)) continue;
+    const status = record.status as ChatLaunchStageStatus;
+    if (!FINISHED_STAGE_STATUSES.includes(status)) continue;
+    byId.set(record.id, {
+      id: record.id,
+      status,
+      startedAt: optionalIso(record.startedAt),
+      endedAt: optionalIso(record.endedAt),
+      percent: typeof record.percent === "number" && Number.isFinite(record.percent)
+        ? Math.max(0, Math.min(100, Math.round(record.percent)))
+        : null,
+      detail: optionalText(record.detail, 200),
+      error: status === "warning" ? optionalText(record.error, 400) : null,
+    });
+  }
+  return CHAT_LAUNCH_CLOUD_STAGE_IDS.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+}
 
 /**
  * The start a launch's new lane uses: the lane config's own, else the
@@ -50,14 +109,51 @@ export function laneSetupLaunchIdFromCardId(cardId: string | null | undefined): 
 /** `metrics[].label` under which a `lane_setup` card carries its lane template's name. */
 export const LANE_SETUP_CARD_TEMPLATE_METRIC = "Template";
 
+/**
+ * Whether a brain can't run a launch of this kind handed to it, from the
+ * `chatLaunchKinds` capability it advertised. A chat runs on any brain. Null
+ * (its answer couldn't be read) is not refused; a brain that answered without
+ * the list predates the kinds, so only `chat` is assumed.
+ */
+export function chatLaunchKindUnknownToBrain(kind: ChatLaunchKind, brainKinds: readonly string[] | null): boolean {
+  if (kind === "chat" || brainKinds === null) return false;
+  return !brainKinds.includes(kind);
+}
+
+/**
+ * The refusal when a launch is cancelled after its agent started (or, for a
+ * lane launch, after the lane is set up): from then on the lane is the user's
+ * to delete. Shared by the local and ADE Cloud launch hosts.
+ */
+export function chatLaunchAlreadyStartedMessage(kind: ChatLaunchKind): string {
+  if (kind === "lane") return "This lane is already set up. Delete it from the lane menu instead.";
+  if (kind === "cli") return "This CLI session already started. Delete its lane from the lane menu instead.";
+  return "This chat already started. Delete its lane from the lane menu instead.";
+}
+
+/** The `chatLaunchKinds` capability as a brain sent it: the strings only; absent is an empty list. */
+export function readChatLaunchKindsCapability(capabilities: unknown): string[] {
+  if (!capabilities || typeof capabilities !== "object") return [];
+  const kinds = (capabilities as { chatLaunchKinds?: unknown }).chatLaunchKinds;
+  return Array.isArray(kinds) ? kinds.filter((kind): kind is string => typeof kind === "string") : [];
+}
+
+/** A launch kind from untrusted input; anything unknown is a chat, as before kinds grew. */
+export function chatLaunchKindOf(value: unknown): ChatLaunchKind {
+  return value === "cli" || value === "lane" ? value : "chat";
+}
+
 function newChatLaunchStage(id: ChatLaunchStageId): ChatLaunchStage {
   return { id, status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null };
 }
 
 /** The stages a launch shows, in {@link CHAT_LAUNCH_STAGE_ORDER}. */
-function chatLaunchStageIds(args: { includeFetch: boolean; includeEnvironment: boolean }): ChatLaunchStageId[] {
+function chatLaunchStageIds(args: { includeCloud?: boolean; includeFetch: boolean; includeEnvironment: boolean; includeAgent: boolean }): ChatLaunchStageId[] {
   return CHAT_LAUNCH_STAGE_ORDER.filter((id) =>
-    (id !== "fetch" || args.includeFetch) && (id !== "environment" || args.includeEnvironment));
+    (!isChatLaunchCloudStageId(id) || args.includeCloud === true)
+    && (id !== "agent" || args.includeAgent)
+    && (id !== "fetch" || args.includeFetch)
+    && (id !== "environment" || args.includeEnvironment));
 }
 
 function clipLaunchTitle(text: string, max: number): string {
@@ -76,11 +172,15 @@ export function createChatLaunchSnapshot(args: {
   laneName: string;
   includeFetch: boolean;
   includeEnvironment: boolean;
+  /** An ADE Cloud launch on the desktop: the `computer`, `join` and `clone` rows come first, pending. */
+  includeCloud?: boolean;
+  /** Finished stages from before this host got the launch; shown first, as they are. */
+  priorStages?: ChatLaunchStage[];
   templateName?: string | null;
   nowIso: string;
 }): ChatLaunchSnapshot {
   const launch = args.launch;
-  const kind: ChatLaunchKind = launch.kind === "cli" ? "cli" : "chat";
+  const kind = chatLaunchKindOf(launch.kind);
   const prompt = String(launch.prompt ?? "");
   const chat = kind === "chat" ? launch.chat : undefined;
   return {
@@ -103,7 +203,12 @@ export function createChatLaunchSnapshot(args: {
     },
     modelId: launch.modelId ?? chat?.create.modelId ?? null,
     phase: "running",
-    stages: chatLaunchStageIds(args).map(newChatLaunchStage),
+    stages: [
+      ...(args.priorStages ?? []).map((stage) => ({ ...stage })),
+      // A lane launch starts nothing in the lane, so it has no agent stage.
+      ...chatLaunchStageIds({ ...args, includeCloud: args.includeCloud === true && !args.priorStages?.length, includeAgent: kind !== "lane" })
+        .map(newChatLaunchStage),
+    ],
     error: null,
     laneCreated: false,
     sessionCreated: false,
@@ -122,6 +227,12 @@ export function chatLaunchStageLabel(
   context: { kind: ChatLaunchKind; templateName?: string | null },
 ): string {
   switch (id) {
+    case "computer":
+      return "Make computer";
+    case "join":
+      return "Join your account";
+    case "clone":
+      return "Clone repository";
     case "fetch":
       return "Fetch base branch";
     case "checkout":
@@ -139,6 +250,12 @@ function chatLaunchStageActiveLabel(
   context: { kind: ChatLaunchKind; templateName?: string | null },
 ): string {
   switch (id) {
+    case "computer":
+      return "Making computer";
+    case "join":
+      return "Joining your account";
+    case "clone":
+      return "Cloning repository";
     case "fetch":
       return "Fetching base branch";
     case "checkout":
@@ -176,6 +293,21 @@ export function isChatLaunchPending(launch: Pick<ChatLaunchSnapshot, "phase" | "
   return !launch.agentStarted && (launch.phase === "running" || launch.phase === "failed" || launch.phase === "awaiting-client");
 }
 
+/**
+ * The launch was refused before anything was made (its `start` was turned
+ * down: a start refusal, an unreachable machine): failed, with no step ever
+ * started. The card shows the sentence, not a failed step.
+ */
+export function isChatLaunchRefused(launch: Pick<ChatLaunchSnapshot, "phase" | "stages" | "laneCreated">): boolean {
+  return launch.phase === "failed" && !launch.laneCreated && launch.stages.every((stage) => stage.status === "pending");
+}
+
+/** The plain sentence of a launch error, without Electron's IPC wrapper or an error class name. */
+export function chatLaunchErrorMessage(error: unknown, fallback = "ADE couldn't start this launch."): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return stripElectronErrorWrapper(raw) || fallback;
+}
+
 /** The agent (or CLI session) is up: completed, or started early and not since failed or cancelled. */
 export function isChatLaunchSucceeded(launch: Pick<ChatLaunchSnapshot, "phase" | "agentStarted">): boolean {
   return launch.phase === "completed" || (launch.agentStarted && launch.phase !== "failed" && launch.phase !== "cancelled");
@@ -206,17 +338,22 @@ export function chatLaunchStatusLine(launch: ChatLaunchSnapshot): string {
   const context = { kind: launch.kind, templateName: launch.templateName };
   if (launch.phase === "cancelled") return "Cancelled";
   if (launch.phase === "failed") {
+    if (isChatLaunchRefused(launch)) return "Couldn't start";
     const failed = launch.stages.find((stage) => stage.status === "failed");
     const label = failed ? chatLaunchStageLabel(failed.id, context) : "Setup";
     return `${label} failed`;
   }
-  if (launch.phase === "completed") return launch.kind === "cli" ? "CLI session started" : "Agent started";
+  if (launch.phase === "completed") {
+    return launch.kind === "cli" ? "CLI session started" : launch.kind === "lane" ? "Lane ready" : "Agent started";
+  }
   const active = chatLaunchActiveStage(launch);
   if (!active) return "Setting up lane";
   const label = chatLaunchStageActiveLabel(active.id, context);
   // A stale base names what it is waiting on. The generic label does not.
   if (active.id === "fetch" && active.detail?.trim()) return active.detail.trim();
-  if (active.id === "checkout" && active.percent != null) return `${label} · ${active.percent}%`;
+  if ((active.id === "checkout" || active.id === "clone") && active.percent != null) return `${label} · ${active.percent}%`;
+  // "Confirm in the window that opened": the one stage that can wait on the person.
+  if (active.id === "join" && active.status === "running" && active.detail?.trim()) return `${label} · ${active.detail.trim()}`;
   if (active.id === "environment") {
     const step = active.steps?.find((entry) => entry.status === "running");
     if (step) return `${label} · ${step.label}`;
@@ -284,6 +421,9 @@ function laneSetupRowIcon(status: ChatLaunchStageStatus): AdeCardIcon {
  * have to match on the English label; the template name (if any) rides in the
  * `Template` metric.
  */
+/** The setup card's title for a launch refused before anything was made. */
+export const CHAT_LAUNCH_REFUSED_TITLE = "Couldn't start this lane";
+
 export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number): AdeCardPayload {
   const context = { kind: snapshot.kind, templateName: snapshot.templateName };
   const rows: AdeCardRow[] = snapshot.stages.map((stage) => {
@@ -314,14 +454,19 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
     : null;
   const durationText = formatChatLaunchDuration(durationMs);
   const base = snapshot.baseRef ? ` from ${snapshot.baseRef}` : "";
-  const title = failed
+  const refused = isChatLaunchRefused(snapshot);
+  const title = refused
+    ? CHAT_LAUNCH_REFUSED_TITLE
+    : failed
     ? "Lane setup failed"
     : allSettled
       ? warned
         ? durationText ? `Lane set up with warnings in ${durationText}` : "Lane set up with warnings"
         : durationText ? `Lane set up in ${durationText}` : "Lane set up"
       : "Setting up lane";
-  const fallbackText = failed
+  const fallbackText = refused
+    ? `${CHAT_LAUNCH_REFUSED_TITLE}: ${snapshot.error ?? "unknown error"}`
+    : failed
     ? `Lane ${snapshot.laneName} setup failed: ${snapshot.error ?? "unknown error"}`
     : allSettled
       ? `Lane ${snapshot.laneName} set up${base}${durationText ? ` in ${durationText}` : ""}.`
@@ -333,7 +478,8 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
     title,
     subtitle: `${snapshot.laneName}${base}${snapshot.templateName ? ` · ${snapshot.templateName}` : ""}`,
     ...(snapshot.templateName ? { metrics: [{ label: LANE_SETUP_CARD_TEMPLATE_METRIC, value: snapshot.templateName }] } : {}),
-    rows,
+    // A refused launch made nothing: no step rows, the sentence says why.
+    rows: refused ? [] : rows,
     fallbackText,
     durationMs,
   };

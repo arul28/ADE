@@ -482,11 +482,6 @@ Also renders:
   into the column once. Lane pins stay in this window's view state
   (`workPinnedLaneIds`); pinned lanes sort above the primary lane.
 - the actual list of `SessionCard` rows (memoized)
-- a bottom **New lane** action that opens `CreateLaneDialogHost` in-place. The
-  Work flow uses the host's `close-on-create` behavior: it closes as
-  soon as the lane row is created, then runs lane environment setup
-  detached from the sidebar component and leaves a sticky retry toast if
-  setup fails.
 - a compact selection toolbar beneath the header that appears when
   `selectedSessionIds` is
   non-empty: "Stop N" for running PTYs, "Settle N", "Delete N" for

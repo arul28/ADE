@@ -90,6 +90,70 @@ export function joinAdeAgentSkillRoots(roots: readonly string[]): string {
   return normalizedRoots.join(pathDelimiter());
 }
 
+/** Every process's default for bundled skills held back from agents, until a brain knows better. */
+const ALWAYS_WITHHELD_AGENT_SKILLS: readonly string[] = [
+  // ADE Cloud's old skill name: a remote machine's older agent-skills folder can still carry it.
+  "ade-agent37",
+];
+
+/**
+ * Skills whose `ade` commands run only on a Mac: `ade apple` drives Xcode's
+ * simulators and answers `supported: false` on any other host. Every other
+ * bundled skill works on macOS, Windows and Linux (Android needs a machine
+ * with virtualization, which a Linux VM or a full cloud computer has).
+ */
+const MAC_ONLY_AGENT_SKILLS: readonly string[] = ["ade-apple", "ade-ios-simulator"];
+
+/**
+ * The bundled skills this host cannot use. The host is the process that builds
+ * the agent's skills: the brain that runs the chat, on the lane's own machine.
+ * The renderer bundles this file and has no `process`, so it withholds nothing.
+ */
+export function adeHostWithheldAgentSkills(
+  platform: string | null = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : null,
+): readonly string[] {
+  return platform && platform !== "darwin" ? MAC_ONLY_AGENT_SKILLS : [];
+}
+
+let adeCloudSkillVisible = false;
+let agentSkillAccessRefresh: (() => void) | null = null;
+let agentSkillRootFilter: ((roots: readonly string[]) => string[]) | null = null;
+
+/**
+ * Bundled skills no agent may see right now: `ade-cloud` unless this account
+ * is on ADE Cloud's access list, and the skills this host cannot run
+ * ({@link adeHostWithheldAgentSkills}). Every skill channel (prompt listing,
+ * the skill roots, the `ade-*` line of guidance, `ade skill`) reads this one set.
+ */
+export function adeWithheldAgentSkills(): readonly string[] {
+  agentSkillAccessRefresh?.();
+  return [
+    ...ALWAYS_WITHHELD_AGENT_SKILLS,
+    ...(adeCloudSkillVisible ? [] : ["ade-cloud"]),
+    ...adeHostWithheldAgentSkills(),
+  ];
+}
+
+/** The account's ADE Cloud answer, from whoever just asked the server. */
+export function setAdeCloudSkillVisible(visible: boolean): void {
+  adeCloudSkillVisible = visible;
+}
+
+/** Called each time an agent's skills are worked out, so a stale answer asks the server again. */
+export function setAgentSkillAccessRefresh(refresh: (() => void) | null): void {
+  agentSkillAccessRefresh = refresh;
+}
+
+/** Node installs the filter that actually mirrors roots; the renderer bundles this file and has no disk. */
+export function setAgentSkillRootFilter(filter: ((roots: readonly string[]) => string[]) | null): void {
+  agentSkillRootFilter = filter;
+}
+
+/** Roots with the withheld skills removed, or as given when no filter is installed (the renderer). */
+export function filterAdeAgentSkillRoots(roots: readonly string[]): string[] {
+  return agentSkillRootFilter ? agentSkillRootFilter(roots) : [...roots];
+}
+
 /**
  * Adds the two repo-relative bundled-skill shapes for one base directory.
  *
@@ -275,10 +339,13 @@ export function getAdeAgentSkillRootsForPrompt(options: {
   dirname?: string | null;
   includeDeepSourceFallbacks?: boolean;
   exists?: (candidate: string) => boolean;
+  /** The env builder: the variable keeps every root, and each launch filters what it passes on. */
+  includeWithheld?: boolean;
 } = {}): string[] {
   const candidates = getAdeAgentSkillRootCandidates(options);
   const usable = options.exists ? candidates.filter((root) => options.exists?.(root)) : candidates;
-  return usable.slice(0, promptAgentSkillRootLimit);
+  const roots = usable.slice(0, promptAgentSkillRootLimit);
+  return options.includeWithheld ? roots : filterAdeAgentSkillRoots(roots);
 }
 
 export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): string {

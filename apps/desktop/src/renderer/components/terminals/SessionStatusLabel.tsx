@@ -175,7 +175,7 @@ export function SessionStatusLabel({
         // Breathing is reserved for the one state that is actively changing.
         breathes && "motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]",
       )}
-      title={activityReportTitle ?? exactWakeTitle}
+      title={presentation.hint ?? activityReportTitle ?? exactWakeTitle}
     >
       <StatusGlyph glyph={presentation.glyph} />
       {/* Keep the ticker outside role=status so screen readers do not announce

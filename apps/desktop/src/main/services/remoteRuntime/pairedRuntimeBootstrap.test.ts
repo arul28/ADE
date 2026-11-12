@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
+import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import type { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 
 const initializeMock = vi.hoisted(() => vi.fn());
 const callMock = vi.hoisted(() => vi.fn());
@@ -141,7 +143,8 @@ describe("bootstrapPairedRuntime", () => {
       options: { openTransport: vi.fn(async () => transport()) },
     });
 
-    expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", "1.0.0");
+    // The runtime is told who is calling and at which version; its time limit is not the contract.
+    expect(initializeMock.mock.calls[0]?.slice(0, 2)).toEqual(["ade-desktop-remote", "1.0.0"]);
     expect(pairedStore.getForReference).toHaveBeenCalledWith(target.pairedMachine);
     expect(result.result).toMatchObject({
       target: updated,
@@ -580,5 +583,71 @@ describe("bootstrapPairedRuntime", () => {
     expect(markEndpointFailed.mock.calls.map(([, endpoint]) => endpoint)).toEqual([
       "ws://studio.local:8787/",
     ]);
+  });
+
+  it("gives up on a host that opens the socket and says hello but never answers the handshake, and closes it", async () => {
+    // The real client, over a transport whose peer reads every request and
+    // answers none: a host whose brain is wedged behind a working sync socket.
+    const { RuntimeRpcClient: RealRuntimeRpcClient } = await vi.importActual<typeof import("./runtimeRpcClient")>("./runtimeRpcClient");
+    const { RuntimeRpcClient: MockedRuntimeRpcClient } = await import("./runtimeRpcClient");
+    vi.mocked(MockedRuntimeRpcClient).mockImplementationOnce((peer) => new RealRuntimeRpcClient(peer));
+    const silent = transport();
+    const closeListeners: Array<() => void> = [];
+    vi.mocked(silent.onClose!).mockImplementation((listener) => {
+      closeListeners.push(listener as () => void);
+    });
+    vi.mocked(silent.close).mockImplementation(() => {
+      for (const listener of closeListeners.splice(0)) listener();
+    });
+    const markEndpointFailed = vi.fn();
+    vi.useFakeTimers();
+    try {
+      let settled = null as { error?: unknown; value?: unknown } | null;
+      const registry: Pick<RemoteTargetRegistry, "update"> = { update: vi.fn(() => target) };
+      const pairedStore: Pick<
+        DesktopPairedMachineStore,
+        "getForReference" | "get" | "save" | "markEndpointFailed" | "forgetEndpoint" | "markEndpointSucceeded"
+      > = {
+        getForReference: vi.fn(() => credentials),
+        get: vi.fn(() => credentials),
+        save: vi.fn(() => credentials),
+        markEndpointFailed,
+        forgetEndpoint: vi.fn(),
+        markEndpointSucceeded: vi.fn(() => credentials),
+      };
+      void bootstrapPairedRuntime({
+        target,
+        registry: registry as RemoteTargetRegistry,
+        pairedStore: pairedStore as DesktopPairedMachineStore,
+        appVersion: "1.0.0",
+        options: { openTransport: vi.fn(async () => silent) },
+      }).then(
+        (value) => { settled = { value }; },
+        (error: unknown) => { settled = { error }; },
+      );
+
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(settled).toBeNull();
+      // The requests did go out; nothing came back.
+      expect(vi.mocked(silent.write).mock.calls.map(([line]) => JSON.parse(String(line)).method)).toEqual([
+        "ade/initialize",
+        "projects.list",
+      ]);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).not.toBeNull();
+      const error = settled!.error;
+      expect(error).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
+      expect(error).toMatchObject({ code: "PAIRED_RUNTIME_TRANSPORT_UNAVAILABLE", diagnostic: { failure: "timeout" } });
+      expect((error as PairedRuntimeTransportUnavailableError).diagnostic?.attempts).toMatchObject([
+        { kind: "lan", outcome: "failed", failure: "timeout", errorCode: "handshake_timeout" },
+      ]);
+      // The socket is closed and no timer is left behind.
+      expect(silent.close).toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(markEndpointFailed).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

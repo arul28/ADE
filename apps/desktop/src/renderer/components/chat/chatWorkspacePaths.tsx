@@ -23,6 +23,12 @@ export type WorkspacePathLocation = {
   path: string;
   startLine?: number;
   startColumn?: number;
+  /**
+   * The path as written, when it contains a backslash. On a POSIX workspace a
+   * backslash is an ordinary file name character; which it is depends on the
+   * workspace's machine, not this client's, so the choice waits for its root.
+   */
+  originalPath?: string;
 };
 
 export function isExternalHref(href: string): boolean {
@@ -114,7 +120,20 @@ export function parseWorkspacePathLocation(value: string): WorkspacePathLocation
     path: normalizedPath,
     startLine: fromFragment.startLine ?? fromSuffix.startLine,
     startColumn: fromFragment.startColumn ?? fromSuffix.startColumn,
+    ...(decodedPath.includes("\\") ? { originalPath: splitWorkspacePathLineSuffix(decodedPath).path } : {}),
   };
+}
+
+const BACKSLASH_PLACEHOLDER = "\u0000";
+
+/** The candidate as a path on the workspace's own machine, keeping a POSIX file name's backslashes. */
+function candidatePathForWorkspaces(
+  candidate: WorkspacePathLocation,
+  workspaces: readonly Pick<FilesWorkspace, "rootPath">[],
+): string {
+  const root = workspaces[0]?.rootPath ?? "";
+  if (!candidate.originalPath || !root.startsWith("/") || isWindowsAbsolutePath(root)) return normalizePath(candidate.path);
+  return normalizePath(candidate.originalPath.replaceAll("\\", BACKSLASH_PLACEHOLDER)).replaceAll(BACKSLASH_PLACEHOLDER, "\\");
 }
 
 /**
@@ -156,8 +175,30 @@ export function looksLikeWorkspacePath(value: string): boolean {
   return !singleSegmentLooksLikeProse(withoutLeadingSlash);
 }
 
+const EDITOR_FILE_LINK_PROTOCOLS = new Set(["cursor:", "vscode:", "vscode-insiders:"]);
+
+/**
+ * The absolute local path of an editor link an agent printed
+ * (`cursor://file/<path>:12`), or null. Only a local file open qualifies:
+ * anything naming another host, a port or credentials is not one.
+ */
+export function editorFileLinkPath(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (!EDITOR_FILE_LINK_PROTOCOLS.has(url.protocol) || url.hostname !== "file") return null;
+  if (url.username || url.password || url.port || !url.pathname.startsWith("/")) return null;
+  return url.pathname;
+}
+
 export function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
   if (!href) return null;
+  // Before the external check, which any `scheme://` link would satisfy.
+  const editorPath = editorFileLinkPath(href);
+  if (editorPath) return parseWorkspacePathLocation(editorPath);
   if (isExternalHref(href)) return null;
   const candidate = parseWorkspacePathLocation(href);
   if (!candidate) return null;
@@ -169,7 +210,7 @@ export function resolveWorkspacePathFromHref(href: string | undefined): Workspac
  * it, and the path relative to that workspace root.
  *
  * Absolute paths are matched against every known workspace root, preferring the
- * chat's own lane and then the longest matching root (nested worktrees). All
+ * longest matching root (nested worktrees) and then the chat's own lane. All
  * comparisons run through `pathUtils`, so Windows drive letters, UNC roots, and
  * case-insensitive volumes behave. Relative paths are taken as already
  * workspace-relative and attributed to the chat's lane.
@@ -190,7 +231,7 @@ export function resolveFilesNavigationTarget<W extends Pick<FilesWorkspace, "roo
   const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
   if (!candidate) return null;
 
-  const normalizedCandidate = normalizePath(candidate.path);
+  const normalizedCandidate = candidatePathForWorkspaces(candidate, args.workspaces);
   if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
     const matches = args.workspaces
       .map((workspace) => ({
@@ -199,10 +240,12 @@ export function resolveFilesNavigationTarget<W extends Pick<FilesWorkspace, "roo
       }))
       .filter(({ rootPath }) => isPathEqualOrDescendant(normalizedCandidate, rootPath))
       .sort((left, right) => {
+        // The deepest root owns the path: lane worktrees live inside the primary
+        // checkout, so a chat in Primary quoting another lane's file matches both.
+        if (right.rootPath.length !== left.rootPath.length) return right.rootPath.length - left.rootPath.length;
         const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
         const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
-        if (rightMatchesLane !== leftMatchesLane) return rightMatchesLane - leftMatchesLane;
-        return right.rootPath.length - left.rootPath.length;
+        return rightMatchesLane - leftMatchesLane;
       });
 
     const match = matches[0];
@@ -428,13 +471,13 @@ export async function probeWorkspacePath(args: {
   workspaceId: string;
   path: string;
   pin: OpenProjectBinding | null | undefined;
+  refreshIndex?: boolean;
 }): Promise<WorkspacePathProbe> {
   const quickOpen = typeof window !== "undefined" ? window.ade?.files?.quickOpen : undefined;
   if (typeof quickOpen !== "function") return { kind: "file", path: args.path };
 
   const normalized = normalizePath(args.path).replace(/^\/+/, "").replace(/\/+$/, "");
   if (!normalized.length) return { kind: "missing" };
-  const hasSeparator = normalized.includes("/");
   // A bare name is searched by name; a full path is searched by itself so an
   // exact hit ranks at all in a repo with many same-named files.
   const query = normalized;
@@ -446,6 +489,7 @@ export async function probeWorkspacePath(args: {
       query,
       limit: PATH_PROBE_LIMIT,
       includeIgnored: false,
+      ...(args.refreshIndex ? { refreshIndex: true } : {}),
     }, args.pin);
   } catch {
     // A failed probe must not swallow the click: fall back to the old
@@ -462,16 +506,79 @@ export async function probeWorkspacePath(args: {
     return { kind: "directory", path: normalized };
   }
 
-  if (hasSeparator) return { kind: "missing" };
-
-  // Bare name: match on the basename, since the index returns full paths.
-  const matches = items.filter((item) => {
-    const segments = normalizePath(item.path).toLowerCase().split("/");
-    return segments[segments.length - 1] === lowered;
-  });
+  // Not relative to the workspace root as written: a bare name, or a path the
+  // agent gave from inside a subfolder. Any indexed file ending in those
+  // segments is a candidate, and the index ranks them ahead of loose matches.
+  const suffix = `/${lowered}`;
+  const matches = items.filter((item) => normalizePath(item.path).toLowerCase().endsWith(suffix));
   if (matches.length === 1) return { kind: "file", path: normalizePath(matches[0]!.path) };
   if (matches.length > 1) return { kind: "ambiguous", query: normalized };
   return { kind: "missing" };
+}
+
+/** Real read of a path the index does not know, for a file it has not indexed yet. */
+async function workspaceFileIsMissing(args: {
+  workspaceId: string;
+  path: string;
+  pin: OpenProjectBinding | null | undefined;
+}): Promise<boolean> {
+  const readFile = typeof window !== "undefined" ? window.ade?.files?.readFile : undefined;
+  if (typeof readFile !== "function") return false;
+  try {
+    await readFile({ workspaceId: args.workspaceId, path: args.path }, args.pin);
+    return false;
+  } catch (error) {
+    // Anything other than "not there" (a binary refusal, a permission error) is
+    // better explained by the workbench than by a false "can't find it".
+    return /does not exist|ENOENT|no such file/i.test(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * Whether a path printed in a terminal can be opened, for its hover link: same
+ * rules as a click on one in chat, with cached roots and only one real read.
+ * A relative path is tried against the terminal's own folder first.
+ */
+export async function probeTerminalPath(args: {
+  location: WorkspacePathLocation;
+  laneId: string | null;
+  cwd: string | null;
+  pin: OpenProjectBinding | null;
+}): Promise<{ openable: boolean; path: string }> {
+  const closed = { openable: false, path: args.location.path };
+  let workspaces = await loadFilesWorkspaces(args.pin);
+  if (workspaces.length === 0) workspaces = await loadFilesWorkspaces(args.pin, true);
+  const target = resolveFilesNavigationTarget({
+    path: args.location,
+    workspaces,
+    fallbackLaneId: args.laneId,
+  });
+  if (!target) return closed;
+  const workspace = target.workspace
+    ?? workspaces.find((candidate) => candidate.laneId === target.laneId)
+    ?? null;
+  if (!workspace) return closed;
+
+  if (!target.workspace && args.cwd) {
+    const root = normalizePath(workspace.rootPath);
+    const cwd = normalizePath(args.cwd);
+    if (isPathEqualOrDescendant(cwd, root)) {
+      const joined = `${cwd.replace(/\/+$/, "")}/${target.openFilePath}`;
+      const relative = joined.slice(root.length).replace(/^\/+/, "");
+      const probe = await probeWorkspacePath({ workspaceId: workspace.id, path: relative, pin: args.pin });
+      if (probe.kind === "file" && normalizePath(probe.path).toLowerCase() === relative.toLowerCase()) {
+        return { openable: true, path: joined };
+      }
+      if (probe.kind === "directory") return { openable: true, path: joined };
+    }
+  }
+
+  const probe = await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: args.pin });
+  if (probe.kind !== "missing") return { openable: true, path: args.location.path };
+  // The index misses new files. Only a name that looks like a file earns a read.
+  if (!target.openFilePath.includes("/") || !/\.[A-Za-z0-9]{1,8}$/.test(target.openFilePath)) return closed;
+  const missing = await workspaceFileIsMissing({ workspaceId: workspace.id, path: target.openFilePath, pin: args.pin });
+  return missing ? closed : { openable: true, path: args.location.path };
 }
 
 export function useWorkspacePathOpener(args: {
@@ -553,9 +660,14 @@ export function useWorkspacePathOpener(args: {
     const workspace = target.laneId
       ? resolvedWorkspaces.find((candidate) => candidate.laneId === target.laneId) ?? null
       : null;
-    const probe = workspace
+    let probe: WorkspacePathProbe = workspace
       ? await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin })
-      : ({ kind: "file", path: target.openFilePath } as const);
+      : { kind: "file", path: target.openFilePath };
+    // A bare name has nothing else to read, so a file an agent just created is
+    // only found by walking the workspace again, once, on this click.
+    if (probe.kind === "missing" && workspace && !target.openFilePath.includes("/")) {
+      probe = await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin, refreshIndex: true });
+    }
 
     if (probe.kind === "missing") {
       // A miss is only authoritative for a BARE name, where the index is the
@@ -565,13 +677,18 @@ export function useWorkspacePathOpener(args: {
       // runs unless the Files or Git tools panel is open. It also excludes
       // gitignored files and `dist`/`node_modules`/`coverage` outright, and
       // stops at 25,000 files. So the file an agent just created — the single
-      // most common thing to click — would be reported as missing forever.
-      // Open it and let a real read error speak for itself, which is what
-      // clicking a path did before the probe existed.
-      if (!target.openFilePath.includes("/")) {
+      // most common thing to click — must not be reported missing on the
+      // index's word alone: read it first.
+      const hasDirectory = target.openFilePath.includes("/");
+      if (
+        !hasDirectory
+        || (workspace && await workspaceFileIsMissing({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin }))
+      ) {
         showToast({
           title: "Can't find that file",
-          message: `Nothing named ${target.openFilePath} in ${workspace?.name ?? "this project"}.`,
+          message: hasDirectory
+            ? `${target.openFilePath} doesn't exist in ${workspace?.name ?? "this project"}.`
+            : `Nothing named ${target.openFilePath} in ${workspace?.name ?? "this project"}.`,
           tone: "error",
         });
         return;

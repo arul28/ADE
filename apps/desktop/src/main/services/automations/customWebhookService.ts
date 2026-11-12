@@ -619,10 +619,17 @@ export function createCustomWebhookService(deps: CustomWebhookServiceDeps) {
       deps.onDeliveriesChanged?.(hookId);
     }).catch((error: unknown) => {
       deps.logger.warn("automations.webhook_dispatch_failed", { hookId, error: errorMessage(error) });
-      deps.db.run(
-        "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
-        [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
-      );
+      // Nobody awaits this chain: a project database that stopped answering
+      // must not throw again from here as an unhandled rejection.
+      try {
+        deps.db.run(
+          "update automation_webhook_deliveries set outcome = 'error', detail = ?, dedupe_key = null where project_id = ? and id = ?",
+          [`The run could not start: ${errorMessage(error)}`, deps.projectId, deliveryId],
+        );
+      } catch (writeError: unknown) {
+        deps.logger.warn("automations.webhook_delivery_outcome_write_failed", { hookId, error: errorMessage(writeError) });
+        return;
+      }
       deps.onDeliveriesChanged?.(hookId);
     });
   };

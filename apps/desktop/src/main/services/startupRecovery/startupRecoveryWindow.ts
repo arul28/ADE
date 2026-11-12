@@ -250,7 +250,7 @@ export function createStartupRecoveryWindow(args: {
   });
   // The page asks for the height its content needs, so each state fits.
   ipcMain.on(IPC.startupRecoveryFit, (event, height: unknown) => {
-    if (!fromThisWindow(event, IPC.startupRecoveryFit) || !win || typeof height !== "number" || !Number.isFinite(height)) return;
+    if (!fromThisWindow(event, IPC.startupRecoveryFit) || !win || win.isDestroyed() || typeof height !== "number" || !Number.isFinite(height)) return;
     const next = Math.round(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, height)));
     const [, current] = win.getContentSize();
     if (current !== next) win.setContentSize(WINDOW_WIDTH, next);

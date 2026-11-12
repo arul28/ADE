@@ -1,25 +1,41 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useAppStoreApi } from "../../state/appStore";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
+import { ADE_CLOUD_MACHINE_ID } from "./useAdeCloudLaneTarget";
+import type { CreateLaneAdeCloud } from "./CreateLaneDialog";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import type { CloudTierId } from "../../../shared/cloudTiers";
+import { adeCloudLaunchProblem, adeCloudStartBranchReady, startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
-import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
+import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
 import { startSourceBranch } from "./laneStartOptions";
 import { loadLaneStartMenuData } from "./useLaneStartMenuData";
 import { getNewLaneDefaultsCached, saveNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { branchNameProblem, renderLaneBranchName, renderLaneBranchPrefix } from "../../../shared/laneBranchName";
-import { dismissToast, showToast } from "../app/toast/toastStore";
+import { dismissToast, READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import {
+  allowPendingLaneCreateStop,
+  beginPendingLaneCreate,
+  endPendingLaneCreate,
+  isProjectTabOnScreen,
+  laneCreatedToastId,
+  laneCreateFailureToastId,
+  markPendingLaneCreateSetup,
+} from "../../lib/pendingLaneCreates";
+import { upsertLaneSummary } from "../prs/tabs/GitHubTabCreateLaneDialog";
 import {
   canCreateLaneOnMachine,
   type LaneMachineOption,
 } from "./laneMachines";
-import type { LaneBranchOption } from "./laneUtils";
+import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
 import type {
   BranchPullRequest,
   ChatLaunchLaneConfig,
-  LaneEnvInitEvent,
+  CreateLaneArgs,
   LaneEnvInitProgress,
   LaneLinearIssue,
   LaneSummary,
@@ -29,13 +45,13 @@ import type {
 } from "../../../shared/types";
 import { useLaneEmojiSuggestion } from "./useLaneEmojiSuggestion";
 
-type CreateSetupPhase =
-  | "creating"
-  | "appearance"
-  | "refreshing"
-  | "environment";
+type CreateLaneBehavior = "create" | "configure-for-chat";
 
-export type CreateLaneBehavior = "stay-open-setup" | "close-on-create" | "configure-for-chat";
+/** Where a created lane lives when that is not the tab's machine (`pin` set). */
+export type CreatedLaneMachine = { machineId: string; pin: OpenProjectBinding | null };
+
+/** Told once the lane exists and the lane list has it, before its setup runs. */
+export type LaneCreatedHandler = (lane: LaneSummary, machine: CreatedLaneMachine) => void;
 
 /**
  * The lane recipe a "configure-for-chat" dialog hands back. It is the launch's
@@ -56,21 +72,49 @@ export type CreateLanePrefill = {
 };
 
 /* ---------------------------------------------------------------------------
- * Detached background env setup (close-on-create mode).
+ * Background create and setup.
  *
- * The Work-tab pane that opens the dialog can unmount the moment the lane is
- * created, so env setup must not be tied to any component lifetime. These
- * module-level helpers run the setup and surface a sticky, retryable failure
- * toast entirely outside React.
+ * The dialog closes when the user submits, and the page that held it can be
+ * gone a moment later, so nothing here is tied to a component. These
+ * module-level helpers create the lane, run its setup, keep the Lanes
+ * sidebar's "Creating…" row current (`pendingLaneCreates`), and report a
+ * failure in a sticky toast that can retry.
  * ------------------------------------------------------------------------- */
 
-type DetachedSetupParams = {
+/** Where one background flow runs. Fixed at submit, the same for every call in it. */
+type LaneFlowScope = {
+  /** The project tab that started the flow (`selectActiveProjectStateKey`). */
+  scopeKey: string | null;
+  machineId: string;
+  /** The lane's machine when it is not the tab's own: the user's pick. */
+  pin: OpenProjectBinding | null;
+  /**
+   * The binding every call goes to: `pin`, else the tab's own binding as it
+   * was at submit. An unpinned call follows the active tab, and the user is
+   * free to switch tabs while this runs; it would then reach another project,
+   * or be refused after the lane is already made.
+   */
+  callPin: OpenProjectBinding;
+};
+
+type DetachedSetupParams = LaneFlowScope & {
   laneId: string;
   laneName: string;
   templateId: string;
-  projectRoot: string | null;
-  /** The lane's machine when it is not the tab's; setup runs there. */
-  pin: OpenProjectBinding | null;
+};
+
+type DetachedCreateParams = LaneFlowScope & {
+  name: string;
+  /** New branch: the create args. Existing branch: the branch to open. */
+  request: { mode: "new"; args: Omit<CreateLaneArgs, "name"> } | { mode: "existing"; branchRef: string };
+  color: string | null;
+  emoji: string | null;
+  templateId: string;
+  /** The starting tab's own lane refresh; the global one writes another store. */
+  refreshLanes: () => Promise<void>;
+  /** Puts the new lane in the starting tab's list with no read, whatever tab is on screen. */
+  addLaneToList: (lane: LaneSummary) => void;
+  onCreated?: LaneCreatedHandler;
 };
 
 /**
@@ -84,77 +128,248 @@ function pinArg(pin: OpenProjectBinding | null): [] | [OpenProjectBinding] {
 async function applyLaneEnvSetup(
   laneId: string,
   templateId: string,
-  pin: OpenProjectBinding | null,
+  pin: OpenProjectBinding,
 ): Promise<LaneEnvInitProgress> {
   return templateId
-    ? await window.ade.lanes.applyTemplate({ laneId, templateId }, ...pinArg(pin))
-    : await window.ade.lanes.initEnv({ laneId }, ...pinArg(pin));
-}
-
-function normalizedProjectRoot(root: string | null | undefined): string | null {
-  return root?.trim() || null;
+    ? await window.ade.lanes.applyTemplate({ laneId, templateId }, pin)
+    : await window.ade.lanes.initEnv({ laneId }, pin);
 }
 
 function getActiveProjectRoot(): string | null {
   return selectActiveProjectRoot(useAppStore.getState());
 }
 
-function isDetachedSetupProjectActive(params: DetachedSetupParams): boolean {
-  return normalizedProjectRoot(getActiveProjectRoot()) === normalizedProjectRoot(params.projectRoot);
+/** The machine a pending row is filed under: none for the tab's own machine. */
+function pendingMachineId(scope: LaneFlowScope): string | null {
+  return scope.pin ? scope.machineId : null;
+}
+
+function errorMessage(error: unknown): string {
+  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
 }
 
 function setupFailureToastId(laneId: string): string {
   return `lane-setup-failed:${laneId}`;
 }
 
-function showSetupFailureToast(params: DetachedSetupParams, detail?: string): void {
+/** The step that failed and why, for the toast. */
+function setupFailureDetail(progress: LaneEnvInitProgress): string {
+  const failed = progress.steps.find((step) => step.status === "failed");
+  if (!failed) return "Environment setup failed. Retry to finish setting up this lane.";
+  return `${failed.label} failed${failed.error ? `: ${failed.error}` : "."} Retry to finish setting up this lane.`;
+}
+
+function showSetupFailureToast(params: DetachedSetupParams, detail: string): void {
   showToast({
     // Keyed by lane so a retry replaces the existing toast in place.
     id: setupFailureToastId(params.laneId),
-    title: params.laneName,
-    message: detail ?? "Environment setup failed. Retry to finish setting up this lane.",
+    // The colon keeps the lane name out of the toast's log event name.
+    title: `Lane setup failed: ${params.laneName}`,
+    message: detail,
+    // The lane name is the person's own text, and an error can quote a path.
+    replayMask: { title: true, message: true },
     tone: "error",
     durationMs: 0,
     actions: [{
       label: "Retry",
-      onClick: () => runDetachedLaneSetup(params),
+      onClick: () => {
+        const pendingId = beginPendingLaneCreate({
+          name: params.laneName,
+          scopeKey: params.scopeKey,
+          machineId: pendingMachineId(params),
+        });
+        markPendingLaneCreateSetup(pendingId, params.laneId);
+        void runLaneSetup(params).finally(() => endPendingLaneCreate(pendingId));
+      },
     }],
   });
 }
 
-/** Run env setup for an already-created lane, detached from any component. */
-function runDetachedLaneSetup(params: DetachedSetupParams): void {
+/** Run env setup for a lane that exists. A failure leaves a toast that can retry. */
+async function runLaneSetup(params: DetachedSetupParams): Promise<void> {
+  try {
+    const progress = await applyLaneEnvSetup(params.laneId, params.templateId, params.callPin);
+    if (progress.overallStatus === "failed") {
+      showSetupFailureToast(params, setupFailureDetail(progress));
+    } else {
+      // A successful retry must clear the sticky failure toast; on the first
+      // run this is a no-op.
+      dismissToast(setupFailureToastId(params.laneId));
+    }
+  } catch (err) {
+    showSetupFailureToast(params, errorMessage(err));
+  }
+}
+
+function showCreateFailureToast(params: DetachedCreateParams, detail: string): void {
+  showToast({
+    id: laneCreateFailureToastId(params.scopeKey, params.name),
+    // The colon keeps the lane name out of the toast's log event name.
+    title: `Could not create lane: ${params.name}`,
+    message: detail,
+    // The lane name is the person's own text, and an error can quote a path.
+    replayMask: { title: true, message: true },
+    tone: "error",
+    durationMs: 0,
+    actions: [{
+      label: "Try again",
+      onClick: () => runDetachedLaneCreate(params),
+    }],
+  });
+}
+
+/**
+ * Create a lane and set it up, detached from any component.
+ *
+ * Every call goes to `params.callPin` for the whole flow: the create, its
+ * Stop, the appearance, and the setup.
+ */
+function runDetachedLaneCreate(params: DetachedCreateParams): void {
+  const { pin, callPin, machineId } = params;
+  const operationId = crypto.randomUUID();
+  // Whether the lane's machine stopped the create, once Stop was pressed.
+  let stopAnswer: Promise<boolean> | null = null;
+  const pendingId = beginPendingLaneCreate({
+    name: params.name,
+    scopeKey: params.scopeKey,
+    machineId: pendingMachineId(params),
+    // Stops the git checkout of the create. A create that has not reached git
+    // yet, or is past it, cannot stop; the button then comes back.
+    stop: () => {
+      const answer = window.ade.lanes.cancelGitWrite({ operationId }, callPin)
+        .then((result) => Boolean(result?.cancelled))
+        .catch(() => false);
+      stopAnswer = answer;
+      void answer.then((cancelled) => {
+        if (!cancelled) allowPendingLaneCreateStop(pendingId);
+      });
+    },
+  });
+
   void (async () => {
     try {
-      if (!isDetachedSetupProjectActive(params)) {
-        showSetupFailureToast(params, "Open the original project to retry this lane setup.");
+      let lane: LaneSummary;
+      try {
+        lane = params.request.mode === "existing"
+          ? await window.ade.lanes.importBranch(
+            { branchRef: params.request.branchRef, name: params.name, operationId },
+            callPin,
+          )
+          : await window.ade.lanes.create(
+            { ...params.request.args, name: params.name, operationId },
+            callPin,
+          );
+      } catch (err) {
+        // A create the machine stopped for the user is not a failure to
+        // report. One that failed for its own reason while Stop was out is.
+        const stopped = stopAnswer ? await stopAnswer : false;
+        console.warn(`create_lane.${stopped ? "stopped" : "failed"}`, err);
+        if (!stopped) showCreateFailureToast(params, errorMessage(err));
         return;
       }
-      const progress = await applyLaneEnvSetup(params.laneId, params.templateId, params.pin);
-      if (progress.overallStatus === "failed") {
-        showSetupFailureToast(params, "Environment setup failed. Retry to finish setting up this lane.");
-      } else {
-        // A successful retry must clear the sticky failure toast; on the first
-        // run this is a no-op.
-        dismissToast(setupFailureToastId(params.laneId));
+      markPendingLaneCreateSetup(pendingId, lane.id);
+      // An earlier failure for this name is answered now; its "Try again"
+      // would make a second lane.
+      dismissToast(laneCreateFailureToastId(params.scopeKey, params.name));
+      // A fallback the brain had to take (a failed fetch, a copy that did not
+      // apply) is worth a word; the lane itself is fine.
+      const notes = lane.createdFrom?.notes ?? [];
+      if (notes.length > 0) {
+        showToast({
+          title: `${lane.name} was created`,
+          message: notes.join(" "),
+          // A note can name another lane or quote a git error.
+          replayMask: { title: true, message: true },
+          tone: "warning",
+          durationMs: READABLE_TOAST_DURATION_MS,
+        });
       }
-    } catch (err) {
-      showSetupFailureToast(params, err instanceof Error ? err.message : String(err));
+
+      if (params.color || params.emoji) {
+        const appearance = {
+          ...(params.color ? { color: params.color } : {}),
+          ...(params.emoji ? { emoji: params.emoji } : {}),
+        };
+        try {
+          await window.ade.lanes.updateAppearance({ laneId: lane.id, ...appearance }, callPin);
+          lane = { ...lane, ...appearance };
+        } catch (err) {
+          // Appearance is optional and must not block lane creation.
+          console.warn("create_lane.appearance_failed", err);
+        }
+      }
+
+      if (pin) {
+        // Another machine has no change feed here; the shared union re-reads it.
+        requestCrossMachineLanesForMachine(machineId);
+      } else {
+        // Into the tab's own list first, with no read: a read goes through the
+        // tab on screen, which can be another project's by now.
+        params.addLaneToList(lane);
+        if (isProjectTabOnScreen(params.scopeKey)) {
+          // The lane is made either way; a failed re-read must not stop its setup.
+          await params.refreshLanes().catch((err: unknown) => {
+            console.warn("create_lane.refresh_failed", err);
+          });
+        }
+      }
+      if (isProjectTabOnScreen(params.scopeKey)) {
+        try {
+          params.onCreated?.(lane, { machineId, pin });
+        } catch (err) {
+          // The caller's follow-up must not cost the lane its setup.
+          console.warn("create_lane.on_created_failed", err);
+        }
+      } else if (pin || callPin.kind === "remote") {
+        // No page to hand it to, and the "Lane created" toast follows the tab
+        // on screen: a lane on a machine the user picked, or on a remote tab's
+        // own machine, would finish without a word. A lifecycle toast for the
+        // same lane has the same id and takes this one's place.
+        showToast({
+          id: laneCreatedToastId(lane.id),
+          title: lane.name,
+          message: "Lane created",
+          replayMask: { title: true },
+          tone: "success",
+        });
+      }
+
+      await runLaneSetup({
+        scopeKey: params.scopeKey,
+        machineId,
+        pin,
+        callPin,
+        laneId: lane.id,
+        laneName: lane.name,
+        templateId: params.templateId,
+      });
+    } finally {
+      endPendingLaneCreate(pendingId);
     }
   })();
 }
 
+const NO_MACHINES: LaneMachineOption[] = [];
+
 /**
- * Self-contained host for {@link CreateLaneDialog}: owns all of the create-lane
- * form state, base-branch loading, submit + env-setup orchestration, and the
- * two post-create behaviors.
+ * The ref a new ADE Cloud computer can check out: a fresh clone has only the
+ * remote's branches, so a local branch goes by its remote copy's name.
+ */
+function cloudBranchRef(branchName: string, branches: LaneBranchOption[]): string {
+  const branch = branches.find((candidate) => candidate.name === branchName);
+  if (!branch || branch.isRemote) return branchName;
+  const plain = stripRemotePrefix(branch.name);
+  return branches.find((candidate) => candidate.isRemote && stripRemotePrefix(candidate.name) === plain)?.name ?? branchName;
+}
+
+/**
+ * Self-contained host for {@link CreateLaneDialog}: owns the create-lane form
+ * state, base-branch loading, and the submit.
  *
- * - `stay-open-setup` (Lanes tab): keeps today's flow. After the lane record
- *   is created it navigates (via `onCreated`) and keeps the dialog open to
- *   stream env-setup progress, with in-dialog error + "Retry setup".
- * - `close-on-create` (Work tab): closes the dialog as soon as the lane record
- *   exists and runs env setup in the background; a failure surfaces a sticky,
- *   retryable toast instead of in-dialog UI.
+ * - `create`: checks the form, closes the dialog, and creates the lane in the
+ *   background (`runDetachedLaneCreate`). The lane lists show the progress, so
+ *   the user is free to leave the page.
+ * - `configure-for-chat`: creates nothing; hands the checked recipe back.
  *
  * Memoized: the chat pane mounts a closed host and re-renders on every streamed
  * event; with stable props a closed dialog must not re-render its whole form.
@@ -164,31 +379,44 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   onOpenChange,
   behavior,
   prefill,
-  onCreated,
+  onCreateStarted,
   onConfigured,
-  onBusyChange,
   onNavigateToTemplates,
   onOpenLinearSettings,
+  adeCloudTierId = null,
+  onChooseAdeCloudTier,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   behavior: CreateLaneBehavior;
   prefill?: CreateLanePrefill | null;
   /**
-   * Called after the lane record is created + refreshed (before env setup).
-   * `machine` names the machine the lane was created on when it is not the
-   * tab's (`pin` set); `lane.id` is only meaningful on that machine.
+   * Called when a create starts. The handler it returns is called once the
+   * lane exists and this tab's lane list was re-read, which can be long after
+   * this host is gone; it must decide for itself whether the user is still
+   * there. It is not called once another project tab is on screen.
    */
-  onCreated?: (lane: LaneSummary, machine?: { machineId: string; pin: OpenProjectBinding | null }) => void;
+  onCreateStarted?: () => LaneCreatedHandler;
   /** "configure-for-chat" only: the validated recipe, with no lane created. */
   onConfigured?: (config: NewLaneDraftConfig) => void;
-  /** Mirrors the in-flight create/setup state so callers can guard forced closes. */
-  onBusyChange?: (busy: boolean) => void;
   onNavigateToTemplates?: () => void;
   onOpenLinearSettings?: () => void;
+  /**
+   * "configure-for-chat" for a draft bound for ADE Cloud: the draft's size.
+   * The place is fixed, so the size takes the machine row's place.
+   */
+  adeCloudTierId?: CloudTierId | null;
+  /** Changes the draft's size (`adeCloudTierId`). */
+  onChooseAdeCloudTier?: (tier: CloudTierId) => void;
 }) {
+  // Configuring a draft creates nothing and owns no machine.
+  const configureForChat = behavior === "configure-for-chat";
   const boundLanes = useAppStore((s) => s.lanes);
+  // This tab's own store, not the global one: the background create keeps them.
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const tabStore = useAppStoreApi();
+  const tabBinding = useAppStore((s) => s.projectBinding);
+  const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
   const [createLaneName, setCreateLaneName] = useState("");
@@ -207,17 +435,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
   const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
   const [createGitUserName, setCreateGitUserName] = useState<string>("");
-  const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
-  const [laneCreated, setLaneCreated] = useState(false);
-  const [createSetupPhase, setCreateSetupPhase] = useState<CreateSetupPhase | null>(null);
-  const createEnvInitLaneIdRef = useRef<string | null>(null);
-  /** Machine the created lane lives on; env setup and retries go there. */
-  const createdLaneMachineRef = useRef<{ machineId: string; pin: OpenProjectBinding | null } | null>(null);
-  /** The create in flight, so Cancel can stop its git checkout on the lane's machine. */
-  const createOperationRef = useRef<{ operationId: string; pin: OpenProjectBinding | null } | null>(null);
-  const [createCancelRequested, setCreateCancelRequested] = useState(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
@@ -247,6 +465,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     targetPinKey,
     targetPinRef,
     setPickedMachineId,
+    adeCloud,
+    adeCloudPicked,
+    repoOriginUrl,
   } = useLaneMachineChoice(open);
 
   const {
@@ -258,7 +479,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     nameChanged: laneNameChangedEmoji,
   } = useLaneEmojiSuggestion({
     name: createLaneName,
-    enabled: open && behavior !== "configure-for-chat" && !createBusy && !laneCreated,
+    enabled: open && !configureForChat,
     pin: targetPin,
     pinKey: targetPinKey,
   });
@@ -292,32 +513,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   }, [boundLanes, pinnedLanes, selectedTarget, targetPin]);
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
-  // Mirror busy so callers can block a forced close mid-create (parity with the
-  // old `handleCreateDialogOpenChange` guard).
-  const busyRef = useRef(false);
-  useEffect(() => {
-    busyRef.current = createBusy;
-    onBusyChange?.(createBusy);
-  }, [createBusy, onBusyChange]);
-
-  // Env-init progress events for the lane currently being created. Only matters
-  // while the dialog is open (stay-open mode); close-on-create runs setup
-  // detached after the dialog is gone. Gated on `open` so a mounted-but-closed
-  // host never touches the env-event bridge.
-  useEffect(() => {
-    if (!open) return;
-    return window.ade.lanes.onEnvEvent((event: LaneEnvInitEvent) => {
-      if (event.progress.laneId !== createEnvInitLaneIdRef.current) return;
-      setCreateEnvInitProgress(event.progress);
-    });
-  }, [open]);
-
   const resetCreateDialogState = useCallback(() => {
-    createEnvInitLaneIdRef.current = null;
-    createdLaneMachineRef.current = null;
     createStartUserPickedRef.current = false;
     createBaseBranchesLoadSeqRef.current += 1;
-    setLaneCreated(false);
     setCreateLaneName("");
     setEditedBranchName(null);
     setCreateBranchProblem(null);
@@ -325,10 +523,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateStartState(DEFAULT_LANE_START);
     setNewLaneDefaults(null);
     setCreateImportBranch("");
-    setCreateBusy(false);
     setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase(null);
     setSelectedTemplateId("");
     setCreateSelectedColor(null);
     resetLaneEmoji();
@@ -446,7 +641,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       defaults: { start: createStart },
     })
       .then(setNewLaneDefaults)
-      .catch((error: unknown) => setCreateError(error instanceof Error ? error.message : String(error)));
+      .catch((error: unknown) => setCreateError(errorMessage(error)));
   }, [createStart, targetPinRef]);
 
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
@@ -460,13 +655,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     resetLaneEmoji();
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
-    setCreateBusy(false);
     setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase(null);
-    setLaneCreated(false);
-    createEnvInitLaneIdRef.current = null;
-    createdLaneMachineRef.current = null;
     setPickedMachineId("");
     // Form data starts on the tab's machine; picking another machine reloads it
     // from there (effect below).
@@ -495,7 +684,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
 
   /** Picking a machine only chooses where the lane goes; nothing is rebound. */
   const handleSelectMachine = useCallback((machineId: string) => {
-    if (createBusy || laneCreated || machineId === selectedMachineId) return;
+    if (machineId === selectedMachineId) return;
+    if (machineId === ADE_CLOUD_MACHINE_ID) {
+      setCreateError(null);
+      setPickedMachineId(machineId);
+      return;
+    }
     const machine = machines.find((candidate) => candidate.id === machineId);
     if (!machine || !canCreateLaneOnMachine(machine)) return;
     if (!machineTargets.has(machineId)) {
@@ -504,14 +698,14 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     }
     setCreateError(null);
     setPickedMachineId(machineId);
-  }, [createBusy, laneCreated, machineTargets, machines, selectedMachineId, setPickedMachineId]);
+  }, [machineTargets, machines, selectedMachineId, setPickedMachineId]);
 
   // Reload the form's branches, templates and identity from the chosen
   // machine once its Primary lane is known. Keyed so a lane-list refresh of the
   // same machine does not reset what the user already picked.
   const targetPrimaryId = primaryLane?.id ?? null;
   useEffect(() => {
-    if (!open || laneCreated || createBusy) return;
+    if (!open) return;
     const key = `${targetPinKey ?? "bound"}::${targetPrimaryId ?? ""}`;
     if (machineDataKeyRef.current === key) return;
     loadMachineData(targetPinRef.current, primaryLane);
@@ -519,85 +713,58 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, targetPinKey, targetPrimaryId]);
 
+  /*
+   * ADE Cloud as the lane's place. From the Lanes tab it is one more choice in
+   * the machine chip; from the "+" of a draft bound for ADE Cloud it is fixed
+   * and the size takes the machine row's place. The form keeps reading the
+   * tab's machine: the new computer clones the pushed project.
+   */
+  const adeCloudFixed = configureForChat && adeCloudTierId != null;
+  const adeCloudOnLane = adeCloudFixed || (!configureForChat && adeCloudPicked);
+  const handleChooseAdeCloud = useCallback(() => handleSelectMachine(ADE_CLOUD_MACHINE_ID), [handleSelectMachine]);
+  const adeCloudDialog = useMemo<CreateLaneAdeCloud | null>(() => {
+    if (!adeCloudFixed && (configureForChat || !adeCloud.offered)) return null;
+    return {
+      choice: adeCloudFixed
+        ? null
+        : {
+          selected: adeCloudPicked,
+          unavailableReason: adeCloud.unavailableReason,
+          detail: adeCloud.detail,
+          onSelect: handleChooseAdeCloud,
+        },
+      picked: adeCloudOnLane,
+      fixed: adeCloudFixed,
+      tiers: adeCloud.tiers,
+      tierId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId,
+      defaultTier: adeCloud.defaultTier,
+      onChooseTier: adeCloudFixed && onChooseAdeCloudTier ? onChooseAdeCloudTier : adeCloud.chooseTier,
+      onSetDefaultTier: adeCloud.setDefaultTier,
+      problem: adeCloudOnLane ? cloudLaneStartBlock(adeCloud.account, { newLane: true })?.message ?? null : null,
+    };
+  }, [
+    adeCloud.account,
+    adeCloud.chooseTier,
+    adeCloud.defaultTier,
+    adeCloud.detail,
+    adeCloud.offered,
+    adeCloud.setDefaultTier,
+    adeCloud.tierId,
+    adeCloud.tiers,
+    adeCloud.unavailableReason,
+    adeCloudFixed,
+    adeCloudOnLane,
+    adeCloudPicked,
+    adeCloudTierId,
+    configureForChat,
+    handleChooseAdeCloud,
+    onChooseAdeCloudTier,
+  ]);
+
   const handleConnectMachine = useCallback(() => {
-    if (createBusy || laneCreated) return;
     onOpenChange(false);
     openConnectionsPanel("machines");
-  }, [createBusy, laneCreated, onOpenChange]);
-
-  const createSetupStatus = useMemo(() => {
-    switch (createSetupPhase) {
-      case "creating":
-        return createMode === "existing"
-          ? "Opening the branch in a new lane..."
-          : createStart.on === "remote"
-            ? "Fetching, then creating the lane's branch..."
-            : "Creating the lane's branch...";
-      case "appearance":
-        return "Saving lane appearance...";
-      case "refreshing":
-        return "Refreshing the lane list...";
-      case "environment":
-        return selectedTemplateId ? "Applying the lane template..." : "Running lane environment setup...";
-      default:
-        return laneCreated ? "Lane exists. Finish setup or retry the failed step." : null;
-    }
-  }, [createMode, createSetupPhase, createStart.on, laneCreated, selectedTemplateId]);
-
-  const createSetupSteps = useMemo<CreateLaneSetupStep[]>(() => {
-    if (!createBusy && !laneCreated) return [];
-    const laneLabel = createMode === "existing" ? "Open the branch in a new lane" : "Create the lane's branch";
-    let laneState: CreateLaneSetupStep["state"];
-    if (createSetupPhase === "creating") laneState = "active";
-    else if (laneCreated) laneState = "done";
-    else laneState = "pending";
-    const steps: CreateLaneSetupStep[] = [{
-      label: laneLabel,
-      detail: createMode === "new" && createStart.on === "remote"
-        ? "Fetch, then check out the branch in its own folder."
-        : "Check out the branch in its own folder.",
-      state: laneState,
-    }];
-    steps.push({
-      label: selectedTemplateId ? "Apply template" : "Initialize environment",
-      detail: selectedTemplateId
-        ? "Run the selected lane template setup."
-        : "Run the default lane setup checks.",
-      state: createSetupPhase === "environment" ? "active" : "pending",
-    });
-    return steps;
-  }, [createBusy, createMode, createSetupPhase, createStart.on, laneCreated, selectedTemplateId]);
-
-  /** Run post-create setup for a lane that already exists. Used as the retry path
-   *  when environment setup fails (stay-open mode). */
-  const runSetupForCreatedLane = useCallback(async (laneId: string) => {
-    setCreateBusy(true);
-    setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase("environment");
-
-    // Setup runs on the machine the lane was created on, not the current pick.
-    const pin = createdLaneMachineRef.current?.pin ?? null;
-    try {
-      const envProgress = selectedTemplateId
-        ? await window.ade.lanes.applyTemplate({ laneId, templateId: selectedTemplateId }, ...pinArg(pin))
-        : await window.ade.lanes.initEnv({ laneId }, ...pinArg(pin));
-      setCreateEnvInitProgress(envProgress);
-
-      if (envProgress.overallStatus === "failed") {
-        setCreateError("Environment setup failed. Review the progress log and retry.");
-        return;
-      }
-
-      resetCreateDialogState();
-      onOpenChange(false);
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreateSetupPhase(null);
-      setCreateBusy(false);
-    }
-  }, [selectedTemplateId, resetCreateDialogState, onOpenChange]);
+  }, [onOpenChange]);
 
   /**
    * The two form errors the submit button cannot express (everything else is in
@@ -635,12 +802,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   }, []);
 
   // Enter and the Create button can both fire while the branch-name check is
-  // still out, before `createBusy` is set: one submit at a time.
+  // still out: one submit at a time.
   const submittingRef = useRef(false);
   const submitCreate = useCallback(async () => {
     // Configure-for-chat: validate like a create, then hand the recipe back
     // instead of creating. The composer owns the deferred creation.
-    if (behavior === "configure-for-chat") {
+    if (configureForChat) {
       const error = validateLaneFormExtras();
       if (error) {
         setCreateError(error);
@@ -653,7 +820,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         mode: createMode,
         name: createLaneName.trim(),
         start: createMode === "new" ? createStart : null,
-        branchRef: createMode === "existing" ? createImportBranch : "",
+        branchRef: createMode === "existing"
+          ? (adeCloudFixed ? cloudBranchRef(createImportBranch, createBranches) : createImportBranch)
+          : "",
         ...(typedBranch ? { branchName: typedBranch } : {}),
         templateId: selectedTemplateId || null,
         color: createSelectedColor,
@@ -664,15 +833,68 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return;
     }
 
-    // If the lane was already created (e.g. env setup failed on a previous
-    // attempt), retry setup only; never re-run creation.
-    if (createEnvInitLaneIdRef.current) {
-      await runSetupForCreatedLane(createEnvInitLaneIdRef.current);
+    const name = createLaneName.trim();
+    if (!name) return;
+
+    // ADE Cloud: a lane-only launch makes the lane on a new computer. Its
+    // card shows in the launches slide-out, from the first frame.
+    if (adeCloudPicked) {
+      const extrasError = validateLaneFormExtras();
+      if (extrasError) {
+        setCreateError(extrasError);
+        return;
+      }
+      if (createMode === "existing" && !createImportBranch) return;
+      if (!tabBinding) {
+        setCreateError("This project is still opening. Try again in a moment.");
+        return;
+      }
+      const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
+      const typedProblem = typedBranch ? branchNameProblem(typedBranch) : null;
+      if (typedProblem) {
+        setCreateBranchProblem(typedProblem);
+        return;
+      }
+      const args = {
+        kind: "lane" as const,
+        mode: "background" as const,
+        launchId: crypto.randomUUID(),
+        laneId: crypto.randomUUID(),
+        laneName: name,
+        title: name,
+        prompt: "",
+        laneConfig: createMode === "existing"
+          ? { mode: "existing" as const, branchRef: cloudBranchRef(createImportBranch, createBranches), templateId: selectedTemplateId || null, color: createSelectedColor }
+          : {
+            mode: "new" as const,
+            start: createStart,
+            ...(typedBranch ? { branchName: typedBranch } : {}),
+            templateId: selectedTemplateId || null,
+            color: createSelectedColor,
+            linearIssue: createSelectedLinearIssue,
+          },
+      };
+      const problem = adeCloudLaunchProblem({
+        args: { ...args, cloud: { sizeId: adeCloud.tierId } },
+        originUrl: repoOriginUrl,
+        account: adeCloud.account,
+      });
+      if (problem) {
+        setCreateError(problem);
+        return;
+      }
+      // A picked branch must be on GitHub before the computer is made ("Push this branch?").
+      const branchReady = await adeCloudStartBranchReady(args.laneConfig);
+      if (!branchReady.go) {
+        if (branchReady.error) setCreateError(branchReady.error);
+        return;
+      }
+      resetCreateDialogState();
+      onOpenChange(false);
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, originUrl: repoOriginUrl, binding: tabBinding });
       return;
     }
 
-    const name = createLaneName.trim();
-    if (!name || createBusy) return;
     // Always asks: never create on a machine nobody chose.
     const machineId = selectedMachineId;
     if (!machineId || !machineTargets.has(machineId)) {
@@ -700,101 +922,51 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
     if (typedBranch && !(await branchNameIsFree(typedBranch, pin))) return;
 
-    setCreateBusy(true);
-    setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase("creating");
-    const operationId = crypto.randomUUID();
-    createOperationRef.current = { operationId, pin };
-    setCreateCancelRequested(false);
-
-    try {
-      const linearIssueArgs = createSelectedLinearIssue
-        ? {
-          linearIssue: {
-            ...createSelectedLinearIssue,
-            branchName: resolveLinearIssueBranchName(createSelectedLinearIssue),
-          },
-          branchName: resolveLinearIssueBranchName(createSelectedLinearIssue),
-        }
-        : {};
-      let lane: LaneSummary;
-      if (createMode === "existing") {
-        lane = await window.ade.lanes.importBranch({ branchRef: createImportBranch, name, operationId }, ...pinArg(pin));
-      } else {
-        lane = await window.ade.lanes.create({
-          name,
-          start: createStart,
-          ...linearIssueArgs,
-          ...(typedBranch ? { branchName: typedBranch } : {}),
-          operationId,
-        }, ...pinArg(pin));
-      }
-      createOperationRef.current = null;
-      // A fallback the brain had to take (a failed fetch, a copy that did not
-      // apply) is worth a word; the lane itself is fine.
-      const notes = lane.createdFrom?.notes ?? [];
-      if (notes.length > 0) {
-        showToast({ title: `${lane.name} was created`, message: notes.join(" "), tone: "warning" });
-      }
-
-      // Lane created successfully: record its id (and machine) so retries skip
-      // creation and run setup on the same machine.
-      createEnvInitLaneIdRef.current = lane.id;
-      createdLaneMachineRef.current = { machineId, pin };
-      setLaneCreated(true);
-
-      if (createSelectedColor || createSelectedEmoji) {
-        try {
-          setCreateSetupPhase("appearance");
-          await window.ade.lanes.updateAppearance({
-            laneId: lane.id,
-            ...(createSelectedColor ? { color: createSelectedColor } : {}),
-            ...(createSelectedEmoji ? { emoji: createSelectedEmoji } : {}),
-          }, ...pinArg(pin));
-        } catch {
-          // Appearance is optional and must not block lane creation.
-        }
-      }
-
-      setCreateSetupPhase("refreshing");
-      if (pin) {
-        // Another machine has no change feed here; the shared union re-reads it.
-        requestCrossMachineLanesForMachine(machineId);
-      } else {
-        await refreshLanes();
-      }
-      onCreated?.(lane, { machineId, pin });
-
-      if (behavior === "close-on-create") {
-        // Detach env setup from this component's lifetime; the opening pane may
-        // unmount as soon as the lane exists. Capture everything the background
-        // runner needs before we reset/close.
-        const detachParams: DetachedSetupParams = {
-          laneId: lane.id,
-          laneName: lane.name,
-          templateId: selectedTemplateId,
-          projectRoot: activeProjectRoot,
-          pin,
-        };
-        resetCreateDialogState();
-        onOpenChange(false);
-        runDetachedLaneSetup(detachParams);
-        return;
-      }
-
-      // stay-open-setup: keep the dialog open and stream env-setup progress.
-      await runSetupForCreatedLane(lane.id);
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : String(err));
-      setCreateSetupPhase(null);
-      setCreateBusy(false);
-    } finally {
-      createOperationRef.current = null;
-      setCreateCancelRequested(false);
+    // Every background call is pinned: the chosen machine, else this tab's own.
+    const callPin = pin ?? tabBinding;
+    if (!callPin) {
+      setCreateError("This project is still opening. Try again in a moment.");
+      return;
     }
+
+    const issueBranchName = createSelectedLinearIssue
+      ? resolveLinearIssueBranchName(createSelectedLinearIssue)
+      : null;
+    // The form is checked: the rest runs in the background. Everything it
+    // needs is captured here, before the reset clears the form.
+    const params: DetachedCreateParams = {
+      name,
+      request: createMode === "existing"
+        ? { mode: "existing", branchRef: createImportBranch }
+        : {
+          mode: "new",
+          args: {
+            start: createStart,
+            ...(createSelectedLinearIssue && issueBranchName
+              ? {
+                linearIssue: { ...createSelectedLinearIssue, branchName: issueBranchName },
+                branchName: issueBranchName,
+              }
+              : {}),
+            ...(typedBranch ? { branchName: typedBranch } : {}),
+          },
+        },
+      color: createSelectedColor,
+      emoji: createSelectedEmoji,
+      templateId: selectedTemplateId,
+      scopeKey: tabScopeKey,
+      machineId,
+      pin,
+      callPin,
+      refreshLanes,
+      addLaneToList: (lane) => tabStore.setState((prev) => ({ lanes: upsertLaneSummary(prev.lanes, lane) })),
+      onCreated: onCreateStarted?.(),
+    };
+    resetCreateDialogState();
+    onOpenChange(false);
+    runDetachedLaneCreate(params);
   }, [
-    behavior,
+    configureForChat,
     createLaneName,
     editedBranchName,
     branchNameIsFree,
@@ -803,21 +975,27 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     createStart,
     newLaneDefaults,
     createImportBranch,
-    createBusy,
-    refreshLanes,
-    onCreated,
+    onCreateStarted,
     onConfigured,
     resetCreateDialogState,
     onOpenChange,
-    runSetupForCreatedLane,
     selectedTemplateId,
     createSelectedColor,
     createSelectedEmoji,
     createSelectedLinearIssue,
-    activeProjectRoot,
+    tabScopeKey,
+    tabBinding,
+    tabStore,
+    refreshLanes,
     validateLaneFormExtras,
     selectedMachineId,
     machineTargets,
+    adeCloudPicked,
+    adeCloud.tierId,
+    adeCloud.account,
+    repoOriginUrl,
+    createBranches,
+    adeCloudFixed,
   ]);
   const handleCreateSubmit = useCallback(async () => {
     if (submittingRef.current) return;
@@ -829,63 +1007,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     }
   }, [submitCreate]);
 
-  // Stops the git checkout of the create in flight. A create that has not
-  // reached git yet, or is past it, cannot stop; the button then comes back.
-  const handleCancelCreate = useCallback(() => {
-    const operation = createOperationRef.current;
-    if (!operation) return;
-    setCreateCancelRequested(true);
-    void window.ade.lanes.cancelGitWrite({ operationId: operation.operationId }, ...pinArg(operation.pin))
-      .then((result) => {
-        if (!result?.cancelled) setCreateCancelRequested(false);
-      })
-      .catch(() => setCreateCancelRequested(false));
-  }, []);
-
-  const handleDialogOpenChange = useCallback((next: boolean) => {
-    // Never dismiss the dialog while a create/setup is in flight.
-    if (!next && busyRef.current) return;
-    onOpenChange(next);
-  }, [onOpenChange]);
-
-  // Configuring a draft creates nothing and owns no machine; the two behaviors
-  // differ in one bundle of props, kept here instead of nine ternaries inline.
-  const configureForChat = behavior === "configure-for-chat";
-  const behaviorChrome: {
-    envInitProgress: LaneEnvInitProgress | null;
-    laneCreated: boolean;
-    setupStatus: string | null;
-    setupSteps: CreateLaneSetupStep[];
-    submitLabelOverride: string | null;
-    machines: LaneMachineOption[];
-    onSelectMachine: ((machineId: string) => void) | undefined;
-    onConnectMachine: (() => void) | undefined;
-  } = configureForChat
-    ? {
-        envInitProgress: null,
-        laneCreated: false,
-        setupStatus: null,
-        setupSteps: [],
-        submitLabelOverride: "Use this setup",
-        machines: [],
-        onSelectMachine: undefined,
-        onConnectMachine: undefined,
-      }
-    : {
-        envInitProgress: createEnvInitProgress,
-        laneCreated,
-        setupStatus: createSetupStatus,
-        setupSteps: createSetupSteps,
-        submitLabelOverride: null,
-        machines,
-        onSelectMachine: handleSelectMachine,
-        onConnectMachine: handleConnectMachine,
-      };
-
   return (
     <CreateLaneDialog
       open={open}
-      onOpenChange={handleDialogOpenChange}
+      onOpenChange={onOpenChange}
       createLaneName={createLaneName}
       setCreateLaneName={handleSetCreateLaneName}
       createBranchName={createBranchName}
@@ -904,10 +1029,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       lanes={lanes}
       onSubmit={handleCreateSubmit}
       machineRequired={!configureForChat}
-      busy={createBusy}
-      onCancelBusy={createSetupPhase === "creating" && !createCancelRequested ? handleCancelCreate : undefined}
+      submitLabelOverride={configureForChat ? "Use this setup" : null}
+      machines={configureForChat ? NO_MACHINES : machines}
+      onSelectMachine={configureForChat ? undefined : handleSelectMachine}
+      onConnectMachine={configureForChat ? undefined : handleConnectMachine}
       error={createError}
-      {...behaviorChrome}
       templates={templates}
       selectedTemplateId={selectedTemplateId}
       setSelectedTemplateId={setSelectedTemplateId}
@@ -926,6 +1052,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       selectedMachineId={selectedMachineId}
+      adeCloud={adeCloudDialog}
     />
   );
 });

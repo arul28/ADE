@@ -39,6 +39,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY, syncUpgradeHelloEnvelope } from "./sharedSyncListener";
@@ -83,6 +84,7 @@ import {
   mobileAppTooOldHelloError,
   sendSyncProtocolVersionMismatchAndClose,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
   SyncProtocolVersionMismatchError,
 } from "./syncProtocol";
 import { isMobileAppBuildTooOld } from "../../../../desktop/src/shared/syncMobileCompatibility";
@@ -125,12 +127,23 @@ import {
   ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
+  createTerminalInputDedupeLedger,
   isRuntimeHostPairingRecord,
   isSyncHostRecoveryPairingRecord,
+  REQUIRED_SEND_MAX_BUFFERED_BYTES,
   type SyncForeignChatTranscriptResolver,
   type SyncProjectCatalogProvider,
+  type TerminalInputDedupeLedger,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
+import {
+  closeSocketQuietly,
+  createSyncTerminalStreams,
+  type SyncTerminalProjectResolver,
+  type SyncTerminalTarget,
+} from "./syncTerminalStreams";
+import type { PendingTerminalSnapshotBarrier } from "./syncTerminalSnapshotBarrier";
+import { syncTerminalProjectTarget } from "./syncTerminalTargets";
 import { supportedAdoptChannelAeads } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
   issueAdoptChallenge,
@@ -204,6 +217,26 @@ type BrainProjectActionsSyncHandlerArgs = {
   /** Runs `command` envelopes that name a registered project in that project. */
   projectCommandRouter?: BrainProjectCommandRouter;
   /**
+   * Open projects of this machine, for `terminal_*` envelopes that name one.
+   * With it, a socket parked here streams any open project's terminals.
+   */
+  terminalProjects?: SyncTerminalProjectResolver;
+  /**
+   * The input ledger this brain shares with its project sync hosts, so a phone
+   * that resends input after it moves between them cannot apply it twice.
+   */
+  terminalInputDedupeLedger?: TerminalInputDedupeLedger;
+  /** True while a project sync host owns new sockets on the shared listener. */
+  projectHostAttached?: () => boolean;
+  /** Subscribe to a project sync host attaching to the shared listener. */
+  onProjectHostAttached?: (listener: () => void) => () => void;
+  /**
+   * Start the sync host for the project this machine's catalog names as open.
+   * A browser's first connection takes that project from the catalog without
+   * switching to it, so nothing else would start its host.
+   */
+  activateProjectHost?: () => Promise<void>;
+  /**
    * One bounded product-analytics capture per completed host repair. The brain
    * is the durable owner boundary here: the tap happens on a phone or a
    * browser, but only this side knows whether the repair actually worked, and
@@ -221,6 +254,8 @@ type BrainPeerState = SyncRosterPeerState & {
   ws: WebSocket;
   lifecycleGeneration: number;
   authenticated: boolean;
+  /** Its `hello_ok` went out, so a close now is a reconnect and not a failed connect. */
+  helloAnswered: boolean;
   authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
@@ -237,6 +272,14 @@ type BrainPeerState = SyncRosterPeerState & {
   envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
   /** The sealed-adoption challenge this socket was issued, single use. */
   adoptChallenge: AdoptChallengeState | null;
+  /** Terminal streams (see `syncTerminalStreams.ts`). */
+  subscribedSessionIds: Set<string>;
+  pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
+  nextTerminalSnapshotGeneration: number;
+  /** Terminal input runs here, beside the message queue (as on the project host). */
+  terminalInputQueue: Promise<void>;
+  /** Subscribe and unsubscribe envelopes queued on `messageQueue` and not finished. */
+  pendingTerminalOwnershipChanges: number;
 };
 
 const WS_OPEN = 1;
@@ -745,6 +788,73 @@ export function createBrainProjectActionsSyncHandler(
     send,
     isPeerBackpressured,
   });
+  // A project socket (a browser's or the phone's) is served here only until a
+  // project host attaches; closing it then makes the client reconnect onto
+  // that host. On a machine with no host yet (a new cloud machine) it otherwise
+  // kept this ingress's reduced hello (no lanes, no files) until a reload. A
+  // roster socket, and a desktop window's or another brain's runtime-only
+  // connection, are this ingress's for good: closing one would drop its calls.
+  const waitsForProjectHost = (metadata: SyncPeerMetadata | null | undefined): boolean =>
+    metadata != null
+    && !isRosterSyncPeer(metadata)
+    && !(metadata.capabilities ?? []).includes(SYNC_RUNTIME_ONLY_CAPABILITY);
+  const handOverToProjectHost = (peer: BrainPeerState): void => {
+    try {
+      peer.ws.close(1012, "This machine's project host is ready");
+    } catch {
+      // The socket is already going away.
+    }
+  };
+  args.onProjectHostAttached?.(() => {
+    for (const peer of [...peers]) {
+      // Before its hello is answered a close would fail the connection (and
+      // an account pairing) outright; the answer checks for the host instead.
+      if (!peer.helloAnswered || !waitsForProjectHost(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
+      args.logger.info("sync_brain.project_socket_handed_to_host", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+      });
+      handOverToProjectHost(peer);
+    }
+  });
+  // Terminals of every open project, routed by the project each envelope names.
+  const terminalStreams = createSyncTerminalStreams<BrainPeerState>({
+    logger: args.logger,
+    peers: () => peers,
+    isPeerReceiving: (peer) => peer.authenticated && peer.ws.readyState === WS_OPEN,
+    isPeerSocketOpen: (peer) => peer.ws.readyState === WS_OPEN,
+    isPeerLifecycleCurrent: (peer, generation) =>
+      peers.has(peer) && peer.lifecycleGeneration === generation && peer.ws.readyState === WS_OPEN,
+    isPeerConnected: (peer) => peers.has(peer) && peer.authenticated,
+    isPeerBackpressured: (peer) => isPeerBackpressured(peer.ws),
+    sendRequired: (peer, type, payload, requestId) => {
+      if (peer.ws.readyState !== WS_OPEN) return false;
+      // Same limit as the project host: a peer that does not drain is closed.
+      if (peer.ws.bufferedAmount >= REQUIRED_SEND_MAX_BUFFERED_BYTES) {
+        args.logger.warn("sync_brain.required_send_backpressured", {
+          type,
+          requestId: requestId ?? null,
+          bufferedAmount: peer.ws.bufferedAmount,
+        });
+        closeSocketQuietly(peer.ws, 1013, "Required sync response backpressured");
+        return false;
+      }
+      return send(peer.ws, type, payload, requestId);
+    },
+    send: (peer, type, payload) => {
+      send(peer.ws, type, payload);
+    },
+    peerDeviceId: (peer) => optionalString(peer.metadata?.deviceId),
+    closePeer: (peer, code, reason) => closeSocketQuietly(peer.ws, code, reason),
+    hostedBackend: null,
+    ...(args.terminalProjects ? { resolveProject: args.terminalProjects } : {}),
+    dedupeLedger: args.terminalInputDedupeLedger ?? createTerminalInputDedupeLedger(),
+    logPrefix: "sync_brain",
+  });
+  // This ingress has a terminal resolver only when it was given one.
+  const terminalCapable = Boolean(args.terminalProjects);
+  /** The project a `terminal_*` envelope names, or null when this ingress has no resolver. */
+  const terminalTargetFor = (envelope: ReturnType<typeof parseSyncEnvelope>): SyncTerminalTarget | null =>
+    terminalCapable ? syncTerminalProjectTarget(envelope) : null;
   const routedCommands = createBrainRoutedCommandHandler<BrainPeerState>({
     router: args.projectCommandRouter,
     send,
@@ -1211,6 +1321,27 @@ export function createBrainProjectActionsSyncHandler(
         }, envelope.requestId);
         break;
       }
+      case "terminal_subscribe":
+      case "terminal_unsubscribe":
+      case "terminal_history":
+      case "terminal_resize": {
+        // No project of its own: an envelope that names no project is refused.
+        const target = terminalTargetFor(envelope);
+        if (!target) {
+          args.logger.warn("sync_brain.terminal_envelope_without_project", {
+            type: envelope.type,
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+          });
+          break;
+        }
+        await terminalStreams.handleEnvelope(peer, envelope, target, peer.lifecycleGeneration);
+        break;
+      }
+      case "terminal_input": {
+        // A null target answers a missing project with a `project_mismatch` ack.
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
+        break;
+      }
       case "changeset_batch":
       case "changeset_ack":
         // No project DB here: nothing to apply and nothing ever sent to ack.
@@ -1235,6 +1366,7 @@ export function createBrainProjectActionsSyncHandler(
       ws,
       lifecycleGeneration: 0,
       authenticated: false,
+      helloAnswered: false,
       authKind: null,
       authTimeout: null,
       metadata: null,
@@ -1245,6 +1377,11 @@ export function createBrainProjectActionsSyncHandler(
       commandChain: Promise.resolve(),
       envelopeChunks: createSyncEnvelopeChunkAssembler(),
       adoptChallenge: null,
+      subscribedSessionIds: new Set(),
+      pendingTerminalSnapshots: new Map(),
+      nextTerminalSnapshotGeneration: 0,
+      terminalInputQueue: Promise.resolve(),
+      pendingTerminalOwnershipChanges: 0,
       ...createSyncRosterPeerState(),
     };
     peers.add(peer);
@@ -1353,6 +1490,9 @@ export function createBrainProjectActionsSyncHandler(
     // One queue for every envelope this socket sends: frames, and a hello
     // that came with the upgrade request (`X-ADE-Hello`), which goes first.
     const enqueueEnvelope = (envelope: ReturnType<typeof parseSyncEnvelope>, lifecycleGeneration: number): void => {
+      const changesTerminalOwnership = envelope.type === "terminal_subscribe"
+        || envelope.type === "terminal_unsubscribe";
+      if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
       peer.messageQueue = peer.messageQueue.catch(() => {}).then(async () => {
         if (!isPeerCurrent(lifecycleGeneration)) return;
 
@@ -1726,6 +1866,14 @@ export function createBrainProjectActionsSyncHandler(
             if (auth?.kind === "account") {
               return await authenticateAccountHello(auth);
             }
+            if (auth?.kind === "guest") {
+              // Lane sharing is served only by a project sync host: a shared
+              // lane lives in a project, and this ingress has none open.
+              return authFail(
+                "The computer that shared this lane has no project open right now. Try again later.",
+                "lane_share_unavailable",
+              );
+            }
             if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
             if (transportOrigin === "relay-bridge") {
               authFailure.code = "relay_account_required";
@@ -1750,6 +1898,10 @@ export function createBrainProjectActionsSyncHandler(
             // rejecting machine so clients never drop a saved pairing over a
             // rejection they cannot attribute to the paired machine.
             const rejectingHost = brainMetadata();
+            reportHelloRejected(
+              { logger: args.logger, hello, transportOrigin, hostDeviceId: () => rejectingHost.deviceId },
+              authFailure.code,
+            );
             send(ws, "hello_error", {
               code: authFailure.code,
               // A named cause when a branch supplied one; the generic wording
@@ -1833,7 +1985,8 @@ export function createBrainProjectActionsSyncHandler(
               ? args.getCloudRelayWssUrl?.() ?? null
               : null,
             relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
-            terminalInputAckEnabled: false,
+            terminalInputAckEnabled: terminalCapable,
+            rosterTerminalEnabled: terminalCapable,
             // Handed back only on first-time account adoption, so the device
             // can reconnect directly later with a real paired secret instead of
             // depending on the relay every time.
@@ -1861,10 +2014,25 @@ export function createBrainProjectActionsSyncHandler(
             ? send(ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId)
             : send(ws, "hello_ok", helloOkPayload, envelope.requestId);
           if (helloOkSent) {
+            reportPeerAccepted({ logger: args.logger, hello, transportOrigin, hostDeviceId: () => brainMetadata().deviceId });
             if (negotiatedCompression) {
               brainPeerCompressionBySocket.set(ws, negotiatedCompression);
             } else {
               brainPeerCompressionBySocket.delete(ws);
+            }
+            peer.helloAnswered = true;
+            if (waitsForProjectHost(hello.peer)) {
+              if (args.projectHostAttached?.()) {
+                // A host attached while this hello was being checked.
+                handOverToProjectHost(peer);
+              } else {
+                // Handed over when the host attaches (onProjectHostAttached).
+                void args.activateProjectHost?.().catch((error) => {
+                  args.logger.warn("sync_brain.project_host_activation_failed", {
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                });
+              }
             }
           }
           return;
@@ -1879,6 +2047,30 @@ export function createBrainProjectActionsSyncHandler(
         args.logger.warn("sync_brain.envelope_failed", {
           error: error instanceof Error ? error.message : String(error),
           peerDeviceId: peer.metadata?.deviceId ?? null,
+        });
+      }).finally(() => {
+        if (changesTerminalOwnership) {
+          peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
+        }
+      });
+    };
+    // Terminal input skips the message queue, as on the project host, so a slow
+    // request cannot delay an attached shell. It waits for the queue only while a
+    // subscribe or unsubscribe is pending on this socket.
+    const runTerminalInput = (envelope: ReturnType<typeof parseSyncEnvelope>, lifecycleGeneration: number): void => {
+      const priorInput = peer.terminalInputQueue.catch(() => {});
+      const ownershipBarrier = peer.pendingTerminalOwnershipChanges > 0
+        ? peer.messageQueue.catch(() => {})
+        : Promise.resolve();
+      const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
+        if (!isPeerCurrent(lifecycleGeneration) || !peer.authenticated) return;
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
+      });
+      peer.terminalInputQueue = work.catch((error) => {
+        args.logger.warn("sync_brain.terminal_input_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          requestId: envelope.requestId,
         });
       });
     };
@@ -1970,6 +2162,10 @@ export function createBrainProjectActionsSyncHandler(
       ) {
         return;
       }
+      if (peer.authenticated && envelope.type === "terminal_input") {
+        runTerminalInput(envelope, lifecycleGeneration);
+        return;
+      }
       enqueueEnvelope(envelope, lifecycleGeneration);
     });
     ws.on("error", (error) => {
@@ -1998,6 +2194,8 @@ export function createBrainProjectActionsSyncHandler(
       peer.pairingRecord = null;
       clearInterval(chatSubscriptionPump);
       peer.chatSubscriptions.clear();
+      peer.pendingTerminalSnapshots.clear();
+      terminalStreams.releasePeer(peer);
       pairedChannelService.closePeer(ws, "Sync socket closed.", false);
       args.logger.info("sync_brain.peer_closed", {
         code,

@@ -34,6 +34,19 @@ Archived lanes are listed by `ade archive list --kind lane --text`. The user
 restores or deletes them in Settings → Archive; see the `ade-cli-control-plane`
 skill for the archive commands.
 
+## Sharing a lane with another person
+
+```bash
+ade lanes share --lane <lane> --text                       # who has access, state, preset, made by
+ade lanes share --lane <lane> --add <email> [--ends 1w]    # a Watch share: they see, they cannot act
+ade lanes share --lane <lane> --remove <email|grant id>
+```
+
+An agent can make only a Watch share: the person sees the lane's chats and
+sessions and cannot send, run or approve anything. The lane's computer
+refuses more rights, and at most 5 shares an hour. To give more rights or
+change a share, ask the user to open the share sheet in the ADE app.
+
 ## Lane templates and dependencies
 
 New lanes are plain git worktrees. ADE does not copy, link, or install packages

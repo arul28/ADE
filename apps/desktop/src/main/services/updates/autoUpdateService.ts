@@ -55,8 +55,16 @@ import { createTrackFeedPolicy } from "./updateTrackFeed";
 import type { LatestByTrackReader } from "./latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
+import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+/**
+ * The prepare limit for a Windows install. Prepare removes the brain's
+ * service there: it may wait the whole install lock, then runs several
+ * PowerShell calls in a row, so it gets the lock wait twice over. The app
+ * passes this; the service's own default stays the install watchdog.
+ */
+export const WINDOWS_PREPARE_WATCHDOG_MS = 2 * RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS;
 // A download that received nothing for this long is cancelled, and the next
 // check starts over (see downloadStallWatchdog.ts). Left alone, it would stay
 // pending and every later check would wait on it until ADE restarts.
@@ -202,6 +210,13 @@ type CreateAutoUpdateServiceArgs = {
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   platform?: NodeJS.Platform;
   installWatchdogMs?: number;
+  /**
+   * The limit for the prepare step alone; the install watchdog when not set.
+   * Inside the install watchdog a slow Windows machine answered
+   * `prepare_timeout` for a step that was still working
+   * (see {@link WINDOWS_PREPARE_WATCHDOG_MS}).
+   */
+  prepareWatchdogMs?: number;
   downloadStallMs?: number;
   downloadStallPollMs?: number;
   quitStagingSlowWarnMs?: number;
@@ -213,6 +228,10 @@ type CreateAutoUpdateServiceArgs = {
   autoApplySuppressionMs?: number;
   activityCheckMs?: number;
   autoCheckEnabled?: boolean;
+  /** A Linux package which must be updated by the package manager or by hand. */
+  manualInstallOnly?: boolean;
+  /** Fetches the newest stable release for a package managed outside ADE. */
+  checkManualRelease?: () => Promise<{ version: string; url: string | null } | null>;
   autoApplyEnabled?: boolean;
   /**
    * The machine's chosen update track (`~/.ade/update-track.json`). Read again
@@ -599,6 +618,7 @@ export function createAutoUpdateService({
   getDiskSpace = readDiskSpace,
   platform = process.platform,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
+  prepareWatchdogMs = installWatchdogMs,
   downloadStallMs = DEFAULT_DOWNLOAD_STALL_MS,
   downloadStallPollMs = DEFAULT_DOWNLOAD_STALL_POLL_MS,
   quitStagingSlowWarnMs = DEFAULT_QUIT_STAGING_SLOW_WARN_MS,
@@ -615,6 +635,8 @@ export function createAutoUpdateService({
   autoApplySuppressionMs = DEFAULT_AUTO_APPLY_SUPPRESSION_MS,
   activityCheckMs = DEFAULT_ACTIVITY_CHECK_MS,
   autoCheckEnabled = true,
+  manualInstallOnly = false,
+  checkManualRelease,
   autoApplyEnabled = autoCheckEnabled && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
   readSelectedTrack,
   writeSelectedTrack,
@@ -764,6 +786,8 @@ export function createAutoUpdateService({
 
   let snapshot: AutoUpdateSnapshot = {
     ...createEmptyAutoUpdateSnapshot(currentVersion),
+    installMode: manualInstallOnly ? "manual" : "automatic",
+    downloadUrl: manualInstallOnly ? `https://github.com/${releaseRepository}/releases/latest` : null,
     recentlyInstalled: initialState.recentlyInstalled,
     lastInstallFailed: initialState.failedInstall,
     ...trackPatch(),
@@ -1688,6 +1712,29 @@ export function createAutoUpdateService({
    * fire and forget; a caller that must know the outcome awaits it.
    */
   function checkForUpdates(options: { userInitiated?: boolean } = {}): Promise<void> {
+    if (manualInstallOnly) {
+      if (checkPromise) return checkPromise.then(() => undefined);
+      patchSnapshot({ status: "checking", error: null });
+      checkPromise = (async () => {
+        const release = await checkManualRelease?.();
+        if (!release || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(release.version)) {
+          throw new Error("Could not check the latest ADE release. Try again or open the download page.");
+        }
+        const newer = compareUpdateVersions(release.version, currentVersion) > 0;
+        patchSnapshot({
+          status: newer ? "ready" : "idle",
+          version: newer ? release.version : null,
+          latestKnownVersion: release.version,
+          downloadUrl: release.url || `https://github.com/${releaseRepository}/releases/latest`,
+          lastCheckedAt: nowMs(),
+          error: null,
+        });
+      })().catch((error: unknown) => {
+        logger.warn("autoUpdate.manual_release_check_failed", { message: formatErrorMessage(error) });
+        patchSnapshot({ status: "error", version: null, error: error instanceof Error ? error.message : String(error) });
+      }).finally(() => { checkPromise = null; });
+      return checkPromise.then(() => undefined);
+    }
     logger.info("autoUpdate.check_requested", {
       userInitiated: options.userInitiated === true,
       status: snapshot.status,
@@ -1740,17 +1787,18 @@ export function createAutoUpdateService({
     task: Promise<T>,
     phase: AutoUpdatePhase,
     timeoutMessage: string,
+    timeoutMs: number = installWatchdogMs,
   ): Promise<{ completed: true; value: T } | { completed: false }> {
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const timeoutResult = new Promise<{ completed: false }>((resolve) => {
       timeout = setTimeout(() => {
         logger.warn("autoUpdate.install_step_timed_out", {
           phase,
-          installWatchdogMs,
+          timeoutMs,
           message: timeoutMessage,
         });
         resolve({ completed: false });
-      }, installWatchdogMs);
+      }, timeoutMs);
     });
     const taskResult = task.then((value) => ({ completed: true as const, value }));
     try {
@@ -2301,6 +2349,7 @@ export function createAutoUpdateService({
       closeAfterInstall?: boolean;
     } = {},
   ): Promise<boolean> {
+    if (manualInstallOnly) return false;
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -2355,6 +2404,7 @@ export function createAutoUpdateService({
           Promise.resolve(beforeQuitAndInstall?.(resumeChats, { closeAfterInstall: options.closeAfterInstall === true })),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
+          prepareWatchdogMs,
         );
         if (!prepareResult.completed) {
           return await abortInstall("prepare_timeout", installReadySnapshot);
@@ -2525,6 +2575,7 @@ export function createAutoUpdateService({
    * installed yet.
    */
   function startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult {
+    if (manualInstallOnly) return { ok: false, target, reason: "This Linux installation must be updated manually." };
     if (!writeSelectedTrack) {
       return { ok: false, target, reason: "This build can't change its update track." };
     }
@@ -2584,6 +2635,7 @@ export function createAutoUpdateService({
    * caller puts the database copies back in `beforeQuitAndInstall`.
    */
   async function startGoBack(version: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (manualInstallOnly) return { ok: false, reason: "This Linux installation must be updated manually." };
     if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
       return { ok: false, reason: "An update is installing. Wait for ADE to restart." };
     }

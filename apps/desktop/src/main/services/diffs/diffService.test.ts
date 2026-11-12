@@ -334,6 +334,39 @@ describe("diffService", () => {
     }
   });
 
+  // A lane-sharing guest's diff read (`refuseIgnored`): an unstaged read opens
+  // the working-tree file, so never one git ignores, nothing under `.ade/`,
+  // and no link that resolves to either.
+  it.each<[string, string, boolean]>([
+    ["a tracked file", "alpha.txt", true],
+    ["a gitignored secret", ".env", false],
+    ["a file under .ade", ".ade/notes.md", false],
+    ["a link to a gitignored secret", "env-link", false],
+  ])("refuses a guest diff read of %s unless git tracks it", async (_label, relPath, readable) => {
+    if (relPath === "env-link" && process.platform === "win32") return;
+    const rootPath = initRepo("ade-diff-guest-");
+    const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });
+    try {
+      fs.writeFileSync(path.join(rootPath, ".gitignore"), ".env\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".env"), "TOKEN=secret-value\n", "utf8");
+      fs.mkdirSync(path.join(rootPath, ".ade"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, ".ade", "notes.md"), "notes\n", "utf8");
+      if (process.platform !== "win32") fs.symlinkSync(path.join(rootPath, ".env"), path.join(rootPath, "env-link"));
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\nedit\n", "utf8");
+      const diff = () => service.getFileDiff({ laneId: "lane-1", filePath: relPath, mode: "unstaged", refuseIgnored: true });
+      const patch = () => service.getFilePatch({ laneId: "lane-1", filePath: relPath, mode: "unstaged", refuseIgnored: true });
+      if (readable) {
+        await expect(diff()).resolves.toMatchObject({ modified: { text: "one\nedit\n" } });
+        await expect(patch()).resolves.toMatchObject({ patch: expect.stringContaining("+edit") });
+      } else {
+        await expect(diff()).rejects.toThrow("not shared");
+        await expect(patch()).rejects.toThrow("not shared");
+      }
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("rejects diff paths that contain null bytes", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-null-path-"));
     const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });

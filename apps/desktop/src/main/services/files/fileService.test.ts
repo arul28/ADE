@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -500,6 +501,44 @@ describe("fileService", () => {
     }
   });
 
+  // A lane-sharing guest's read (`refuseIgnored`): never a file git ignores,
+  // nothing under `.ade/`, and no link that resolves to either.
+  it.each<[string, string, boolean]>([
+    ["a tracked file", "src/index.ts", true],
+    ["a gitignored secret", ".env", false],
+    ["a file in a gitignored folder", "secrets/key.pem", false],
+    ["a file under .ade", ".ade/notes/project.md", false],
+    // Windows makes links only with Developer Mode or admin rights.
+    ...(process.platform === "win32" ? [] : [["a link to a gitignored secret", "src/env-link", false] as [string, string, boolean]]),
+  ])("refuses a guest read of %s unless git tracks it", async (_label, relPath, readable) => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-guest-"));
+    execFileSync("git", ["init"], { cwd: rootPath, stdio: "ignore" });
+    const service = createFileService({ laneService: createLaneServiceStub(rootPath) });
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, "secrets"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, ".ade", "notes"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, ".gitignore"), ".env\nsecrets/\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".env"), "TOKEN=1\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "secrets", "key.pem"), "KEY\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".ade", "notes", "project.md"), "notes\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export {};\n", "utf8");
+      if (relPath === "src/env-link") fs.symlinkSync(path.join(rootPath, ".env"), path.join(rootPath, "src", "env-link"));
+      // Each read starts only when the one before it is awaited: a rejection never waits unhandled.
+      const read = () => service.readFile({ workspaceId: "workspace-1", path: relPath, refuseIgnored: true });
+      const range = () => service.readFileRange({ workspaceId: "workspace-1", path: relPath, offset: 0, refuseIgnored: true });
+      if (readable) {
+        await expect(read()).resolves.toMatchObject({ content: "export {};\n" });
+        await expect(range()).resolves.toBeTruthy();
+      } else {
+        await expect(read()).rejects.toThrow("not shared");
+        await expect(range()).rejects.toThrow("not shared");
+      }
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("keeps useful dotfiles searchable while skipping volatile ADE runtime paths", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-volatile-"));
     const { execSync } = await import("node:child_process");
@@ -872,6 +911,21 @@ describe("fileService", () => {
       service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/notes.md", text: "# new\n" });
       expect(fs.readFileSync(path.join(rootPath, "docs", "notes.md"), "utf8")).toBe("# new\n");
 
+      // Chunked upload: each chunk lands at the byte it names, the receipt
+      // hashes the whole file, and a chunk at the wrong byte (a retry sent
+      // twice) is refused instead of corrupting it.
+      service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/blob.bin", text: Buffer.from([0, 1, 2]).toString("base64"), encoding: "base64" });
+      const receipt = service.writeWorkspaceText({
+        workspaceId: "workspace-1", path: "docs/blob.bin", text: Buffer.from([3, 4]).toString("base64"), encoding: "base64", offset: 3,
+      });
+      const whole = Buffer.from([0, 1, 2, 3, 4]);
+      expect(fs.readFileSync(path.join(rootPath, "docs", "blob.bin"))).toEqual(whole);
+      expect(receipt).toEqual({ path: "docs/blob.bin", bytes: 5, sha256: createHash("sha256").update(whole).digest("hex") });
+      expect(() =>
+        service.writeWorkspaceText({ workspaceId: "workspace-1", path: "docs/blob.bin", text: "AwQ=", encoding: "base64", offset: 3 }),
+      ).toThrow(/is 5 bytes/);
+      expect(fs.readFileSync(path.join(rootPath, "docs", "blob.bin"))).toEqual(whole);
+
       // Honest failure: an unwritable directory surfaces the filesystem error
       // instead of claiming success. Permission bits do not constrain root
       // (CAP_DAC_OVERRIDE in containerized CI) and chmod is a no-op on
@@ -909,6 +963,21 @@ describe("fileService", () => {
         service.writeWorkspaceText({ workspaceId: "workspace-1", path: ".git/config", text: "nope" }),
       ).toThrow(/\.git/i);
       expect(fs.existsSync(path.join(path.dirname(rootPath), "outside.txt"))).toBe(false);
+
+      // ADE's secrets stay out of reach however the path is spelled: `..`
+      // collapsed into `.ade/secrets`, or other letter case on a disk that
+      // ignores it. Remote apps read files through this service.
+      fs.mkdirSync(path.join(rootPath, ".ade", "secrets"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, ".ade", "secrets", "token.txt"), "secret", "utf8");
+      const disguised = ["docs/../.ade/secrets/token.txt", ...(process.platform === "linux" ? [] : [".ADE/Secrets/token.txt"])];
+      for (const spelled of disguised) {
+        await expect(service.readFile({ workspaceId: "workspace-1", path: spelled })).rejects.toThrow(/ADE runtime paths/);
+        expect(() =>
+          service.writeWorkspaceText({ workspaceId: "workspace-1", path: spelled, text: "overwritten" }),
+        ).toThrow(/ADE runtime paths/);
+      }
+      expect(fs.readFileSync(path.join(rootPath, ".ade", "secrets", "token.txt"), "utf8")).toBe("secret");
     } finally {
       removeTestTree(rootPath);
     }

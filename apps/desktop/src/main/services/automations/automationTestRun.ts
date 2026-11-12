@@ -172,6 +172,8 @@ export function safeTestRule(rule: AutomationRule): AutomationRule {
       ...rule.execution,
       laneMode: "require-on-trigger" as const,
       targetLaneId: null,
+      // A safe test runs here, in its test lane: never on a new ADE Cloud computer.
+      cloud: null,
       ...(rule.execution.session ? { session: { ...rule.execution.session, chatSessionId: null } } : {}),
       ...(rule.execution.builtIn ? { builtIn: { ...rule.execution.builtIn, actions: inTestLane(rule.execution.builtIn.actions) ?? [] } } : {}),
     }

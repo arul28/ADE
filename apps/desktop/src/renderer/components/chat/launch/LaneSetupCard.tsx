@@ -5,14 +5,14 @@ import {
   ArrowSquareOut,
   CaretRight,
   Check,
-  Circle,
+  Cloud,
   CloudArrowDown,
   Copy,
+  DownloadSimple,
   Files,
   HardDrives,
   Key,
   Lightning,
-  Minus,
   Package,
   Play,
   Scroll,
@@ -21,6 +21,7 @@ import {
   Stack,
   TerminalWindow,
   Trash,
+  UserCirclePlus,
   Warning,
   Wrench,
   X,
@@ -36,13 +37,16 @@ import type {
   LaneEnvInitStep,
 } from "../../../../shared/types";
 import {
+  CHAT_LAUNCH_REFUSED_TITLE,
   CHAT_LAUNCH_STAGE_ORDER,
   LANE_SETUP_CARD_TEMPLATE_METRIC,
+  chatLaunchErrorMessage,
   chatLaunchHasWarnings,
   chatLaunchStageDurationMs,
   chatLaunchStageLabel,
   formatChatLaunchDuration,
   isChatLaunchPending,
+  isChatLaunchRefused,
   isChatLaunchTerminal,
   laneSetupLaunchIdFromCardId,
 } from "../../../../shared/chatLaunch";
@@ -54,8 +58,6 @@ import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
 import { CHAT_LAUNCH_HYDRATE_RETRY_MS, getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
 import { useChatRuntimeScope } from "../ChatRuntimeScope";
-import { extractError } from "../../../lib/format";
-import { stripElectronErrorWrapper } from "../../../../shared/codedError";
 import { showToast } from "../../app/toast/toastStore";
 import { CHAT_CARD_WIDTH_CLASS } from "../chatCardPrimitives";
 import {
@@ -65,6 +67,26 @@ import {
 } from "./chatLaunchActions";
 import { LaunchProgressRail } from "./LaunchProgressRail";
 import { useLaunchDurationText } from "./launchClock";
+import { CloudMark } from "../../remoteTargets/cloudBrand";
+import {
+  Chip,
+  CloudDrift,
+  PHASE_TILE_TONE,
+  StageErrorCallout,
+  StageLine,
+  StatusMark,
+  StepCardHeader,
+  TILE_TONE,
+  TextAction,
+  copyStepCardDetails,
+  normalizeStatus,
+  stepCardFrameClass,
+} from "./stepCardParts";
+
+/** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
+function launchErrorText(raw: string): string {
+  return chatLaunchErrorMessage(raw, raw);
+}
 
 /**
  * The lane setup card: a header (phase tile, title, lane + base chips, live
@@ -89,37 +111,17 @@ import { useLaunchDurationText } from "./launchClock";
 
 export type LaneSetupCardVariant = "thread" | "compact";
 
-/* ── Status palette ─────────────────────────────────────────────────────── */
-
-type Status = ChatLaunchStageStatus | LaneEnvInitStep["status"];
-
-function normalizeStatus(status: Status): ChatLaunchStageStatus {
-  return status === "completed" ? "done" : status;
-}
-
-/** Tile tones by status; the Launches slide-out indexes the same palette. */
-export const TILE_TONE: Record<ChatLaunchStageStatus, string> = {
-  running: "border-violet-400/25 bg-violet-400/[0.12] text-violet-200",
-  done: "border-emerald-400/15 bg-emerald-400/[0.08] text-emerald-300/85",
-  warning: "border-amber-400/20 bg-amber-400/[0.08] text-amber-300/90",
-  failed: "border-amber-400/25 bg-amber-400/[0.10] text-amber-300",
-  skipped: "border-fg/[0.05] bg-fg/[0.02] text-fg/25",
-  pending: "border-fg/[0.06] bg-fg/[0.025] text-fg/30",
-};
-
-const LABEL_TONE: Record<ChatLaunchStageStatus, string> = {
-  running: "text-fg/90",
-  done: "text-fg/68",
-  warning: "text-amber-100/90",
-  failed: "text-amber-100/90",
-  skipped: "text-fg/35",
-  pending: "text-fg/40",
-};
-
 /* ── Icons ──────────────────────────────────────────────────────────────── */
 
 export function launchStageIcon(id: ChatLaunchStageId, context: { kind: ChatLaunchKind; templateName?: string | null }): Icon {
   switch (id) {
+    case "computer":
+      return Cloud;
+    case "join":
+      return UserCirclePlus;
+    case "clone":
+      // The repository comes down onto the new computer.
+      return DownloadSimple;
     case "fetch":
       return CloudArrowDown;
     case "checkout":
@@ -152,91 +154,6 @@ function launchKindForCardRows(rows: readonly AdeCardRow[]): ChatLaunchKind {
   return agentRow?.text === chatLaunchStageLabel("agent", { kind: "cli" }) ? "cli" : "chat";
 }
 
-/* ── Glyphs ──────────────────────────────────────────────────────────────── */
-
-function SpinnerRing({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 12 12"
-      className="motion-safe:animate-spin"
-      aria-hidden
-      data-launch-glyph="running"
-    >
-      <circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" strokeOpacity="0.22" strokeWidth="1.4" />
-      <path d="M6 1.4 A4.6 4.6 0 0 1 10.6 6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** The small status mark at the end of a row (and the slide-out row's leading mark). */
-export function LaunchStageGlyph({
-  status,
-  size = 12,
-}: {
-  status: Status;
-  size?: number;
-}) {
-  switch (normalizeStatus(status)) {
-    case "done":
-      return (
-        <span className="grid place-items-center text-emerald-300/80" data-launch-glyph="done">
-          <Check size={size - 1} weight="bold" aria-hidden />
-        </span>
-      );
-    case "running":
-      return <span className="grid place-items-center text-violet-300/90"><SpinnerRing size={size} /></span>;
-    case "warning":
-      return (
-        <span className="grid place-items-center text-amber-300/85" data-launch-glyph="warning">
-          <Warning size={size} weight="bold" aria-hidden />
-        </span>
-      );
-    case "failed":
-      return (
-        <span className="grid place-items-center text-amber-300/90" data-launch-glyph="failed">
-          <X size={size - 1} weight="bold" aria-hidden />
-        </span>
-      );
-    case "skipped":
-      return (
-        <span className="grid place-items-center text-fg/25" data-launch-glyph="skipped">
-          <Minus size={size - 1} weight="bold" aria-hidden />
-        </span>
-      );
-    default:
-      return (
-        <span className="grid place-items-center text-fg/20" data-launch-glyph="pending">
-          <Circle size={size - 1} weight="regular" aria-hidden />
-        </span>
-      );
-  }
-}
-
-/** A status mark that fades in when the status changes (CSS, transform/opacity only). */
-function StatusMark({ status, size }: { status: Status; size: number }) {
-  return (
-    <span key={normalizeStatus(status)} className="ade-launch-glyph-in grid h-4 w-4 shrink-0 place-items-center">
-      <LaunchStageGlyph status={status} size={size} />
-    </span>
-  );
-}
-
-function StageTile({ icon: IconComponent, status, compact }: { icon: Icon; status: Status; compact: boolean }) {
-  return (
-    <span
-      className={cn(
-        "grid shrink-0 place-items-center rounded-[6px] border transition-colors duration-300",
-        compact ? "h-[18px] w-[18px]" : "h-5 w-5",
-        TILE_TONE[normalizeStatus(status)],
-      )}
-      aria-hidden
-    >
-      <IconComponent size={compact ? 10.5 : 11.5} weight={normalizeStatus(status) === "running" ? "bold" : "regular"} />
-    </span>
-  );
-}
 
 /* ── Durations ──────────────────────────────────────────────────────────── */
 
@@ -265,7 +182,7 @@ function launchDurationMs(snapshot: ChatLaunchSnapshot, nowMs: number): number |
 function laneSetupTitle(snapshot: ChatLaunchSnapshot, nowMs = Date.now()): string {
   switch (snapshot.phase) {
     case "failed":
-      return "Lane setup failed";
+      return isChatLaunchRefused(snapshot) ? CHAT_LAUNCH_REFUSED_TITLE : "Lane setup failed";
     case "cancelled":
       return "Lane setup cancelled";
     case "completed": {
@@ -364,54 +281,6 @@ const EnvironmentSteps = React.memo(function EnvironmentSteps({ steps, compact }
   );
 });
 
-/** One stage line, shared by the live card and the transcript-payload fallback. */
-function StageLine({
-  icon,
-  status,
-  label,
-  detail,
-  percent,
-  trailing,
-  compact,
-}: {
-  icon: Icon;
-  status: ChatLaunchStageStatus;
-  label: string;
-  detail: string | null;
-  percent?: number | null;
-  trailing?: React.ReactNode;
-  compact: boolean;
-}) {
-  const stackDetail = compact && Boolean(detail);
-  return (
-    <div className={cn("flex min-w-0 gap-2.5", stackDetail ? "items-start py-1" : "items-center", compact ? "min-h-[28px]" : "h-[32px]")}>
-      <StageTile icon={icon} status={status} compact={compact} />
-      <div className={cn("flex min-w-0 flex-1 gap-2", stackDetail ? "flex-col items-stretch gap-0" : "items-baseline")}>
-        <span className={cn("shrink-0 transition-colors duration-200", LABEL_TONE[status])}>{label}</span>
-        {detail ? <span className="min-w-0 truncate text-fg/35" title={detail}>{detail}</span> : null}
-        {percent != null ? (
-          <span className="shrink-0 tabular-nums text-violet-200/80">{`${percent}%`}</span>
-        ) : null}
-      </div>
-      {trailing}
-      <StatusMark status={status} size={compact ? 11 : 12} />
-    </div>
-  );
-}
-
-/** The full error a failed or warned stage shows under its row (live card and payload fallback). */
-function StageErrorCallout({ error, className }: { error: string; className?: string }) {
-  return (
-    <p
-      className={cn(
-        "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
-        className,
-      )}
-    >
-      {error}
-    </p>
-  );
-}
 
 const StageRow = React.memo(function StageRow({
   stage,
@@ -419,16 +288,18 @@ const StageRow = React.memo(function StageRow({
   templateName,
   compact,
   showSteps,
+  cloud,
 }: {
   stage: ChatLaunchStage;
   kind: ChatLaunchKind;
   templateName: string | null;
   compact: boolean;
   showSteps: boolean;
+  cloud: boolean;
 }) {
   const context = { kind, templateName };
   const detail = stage.detail?.trim() || null;
-  const percent = stage.id === "checkout" && stage.status === "running" ? stage.percent : null;
+  const percent = (stage.id === "checkout" || stage.id === "clone") && stage.status === "running" ? stage.percent : null;
   return (
     <li data-testid="lane-setup-stage" data-stage-id={stage.id} data-stage-status={stage.status}>
       <StageLine
@@ -438,11 +309,12 @@ const StageRow = React.memo(function StageRow({
         detail={detail}
         percent={percent}
         compact={compact}
+        cloud={cloud}
         trailing={<StageDuration stage={stage} className="min-w-[3rem] shrink-0 text-right text-fg/35" />}
       />
       {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
         <StageErrorCallout
-          error={stage.error}
+          error={launchErrorText(stage.error)}
           className={compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]"}
         />
       ) : null}
@@ -459,7 +331,7 @@ function DetailsList({ snapshot, compact }: { snapshot: ChatLaunchSnapshot; comp
   if (snapshot.baseRef) rows.push(["Base", snapshot.baseRef, true]);
   if (snapshot.worktreePath) rows.push(["Worktree", snapshot.worktreePath, true]);
   if (snapshot.templateName) rows.push([LANE_SETUP_CARD_TEMPLATE_METRIC, snapshot.templateName]);
-  if (snapshot.error) rows.push(["Error", snapshot.error]);
+  if (snapshot.error) rows.push(["Error", launchErrorText(snapshot.error)]);
   if (rows.length === 0) return null;
   return (
     <dl
@@ -481,84 +353,29 @@ function DetailsList({ snapshot, compact }: { snapshot: ChatLaunchSnapshot; comp
   );
 }
 
-function TextAction({
-  children,
-  onClick,
-  tone = "default",
-  disabled,
-  testId,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  tone?: "default" | "primary";
-  disabled?: boolean;
-  testId?: string;
-}) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      disabled={disabled}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors disabled:cursor-default disabled:opacity-40",
-        tone === "primary"
-          ? "text-violet-200/90 hover:bg-violet-400/[0.10] hover:text-violet-100"
-          : "text-fg/45 hover:bg-fg/[0.04] hover:text-fg/80",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Chip({ children, title, mono }: { children: React.ReactNode; title?: string; mono?: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-px text-fg/55",
-        mono && "font-mono",
-      )}
-      title={title}
-    >
-      {children}
-    </span>
-  );
-}
-
-const PHASE_TILE_TONE: Record<ChatLaunchSnapshot["phase"], string> = {
-  running: TILE_TONE.running,
-  "awaiting-client": TILE_TONE.running,
-  completed: TILE_TONE.done,
-  failed: TILE_TONE.failed,
-  cancelled: TILE_TONE.skipped,
-};
 
 function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; metaSize: string }) {
   const failed = snapshot.phase === "failed";
+  const cloud = snapshot.cloud != null;
   const base = snapshot.baseRef ?? (snapshot.branchRef ? snapshot.branchRef.replace(/^refs\/heads\//, "") : null);
+  const makingComputer = cloud && snapshot.stages.some((stage) => stage.id === "computer" && stage.status === "running");
+  // Running ADE Cloud launches wear the blue; failed stays amber, done green.
+  const tileTone = cloud && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")
+    ? "adec-tile"
+    : PHASE_TILE_TONE[snapshot.phase];
   return (
-    <div className="flex min-w-0 items-start gap-2.5">
-      <span
-        className={cn("mt-px grid h-6 w-6 shrink-0 place-items-center rounded-[7px] border transition-colors duration-300", PHASE_TILE_TONE[snapshot.phase])}
-        aria-hidden
-      >
-        {failed ? <Warning size={13} weight="bold" /> : <LaneIcon size={13} weight="bold" />}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn("min-w-0 truncate font-medium", failed ? "text-amber-200/90" : "text-fg/82")}
-            data-testid="lane-setup-title"
-          >
-            {laneSetupTitle(snapshot)}
-          </span>
-          <LaunchElapsed snapshot={snapshot} className={cn("ml-auto text-fg/38", metaSize)} />
-        </div>
-        <div className={cn("mt-1 flex min-w-0 flex-wrap items-center gap-1.5", metaSize)}>
+    <StepCardHeader
+      backdrop={makingComputer ? <CloudDrift /> : null}
+      tileTone={tileTone}
+      tileIcon={failed ? <Warning size={13} weight="bold" /> : cloud ? <CloudMark size={13} bold /> : <LaneIcon size={13} weight="bold" />}
+      title={laneSetupTitle(snapshot)}
+      titleTestId="lane-setup-title"
+      failed={failed}
+      // A refused launch made nothing, so it has no time to show.
+      trailing={isChatLaunchRefused(snapshot) ? null : <LaunchElapsed snapshot={snapshot} className={cn("ml-auto text-fg/38", metaSize)} />}
+      metaSize={metaSize}
+      chips={(
+        <>
           <Chip title={snapshot.laneName}>
             <LaneIcon size={10} className="text-violet-300/80" />
             <span className="min-w-0 truncate"><LaneNamingLabel laneName={snapshot.laneName} naming={snapshot.laneNaming} /></span>
@@ -569,9 +386,9 @@ function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; meta
               <span className="min-w-0 truncate">{base}</span>
             </Chip>
           ) : null}
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    />
   );
 }
 
@@ -603,9 +420,25 @@ export function LaneSetupCard({
   const confirmAbortRef = useRef<AbortController | null>(null);
   const actions = laneSetupActions(snapshot);
   const failed = snapshot.phase === "failed";
+  // Refused before anything was made: the sentence, not a failed step.
+  const refused = isChatLaunchRefused(snapshot);
+  const cloudLaunch = snapshot.cloud != null;
+  /**
+   * What "Copy details" puts on the clipboard for a failed launch: the launch
+   * id, the step and the sentence the card shows. The snapshot carries no
+   * secret; nothing else goes in.
+   */
+  const copyFailureDetails = () => {
+    const failedStage = snapshot.stages.find((stage) => stage.status === "failed") ?? null;
+    copyStepCardDetails([
+      `Launch: ${snapshot.launchId}`,
+      failedStage ? `Step: ${chatLaunchStageLabel(failedStage.id, { kind: snapshot.kind, templateName: snapshot.templateName })} (${failedStage.id})` : null,
+      `What happened: ${chatLaunchErrorMessage(failedStage?.error?.trim() || snapshot.error?.trim() || "", "Setup stopped.")}`,
+    ], "launch details");
+  };
   const envStage = snapshot.stages.find((stage) => stage.id === "environment");
   const showEnvSteps = Boolean(detailsOpen || envStage?.status === "running" || envStage?.status === "failed");
-  const hasDetails = Boolean(snapshot.branchRef || snapshot.baseRef || snapshot.worktreePath || snapshot.templateName || snapshot.error);
+  const hasDetails = Boolean(snapshot.branchRef || snapshot.baseRef || snapshot.worktreePath || snapshot.templateName || (snapshot.error && !refused));
 
   const run = (name: string, action: () => Promise<void>) => {
     if (busy) return;
@@ -613,8 +446,8 @@ export function LaneSetupCard({
     setActionError(null);
     setNotice(null);
     void action()
-      // The host's own words (e.g. "This chat already started — …"), minus the IPC wrapper.
-      .catch((error: unknown) => setActionError(stripElectronErrorWrapper(extractError(error))))
+      // The host's own words (e.g. "This chat already started. …"), minus the IPC wrapper.
+      .catch((error: unknown) => setActionError(chatLaunchErrorMessage(error, "That didn't work. Try again.")))
       .finally(() => setBusy(null));
   };
 
@@ -626,11 +459,14 @@ export function LaneSetupCard({
     confirmAbortRef.current = abort;
     setConfirmAbort(abort);
     void confirmDialog({
-      title: name === "cancel" ? "Cancel this launch?" : "Delete this launch?",
-      message: laneExists
-        ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
-        : "Setup stops before a lane is created. Your prompt goes back into the composer.",
-      confirmLabel: laneExists ? `Delete lane and ${subject}` : "Stop setup",
+      title: name === "cancel" || cloudLaunch ? "Cancel this launch?" : "Delete this launch?",
+      message: cloudLaunch
+        // An ADE Cloud lane's computer was made for it alone: it goes too.
+        ? "ADE stops the setup and deletes the ADE Cloud computer it made for this lane. Your prompt goes back into the composer."
+        : laneExists
+          ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
+          : "Setup stops before a lane is created. Your prompt goes back into the composer.",
+      confirmLabel: cloudLaunch ? "Stop and delete computer" : laneExists ? `Delete lane and ${subject}` : "Stop setup",
       destructive: true,
       signal: abort.signal,
     }).then((ok) => {
@@ -687,33 +523,36 @@ export function LaneSetupCard({
         textSize,
         compact
           ? "w-full"
-          : cn(
-            CHAT_CARD_WIDTH_CLASS,
-            "ade-launch-card-enter rounded-[calc(var(--chat-radius-card,16px)-6px)] border bg-fg/[0.022] px-3.5 pb-2 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]",
-            failed ? "border-amber-400/20" : "border-fg/[0.07]",
-          ),
+          : stepCardFrameClass(failed),
         className,
       )}
     >
       {showTitle ? (
         <>
           <CardHeader snapshot={snapshot} metaSize={metaSize} />
-          <LaunchProgressRail stages={snapshot.stages} className="mb-1 mt-3" />
+          {refused ? null : <LaunchProgressRail stages={snapshot.stages} cloud={cloudLaunch} className="mb-1 mt-3" />}
         </>
       ) : null}
 
-      <ul className="divide-y divide-fg/[0.045]" aria-label="Lane setup stages">
-        {snapshot.stages.map((stage) => (
-          <StageRow
-            key={stage.id}
-            stage={stage}
-            kind={snapshot.kind}
-            templateName={snapshot.templateName}
-            compact={compact}
-            showSteps={showEnvSteps}
-          />
-        ))}
-      </ul>
+      {refused ? (
+        <div data-testid="lane-setup-refusal" className="mt-2">
+          <StageErrorCallout error={snapshot.error?.trim() || "ADE couldn't start this launch."} className={metaSize} />
+        </div>
+      ) : (
+        <ul className="divide-y divide-fg/[0.045]" aria-label="Lane setup stages">
+          {snapshot.stages.map((stage) => (
+            <StageRow
+              key={stage.id}
+              stage={stage}
+              kind={snapshot.kind}
+              templateName={snapshot.templateName}
+              compact={compact}
+              showSteps={showEnvSteps}
+              cloud={cloudLaunch}
+            />
+          ))}
+        </ul>
+      )}
 
       <AnimatePresence initial={false}>
         {detailsOpen ? (
@@ -800,8 +639,14 @@ export function LaneSetupCard({
           ) : null}
           {actions.delete ? (
             <TextAction disabled={busy != null} onClick={() => confirmDelete("delete")} testId="lane-setup-delete">
-              <Trash size={11} aria-hidden />
-              Delete
+              {cloudLaunch ? <X size={10} weight="bold" aria-hidden /> : <Trash size={11} aria-hidden />}
+              {cloudLaunch ? "Cancel" : "Delete"}
+            </TextAction>
+          ) : null}
+          {failed ? (
+            <TextAction onClick={copyFailureDetails} testId="lane-setup-copy-details">
+              <Copy size={11} aria-hidden />
+              Copy details
             </TextAction>
           ) : null}
           {actions.cancel ? (
@@ -974,7 +819,8 @@ function LaneSetupCardFromPayload({
         // The host folds a stage's error into the row detail. Show it in full
         // under the row, the way the live card does, instead of truncating the
         // only explanation to one line.
-        const error = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
+        const rawError = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
+        const error = rawError ? launchErrorText(rawError) : null;
         return (
           <li key={row.key || `${row.text}:${index}`} data-testid="lane-setup-stage" data-stage-id={id ?? undefined} data-stage-status={status}>
             <StageLine icon={icon} status={status} label={row.text} detail={error ? null : row.detail ?? null} compact />

@@ -42,6 +42,7 @@ import type {
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { formatMachineVersions } from "../../../shared/machineVersions";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
@@ -137,7 +138,8 @@ import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanes/lanePageModel";
 import { useCommandPaletteLanePr } from "./commandPaletteLanePr";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
-import { CloneProjectForm } from "../projects/CloneProjectForm";
+import { AddProjectForm, openProjectCopy } from "../projects/AddProjectForm";
+import type { CopyOpenTarget } from "../projects/projectCopies";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
 import { WorktreeBadge } from "../projects/WorktreeBadge";
@@ -152,6 +154,7 @@ import {
   settingsEntryPath,
   settingsTabLabel,
 } from "../settings/settingsManifest";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isImeComposing } from "../../lib/imeComposition";
 import { InlineErrorNotice } from "../ui/notice";
 
@@ -673,6 +676,7 @@ export function CommandPalette({
     [androidSupport, macDesktopSupport, supportsIosSimulator],
   );
 
+  const cloudEnabled = useAdeCloudEnabled();
   const commands: Command[] = useMemo(() => {
     // The palette is mounted for the life of the window; while it is closed
     // nothing reads the list, so a lane or selection change does not rebuild it.
@@ -1048,6 +1052,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    cloudEnabled,
     open,
     activeSessionTarget,
     hasActiveProject,
@@ -1344,7 +1349,7 @@ export function CommandPalette({
   const openTargetLabel = openTarget ? pathLabel(openTarget) : null;
   const canOpenHighlighted =
     Boolean(openTarget) && openTarget !== activeBrowseRoot;
-  const openShortcutLabel = `${isMacPlatform() ? "⌘" : modifierKeyLabel}↵`;
+  const openShortcutLabel = `${isMacPlatform() ? "⌘" : `${modifierKeyLabel}+`}↵`;
 
   // Restore the per-location last path whenever browsing begins or the active
   // location changes. `startProjectBrowse` already seeds the path for the
@@ -2125,6 +2130,22 @@ export function CommandPalette({
     [navigate, onOpenChange, switchProjectToPath, switchRemoteProject],
   );
 
+  // Opens the copy the Add project form names, bound to its machine. The form
+  // closes the palette itself once no other copy still clones.
+  const openProjectCopyHere = useCallback(
+    async (target: CopyOpenTarget) => {
+      writeStoredProjectRoute(
+        target.kind === "remote"
+          ? `remote:${target.targetId}:${target.projectId}`
+          : `local:${target.rootPath}`,
+        "/work",
+      );
+      await openProjectCopy(target);
+      navigate("/work");
+    },
+    [navigate],
+  );
+
   const handleProjectActionSuccess = useCallback(
     async (
       verb: "Created" | "Cloned",
@@ -2176,7 +2197,7 @@ export function CommandPalette({
       addFlowTitle = `Create a new project${activeRemoteTargetId ? ` on ${browseMachineName}` : ""}`;
       break;
     case "project-clone":
-      addFlowTitle = `Clone from GitHub${activeRemoteTargetId ? ` on ${browseMachineName}` : ""}`;
+      addFlowTitle = "Add project";
       break;
     case "project-remote":
       addFlowTitle = "Connect to a machine";
@@ -2453,44 +2474,19 @@ export function CommandPalette({
                         }
                       />
                     ) : mode === "project-clone" ? (
-                      <CloneProjectForm
-                        machineName={
-                          activeRemoteTargetId ? browseMachineName : undefined
-                        }
-                        getDefaultParentDir={
-                          activeRemoteTargetId
-                            ? () =>
-                                window.ade.remoteRuntime.getDefaultParentDir(
-                                  activeRemoteTargetId,
-                                )
+                      <AddProjectForm
+                        initialMachineIds={
+                          selectedProjectLocation
+                            ? [
+                                selectedProjectLocation.kind === "remote"
+                                  ? selectedProjectLocation.targetId
+                                  : THIS_MACHINE_ID,
+                              ]
                             : undefined
                         }
-                        browseDirectories={
-                          activeRemoteTargetId
-                            ? (input) =>
-                                window.ade.remoteRuntime.browseDirectories(
-                                  activeRemoteTargetId,
-                                  input,
-                                )
-                            : undefined
-                        }
-                        chooseDirectory={
-                          activeRemoteTargetId ? null : undefined
-                        }
-                        cloneProject={
-                          activeRemoteTargetId
-                            ? (input) =>
-                                window.ade.remoteRuntime.cloneProject(
-                                  activeRemoteTargetId,
-                                  input,
-                                )
-                            : undefined
-                        }
-                        allowTokenSetup={true}
                         onCancel={() => setMode("project-add")}
-                        onCloned={(result) =>
-                          handleProjectActionSuccess("Cloned", result)
-                        }
+                        onClose={() => onOpenChange(false)}
+                        onOpenProject={openProjectCopyHere}
                       />
                     ) : mode === "project-remote" ? (
                       <RemoteTargetList />

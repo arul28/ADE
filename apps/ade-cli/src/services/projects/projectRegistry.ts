@@ -3,17 +3,21 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readGitOriginUrlFromConfigOrGit } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
+import {
+  readGitOriginUrl as readGitConfigOriginForIdentity,
+  readGitOriginUrlFromConfigOrGit,
+} from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { isFsAccessRefusal } from "../../../../desktop/src/shared/fsAccessRefusal";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
-import { normalizeProjectRootPath, realpathIfExists } from "./projectRoots";
+import { isOtherAdeInstallHome, normalizeProjectRootPath, realpathIfExists } from "./projectRoots";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../lib/exclusiveFileLock";
 import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
@@ -86,7 +90,8 @@ export function isDisallowedProjectRoot(
 ): boolean {
   const normalized = normalizeRoot(rootPath);
   if (homeDir && isSamePath(normalized, homeDir)) return true;
-  return normalized === path.parse(normalized).root;
+  if (normalized === path.parse(normalized).root) return true;
+  return isOtherAdeInstallHome(normalized);
 }
 
 export function deriveProjectId(rootPath: string): ProjectId {
@@ -103,15 +108,12 @@ function readGitOriginUrl(rootPath: string): string | null {
   return canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(rootPath));
 }
 
-/** Errnos that mean this account may not write in the project folder. */
-const PROJECT_FOLDER_NOT_WRITABLE = new Set(["EACCES", "EPERM", "EROFS"]);
-
 function ensureProjectAdeDir(rootPath: string): void {
   try {
     fs.mkdirSync(path.join(rootPath, ".ade"), { recursive: true });
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
-    if (typeof code !== "string" || !PROJECT_FOLDER_NOT_WRITABLE.has(code)) throw error;
+    if (!isFsAccessRefusal(error)) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
     // A folder this account cannot write (owned by another user, read-only
     // media): the machine's setup, not a defect, and the user can fix it.
     throw markExpected(
@@ -206,7 +208,12 @@ function coerceRecord(
  * see, never inside the registry lock: the ssh lookup can take a moment.
  */
 function withCanonicalOrigin(record: ProjectRecord): ProjectRecord {
-  const gitOriginUrl = canonicalGitOriginUrl(record.gitOriginUrl);
+  // A project added before it had an origin (or while git could not answer)
+  // was saved with none. Every other machine learns the repository from this
+  // list, so read the config file again: no process, cached by its mtime.
+  const gitOriginUrl = record.gitOriginUrl
+    ? canonicalGitOriginUrl(record.gitOriginUrl)
+    : readGitConfigOriginForIdentity(record.rootPath);
   return gitOriginUrl === record.gitOriginUrl ? record : { ...record, gitOriginUrl };
 }
 

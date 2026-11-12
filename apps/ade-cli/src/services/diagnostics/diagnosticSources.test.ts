@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { buildDiagnosticReport } from "./diagnosticReport";
 import {
   collectMachineDiagnosticSources,
@@ -88,6 +88,10 @@ function collect(args: {
     readVolume: () => null,
   });
 }
+
+// A runner's own XDG_CONFIG_HOME would move the unit away from the test's home.
+beforeEach(() => { vi.stubEnv("XDG_CONFIG_HOME", ""); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("collectMachineDiagnosticSources — service output streams", () => {
   it("collects launchd stdout as well as stderr", () => {

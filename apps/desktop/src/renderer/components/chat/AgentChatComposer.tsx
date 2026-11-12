@@ -202,6 +202,8 @@ import {
   type ComposerAtChipKind,
 } from "./mentionChipMark";
 import { ComposerMachineChipPopover } from "./MachineChipCard";
+import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
+import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -266,8 +268,8 @@ import {
 } from "./chatSurfaceTheme";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
-import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
-import { harnessBodyLabel, type HarnessPresetBody } from "../../../shared/harnessPresets";
+import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { harnessBodyLabel, harnessEffortTiers, type HarnessPresetBody } from "../../../shared/harnessPresets";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
@@ -969,12 +971,18 @@ const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
 function ComposerMachineChip({
   machineName,
   cloud = false,
+  adeCloudLane = null,
   action = null,
 }: {
   machineName: string;
   cloud?: boolean;
+  /** Set for a chat on an ADE Cloud lane: the chip wears the cloud mark and names the lane. */
+  adeCloudLane?: ComposerAdeCloudLane | null;
   action?: ComposerMachineChipAction | null;
 }) {
+  if (adeCloudLane) {
+    return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
+  }
   if (action) {
     return (
       <>
@@ -1135,18 +1143,26 @@ function ComposerIdleSendButton({
   effect,
   icon,
   sendEnabled,
+  sendPressableWhenOff = false,
+  sendAriaLabel,
   backgroundLabel,
   backgroundEnabled,
   backgroundBusy,
   onSend,
   onSendInBackground,
   onSchedule,
+  scheduleEnabled = sendEnabled,
+  launchBlockedReason = null,
 }: {
   label: string;
   description: string;
   effect?: string | undefined;
   icon: React.ReactNode;
   sendEnabled: boolean;
+  /** Send looks off but still takes the press (the composer explains why on it). */
+  sendPressableWhenOff?: boolean;
+  /** The Send part's accessible name; it carries the reason while Send is off. */
+  sendAriaLabel?: string;
   backgroundLabel: string;
   backgroundEnabled: boolean;
   backgroundBusy: boolean;
@@ -1154,6 +1170,10 @@ function ComposerIdleSendButton({
   onSendInBackground: () => void;
   /** Absent hides the Scheduled send row entirely. */
   onSchedule?: (() => void) | undefined;
+  /** Defaults to `sendEnabled`. */
+  scheduleEnabled?: boolean;
+  /** Why the background and scheduled rows are off; shown as their detail. */
+  launchBlockedReason?: string | null;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-idle-send-menu]");
   useEffect(() => {
@@ -1176,7 +1196,7 @@ function ComposerIdleSendButton({
     {
       id: "background",
       label: backgroundBusy ? "Launching…" : backgroundLabel,
-      detail: "Start this chat without leaving the new chat pane.",
+      detail: launchBlockedReason ?? "Start this chat without leaving the new chat pane.",
       icon: <RocketLaunch size={13} weight="fill" />,
       enabled: backgroundEnabled,
       onSelect: onSendInBackground,
@@ -1185,9 +1205,9 @@ function ComposerIdleSendButton({
       ? [{
         id: "schedule",
         label: "Scheduled send…",
-        detail: "Send this prompt later, with the settings it has now.",
+        detail: launchBlockedReason ?? "Send this prompt later, with the settings it has now.",
         icon: <Clock size={13} weight="bold" />,
-        enabled: sendEnabled,
+        enabled: scheduleEnabled,
         onSelect: onSchedule,
       }]
       : []),
@@ -1200,9 +1220,10 @@ function ComposerIdleSendButton({
           <button
             data-send-part=""
             type="button"
-            disabled={!sendEnabled}
+            disabled={!sendEnabled && !sendPressableWhenOff}
+            aria-disabled={sendEnabled ? undefined : true}
             onClick={onSend}
-            aria-label={label}
+            aria-label={sendAriaLabel ?? label}
             className={cn(
               "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all",
               sendEnabled
@@ -2264,6 +2285,18 @@ function PromptSuggestionHint({ text }: { text: string }) {
   );
 }
 
+/** Scripts written without spaces between words. */
+const UNSPACED_SCRIPT = "[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}]";
+const ENDS_UNSPACED = new RegExp(`${UNSPACED_SCRIPT}$`, "u");
+const STARTS_UNSPACED = new RegExp(`^${UNSPACED_SCRIPT}`, "u");
+
+/** Dictated text with the spaces its neighbors need: none beside whitespace, or between characters of an unspaced script. */
+function spaceDictatedText(before: string, insertion: string, after: string): string {
+  const leading = before.length > 0 && !/\s$/.test(before) && !(ENDS_UNSPACED.test(before) && STARTS_UNSPACED.test(insertion));
+  const trailing = after.length > 0 && !/^\s/.test(after) && !(ENDS_UNSPACED.test(insertion) && STARTS_UNSPACED.test(after));
+  return `${leading ? " " : ""}${insertion}${trailing ? " " : ""}`;
+}
+
 function AgentChatComposerImpl({
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -2272,6 +2305,7 @@ function AgentChatComposerImpl({
   isActive = false,
   shouldAutofocus = isActive,
   caretToEndRequest = 0,
+  focusRequest = 0,
   browserTabInsertRequest = null,
   threadComments = EMPTY_THREAD_COMMENTS,
   threadCommentsSessionId = null,
@@ -2286,6 +2320,7 @@ function AgentChatComposerImpl({
   constrainModelSelection = false,
   modelUnavailableMessage,
   providerAuthStatus,
+  providerRuntimeMissing,
   onRuntimeCatalogRefreshed,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
@@ -2409,7 +2444,10 @@ function AgentChatComposerImpl({
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
-  replacementCard,
+  aboveComposerSlot,
+  sendBlockedReason = null,
+  onSendBlocked,
+  sendBlockExempt,
   onOpenLinearSettings,
   launchPromptClipboardEnabled = false,
   launchPromptClipboardNoticeEnabled = true,
@@ -2468,6 +2506,8 @@ function AgentChatComposerImpl({
    * editor with the caret at the very end, after the added chip.
    */
   caretToEndRequest?: number;
+  /** Each new value focuses the composer, leaving its draft and caret alone. */
+  focusRequest?: number;
   /**
    * A browser tab attached from the Browser panel ("Attach to chat"). Each new
    * `id` inserts the tab's `<ade-browser-tab>` token as a chip at the caret the
@@ -2499,6 +2539,8 @@ function AgentChatComposerImpl({
   constrainModelSelection?: boolean;
   modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /** Passed to the model pickers with `providerAuthStatus` (see ModelPicker). */
+  providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   allowCliOnlyModels?: boolean;
   /** False on a tracked-CLI launch, where a preset would be dropped anyway. */
@@ -2533,11 +2575,11 @@ function AgentChatComposerImpl({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
+  /** Sends `/compact` without replacing the unsent draft. */
   onCompactContext?: () => void;
   /**
    * Provider of the open session. Compact must follow the live session, not the
-   * model picker, so a Cursor chat does not grow a compact control just because
+   * model picker, so a Droid chat does not grow a compact control just because
    * Claude is selected for the next turn.
    */
   compactSessionProvider?: string | null;
@@ -2741,11 +2783,29 @@ function AgentChatComposerImpl({
   onSendSteerInterrupt?: () => void;
   onOpenAiSettings?: (family?: ProviderFamily) => void;
   /**
-   * A card that takes the composer's place while it is up: the sign-in card
-   * for a provider that is signed out on the composer's machine. An agent's
-   * own question still comes first.
+   * Shown above the prompt box while the box stays mounted and usable: the
+   * sign-in strip or card for a provider signed out on the composer's machine.
+   * It never hides what the person typed.
    */
-  replacementCard?: React.ReactNode;
+  aboveComposerSlot?: React.ReactNode;
+  /**
+   * Send is off for this reason (the target can't take the message now, e.g.
+   * its provider is not signed in). The typed text stays; Enter does nothing
+   * and the Send button's tooltip says why. The reason itself shows above the
+   * box.
+   */
+  sendBlockedReason?: string | null;
+  /**
+   * Called when the person presses Send or Enter while `sendBlockedReason`
+   * holds Send off. Given, the Send button stays pressable (it still looks
+   * off), so the press can bring back what explains the reason.
+   */
+  onSendBlocked?: () => void;
+  /**
+   * A draft this returns true for still sends while `sendBlockedReason` is
+   * set: a local command that needs no provider (`/usage`, `/context`).
+   */
+  sendBlockExempt?: (text: string) => boolean;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
   launchPromptClipboardNoticeEnabled?: boolean;
@@ -3551,6 +3611,46 @@ function AgentChatComposerImpl({
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
+  // Root store: the preset list is an account-scoped preference the project
+  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
+  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
+  const activeHarnessTarget = useMemo(
+    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
+  const activeHarnessPreset = useMemo(
+    () => activeHarnessTarget
+      ? {
+        name: activeHarnessTarget.name,
+        logo: activeHarnessTarget.logo,
+        accentColor: activeHarnessTarget.accentColor,
+        harness: activeHarnessTarget.harness,
+      }
+      : null,
+    [activeHarnessTarget],
+  );
+  // A Custom pick runs another source's model (DeepSeek in Claude Code), so the
+  // effort ladder belongs to the source model, not to the harness's own rows.
+  const reasoningModelId = activeHarnessTarget
+    ? reasoningModelIdForLaunchTarget(activeHarnessTarget)
+    : modelId;
+  const reasoningTiers = activeHarnessTarget?.reasoningTiers;
+  const reasoningDescriptor = useMemo(
+    () => resolveModelDescriptorWithRuntimeCatalog(reasoningModelId, modelCatalogScopeKey)
+      ?? getModelById(reasoningModelId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+    [modelCatalogScopeKey, reasoningModelId, runtimeCatalogTick],
+  );
+  // Ultrathink belongs to a Claude MODEL, not to the Claude Code harness: a
+  // DeepSeek model in Claude Code must not keep a switch it has no way to use.
+  // Test the source model id, not the catalog id: an OpenCode source can be
+  // named `claude` (opencode/claude/deepseek-v4) without being Claude.
+  const sourceModelIdForUltrathink = activeHarnessTarget?.model?.trim() || reasoningModelId;
+  const sourceReadsUltrathink = !activeHarnessTarget
+    || reasoningDescriptor?.family === "anthropic"
+    || /(?:^|[\/\s_-])claude(?:$|[\/\s_.-])/i.test(sourceModelIdForUltrathink);
   const plainUltrathinkExcludedRanges = useMemo(() => [
     ...plainComposerTokens.map(({ start, end }) => ({ start, end })),
     ...(plainUserShellChipRange ? [plainUserShellChipRange] : []),
@@ -3569,12 +3669,13 @@ function AgentChatComposerImpl({
       || !draft
       || draft.length > MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS
       || !providerReadsUltrathink(sessionProvider)
+      || !sourceReadsUltrathink
       || parallelChatMode
     ) return [];
     return ultrathinkKeywordRanges(draft)
       .filter((range) => !plainUltrathinkExcludedRanges.some((token) => range.start < token.end && token.start < range.end))
       .map((range) => ({ ...range, kind: "ultrathink" as const }));
-  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, useRichComposer]);
+  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, sourceReadsUltrathink, useRichComposer]);
   const plainOverlayTokenCount = plainComposerTokens.length + plainUltrathinkTokens.length;
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
   useLayoutEffect(() => {
@@ -4239,7 +4340,9 @@ function AgentChatComposerImpl({
   // "ultrathink" is a word in the message, so the draft is its only state: the
   // switch adds or removes the word, typing it turns the switch on, and sending
   // clears it with the draft. It works the same on any machine.
-  const ultrathinkReadable = providerReadsUltrathink(sessionProvider) && !parallelChatMode;
+  const ultrathinkReadable = providerReadsUltrathink(sessionProvider)
+    && sourceReadsUltrathink
+    && !parallelChatMode;
   const [richUltrathinkActive, setRichUltrathinkActive] = useState(false);
   useLayoutEffect(() => {
     if (useRichComposer && ultrathinkReadable) {
@@ -4327,6 +4430,12 @@ function AgentChatComposerImpl({
   // exists: a quote promotes the plain textarea to the rich editor one render
   // later, and focusing the textarea in between would put the caret in an
   // element that is about to unmount.
+  const appliedFocusRequestRef = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === appliedFocusRequestRef.current) return;
+    appliedFocusRequestRef.current = focusRequest;
+    focusComposerInput();
+  }, [focusComposerInput, focusRequest]);
   const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
   useEffect(() => {
     if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;
@@ -5402,17 +5511,20 @@ function AgentChatComposerImpl({
     setVoiceError(null);
     if (useRichComposer) {
       // Rich editor: insert at the saved selection range (or end), then sync draft.
-      insertTextIntoRichEditor(insertion);
+      const editor = richEditorRef.current;
+      const caret = richSelectionRef.current;
+      const text = editor ? serializeComposerDom(editor).text : "";
+      const atCaret = editor && caret && editor.contains(caret.commonAncestorContainer);
+      const before = atCaret ? text.slice(0, serializedComposerOffsetAt(editor, caret.startContainer, caret.startOffset, text)) : text;
+      const after = atCaret ? text.slice(serializedComposerOffsetAt(editor, caret.endContainer, caret.endOffset, text)) : "";
+      insertTextIntoRichEditor(spaceDictatedText(before, insertion, after));
     } else {
       const current = draft;
       const caret = lastPlainSelectionRef.current ?? current.length;
       const start = Math.max(0, Math.min(caret, current.length));
       const before = current.slice(0, start);
       const after = current.slice(start);
-      // Add a separating space when butting up against existing words.
-      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
-      const piece = `${needsLeadingSpace ? " " : ""}${insertion}${needsTrailingSpace ? " " : ""}`;
+      const piece = spaceDictatedText(before, insertion, after);
       const next = `${before}${piece}${after}`;
       onDraftChange(next);
       const nextCaret = before.length + piece.length;
@@ -5836,7 +5948,7 @@ function AgentChatComposerImpl({
       provider: compactSessionProvider === undefined ? sessionProvider : compactSessionProvider,
       state: usageViewModel?.state ?? "unknown",
       enabled: Boolean(onCompactContext && usageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy,
       pendingInput: hasPendingInput,
@@ -5901,24 +6013,6 @@ function AgentChatComposerImpl({
     [codexDaybreak, daybreakOffered, onCodexDaybreakChange],
   );
 
-  /* The preset this chat runs on, resolved from the account-scoped list.
-
-     Resolved here rather than passed in already-shaped so a preset the user
-     renames or re-logos is reflected without the chat being reloaded. A
-     presetId that no longer names a preset falls through to the model trigger,
-     which is the same honest degradation the launch path takes. */
-  // Root store: the preset list is an account-scoped preference the project
-  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
-  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
-  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
-  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
-  const activeHarnessPreset = useMemo(() => {
-    const target = resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey);
-    return target
-      ? { name: target.name, logo: target.logo, accentColor: target.accentColor, harness: target.harness }
-      : null;
-  }, [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey]);
-
   /* Where this chat executes.
 
      Running chats only. A draft has no machine yet — it has a CHOICE of one, and
@@ -5929,10 +6023,14 @@ function AgentChatComposerImpl({
      stash are pinned to, so this label can never disagree with where a file you
      drop actually lands. Its absence is meaningful rather than unknown: a chat
      with no remote binding is running on this Mac. */
+  // A chat on an ADE Cloud lane says "ADE Cloud", not its computer's name, also once its lane has no computer.
+  const adeCloudLane = useComposerAdeCloudLane(composerMachineBinding, Boolean(sessionId) && cursorRuntime !== "cloud");
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
       ? cloudTargetLabel
-      : chatPaneScope?.machineName
+      : adeCloudLane
+        ? ADE_CLOUD_NAME
+        : chatPaneScope?.machineName
         ?? (composerMachineBinding?.kind === "remote"
           ? composerMachineBinding.runtimeName
           : THIS_MACHINE_NAME)
@@ -6314,11 +6412,26 @@ function AgentChatComposerImpl({
   // "highlighted" outline).
   const composerGlowColor = null;
   // Parallel mode runs several models at once, so no one level owns the frame.
+  // A Custom pick's frame follows the same source ladder as its picker.
+  const effortFrameTiers = useMemo(
+    () => (parallelChatMode
+      ? null
+      : harnessEffortTiers(activeHarnessTarget?.harness, reasoningTiers)
+        ?? reasoningDescriptor?.reasoningTiers
+        ?? fastModeDescriptor?.reasoningTiers),
+    [
+      activeHarnessTarget?.harness,
+      fastModeDescriptor?.reasoningTiers,
+      parallelChatMode,
+      reasoningDescriptor?.reasoningTiers,
+      reasoningTiers,
+    ],
+  );
   const composerEffortFrame = useMemo(() => resolveComposerEffortFrame({
     ultrathink: ultrathinkActive,
     effort: parallelChatMode ? null : fastModeEffort,
-    tiers: parallelChatMode ? null : fastModeDescriptor?.reasoningTiers,
-  }), [fastModeDescriptor?.reasoningTiers, fastModeEffort, parallelChatMode, ultrathinkActive]);
+    tiers: effortFrameTiers,
+  }), [effortFrameTiers, fastModeEffort, parallelChatMode, ultrathinkActive]);
 
   const applyPromptHistoryEntry = useCallback((
     entry: AgentChatPromptHistoryEntry,
@@ -7382,8 +7495,18 @@ function AgentChatComposerImpl({
   const recordModelHintSendRef = useRef(modelHint.recordSend);
   recordModelHintSendRef.current = modelHint.recordSend;
 
+  // Held off for the pane's reason. A launch elsewhere (background, scheduled)
+  // always is; Send and Enter are not for a draft the pane runs without it
+  // (`sendBlockExempt`), so the button looks as Enter acts.
+  const launchBlocked = Boolean(sendBlockedReason) && !turnActive;
+  const sendBlocked = launchBlocked && !sendBlockExempt?.(draft.trim());
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking && !pendingRedirectActive) {
+      return;
+    }
+    // The reason already shows above the box; a blocked send says nothing more.
+    if (sendBlocked) {
+      onSendBlocked?.();
       return;
     }
     if (pendingImageAttachments.length > 0) {
@@ -7445,7 +7568,7 @@ function AgentChatComposerImpl({
     // empty composer (Send clicked with the menu open, `/usage`, `/context`).
     closeCommandMenu();
     onSubmit();
-  }, [activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [sendBlocked, onSendBlocked, activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -7536,7 +7659,10 @@ function AgentChatComposerImpl({
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
+  // Off for a reason the pane can explain: the button takes the press anyway.
+  const sendPressableWhileBlocked = sendBlocked && Boolean(onSendBlocked);
   const sendEnabled = !busy
+    && !sendBlocked
     && !backgroundLaunchBusy
     && !parallelLaunchBusy
     && !composerInputLocked
@@ -7549,6 +7675,7 @@ function AgentChatComposerImpl({
     && (cloudModeActiveForSend ? cloudSendBlock === null : activeTurnHasContent);
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
+    && !launchBlocked
     && !backgroundLaunchBusy
     && !parallelLaunchBusy
     && !composerInputLocked
@@ -7561,6 +7688,7 @@ function AgentChatComposerImpl({
 
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
+    if (sendBlocked && sendBlockedReason) return sendBlockedReason;
     if (hasPendingImageAttachments) return "Finish attaching images";
     if (parallelChatMode) {
       if (parallelModelSlots.length < 2) return "Add at least two models";
@@ -7962,6 +8090,7 @@ function AgentChatComposerImpl({
             {...(availableModelIds ? { availableModelIds } : {})}
             constrainToAvailableModelIds={constrainModelSelection}
             {...(providerAuthStatus ? { providerAuthStatus } : {})}
+            {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
             {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
             {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
             runtimePin={modelRuntimePin}
@@ -8024,6 +8153,7 @@ function AgentChatComposerImpl({
             {...(availableModelIds ? { availableModelIds } : {})}
             constrainToAvailableModelIds={constrainModelSelection}
             {...(providerAuthStatus ? { providerAuthStatus } : {})}
+            {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
             {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
             {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
             runtimePin={modelRuntimePin}
@@ -8051,7 +8181,9 @@ function AgentChatComposerImpl({
           />
           </PaneTooltip>
           <ReasoningEffortPicker
-            modelId={modelId}
+            modelId={reasoningModelId}
+            reasoningTiers={reasoningTiers}
+            harness={activeHarnessPreset?.harness}
             reasoningEffort={reasoningEffort}
             squeezed={modelHint.chip != null}
             onChange={handleReasoningEffortPickerChange}
@@ -8081,11 +8213,12 @@ function AgentChatComposerImpl({
         <ComposerMachineChip
           machineName={composerMachineName}
           cloud={cursorRuntime === "cloud"}
-          action={cursorRuntime === "cloud" ? null : machineChipAction}
+          adeCloudLane={adeCloudLane}
+          action={cursorRuntime === "cloud" || adeCloudLane ? null : machineChipAction}
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
@@ -8339,7 +8472,14 @@ function AgentChatComposerImpl({
           // Without a background option this is a plain circular Send.
           if (!backgroundAvailable) {
             return withThreadComments(
-              <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitleText }}>
+              <SmartTooltip
+                forceEnabled
+                // A block reason is plain text in the body, not the effect
+                // line: that line is the success tone, and this is no success.
+                content={sendBlocked && sendBlockedReason
+                  ? { label, description: sendBlockedReason }
+                  : { label, description, effect: sendButtonTitleText }}
+              >
                 <button
                   data-send-part=""
                   data-send-control=""
@@ -8350,9 +8490,10 @@ function AgentChatComposerImpl({
                       ? "bg-white/90 text-zinc-900 hover:bg-white"
                       : "bg-fg/[0.06] text-muted-fg/20",
                   )}
-                  disabled={!sendEnabled}
+                  disabled={!sendEnabled && !sendPressableWhileBlocked}
+                  aria-disabled={sendEnabled ? undefined : true}
                   onClick={submitComposerDraftLatest}
-                  aria-label={label}
+                  aria-label={sendBlocked && sendBlockedReason ? `${label}. ${sendBlockedReason}` : label}
                 >
                   {sendIcon}
                 </button>
@@ -8363,21 +8504,25 @@ function AgentChatComposerImpl({
           return withThreadComments(
             <ComposerIdleSendButton
               label={label}
-              description={description}
-              effect={sendButtonTitleText}
+              description={sendBlocked && sendBlockedReason ? sendBlockedReason : description}
+              effect={sendBlocked && sendBlockedReason ? undefined : sendButtonTitleText}
               icon={sendIcon}
               sendEnabled={sendEnabled}
+              sendPressableWhenOff={sendPressableWhileBlocked}
+              sendAriaLabel={sendBlocked && sendBlockedReason ? `${label}. ${sendBlockedReason}` : label}
               backgroundLabel={backgroundLaunchActionLabel}
               backgroundEnabled={backgroundSendEnabled}
               backgroundBusy={backgroundLaunchBusy}
               onSend={submitComposerDraftLatest}
               onSendInBackground={onSubmitInBackground!}
               onSchedule={scheduledSendContext ? openComposerSchedule : undefined}
+              scheduleEnabled={sendEnabled && !launchBlocked}
+              launchBlockedReason={launchBlocked ? sendBlockedReason : null}
             />,
           );
         })()
 
-  )), [activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
+  )), [sendBlocked, launchBlocked, sendBlockedReason, sendPressableWhileBlocked, activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
   const commandMenu = useMemo(() => (
     <ChatCommandMenu
       ref={commandMenuRef}
@@ -8431,6 +8576,23 @@ function AgentChatComposerImpl({
           >
             Dismiss
           </button>
+        </div>
+      ) : null}
+      {/* Always mounted, so a screen reader hears Send turn off for a
+          sign-in even when the status lands after the box. It says what the
+          Send button does: a command that runs anyway (`sendBlockExempt`)
+          clears it. */}
+      <div role="status" className="sr-only">
+        {sendBlocked && sendBlockedReason ? `Send is off. ${sendBlockedReason}` : null}
+      </div>
+      {aboveComposerSlot ? (
+        <div
+          data-composer-above-slot="true"
+          // A slot whose parts all render nothing (an ADE Cloud lane with no change running) takes no room.
+          // Its parts stack (a sign-in card above a cloud lane's card).
+          className={cn("mb-1.5 flex min-w-0 flex-col gap-1.5 empty:hidden", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
+        >
+          {aboveComposerSlot}
         </div>
       ) : null}
       <BorderBeam
@@ -9432,6 +9594,8 @@ function AgentChatComposerImpl({
               key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
               request={askQuestionRequest}
               responding={approvalResponding ?? false}
+              // Through the ref: the editor kind can change in the render that removes the card.
+              onFocusLost={() => focusComposerInputRef.current()}
               onSubmit={(answers) => {
                 // The draft WAS the answer; it must not survive into the next
                 // turn as a half-sent duplicate. Staged attachments deliberately
@@ -9461,8 +9625,6 @@ function AgentChatComposerImpl({
             />
           );
         }
-
-        if (replacementCard) return replacementCard;
 
         // The one thing the tags cannot say, kept visible because tooltips
         // never show on a touch pointer: why a message has to wait.

@@ -49,6 +49,7 @@ import { gitRemoteIdentity } from "../github/githubSshAlias";
 import { crossMachineMoveLock, MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import {
+  downgradeFamilyForProvider,
   isPermissionLevel,
   permissionFieldsForLevel,
   permissionLevelLabel,
@@ -111,7 +112,7 @@ export type CrossMachineHandoffTransport = {
     action: string;
     args: Record<string, unknown>;
     timeoutMs?: number;
-  }): Promise<{ machine: { machineKey: string; name: string }; result: unknown }>;
+  }): Promise<{ machine: { machineKey: string; name: string }; project?: { projectId: string } | null; result: unknown }>;
   /**
    * The request may have reached the destination but its answer was lost
    * (timeout, dropped connection). Errors raised before sending (offline,
@@ -333,10 +334,7 @@ export function crossMachineAgentTargetPermissions(
   const provider = resolveProviderGroupForModel(descriptor);
   // The source reads an unreadable posture as `ask` (sessionPermissionLevel).
   const level: PermissionLevel = isPermissionLevel(sourceLevel) ? sourceLevel : "ask";
-  let applied = resolvePermissionLevel(
-    level,
-    provider === "opencode" ? "opencode" : provider === "cursor" ? "cursor" : undefined,
-  ).level;
+  let applied = resolvePermissionLevel(level, downgradeFamilyForProvider(provider)).level;
   // Kimi refuses auto-edit at launch and Copilot quietly runs it as ask; both
   // step down to ask so the label says what the chat will actually do.
   if (applied === "auto-edit" && ACP_PROVIDERS_WITHOUT_AUTO_EDIT.has(provider)) applied = "ask";
@@ -824,6 +822,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         reason: null,
         targetLaneId: null,
         targetSessionId: null,
+        targetProjectId: null,
         // Keep the previous return address until this move lands. A new move
         // revokes the earlier Work here instead choice only once it continues
         // (landing clears it); a move that is cancelled, fails or is denied
@@ -1213,9 +1212,11 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         // have made the lane and chat. Keep the capsule; a retry reconciles.
         throw new UnreadableAcceptError(persisted.record.targetMachineName);
       }
+      const targetProjectId = response.project?.projectId ?? null;
       persisted = checkpoint(sessionId, persisted, "accepted", {
         targetLaneId: accepted.laneId,
         targetSessionId: accepted.session.id,
+        targetProjectId,
       });
       try {
         await deps.markSource({
@@ -1247,6 +1248,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           targetMachineName: persisted.record.targetMachineName,
           targetLaneId: accepted.laneId,
           targetSessionId: accepted.session.id,
+          targetProjectId,
           continuedAt: now(),
         },
       });
