@@ -67,6 +67,17 @@ import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettin
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Binds the tab to its project's copy on this computer, as opening a project does. */
+function bindTabCopy() {
+  const rootPath = useAppStore.getState().project?.rootPath ?? "/repo";
+  useAppStore.setState({ projectBinding: { kind: "local", key: `local:${rootPath}`, rootPath, displayName: "repo" } });
+}
+
+/** The tab's copy: the machine a lane refresh reads. */
+function tabCopy() {
+  return useAppStore.getState().projectBinding;
+}
+
 /** Reset store to initial state between tests */
 function resetStore() {
   useAppStore.setState({
@@ -769,6 +780,7 @@ describe("appStore", () => {
     });
 
     it("refreshLanes hydrates lane snapshots and derives lanes", async () => {
+      bindTabCopy();
       const snapshots = [
         {
           lane: { id: "lane-1", name: "Lane 1" },
@@ -791,7 +803,7 @@ describe("appStore", () => {
         includeArchived: false,
         includeStatus: true,
         includeConflictStatus: true,
-      });
+      }, tabCopy());
       expect(useAppStore.getState().laneSnapshots).toEqual(snapshots);
       expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
     });
@@ -802,6 +814,7 @@ describe("appStore", () => {
       // project and flushed the deletion to storage immediately, so the state
       // could not come back when the real lane list arrived.
       useAppStore.setState({ project: { rootPath: "/proj" } as any });
+      bindTabCopy();
       useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "keep-me" });
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
 
@@ -812,6 +825,7 @@ describe("appStore", () => {
 
     it("refreshLanes prunes per-lane view state only for lanes the list omits", async () => {
       useAppStore.setState({ project: { rootPath: "/proj" } as any });
+      bindTabCopy();
       useAppStore.getState().setLaneWorkViewState("/proj", "lane-live", { search: "live" });
       useAppStore.getState().setLaneWorkViewState("/proj", "lane-gone", { search: "gone" });
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([
@@ -848,6 +862,7 @@ describe("appStore", () => {
         laneSnapshots: [],
         selectedLaneId: existingLane.id,
       } as any);
+      bindTabCopy();
       (window.ade.lanes.listSnapshots as any).mockRejectedValueOnce(
         new Error("Remote ADE service is not connected"),
       );
@@ -864,6 +879,7 @@ describe("appStore", () => {
         project: { rootPath: "/p/lite", displayName: "Lite", baseRef: "main" } as any,
         lanes: [{ id: "lane-lite", name: "Lane lite", status: { dirty: true } }] as any[],
       });
+      bindTabCopy();
       (window.ade.lanes.list as any).mockResolvedValueOnce([{ id: "lane-lite", name: "Lane lite", color: "#7dd3fc" }] as any[]);
 
       await useAppStore.getState().refreshLanes({ includeStatus: false });
@@ -871,7 +887,7 @@ describe("appStore", () => {
       expect(window.ade.lanes.list).toHaveBeenCalledWith({
         includeArchived: false,
         includeStatus: false,
-      });
+      }, tabCopy());
       expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
       expect(useAppStore.getState().lanes[0]).toEqual(
         expect.objectContaining({
@@ -1052,6 +1068,7 @@ describe("appStore", () => {
     });
 
     it("refreshLanes can update lane git status without snapshot decorations", async () => {
+      bindTabCopy();
       const lanes = [{ id: "lane-status", name: "Lane status", status: { dirty: true } }] as any[];
       (window.ade.lanes.list as any).mockResolvedValueOnce(lanes);
 
@@ -1060,12 +1077,13 @@ describe("appStore", () => {
       expect(window.ade.lanes.list).toHaveBeenCalledWith({
         includeArchived: false,
         includeStatus: true,
-      });
+      }, tabCopy());
       expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
       expect(useAppStore.getState().lanes).toEqual(lanes);
     });
 
     it("refreshLanes tracks loading while lane state is pending", async () => {
+      bindTabCopy();
       const lanes = [{ id: "lane-loading", name: "Lane loading" }] as any[];
       let resolveLanes: (value: any[]) => void = () => {};
       const pendingLanes = new Promise<any[]>((resolve) => {
@@ -1085,6 +1103,7 @@ describe("appStore", () => {
     });
 
     it("refreshLanes can update runtime snapshots without recomputing lane git status", async () => {
+      bindTabCopy();
       useAppStore.setState({
         lanes: [{ id: "lane-1", name: "Lane 1", status: { dirty: true } }] as any[],
       });
@@ -1114,13 +1133,14 @@ describe("appStore", () => {
         includeArchived: false,
         includeStatus: false,
         includeConflictStatus: false,
-      });
+      }, tabCopy());
       expect(useAppStore.getState().laneSnapshots[0].runtime.bucket).toBe("running");
       expect(useAppStore.getState().lanes[0].status).toEqual({ dirty: true });
       expect(useAppStore.getState().laneSnapshots[0].lane).toBe(useAppStore.getState().lanes[0]);
     });
 
     it("refreshLanes can skip conflict status for cheaper warmup snapshots", async () => {
+      bindTabCopy();
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
 
       await useAppStore.getState().refreshLanes({ includeStatus: true, includeConflictStatus: false });
@@ -1129,10 +1149,11 @@ describe("appStore", () => {
         includeArchived: false,
         includeStatus: true,
         includeConflictStatus: false,
-      });
+      }, tabCopy());
     });
 
     it("refreshLanes syncs retained snapshots to statusless lane metadata during lightweight refresh", async () => {
+      bindTabCopy();
       useAppStore.setState({
         laneSnapshots: [
           {
