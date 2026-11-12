@@ -340,6 +340,28 @@ async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
   await env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(pendingId).run();
 }
 
+/** A repeated request id: the computer that request made, or a create still in flight. */
+type ReplayOutcome = { kind: "replayed"; instance: CloudInstance } | { kind: "in_progress" };
+
+/**
+ * How a create ended, for a caller inside the server (the launcher) that acts
+ * on it without decoding HTTP: `made` by this call (`answer` is the route's
+ * 201 body), `replayed` (an earlier request with the same id made it), a
+ * create still `in_progress`, or `refused` with the route's own answer.
+ */
+export type CreateComputerOutcome =
+  | { kind: "made"; instance: CloudInstance; answer: unknown }
+  | ReplayOutcome
+  | { kind: "refused"; response: Response };
+
+/** The route's answer for a create's outcome: 201, 200 for a replay, 409 while one is in flight, or the refusal. */
+export function createAnswerOf(outcome: CreateComputerOutcome): Response {
+  if (outcome.kind === "made") return json(outcome.answer, 201);
+  if (outcome.kind === "replayed") return json(outcome.instance, 200);
+  if (outcome.kind === "in_progress") return createInProgress();
+  return outcome.response;
+}
+
 /**
  * A create or copy that names a request id this account already used gets the
  * computer that request made, so a retried request (a lost answer, a client
@@ -352,7 +374,7 @@ async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
  * A reservation still inside that time with no computer yet is a create in
  * flight: 409 `create_in_progress`, and the client asks again in a moment.
  */
-async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: string, requestId: string, now: number): Promise<Response | null> {
+async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: string, requestId: string, now: number): Promise<ReplayOutcome | null> {
   const row = await env.DB.prepare("select * from cloud_computers where user_id = ? and request_id = ? and deleted_at is null order by created_at desc limit 1")
     .bind(userId, requestId).first<ComputerRow>();
   if (!row) return null;
@@ -364,7 +386,7 @@ async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: str
       const statements = [...statusChangeStatements(env, row, instance.status, now, "seen"), ...(ended ? [ended] : [])];
       if (statements.length) await env.DB.batch(statements);
       logCloud("cloud.create_replayed", { userId, instanceId: row.instance_id });
-      return json(instance, 200);
+      return { kind: "replayed", instance };
     } catch (error) {
       if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
       await markGone(env, row, now);
@@ -378,14 +400,14 @@ async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: str
     const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId: row.instance_id, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_replayed" }));
     if (adopted?.meta.changes === 1) {
       logCloud("cloud.create_replayed", { userId, instanceId: instance.id, adopted: true });
-      return json(instance, 200);
+      return { kind: "replayed", instance };
     }
   }
   if (now - row.created_at > PENDING_TIMEOUT_MS) {
     await releasePending(env, row.instance_id);
     return null;
   }
-  return createInProgress();
+  return { kind: "in_progress" };
 }
 
 /** Only a provider's clear no means nothing was made. Timeouts and 5xx can leave a running computer, so its reservation stays for adoption. */
@@ -412,7 +434,7 @@ const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> |
 async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, ctx: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  return await createComputer(env, userId, provider, { body }, ctx);
+  return createAnswerOf(await createComputer(env, userId, provider, { body }, ctx));
 }
 
 /**
@@ -429,26 +451,26 @@ export type CreateComputerExtras = {
 /**
  * The one way a computer is made (`POST /cloud/instances` and the server
  * launcher): the same replay, limits, reservation, billing and metadata.
- * 201 for a computer this call made, 200 for one an earlier request with the
- * same request id made, or the refusal.
+ * `createAnswerOf` turns the outcome into the route's answer.
  */
-export async function createComputer(env: CloudEnv, userId: string, provider: CloudProvider, extras: CreateComputerExtras, { now, waitUntil }: CloudRequestContext): Promise<Response> {
+export async function createComputer(env: CloudEnv, userId: string, provider: CloudProvider, extras: CreateComputerExtras, { now, waitUntil }: CloudRequestContext): Promise<CreateComputerOutcome> {
+  const refused = (response: Response): CreateComputerOutcome => ({ kind: "refused", response });
   const { body } = extras;
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
-  if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  if (!size) return refused(badRequest("That size isn't one ADE Cloud offers."));
   const name = shortText(body.name, 60) ?? "ADE computer";
   const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
   const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
-  if (!clientMetadata || !requestedEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  if (!clientMetadata || !requestedEnv || !publicPorts) return refused(badRequest(UNREADABLE_REQUEST_MESSAGE));
   // The server's own entries only: a client can't name a launch or its join code.
   delete requestedEnv[CLOUD_LAUNCH_ENV.launchId];
   delete requestedEnv[CLOUD_LAUNCH_ENV.join];
   const clientEnv = { ...requestedEnv, ...extras.serverEnv };
   // The app's own update track: the computer starts from that channel's image and follows it.
   const channel = body.channel === undefined ? "stable" : readUpdateChannel(body.channel);
-  if (!channel) return badRequest("That update channel isn't one ADE knows.");
+  if (!channel) return refused(badRequest("That update channel isn't one ADE knows."));
 
   // A repeat of a request this account made gets that computer, before any
   // limit: it is not a new computer, so hours or the computer limit can't refuse it.
@@ -462,15 +484,15 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const templateVersion = channelTemplate(targets, channel);
   if (!templateVersion) {
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
-    return fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503);
+    return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
   const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(clientMetadata);
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: originOf(clientMetadata), key: requestId, refusedAction: action, now });
-  if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
-  if ((await ownerLimitState(env)).reached) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
+  if (empty) return refused(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
+  if ((await ownerLimitState(env)).reached) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
 
   // A move carries the old computer's disk; a plain create always starts at the smallest.
   let diskGb = DISK_ON_CREATE_GB;
@@ -478,26 +500,26 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   let lane = laneFactsOf(metadata);
   if (isMove) {
     const source = typeof body.moveFromInstanceId === "string" ? await ownedComputer(env, userId, body.moveFromInstanceId) : null;
-    if (!source) return notFound();
+    if (!source) return refused(notFound());
     // One move at a time per computer: a chain (A to B, then B to C) would leave both A and B out of the disk.
     if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
-      return fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409);
+      return refused(fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409));
     }
     diskGb = source.disk_gb;
     moveFromInstanceId = source.instance_id;
     // The lane moves with its computer, even when the client's metadata left it out.
     lane = mergeLaneFacts(lane, laneFactsOfRow(source));
     const tooBig = tierRefusal(size, diskGb, true);
-    if (tooBig) return refuse(tooBig);
+    if (tooBig) return refused(refuse(tooBig));
   }
   // The move's source is deleted at the end of the move, so its disk isn't counted twice while it runs.
   const room = await diskRoom(env, account, await accountDiskGb(env, userId, moveFromInstanceId ?? "") + diskGb, now);
-  if (!room.ok) return refuse(room);
+  if (!room.ok) return refused(refuse(room));
 
   const reservation = await reserveComputer(env, account, { size, diskGb, capGb: room.capGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
   if (!reservation.ok) {
-    if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? createInProgress();
-    return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
+    if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
+    return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
   }
 
   try {
@@ -518,12 +540,12 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
       ...(extras.onMade?.(instance) ?? []),
     ]);
     track({ action, tier: tierOf(size) });
-    return json(withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets), 201);
+    return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     if (error instanceof CloudProviderError && (error.code === "not_found" || error.code === "invalid_request")) {
       reportCloudFailure("cloud.create_refused_template", { userId, templateVersion, code: error.code });
-      return fail("template_unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
+      return refused(fail("template_unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503));
     }
     throw error;
   }
@@ -539,7 +561,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   // limit, as a repeated create does.
   if (metadataIn.ade_request_id) {
     const replay = await replayRequest(env, provider, computer.user_id, metadataIn.ade_request_id, now);
-    if (replay) return replay;
+    if (replay) return createAnswerOf(replay);
   }
   const { track, refuse } = cloudActionTracker({
     env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: originOf(metadataIn), key: computer.instance_id, refusedAction: "copy", now,
@@ -577,7 +599,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     now,
   });
   if (!reservation.ok) {
-    if ("replay" in reservation) return await replayRequest(env, provider, computer.user_id, requestId, now) ?? createInProgress();
+    if ("replay" in reservation) return createAnswerOf(await replayRequest(env, provider, computer.user_id, requestId, now) ?? { kind: "in_progress" });
     return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
   }
   try {

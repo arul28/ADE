@@ -51,7 +51,7 @@
  *   POST   /cloud/instances/:id/sign-ins                CloudRemoteSignInStart   ({ provider })
  *   POST   /cloud/instances/:id/sign-ins/:job/code      CloudRemoteSignInStatus   ({ code })
  *   GET    /cloud/instances/:id/sign-ins/:job           CloudRemoteSignInStatus
- *   POST   /cloud/projects/computers/delete             CloudProjectComputersPreview | { jobId }   ({ origin, dryRun? })
+  *   POST   /cloud/projects/computers/delete             CloudProjectComputersPreview | CloudProjectComputersDeleteStarted   ({ origin, dryRun: true } | { origin, instanceIds })
  *   GET    /cloud/projects/computers/delete/:job        CloudProjectComputersJob
  *
  * CORS: every `/cloud/*` route answers a browser on `WEB_CLIENT_ORIGIN` only
@@ -706,8 +706,10 @@ export type CloudChatTranscriptPage = {
 
 /**
  * What the new computer's env carries for a server launch, and nothing else:
- * the launch id, and a one-time join code (single use, 30 minutes, bound to
- * that computer and the account). The server keeps only the code's SHA-256.
+ * the launch id, and its join code (30 minutes, bound to that computer and
+ * the account; spent by the first join, and only that computer may join again
+ * with it while the launch is still joining). The server keeps only the
+ * code's salt and SHA-256.
  */
 export const CLOUD_LAUNCH_ENV = { launchId: "ADE_LAUNCH_ID", join: "ADE_LAUNCH_JOIN" } as const;
 /** The computer names itself on the join (its `ADE_CLOUD_INSTANCE_ID`); the server checks it against the launch and the provider's own record. */
@@ -746,7 +748,13 @@ export type CloudServerLaunchRequest = {
     prompt: string;
     attachments?: CloudLaunchAttachment[];
   };
-  /** Who asked: a person on the web or the phone (the default), or an automation (the agent limits answer). */
+  /**
+   * Who asked: a person on the web or the phone (the default), or an
+   * automation. Recorded on the computer (`ade_made_by_agent`) only: the
+   * server checks hours, computers and disk, never the agent limits (they live
+   * in the desktop's vault, which the server can't read), so an automation
+   * checks its own limits before it calls.
+   */
   madeBy?: { kind: "person" } | { kind: "automation"; ruleId?: string | null };
   /** The app's update track; left out is `stable`. */
   channel?: CloudUpdateChannel;
@@ -797,10 +805,16 @@ export type CloudLaunchRecord = {
  * the launch's account. `needsApproval: true` (with the same code, after it
  * was spent, from the same computer, before it expires) moves the launch to
  * `needs_approval` when its headless browser stopped on a confirm page; a
- * `userCode` with it replaces a sign-in the person let expire.
+ * `userCode` with it replaces a sign-in the person let expire. While the
+ * launch is still joining, the same computer may join again with a spent
+ * code (a restart mid-sign-in): that names a fresh sign-in. Both answers carry
+ * `joinExpiresAt` (epoch ms): the computer waits for a sign-in no longer, and
+ * the server shows the launch failed once it passed unjoined.
  */
 export type CloudLaunchJoinRequest = { nonce: string; userCode?: string; needsApproval?: boolean };
-export type CloudLaunchJoinResult = { url: string } | { ok: true; state: CloudLaunchState };
+export type CloudLaunchJoinResult =
+  | { url: string; joinExpiresAt?: number }
+  | { ok: true; state: CloudLaunchState; joinExpiresAt?: number };
 
 /** `PUT /cloud/launches/:launch/stages`, from the computer once signed in: a handful of writes per launch. */
 export type CloudLaunchStagesUpdate = {
@@ -879,8 +893,19 @@ export type CloudProjectComputer = {
   unpushed: boolean | null;
 };
 
-/** `{ dryRun: true }`: every computer of this account whose lane names the origin. */
-export type CloudProjectComputersPreview = { computers: CloudProjectComputer[] };
+/**
+ * `{ dryRun: true }`: every computer of this account whose lane names the
+ * origin, at most 50; `truncated` when there were more. The delete then names
+ * the ones it acts on: `{ origin, instanceIds }` from this preview.
+ */
+export type CloudProjectComputersPreview = { computers: CloudProjectComputer[]; truncated: boolean };
+
+/**
+ * The delete's answer. It acts only on the named computers that still belong
+ * to the origin and aren't already in another delete job; `truncated` when
+ * more than 50 were named (the rest are left alone).
+ */
+export type CloudProjectComputersDeleteStarted = { jobId: string; truncated: boolean };
 
 /**
  * One computer's place in a delete job: `pending` until the server takes it,

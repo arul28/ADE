@@ -14,13 +14,19 @@
 import {
   CLOUD_REMOTE_SIGN_IN_ELSEWHERE,
   cloudRemoteSignInOf,
+  type CloudRemoteSignInState,
   type CloudRemoteSignInStatus,
 } from "../../../../account-directory/src/cloud/contract";
+import {
+  isAgentCliLoginProvider,
+  type AgentCliLoginStartArgs,
+} from "../../../../desktop/src/shared/types/agentCliLogin";
+import type { ProviderLoginState } from "../../../../desktop/src/shared/types/providerInstances";
 
 /** The slice of a login runner's status this needs (the provider account runner and the agent CLI runner share it). */
 type RunnerStatus = {
   loginId: string;
-  state: "running" | "verifying" | "succeeded" | "failed" | "cancelled" | string;
+  state: ProviderLoginState;
   url: string | null;
   deviceCode?: string;
   awaitingCode: boolean;
@@ -37,7 +43,7 @@ export type RemoteProviderSignInDeps = {
   providerAccounts: () => Promise<Runner & { start: (instanceId: string, options: { deviceAuth: boolean }) => RunnerStatus }>;
   defaultInstanceId: (provider: "codex") => Promise<string>;
   /** The agent CLIs with their own sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi). */
-  agentClis: () => Promise<Runner & { start: (args: { provider: string }) => Promise<RunnerStatus> }>;
+  agentClis: () => Promise<Runner & { start: (args: AgentCliLoginStartArgs) => Promise<RunnerStatus> }>;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -48,10 +54,17 @@ const FIRST_LINK_POLL_MS = 250;
 const PROVIDER_ACCOUNT = "p_";
 const AGENT_CLI = "c_";
 
+/** A runner's state as the phone and the web read it. */
+const ANSWER_STATE: Record<ProviderLoginState, CloudRemoteSignInState> = {
+  running: "pending",
+  verifying: "pending",
+  succeeded: "done",
+  failed: "failed",
+  cancelled: "failed",
+};
+
 function answerOf(jobId: string, status: RunnerStatus): CloudRemoteSignInStatus {
-  const state = status.state === "succeeded" ? "done"
-    : status.state === "failed" || status.state === "cancelled" ? "failed"
-      : "pending";
+  const state = ANSWER_STATE[status.state] ?? "pending";
   return {
     jobId,
     state,
@@ -87,6 +100,7 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
         runner = accounts;
         jobId = `${PROVIDER_ACCOUNT}${status.loginId}`;
       } else {
+        if (!isAgentCliLoginProvider(row.provider)) throw new Error(`ADE can't run ${row.label}'s sign-in for another screen.`);
         const clis = await deps.agentClis();
         status = await clis.start({ provider: row.provider });
         runner = clis;

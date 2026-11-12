@@ -4,7 +4,7 @@
 --
 -- One row per launch id. The caller writes the facts (the lane, the first
 -- message, its settings and files); the server makes the computer and keeps
--- only the SHA-256 of the computer's one-time join code; the computer reads
+-- only the salt and SHA-256 of the computer's join code; the computer reads
 -- the facts once it signed in and writes its stage progress. The minute cron
 -- deletes a row (and its files in R2) once `expires_at` passed.
 create table if not exists cloud_launches (
@@ -22,7 +22,11 @@ create table if not exists cloud_launches (
   -- The launch's own facts as the caller sent them (CloudServerLaunchRequest), JSON.
   request_json text,
   instance_id text,
-  -- SHA-256 (hex) of the one-time join code in the computer's env. Never the code.
+  -- The join code is HMAC(CLOUD_LAUNCH_JOIN_KEY, launch id and this salt), so a
+  -- retried start works the same code out again. Written with the claim,
+  -- before the provider is called.
+  join_salt text,
+  -- SHA-256 (hex) of the join code in the computer's env. Never the code.
   join_hash text,
   join_expires_at integer,
   join_used_at integer,
@@ -43,6 +47,8 @@ create table if not exists cloud_launches (
 
 create index if not exists cloud_launches_user on cloud_launches (user_id, created_at);
 create index if not exists cloud_launches_expires on cloud_launches (expires_at);
+-- The minute cron's no-check-in sleep leaves a computer awake while its launch joins.
+create index if not exists cloud_launches_joining on cloud_launches (state, join_expires_at);
 
 -- "Delete the cloud computers of one project" (C10, src/cloud/projectComputers.ts):
 -- one row per computer a job named. The minute cron moves each row on (wake,

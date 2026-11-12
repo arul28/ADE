@@ -259,7 +259,7 @@ export function checkRemoteAdeCommand(
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"], ["provider", "providers"]]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
@@ -376,12 +376,19 @@ const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credent
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
 
+/** `ade providers sign-in`, `sign-in-code` and `sign-in-status` (cli.ts `buildRemoteSignInPlan`). */
+const REMOTE_PROVIDER_SIGN_INS: ReadonlySet<string> = new Set(["sign-in", "sign-in-code", "sign-in-status"]);
+
 /** Signing this machine in or out of a connected service. */
 function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
   if (command === "github") return GITHUB_AUTH_GROUPS.has(words[0] ?? "") && GITHUB_AUTH_CHANGES.has(words[1] ?? "");
   if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
   if (command === "integrations" || command === "integration") return words[0] === "connect";
   if (command === "providers") {
+    // A provider sign-in for another screen hands its link and code to the
+    // caller, so whoever approves it signs this computer's provider in as
+    // themselves. Only ADE's server runs these, over exec, for the person.
+    if (REMOTE_PROVIDER_SIGN_INS.has(words[0] ?? "")) return true;
     return words[0] === "opencode" && (words[1] === "accounts" || words[1] === "account")
       && OPENCODE_ACCOUNT_REMOVALS.has(words[2] ?? "");
   }

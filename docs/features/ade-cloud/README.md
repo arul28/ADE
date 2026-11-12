@@ -640,27 +640,45 @@ ADE's server, and the new computer runs its own launch
   create's request id: the same id answers the same launch and never makes a
   second computer. The create is the one create path (`createComputer` in
   `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
-- **Join.** The computer's env carries `ADE_LAUNCH_ID` and a one-time
-  `ADE_LAUNCH_JOIN` code; the server keeps only its SHA-256. At brain start
-  with no account session (`apps/ade-cli/src/services/account/cloudBootLaunch.ts`)
-  the brain drops both from its env, starts ADE's device sign-in and calls
-  `POST /cloud/launches/:id/join` with no account token. The code is single
-  use, valid 30 minutes, and only from the launch's computer (`x-ade-instance`
-  plus the provider's metadata); the answer is a sign-in link for the
-  launch's account only, opened in the computer's headless Chromium
-  (`cloudHeadlessApproval.ts`, now in `apps/ade-cli`). When the page stops on
-  a confirm step, the launch shows `needs_approval` with the device page and
-  code, and the caller offers one Approve tap in the person's own browser.
+- **Join.** The computer's env carries `ADE_LAUNCH_ID` and an
+  `ADE_LAUNCH_JOIN` code. The code is an HMAC under the Worker secret
+  `CLOUD_LAUNCH_JOIN_KEY` of the launch id and a salt the row keeps from the
+  first start, so a start retried after a lost create answer puts the same
+  code in the computer the create's replay adopts; the server keeps only the
+  salt and the code's SHA-256. At brain start with no account session
+  (`apps/ade-cli/src/services/account/cloudBootLaunch.ts`) the brain drops
+  both from its env, starts ADE's device sign-in and calls
+  `POST /cloud/launches/:id/join` with no account token. The code is valid
+  30 minutes and only from the launch's computer (`x-ade-instance` plus the
+  provider's metadata). The first join spends it; while the launch is still
+  `joining` or `needs_approval`, that computer may join again with it (a
+  brain that restarted mid-sign-in), each time with a fresh device sign-in.
+  The answer is a sign-in link for the launch's account only, opened in the
+  computer's headless Chromium (`cloudHeadlessApproval.ts`, now in
+  `apps/ade-cli`). When the page stops on a confirm step, the launch shows
+  `needs_approval` with the device page and code, and the caller offers one
+  Approve tap in the person's own browser. The computer waits no longer than
+  the join window (`joinExpiresAt` in the join's answer), the minute cron's
+  no-check-in sleep leaves it awake meanwhile, and a launch still joining
+  when the window closes reads as `failed` ("The new computer couldn't sign
+  in.").
 - **Run.** Signed in, the computer reads the facts (`GET /cloud/launches/:id`),
   sets the repository up with its own Git sign-in, and runs `chat.startLaunch`
   in its own brain with the same launch and lane ids. It posts a stage
-  update only when a stage changes (`PUT .../stages`); the caller reads the
-  record while it watches. A cancel before the agent starts deletes the
-  computer. The minute cron deletes a record a week after its start (a draft
-  after a day), with its files.
+  update only when a stage changes (`PUT .../stages`), one after another; a
+  `done` launch takes no other state. A launch stopped in the computer's own
+  ADE reads as `failed` ("The launch was stopped on the computer."). The
+  caller reads the record while it watches. A cancel before the agent starts
+  deletes the computer the row holds after the cancel lands, and a cancel
+  again retries a delete that failed. The minute cron deletes a record a
+  week after its start (a draft after a day), with all its files.
 - **Not yet:** the server can't check for a git credential before it makes
   the computer (no vault access here); a private repository with none fails
   at the clone with the usual sentence.
+- **Not yet:** an automation's launch (`madeBy: automation`) is checked for
+  hours, computers and disk only. The agent limits live in the desktop's
+  vault, which the server can't read, so the automation checks them itself
+  before it calls.
 
 Provider sign-ins on a cloud computer from the phone or the web:
 `POST /cloud/instances/:id/sign-ins { provider }` runs
@@ -668,9 +686,13 @@ Provider sign-ins on a cloud computer from the phone or the web:
 `.../sign-ins/:job` and `.../code` read it and pass a pasted code (on stdin).
 The login runners live in the computer's brain. Which providers can do this
 is `CLOUD_REMOTE_SIGN_IN` in `contract.ts`; a `none` row is refused with its
-reason. `POST /cloud/projects/computers/delete { origin, dryRun? }` starts a
-job the minute cron runs: wake, push every lane's work, delete; a computer
-whose push failed is kept with why. The typed client for all of these is
+reason. `POST /cloud/projects/computers/delete { origin, dryRun: true }`
+lists the project's computers (at most 50, `truncated` when there are more);
+`{ origin, instanceIds }` from that list starts a job the minute cron runs on
+the named computers that still belong to the project and aren't already in
+another job: wake, push every lane's work, delete; a computer whose push
+failed is kept with why. The plan cleanup and this job share one push run
+(`pushAllWork` in `planCleanup.ts`). The typed client for all of these is
 `apps/desktop/src/shared/cloudApiClient.ts` (fetch only). Every `/cloud/*`
 route answers a browser only on `WEB_CLIENT_ORIGIN`.
 

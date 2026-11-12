@@ -1317,12 +1317,13 @@ describe("ADE Cloud server launcher", () => {
     kind: "chat",
     sizeId: "small",
     project: { origin: "https://github.com/Acme/Widgets.git" },
-    lane: { id: "lane-1", name: "Fix the login page" },
+    lane: { id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", name: "Fix the login page" },
     chat: { provider: "codex", modelId: "gpt-5", permissions: "full-auto", prompt: "Fix the login page." },
   };
 
   beforeEach(() => {
     harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
     harness.env.WEB_CLIENT_ORIGIN = WEB;
     seedAccount(harness, OWNER);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
@@ -1374,22 +1375,23 @@ describe("ADE Cloud server launcher", () => {
     if (status !== 410) expect((await join({ nonce: joinCode(), userCode: USER_CODE })).status).toBe(200);
   });
 
-  it("the join code is spent once, and its link signs in only the launch's account", async () => {
+  it("the join code is spent by the first join, and its links sign in only the launch's account", async () => {
     await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
     seedDeviceSignIn();
     seedDeviceSignIn("GHJK-6789");
 
     const first = await join({ nonce: joinCode(), userCode: USER_CODE });
+    // The same computer joining again while the launch still joins (a restart mid-sign-in) names a fresh sign-in.
     const second = await join({ nonce: joinCode(), userCode: "GHJK-6789" });
 
     expect(first.status).toBe(200);
     expect((await first.json() as { url: string }).url).toContain(`ticket=t_${OWNER}`);
-    expect(second.status).toBe(409);
-    expect(providerCalls(harness, /sign_in_tokens/).map((call) => call.body?.user_id)).toEqual([OWNER]);
+    expect(second.status).toBe(200);
+    expect(providerCalls(harness, /sign_in_tokens/).map((call) => call.body?.user_id)).toEqual([OWNER, OWNER]);
     // After it was spent, the same computer may still say a person has to confirm.
     expect((await join({ nonce: joinCode(), needsApproval: true })).status).toBe(200);
     const record = await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json();
-    expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: USER_CODE }) }));
+    expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: "GHJK-6789" }) }));
   });
 
   it.each<[string, Record<string, string>, number, string | null]>([

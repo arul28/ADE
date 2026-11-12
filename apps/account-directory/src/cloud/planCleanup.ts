@@ -76,9 +76,9 @@ const WAKE_POLL_MS = 5_000;
 /** Like the person's push-work wake: not charged, and the tick's stops and sleeps leave it alone. */
 const FREE_WAKE_MS = 15 * 60_000;
 /** Interrupt and save first (40 s, as the 0-hours stop), then push: bounded like the desktop's 3-minute push. */
-export const PREPARE_TIMEOUT_MS = 90_000;
-export const PUSH_TIMEOUT_MS = 4 * 60_000;
-export const CHECK_TIMEOUT_MS = 2 * 60_000;
+const PREPARE_TIMEOUT_MS = 90_000;
+const PUSH_TIMEOUT_MS = 4 * 60_000;
+const CHECK_TIMEOUT_MS = 2 * 60_000;
 const DONE_SHOWN_MS = 14 * DAY_MS;
 
 /** `$ADE_HOME/bin` holds the newer ADE; ADE on the computer answers a few seconds after a start. Shared by every server-run command on a computer. */
@@ -87,9 +87,9 @@ export const commandWith = (...lines: string[]) => [
   'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
   ...lines,
 ].join("\n");
-export const PREPARE_COMMAND = commandWith("ade cloud prepare-stop --timeout 40 --json");
-export const PUSH_COMMAND = commandWith("ade cloud push-work --json");
-export const CHECK_COMMAND = commandWith("ade cloud work-state --json");
+const PREPARE_COMMAND = commandWith("ade cloud prepare-stop --timeout 40 --json");
+const PUSH_COMMAND = commandWith("ade cloud push-work --json");
+const CHECK_COMMAND = commandWith("ade cloud work-state --json");
 
 type CleanupComputerRow = ComputerRow & { plan_cleanup_claimed_at?: number | null; plan_cleanup_failed_at?: number | null };
 
@@ -460,19 +460,9 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
   try {
     // Never woken for nothing.
     if (!(await stillDue(env, computer.user_id, computer.instance_id, now))) return await release();
-    const metadata = await wakeForPush(env, provider, computer, now, wake);
-    // Agents stopped and chats saved first: anything still writing could land after the check.
-    const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
-    if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return await keep("ADE on the computer couldn't stop its agents and save its chats.", "prepare_stop_failed");
-    const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
-    if (!pushed) return await keep("ADE on the computer didn't answer the push.", "push_unreadable");
-    const left = leftLanes(pushed);
-    if (left) return await keep(left, "push_left_work");
-    // Read once more: anything new or unknown keeps it.
-    const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
-    if (!checked) return await keep("ADE couldn't confirm all work is on GitHub.", "check_unreadable");
-    const stillLeft = leftLanes(checked);
-    if (stillLeft) return await keep(stillLeft, "check_left_work");
+    const work = await pushAllWork(env, provider, computer, now, wake, "plan_cleanup");
+    if (!work.ok) return await keep(work.reason, work.code);
+    const { metadata, pushed } = work;
     // The pushes took minutes: the person may have deleted computers or upgraded since.
     if (!(await stillDue(env, computer.user_id, computer.instance_id, now))) return await release();
 
@@ -498,13 +488,43 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
 /** Whether this run started the computer, and the resting status it had before (`stopped` or `sleeping`). */
 export type WakeRecord = { woke: boolean; from: string };
 
+/** All of a computer's work pushed and checked (its metadata and the push's tally), or why some stays, with a code for the log. */
+export type PushAllOutcome =
+  | { ok: true; metadata: Record<string, string>; pushed: Tally }
+  | { ok: false; reason: string; code: string };
+
+/**
+ * The one push-before-delete run, on the computer itself: a free wake when it
+ * rests, its own ADE stops its agents and saves its chats, pushes every
+ * lane's work, then reads it all again; anything new or unknown keeps it.
+ * The plan cleanup and the project delete both delete only on `ok`. `wake`
+ * notes a wake, so a caller that keeps the computer puts it back to rest
+ * (`putBackToRest`). Provider errors are thrown.
+ */
+export async function pushAllWork(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason: string): Promise<PushAllOutcome> {
+  const metadata = await wakeForPush(env, provider, computer, now, wake, reason);
+  // Agents stopped and chats saved first: anything still writing could land after the check.
+  const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
+  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+  const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
+  if (!pushed) return { ok: false, reason: "ADE on the computer didn't answer the push.", code: "push_unreadable" };
+  const left = leftLanes(pushed);
+  if (left) return { ok: false, reason: left, code: "push_left_work" };
+  // Read once more: anything new or unknown keeps it.
+  const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
+  if (!checked) return { ok: false, reason: "ADE couldn't confirm all work is on GitHub.", code: "check_unreadable" };
+  const stillLeft = leftLanes(checked);
+  if (stillLeft) return { ok: false, reason: stillLeft, code: "check_left_work" };
+  return { ok: true, metadata, pushed };
+}
+
 /**
  * Wakes a resting computer for the push, as the person's push-work wake does:
  * the time isn't charged, isn't counted as use, and the tick's stops and
  * sleeps leave it alone. Answers the computer's metadata, and notes in `wake`
  * that it started it (before the wait, so a wake that times out is put back too).
  */
-export async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason = "plan_cleanup"): Promise<Record<string, string>> {
+async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason = "plan_cleanup"): Promise<Record<string, string>> {
   let instance = await provider.getInstance(computer.instance_id);
   if (isMeteredStatus(instance.status)) return instance.metadata;
   wake.from = instance.status;
@@ -564,7 +584,7 @@ export function readResult(stdout: string): Record<string, unknown> | null {
  * no chat turn is still running, every saved chat was written, and it didn't
  * run out of time. Anything else (an older ADE, a timeout) keeps the computer.
  */
-export function prepareConfirmed(exitCode: number, stdout: string): boolean {
+function prepareConfirmed(exitCode: number, stdout: string): boolean {
   if (exitCode !== 0) return false;
   const result = readResult(stdout);
   return result != null && result.stillRunning === 0 && result.chatsNotUploaded === 0 && result.timedOut === false;
@@ -575,7 +595,7 @@ type TallyLane = { laneId: string; laneName: string; branchRef: string; state: s
 type Tally = { failed: number; readsRemotes: boolean; lanes: TallyLane[] | null };
 
 /** `ade cloud push-work --json` / `work-state --json`: the tally, or null when unreadable. */
-export function readTally(stdout: string): Tally | null {
+function readTally(stdout: string): Tally | null {
   const tally = readResult(stdout);
   if (!tally) return null;
   const lanes = Array.isArray(tally.lanes)
@@ -609,7 +629,7 @@ function laneIsSafe(lane: TallyLane, readsRemotes: boolean): boolean {
 }
 
 /** Why work stays on the computer, or null when everything is on GitHub. An older ADE without the lane list can't say: it stays. */
-export function leftLanes(tally: Tally): string | null {
+function leftLanes(tally: Tally): string | null {
   if (!tally.lanes) return "This computer's ADE is too old to say what isn't pushed.";
   if (tally.failed > 0) return "ADE couldn't read or push every project on it.";
   const left = tally.lanes.filter((lane) => !laneIsSafe(lane, tally.readsRemotes));

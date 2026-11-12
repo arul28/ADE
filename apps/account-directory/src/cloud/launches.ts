@@ -15,7 +15,6 @@ import {
   CLOUD_LAUNCH_METADATA,
   CLOUD_LAUNCH_RECORD_TTL_MS,
   CLOUD_PATHS,
-  type CloudInstance,
   type CloudLaunchAttachment,
   type CloudLaunchRecord,
   type CloudLaunchStage,
@@ -24,11 +23,11 @@ import {
   type CloudServerLaunchRequest,
   type CloudTierId,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, fail, json, readJson } from "./http";
 import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, type CloudEnv } from "./store";
-import type { CreateComputerExtras } from "./routes";
+import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./routes";
 
 /**
  * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): a lane
@@ -41,10 +40,15 @@ import type { CreateComputerExtras } from "./routes";
  * launch's facts, checks a one-time join code, mints the sign-in link and
  * records progress.
  *
- * The join code is the only secret: random, in the computer's env only,
- * single use, 30 minutes, bound to the launch's computer (`x-ade-instance`
- * plus the provider's own metadata) and minting a link only for the launch's
- * account. The server keeps its SHA-256, never the code.
+ * The join code is the only secret: in the computer's env only, 30 minutes,
+ * bound to the launch's computer (`x-ade-instance` plus the provider's own
+ * metadata) and minting a link only for the launch's account. It is
+ * HMAC(`CLOUD_LAUNCH_JOIN_KEY`, launch id and a random salt), so a start
+ * retried after a lost create answer puts the same code in the same
+ * computer's env; the server keeps the salt and the code's SHA-256, never
+ * the code. The first join spends it. While the launch is still joining, the
+ * same computer may join again with it (a brain that restarted mid-sign-in,
+ * or a join whose answer was lost): each join names a fresh device sign-in.
  */
 
 type LaunchRow = {
@@ -58,6 +62,7 @@ type LaunchRow = {
   lane_name: string | null;
   request_json: string | null;
   instance_id: string | null;
+  join_salt: string | null;
   join_hash: string | null;
   join_expires_at: number | null;
   join_used_at: number | null;
@@ -74,12 +79,13 @@ type LaunchRow = {
 export type LaunchRouteDeps = {
   provider: CloudProvider | null;
   now: number;
-  createComputer: (userId: string, provider: CloudProvider, extras: CreateComputerExtras) => Promise<Response>;
+  createComputer: (userId: string, provider: CloudProvider, extras: CreateComputerExtras) => Promise<CreateComputerOutcome>;
 };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID = UUID_PATTERN;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const LANE_ID = /^[A-Za-z0-9_.:-]{1,120}$/;
+/** `AgentChatPermissionMode` (the desktop's chat types): the modes a chat on the computer accepts. */
+const CHAT_PERMISSION_MODES: ReadonlySet<string> = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
 const SHORT_ID = /^[A-Za-z0-9_.:/-]{1,200}$/;
 const STAGE_ID = /^[a-z][a-z0-9_-]{0,39}$/;
 const STAGE_STATUSES: ReadonlySet<CloudLaunchStageStatus> = new Set(["pending", "running", "done", "failed", "skipped", "warning"]);
@@ -89,6 +95,8 @@ const NOT_FOUND = "ADE Cloud has no such launch.";
 const notFound = () => fail("not_found", NOT_FOUND, 404);
 const badRequest = (message: string) => fail("bad_request", message, 400);
 const JOIN_REFUSED = "This computer can't join with that code.";
+/** What a launch that never signed its computer in shows once its join window closed. */
+const JOIN_NEVER_FINISHED = "The new computer couldn't sign in.";
 /** The stages before which a cancel still deletes the computer: nothing of the agent ran yet. */
 const AGENT_STAGE = "agent";
 
@@ -116,10 +124,24 @@ function sameDigest(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** 32 random bytes, base64url: the computer's one-time join code. */
-function newJoinCode(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const base64Url = (bytes: Uint8Array): string =>
+  btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+/** 16 random bytes: the launch's join salt, kept in its row from the first start. */
+const newJoinSalt = (): string => base64Url(crypto.getRandomValues(new Uint8Array(16)));
+
+/**
+ * The computer's join code: HMAC-SHA256(`CLOUD_LAUNCH_JOIN_KEY`, launch id and
+ * salt), base64url. A retried start works it out again from the kept salt, so
+ * the computer an earlier attempt made (adopted by the create's replay) holds
+ * the code the row's hash matches. Null when the key isn't set.
+ */
+async function joinCodeOf(env: CloudEnv, launchId: string, salt: string): Promise<string | null> {
+  const secret = env.CLOUD_LAUNCH_JOIN_KEY?.trim();
+  if (!secret) return null;
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`ade-cloud-launch-join:v1:${launchId}:${salt}`))));
 }
 
 /** `github.com/owner/repo` from any spelling a git remote has, or null for anything that isn't GitHub. */
@@ -165,9 +187,10 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
   const origin = githubOriginOf(project?.origin);
   if (!origin) return "Only GitHub repositories can start a lane on ADE Cloud.";
   const lane = body.lane && typeof body.lane === "object" ? body.lane as Record<string, unknown> : null;
-  const laneId = typeof lane?.id === "string" && LANE_ID.test(lane.id.trim()) ? lane.id.trim() : null;
+  // The computer's launch reserves this id for its lane, which must be a UUID (`chatLaunchService.start`).
+  const laneId = typeof lane?.id === "string" && UUID.test(lane.id.trim().toLowerCase()) ? lane.id.trim().toLowerCase() : null;
   const laneName = shortString(lane?.name, 200);
-  if (!laneId || !laneName) return "A launch needs its lane's id and name.";
+  if (!laneId || !laneName) return "A launch needs its lane's id (a UUID) and name.";
   const from = lane?.from == null ? null : typeof lane.from === "string" && BRANCH.test(lane.from.trim()) ? lane.from.trim() : undefined;
   const existingBranch = lane?.existingBranch == null ? null
     : typeof lane.existingBranch === "string" && BRANCH.test(lane.existingBranch.trim()) ? lane.existingBranch.trim() : undefined;
@@ -178,7 +201,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     const raw = body.chat && typeof body.chat === "object" ? body.chat as Record<string, unknown> : null;
     const provider = typeof raw?.provider === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.provider) ? raw.provider : null;
     const modelId = typeof raw?.modelId === "string" && SHORT_ID.test(raw.modelId) ? raw.modelId : null;
-    const permissions = typeof raw?.permissions === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.permissions) ? raw.permissions : null;
+    const permissions = typeof raw?.permissions === "string" && CHAT_PERMISSION_MODES.has(raw.permissions) ? raw.permissions : null;
     const effort = raw?.effort == null ? null : typeof raw.effort === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.effort) ? raw.effort : undefined;
     const prompt = typeof raw?.prompt === "string" ? raw.prompt : null;
     if (!provider || !modelId || !permissions || effort === undefined || prompt == null) return "A chat launch needs its provider, model, permissions and first message.";
@@ -213,32 +236,43 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
   };
 }
 
-function parseJsonColumn<T>(text: string | null, fallback: T): T {
+function parseJsonColumn<T>(text: string | null, fallback: T, where: { launchId: string; column: string }): T {
   if (!text) return fallback;
   try {
     return JSON.parse(text) as T;
-  } catch {
+  } catch (error) {
+    reportCloudFailure("cloud.launch_column_unreadable", { ...where, message: error instanceof Error ? error.message : "unknown" });
     return fallback;
   }
 }
 
-export function recordOf(row: LaunchRow): CloudLaunchRecord {
+/**
+ * A launch still `joining` or `needs_approval` once its join window closed
+ * never signed its computer in (a computer with no token can't say so
+ * itself), so it reads as failed. The row keeps its state: a computer that
+ * did sign in at the last moment still reports `joined`.
+ */
+const joinNeverFinished = (row: LaunchRow, now: number): boolean =>
+  (row.state === "joining" || row.state === "needs_approval") && row.join_expires_at != null && row.join_expires_at <= now;
+
+export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
+  const neverJoined = joinNeverFinished(row, now);
   return {
     launchId: row.launch_id,
-    state: row.state,
+    state: neverJoined ? "failed" : row.state,
     kind: row.kind === "chat" || row.kind === "lane" ? row.kind : null,
     sizeId: (row.size_id as CloudTierId | null) ?? null,
     projectOrigin: row.project_origin,
     laneId: row.lane_id,
     laneName: row.lane_name,
     instanceId: row.instance_id,
-    request: parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null),
-    approval: row.state === "needs_approval" && row.approval_url && row.join_user_code
+    request: parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" }),
+    approval: !neverJoined && row.state === "needs_approval" && row.approval_url && row.join_user_code
       ? { url: row.approval_url, userCode: row.join_user_code }
       : null,
-    stages: parseJsonColumn<CloudLaunchStage[]>(row.stages_json, []),
+    stages: parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" }),
     sessionId: row.session_id,
-    error: row.error,
+    error: neverJoined ? JOIN_NEVER_FINISHED : row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
@@ -276,9 +310,13 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   // finish (`making` with no computer) goes on, and the create's own replay
   // gives back a computer an earlier attempt made.
   if (existing && existing.state !== "draft" && !(existing.state === "making" && !existing.instance_id)) {
-    return json(recordOf(existing), 200);
+    return json(recordOf(existing, now), 200);
   }
   if (!deps.provider) return fail("unavailable", "ADE Cloud can't make a computer right now. Try again soon.", 503);
+  if (!env.CLOUD_LAUNCH_JOIN_KEY?.trim()) {
+    reportCloudFailure("cloud.launch_join_key_missing");
+    return fail("unavailable", "ADE Cloud can't start a lane here right now. Try again soon.", 503);
+  }
 
   // Files first: each one named must already be here, at the size it says.
   for (const file of parsed.chat?.attachments ?? []) {
@@ -289,26 +327,38 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
 
   const requestJson = JSON.stringify(parsed);
   const expiresAt = now + CLOUD_LAUNCH_RECORD_TTL_MS;
-  // One write: a draft becomes the launch, or a new row is the launch. A
-  // start racing this one finds the row and is answered by it.
+  // The join code's salt and hash land with the claim, before the provider is
+  // called, so a retry after a lost create answer works the same code out again.
+  let salt = newJoinSalt();
+  let joinCode = (await joinCodeOf(env, launchId, salt))!;
+  // One write: a draft becomes the launch, or a new row is the launch. A start
+  // racing this one changes nothing here, goes on into the create, and is
+  // answered by its replay (409 while the first create is in flight).
   const claimed = await env.DB.prepare(`
-    insert into cloud_launches (launch_id, user_id, state, kind, size_id, project_origin, lane_id, lane_name, request_json, created_at, updated_at, expires_at)
-    values (?, ?, 'making', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_launches (launch_id, user_id, state, kind, size_id, project_origin, lane_id, lane_name, request_json, join_salt, join_hash, created_at, updated_at, expires_at)
+    values (?, ?, 'making', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (launch_id) do update set state = 'making', kind = excluded.kind, size_id = excluded.size_id,
       project_origin = excluded.project_origin, lane_id = excluded.lane_id, lane_name = excluded.lane_name,
-      request_json = excluded.request_json, updated_at = excluded.updated_at, expires_at = excluded.expires_at
+      request_json = excluded.request_json, join_salt = excluded.join_salt, join_hash = excluded.join_hash,
+      updated_at = excluded.updated_at, expires_at = excluded.expires_at
     where cloud_launches.user_id = excluded.user_id and cloud_launches.state = 'draft'
-  `).bind(launchId, userId, parsed.kind, parsed.sizeId, parsed.project.origin, parsed.lane.id, parsed.lane.name, requestJson, now, now, expiresAt).run();
+  `).bind(launchId, userId, parsed.kind, parsed.sizeId, parsed.project.origin, parsed.lane.id, parsed.lane.name, requestJson, salt, await sha256Hex(joinCode), now, now, expiresAt).run();
   if ((claimed.meta?.changes ?? 0) !== 1) {
     const row = await readLaunch(env, launchId);
     if (!row || row.user_id !== userId) return badRequest("That launch id can't be used.");
     // Not ours to make: another start holds it (or it's a retry of one that never got a computer).
-    if (!(row.state === "making" && !row.instance_id)) return json(recordOf(row), 200);
+    if (!(row.state === "making" && !row.instance_id)) return json(recordOf(row, now), 200);
+    // A retry: the salt the first attempt kept, so the computer it may have made has this code.
+    if (row.join_salt) {
+      salt = row.join_salt;
+      joinCode = (await joinCodeOf(env, launchId, salt))!;
+    } else {
+      await env.DB.prepare("update cloud_launches set join_salt = ?, join_hash = ? where launch_id = ? and join_salt is null")
+        .bind(salt, await sha256Hex(joinCode), launchId).run();
+    }
   }
 
   const size = cloudSizeForTier(parsed.sizeId)!;
-  const joinCode = newJoinCode();
-  const joinHash = await sha256Hex(joinCode);
   const metadata: Record<string, string> = {
     [CLOUD_LANE_METADATA.laneId]: parsed.lane.id,
     [CLOUD_LANE_METADATA.laneName]: parsed.lane.name,
@@ -319,7 +369,8 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
     // The same id as the launch: a repeated start finds the computer it made.
     ade_request_id: launchId,
   };
-  const response = await deps.createComputer(userId, deps.provider, {
+  const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
+  const outcome = await deps.createComputer(userId, deps.provider, {
     body: {
       name: computerNameOf(parsed.lane.name),
       type: size.type,
@@ -329,27 +380,27 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
       channel: parsed.channel ?? "stable",
     },
     serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode },
-    // Only a computer this call made carries this code: its hash lands with the adoption, in one batch.
+    // A computer this call made: its join window opens with the adoption, in one batch.
     onMade: (instance) => [
       env.DB.prepare(`
-        update cloud_launches set instance_id = ?, join_hash = ?, join_expires_at = ?, join_used_at = null, join_user_code = null,
+        update cloud_launches set instance_id = ?, join_expires_at = ?, join_used_at = null, join_user_code = null,
           state = case when state = 'making' then 'joining' else state end, updated_at = ?
         where launch_id = ?
-      `).bind(instance.id, joinHash, now + CLOUD_LAUNCH_JOIN_TTL_MS, now, launchId),
+      `).bind(instance.id, joinExpiresAt, now, launchId),
     ],
   });
-  if (response.status === 200) {
-    // An earlier start made this computer (its code is the one already kept).
-    const instance = await response.clone().json() as CloudInstance;
+  if (outcome.kind === "replayed") {
+    // An earlier start made this computer, with the code worked out from the same salt.
     await env.DB.prepare(`
-      update cloud_launches set instance_id = coalesce(instance_id, ?), state = case when state = 'making' then 'joining' else state end, updated_at = ?
+      update cloud_launches set instance_id = coalesce(instance_id, ?), join_expires_at = coalesce(join_expires_at, ?),
+        state = case when state = 'making' then 'joining' else state end, updated_at = ?
       where launch_id = ?
-    `).bind(instance.id, now, launchId).run();
-  } else if (response.status !== 201) {
+    `).bind(outcome.instance.id, joinExpiresAt, now, launchId).run();
+  } else if (outcome.kind !== "made") {
     // Refused (hours, computers, disk): nothing was made, and the launch goes
     // back to what it was (a draft keeps its files), so the same start can be
-    // sent again once the reason is gone. A create still in flight (409) keeps it.
-    if (response.status !== 409) {
+    // sent again once the reason is gone. A create still in flight keeps it.
+    if (outcome.kind === "refused") {
       if (existing?.state === "draft") {
         await env.DB.prepare(`
           update cloud_launches set state = 'draft', expires_at = ?, updated_at = ? where launch_id = ? and state = 'making' and instance_id is null
@@ -358,13 +409,13 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
         await env.DB.prepare("delete from cloud_launches where launch_id = ? and state = 'making' and instance_id is null").bind(launchId).run();
       }
     }
-    return response;
+    return createAnswerOf(outcome);
   }
   const after = (await readLaunch(env, launchId))!;
   // A cancel landed while the computer was being made: it goes now.
   if (after.state === "cancelled" && after.instance_id) await deleteLaunchComputer(env, deps.provider, after, deps.now);
-  logCloud("cloud.launch_started", { userId, launchId, instanceId: after.instance_id, launchKind: parsed.kind, replay: response.status === 200 });
-  return json(recordOf(after), response.status === 201 ? 201 : 200);
+  logCloud("cloud.launch_started", { userId, launchId, instanceId: after.instance_id, launchKind: parsed.kind, replay: outcome.kind === "replayed" });
+  return json(recordOf(after, now), outcome.kind === "made" ? 201 : 200);
 }
 
 /* ---- Files ---- */
@@ -398,7 +449,8 @@ async function handlePutFile(request: Request, env: CloudEnv, userId: string, la
 
 async function handleGetFile(env: CloudEnv, row: LaunchRow, fileId: string): Promise<Response> {
   if (!FILE_ID.test(fileId)) return notFound();
-  const named = recordOf(row).request?.chat?.attachments?.some((file) => file.fileId === fileId);
+  const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+  const named = request?.chat?.attachments?.some((file) => file.fileId === fileId);
   const object = named && env.CLOUD_CHATS ? await env.CLOUD_CHATS.get(r2KeyOf(row.user_id, row.launch_id, fileId)) : null;
   if (!object) return notFound();
   return new Response(object.body, {
@@ -432,6 +484,8 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   const state = body.state === undefined ? null : typeof body.state === "string" && COMPUTER_STATES.has(body.state) ? body.state : undefined;
   const stages = parseStages(body.stages);
   if (state === undefined || (body.stages !== undefined && !stages)) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  // A finished launch stays finished: a report that left the computer before the last one can land after it.
+  if (row.state === "done" && state !== "done") return fail("launch_closed", "This launch already finished.", 409);
   const sessionId = body.sessionId === undefined ? undefined : shortString(body.sessionId, 120);
   const error = body.error === undefined ? undefined : shortString(body.error, 400);
   await env.DB.prepare(`
@@ -442,14 +496,14 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       error = case when ? then ? else error end,
       approval_url = case when ? is not null then null else approval_url end,
       updated_at = ?
-    where launch_id = ? and state <> 'cancelled'
+    where launch_id = ? and state <> 'cancelled' and (state <> 'done' or ? = 'done')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
     error !== undefined ? 1 : 0, error ?? null,
-    state, now, row.launch_id,
+    state, now, row.launch_id, state,
   ).run();
-  return json(recordOf((await readLaunch(env, row.launch_id))!));
+  return json(recordOf((await readLaunch(env, row.launch_id))!, now));
 }
 
 /* ---- Cancel ---- */
@@ -462,19 +516,40 @@ async function deleteLaunchComputer(env: CloudEnv, provider: CloudProvider, row:
 }
 
 async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps): Promise<Response> {
-  if (row.state === "cancelled") return json(recordOf(row));
-  const agentStarted = recordOf(row).stages.some((stage) => stage.id === AGENT_STAGE && stage.status !== "pending");
+  const cannotDelete = () => fail("unavailable", "ADE Cloud can't delete the computer right now. Delete it in Settings › ADE Cloud.", 503);
+  if (row.state === "cancelled") {
+    // A delete that failed last time is tried again while the computer is still on the account.
+    if (row.instance_id && await ownedComputer(env, row.user_id, row.instance_id)) {
+      if (!deps.provider) return cannotDelete();
+      await deleteLaunchComputer(env, deps.provider, row, deps.now);
+    }
+    return json(recordOf(row, deps.now));
+  }
+  const stages = parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" });
+  const agentStarted = stages.some((stage) => stage.id === AGENT_STAGE && stage.status !== "pending");
   if (row.state === "done" || agentStarted) {
     return fail("launch_started", "The lane already started. Delete its computer to stop it.", 409);
   }
-  // Closed first, so the computer's next write is refused and a create in flight deletes what it made.
-  await env.DB.prepare("update cloud_launches set state = 'cancelled', approval_url = null, updated_at = ? where launch_id = ?").bind(deps.now, row.launch_id).run();
-  if (row.instance_id) {
-    if (!deps.provider) return fail("unavailable", "ADE Cloud can't delete the computer right now. Delete it in Settings › ADE Cloud.", 503);
-    await deleteLaunchComputer(env, deps.provider, row, deps.now);
+  // Closed first, so the computer's next write is refused and a create in
+  // flight deletes what it made. The computer to delete is the one the row
+  // holds after this write: a create that adopted one since the read above is
+  // deleted here, never left behind.
+  const closed = await env.DB.prepare(`
+    update cloud_launches set state = 'cancelled', approval_url = null, updated_at = ? where launch_id = ? and state not in ('done', 'cancelled')
+    returning instance_id
+  `).bind(deps.now, row.launch_id).first<{ instance_id: string | null }>();
+  const latest = (await readLaunch(env, row.launch_id))!;
+  if (!closed) {
+    // Another cancel won (its delete is retried like any), or the launch finished meanwhile.
+    if (latest.state === "cancelled") return await handleCancel(env, latest, deps);
+    return fail("launch_started", "The lane already started. Delete its computer to stop it.", 409);
   }
-  logCloud("cloud.launch_cancelled", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id });
-  return json(recordOf((await readLaunch(env, row.launch_id))!));
+  if (closed.instance_id) {
+    if (!deps.provider) return cannotDelete();
+    await deleteLaunchComputer(env, deps.provider, { ...latest, instance_id: closed.instance_id }, deps.now);
+  }
+  logCloud("cloud.launch_cancelled", { userId: row.user_id, launchId: row.launch_id, instanceId: closed.instance_id });
+  return json(recordOf(latest, deps.now));
 }
 
 /* ---- The account-token routes ---- */
@@ -498,7 +573,7 @@ export async function routeLaunches(request: Request, path: string, env: CloudEn
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return notFound();
   if (action === undefined) {
-    if (request.method === "GET") return json(recordOf(row));
+    if (request.method === "GET") return json(recordOf(row, deps.now));
     if (request.method === "DELETE") return handleCancel(env, row, deps);
     return notFound();
   }
@@ -521,17 +596,30 @@ async function instanceIsLaunchs(provider: CloudProvider, instanceId: string, la
     return instance.status !== "deleted" && instance.metadata[CLOUD_LAUNCH_METADATA.launchId] === launchId;
   } catch (error) {
     if (error instanceof CloudProviderError && error.status === 404) return false;
+    reportCloudFailure("cloud.launch_join_check_failed", { launchId, code: error instanceof CloudProviderError ? error.code : "unknown" });
     return "unreadable";
   }
 }
+
+/** The join's sentence when the sign-in link couldn't be minted, by the device approval's error. */
+const MINT_FAILED: Record<string, string> = {
+  expired: "The computer's sign-in expired. It starts a new one.",
+  not_found: "ADE has no such sign-in. The computer starts a new one.",
+  already_used: "That sign-in was already used. The computer starts a new one.",
+};
+const MINT_UNAVAILABLE = "ADE's account service can't approve sign-ins right now. Try again in a moment.";
 
 /**
  * `POST /cloud/launches/:launch/join`. The code is checked before anything
  * else is read for the caller: its hash, its time, and the computer that
  * presents it (the header, against the launch's computer and the provider's
- * metadata on it). Spent atomically, then the link is minted for the
- * launch's own account; a link that couldn't be minted gives the code back,
- * so the computer can ask again with a fresh sign-in.
+ * metadata on it). Claimed atomically while the launch is still joining, then
+ * the link is minted for the launch's own account; a link that couldn't be
+ * minted puts the claim back, so the computer can ask again with a fresh
+ * sign-in. A code already spent may join again from the same computer while
+ * the launch is `joining` or `needs_approval` (a brain that restarted
+ * mid-sign-in, a lost answer): that join names a fresh device sign-in, and
+ * an approval page shown for the old one is withdrawn.
  */
 export async function handleLaunchJoin(request: Request, env: CloudEnv, path: string, deps: { provider: CloudProvider | null; now: number }): Promise<Response> {
   const route = launchRouteOf(path);
@@ -545,6 +633,7 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
   if (!row?.join_hash || !sameDigest(await sha256Hex(nonce), row.join_hash)) return fail("join_refused", JOIN_REFUSED, 403);
   const { now } = deps;
   if (row.join_expires_at == null || row.join_expires_at <= now) return fail("join_expired", "This computer's join code expired. Cancel the launch and start it again.", 410);
+  const joinExpiresAt = row.join_expires_at;
   const instanceId = request.headers.get(CLOUD_INSTANCE_HEADER)?.trim() ?? "";
   if (!instanceId || instanceId !== row.instance_id) {
     logCloud("cloud.launch_join_wrong_computer", { launchId });
@@ -564,10 +653,11 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
       update cloud_launches set state = 'needs_approval', join_user_code = ?, approval_url = ?, updated_at = ? where launch_id = ? and state in ('joining', 'needs_approval')
     `).bind(userCode, approvalPageOf(env, request, userCode), now, launchId).run();
     logCloud("cloud.launch_needs_approval", { launchId });
-    return json({ ok: true, state: "needs_approval" });
+    return json({ ok: true, state: "needs_approval", joinExpiresAt });
   }
 
-  if (row.join_used_at != null) return fail("join_used", "This computer's join code was already used.", 409);
+  const rejoin = row.join_used_at != null;
+  if (rejoin && row.state !== "joining" && row.state !== "needs_approval") return fail("join_used", "This computer's join code was already used.", 409);
   const userCode = typeof body.userCode === "string" ? normalizeUserCode(body.userCode) : null;
   if (!userCode) return badRequest("The join needs the computer's sign-in code.");
   if (!deps.provider) return fail("unavailable", "ADE Cloud can't check this computer right now. Try again soon.", 503);
@@ -577,26 +667,42 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
     reportCloudFailure("cloud.launch_join_metadata_mismatch", { launchId });
     return fail("join_refused", JOIN_REFUSED, 403);
   }
+  // The claim holds only if nothing moved since the read: the same spend (none,
+  // or the one a rejoin saw), the code, its time, the computer, and a launch
+  // still joining (a cancel during the provider check above wins).
   const claimed = await env.DB.prepare(`
-    update cloud_launches set join_used_at = ?, join_user_code = ?, updated_at = ?
-    where launch_id = ? and join_used_at is null and join_hash = ? and join_expires_at > ? and instance_id = ?
-  `).bind(now, userCode, now, launchId, row.join_hash, now, instanceId).run();
-  if ((claimed.meta?.changes ?? 0) !== 1) return fail("join_used", "This computer's join code was already used.", 409);
+    update cloud_launches set join_used_at = ?, join_user_code = ?, approval_url = null,
+      state = case when state = 'needs_approval' then 'joining' else state end, updated_at = ?
+    where launch_id = ? and coalesce(join_used_at, 0) = ? and join_hash = ? and join_expires_at > ? and instance_id = ?
+      and state in ('joining', 'needs_approval')
+  `).bind(now, userCode, now, launchId, row.join_used_at ?? 0, row.join_hash, now, instanceId).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) {
+    const latest = await readLaunch(env, launchId);
+    return latest && latest.state !== "joining" && latest.state !== "needs_approval"
+      ? fail("launch_closed", "This launch isn't running.", 409)
+      : fail("join_used", "This computer's join code was already used.", 409);
+  }
   const link = await mintDeviceApprovalLink(env, { userId: row.user_id, userCode, origin: new URL(request.url).origin }, resolveDeviceRequestOptions({}));
   if (!link.ok) {
-    await env.DB.prepare("update cloud_launches set join_used_at = null, join_user_code = null where launch_id = ? and join_used_at = ?")
-      .bind(launchId, now).run();
-    const message = link.error === "expired" ? "The computer's sign-in expired. It starts a new one."
-      : link.error === "not_found" ? "ADE has no such sign-in. The computer starts a new one."
-        : link.error === "already_used" ? "That sign-in was already used. The computer starts a new one."
-          : "ADE's account service can't approve sign-ins right now. Try again in a moment.";
-    return fail(link.error, message, link.status);
+    // Back to what the claim found: an unspent code stays unspent.
+    await env.DB.prepare("update cloud_launches set join_used_at = ?, join_user_code = ? where launch_id = ? and join_used_at = ?")
+      .bind(row.join_used_at, row.join_user_code, launchId, now).run();
+    return fail(link.error, MINT_FAILED[link.error] ?? MINT_UNAVAILABLE, link.status);
   }
-  logCloud("cloud.launch_joined", { launchId, userId: row.user_id });
-  return json({ url: link.url });
+  logCloud("cloud.launch_joined", { launchId, userId: row.user_id, rejoin });
+  return json({ url: link.url, joinExpiresAt });
 }
 
-/* ---- The minute cron: expiry only ---- */
+/* ---- The minute cron ---- */
+
+/** The computers whose launch is still joining inside its window: the no-check-in sleep leaves them awake. */
+export async function computersJoiningLaunches(env: CloudEnv, now: number): Promise<Set<string>> {
+  const rows = (await env.DB.prepare(`
+    select instance_id from cloud_launches where state in ('joining', 'needs_approval') and join_expires_at > ? and instance_id is not null
+  `).bind(now).all<{ instance_id: string }>()).results ?? [];
+  return new Set(rows.map((row) => row.instance_id));
+}
+
 
 /** Most launch records one tick deletes; the rest wait for the next. */
 const EXPIRE_PER_TICK = 50;
@@ -609,8 +715,13 @@ export async function expireCloudLaunches(env: CloudEnv, now = Date.now()): Prom
   const bucket = env.CLOUD_CHATS;
   for (const row of rows) {
     if (!bucket) break;
-    const listed = await bucket.list({ prefix: r2PrefixOf(row.user_id, row.launch_id), limit: CLOUD_LAUNCH_MAX_FILES + 5 });
-    if (listed.objects.length) await bucket.delete(listed.objects.map((object) => object.key));
+    // Every page: parallel uploads can leave more than the 10 a launch takes, and this is their only cleanup.
+    let cursor: string | undefined;
+    do {
+      const listed = await bucket.list({ prefix: r2PrefixOf(row.user_id, row.launch_id), cursor, limit: 100 });
+      if (listed.objects.length) await bucket.delete(listed.objects.map((object) => object.key));
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
   }
   await env.DB.batch(rows.map((row) => env.DB.prepare("delete from cloud_launches where launch_id = ? and expires_at < ?").bind(row.launch_id, now)));
   return rows.length;

@@ -1,22 +1,16 @@
-import { CLOUD_PATHS, type CloudProjectComputer, type CloudProjectComputerDeleteState, type CloudProjectComputersJob } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import {
+  CLOUD_PATHS,
+  type CloudProjectComputer,
+  type CloudProjectComputerDeleteState,
+  type CloudProjectComputersDeleteStarted,
+  type CloudProjectComputersJob,
+  type CloudProjectComputersPreview,
+} from "./contract";
+import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, fail, json, readJson } from "./http";
 import { githubOriginOf } from "./launches";
 import { laneWorkOfRow } from "./diskUsage";
 import { laneFactsOfRow } from "./lanesWithoutComputer";
-import {
-  CHECK_COMMAND,
-  CHECK_TIMEOUT_MS,
-  PREPARE_COMMAND,
-  PREPARE_TIMEOUT_MS,
-  PUSH_COMMAND,
-  PUSH_TIMEOUT_MS,
-  leftLanes,
-  prepareConfirmed,
-  putBackToRest,
-  readTally,
-  wakeForPush,
-  type WakeRecord,
-} from "./planCleanup";
+import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
 import { cloudSizeFor, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, listComputers, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
@@ -30,12 +24,19 @@ import { deleteComputer, listComputers, logCloud, ownedComputer, reportCloudFail
  * deleted only when nothing is left: a computer whose push failed stays, with
  * why, and the caller offers "Delete anyway".
  *
+ * The preview (`dryRun`) lists them; the delete names the ones it saw
+ * (`instanceIds`) and acts only on those that still belong to the origin, so
+ * a computer made after the preview (a server launch still joining) is left
+ * alone. A computer already in another job's `pending` or `working` row is
+ * skipped, so two jobs never push one computer at once. At most 50 a job;
+ * `truncated` says when there were more.
+ *
  * Bounded: the route only writes the job's rows and answers `{ jobId }`; the
  * minute cron moves each row on, a few computers a tick, so no request waits
  * on a push and a closed window doesn't stop the job.
  */
 
-const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const JOB_ID = UUID_PATTERN;
 /** Computers one tick works on, across accounts; they run in parallel. */
 const DELETES_PER_TICK = 4;
 /** A claim older than this was lost mid-run (the Worker died): the next tick takes the computer again. */
@@ -70,9 +71,9 @@ export async function routeProjectComputersDelete(request: Request, path: string
     if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
     const origin = githubOriginOf(body.origin);
     if (!origin) return fail("bad_request", "Name the project by its GitHub origin.", 400);
-    const computers = (await computersOf(env, userId, origin)).slice(0, MAX_COMPUTERS_PER_JOB);
+    const all = await computersOf(env, userId, origin);
     if (body.dryRun === true) {
-      const list: CloudProjectComputer[] = computers.map((computer) => ({
+      const list: CloudProjectComputer[] = all.slice(0, MAX_COMPUTERS_PER_JOB).map((computer) => ({
         instanceId: computer.instance_id,
         name: computer.name,
         laneName: computer.lane_name ?? null,
@@ -80,8 +81,17 @@ export async function routeProjectComputersDelete(request: Request, path: string
         awake: isMeteredStatus(computer.status),
         unpushed: laneWorkOfRow(computer)?.unpushed ?? null,
       }));
-      return json({ computers: list });
+      const preview: CloudProjectComputersPreview = { computers: list, truncated: all.length > MAX_COMPUTERS_PER_JOB };
+      return json(preview);
     }
+    const named = Array.isArray(body.instanceIds) ? body.instanceIds.filter((id): id is string => typeof id === "string") : null;
+    if (!named) return fail("bad_request", "Name the computers from the preview to delete.", 400);
+    const wanted = new Set(named.slice(0, MAX_COMPUTERS_PER_JOB));
+    // Already in another job's hands: that job pushes and deletes it.
+    const busy = new Set(((await env.DB.prepare("select instance_id from cloud_project_deletes where user_id = ? and state in ('pending', 'working')")
+      .bind(userId).all<{ instance_id: string }>()).results ?? []).map((row) => row.instance_id));
+    const stillMatching = all.filter((computer) => wanted.has(computer.instance_id));
+    const computers = stillMatching.filter((computer) => !busy.has(computer.instance_id));
     const jobId = crypto.randomUUID();
     if (computers.length) {
       await env.DB.batch(computers.map((computer) => env.DB.prepare(`
@@ -89,8 +99,9 @@ export async function routeProjectComputersDelete(request: Request, path: string
         values (?, ?, ?, ?, ?, 'pending', ?, ?)
       `).bind(jobId, computer.instance_id, userId, origin, computer.lane_name ?? computer.name, now, now)));
     }
-    logCloud("cloud.project_delete_started", { userId, computers: computers.length });
-    return json({ jobId }, 201);
+    logCloud("cloud.project_delete_started", { userId, computers: computers.length, named: named.length, skippedBusy: stillMatching.length - computers.length });
+    const started: CloudProjectComputersDeleteStarted = { jobId, truncated: named.length > MAX_COMPUTERS_PER_JOB };
+    return json(started, 201);
   }
   const jobId = path.slice(CLOUD_PATHS.projectComputersDelete.length + 1);
   if (request.method !== "GET" || !JOB_ID.test(jobId)) return notFound();
@@ -121,17 +132,11 @@ async function runOne(env: CloudEnv, provider: CloudProvider, row: JobRow, now: 
     await settle(env, row, "kept", reason);
   };
   try {
-    await wakeForPush(env, provider, computer, now, wake, "project_delete");
-    const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
-    if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return keep("ADE on the computer couldn't stop its agents and save its chats.");
-    const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
-    if (!pushed) return keep("ADE on the computer didn't answer the push.");
-    const left = leftLanes(pushed);
-    if (left) return keep(left);
-    const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
-    if (!checked) return keep("ADE couldn't confirm all work is on GitHub.");
-    const stillLeft = leftLanes(checked);
-    if (stillLeft) return keep(stillLeft);
+    const work = await pushAllWork(env, provider, computer, now, wake, "project_delete");
+    if (!work.ok) {
+      logCloud("cloud.project_delete_computer_kept", { instanceId: computer.instance_id, code: work.code });
+      return keep(work.reason);
+    }
     await deleteComputer(env, provider, computer, { who: "project_delete", reason: "project_delete" }, Date.now());
     logCloud("cloud.project_delete_computer_deleted", { instanceId: computer.instance_id });
     return settle(env, row, "deleted", null);

@@ -59,6 +59,8 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   /** The server launcher's join mints the device sign-in link with Clerk's backend key (`deviceAppApproval.ts`). */
   CLERK_SECRET_KEY?: string;
   DEVICE_PAGE_ORIGIN?: string;
+  /** The server launcher's join codes are HMACs under this key (`launches.ts`). Unset: a server launch can't start (503). */
+  CLOUD_LAUNCH_JOIN_KEY?: string;
 };
 
 /** The deployed production Worker, where a missing secret or an email that can't be sent is a failure, not a setup. */

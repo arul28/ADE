@@ -18,7 +18,7 @@ import type { ComputerRow } from "./store";
  * their own browser. ADE never signs a provider in for the person.
  *
  *   start   `ade providers sign-in <provider> --remote --json`
- *   code    `ade providers sign-in-code <job> --stdin --json` (the code on stdin, never in the arguments)
+ *   code    `ade providers sign-in-code <job> --stdin --json` (the code on the `ade` command's stdin, not its arguments)
  *   status  `ade providers sign-in-status <job> --json`
  */
 
@@ -35,6 +35,13 @@ const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** The status a `--json` sign-in command printed, as the route's answer; 502 when it can't be read. */
+function statusAnswer(stdout: string, jobId: string): Response {
+  const result = readResult(stdout);
+  const status = result ? statusOf(result, jobId) : null;
+  return status ? json(status) : unreadable();
 }
 
 function statusOf(result: Record<string, unknown>, jobId: string): CloudRemoteSignInStatus | null {
@@ -81,7 +88,7 @@ export async function routeSignIns(request: Request, computer: ComputerRow, rest
     const result = readResult(ran.stdout);
     const jobId = readString(result?.jobId);
     if (!result || !jobId) {
-      const reason = readString(readResult(ran.stdout)?.error) ?? readString(ran.stderr.split("\n").filter(Boolean).pop());
+      const reason = readString(result?.error) ?? readString(ran.stderr.split("\n").filter(Boolean).pop());
       return reason ? fail("sign_in_failed", reason.slice(0, 300), 502) : unreadable();
     }
     const started: CloudRemoteSignInStart = {
@@ -99,18 +106,19 @@ export async function routeSignIns(request: Request, computer: ComputerRow, rest
     if (request.method !== "GET") return fail("not_found", "ADE Cloud has no such sign-in.", 404);
     const ran = await exec(`ade providers sign-in-status ${shellQuote(jobId)} --json`);
     if (ran instanceof Response) return ran;
-    const status = readResult(ran.stdout);
-    return status && statusOf(status, jobId) ? json(statusOf(status, jobId)) : unreadable();
+    return statusAnswer(ran.stdout, jobId);
   }
   if (rest[1] !== "code" || request.method !== "POST") return fail("not_found", "ADE Cloud has no such sign-in.", 404);
   const body = await readJson(request);
   const code = typeof body?.code === "string" ? body.code.trim() : "";
   if (!code || code.length > MAX_CODE_CHARS || /[\r\n\u0000]/.test(code)) return badRequest("That code can't be used.");
-  // On stdin, so the code never sits in the computer's process list. The CLI
-  // hands it to the provider's runner (`writeLoginCode`: the code, then Enter).
+  // Base64 inside the command, so no shell quoting can break on it, and on
+  // the `ade` command's stdin, so it is not in that process's arguments. It
+  // is still in the short-lived shell's command line and in the exec request
+  // to the provider (whose exec takes no stdin). The CLI hands it to the
+  // provider's runner (`writeLoginCode`: the code, then Enter).
   const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(code)));
   const ran = await exec(`printf %s ${shellQuote(encoded)} | base64 -d | ade providers sign-in-code ${shellQuote(jobId)} --stdin --json`);
   if (ran instanceof Response) return ran;
-  const status = readResult(ran.stdout);
-  return status && statusOf(status, jobId) ? json(statusOf(status, jobId)) : unreadable();
+  return statusAnswer(ran.stdout, jobId);
 }

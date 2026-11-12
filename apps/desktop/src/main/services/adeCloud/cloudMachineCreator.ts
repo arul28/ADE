@@ -43,11 +43,12 @@ import {
   type CloudPendingCreateStore,
   type CloudReconcileResult,
 } from "./cloudPendingCreates";
+import type { HeadlessApprovalResult } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** `cancelled`: ADE closed the window itself because the box signed in another way. */
-export type CloudApprovalWindowResult = "signed_in" | "closed" | "timed_out" | "cancelled";
+/** `cancelled`: ADE closed the window itself because the box signed in another way. The same values as a brain's headless approval. */
+export type CloudApprovalWindowResult = HeadlessApprovalResult;
 
 /**
  * `ticket`: a one-time sign-in link from `/device/approve`; nothing to type,

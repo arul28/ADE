@@ -22,6 +22,7 @@ import {
   type CloudLaunchJoinResult,
   type CloudLaunchRecord,
   type CloudLaunchStagesUpdate,
+  type CloudProjectComputersDeleteStarted,
   type CloudProjectComputersJob,
   type CloudProjectComputersPreview,
   type CloudRemoteSignInStart,
@@ -156,8 +157,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /* ---- A project's computers ---- */
     previewProjectComputers: (origin: string) =>
       request<CloudProjectComputersPreview>("POST", CLOUD_PATHS.projectComputersDelete, { body: { origin, dryRun: true } }),
-    deleteProjectComputers: (origin: string) =>
-      request<{ jobId: string }>("POST", CLOUD_PATHS.projectComputersDelete, { body: { origin } }),
+    /** Only the computers the preview listed (`instanceIds`) that still belong to the origin. */
+    deleteProjectComputers: (origin: string, instanceIds: readonly string[]) =>
+      request<CloudProjectComputersDeleteStarted>("POST", CLOUD_PATHS.projectComputersDelete, { body: { origin, instanceIds } }),
     projectComputersJob: (jobId: string) =>
       request<CloudProjectComputersJob>("GET", `${CLOUD_PATHS.projectComputersDelete}/${encodeURIComponent(jobId)}`),
 
