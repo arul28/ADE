@@ -83,6 +83,37 @@ function readSaved(statePath: string): LaneComputer[] {
   }
 }
 
+function endOf(value: unknown): { instanceId: string; machineKey: string | null } | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.instanceId !== "string" || !record.instanceId) return null;
+  return { instanceId: record.instanceId, machineKey: typeof record.machineKey === "string" ? record.machineKey : null };
+}
+
+/** Moves saved while their new computer was still joining. */
+function readPending(path: string): Map<string, LaneMovedEvent> {
+  const pending = new Map<string, LaneMovedEvent>();
+  try {
+    const parsed = safeJsonParse<unknown>(fs.readFileSync(path, "utf8"), null);
+    for (const row of Array.isArray(parsed) ? parsed : []) {
+      if (!row || typeof row !== "object") continue;
+      const record = row as Record<string, unknown>;
+      const to = endOf(record.to);
+      if (typeof record.laneId !== "string" || !record.laneId || !to) continue;
+      pending.set(record.laneId, {
+        laneId: record.laneId,
+        laneName: typeof record.laneName === "string" ? record.laneName : "",
+        from: endOf(record.from),
+        to,
+        at: typeof record.at === "string" ? record.at : "",
+      });
+    }
+  } catch {
+    // None saved yet.
+  }
+  return pending;
+}
+
 export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
   const now = deps.now ?? (() => Date.now());
   let known: LaneComputer[] | null = null;
@@ -108,9 +139,27 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
 
   /**
    * Moves whose new computer hasn't joined the account yet (no machine key):
-   * by lane id. They finish when that computer gets its key.
+   * by lane id. They finish when that computer gets its key. Kept on disk
+   * beside the baseline, which already names the new computer: a restart in
+   * between must still redirect the old computer's pins.
    */
-  const pendingMoves = new Map<string, LaneMovedEvent>();
+  const pendingPath = deps.statePath.replace(/(\.json)?$/, "-pending.json");
+  let pendingMoves: Map<string, LaneMovedEvent> | null = null;
+  const pending = (): Map<string, LaneMovedEvent> => {
+    pendingMoves ??= readPending(pendingPath);
+    return pendingMoves;
+  };
+  let savedPending: string | null = null;
+  const savePending = (): void => {
+    const rows = JSON.stringify([...pending().values()]);
+    if (rows === savedPending) return;
+    try {
+      writeTextAtomic(pendingPath, rows);
+      savedPending = rows;
+    } catch (error) {
+      deps.logger?.warn?.("cloud.lane_follow_save_failed", { error: getErrorMessage(error) });
+    }
+  };
 
   /**
    * A lane's computer changed. The old computer's connections are forgotten,
@@ -153,27 +202,32 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
     known = [...computers, ...kept];
     lastNoteAtMs = now();
     save(known);
-    for (const move of moves) {
+    const waiting = pending();
+    for (const found of moves) {
+      // A move that replaces one still waiting moves the lane from where it was before that one.
+      const earlier = waiting.get(found.laneId);
+      const move = earlier ? { ...found, from: earlier.from } : found;
       // A new computer that hasn't joined yet: finish the move once it has a key.
       if (!move.to.machineKey) {
-        pendingMoves.set(move.laneId, move);
+        waiting.set(move.laneId, move);
         deps.emit(move);
         continue;
       }
-      pendingMoves.delete(move.laneId);
+      waiting.delete(move.laneId);
       onMoved(move, liveInstanceIds);
     }
-    for (const [laneId, pending] of pendingMoves) {
+    for (const [laneId, move] of waiting) {
       const laneNow = computers.find((computer) => computer.laneId === laneId);
-      if (!laneNow || laneNow.instanceId !== pending.to.instanceId) {
+      if (!laneNow || laneNow.instanceId !== move.to.instanceId) {
         // The lane went elsewhere (or away) before that computer joined.
-        if (!laneNow) pendingMoves.delete(laneId);
+        if (!laneNow) waiting.delete(laneId);
         continue;
       }
       if (!laneNow.machineKey) continue;
-      pendingMoves.delete(laneId);
-      onMoved({ ...pending, to: { instanceId: laneNow.instanceId, machineKey: laneNow.machineKey }, at }, liveInstanceIds);
+      waiting.delete(laneId);
+      onMoved({ ...move, to: { instanceId: laneNow.instanceId, machineKey: laneNow.machineKey }, at }, liveInstanceIds);
     }
+    savePending();
   };
 
   /** The lane's computer, and whether ADE could read the account's computers at all. */

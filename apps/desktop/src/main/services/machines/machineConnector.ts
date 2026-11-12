@@ -101,7 +101,7 @@ function reasonText(error: unknown): string {
 }
 
 export function createMachineConnector(deps: MachineConnectorDeps): MachineConnector {
-  const inFlight = new Map<string, { wantConnected: boolean; promise: Promise<MachineConnectResult> }>();
+  const inFlight = new Map<string, { wantConnected: boolean; promise: Promise<MachineConnectResult>; paired: Promise<MachineConnectResult> }>();
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -158,7 +158,8 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
     return failure(key, "unreachable", `ADE couldn't reach ${name}: ${reasonText(lastError)}.`);
   };
 
-  const run = async (key: string, wantConnected: boolean): Promise<MachineConnectResult> => {
+  /** `onPaired` hears the address (or the failure) as soon as it is known, before any connect. */
+  const run = async (key: string, wantConnected: boolean, onPaired: (result: MachineConnectResult) => void): Promise<MachineConnectResult> => {
     const known = addressFor(key);
     if (known?.kind === "this") return { ok: true, address: known };
     let address = known;
@@ -167,6 +168,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       if (!paired.ok || paired.address.kind !== "remote") return paired;
       address = paired.address;
     }
+    onPaired({ ok: true, address });
     if (!wantConnected || deps.isConnected(address.targetId)) return { ok: true, address };
     try {
       await deps.connect(address.targetId);
@@ -187,11 +189,16 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       const existing = inFlight.get(flightKey);
       // One flight per machine: a connect that finds a save-only pairing
       // running waits for it, then connects (the pairing is saved by then).
+      // A save-only call that finds a connect running takes its pairing, not
+      // its wake wait or connect.
+      if (existing && existing.wantConnected && !wantConnected) return existing.paired;
       if (existing && (existing.wantConnected || !wantConnected)) return existing.promise;
+      let settlePaired!: (result: MachineConnectResult) => void;
+      const paired = new Promise<MachineConnectResult>((resolve) => { settlePaired = resolve; });
       const promise = (async (): Promise<MachineConnectResult> => {
         if (existing) await existing.promise;
         try {
-          const result = await run(key, wantConnected);
+          const result = await run(key, wantConnected, settlePaired);
           if (!result.ok) deps.logger?.warn?.("machines.connect_refused", { reason: result.reason, wantConnected });
           return result;
         } catch (error) {
@@ -199,10 +206,14 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
           deps.logger?.warn?.("machines.connect_threw", { error: getErrorMessage(error) });
           return failure(key, "unreachable", `ADE couldn't reach that computer: ${reasonText(error)}.`);
         }
-      })().finally(() => {
+      })().then((result) => {
+        // A flight that ended before an address (a failure, this computer) settles its pairing with the same answer.
+        settlePaired(result);
+        return result;
+      }).finally(() => {
         if (inFlight.get(flightKey)?.promise === promise) inFlight.delete(flightKey);
       });
-      inFlight.set(flightKey, { wantConnected, promise });
+      inFlight.set(flightKey, { wantConnected, promise, paired });
       return promise;
     },
   };

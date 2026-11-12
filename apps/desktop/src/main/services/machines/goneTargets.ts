@@ -2,9 +2,9 @@
  * Contract C2 for pins that outlive their saved connection.
  *
  * A pin names a machine by this computer's saved connection id (`targetId`).
- * That id can go away while pins to it still exist: the connection was
- * removed, a lane's computer moved (the old one's connection is forgotten),
- * or the connection was saved again under a new id. A chat pinned to it then
+ * That id can go away while pins to it still exist: a lane's computer moved
+ * or was deleted (its connection is forgotten), or the connection was saved
+ * again under a new id. A person's own Remove is not remembered. A chat pinned to it then
  * failed every call with "Remote target was not found".
  *
  * This remembers which machine each removed connection reached, and where a

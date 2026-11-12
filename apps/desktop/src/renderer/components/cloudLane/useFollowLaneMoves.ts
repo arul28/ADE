@@ -8,8 +8,9 @@ import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 
 /**
  * Contract C3 for an open chat: when its cloud lane's computer changes (a
- * move, a new computer), the chat follows. Same chat id, same lane id; the
- * pin, and with it the Android panel and tools, move to the new computer.
+ * move, a new computer), Work reopens the chat on the new computer once that
+ * computer lists it. Same chat id, same lane id; the pane's pin, and so its
+ * tools, then come from the new computer's row. Looking opens no connection.
  *
  * Two ways it notices:
  * - the move event (`window.ade.cloud.onLaneMoved`), live;

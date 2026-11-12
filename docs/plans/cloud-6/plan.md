@@ -34,7 +34,7 @@ The caller gets one `MachineAddress` and passes it with each call.
 - IPC / preload: `window.ade.machines.connect(machineKey, options?)`, `window.ade.machines.addressFor(machineKey)`.
 - Renderer: `apps/desktop/src/renderer/lib/machineConnect.ts` — `connectMachine(machineKey)`, `projectPinOnMachine(...)`.
 - Pins that outlive a connection: `main/services/machines/goneTargets.ts`. Only connections a move or a delete
-  removed are remembered (a person's own Remove is not); only a person's write re-pairs and wakes.
+  removed are remembered (a person's own Remove is not); only a person's write wakes; a lane move pairs without waking.
 
 ## C3 — a lane follows its computer
 
@@ -56,7 +56,7 @@ Branch commits are grouped per item; the layer branches are cut from them at the
 - **C2, C3: done, validated live** (own test computer, dev app on this branch). Proof: `6217434d` (before),
   `1f1ae7b1` (B14-31 fixed), the move proof (B14-35). Extras that came out of the live test:
   - `machines/goneTargets.ts`: a pin to a removed connection (or a saved chat's stand-in pin
-    `cloud-saved:<key>`) reaches its machine by key; only a person's write re-pairs and wakes, the
+    `cloud-saved:<key>`) reaches its machine by key; only a person's write wakes; a lane move pairs without waking, the
     same rule as `remoteConnectionService.callAction`; reads use the saved copy.
   - `cloudSavedChatsSync.ts`: "deleted" only when the account says so; a moved lane's saved chats
     are listed under the new computer.

@@ -369,10 +369,10 @@ export type RemoteRuntimeConnectionStatus = {
 
 export type RemoteRuntimeConnectionRecovery = "reconnecting" | "waiting_for_user" | "held_elsewhere";
 
-/** What a call to a machine the person disconnected is told. */
 /** A call named a saved connection this computer doesn't have. Matched by clients that fall back to a saved chat copy. */
 export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
 
+/** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
   "Remote machine was manually disconnected. Connect again to use this remote project.";
 
