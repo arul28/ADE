@@ -134,8 +134,11 @@ async function loadSnapshot(db: D1Database, userId: string, machineKey: string |
       select machine_key, checkout_id, project_id, root_path, is_main, last_seen_at
         from account_project_copies where user_id = ? and machine_key = ?
     `).bind(userId, machineKey ?? ""),
-    db.prepare("select count(*) as count from account_project_copies where user_id = ? and machine_key <> ?")
-      .bind(userId, machineKey ?? ""),
+    // Only machines still on the account count toward the limit (`ON_ACCOUNT_MACHINE`).
+    db.prepare(`
+      select count(*) as count from account_project_copies c ${ON_ACCOUNT_MACHINE}
+       where c.user_id = ? and c.machine_key <> ?
+    `).bind(userId, machineKey ?? ""),
   ]);
   const stateRow = (state?.results?.[0] ?? null) as { seq: number; floor_seq: number } | null;
   return {
