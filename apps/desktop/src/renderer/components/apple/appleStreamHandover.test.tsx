@@ -42,9 +42,9 @@ import { closeWorkToolForReal } from "../terminals/closeWorkToolForReal";
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
-/** The tab's copy: a null pin names it. */
+/** The tab's copy: a viewer with no pin of its own is on it. */
 const TAB = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
-const KEY = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: LANE, deviceUdid: UDID });
+const KEY = appleStreamLeaseKey({ pin: TAB, bound: TAB, laneId: LANE, deviceUdid: UDID });
 
 let calls: string[] = [];
 
@@ -77,8 +77,8 @@ function installApi() {
 let latestUrl: string | null = null;
 
 /** One viewer of the lane's stream — the pane's column, or the floating player. */
-function Viewer({ pin = null }: { pin?: OpenProjectBinding | null } = {}) {
-  const pinRef = useRef<OpenProjectBinding | null>(pin);
+function Viewer({ pin = TAB }: { pin?: OpenProjectBinding } = {}) {
+  const pinRef = useRef<OpenProjectBinding>(pin);
   const stream = useAppleDeviceStream({
     deviceUdid: UDID, laneId: LANE, chatSessionId: "chat-1",
     enabled: true, hidden: false, machineName: null, bitrateKbpsCap: null,
@@ -246,7 +246,7 @@ describe("the pane and the floating player name the same machine two ways", () =
     const player = render(<Viewer pin={playerPin} />);
     await waitFor(() => expect(calls).toContain("start"));
 
-    // Open the pane: WorkIosTool retakes the device, the pane (null pin)
+    // Open the pane: WorkIosTool retakes the device, the pane (the tab's pin)
     // mounts, the handover hold is given back, and the player unmounts.
     act(() => { retakeAppleMiniPlayer(); });
     render(<Viewer />);

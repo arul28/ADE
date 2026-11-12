@@ -58,7 +58,7 @@ import {
   getChatLaunchLocalRecord,
   resetChatLaunchStoreForTests,
 } from "../../state/chatLaunchStore";
-import type { ChatLaunchArgs, ChatLaunchSnapshot } from "../../../shared/types";
+import type { ChatLaunchArgs, ChatLaunchSnapshot, LaneSummary } from "../../../shared/types";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import {
   rememberRuntimeCatalog,
