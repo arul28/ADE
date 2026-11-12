@@ -172,7 +172,7 @@ export function createGithubSessionEnv(deps: {
         return null;
       }
       const token = deps.peekAccountAppToken();
-      const cached = deps.readGrant.peek?.(owner, "account_app") ?? null;
+      const cached = token ? deps.readGrant.peek?.(owner, "account_app", token) ?? null : null;
       if (!token || !cached || now() - cached.checkedAt > GRANT_STALE_MAX_MS) {
         warm(env);
         return shimFor(env, owner);

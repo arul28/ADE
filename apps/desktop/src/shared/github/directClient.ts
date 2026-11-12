@@ -831,10 +831,16 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
         },
       };
     }
+    // The ADE account this read belongs to, taken before the token. A switch
+    // while the read runs drops its answer and its retry: neither the old
+    // account's data nor the new account's token may cross over.
+    const scope = options.credential.scopeKey() ?? "anonymous";
+    const accountChanged = (): boolean => (options.credential.scopeKey() ?? "anonymous") !== scope;
+    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: "The ADE account changed during the read." } };
     const tokenAnswer = await options.credential.getToken().catch(() => null);
+    if (accountChanged()) return changedAnswer;
     if (!tokenAnswer) return { ok: false, error: { kind: "github_unavailable", message: "The GitHub sign-in could not be read." } };
     if (!tokenAnswer.ok) return { ok: false, error: tokenAnswer.error };
-    const scope = options.credential.scopeKey() ?? "anonymous";
 
     const attempt = async (token: string): Promise<GithubDirectResult<GithubDirectData[O]>> => {
       if (built.op === "diagnoseRepository") {
@@ -869,18 +875,22 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
       return { ok: true, data: data as GithubDirectData[O], meta };
     };
 
+    const forThisAccount = (result: GithubDirectResult<GithubDirectData[O]>) => (accountChanged() ? changedAnswer : result);
     try {
-      return await attempt(tokenAnswer.token);
+      return forThisAccount(await attempt(tokenAnswer.token));
     } catch (error) {
+      if (accountChanged()) return changedAnswer;
       if (!(error instanceof RejectedToken)) {
         return { ok: false, error: { kind: "github_unavailable", message: "The GitHub read failed." } };
       }
       const replacement = await options.credential.onRejected(error.token).catch(() => null);
+      if (accountChanged()) return changedAnswer;
       if (!replacement) return { ok: false, error: { kind: "sign_in_expired", message: "GitHub did not accept the sign-in." } };
       counts.retriesAfter401 += 1;
       try {
-        return await attempt(replacement);
+        return forThisAccount(await attempt(replacement));
       } catch (again) {
+        if (accountChanged()) return changedAnswer;
         if (again instanceof RejectedToken) {
           return { ok: false, error: { kind: "sign_in_expired", message: "GitHub did not accept the renewed sign-in." } };
         }

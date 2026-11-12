@@ -58,12 +58,15 @@ const GIT_CREDENTIAL_HELPER_NAME = "git-credential-ade-github";
 const GIT_HELPER_CONFIG_KEY = "credential.https://github.com.helper";
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 /**
- * How long a shim waits for an answer. Normally a cache hit (milliseconds).
- * At a renewal the server makes the asker wait up to 15 s while it renews
- * (grants.ts), so this is longer: a `gh` that lands in that window waits
- * instead of running without a token.
+ * How long the endpoint waits for a token. Normally a cache hit
+ * (milliseconds). At a renewal the token client may wait up to 45 s (the
+ * server's closing wait plus the renewal at GitHub, `REQUEST_TIMEOUT_MS` in
+ * accountAppTokenClient.ts), so this is longer: a `gh` that lands in that
+ * window waits instead of running without a token.
  */
-const ANSWER_TIMEOUT_MS = 22_000;
+const ANSWER_TIMEOUT_MS = 48_000;
+/** The shims' own limit (curl, Node): longer than the endpoint's, so its answer always arrives. */
+const SHIM_CLIENT_TIMEOUT_SEC = 52;
 
 // ---------------------------------------------------------------------------
 // Shim bodies
@@ -130,7 +133,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 ade_owner=\${${GH_SHIM_OWNER_ENV}:-}
 case $ade_owner in *[!A-Za-z0-9-]*) ade_owner= ;; esac
-ade_tok=$(curl -q -sf --noproxy '*' --max-time 25 --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || ade_tok=
+ade_tok=$(curl -q -sf --noproxy '*' --max-time ${SHIM_CLIENT_TIMEOUT_SEC} --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || ade_tok=
 case $ade_tok in ''|*[!A-Za-z0-9_.-]*) ade_step_aside "$@" ;; esac
 GH_TOKEN=$ade_tok
 ADE_GH_TOKEN_SOURCE=account_app
@@ -183,7 +186,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 ade_owner=\${${GH_SHIM_OWNER_ENV}:-}
 case $ade_owner in *[!A-Za-z0-9-]*) ade_owner= ;; esac
-ade_tok=$(curl -q -sf --noproxy '*' --max-time 25 --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || exit 0
+ade_tok=$(curl -q -sf --noproxy '*' --max-time ${SHIM_CLIENT_TIMEOUT_SEC} --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || exit 0
 case $ade_tok in ''|*[!A-Za-z0-9_.-]*) exit 0 ;; esac
 printf 'username=x-access-token\\npassword=%s\\n' "$ade_tok"
 `;
@@ -286,7 +289,7 @@ function askToken() {
   const ownerValue = (envValue(OWNER_ENV) || "").trim();
   const owner = OWNER.test(ownerValue) ? ownerValue : "";
   return new Promise((resolve) => {
-    const request = http.request({ socketPath: endpoint, path: "/v1/token?owner=" + owner, method: "GET", agent: false, timeout: 25000 }, (response) => {
+    const request = http.request({ socketPath: endpoint, path: "/v1/token?owner=" + owner, method: "GET", agent: false, timeout: ${SHIM_CLIENT_TIMEOUT_SEC * 1000} }, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => { if (body.length < 4096) body += chunk; });

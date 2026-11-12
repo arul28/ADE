@@ -19,6 +19,7 @@ import {
 } from "../../../shared/types/apiCredentials";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import { ACCOUNT_VAULT_NO_REVISION } from "../../../shared/types/accountVault";
 import {
   describeVaultFailure,
   fireAndForgetVaultWrite,
@@ -1697,8 +1698,13 @@ async function copyAdoptedApiKeyToVault(storageKey: string, value: string): Prom
     }
     if (existing.value !== null) return;
     if ((getAccountUserId?.()?.trim() || null) !== accountUserId) return;
-    const saved = await vault.set("all", "provider_api_key", storageKey, value, { expectedAccountUserId: accountUserId });
-    if (!saved.ok) logVaultFailure("adopt", storageKey, saved);
+    // Only while the account still has no item: another machine's first key,
+    // or a removal made after the read above, wins over this background copy.
+    const saved = await vault.set("all", "provider_api_key", storageKey, value, {
+      expectedAccountUserId: accountUserId,
+      expectedRevision: ACCOUNT_VAULT_NO_REVISION,
+    });
+    if (!saved.ok && !("stale" in saved && saved.stale)) logVaultFailure("adopt", storageKey, saved);
   } catch (error) {
     logVaultFailure("adopt", storageKey, error);
   }

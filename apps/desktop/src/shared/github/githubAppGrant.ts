@@ -156,15 +156,32 @@ export type AppGrantReader = ((
    * The last answer for `owner`, with no request: `stale` once it is older
    * than the cache time. Null when nothing was asked yet.
    */
-  peek?: (owner: string, identity?: string) => { grant: AppInstallationGrant | null; checkedAt: number; stale: boolean } | null;
+  peek?: (owner: string, identity?: string, appToken?: string) => { grant: AppInstallationGrant | null; checkedAt: number; stale: boolean } | null;
 };
 
-type GrantEntry = { grant: AppInstallationGrant | null; checkedAt: number; promise: Promise<AppInstallationGrant | null> | null };
+type GrantEntry = {
+  grant: AppInstallationGrant | null;
+  checkedAt: number;
+  promise: Promise<AppInstallationGrant | null> | null;
+  /** Which token the answer is for (`tokenMark`), so a new sign-in never reuses another user's answer. */
+  tokenMark: string;
+};
+
+/** A short, non-secret mark of a token (FNV-1a), to tell answers for different tokens apart. */
+function tokenMark(token: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+}
 
 /**
  * The installation on each owner, cached for `APP_GRANT_TTL_MS` per token
  * user (`identity`: the legacy and the account App can be different GitHub
- * users) and owner. A failed read answers null (unknown), and unknown is
+ * users) and owner. An answer belongs to the token it was read with: a new
+ * token (a renewal, or a sign-in as another GitHub user) reads again. A failed read answers null (unknown), and unknown is
  * treated as "not granted": the request then goes to the next credential,
  * which is the behaviour before App writes existed.
  */
@@ -176,22 +193,26 @@ export function createAppInstallationGrantReader(
   const keyOf = (owner: string, identity: string | undefined) => `${identity ?? "app"}:${owner.trim().toLowerCase()}`;
   const read: AppGrantReader = async (owner, appToken, options = {}) => {
     const key = keyOf(owner, options.identity);
-    const current = entries.get(key);
+    const mark = tokenMark(appToken);
+    const stored = entries.get(key);
+    const current = stored?.tokenMark === mark ? stored : undefined;
     if (current?.promise) return current.promise;
     if (!options.force && current && now() - current.checkedAt < APP_GRANT_TTL_MS) return current.grant;
     const promise = listInstallations(appToken)
       .then((data) => appInstallationGrantForOwner(data, owner))
       .catch(() => null)
       .then((grant) => {
-        entries.set(key, { grant, checkedAt: now(), promise: null });
+        // A read for an older token that ends after a newer one started does not overwrite it.
+        if (entries.get(key)?.tokenMark === mark) entries.set(key, { grant, checkedAt: now(), promise: null, tokenMark: mark });
         return grant;
       });
-    entries.set(key, { grant: current?.grant ?? null, checkedAt: current?.checkedAt ?? 0, promise });
+    entries.set(key, { grant: current?.grant ?? null, checkedAt: current?.checkedAt ?? 0, promise, tokenMark: mark });
     return promise;
   };
-  read.peek = (owner, identity) => {
+  read.peek = (owner, identity, appToken) => {
     const current = entries.get(keyOf(owner, identity));
     if (!current || current.checkedAt === 0) return null;
+    if (appToken !== undefined && current.tokenMark !== tokenMark(appToken)) return null;
     return { grant: current.grant, checkedAt: current.checkedAt, stale: now() - current.checkedAt >= APP_GRANT_TTL_MS };
   };
   return read;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGithubDirectRequest, classifyGithubDirectResponse, diagnoseRepositoryAccess } from "./directClient";
+import { buildGithubDirectRequest, classifyGithubDirectResponse, createGithubDirectClient, diagnoseRepositoryAccess } from "./directClient";
 
 // The request builder is the fence that keeps the account's GitHub token on
 // the allowed reads, and the classifier is the L12 contract the web, the
@@ -86,5 +86,37 @@ describe("diagnoseRepositoryAccess", () => {
     ["installed, repository reachable", install(full), { status: 200, private: true, sso: false }, "ok"],
   ])("%s", (_label, installations, repoAnswer, state) => {
     expect(diagnoseRepositoryAccess({ repo, installations, repoAnswer }).state).toBe(state);
+  });
+});
+
+describe("createGithubDirectClient across an ADE account switch", () => {
+  // One account's private GitHub data must never answer a read after the
+  // person switched to another account, and the new account's token must
+  // never be used for the old account's read.
+  it.each([
+    ["GitHub answers after the switch", 200],
+    ["the 401 retry would use the new account's token", 401],
+  ])("drops the read when %s", async (_label, firstStatus) => {
+    let account = "user-a";
+    const tokensUsed: string[] = [];
+    const client = createGithubDirectClient({
+      credential: {
+        getToken: async () => ({ ok: true, token: `tok-${account}` }),
+        onRejected: async () => `tok-${account}`,
+        scopeKey: () => account,
+      },
+      fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        tokensUsed.push(String(new Headers(init?.headers).get("authorization")));
+        account = "user-b";
+        return new Response(JSON.stringify(firstStatus === 200 ? [{ number: 1, title: "private" }] : { message: "Bad credentials" }), {
+          status: firstStatus,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch,
+      now: () => NOW,
+    });
+    const result = await client.request({ op: "listPulls", params: { owner: "dorg", name: "widgets" } });
+    expect(result.ok).toBe(false);
+    expect(tokensUsed.every((value) => !value.includes("tok-user-b"))).toBe(true);
   });
 });
