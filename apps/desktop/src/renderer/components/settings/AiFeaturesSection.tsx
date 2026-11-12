@@ -6,6 +6,7 @@ import type {
 import { Clock } from "@phosphor-icons/react";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { onlineCopyPin, ProjectCopyBar, ProjectCopyUnavailable, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -13,6 +14,11 @@ import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitiv
  * from two distances.
  */
 export function AiFeaturesSection() {
+  // Scheduled work is saved in each copy of the project: the page reads the
+  // copy picked here, the tab's copy by default.
+  const copy = useProjectCopyPage(settingsCopyScope("notifications"));
+  // No call while the copy's computer is offline.
+  const pin = onlineCopyPin(copy);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
@@ -21,15 +27,16 @@ export function AiFeaturesSection() {
   const [scheduledWorkError, setScheduledWorkError] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
+    if (!pin) return;
     try {
       const [snapshotResult, scheduledWorkResult] = await Promise.all([
-        window.ade.projectConfig.get()
+        window.ade.projectConfig.get(pin)
           .then((snapshot) => ({ snapshot, error: null as string | null }))
           .catch((error) => ({
             snapshot: null,
             error: error instanceof Error ? error.message : String(error),
           })),
-        window.ade.agentChat.listScheduledWork()
+        window.ade.agentChat.listScheduledWork(undefined, pin)
           .then((items) => ({ items, error: null as string | null }))
           .catch((error) => ({
             items: [] as AgentChatScheduledWorkItem[],
@@ -50,7 +57,7 @@ export function AiFeaturesSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     void loadStatus();
@@ -66,7 +73,7 @@ export function AiFeaturesSection() {
     setSaving(true);
     setLocal(value);
     try {
-      await window.ade.ai.updateConfig({ chat: { [key]: value } });
+      await window.ade.ai.updateConfig({ chat: { [key]: value } }, pin);
     } catch (error) {
       setLocal(!value);
       showToast({
@@ -77,7 +84,7 @@ export function AiFeaturesSection() {
     } finally {
       setSaving(false);
     }
-  }, [saving]);
+  }, [pin, saving]);
   const handleScheduledWorkPaused = (paused: boolean) =>
     saveChatToggle("scheduledWorkPaused", paused, setScheduledWorkPaused);
 
@@ -87,7 +94,7 @@ export function AiFeaturesSection() {
       const result = await window.ade.agentChat.cancelScheduledWork({
         sessionId: item.sessionId,
         scheduleId: item.id,
-      });
+      }, pin);
       if (result.schedule.status === "cancelled") {
         setScheduledWork((current) => current.filter((candidate) => candidate.id !== item.id));
       }
@@ -96,7 +103,15 @@ export function AiFeaturesSection() {
       console.error("[AiFeaturesSection] scheduled-work cancellation failed:", error);
       setScheduledWorkError(error instanceof Error ? error.message : String(error));
     }
-  }, [loadStatus]);
+  }, [loadStatus, pin]);
+
+  if (!pin) {
+    return (
+      <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule.">
+        <ProjectCopyUnavailable copy={copy} />
+      </ModernSection>
+    );
+  }
 
   const unavailable = loading
     ? "Loading…"
@@ -106,6 +121,7 @@ export function AiFeaturesSection() {
 
   return (
     <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule.">
+      <ProjectCopyBar copy={copy} />
       <ModernRows>
         <ModernRow
           anchor="scheduled-work"
