@@ -24,7 +24,7 @@ import {
 import type { OpenProjectBinding } from "../../shared/types";
 import { useAppStore } from "./appStore";
 import { useStableBinding } from "./laneMachineRouting";
-import { withMachineTimeout } from "./projectMachines";
+import { useRemoteTargetState, withMachineTimeout } from "./projectMachines";
 import {
   useAccountProjectList,
   useRepositoryCopies,
@@ -86,9 +86,16 @@ export function useActiveRepositoryTab(): RepositoryTab | null {
   return held.current;
 }
 
-/** The copy the tab is bound to today, or null. Read it; do not pass it to silence a missing pin. */
+/**
+ * The copy the tab is bound to today, or null. Null also while that copy's
+ * computer is offline: the page then shows its no-computer state and calls
+ * nothing, instead of a connection error. A copy on this computer is always
+ * online. Read it; do not pass it to silence a missing pin.
+ */
 export function useTabCopyPin(): MachineAddress | null {
-  return useStableBinding(useAppStore((state) => state.projectBinding));
+  const binding = useAppStore((state) => state.projectBinding);
+  const targetState = useRemoteTargetState(binding?.kind === "remote" ? binding.targetId : null);
+  return useStableBinding(targetState === "offline" ? null : binding);
 }
 
 /** Every copy of the open repository (see `useRepositoryCopies`). */
