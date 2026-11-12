@@ -3269,6 +3269,7 @@ export function ChatBuiltInBrowserPanel({
         />
         {remotePin && remoteViewTabId ? (
           <RemoteBrowserTabViewer
+            key={`${remotePin.key}:${remoteViewTabId}`}
             pin={remotePin}
             machineName={remoteMachineName}
             tabId={remoteViewTabId}

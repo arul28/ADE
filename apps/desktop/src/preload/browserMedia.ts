@@ -83,15 +83,17 @@ function installChromeBrandHook(): void {
     getHighEntropyValues?: (hints: string[]) => Promise<Record<string, unknown>>;
   } | undefined;
   if (!proto) return;
-  const fullVersion = /Chrome\/(\d+(?:\.\d+)*)/.exec(navigator.userAgent)?.[1] ?? null;
   const withChrome = (list: unknown, full = false): unknown => {
     if (!Array.isArray(list)) return list;
     const brands = list as Brand[];
+    // Read at use, not at install: a device preset changes the UA later, and a
+    // non-Chrome one (Safari on iPhone and iPad) must keep its own list.
+    const fullVersion = /Chrome\/(\d+(?:\.\d+)*)/.exec(navigator.userAgent)?.[1] ?? null;
+    if (!fullVersion) return brands;
     if (brands.some((entry) => entry?.brand === "Google Chrome")) return brands;
     const chromium = brands.find((entry) => entry?.brand === "Chromium");
     if (!chromium) {
       // An overridden UA can leave the list empty; build Chrome's own.
-      if (!fullVersion) return brands;
       const version = full ? fullVersion : fullVersion.split(".")[0]!;
       return Object.freeze([
         { brand: "Not?A_Brand", version: full ? "24.0.0.0" : "24" },

@@ -237,8 +237,10 @@ export function BrowserTabStrip({
 
   // One tab is not a choice. The title lives in the tool header above, so the
   // strip stays out of the way until there is something to switch between —
-  // unless the lane view is hiding tabs, when the strip is how you get them back.
-  if (tabs.length <= 1 && !(laneFilter && laneFilter.mode === "lane" && laneFilter.hiddenCount > 0)) return null;
+  // unless the lane view is hiding tabs (the strip is how you get them back),
+  // or the one tab is an agent's (its chat group and Keep live only here).
+  const loneAgentTab = tabs.length === 1 && browserTabOwnerKind(tabs[0]!) === "chat";
+  if (tabs.length <= 1 && !loneAgentTab && !(laneFilter && laneFilter.mode === "lane" && laneFilter.hiddenCount > 0)) return null;
 
   const renderTab = (tab: BrowserTab, group: { color: string } | null) => {
     const index = reachableTabs.indexOf(tab);

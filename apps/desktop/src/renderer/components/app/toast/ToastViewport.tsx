@@ -117,7 +117,6 @@ function useNoticeLayerHost(
       host.style.left = `${LAYER_SHADOW_PX}px`;
       host.style.right = `${TOAST_VIEWPORT_INSET_PX}px`;
       host.style.bottom = `${TOAST_VIEWPORT_INSET_PX}px`;
-      host.style.gap = `${TOAST_VIEWPORT_GAP_PX}px`;
       if (cardsHeight > 0) onHeightRef.current(cardsHeight);
       const width = cardsWidth + LAYER_SHADOW_PX + TOAST_VIEWPORT_INSET_PX;
       const height = cardsHeight + LAYER_SHADOW_PX + TOAST_VIEWPORT_INSET_PX;
@@ -210,17 +209,42 @@ export function ToastViewport({
   }, [count, wantsLayer]);
   const layerHost = useNoticeLayerHost(wantsLayer, viewportRef, setStackHeight);
 
+  // The cards always render into this one element, and the element moves
+  // between the corner and the layer (appending it to the layer's document
+  // adopts it). Swapping portal targets instead would remount every card and
+  // lose its state, such as an expanded row, each time a page came or went.
+  const [stack] = useState(() => {
+    const element = document.createElement("div");
+    element.dataset.testid = "toast-stack-host";
+    Object.assign(element.style, {
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "flex-end",
+      gap: `${TOAST_VIEWPORT_GAP_PX}px`,
+      width: "100%",
+      pointerEvents: "none",
+    });
+    return element;
+  });
+  useLayoutEffect(() => {
+    const target = layerHost ?? viewportRef.current;
+    if (target && stack.parentNode !== target) target.appendChild(stack);
+  }, [layerHost, stack]);
+  useEffect(() => () => stack.remove(), [stack]);
+
   useLayoutEffect(() => {
     const element = viewportRef.current;
     if (!element || typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver(() => {
-      // Only the corner's own height counts; while the cards are in the layer
-      // the corner is empty and the layer reports their height instead.
-      if (element.childElementCount > 0) setStackHeight(Math.round(element.getBoundingClientRect().height));
+      // Only the corner's own height counts, and only with cards in it; while
+      // they are in the layer, the layer reports their height instead.
+      if (stack.parentNode === element && stack.childElementCount > 0) {
+        setStackHeight(Math.round(element.getBoundingClientRect().height));
+      }
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [stack]);
 
   const content = (
     <>
@@ -261,7 +285,7 @@ export function ToastViewport({
         pointerEvents: "none",
       }}
     >
-      {layerHost ? createPortal(content, layerHost) : content}
+      {createPortal(content, stack)}
     </div>
   );
 }

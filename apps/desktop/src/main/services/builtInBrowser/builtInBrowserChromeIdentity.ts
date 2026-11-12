@@ -80,7 +80,9 @@ function headerName(headers: Record<string, string>, lower: string): string | un
  * One request's headers, rewritten to Chrome's identity.
  *
  * - The UA loses any Electron or app token (a CDP device preset sets its own
- *   UA and is left alone, because it already carries no such token).
+ *   UA and is left alone, because it already carries no such token). A
+ *   request whose UA is not Chrome's at all (a Safari device preset) is not
+ *   touched.
  * - A Sec-CH-UA that is present gains the Google Chrome brand; one that is
  *   missing on a secure request is added with the low-entropy trio Chrome
  *   always sends (`Sec-CH-UA`, `-Mobile`, `-Platform`). A mobile device preset
@@ -99,6 +101,10 @@ export function withChromeIdentityHeaders(
   const edit = () => (next ??= { ...requestHeaders });
 
   const uaKey = headerName(requestHeaders, "user-agent");
+  // A device preset that is not Chrome (the iPhone and iPad ones are Safari)
+  // sends its own identity through CDP, with no Chrome hints on purpose:
+  // adding Chrome's brand would contradict it.
+  if (uaKey && !/ Chrome\//.test(requestHeaders[uaKey]!)) return null;
   if (uaKey) {
     const cleaned = chromeUserAgent(requestHeaders[uaKey]!);
     if (cleaned !== requestHeaders[uaKey]) edit()[uaKey] = cleaned;

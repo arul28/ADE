@@ -5247,7 +5247,17 @@ export const APP_CONTROL_AGENT_DRIVING_ACTIONS = new Set<string>(
 );
 
 /** `work_tools` actions scoped for every role, the CTO's included. */
-const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow", "stopDevServer"]);
+// The person-only actions are scoped for a CTO caller too: watching or
+// driving a tab carries none of the ownership or access checks agent browser
+// commands keep, so the CTO's cross-lane read carve-out must not reach them.
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set([
+  "setActiveTool",
+  "show",
+  "acknowledgeShow",
+  "stopDevServer",
+  "readBrowserTabFrame",
+  "sendBrowserTabInput",
+]);
 
 /**
  * `ios_simulator` actions that mean an agent is driving the device, so the

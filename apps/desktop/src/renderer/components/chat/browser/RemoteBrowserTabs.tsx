@@ -30,6 +30,8 @@ type RemotePin = Extract<OpenProjectBinding, { kind: "remote" }>;
 const REMOTE_TABS_POLL_MS = 5_000;
 /** Frames a second while watching. The other machine's capture loop runs at the same rate. */
 const FRAME_POLL_MS = 250;
+/** With no fresh frame for this long, the picture is called lost and input stops. */
+const FRAME_LOST_AFTER_MS = 3_000;
 
 export type RemoteBrowserTabsState = {
   tabs: WorkToolsBrowserTab[];
@@ -48,10 +50,10 @@ export function useRemoteBrowserTabs(pin: RemotePin | null, laneId: string | nul
   pinRef.current = pin;
   useEffect(() => {
     const getLaneState = window.ade?.workTools?.getLaneState;
-    if (!pinKey || !laneId || typeof getLaneState !== "function") {
-      setState({ tabs: [], presence: [] });
-      return undefined;
-    }
+    // Another machine's (or lane's) list never shows under this one, even
+    // for the few seconds before the first read of the new one lands.
+    setState((current) => (current.tabs.length === 0 && current.presence.length === 0 ? current : { tabs: [], presence: [] }));
+    if (!pinKey || !laneId || typeof getLaneState !== "function") return undefined;
     let cancelled = false;
     let timer: number | null = null;
     const read = async () => {
@@ -176,7 +178,10 @@ const SPECIAL_KEYS: Record<string, string> = {
  *
  * Polls one frame at a time (never two in flight), so a slow link lowers the
  * frame rate instead of queueing. Watching is passive; Take control turns the
- * picture into an input surface until Esc or the button again.
+ * picture into an input surface until Esc or the button again. Input goes only
+ * to a picture that is fresh: with no frame for a few seconds the viewer says
+ * the link is lost and stops control until frames come back. The caller keys
+ * this by machine and tab, so a different tab starts from a blank picture.
  */
 export function RemoteBrowserTabViewer({
   pin,
@@ -193,6 +198,7 @@ export function RemoteBrowserTabViewer({
 }) {
   const [snapshot, setSnapshot] = useState<BuiltInBrowserRemoteTabFrame | null>(null);
   const [gone, setGone] = useState(false);
+  const [lost, setLost] = useState(false);
   const [controlling, setControlling] = useState(false);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -205,6 +211,7 @@ export function RemoteBrowserTabViewer({
     let cancelled = false;
     let timer: number | null = null;
     let misses = 0;
+    let lastFrameAt = Date.now();
     const tick = async () => {
       timer = null;
       if (document.visibilityState === "visible") {
@@ -213,7 +220,9 @@ export function RemoteBrowserTabViewer({
           if (cancelled) return;
           if (next) {
             misses = 0;
+            lastFrameAt = Date.now();
             setGone(false);
+            setLost(false);
             setSnapshot((current) => (
               current && current.frame?.capturedAt === next.frame?.capturedAt && current.url === next.url && current.title === next.title
                 ? current
@@ -225,8 +234,9 @@ export function RemoteBrowserTabViewer({
             if (misses >= 3) setGone(true);
           }
         } catch {
-          // A dropped link: keep the last frame and try again.
+          // A dropped link: keep trying; the deadline below says so on screen.
         }
+        if (!cancelled && Date.now() - lastFrameAt > FRAME_LOST_AFTER_MS) setLost(true);
       }
       if (!cancelled) timer = window.setTimeout(tick, FRAME_POLL_MS);
     };
@@ -241,8 +251,16 @@ export function RemoteBrowserTabViewer({
     if (controlling) surfaceRef.current?.focus();
   }, [controlling]);
 
+  // A closed tab or a lost link ends control; it comes back only by choice.
+  const canControl = Boolean(snapshot?.frame) && !gone && !lost;
+  useEffect(() => {
+    if (!canControl) setControlling(false);
+  }, [canControl]);
+
   const send = useCallback((event: BuiltInBrowserRemoteInputEvent) => {
-    void window.ade?.workTools?.sendBrowserTabInput?.({ tabId, event }, pinRef.current).catch(() => {});
+    void window.ade?.workTools?.sendBrowserTabInput?.({ tabId, event }, pinRef.current).catch(() => {
+      // The next frame read decides whether the link is lost.
+    });
   }, [tabId]);
 
   /** Where in the picture (0–1 each way) the pointer is; null outside it. */
@@ -258,17 +276,17 @@ export function RemoteBrowserTabViewer({
   };
 
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (!controlling) return;
+    if (!controlling || !canControl) return;
     const at = fractionAt(event);
     if (at) send({ type: "click", ...at });
   };
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
-    if (!controlling) return;
+    if (!controlling || !canControl) return;
     const at = fractionAt(event);
     if (at) send({ type: "scroll", ...at, deltaY: event.deltaY });
   };
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!controlling) return;
+    if (!controlling || !canControl) return;
     if (event.key === "Escape") {
       event.preventDefault();
       setControlling(false);
@@ -287,21 +305,22 @@ export function RemoteBrowserTabViewer({
     }
   };
 
-  const frame = snapshot?.frame ?? null;
+  // A closed tab's last picture is not shown; the message says what happened.
+  const frame = gone ? null : snapshot?.frame ?? null;
   const url = snapshot?.url ?? null;
   return (
     <div className="absolute inset-0 z-[1] flex flex-col bg-[var(--color-bg)]" data-testid="browser-remote-viewer">
       <div className="flex h-8 shrink-0 items-center gap-2 px-3 text-[11.5px]">
         <span className="inline-flex min-w-0 items-center gap-1.5 text-muted-fg/75">
-          <span aria-hidden="true" className="h-[6px] w-[6px] shrink-0 rounded-full bg-emerald-400/90" />
-          <span className="shrink-0">Live from {machineName}</span>
+          <span aria-hidden="true" className={cn("h-[6px] w-[6px] shrink-0 rounded-full", lost ? "bg-amber-400/90" : "bg-emerald-400/90")} />
+          <span className="shrink-0">{lost ? `Lost the link to ${machineName} · reconnecting…` : `Live from ${machineName}`}</span>
           {snapshot?.title ? <span className="min-w-0 truncate text-fg/80">· {snapshot.title}</span> : null}
         </span>
         <span className="flex-1" />
         <button
           type="button"
           onClick={() => setControlling((value) => !value)}
-          disabled={gone}
+          disabled={!canControl}
           aria-pressed={controlling}
           className={cn(
             "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2",

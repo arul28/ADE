@@ -1441,11 +1441,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     // Not `visible` (the panel's own bounds flag): the card wants frames from a
     // tab the panel is NOT showing. What matters is whether this ADE window is
     // on screen at all.
-    isVisible: () => {
-      // Someone on another machine is watching: the frames are for them, and
-      // this window being in the background says nothing about whether they
-      // can see it.
-      if (remoteWatchedTabs.size > 0) return true;
+    isVisible: (tabId) => {
+      // Someone on another machine is watching this tab: the frames are for
+      // them, and this window being in the background says nothing about
+      // whether they can see it. Only that tab; others still pause.
+      if (remoteWatchedTabs.has(tabId)) return true;
       const hostWindow = win();
       return Boolean(
         hostWindow
@@ -1941,6 +1941,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     /** Drops any preview stream watching a tab the service just closed. */
     stopPreviewStreamsForTab: (tabId: string): void => {
       previewStreams.stopTab(tabId);
+      latestPreviewFrames.delete(tabId);
+      const remoteTimer = remoteWatchTimers.get(tabId);
+      if (remoteTimer) clearTimeout(remoteTimer);
+      remoteWatchTimers.delete(tabId);
+      remoteWatchedTabs.delete(tabId);
     },
     /**
      * Drops every preview subscription one renderer holds, and reports the tabs

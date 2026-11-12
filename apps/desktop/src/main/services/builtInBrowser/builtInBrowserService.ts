@@ -473,6 +473,12 @@ export type BrowserTabState = {
   autoCloseAtMs: number | null;
   /** When an agent command last drove input into this tab (any action, not only downloads). */
   lastAgentInputAtMs: number | null;
+  /**
+   * Agent actions running on this tab right now. While any runs, input the
+   * tab sees is the agent's own, however long the action waited before it
+   * sent it (an access check, a wake, the recording viewport).
+   */
+  agentActionsInFlight: number;
   /** Last time a person saw this tab on screen, or an agent or a watcher used it. */
   lastUsedAtMs: number;
   /**
@@ -2932,6 +2938,8 @@ function createBuiltInBrowserWindowService(args: {
     tab.ownerLastActiveAt = touchedAt;
     // A chat that drives the browser while "idle" (a subagent, a background
     // task) is working: its countdown starts again from now.
+    // A close pass already under way for it stops too.
+    if (chatSessionId) bumpChatGeneration(chatSessionId);
     if (chatSessionId && chatIdleTimers.has(chatSessionId)) armChatIdleClose(chatSessionId, CHAT_IDLE_CLOSE_MS);
     /*
      * A new owner is news the moment it happens. Reads and actions claim the
@@ -3081,6 +3089,18 @@ function createBuiltInBrowserWindowService(args: {
     await Promise.race([waking, new Promise<void>((resolve) => setTimeout(resolve, 15_000))]);
   };
 
+  /** Whether anything keeps this tab awake right now (checked again after every await). */
+  const tabMustStayAwake = (tab: BrowserTabState): boolean => {
+    const wc = tab.webContents;
+    if (tab.sleeping || wc.isDestroyed() || tab.isolation) return true;
+    if (tab.id === activeTabId || tab.agentActionsInFlight > 0) return true;
+    if (Date.now() - tab.lastUsedAtMs < TAB_SLEEP_AFTER_MS) return true;
+    if (tab.handoff || tab.recording || tab.emulation || tab.devToolsMode || tab.networkLoggingEnabled) return true;
+    if (tabCapabilities.hasPreviewWatchers(tab.id)) return true;
+    if (wc.isLoading() || wc.isCurrentlyAudible() || BACKGROUND_AUDIO_WEB_CONTENTS.has(wc)) return true;
+    return !/^https?:\/\//i.test(wc.getURL());
+  };
+
   /**
    * Put one background tab to sleep, as Chrome discards a tab it has not shown
    * in a while. Never a tab on screen, playing sound, recording, being signed
@@ -3088,20 +3108,32 @@ function createBuiltInBrowserWindowService(args: {
    * the one thing a reload would lose).
    */
   const maybeSleepTab = async (tab: BrowserTabState): Promise<void> => {
+    if (tabMustStayAwake(tab)) return;
     const wc = tab.webContents;
-    if (tab.sleeping || wc.isDestroyed() || tab.isolation) return;
-    if (tab.id === activeTabId) return;
-    if (Date.now() - tab.lastUsedAtMs < TAB_SLEEP_AFTER_MS) return;
-    if (tab.handoff || tab.recording || tab.emulation || tab.devToolsMode || tab.networkLoggingEnabled) return;
-    if (tabCapabilities.hasPreviewWatchers(tab.id)) return;
-    if (wc.isLoading() || wc.isCurrentlyAudible() || BACKGROUND_AUDIO_WEB_CONTENTS.has(wc)) return;
     const url = wc.getURL();
-    if (!/^https?:\/\//i.test(url)) return;
+    // Anything a reload would lose blocks sleep: a field in use, a field whose
+    // value differs from what the page loaded with, and any editor area with
+    // text in it (a rich-text draft keeps no "default" to compare against).
     const editing = await wc.executeJavaScript(
-      `(() => { const a = document.activeElement; if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true; for (const t of document.querySelectorAll("textarea")) { if (t.value) return true; } return false; })()`,
+      `(() => {
+        const a = document.activeElement;
+        if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true;
+        for (const f of document.querySelectorAll("textarea, input")) {
+          if (/^(button|submit|reset|hidden|image|file)$/i.test(f.type || "")) continue;
+          if (f.type === "checkbox" || f.type === "radio") { if (f.checked !== f.defaultChecked) return true; continue; }
+          if (f.value !== f.defaultValue) return true;
+        }
+        for (const e of document.querySelectorAll("[contenteditable]:not([contenteditable=false])")) {
+          if ((e.textContent || "").trim()) return true;
+        }
+        return false;
+      })()`,
       true,
     ).catch(() => true);
-    if (editing || tab.sleeping || wc.isDestroyed() || tab.id === activeTabId) return;
+    // The page check awaited: a watcher, a wake, an agent or a navigation may
+    // have arrived meanwhile, so every blocker is read again, and the page
+    // must still be the one that was checked.
+    if (editing || tabMustStayAwake(tab) || wc.getURL() !== url) return;
     const history = (wc as unknown as {
       navigationHistory?: { getAllEntries?: () => Electron.NavigationEntry[]; getActiveIndex?: () => number };
     }).navigationHistory;
@@ -3576,12 +3608,15 @@ function createBuiltInBrowserWindowService(args: {
     const traceDraft = beginActionTrace(tab, action, input as Record<string, unknown>);
     const effectEntry: ActionEffectEntry = { action, tracker: createAgentActionEffectTracker(), navigationApproval: null };
     actionEffectTrackers.set(tab, effectEntry);
+    let inFlight = false;
     try {
       // Only an action that can start a download moves this mark. `wait` and
       // `observe` between the click and `downloads wait` used to move it past
       // the finished file, so the wait timed out on a download it had made.
       if (DOWNLOAD_TRIGGER_ACTIONS.has(action)) tab.lastActionAtMs = Date.now();
       tab.lastAgentInputAtMs = Date.now();
+      tab.agentActionsInFlight += 1;
+      inFlight = true;
       await prepareAgentActionTab(tab, input);
       // A tab nobody is looking at has no compositor surface, and Chromium
       // drops synthesized input to it: a click found its element, was sent,
@@ -3606,6 +3641,7 @@ function createBuiltInBrowserWindowService(args: {
       touchSession(sessionEntry, { lastTraceEntryId: trace.id });
       throw error;
     } finally {
+      if (inFlight) tab.agentActionsInFlight = Math.max(0, tab.agentActionsInFlight - 1);
       tab.lastAgentInputAtMs = Date.now();
       if (actionEffectTrackers.get(tab) === effectEntry) actionEffectTrackers.delete(tab);
     }
@@ -4010,12 +4046,23 @@ function createBuiltInBrowserWindowService(args: {
     const noteHumanInput = () => {
       const tab = tabForWebContents(wc);
       if (!tab || tab.keptByPerson || tab.openedBy !== "chat") return;
+      if (tab.agentActionsInFlight > 0) return;
       if (tab.lastAgentInputAtMs != null && Date.now() - tab.lastAgentInputAtMs < AGENT_INPUT_QUIET_MS) return;
       if (tab.id !== activeTabId || !visible || !win || win.isDestroyed() || !win.isFocused()) return;
       keepTabForPerson(tab, "input");
     };
     wc.on("before-input-event", (_event, input) => {
       if (input.type === "keyDown") noteHumanInput();
+    });
+    // A sleeping tab sent anywhere new (an agent's navigate, a load from
+    // elsewhere) is awake on that page: forget the remembered one, or status
+    // would keep reporting it and the next wake would restore it over this.
+    wc.on("did-start-navigation", (details) => {
+      if (!details.isMainFrame || details.isSameDocument || details.url === "about:blank") return;
+      const tab = tabForWebContents(wc);
+      if (!tab?.sleeping) return;
+      tab.sleeping = null;
+      emitStatus();
     });
     (wc as unknown as { on: (event: string, listener: (event: unknown, mouse: { type?: string }) => void) => void })
       .on("before-mouse-event", (_event, mouse) => {
@@ -4197,6 +4244,7 @@ function createBuiltInBrowserWindowService(args: {
       keptByPerson: false,
       autoCloseAtMs: null,
       lastAgentInputAtMs: null,
+      agentActionsInFlight: 0,
       lastUsedAtMs: Date.now(),
       sleeping: null,
       createdAt: new Date().toISOString(),
@@ -5373,6 +5421,22 @@ function createBuiltInBrowserWindowService(args: {
     on waits and is tried again a few minutes later.
   */
   const chatIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Bumped on every lifecycle word for a chat. A close pass that started
+   * before the chat came back to work sees a newer generation and stops, so
+   * a tab never closes in the middle of a turn.
+   */
+  const chatLifecycleGenerations = new Map<string, number>();
+  const chatGeneration = (chatSessionId: string): number => chatLifecycleGenerations.get(chatSessionId) ?? 0;
+  const bumpChatGeneration = (chatSessionId: string): void => {
+    chatLifecycleGenerations.delete(chatSessionId);
+    chatLifecycleGenerations.set(chatSessionId, chatGeneration(chatSessionId) + 1);
+    // Bounded: only the most recent chats can still have a pass in flight.
+    if (chatLifecycleGenerations.size > 1_000) {
+      const oldest = chatLifecycleGenerations.keys().next().value;
+      if (oldest !== undefined) chatLifecycleGenerations.delete(oldest);
+    }
+  };
 
   const isAgentWorkTab = (tab: BrowserTabState): boolean => tab.openedBy === "chat" && !tab.keptByPerson;
   const tabBelongsToChat = (tab: BrowserTabState, chatSessionId: string): boolean => (
@@ -5410,7 +5474,12 @@ function createBuiltInBrowserWindowService(args: {
   /** Close a chat's agent tabs that can close now; true when some had to wait. */
   const closeChatTabsNow = async (chatSessionId: string, reason: "idle" | "ended" | "lane"): Promise<boolean> => {
     let deferred = false;
+    const generation = chatGeneration(chatSessionId);
     for (const tab of tabsOfChat(chatSessionId)) {
+      // The chat went back to work (or the person kept the tab) while an
+      // earlier close in this pass was awaited: leave the rest open.
+      if (chatGeneration(chatSessionId) !== generation) return false;
+      if (!isAgentWorkTab(tab) || tab.webContents.isDestroyed()) continue;
       if (tabBusyForAutoClose(tab)) {
         deferred = true;
         continue;
@@ -5455,6 +5524,7 @@ function createBuiltInBrowserWindowService(args: {
    * collection's tabs the chat holds.
    */
   function chatBrowserLifecycle(chatSessionId: string, state: "running" | "idle" | "ended"): number {
+    bumpChatGeneration(chatSessionId);
     const count = tabsOfChat(chatSessionId).length;
     if (state === "running") {
       cancelChatIdleClose(chatSessionId);
@@ -5480,14 +5550,23 @@ function createBuiltInBrowserWindowService(args: {
   );
   const sweepStaleAgentTabs = (): void => {
     if (disposed) return;
-    for (const tab of [...tabs]) void maybeSleepTab(tab).catch(() => {});
+    for (const tab of [...tabs]) {
+      void maybeSleepTab(tab).catch((error: unknown) => logger()?.warn("built_in_browser.tab_sleep_failed", {
+        tabId: tab.id,
+        err: error instanceof Error ? error.message : String(error),
+      }));
+    }
     const cutoff = Date.now() - STALE_AGENT_TAB_MS;
     for (const tab of [...tabs]) {
       if (tab.webContents.isDestroyed() || !isAgentWorkTab(tab) || tab.autoCloseAtMs != null) continue;
       if (tabBusyForAutoClose(tab) || lastAgentTouchMs(tab) > cutoff) continue;
       void closeTab({ tabId: tab.id }).then(
         () => logger()?.info("built_in_browser.tab_auto_closed", { tabId: tab.id, reason: "stale" }),
-        () => {},
+        (error: unknown) => logger()?.warn("built_in_browser.tab_auto_close_failed", {
+          tabId: tab.id,
+          reason: "stale",
+          err: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
   };
@@ -6293,9 +6372,8 @@ function createBuiltInBrowserWindowService(args: {
   async function closeTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
     const tabId = input.tabId?.trim();
     if (!tabId) throw new Error("Browser tab id is required.");
-    const index = tabs.findIndex((entry) => entry.id === tabId);
-    if (index < 0) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
-    const closing = tabs[index]!;
+    const closing = tabs.find((entry) => entry.id === tabId);
+    if (!closing) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
     // Any agent may close any tab, one another chat holds included: a tab whose
     // chat stopped working would otherwise sit in the cap until a person found
     // it. The skill tells agents to check the owner first. Two things still
@@ -6313,6 +6391,11 @@ function createBuiltInBrowserWindowService(args: {
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
     }
+    // Find the tab again after the awaits: closes run concurrently (the
+    // cleanup sweep, a group's "Close tabs"), and a position taken before
+    // them would now name a different tab.
+    const index = tabs.indexOf(closing);
+    if (index < 0) return { ...scopeStatusForInput(getStatus(), input), closedTab };
     const [removed] = tabs.splice(index, 1);
     if (removed) {
       parkedTabIds.delete(removed.id);

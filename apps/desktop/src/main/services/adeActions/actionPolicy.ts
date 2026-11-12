@@ -433,6 +433,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // service checks the caller the RPC server stamps). No agent widens a
   // share, sends an invite again, reads or leaves shares given to the
   // account, or moves a chat to or from the other person (`move*`).
+  // Watching or driving a browser tab on another machine is a person's view:
+  // it skips the ownership and access checks agent browser commands keep.
+  work_tools: ["readBrowserTabFrame", "sendBrowserTabInput"],
   lane_share: [
     "updateRights", "resendInvite", "listReceived", "leave",
     "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
