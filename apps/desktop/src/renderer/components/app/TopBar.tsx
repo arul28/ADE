@@ -2159,8 +2159,15 @@ export function TopBar({
         // The account no longer lists it: its tab closes on every copy,
         // including a tab with no computer online.
         useAppStore.getState().closeNoMachineTab(groupId);
-        if (tabGroupsRef.current.some((entry) => entry.id === groupId)) {
-          await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        // The account list drops the project as soon as the route answers, so
+        // the group can have a new id (`repo:` instead of `ap_`) by now: find
+        // it by its removed copies too.
+        const removedKeys = new Set(result.removedBindingKeys);
+        const closing = tabGroupsRef.current
+          .filter((entry) => entry.id === groupId || entry.machines.some((machine) => removedKeys.has(machine.bindingKey)))
+          .map((entry) => entry.id);
+        if (closing.length > 0) {
+          await closeTabGroups(closing, { confirm: false, checkWorkloads: false, forgetState: true });
         }
       }
       const removed = new Set(result.removedBindingKeys);

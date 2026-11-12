@@ -568,6 +568,17 @@ export function groupRecentProjects(args: {
 /** The target id of a copy on a machine this client has no saved connection to. */
 export const ACCOUNT_MACHINE_TARGET_PREFIX = "account-machine:";
 
+/**
+ * The location of an account project that no computer has a copy of: the
+ * account prefix with no machine key. It opens the no-machine tab, like a
+ * copy on a machine with no saved connection.
+ */
+export const ACCOUNT_NO_COPY_TARGET_ID = ACCOUNT_MACHINE_TARGET_PREFIX;
+
+export function isAccountNoCopyLocation(summary: Pick<RecentProjectSummary, "kind" | "remote">): boolean {
+  return summary.kind === "remote" && summary.remote?.targetId === ACCOUNT_NO_COPY_TARGET_ID;
+}
+
 function connectionKeyOf(connection: RemoteRuntimeConnectionSnapshot["connections"][number]): string {
   return connection.target.pairedMachine?.machineKey?.trim() || connection.target.id;
 }
@@ -684,7 +695,35 @@ export function accountProjectGroups(args: {
         reachable: state === "connected" && row != null && row.exists !== false,
       });
     }
-    if (locations.length === 0) continue;
+    // A project with no copy is still the account's (added with no
+    // computer, or every copy removed): its row opens the no-machine tab,
+    // where a copy can be added.
+    if (locations.length === 0) {
+      const addedAt = project.addedAt > 0 ? new Date(project.addedAt).toISOString() : "";
+      locations.push({
+        summary: {
+          rootPath: "",
+          displayName: project.name,
+          lastOpenedAt: addedAt,
+          exists: true,
+          kind: "remote",
+          gitOriginUrl,
+          remote: {
+            targetId: ACCOUNT_NO_COPY_TARGET_ID,
+            projectId: project.id,
+            runtimeName: "No computer",
+            hostname: "",
+            gitOriginUrl,
+            iconDataUrl: null,
+          },
+        },
+        recentKey: null,
+        machineId: ACCOUNT_NO_COPY_TARGET_ID,
+        machineName: "No computer",
+        connectionState: null,
+        reachable: false,
+      });
+    }
     locations.sort((left, right) => recentTimestamp(right.summary) - recentTimestamp(left.summary));
     const primary =
       locations.find((location) => location.summary.kind !== "remote" && location.reachable)
