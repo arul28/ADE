@@ -2417,10 +2417,8 @@ async function readPreviewHydrationData(
         terminalId: runtime.sessionId,
         maxBytes: HYDRATE_TAIL_BYTES,
       }, runtime.runtimePin)
-    : await window.ade.terminal.preview({
-        terminalId: runtime.sessionId,
-        maxBytes: HYDRATE_TAIL_BYTES,
-      });
+    // No machine for the session: there is no screen to read.
+    : null;
   if (preview?.snapshot) {
     reportTerminalDimsMismatch(runtime, {
       reason: "snapshot-hydrate",
@@ -2458,10 +2456,8 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
           terminalId: runtime.sessionId,
           maxBytes: HYDRATE_TAIL_BYTES,
         }, runtime.runtimePin)
-      : await window.ade.terminal.preview({
-          terminalId: runtime.sessionId,
-          maxBytes: HYDRATE_TAIL_BYTES,
-        });
+      // No machine for the session: there is no screen to read.
+      : null;
     const snapshot = preview?.snapshot?.serialized ?? "";
     const previewTranscript = preview?.transcript ?? "";
     return `${snapshot}${previewTranscript}${transcript}`;
@@ -2547,10 +2543,8 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
           terminalId: runtime.sessionId,
           maxBytes: HYDRATE_TAIL_BYTES,
         }, runtime.runtimePin)
-      : await window.ade.terminal.preview({
-          terminalId: runtime.sessionId,
-          maxBytes: HYDRATE_TAIL_BYTES,
-        });
+      // No machine for the session: there is no screen to read.
+      : null;
     const previewSessionStatus = preview?.session?.status ?? sessionStatus;
     const previewSessionExitCode = preview?.session?.exitCode ?? sessionExitCode;
 

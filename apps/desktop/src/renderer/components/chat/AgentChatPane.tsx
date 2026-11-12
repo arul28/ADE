@@ -237,6 +237,7 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { requireChatPin } from "./chatMachinePin";
 import { ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
@@ -602,6 +603,9 @@ import {
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
+import { useActiveRepositoryTab, useActiveStartOn } from "../../state/repositoryScope";
+import type { StartOnChoice } from "../../../shared/repositoryTab";
+import { recordStartOnLastMachine } from "./startOnLastMachine";
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -5621,6 +5625,7 @@ export function AgentChatPane({
   // not returned by the hook, so `react-hooks/exhaustive-deps` still sees it
   // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
+  const draftStartedOnRef = useRef<{ tabId: string | null; machineKey: string | null }>({ tabId: null, machineKey: null });
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   // The chat's pin when it names another copy than the tab's own; null for the
@@ -5663,7 +5668,7 @@ export function AgentChatPane({
     : null;
   // The offer reads the setting and the plugins of this tab's own project, so a
   // chat pinned to another runtime (another machine, another open project) gets none.
-  useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId);
+  useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId, chatRuntimePin);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -5791,6 +5796,10 @@ export function AgentChatPane({
     // machine. The probe used to be skipped for a remote project entirely,
     // which left the toggle permanently hidden — and hiding the toggle is what
     // kept the panel from ever opening to un-skip it.
+    if (!chatRuntimePin) {
+      setAppControlAvailable(false);
+      return;
+    }
     let cancelled = false;
     void api.getStatus({ laneId: laneId ?? null }, chatRuntimePin)
       .then((status) => {
@@ -8445,6 +8454,8 @@ export function AgentChatPane({
       : null;
     return {
       runtimePin,
+      // The composer's machine, also when it is the tab's: catalog reads name it.
+      catalogPin: composerPin ?? null,
       runtimeProjectRoot: composerPin?.rootPath ?? projectRoot,
       boundRuntimeKey: projectBinding?.key ?? null,
     };
@@ -8499,7 +8510,7 @@ export function AgentChatPane({
       setAvailableModelIds(keepEmptyArray);
       return [];
     }
-    const { runtimePin, runtimeProjectRoot, boundRuntimeKey } = scope;
+    const { runtimePin, catalogPin, runtimeProjectRoot, boundRuntimeKey } = scope;
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
@@ -8534,17 +8545,19 @@ export function AgentChatPane({
     }
 
     try {
+      // No machine for the composer: nothing to ask.
+      if (!catalogPin) return [];
       const [codexModels, claudeModels, cursorModels, droidModels, museModels, openCodeModels] = await Promise.all([
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "codex", pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "claude", pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "cursor", activateRuntime: true, pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "droid", pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "muse", pin: runtimePin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "codex", pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "claude", pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "cursor", activateRuntime: true, pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "droid", pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "muse", pin: catalogPin }).catch(() => []),
         getAgentChatModelsCached({
           projectRoot: runtimeProjectRoot,
           provider: "opencode",
           activateRuntime: shouldRefreshOpenCodeInventory,
-          pin: runtimePin,
+          pin: catalogPin,
         }).catch(() => []),
       ]);
       const available = new Set<string>();
@@ -8982,7 +8995,7 @@ export function AgentChatPane({
       try {
         const snapshot = await window.ade.computerUse.getOwnerSnapshot({
           owner: { kind: "chat_session", id: sessionId },
-        }, chatRuntimePinRef.current);
+        }, requireChatPin(chatRuntimePinRef.current));
         // An older desktop host can answer null; treat it as a failed read
         // so the pane never stores (and renders) an empty snapshot.
         if (!snapshot) throw new Error("No computer-use snapshot for this chat.");
@@ -11194,7 +11207,8 @@ export function AgentChatPane({
   }, [isPersonalPane, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
-    if (!isTileActive) return undefined;
+    const eventPin = chatRuntimePinRef.current;
+    if (!isTileActive || !eventPin) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       const belongsToSelectedChat = event.owner?.kind === "chat_session"
@@ -11223,7 +11237,7 @@ export function AgentChatPane({
       } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
-    }, chatRuntimePinRef.current);
+    }, eventPin);
     return unsubscribe;
     // The pin is read through the ref, but its key must re-subscribe: a pin
     // that resolves after mount would otherwise leave the drawer on the bound
@@ -13529,8 +13543,11 @@ export function AgentChatPane({
     // launch then drops its card/row and runs the renderer-owned chain, which
     // consumes this recipe so it still builds the lane the user configured.
     pendingRendererRef.current = configuredLane;
+    // Read now: the draft machine is the one this launch runs on.
+    const startedOn = draftStartedOnRef.current;
     void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
+      if (outcome === "started") recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
     });
     return true;
   }, [
@@ -16809,6 +16826,11 @@ export function AgentChatPane({
     && !lockSessionId
     && !initialSessionId
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
+  // "Start on" for the open repository: a new chat starts on the machine of
+  // its first available copy unless the person picks another.
+  const { choices: draftStartOnChoices, defaultChoice: draftStartOnChoice } = useActiveStartOn(showDraftLaunchControls);
+  const draftStartOnMachineId = draftStartOnChoice?.kind === "copy" ? draftStartOnChoice.copy.machineId : null;
+  const draftRepositoryTabId = useActiveRepositoryTab()?.id ?? null;
   const {
     machineOptions: routedLaneMachineOptions,
     cloneMachineOptions: routedCloneMachineOptions,
@@ -16831,6 +16853,7 @@ export function AgentChatPane({
     handleLaneSelectionChange: handleDraftLaneSelectionChange,
   } = useDraftMachineRouting({
     enabled: showDraftLaunchControls,
+    startOnMachineId: draftStartOnMachineId,
     projectBinding,
     openProjectTabRoots,
     crossMachineLanesByMachineId,
@@ -16846,6 +16869,15 @@ export function AgentChatPane({
     setError,
   });
   refreshDraftMachineProjectsRef.current = refreshDraftMachineProjects;
+  // The copy the draft starts on, for "Start on"'s last-used machine.
+  const draftStartedOnCopy = draftStartOnChoices.find(
+    (choice): choice is Extract<StartOnChoice, { kind: "copy" }> =>
+      choice.kind === "copy" && choice.copy.machineId === selectedDraftMachineId,
+  );
+  draftStartedOnRef.current = {
+    tabId: draftRepositoryTabId,
+    machineKey: draftStartedOnCopy?.copy.machineKey ?? null,
+  };
   // ADE Cloud: one Run on entry for every lane there, read from memory.
   const adeCloud = useAdeCloudDraft({
     enabled: showDraftLaunchControls,
@@ -19331,6 +19363,15 @@ export function AgentChatPane({
           || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
         );
     if (!modelAllowed) {
+      // Say why, so a pick never fails without a word.
+      showToast({
+        id: "composer-model-refused",
+        tone: "warning",
+        title: "This model is not available here",
+        message: composerAvailableModelIds.length === 0
+          ? "The models for this chat are still loading. Try again in a moment."
+          : "Pick a model from the list for this chat's computer.",
+      });
       return false;
     }
     if (isPersistentIdentitySurface && sessionMutationKind) {
@@ -20696,6 +20737,7 @@ export function AgentChatPane({
                                 onPointerClose={returnFocusToComposer}
                                 side="bottom"
                                 menuLabel="Run on"
+                                showWhenSingle
                               />
                               <LaneCombobox
                                 lanes={adeCloudMode ? adeCloudShelfLanes : draftShelfLanes}

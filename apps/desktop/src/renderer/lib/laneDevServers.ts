@@ -98,7 +98,8 @@ const ALL_LANES = "*";
 function load(key: string, pin: OpenProjectBinding | null, laneId: string): void {
   const entry = entries.get(key);
   const list = window.ade?.workTools?.listDevServers;
-  if (!entry || !list) return;
+  // No machine named: nothing to read; the entry stays empty.
+  if (!entry || !list || !pin) return;
   if (entry.loading) {
     entry.stale = true;
     return;
@@ -151,7 +152,7 @@ function retainMachine(pin: OpenProjectBinding | null): () => void {
     existing.refCount += 1;
   } else {
     const subscribe = window.ade?.workTools?.onDevServer;
-    const dispose = subscribe
+    const dispose = pin && typeof subscribe === "function"
       ? subscribe((event) => {
         const laneId = event.server.source.laneId;
         const prefix = `${key}|`;

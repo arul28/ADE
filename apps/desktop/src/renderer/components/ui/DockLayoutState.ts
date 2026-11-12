@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { readClientLayout, writeClientLayout } from "./clientLayoutStore";
 
 export type DockLayout = Record<string, number>;
 type DockLayoutUpdater = DockLayout | ((prev: DockLayout) => DockLayout);
+
+function isDockLayout(value: unknown): value is DockLayout {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
   const [layout, setLayout] = useState<DockLayout>(fallbackLayout);
@@ -16,10 +21,11 @@ export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
-    window.ade.layout
-      .get(layoutId)
-      .then((saved) => {
+    // This client's layout (see `clientLayoutStore`), never a machine's.
+    void readClientLayout("dock", layoutId)
+      .then((value) => {
         if (cancelled) return;
+        const saved = isDockLayout(value) ? value : null;
         if (saved) {
           setLayout(saved);
           layoutRef.current = saved;
@@ -53,7 +59,7 @@ export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
           setLayout(final);
           layoutRef.current = final;
           pendingRef.current = null;
-          window.ade.layout.set(layoutId, final).catch(() => {});
+          writeClientLayout("dock", layoutId, final);
         }
       }, 150);
     },

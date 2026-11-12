@@ -98,8 +98,9 @@ export function useChatLaunchSync(): void {
   useEffect(() => {
     const api = window.ade?.chatLaunch;
     if (!api) return undefined;
-    const targets: Array<{ binding: OpenProjectBinding | null; pin: OpenProjectBinding | null }> = [];
-    if (projectBinding) targets.push({ binding: projectBinding, pin: null });
+    const targets: Array<{ binding: OpenProjectBinding; pin: OpenProjectBinding }> = [];
+    // The tab's copy is named by its own address, like every other machine.
+    if (projectBinding) targets.push({ binding: projectBinding, pin: projectBinding });
     const extraKeys = new Set(extraSignature ? extraSignature.split("\n") : []);
     const seen = new Set<string>();
     for (const entry of Object.values(chatLaunchStore.getState().entries)) {
@@ -116,7 +117,7 @@ export function useChatLaunchSync(): void {
     // One list read per binding at a time; a resync that lands while one is
     // in flight re-reads once more when it returns, so the newest state wins.
     const hydrating = new Map<string, boolean>();
-    const hydrate = (binding: OpenProjectBinding | null, pin: OpenProjectBinding | null) => {
+    const hydrate = (binding: OpenProjectBinding, pin: OpenProjectBinding) => {
       const key = chatLaunchBindingKey(binding);
       if (hydrating.has(key)) {
         hydrating.set(key, true);
@@ -124,7 +125,7 @@ export function useChatLaunchSync(): void {
       }
       let request: Promise<unknown>;
       try {
-        request = api.list(pin ?? undefined);
+        request = api.list(pin);
       } catch {
         return;
       }
@@ -149,7 +150,7 @@ export function useChatLaunchSync(): void {
           (event) => {
             if (!disposed) coalescer.push(binding, event);
           },
-          pin ?? undefined,
+          pin,
           () => {
             if (!disposed) hydrate(binding, pin);
           },

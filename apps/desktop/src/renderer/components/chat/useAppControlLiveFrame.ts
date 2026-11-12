@@ -165,9 +165,10 @@ export function useAppControlLiveFrame(
   const seedPinRef = seed?.runtimePinRef ?? null;
   useEffect(() => {
     const read = window.ade?.appControl?.getLatestFrame;
-    if (!seedLaneId || !seedTargetId || typeof read !== "function") return undefined;
+    const seedPin = seedPinRef?.current ?? null;
+    if (!seedLaneId || !seedTargetId || !seedPin || typeof read !== "function") return undefined;
     let cancelled = false;
-    void read({ laneId: seedLaneId }, seedPinRef?.current ?? null)
+    void read({ laneId: seedLaneId }, seedPin)
       .then((frame) => {
         if (cancelled || !frame || activeRef.current) return;
         onFrame(frame, seedTargetId);

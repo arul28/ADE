@@ -135,6 +135,7 @@ import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1182,9 +1183,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   /** The list has never loaded and is still trying, so an empty list says nothing yet. */
   firstLoadRetrying?: boolean;
   /**
-   * The machine a chat runs on: `null` is the project tab's own machine. Asks
-   * which machine owns a chat whose lane is missing, so the archived-lane read
-   * goes to that machine rather than the tab's.
+   * The machine a chat runs on: the tab's copy for its own lanes, `null` when
+   * no machine is known. Asks which machine owns a chat whose lane is missing,
+   * so the archived-lane read goes to that machine rather than the tab's.
    */
   resolveSessionRuntimePin: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
@@ -1254,6 +1255,11 @@ export const SessionListPane = React.memo(function SessionListPane({
     workLaneSortMode,
     workLaneOrder,
   );
+  // Lanes from more than one computer are on screen: a lane header that is not
+  // on this computer names its computer (see `LaneMachineMarker`).
+  const listShowsSeveralComputers = foreignRows.length > 0;
+  // No copy of the repository online: the list reads nothing and says so.
+  const tabCopyPin = useTabCopyPin();
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
   // its own timer; this fallback timer prevents a foreign snooze from staying
@@ -1317,7 +1323,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     },
     [effectiveFilingBucketsProp, foreignFilingNowMs],
   );
-  const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
+  const [settleUndo, setSettleUndo] = useState<{
+    groups: Array<{ pin: OpenProjectBinding; ids: string[] }>;
+    count: number;
+  } | null>(null);
   const {
     trigger: triggerLaneContextMenu,
     triggerForeign: triggerForeignLaneContextMenu,
@@ -1591,9 +1600,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Bulk settle targets at-rest rows only — actively working sessions are not
   // "done" merely because they lack a settled marker.
   const selectedSettleableSessions = useMemo(() => {
-    // Bulk settle still goes through the unpinned `sessions.settleMany`, which
-    // only reaches the bound machine — so it stays scoped to the active
-    // roster's rows. Delete is the action that now carries per-row pins.
+    // Bulk settle stays scoped to the host roster's rows; each machine's
+    // share goes to that machine (see `settleSessions`).
     const localIds = new Set(allSessions.map((session) => session.id));
     return selectedSessions.filter((session) =>
       localIds.has(session.id)
@@ -1608,25 +1616,37 @@ export const SessionListPane = React.memo(function SessionListPane({
     [awaitingInputFiltered],
   );
   const selectedSettleCount = selectedSettleableSessions.length;
-  const settleSessions = useCallback(async (sessionIds: string[]) => {
-    try {
-      const newlySettled = await window.ade.sessions.settleMany(sessionIds);
-      if (newlySettled.length > 0) {
-        setSettleUndo({ ids: newlySettled, count: newlySettled.length });
+  // `settleMany` takes the ids of one machine, so the selection is split by
+  // the machine each row lives on. A row with no known machine is not sent.
+  const settleSessions = useCallback(async (sessions: readonly TerminalSessionSummary[]) => {
+    const { groups, unrouted } = groupByMachine(sessions, resolveSessionRuntimePin);
+    if (unrouted.length > 0) {
+      console.warn("[SessionListPane] bulk settle skipped rows with no machine", { count: unrouted.length });
+    }
+    const settled = await Promise.all(groups.map(async ({ pin, items }) => {
+      const sessionIds = items.map((session) => session.id);
+      try {
+        return { pin, ids: await window.ade.sessions.settleMany(sessionIds, pin) };
+      } catch (error) {
+        console.error("[SessionListPane] bulk settle failed", { sessionIds, error });
+        return { pin, ids: [] as string[] };
       }
-    } catch (error) {
-      console.error("[SessionListPane] bulk settle failed", { sessionIds, error });
-    }
-  }, []);
+    }));
+    const undoGroups = settled.filter((group) => group.ids.length > 0);
+    const count = undoGroups.reduce((total, group) => total + group.ids.length, 0);
+    if (count > 0) setSettleUndo({ groups: undoGroups, count });
+  }, [resolveSessionRuntimePin]);
   const undoSettle = useCallback(async () => {
-    const ids = settleUndo?.ids ?? [];
-    if (!ids.length) return;
+    const groups = settleUndo?.groups ?? [];
+    if (!groups.length) return;
     setSettleUndo(null);
-    try {
-      await window.ade.sessions.unsettleMany(ids);
-    } catch (error) {
-      console.error("[SessionListPane] undo settle failed", { sessionIds: ids, error });
-    }
+    await Promise.all(groups.map(async ({ pin, ids }) => {
+      try {
+        await window.ade.sessions.unsettleMany(ids, pin);
+      } catch (error) {
+        console.error("[SessionListPane] undo settle failed", { sessionIds: ids, error });
+      }
+    }));
   }, [settleUndo]);
   useEffect(() => {
     if (!settleUndo) return;
@@ -3181,7 +3201,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(quietlyAwaitingSessions.map((session) => session.id));
+              void settleSessions(quietlyAwaitingSessions);
             }}
           >
             {flatLists.rows.size ? "Settle local" : "Settle all"}
@@ -3203,7 +3223,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(endedFiltered.map((session) => session.id));
+              void settleSessions(endedFiltered);
             }}
           >
             {flatLists.rows.size ? "Settle local" : "Settle all"}
@@ -3292,7 +3312,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     ) : null;
     // Never populated for a lane on the Mac you're sitting at. Note this list is
     // the ACTIVE BINDING's lanes, which is not necessarily this machine; the
-    // marker only draws while its machine is offline (`isMachineMarkerShown`).
+    // marker draws while its machine is offline, or names the machine while
+    // lanes from several computers are on screen.
     const machineMarker = markersByLaneId.get(lane.id) ?? null;
     // A header that marks the machine makes every row beneath it a repetition.
     // A headerless lane has no such header, so its lone card carries the marker
@@ -3323,7 +3344,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         prBadge={prBadge}
         machineMarker={laneCloudProvider(lane)
           ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
-          : machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
+          : machineMarker ? <LaneMachineMarker marker={machineMarker} named={listShowsSeveralComputers} /> : null}
         appleDevice={laneAppleDevice || laneAndroidDevice || laneDesktop || laneAppControl || laneBrowserTabs > 0 ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
@@ -3425,11 +3446,9 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const renderForeignLaneGroup = (entry: ForeignLaneEntry) => {
     const { row, compositeLaneId, quiet, fullQuiet, nesting, fullNesting, shelf } = entry;
-    // One resolver, one answer — including for Primary, which used to get its
-    // name spelled out here on the theory that two identically-named Primaries
-    // are otherwise indistinguishable. Under the physical-machine rule they are
-    // not: at most one Primary on screen is unbadged, and it is the one on the
-    // Mac you're sitting at.
+    // One resolver, one answer. With lanes from several computers on screen,
+    // every header not on this computer names its computer, so two Primaries
+    // read as two computers.
     const headerMarker = markersByLaneId.get(compositeLaneId) ?? null;
     // Keyed the same way the delete was started (`machineId:laneId`), never by the
     // bare lane id, which can name a lane on this machine.
@@ -3508,7 +3527,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             onOpen={(target) => openLanePr(target, { foreign: true, navigate })}
           />
         ) : null}
-        machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
+        machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} named={listShowsSeveralComputers} /> : null}
         laneStatus={entry.focusStatus}
         laneFailed={entry.focusFailed}
         quietCounts={laneQuiet && collapsed
@@ -4210,7 +4229,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   type="button"
                   className={BULK_ACTION_BUTTON_CLASS}
                   onClick={() => {
-                    void settleSessions(selectedSettleableSessions.map((session) => session.id));
+                    void settleSessions(selectedSettleableSessions);
                   }}
                 >
                   Settle {selectedSettleCount}
@@ -4322,10 +4341,14 @@ export const SessionListPane = React.memo(function SessionListPane({
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
             <div className="text-[12px] font-medium text-fg/70">
-              {firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
+              {!tabCopyPin
+                ? "No computer connected"
+                : firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
             </div>
             <div className="mt-1 text-[11px] text-muted-fg/60">
-              {firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
+              {!tabCopyPin
+                ? "Connect a computer to see this project's chats"
+                : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
           </div>
         ) : isByTime ? (

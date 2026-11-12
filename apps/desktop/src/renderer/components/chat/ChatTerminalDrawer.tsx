@@ -330,9 +330,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   useEffect(() => {
     if (!chatSessionId) return;
     if (!open && !revealRequest) return;
+    const listPin = pinRef.current;
+    if (!listPin) return;
     let cancelled = false;
     setRestoringTabs(true);
-    window.ade.terminal.list({ chatSessionId, limit: 20 }, pinRef.current)
+    window.ade.terminal.list({ chatSessionId, limit: 20 }, listPin)
       .then((sessions) => {
         if (cancelled) return;
         const restored = sessions
@@ -540,11 +542,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   useEffect(() => {
     if (!open) return undefined;
     const appControlBridge = window.ade?.appControl;
-    if (!appControlBridge) return undefined;
+    const statusPin = pinRef.current;
+    if (!appControlBridge || !statusPin) return undefined;
     let cancelled = false;
     // App Control keeps one session per lane: this drawer's lane is the one
     // whose app terminal it can show, and other lanes' events are not ours.
-    void appControlBridge.getStatus({ laneId }, pin)
+    void appControlBridge.getStatus({ laneId }, statusPin)
       .then((status) => {
         if (cancelled) return;
         setAppControlTabState(deriveAppControlTabState(status?.activeSession ?? null));
@@ -559,12 +562,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       } else if (event.type === "session-stopped") {
         setAppControlTabState(deriveAppControlTabState(event.previousSession ?? null));
       }
-    });
+    }, statusPin);
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [laneId, open, pin]);
+  }, [laneId, open, pinKey]);
 
   // Shells this chat runs on other machines, read through each machine's pin.
   const resolveRemotePin = useRemoteWorkPinResolver(open && Boolean(remoteWork?.length));

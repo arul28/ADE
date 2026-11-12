@@ -131,6 +131,7 @@ import {
   seedCrossMachineOptimisticChatSession,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
+import { writeClientLayout } from "../ui/clientLayoutStore";
 
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
@@ -1303,6 +1304,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (!workSidebarVisible) setWorkToolsMaximized(false);
   }, [workSidebarVisible]);
 
+  // The tools pane publishes its tool to the lane's machine, also for a draft
+  // with no session yet: the session's machine, else the lane's.
+  const workToolsLanePin = useMemo(
+    () => activeWorkSessionRuntimePin ?? (activeLaneId ? resolveSessionRuntimePin({ laneId: activeLaneId }) : null),
+    [activeLaneId, activeWorkSessionRuntimePin, resolveSessionRuntimePin],
+  );
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
   const {
@@ -1314,7 +1321,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(
     activeLaneId,
-    activeWorkSessionRuntimePin,
+    workToolsLanePin,
     // The chat the pane's tools are attached to, so closing a tab can stop the
     // tool with the right owner.
     contextTarget?.kind === "chat" ? contextTarget.sessionId : null,
@@ -1505,7 +1512,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (set) {
       const preset = edge === "left" || edge === "right" ? "columns" : "rows";
       const tree: PaneSplit = buildWorkSessionTilingTree(set.sessionIds, preset);
-      window.ade.tilingTree.set(set.layoutId, tree).catch(() => {});
+      writeClientLayout("tiling", set.layoutId, tree);
     }
     work.setGridSets(next);
     work.openSessionTab(draggedId);
@@ -1533,7 +1540,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const detached = ids.reduce((sets, id) => removeSessionFromGrids(sets, id), work.gridSets);
     const id = makeGridSetId();
     const layoutId = makeGridLayoutId(projectStateKey, id);
-    window.ade.tilingTree.set(layoutId, buildWorkSessionTilingTree(ids)).catch(() => {});
+    writeClientLayout("tiling", layoutId, buildWorkSessionTilingTree(ids));
     work.setGridSets([...detached, { id, layoutId, sessionIds: ids }]);
     work.openSessionTab(ids[0]!);
     work.setActiveItemId(ids[0]!);

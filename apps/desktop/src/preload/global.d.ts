@@ -2663,18 +2663,18 @@ declare global {
         ) => () => void;
       };
       chatLaunch: {
-        start: (args: ChatLaunchArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
-        get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
-        list: (pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot[]>;
-        cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
-        retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
-        startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
-        queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
-        completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
+        start: (args: ChatLaunchArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot>;
+        get: (args: ChatLaunchIdArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot | null>;
+        list: (pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot[]>;
+        cancel: (args: ChatLaunchIdArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot | null>;
+        retry: (args: ChatLaunchIdArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot | null>;
+        startNow: (args: ChatLaunchIdArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot | null>;
+        queueMessage: (args: ChatLaunchQueueMessageArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot>;
+        completeClient: (args: ChatLaunchCompleteClientArgs, pin: OpenProjectBinding) => Promise<ChatLaunchSnapshot | null>;
         /** `onResync`: the event stream may have dropped events (gap, runtime restart, reconnect); re-read `list`. */
         onEvent: (
           cb: (event: ChatLaunchEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
           onResync?: () => void,
         ) => () => void;
       };
@@ -3202,16 +3202,16 @@ declare global {
       };
       computerUse: {
         listArtifacts: (
-          args?: ComputerUseArtifactListArgs,
-          pin?: OpenProjectBinding | null,
+          args: ComputerUseArtifactListArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<ComputerUseArtifactView[]>;
         getOwnerSnapshot: (
           args: ComputerUseOwnerSnapshotArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ComputerUseOwnerSnapshot>;
         deleteArtifacts: (
           args: ComputerUseArtifactDeleteArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ComputerUseArtifactDeleteResult>;
         listBrokenArtifacts: (args?: {
           limit?: number;
@@ -3219,15 +3219,15 @@ declare global {
         pruneBrokenArtifacts: (pin?: OpenProjectBinding | null) => Promise<ComputerUseArtifactDeleteResult>;
         recoverArtifact: (
           args: { artifactId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ComputerUseArtifactView>;
         updateArtifactReview: (
           args: ComputerUseArtifactReviewArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ComputerUseArtifactView>;
         readArtifactPreview: (
           args: { uri: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<string | null>;
         /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
         mediaBaseUrl: () => Promise<string | null>;
@@ -3235,7 +3235,7 @@ declare global {
         saveMediaAs?: (args: { url: string; fileName?: string }) => Promise<{ saved: boolean; path?: string }>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
       };
       /**
@@ -3791,73 +3791,73 @@ declare global {
          * `activeSession: null` and lists every lane's session in `sessions`.
          */
         getStatus: (
-          args?: AppControlLaneArgs,
-          pin?: OpenProjectBinding | null,
+          args: AppControlLaneArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlStatus>;
         launch: (
-          args?: AppControlLaunchArgs,
-          pin?: OpenProjectBinding | null,
+          args: AppControlLaunchArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlSession>;
         launchInTerminal: (
-          args?: AppControlLaunchArgs,
-          pin?: OpenProjectBinding | null,
+          args: AppControlLaunchArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlSession>;
         connect: (
           args: AppControlConnectArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlSession>;
         /** Quits an app ADE launched (whole process tree); detaches an attached one. */
         stop: (
           args: AppControlStopArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
         focusWindow: (
           args: AppControlLaneArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         minimizeWindow: (
           args: AppControlLaneArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         screenshot: (
           args: AppControlLaneArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlScreenshot>;
         getSnapshot: (
           args: AppControlSnapshotArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlSnapshot>;
         inspectPoint: (
           args: AppControlInspectPointArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlInspectResult>;
         selectPoint: (
           args: AppControlInspectPointArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlSelectResult>;
         click: (
           args: AppControlClickArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         typeText: (
           args: AppControlTypeTextArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         scroll: (
           args: AppControlScrollArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         dispatchKey: (
           args: AppControlDispatchKeyArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         listTargets: (
           args: AppControlLaneArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlTarget[]>;
         attachToTarget: (
           args: AppControlAttachToTargetArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlSession>;
         /**
          * Records the lane's app: its window on macOS (needs Screen
@@ -3867,15 +3867,15 @@ declare global {
          */
         startRecording: (
           args: AppControlRecordStartArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlRecordingStatus>;
         stopRecording: (
           args: AppControlRecordStopArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlRecordingStatus>;
         getRecordingStatus: (
           args: AppControlRecordingStatusArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlRecordingStatus>;
         /**
          * The lane's current picture for a viewer that just mounted. The
@@ -3886,12 +3886,12 @@ declare global {
          */
         getLatestFrame?: (
           args: AppControlRecordingStatusArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlScreencastFrame | null>;
         /** One still of the lane's app, filed as proof (Mac Desktop's Save screenshot). */
         captureProof: (
           args: AppControlCaptureProofArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlCaptureProofResult>;
         /**
          * Agent action model, read side only. `agentClick`/`agentFill`/… are
@@ -3902,30 +3902,30 @@ declare global {
          * channel to fall back to.
          */
         listDrivers: (
-          args?: AppControlLaneArgs,
-          pin?: OpenProjectBinding | null,
+          args: AppControlLaneArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlDriversResult>;
         /** Writes an observation record and prunes older ones — never poll it. */
         observe: (
           args: AppControlObservationArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlObservation>;
         getTrace: (
           args: AppControlTraceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlTraceResult>;
         windows: (
           args: AppControlSessionTargetArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlWindowsResult>;
         /** Re-attaches CDP and clears the trace, like `attachToTarget`. */
         switchWindow: (
           args: AppControlSwitchWindowArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppControlWindowsResult>;
         onEvent: (
           cb: (ev: AppControlEventPayload) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
         /**
          * A view that shows live frames holds this while it is on screen.
@@ -4192,45 +4192,45 @@ declare global {
       };
       terminal: {
         list: (
-          args?: ChatTerminalListArgs,
-          pin?: OpenProjectBinding | null,
+          args: ChatTerminalListArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<ChatTerminalSession[]>;
         read: (
-          args?: ChatTerminalReadArgs,
-          pin?: OpenProjectBinding | null,
+          args: ChatTerminalReadArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<ChatTerminalReadResult>;
         preview: (
-          args?: ChatTerminalPreviewArgs,
-          pin?: OpenProjectBinding | null,
+          args: ChatTerminalPreviewArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<ChatTerminalPreviewResult>;
         write: (
           args: ChatTerminalWriteArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         signal: (
           args: ChatTerminalSignalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         activeForChat: (
           args: ChatTerminalActiveForChatArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ChatTerminalSession | null>;
         reattachChatCli: (
           args: ChatTerminalReattachArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ChatTerminalReattachResult>;
         /** Absent on hosts without terminal watches (the web client). */
         watch?: (
           args: TerminalWatchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<TerminalWatchResult>;
         unwatch?: (
           args: TerminalUnwatchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<TerminalUnwatchResult>;
         listWatches?: (
           args: TerminalListWatchesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<TerminalWatchSummary[]>;
       };
       localhost: {
@@ -5234,8 +5234,8 @@ declare global {
       };
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
-        getLaneState: (laneId: string, pin?: OpenProjectBinding | null) => Promise<WorkToolsLaneState | null>;
-        noteWatching?: (pin?: OpenProjectBinding | null) => Promise<void>;
+        getLaneState: (laneId: string, pin: OpenProjectBinding) => Promise<WorkToolsLaneState | null>;
+        noteWatching?: (pin: OpenProjectBinding) => Promise<void>;
         /**
          * `openTools` is the pane's whole tab strip in order; `tool` is the one
          * on screen. Defaulted so an older caller still publishes coherently.
@@ -5243,27 +5243,30 @@ declare global {
         setActiveTool: (
           laneId: string,
           tool: WorkToolId | null,
-          openTools?: WorkToolId[],
-          pin?: OpenProjectBinding | null,
+          openTools: WorkToolId[] | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         readObservationPreview: (
           observationPath: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<WorkToolsObservationPreview | null>;
         /** Dev servers on the lane's machine, for the Browser on any machine. */
-        listDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
+        listDevServers: (args: DevServersArgs | undefined, pin: OpenProjectBinding) => Promise<DevServersResult>;
         /**
          * Stop a dev server one chat's agent started, on the chat's machine
          * (pass the row's pin). Refused unless the process on the port is still
          * that chat's; feature-detect before use.
          */
-        stopDevServer?: (args: DevServerStopArgs, pin?: OpenProjectBinding | null) => Promise<DevServerStopResult>;
+        stopDevServer?: (args: DevServerStopArgs, pin: OpenProjectBinding) => Promise<DevServerStopResult>;
         /** A dev server started or stopped on the lane's machine. */
         onDevServer: (
           cb: (event: DevServerEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
-        /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
+        /**
+         * `ade ui show`: an agent asking this desktop to show a surface of its chat.
+         * The pin stays optional until the window listener in `App.tsx` names its copy.
+         */
         onShowRequest: (
           cb: (request: WorkToolShowRequest) => void,
           pin?: OpenProjectBinding | null,

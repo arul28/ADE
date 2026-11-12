@@ -53,6 +53,7 @@ import {
   useArtifactPreview,
 } from "./useArtifactPreview";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { requireChatPin } from "./chatMachinePin";
 
 function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
@@ -146,7 +147,7 @@ export function ArtifactLightbox({
 }) {
   const scope = useChatRuntimeScope();
   const readDataUrl = useCallback(
-    () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin),
+    async () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, requireChatPin(scope.pin)),
     [artifact.uri, scope.pin],
   );
   // A video that plays from main's media server is saved by main, which can
@@ -719,7 +720,7 @@ export function ChatComputerUsePanel({
   const handleDelete = useCallback(
     (artifact: ComputerUseArtifactView) => {
       void withBusy([artifact.id], async () => {
-        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, scope.pin);
+        const result = await window.ade.computerUse.deleteArtifacts({ artifactId: artifact.id }, requireChatPin(scope.pin));
         assertArtifactDeletionSucceeded(result);
       });
     },
@@ -728,8 +729,8 @@ export function ChatComputerUsePanel({
 
   const handleRecover = useCallback(
     (artifact: ComputerUseArtifactView) => {
-      void withBusy([artifact.id], () =>
-        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, scope.pin),
+      void withBusy([artifact.id], async () =>
+        window.ade.computerUse.recoverArtifact({ artifactId: artifact.id }, requireChatPin(scope.pin)),
       );
     },
     [scope.pin, withBusy],
@@ -739,7 +740,7 @@ export function ChatComputerUsePanel({
     const ids = artifacts.filter((artifact) => isBrokenArtifact(artifact)).map((artifact) => artifact.id);
     if (!ids.length) return;
     void withBusy(ids, async () => {
-      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, scope.pin);
+      const result = await window.ade.computerUse.deleteArtifacts({ artifactIds: ids }, requireChatPin(scope.pin));
       assertArtifactDeletionSucceeded(result);
     });
   }, [artifacts, scope.pin, withBusy]);

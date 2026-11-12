@@ -9,6 +9,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { browserEventMatchesProject } from "../chat/browser/browserPanelNormalizers";
 import { asBuiltInBrowserStatus } from "./useNativeToolSessions";
+import { useTabCopyPin } from "../../state/repositoryScope";
 
 /**
  * Which lanes have a live App Control app, and which have browser tabs an agent
@@ -26,7 +27,8 @@ import { asBuiltInBrowserStatus } from "./useNativeToolSessions";
  *   event carries the whole list again, so the set is rebuilt from it and only
  *   a changed set re-renders.
  *
- * No pin, as for the other marks: the rows are the bound machine's lanes. The
+ * The marks belong to the lanes this list shows from the tab's copy, so the
+ * reads name that copy's address. No copy online: no read and no marks. The
  * web client is left out.
  */
 
@@ -111,8 +113,11 @@ function sameCounts(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, numbe
 
 export function useLaneWorkToolUse(): LaneWorkToolUse {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
-  const scope = isWebClientMode() ? null : `${bindingKey ?? ""}\u0000${projectRoot ?? ""}`;
+  const copyPin = useTabCopyPin();
+  const copyPinRef = useRef(copyPin);
+  copyPinRef.current = copyPin;
+  const bindingKey = copyPin?.key ?? null;
+  const scope = isWebClientMode() || !bindingKey ? null : `${bindingKey}\u0000${projectRoot ?? ""}`;
   const [appControl, setAppControl] = useState<ReadonlySet<string>>(EMPTY_SET);
   const appControlRef = useRef<ReadonlySet<string>>(EMPTY_SET);
   const [browserTabs, setBrowserTabs] = useState<ReadonlyMap<string, number>>(EMPTY_MAP);
@@ -122,7 +127,8 @@ export function useLaneWorkToolUse(): LaneWorkToolUse {
   useEffect(() => {
     appControlRef.current = EMPTY_SET;
     setAppControl(EMPTY_SET);
-    if (!scope) return undefined;
+    const pin = copyPinRef.current;
+    if (!scope || !pin) return undefined;
     const api = window.ade?.appControl;
     if (!api?.getStatus) return undefined;
     let cancelled = false;
@@ -140,14 +146,14 @@ export function useLaneWorkToolUse(): LaneWorkToolUse {
       }
       if (pending) pending.push(event);
       else apply(applyLaneAppControlEvent(appControlRef.current, event));
-    }) ?? null;
+    }, pin) ?? null;
     const settle = (base: ReadonlySet<string>) => {
       let next = base;
       for (const event of pending ?? []) next = applyLaneAppControlEvent(next, event);
       pending = null;
       apply(next);
     };
-    void api.getStatus({})
+    void api.getStatus({}, pin)
       .then((status) => {
         if (!cancelled) settle(buildLaneAppControls(status?.sessions));
       })
