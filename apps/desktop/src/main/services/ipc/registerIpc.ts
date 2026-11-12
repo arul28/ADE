@@ -13170,6 +13170,9 @@ export function registerIpc({
   // guest connection, with the one-use ticket `connect` answers. The ticket
   // is returned to the renderer and never logged or stored.
   handle(IPC.laneShareGuestListReceived, async () => accountBridge.laneShareGuest().listReceived());
+  handle(IPC.laneShareGuestListGiven, async () => accountBridge.laneShareGuest().listGiven());
+  handle(IPC.laneShareGuestRevokeGiven, async (_event, arg: { grantId?: unknown } | undefined) =>
+    accountBridge.laneShareGuest().revokeGiven({ grantId: String(arg?.grantId ?? "") }));
   handle(IPC.laneShareGuestOpen, async (_event, arg: { grantId?: unknown }) =>
     accountBridge.laneShareGuest().open({ grantId: String(arg?.grantId ?? "") }));
   handle(IPC.laneShareGuestAccept, async (_event, arg: { grantId?: unknown }) =>

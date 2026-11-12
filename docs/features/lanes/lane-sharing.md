@@ -199,8 +199,16 @@ case a share made by an agent cannot change anything on the host.
   project; "Shared with me" with Accept, Open and Leave; and **My default
   rights** (`laneShareDefaults.tsx`, account settings key
   `laneShare.defaultRights`, scope `all`), the start value of the sheet for a
-  new person. A share on another computer can be stopped from here. That
-  computer drops the guest at its next grant read.
+  new person. "Shared by me" is read from the account directory
+  (`laneShareGuest.listGiven`, `GET /lane-shares/given`), so it lists every
+  share with no project open and no computer online; an online copy of the
+  open project adds its own rows' rights, usage and connections. Revoke goes
+  to the lane's computer for a share of that copy (the guest drops at once)
+  and to the directory otherwise (`laneShareGuest.revokeGiven`); the lane's
+  computer then drops a connected guest at its next grant read (30 s) and
+  refuses every new connection. Rights and the end date change only through
+  the lane's computer: it holds them, and a lane whose computer is off has
+  no guest to apply them to.
 
 ### Host records
 

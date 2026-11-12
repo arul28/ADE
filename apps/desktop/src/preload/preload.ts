@@ -16,6 +16,7 @@ import type {
   LaneShareMoveAction,
   LaneShareListArgs,
   LaneShareListResult,
+  LaneShareGivenEntry,
   LaneShareReceivedResult,
   LaneShareResendResult,
   LaneShareRevokeResult,
@@ -15375,6 +15376,9 @@ const adeBridge = {
   // connection with the one-use ticket `connect` answers.
   laneShareGuest: {
     listReceived: (): Promise<LaneShareReceivedResult> => ipcRenderer.invoke(IPC.laneShareGuestListReceived),
+    listGiven: (): Promise<LaneShareGivenEntry[]> => ipcRenderer.invoke(IPC.laneShareGuestListGiven),
+    revokeGiven: (args: { grantId: string }): Promise<{ grantId: string; state: string }> =>
+      ipcRenderer.invoke(IPC.laneShareGuestRevokeGiven, { grantId: args.grantId }),
     open: (args: { grantId: string }): Promise<LaneShareOpenResult> =>
       ipcRenderer.invoke(IPC.laneShareGuestOpen, { grantId: args.grantId }),
     accept: (args: { grantId: string }): Promise<LaneShareAcceptResult> =>

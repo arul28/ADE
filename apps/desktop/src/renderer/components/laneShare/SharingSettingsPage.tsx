@@ -18,7 +18,7 @@ import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary, laneShareRightsPreset } from "./LaneShareRightsPanel";
 import { LaneShareMeta, LaneShareRiskWord, LaneShareState } from "./laneShareUi";
-import { revokeLaneShares } from "./laneShareActions";
+import { revokeGivenShares, revokeLaneShares } from "./laneShareActions";
 import { useLaneShareDefaults, writeLaneShareDefaults, type LaneShareDefaults } from "./laneShareDefaults";
 import {
   LANE_SHARE_PRESET_LABELS,
@@ -94,23 +94,33 @@ function SharedByMe() {
   const [menu, setMenu] = React.useState<{ point: ContextMenuState; entry: LaneShareGivenEntry } | null>(null);
   const [busyGroup, setBusyGroup] = React.useState<string | null>(null);
 
+  // The list is the account's: read straight from the account directory, so
+  // it shows with every computer off. A copy of the open project that is
+  // online adds what only the lane's computer knows (rights, usage,
+  // connections) to its own rows.
   const load = React.useCallback(async () => {
-    const listPin = pinRef.current;
-    if (!active || !listPin) return;
-    try {
-      const result = await window.ade.laneShare.list({ scope: "account" }, listPin);
-      setState({ status: "ready", data: result.shares ?? [], problem: null });
-    } catch (error) {
-      setState((current) => ({ status: "error", data: current.data, problem: laneShareProblem(error) }));
+    const listPin = active ? pinRef.current : null;
+    const [account, runtime] = await Promise.allSettled([
+      window.ade.laneShareGuest.listGiven(),
+      listPin ? window.ade.laneShare.list({ scope: "account" }, listPin) : Promise.resolve(null),
+    ]);
+    if (account.status === "rejected" && (runtime.status === "rejected" || runtime.value == null)) {
+      setState((current) => ({ status: "error", data: current.data, problem: laneShareProblem(account.reason) }));
+      return;
     }
+    const enriched = runtime.status === "fulfilled" && runtime.value ? runtime.value.shares ?? [] : [];
+    const byId = new Map<string, LaneShareGivenEntry>();
+    for (const entry of account.status === "fulfilled" ? account.value : []) byId.set(entry.grantId, entry);
+    for (const entry of enriched) if (entry.local || !byId.has(entry.grantId)) byId.set(entry.grantId, entry);
+    setState({ status: "ready", data: [...byId.values()], problem: null });
     // `pinKey` carries the pin's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, pinKey]);
 
   React.useEffect(() => {
-    const subscribedPin = pinRef.current;
-    if (!active || !subscribedPin) return;
     void load();
+    const subscribedPin = active ? pinRef.current : null;
+    if (!subscribedPin) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const off = window.ade.laneShare.onEvent((event) => {
       if (event.type === "lane_share_guest_turn_running") return;
@@ -153,12 +163,16 @@ function SharedByMe() {
   };
 
   const revoke = async (entries: LaneShareGivenEntry[], title: string, message: string, groupKey: string | null) => {
-    if (!pin) return;
     const ok = await confirmDialog({ title, message, confirmLabel: "Stop sharing", destructive: true, size: "md" });
     if (!ok) return;
     setBusyGroup(groupKey);
     try {
-      await revokeLaneShares(entries, pin, listKey);
+      // A share of the copy that answered stops on its computer, which drops
+      // the guest at once; any other stops at the account (`revokeGivenShares`).
+      const here = pin ? entries.filter((entry) => entry.local) : [];
+      const elsewhere = entries.filter((entry) => !here.includes(entry));
+      if (here.length > 0) await revokeLaneShares(here, pin, listKey);
+      if (elsewhere.length > 0) await revokeGivenShares(elsewhere);
       await load();
     } finally {
       setBusyGroup(null);
@@ -175,7 +189,7 @@ function SharedByMe() {
         label: "Edit rights…",
         icon: PencilSimple,
         disabled: !entry.local || !live || pending,
-        ...(entry.local ? {} : { title: "Open this project on the computer that holds the lane to edit it." }),
+        ...(entry.local ? {} : { title: "You can change this from the lane's menu while its computer is online." }),
         onSelect: () => edit(entry),
       },
       {
@@ -199,10 +213,6 @@ function SharedByMe() {
       },
     ];
   };
-
-  if (!boundKey) {
-    return <div className="text-[12px] text-fg/55">Open a project to see and manage your shares.</div>;
-  }
 
   return (
     <div className="flex min-w-0 flex-col gap-4" data-testid="sharing-by-me">
@@ -252,7 +262,6 @@ function SharedByMe() {
                           usage ? <span className="kit-num">{usage}</span> : null,
                           entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null,
                           entry.createdBy === "agent" ? <span data-testid="lane-share-made-by-agent">Made by an agent</span> : null,
-                          !entry.local ? "On another computer" : null,
                         ]}
                       />
                     }

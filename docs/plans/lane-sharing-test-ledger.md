@@ -129,3 +129,20 @@ Left as is: frames a guest sends before `hello_ok` during the hop are dropped
 
 Rechecked after the fixes on the test machine: routed from the served scratch
 project to the lane's project, guest connected.
+
+## Shares managed with no computer online
+
+Owner's ask on 2026-11-12: see and stop shares with just the account. A share
+is only usable while the lane's computer is on, so making or tuning a share
+stays on that computer; seeing and stopping does not.
+
+- "Shared by me" reads `GET /lane-shares/given` straight from the account
+  (desktop main and the web client's own session), and Revoke goes to
+  `POST /lane-shares/<id>/revoke` when no online copy holds the share.
+- Checked: a scratch desktop signed in as the giver, with no project and the
+  lane's computer unreachable, listed the active share (lane, access level,
+  state); Edit rights was off with the reason; Revoke answered "Share
+  stopped". The web guest then read "This share has ended".
+- Not run: the 30 s drop of a guest connected at the time of a directory
+  revoke (the test host was taken by another lane's run). The host's grant
+  refresh is unchanged main code.

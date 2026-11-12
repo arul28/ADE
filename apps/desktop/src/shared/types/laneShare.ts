@@ -230,8 +230,17 @@ export type LaneShareConnectTicket = {
   ticketExpiresAt: number | null;
 };
 
+/**
+ * This device's own account calls for lane sharing: the guest's (received,
+ * accept, leave, connect) and the giver's account-only ones (the list of
+ * shares given and a revoke). None needs a computer of the account online.
+ */
 export type LaneShareGuestBridge = {
   listReceived: () => Promise<LaneShareReceivedResult>;
+  /** Every share this account gave, on any computer, as the directory has them (`local: false` rows). */
+  listGiven: () => Promise<LaneShareGivenEntry[]>;
+  /** Stops a share at the directory. The lane's computer drops a connected guest on its next grant read. */
+  revokeGiven: (args: { grantId: string }) => Promise<{ grantId: string; state: string }>;
   open: (args: { grantId: string }) => Promise<LaneShareOpenResult>;
   accept: (args: { grantId: string }) => Promise<LaneShareAcceptResult>;
   leave: (args: { grantId: string }) => Promise<LaneShareLeaveResult>;
