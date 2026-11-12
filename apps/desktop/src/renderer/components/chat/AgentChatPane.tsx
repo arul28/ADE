@@ -8147,12 +8147,17 @@ export function AgentChatPane({
   // appears without a reload.
   const refetchDevinCloudAuth = useCallback(() => {
     // Devin Cloud rides the Devin CLI's own login (`devin acp --cloud`), so a
-    // signed-in CLI is the whole gate. Asked of the chat's machine, the one
-    // that launches: with shared sign-ins any computer can.
-    void getAiStatusCached({ projectRoot: projectRoot ?? null, pin: chatRuntimePinRef.current })
+    // signed-in CLI is the whole gate. Asked of the machine that launches it:
+    // an open chat's machine, or the machine a draft is set to Run on (the
+    // launch carries that machine's pin). With shared sign-ins any computer can.
+    const composerPin = selectedSessionIdRef.current
+      ? (chatRuntimePinRef.current ?? projectBinding)
+      : (draftExecutionBindingRef.current ?? chatRuntimePinRef.current);
+    const pin = composerPin && composerPin.key !== projectBinding?.key ? composerPin : null;
+    void getAiStatusCached({ projectRoot: composerPin?.rootPath ?? projectRoot ?? null, pin })
       .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
       .catch(() => setDevinCloudAuthConfigured(false));
-  }, [projectRoot]);
+  }, [projectBinding, projectRoot]);
   useEffect(() => {
     // Once per pane, and again when the chat moves to another machine (the
     // pin is read from its ref; its key says when the machine changed).
