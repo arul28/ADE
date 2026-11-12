@@ -567,6 +567,52 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   }
 }
 
+/**
+ * A resize on an awake computer. The provider refuses a resize (like a
+ * restart or a restore) of a sleeping one with `invalid_request`, so a
+ * sleeping computer is woken first, under the same rules as any wake (the
+ * free plan's disk), and the wake is recorded so its time is metered. The row
+ * can be a minute behind the provider: a refusal on a computer the row calls
+ * awake reads the provider once, and wakes and asks again if it sleeps.
+ *
+ * Here and not on each client: every resize (a person's size change, `ade
+ * cloud resize`, the dashboard, a computer's own disk grow) comes through this
+ * route, and only the server knows the wake rules and the meter.
+ */
+async function resizeAwake(
+  env: CloudEnv,
+  computer: ComputerRow,
+  provider: CloudProvider,
+  resize: { cpu: number; memory: number; disk?: number },
+  now: number,
+): Promise<{ status: string } | { blocked: Refused }> {
+  const wake = async (): Promise<Refused | null> => {
+    const { blocked } = await wakeBlocker(env, computer.user_id, now);
+    if (blocked) return blocked;
+    const status = await provider.startInstance(computer.instance_id);
+    await recordStatus(env, computer, status, now, "resize");
+    return null;
+  };
+  let woken = false;
+  if (computer.status === "sleeping") {
+    const blocked = await wake();
+    if (blocked) return { blocked };
+    woken = true;
+  }
+  try {
+    return { status: await provider.resizeInstance(computer.instance_id, resize) };
+  } catch (error) {
+    if (woken || !(error instanceof CloudProviderError && error.code === "invalid_request")) throw error;
+    const live = await provider.getInstance(computer.instance_id).catch(() => null);
+    if (live?.status !== "sleeping") throw error;
+    // The row said awake; the provider says asleep. Take its word for the meter too.
+    if (computer.status !== "sleeping") await recordStatus(env, computer, "sleeping", now, "resize");
+    const blocked = await wake();
+    if (blocked) return { blocked };
+    return { status: await provider.resizeInstance(computer.instance_id, resize) };
+  }
+}
+
 async function handleResize(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -627,7 +673,15 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   if (nextDisk !== currentDisk) resize.disk = nextDisk;
   let status: string;
   try {
-    status = await provider.resizeInstance(computer.instance_id, resize);
+    const awake = await resizeAwake(env, computer, provider, resize, now);
+    if ("blocked" in awake) {
+      if (nextDisk !== currentDisk) {
+        await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
+          .bind(currentDisk, computer.instance_id, nextDisk).run();
+      }
+      return refuse(awake.blocked);
+    }
+    status = awake.status;
   } catch (error) {
     if (nextDisk !== currentDisk && providerMadeNothing(error)) {
       await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")

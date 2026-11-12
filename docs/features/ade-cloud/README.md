@@ -40,7 +40,10 @@ seam, nothing knows who runs the computers.
 sleep, start, stop, update, resize, back up, auto-sleep, public port, fork,
 signed URL, name, metadata, usage, whether the server can make a computer now,
 and exec, plus the account's access, plan and billing calls. Failures are
-`CloudProviderError`, with the server's one plain sentence; the code
+`CloudProviderError`, with the server's one plain sentence (for a refusal ADE
+doesn't word itself, such as the provider's `invalid_request`, that sentence
+carries the provider's own explanation, cleaned: `cloudRefusalMessage` in
+`provider.ts`); the code
 `CLOUD_ACCESS_REFUSED` means the account was refused. The server's shapes are in
 `apps/account-directory/src/cloud/contract.ts`.
 
@@ -611,7 +614,9 @@ Each call is account level: it names a computer of the account, never a pin.
   (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
   lane the same way. A new computer made for the same lane id ends the row.
 - **Tier change.** In place when the kind stays (resize), else a move to the
-  other kind. It starts when the agent is idle (the computer's
+  other kind. The provider refuses a resize of a sleeping computer, so the
+  server's `/resize` wakes it first (under the same wake rules, and metered
+  from the wake) for every caller: a size change, a disk grow, the dashboard. It starts when the agent is idle (the computer's
   `keep-awake.json` shows no agent work) or now (`ade cloud prepare-stop`
   stops the turn). Its steps go to every window (`IPC.cloudLaneJobEvent`).
   The lane is Online only when ADE on the computer answers and has the

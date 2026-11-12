@@ -72,6 +72,53 @@ export function cloudErrorMessage(code: string, status: number): string {
   }
 }
 
+/** Codes with a sentence of ADE's own (`cloudErrorMessage`) that says more than the provider would. */
+const OWN_SENTENCE_CODES = new Set([
+  "invalid_api_key", "ip_not_allowed", "instance_limit_reached", "insufficient_balance", "instance_suspended",
+  "tier_limit", "no_capacity", "capacity_unavailable", "not_found", "rate_limited", TRY_AGAIN_CODE, "wake_failed",
+  "wake_timeout", "container_unreachable", "upstream_unreachable", "host_mesh_not_ready", "provisioning_failed",
+  "timeout", "network",
+]);
+
+/**
+ * The provider's own explanation (`{error: {code, message}}`), made safe to
+ * show: one line, no links, no key- or token-like strings, the provider named
+ * as ADE Cloud, at most 240 characters. Null when nothing readable is left.
+ */
+export function providerErrorDetail(body: unknown): string | null {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : null;
+  const error = record?.error;
+  const raw = error && typeof error === "object" ? (error as Record<string, unknown>).message : record?.message;
+  if (typeof raw !== "string") return null;
+  const cleaned = raw
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    // A link goes with the words that point at it ("See https://…").
+    .replace(/\s*\b(?:see|visit|read)\s+(?:the\s+docs\s+(?:at\s+)?)?https?:\/\/\S+/gi, "")
+    .replace(/\bhttps?:\/\/\S+/gi, "")
+    .replace(/\bBearer\s+\S+/gi, "")
+    .replace(/[A-Za-z0-9_+/=-]{32,}/g, "…")
+    .replace(/\bagent\s?37\b/gi, "ADE Cloud")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!/[A-Za-z]{3}/.test(cleaned)) return null;
+  const clipped = cleaned.length > 240 ? `${cleaned.slice(0, 239)}…` : cleaned;
+  return /[.!?…]$/.test(clipped) ? clipped : `${clipped}.`;
+}
+
+/**
+ * The sentence for a refused request: ADE's own for the codes it words
+ * itself, else the provider's own explanation after ADE's "couldn't". The
+ * provider's `invalid_request` covers many causes (a lifecycle action in the
+ * wrong state, a shape it doesn't take), and one fixed sentence hid which.
+ */
+export function cloudRefusalMessage(code: string, status: number, body: unknown): string {
+  // A refusal of ADE's own key, or the provider's own trouble, is ADE's to word: neither is the person's to act on.
+  const refusal = status >= 400 && status < 500 && status !== 401 && status !== 403;
+  if (OWN_SENTENCE_CODES.has(code) || !refusal) return cloudErrorMessage(code, status);
+  const detail = providerErrorDetail(body);
+  return detail ? `ADE Cloud couldn't do that. ${detail}` : cloudErrorMessage(code, status);
+}
+
 /** Both envelopes: `{error: {code}}` on the API and `{error: "code"}` on transport errors. */
 function readErrorCode(body: unknown): string | null {
   const record = body && typeof body === "object" ? body as Record<string, unknown> : null;
@@ -213,7 +260,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
     }
     if (!response.ok) {
       const code = readErrorCode(body) ?? (response.status === 401 ? "invalid_api_key" : `http_${response.status}`);
-      throw new CloudProviderError(cloudErrorMessage(code, response.status), code, response.status);
+      throw new CloudProviderError(cloudRefusalMessage(code, response.status, body), code, response.status);
     }
     return body;
   }
