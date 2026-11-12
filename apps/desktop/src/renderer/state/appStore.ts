@@ -3335,6 +3335,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const request = normalizeLaneRefreshRequest(options);
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
       const requestedProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // The tab's lane list is the list of the copy the tab shows: the read
+      // names that copy, the one the refresh was requested for.
+      const requestedPin = get().projectBinding ?? null;
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
       activeLaneRefreshToken = token;
@@ -3346,7 +3349,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         includeConflictStatus: currentRequest.includeConflictStatus,
       };
       const rawLaneSnapshots = currentRequest.includeSnapshots
-        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey })
+        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey, pin: requestedPin })
         : null;
       const laneSnapshots = rawLaneSnapshots?.map((snapshot) => {
         if (currentRequest.includeStatus) return snapshot;
@@ -3358,7 +3361,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : await listLanesCoalesced({
             includeArchived: false,
             includeStatus: currentRequest.includeStatus,
-          }, { projectRoot: requestedProjectKey });
+          }, { projectRoot: requestedProjectKey, pin: requestedPin });
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
@@ -3556,10 +3559,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   refreshProviderMode: async () => {
     const projectRoot = selectActiveProjectRoot(get());
+    // The provider mode of the copy the tab shows.
+    const pin = get().projectBinding ?? null;
     const [snapshot, aiStatus] = await Promise.all([
       // With no project open there is no project config to read: the mode
       // then follows the configured providers alone.
-      projectRoot ? getProjectConfigCached({ projectRoot }) : Promise.resolve(null),
+      projectRoot && pin ? getProjectConfigCached({ projectRoot, pin }) : Promise.resolve(null),
       getAiStatusCached({ projectRoot }).catch(() => null),
     ]);
     const configMode = snapshot?.effective.providerMode ?? "guest";
@@ -3574,7 +3579,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // saved in a project's database before shortcuts moved here.
     set({ keybindings: readKeybindingsSnapshot() });
     const projectRoot = selectActiveProjectRoot(get());
-    await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot }));
+    // The old overrides live in the database of the copy the tab shows.
+    const pin = get().projectBinding ?? null;
+    if (pin) await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot, pin }));
     set({ keybindings: readKeybindingsSnapshot() });
   },
 
