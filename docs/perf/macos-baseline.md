@@ -914,6 +914,39 @@ main. The Sentry chunk alone is 445 KB of the branch's 1,253 KB JS; without
 it, JS is about 808 KB, under the ceiling. The settings manifest chunk is
 166 KB.
 
+Measured again with three more fixes on `ade/account-web-cli-links` (same
+script, `--runs 3` for the last column, load average 94–150 from other
+agents, so the gate times are noise; the counts and bytes are not):
+
+| Metric | PR #2205 alone `96682f195` | `502572197` | `5d6daedc5` | With the Sentry session fix | Ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Requests | 96 | 67 | 61 | 60 | 60 |
+| Transfer (KB) | 2,475 | 1,498 | 1,318 | 1,318 | 2,000 |
+| JS (KB) | 1,663 | 1,253 | 1,084 | 1,084 | 950 |
+| Images (KB) | 642 | 82 | 71 | 71 | 100 |
+| Heap after GC (MB) | 4.6 | 3.6 | 3.3 | 3.3 | 3.5 |
+| Gate visible (ms) | 122 | 100 | 301 | 190 | 190 |
+
+What each commit removed from PR #2205's 96 requests:
+
+- `d2eba4d89`: the app store and its scene image (through `requirePin`), and
+  the notice system on the sign-in card.
+- `d9385e5b8`: the account list code loads only for a read or a link.
+- `4445438e7` (67 → 63): the settings manifest and the MCP catalogue. The
+  target-to-route map moved to `webTargetPaths.ts`, which only a signed-in
+  boot loads.
+- `5d6daedc5` (63 → 61): an empty icon link. The browser asked for
+  `/favicon.ico` twice, and the SPA fallback sent the page each time.
+- The Sentry session fix (61 → 60): the last request over the ceiling was a
+  Sentry session envelope (release health, sent when the page goes idle).
+  The session now starts with the signed-in workspace. Errors still report
+  from the signed-out page: a thrown error sent an `event` envelope in a
+  headless check with every Sentry request blocked.
+
+Still over: JS (1,084 KB, ceiling 950). The Sentry SDK chunk is 445 KB of it
+and loads at idle, so errors before sign-in still report. Without it, JS is
+about 640 KB. Requests and heap are now at or under their ceilings.
+
 ## Mac Studio (M4 Max), ADE-175 pass
 
 A second machine, so a second set of columns and not new values for the tables
