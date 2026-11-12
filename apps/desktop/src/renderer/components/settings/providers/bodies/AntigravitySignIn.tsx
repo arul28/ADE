@@ -1,18 +1,15 @@
 /**
  * Antigravity sign-in on the machine the Settings page shows.
  *
- * Google's Antigravity agent has no terminal login: sign-in is its ACP
- * `authenticate` request, which ADE runs with its pinned agent on that
- * machine (`ai.antigravitySignIn*`, routed by `useSettingsMachineScope().pin`;
- * start, status reads, a pasted address and cancel all go to that one
- * machine). For a Google account the agent waits for Google to send the
- * browser back to a 127.0.0.1 address on that machine:
+ * ADE runs the sign-in with its pinned Antigravity CLI on that machine
+ * (`ai.antigravitySignIn*`, routed by `useSettingsMachineScope().pin`; start,
+ * status reads, the pasted code and cancel all go to that one machine).
  *
- * - This computer: ADE opens the Google page; the browser lands on the
- *   agent's listener by itself.
- * - Another machine (or the web client): open the page anywhere, then paste
- *   the full address the browser ends on (it will not load). ADE checks it
- *   and hands it to the agent there.
+ * - Google account: the CLI's `agy acp --login`. Google's page shows a code
+ *   once the person approves, in a browser on any computer; it is pasted
+ *   here and ADE hands it to the CLI there.
+ * - Gemini Enterprise: the agent's ACP `authenticate`, which opens a browser
+ *   on that machine and waits for Google to come back to it there.
  *
  * The page keeps the method and the flow; a running sign-in shows in the
  * shared sign-in sheet (`AntigravitySignInSheetView`). Closing the sheet
@@ -33,11 +30,11 @@ import type { ProvidersViewContext } from "../types";
 const POLL_MS = 1_000;
 
 const METHODS: ReadonlyArray<{ id: AntigravityAuthMethod; label: string; hint: string }> = [
-  { id: "oauth-personal", label: "Google account", hint: "Sign in with your Google account in a browser." },
+  { id: "oauth-personal", label: "Google account", hint: "Sign in with your Google account in a browser on any computer, then paste the code Google shows." },
   {
     id: "oauth-business",
     label: "Gemini Enterprise",
-    hint: "Sign in with your work account, then choose your license on the page Antigravity serves. That page opens only in a browser on the machine that runs Antigravity.",
+    hint: "Sign in with your work account. Antigravity opens the browser itself, so this finishes only on the machine that runs it.",
   },
   { id: "gemini-api-key", label: "Gemini API key", hint: "Uses the Gemini API key saved under API keys on this page." },
   {

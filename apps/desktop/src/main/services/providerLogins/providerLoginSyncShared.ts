@@ -2,7 +2,7 @@
  * The sign-in sync's shared parts: its limits, words and types, and the one
  * state object every job of the sync reads (`createSyncShared`). Each job
  * (capture, apply, the gate, the takeover, the person's writes, the
- * Keychain and GitHub CLI reads, the ticks) is its own file and takes this
+ * OS keyring and GitHub CLI reads, the ticks) is its own file and takes this
  * object; `providerLoginSync.ts` builds them and returns the service.
  *
  * Never logs a value, a hash or a file's content: events carry the provider,
@@ -262,8 +262,6 @@ export type ProviderLoginSyncDeps = {
    * absent: no renewal ahead, no timer.
    */
   cloudComputerExists?: () => Promise<boolean | null>;
-  /** The `security` command for the person's Keychain read. The scratch checks pass a fake one. */
-  keychainCommand?: string;
   /**
    * The one `gh auth token --hostname github.com` read for Copilot's GitHub
    * CLI login (G1). Default: the real, reaped process. The scratch checks pass
@@ -429,7 +427,7 @@ export type SyncJobs = {
   armTakeover(provider: ProviderLoginProvider, place: string, key: string): void;
   claimAt(key: string): number | null;
   ownerLabelOf(key: string): string;
-  // the Keychain and GitHub CLI parts of the status (providerLoginAllow.ts)
+  // the OS keyring and GitHub CLI parts of the status (providerLoginAllow.ts)
   keychainStatus(
     provider: ProviderLoginProvider,
     off: ProviderLoginCaptureOffReason | null,

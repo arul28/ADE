@@ -538,69 +538,62 @@
     },
     {
       "name": "antigravity",
-      "description": "Google Antigravity ACP server; its local harness must sit beside it.",
+      "description": "Google Antigravity CLI (`agy`): `agy acp` runs chats, the TUI runs terminals.",
       "entry": {
         "kind": "binary",
-        "path": "agy_acp_server.par",
-        "windowsPath": "agy_acp_server.exe",
-        "files": {
-          "harness": {
-            "path": "localharness_external",
-            "windowsPath": "localharness_external.exe",
-            "executable": true
-          }
-        }
+        "path": "antigravity",
+        "windowsPath": "antigravity.exe"
       },
       "targets": {
         "darwin-arm64": {
           "format": "archive",
-          "package": "antigravity-acp-darwin-arm64",
-          "version": "1.4.5",
-          "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.5-darwin-arm64.zip",
-          "archive": "zip",
+          "package": "antigravity-cli-darwin-arm64",
+          "version": "1.5.6",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_mac_arm64.tar.gz",
+          "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "886fff7767d08994ca39eb02c3d01a7532c7325a94aa33aaf52d52068733284f",
-          "size": 97923855
+          "sha256": "87b8adbcb33d81d3629f049586ab2e6abaeb8c69d2e7d40425dc98e6d7aeee7a",
+          "size": 88093165
         },
         "darwin-x64": {
           "format": "archive",
-          "package": "antigravity-acp-darwin-x64",
-          "version": "1.4.5",
-          "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.5-darwin-x86_64.zip",
-          "archive": "zip",
+          "package": "antigravity-cli-darwin-x64",
+          "version": "1.5.6",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_mac_x64.tar.gz",
+          "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "b39f3573c03b9acb9df028853f647527f1f3133f32bd77e78b796e48a205114a",
-          "size": 103577295
+          "sha256": "a5ca02484a13fa252c3afeb2dbb6a4e4f432def6915faefec7d849fa112039a2",
+          "size": 93724261
         },
         "linux-arm64": {
           "format": "archive",
-          "package": "antigravity-acp-linux-arm64",
-          "version": "1.4.5",
-          "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-arm64.zip",
-          "archive": "zip",
+          "package": "antigravity-cli-linux-arm64",
+          "version": "1.5.6",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_linux_arm64.tar.gz",
+          "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "7d64246633ae094f67e3bbcd2d679e89048f91346d5339313336e7483f40f056",
-          "size": 307829008
+          "sha256": "42bfcf996e27f6e63330ff74150bbb1d69c81632586b37ff440e92eb81955520",
+          "size": 94863807
         },
         "linux-x64": {
           "format": "archive",
-          "package": "antigravity-acp-linux-x64",
-          "version": "1.4.5",
-          "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.5-linux-x86_64.zip",
-          "archive": "zip",
+          "package": "antigravity-cli-linux-x64",
+          "version": "1.5.6",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_linux_x64.tar.gz",
+          "archive": "tar.gz",
           "stripComponents": 0,
-          "sha256": "923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b",
-          "size": 321783181
+          "sha256": "408f902da6fce5a45ef777c246c182f6ef263eb155cc26548b910cdbc792dfd9",
+          "size": 104223118
         },
         "win32-x64": {
           "format": "archive",
-          "package": "antigravity-acp-win32-x64",
-          "version": "1.4.5",
-          "url": "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.4.5-windows-x86_64.zip",
+          "package": "antigravity-cli-win32-x64",
+          "version": "1.5.6",
+          "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.6/agy_cli_windows_x64.zip",
           "archive": "zip",
           "stripComponents": 0,
-          "sha256": "d24f4c73c9f96d4f44384e281c855a56c72d8eaa9c5b0fad7ccb1635c6b63f50",
-          "size": 100423655
+          "sha256": "6726139bc6659fc8dbfcd50ab3e5725ef94b7a7e16ad1aaa131895ead5f845c0",
+          "size": 85206701
         }
       }
     },

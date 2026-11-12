@@ -114,6 +114,7 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   supervisionPreflight: { ok: boolean; detail?: string } | null;
   supervisionAlreadyNotified: boolean;
   mcpServers?: OpenAcpSessionArgs["mcpServers"];
+  systemPromptAppend?: OpenAcpSessionArgs["systemPromptAppend"];
   logger: Logger;
   runtimeBudget: Pick<ChatRuntimeBudget, "enforce">;
   existingRuntime: AcpRuntimeState<TSteer> | null;
@@ -484,6 +485,7 @@ export async function createAcpRuntime<TSteer>(
       supervisionPreflight: args.supervisionPreflight,
       supervisionAlreadyNotified: args.supervisionAlreadyNotified,
       mcpServers: args.mcpServers ?? [],
+      ...(args.systemPromptAppend ? { systemPromptAppend: args.systemPromptAppend } : {}),
       logger: args.logger,
       ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
       ...(args.pool ? { pool: args.pool } : {}),

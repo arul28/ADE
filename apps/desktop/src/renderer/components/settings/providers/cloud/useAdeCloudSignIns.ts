@@ -3,7 +3,7 @@
  *
  * Two sources, each through its own pin:
  *  - the account part (`providerLogins.status`) through This computer's pin,
- *    so the Keychain state is the Mac in front of the person;
+ *    so the OS keyring state is the computer in front of the person;
  *  - the cloud part (`providerLogins.status` and `ai.getStatus`) through the
  *    reporting cloud computer's pin.
  *
@@ -36,8 +36,8 @@ export type AdeCloudSignInsState = {
   pickReporting: (machineId: string) => void;
   /** This computer's pin (null: the tab is bound here, or it cannot be reached). Writes go here. */
   accountPin: OpenProjectBinding | null;
-  /** The account read reaches the Mac in front of the person. */
-  keychainIsThisMac: boolean;
+  /** The account read reaches the computer in front of the person (its OS keyring is the one an Allow reads). */
+  keyringIsThisComputer: boolean;
   recheck: () => Promise<void>;
   rechecking: boolean;
   /** A write's returned status replaces the account part (the write and its read reach one brain). */
@@ -67,18 +67,18 @@ function reportingKey(machine: ProjectMachine | null): string | null {
  * This computer's pin, for the account's reads and writes (null: the tab is
  * bound here, or This computer cannot be reached). When it cannot be reached,
  * the account goes unpinned: the account fields are still right, but the
- * Keychain state is the bound machine's.
+ * OS keyring state is the bound machine's.
  */
-export function useThisComputerPin(): { accountPin: OpenProjectBinding | null; keychainIsThisMac: boolean } {
+export function useThisComputerPin(): { accountPin: OpenProjectBinding | null; keyringIsThisComputer: boolean } {
   const { machines } = useSettingsMachines();
   const thisMachine = machines.find((machine) => machine.isThisMachine) ?? null;
-  const keychainIsThisMac = thisMachine?.routable === true;
-  return { accountPin: keychainIsThisMac ? thisMachine!.pin : null, keychainIsThisMac };
+  const keyringIsThisComputer = thisMachine?.routable === true;
+  return { accountPin: keyringIsThisComputer ? thisMachine!.pin : null, keyringIsThisComputer };
 }
 
 export function useAdeCloudSignIns(): AdeCloudSignInsState {
   const { machines } = useSettingsMachines();
-  const { accountPin, keychainIsThisMac } = useThisComputerPin();
+  const { accountPin, keyringIsThisComputer } = useThisComputerPin();
   const accountPinRef = useRef(accountPin);
   accountPinRef.current = accountPin;
 
@@ -295,7 +295,7 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
     reporting,
     pickReporting: setPickedId,
     accountPin,
-    keychainIsThisMac,
+    keyringIsThisComputer,
     recheck,
     rechecking,
     applyAccountStatus,

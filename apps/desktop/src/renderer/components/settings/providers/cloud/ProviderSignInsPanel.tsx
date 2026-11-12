@@ -8,8 +8,9 @@
  *   say how to use them there, with no button that would fail.
  * - On a cloud computer, "In use here" is the one it applied, and the others
  *   offer "Use on ADE Cloud" (the choice is account-wide).
- * - Antigravity on a Mac: the Keychain state, with "Allow on this Mac" only
- *   on this Mac's own page.
+ * - Antigravity on a person's own computer: its OS keyring state (the
+ *   Keychain, Credential Manager or the keyring), with "Allow on this
+ *   computer" only on this computer's own page.
  * - Copilot: this computer's GitHub CLI login (`GitHubCliLoginRow`), turned
  *   on only on its own page, off from any page with that page's pin.
  *
@@ -24,7 +25,7 @@ import type { ProviderLoginProvider, ProviderLoginStatus } from "../../../../../
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { signInMachineWords } from "../signInSheetParts";
-import { COPILOT_REPO_LINE } from "./adeCloudSignInModel";
+import { COPILOT_REPO_LINE, keyringAllowWords } from "./adeCloudSignInModel";
 import { inUseCard, previousPick, signInCardGroups, type SignInCardModel } from "./adeCloudPageModel";
 import { SignInAccountCard } from "./SignInAccountCard";
 import { confirmRemoveSignIn, confirmUseOnCloud, useSignInWrites } from "./signInWrites";
@@ -41,7 +42,7 @@ const noteStyle: React.CSSProperties = { fontSize: 12, fontFamily: SANS_FONT, co
 export function ProviderSignInsPanel({ provider, providerLabel }: { provider: ProviderLoginProvider; providerLabel: string }) {
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   const pageKey = pin?.key ?? null;
-  const { accountPin, keychainIsThisMac } = useThisComputerPin();
+  const { accountPin, keyringIsThisComputer } = useThisComputerPin();
   const { held, hold } = useHeldWrites();
   const cloudOn = useAdeCloudEnabled();
 
@@ -90,10 +91,11 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
   // This computer's copy in the account can't be read here (another key wrote it, or a newer ADE):
   // capture keeps it, so the person removes it, and this computer saves its own sign-in again.
   const unreadableKey = row.local.state === "account_unreadable" ? row.local.key : null;
-  // Nothing to show: no sign-in in the account, nothing is captured here, no Keychain to allow, no GitHub CLI login.
+  // Nothing to show: no sign-in in the account, nothing is captured here, no keyring to allow, no GitHub CLI login.
   if (cardCount === 0 && status.thisComputer.capture === "off" && !keychain && !ghCli && !ghCliCloudLine && !unreadableKey) return null;
 
   const machineWords = signInMachineWords(isThisMachine, machineName);
+  const keyringWords = keyringAllowWords(keychain?.store);
   const inUseHere = (card: SignInCardModel): boolean => {
     if (!cloudComputer) return row.local.key === card.key;
     const applied = (status.applied ?? []).find((entry) => entry.place === card.place);
@@ -207,19 +209,19 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
         {keychain ? (
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", borderTop: `1px solid ${COLORS.borderMuted}`, paddingTop: 12 }}>
             <span style={{ ...noteStyle, flex: "1 1 240px" }}>
-              {/* Only this Mac's ADE can ask its Keychain; another Mac's page says where to do it. */}
-              {isThisMachine ? keychain.message : `Allow it on ${machineName}. ADE reads a Mac's Keychain only on that Mac.`}
+              {/* Only this computer's ADE can ask its OS keyring; another computer's page says where to do it. */}
+              {isThisMachine ? keychain.message : `Allow it on ${machineName}. ADE reads a computer's OS keyring only on that computer.`}
             </span>
-            {isThisMachine && keychainIsThisMac && keychain.canAllow ? (
+            {isThisMachine && keyringIsThisComputer && keychain.canAllow ? (
               <button
                 type="button"
                 disabled={allowing}
                 aria-busy={allowing || undefined}
-                aria-label="Allow on this Mac: ADE copies the Antigravity sign-in from this Mac's Keychain"
+                aria-label={keyringWords.aria}
                 onClick={allow}
                 style={outlineButton({ height: 28, padding: "0 11px", fontSize: 12 })}
               >
-                {allowing ? "Waiting for macOS…" : "Allow on this Mac"}
+                {allowing ? keyringWords.waiting : keyringWords.label}
               </button>
             ) : null}
           </div>

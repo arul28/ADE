@@ -12,8 +12,9 @@
  * - Pi's `auth.json` is merged one entry at a time under Pi's own lock (the
  *   `<file>.lock` folder of proper-lockfile). Kimi's config gets one section,
  *   only when it has none. Qwen's settings get only their auth part.
- *   Antigravity's agent settings get only `auth.type` (and `gcp.project` and
- *   `gcp.location` for a business sign-in).
+ *   Antigravity's sign-in is the agy CLI's token file
+ *   (`~/.gemini/antigravity-cli/antigravity-oauth-token`); the CLI's settings
+ *   are not written.
  * - A cloud computer that does not own a renewing sign-in gets it
  *   access-only: its refresh token is taken out (`accessOnlyFile`). Only a
  *   cloud computer that took the renewal over (step 3b, `full`) gets the full
@@ -41,7 +42,6 @@ import type { ProviderLoginProvider } from "../../../shared/types/providerLogins
 import { writeFileAtomic } from "../state/durableFile";
 import { isRecord } from "../shared/utils";
 import {
-  ANTIGRAVITY_SETTINGS_REL,
   accessOnlyFile,
   accessOnlyPiEntry,
   carryRootDir,
@@ -304,26 +304,7 @@ function qwenPartOf(settings: Record<string, unknown>, envKeys?: readonly string
 
 const qwenPartHash = (part: QwenPart): string => shortHash(JSON.stringify(part));
 
-// ── Antigravity's agent settings ──────────────────────────────────────
-
-const ANTIGRAVITY_AUTH_TYPES = new Set(["oauth-personal", "oauth-business"]);
-/** A project id or a location: short, one line. Anything else from a vault item is not written. */
-const SETTING_TEXT = /^[^\u0000-\u001f]{1,200}$/;
-
-/** The fields to write, by dotted name: what the agent needs to pick this sign-in's token. */
-function antigravityFields(slot: string, parts: Record<string, unknown> | null): Record<string, string> | null {
-  const settings = isRecord(parts?.antigravitySettings) ? parts!.antigravitySettings as Record<string, unknown> : null;
-  const authType = typeof settings?.authType === "string" && ANTIGRAVITY_AUTH_TYPES.has(settings.authType)
-    ? settings.authType
-    : slot === "business" ? "oauth-business" : slot === "personal" ? "oauth-personal" : null;
-  if (!authType) return null;
-  const fields: Record<string, string> = { "auth.type": authType };
-  if (authType === "oauth-business") {
-    if (typeof settings?.gcpProject === "string" && SETTING_TEXT.test(settings.gcpProject)) fields["gcp.project"] = settings.gcpProject;
-    if (typeof settings?.gcpLocation === "string" && SETTING_TEXT.test(settings.gcpLocation)) fields["gcp.location"] = settings.gcpLocation;
-  }
-  return fields;
-}
+// ── Antigravity's agent settings (`~/.gemini/antigravity-cli/settings.json`) ──
 
 function readDotted(record: Record<string, unknown>, name: string): unknown {
   const [group, field] = name.split(".") as [string, string];
@@ -486,26 +467,9 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
       }
     }
 
-    if (want.provider === "antigravity") {
-      // Only the fields the agent needs to pick this token go in; the rest of the settings here stay.
-      const fields = antigravityFields(want.slot, want.parts);
-      if (!fields) return { ok: false, reason: "nothing_to_write" };
-      const settingsPath = path.join(carryRootDir("geminiHome", ctx)!, ...ANTIGRAVITY_SETTINGS_REL.split("/"));
-      const current = readAntigravitySettingsFile(settingsPath);
-      if (current === "unreadable") return { ok: false, reason: "unreadable_target" };
-      // A business copy replaced by a personal one: a gcp field the earlier copy wrote leaves, if unchanged.
-      const names = Object.keys(fields);
-      const stale = Object.entries(previous?.antigravity?.fields ?? {})
-        .filter(([name, hash]) => !names.includes(name) && current !== "missing" && fieldHash(current, name) === hash)
-        .map(([name]) => name);
-      let next: Record<string, unknown> = current === "missing" ? {} : withoutFields(current, stale);
-      for (const [name, value] of Object.entries(fields)) {
-        const [group, field] = name.split(".") as [string, string];
-        next = { ...next, [group]: { ...(isRecord(next[group]) ? next[group] as Record<string, unknown> : {}), [field]: value } };
-      }
-      writePrivateFileAtomic(settingsPath, encodeJson(next));
-      entry.antigravity = { path: settingsPath, fields: Object.fromEntries(names.map((name) => [name, fieldHash(next, name)])) };
-    }
+    // Antigravity: the token file is the whole sign-in (it names its own
+    // method), so agy's settings are not touched. An entry an earlier ADE left
+    // in them is undone by `removeEntry`.
   } catch (error) {
     return { ok: false, reason: "write_failed", code: (error as NodeJS.ErrnoException)?.code ?? null };
   }

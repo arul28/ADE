@@ -40,6 +40,7 @@ export type PinnedCliProvider =
   | "kimi"
   | "grok"
   | "devin"
+  | "antigravity"
   | "muse";
 
 export type PinnedProviderCli = {
@@ -83,9 +84,9 @@ function nativeCli(
   return command ? { provider, command, leadingArgs: [...leadingArgs], env: pinnedToolSelfUpdateEnv(tool) } : null;
 }
 
-/** Qwen, Kimi, Grok, Devin and Copilot's terminal CLI: env override, then the pin (Qwen's is its Node plus a script). */
+/** Qwen, Kimi, Grok, Devin, Antigravity and Copilot's terminal CLI: env override, then the pin (Qwen's is its Node plus a script). */
 function acpCli(
-  provider: Extract<PinnedCliProvider, "qwen" | "kimi" | "grok" | "devin" | "copilot">,
+  provider: Extract<PinnedCliProvider, "qwen" | "kimi" | "grok" | "devin" | "antigravity" | "copilot">,
   tool: string,
   selfUpdateArgs: readonly string[] = [],
 ): PinnedProviderCli | null {
@@ -182,6 +183,14 @@ const PROVIDER_CLIS: Readonly<Record<PinnedCliProvider, ProviderCliSpec>> = {
     tools: terminalSpec("devin").tools,
     resolve: () => acpCli("devin", terminalSpec("devin").selfUpdateTool),
   },
+  antigravity: {
+    label: terminalSpec("antigravity").label,
+    // `agy` is what users type; `antigravity` is the pinned binary's own name.
+    binaries: terminalSpec("antigravity").binaries,
+    tools: terminalSpec("antigravity").tools,
+    // The TUI is the bare binary; chats run the same one as `agy acp`.
+    resolve: () => acpCli("antigravity", terminalSpec("antigravity").selfUpdateTool),
+  },
   muse: {
     label: terminalSpec("muse").label,
     binaries: terminalSpec("muse").binaries,
@@ -243,6 +252,9 @@ export function pinnedCliProviderForToolType(toolType: TerminalToolType | null |
     case "devin":
     case "devin-chat":
       return "devin";
+    case "antigravity":
+    case "antigravity-chat":
+      return "antigravity";
     default:
       return null;
   }

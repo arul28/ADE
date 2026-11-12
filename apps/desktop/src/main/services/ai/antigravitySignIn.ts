@@ -1,35 +1,38 @@
 /**
- * Antigravity sign-in: the ACP `authenticate` request, run as an explicit
- * user action in the process that owns the provider row (the brain on that
- * machine; the `ai.antigravitySignIn*` runtime actions route it there).
+ * Antigravity sign-in, run as an explicit user action in the process that
+ * owns the provider row (the brain on that machine; the
+ * `ai.antigravitySignIn*` runtime actions route it there).
  *
- *   start    spawn ADE's pinned agent with the chosen method's credentials,
- *            `initialize`, `authenticate({ methodId })`, then one
- *            `session/new` to prove the login works
+ *   start    begin the chosen method's sign-in
  *   status   the flow's state plus the disk check (cheap; polled by Settings
  *            only while a flow runs)
- *   complete forward a pasted return URL to the agent's 127.0.0.1 listener
- *            on this machine, for a browser on another machine
- *   cancel   end the flow and the agent
+ *   complete hand the code (or the address Google's last page shows) to the
+ *            waiting sign-in
+ *   cancel   end the flow and its process
  *
- * Browser methods (Google account, Gemini Enterprise): the agent prints
- * "Open the following link to authenticate the ACP server: <url>" on stderr
- * and waits for Google to redirect to its loopback listener. The URL goes to
- * the client, which opens it (same machine) or shows it with a paste field
- * (another machine). ADE validates a pasted URL against the agent's own
- * `redirect_uri` and `state` before it forwards exactly that request, and
- * never logs the URL, the code or a token.
+ * Google account (`oauth-personal`): ADE runs the pinned CLI's own terminal
+ * sign-in, `agy acp --login`. It prints a Google link whose `redirect_uri` is
+ * `https://antigravity.google/oauth-callback`, a page that shows a code, and
+ * then reads the code (or that page's full address) from stdin. Nothing
+ * listens on the machine, so the same paste works from any computer, the
+ * phone and ADE Cloud. ADE validates the link and the pasted value, writes the
+ * value to the CLI's stdin, and never logs either.
  *
- * Key methods (Gemini API key, Agent Platform): the credentials go in the
- * agent's environment for this run only; the agent records the method in
- * its own settings.json, and later chats get the same variables from
- * `antigravityCredentialEnv`.
+ * Gemini Enterprise (`oauth-business`): the ACP `authenticate` request. The
+ * CLI opens the OS browser itself (it ignores BROWSER) and waits on a
+ * `localhost` listener without printing the link, so it can only finish on
+ * the machine that runs the agent.
  *
+ * Key methods (Gemini API key, Agent Platform): `authenticate` with the
+ * credentials in the agent's environment for this run only; later chats get
+ * the same variables from `antigravityCredentialEnv`.
+ *
+ * Every method ends with one `session/new` that proves the login works.
  * One flow per process: a new start replaces a running one.
  */
 
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import http from "node:http";
 import os from "node:os";
 import type { Logger } from "../logging/logger";
 import type {
@@ -46,13 +49,9 @@ import {
   type AcpConnection,
 } from "../chat/acpHost/acpConnection";
 import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
-import {
-  ANTIGRAVITY_AUTH_URL_PREFIX,
-  ANTIGRAVITY_LICENSE_URL_PREFIX,
-  antigravityDialect,
-  buildAntigravitySpawnPlan,
-} from "../chat/acpHost/acpDialects/antigravity";
-import { resolveAntigravityExecutable } from "./acpExecutables";
+import { antigravityDialect, antigravitySpawnEnv, buildAntigravitySpawnPlan } from "../chat/acpHost/acpDialects/antigravity";
+import { allocateAcpScratchDir, prepareAcpScratchDir, removeAcpScratchDir } from "../chat/acpHost/acpScratchDirs";
+import { resolveAntigravityExecutable, type AcpExecutableResolution } from "./acpExecutables";
 import {
   ANTIGRAVITY_AGENT_PLATFORM_KEY_CREDENTIAL,
   inspectAntigravityCredentials,
@@ -63,28 +62,30 @@ import {
   writeAdeAntigravityAgentPlatformConfig,
 } from "./antigravityAuth";
 import { requirePinnedProviderExecutable } from "./pinnedProviderTools";
+import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { getErrorMessage } from "../shared/utils";
 
 /** A sign-in that has not finished in this long is abandoned. */
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 const HANDSHAKE_TIMEOUT_MS = 60_000;
 const VERIFY_TIMEOUT_MS = 90_000;
-const FORWARD_TIMEOUT_MS = 10_000;
 const MAX_URL_LENGTH = 16_384;
-
-type PendingRedirect = { redirectUri: URL; state: string };
+/** Where Google sends the browser after `agy acp --login`: a page that shows the code. */
+export const ANTIGRAVITY_LOGIN_REDIRECT_URI = "https://antigravity.google/oauth-callback";
 
 type Flow = {
   id: string;
   method: AntigravityAuthMethod;
   phase: AntigravitySignInState["phase"];
   authorizationUrl: string | null;
-  licensePickerUrl: string | null;
-  pending: PendingRedirect | null;
-  callbackSent: boolean;
+  /** The `state` of the printed link; a pasted address must carry the same one. */
+  state: string | null;
+  codeSent: boolean;
   message: string | null;
   expiresAtMs: number;
   connection: AcpConnection | null;
+  child: ChildProcess | null;
+  scratchDir: string | null;
   timer: NodeJS.Timeout | null;
   done: boolean;
 };
@@ -100,14 +101,14 @@ function browserMethod(method: AntigravityAuthMethod): boolean {
   return method === "oauth-personal" || method === "oauth-business";
 }
 
-// ── URL validation ──────────────────────────────────────────────────────────
+// ── Link and code validation ────────────────────────────────────────────────
 
 /**
- * Google's sign-in URL as the agent printed it. Accepted only when it is the
- * real Google endpoint and names one `state` and a loopback `redirect_uri`
- * on an unprivileged port.
+ * Google's sign-in link as `agy acp --login` printed it. Accepted only when it
+ * is the real Google endpoint, sends the browser to Antigravity's code page,
+ * and names one `state`.
  */
-export function parseAntigravityAuthorizationUrl(raw: string): { url: string; pending: PendingRedirect } | null {
+export function parseAntigravityLoginUrl(raw: string): { url: string; state: string } | null {
   if (raw.length > MAX_URL_LENGTH || /\s/.test(raw)) return null;
   let url: URL;
   try {
@@ -119,108 +120,55 @@ export function parseAntigravityAuthorizationUrl(raw: string): { url: string; pe
   const redirect = url.searchParams.getAll("redirect_uri");
   if (
     url.origin !== "https://accounts.google.com"
-    || url.pathname !== "/o/oauth2/v2/auth"
+    || !/^\/o\/oauth2(\/v2)?\/auth$/.test(url.pathname)
     || url.username || url.password || url.hash
     || state.length !== 1 || !state[0] || state[0].length > 512 || /\s/.test(state[0])
-    || redirect.length !== 1
+    || redirect.length !== 1 || redirect[0] !== ANTIGRAVITY_LOGIN_REDIRECT_URI
     || url.searchParams.get("response_type") !== "code"
   ) {
     return null;
   }
-  if (!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/[A-Za-z0-9._~/-]*$/.test(redirect[0]!)) return null;
-  let redirectUri: URL;
-  try {
-    redirectUri = new URL(redirect[0]!);
-  } catch {
-    return null;
-  }
-  const port = Number(redirectUri.port);
-  if (!Number.isInteger(port) || port < 1_024 || port > 65_535) return null;
-  return { url: url.toString(), pending: { redirectUri, state: state[0] } };
+  return { url: url.toString(), state: state[0] };
 }
 
-/** The license page the agent serves on this machine's loopback. */
-function parseLicensePickerUrl(raw: string): string | null {
-  if (raw.length > MAX_URL_LENGTH || /\s/.test(raw)) return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "http:" || (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")) return null;
-    if (url.username || url.password) return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
+/** Google authorization codes: `4/0A…`, URL-safe characters only. */
+const AUTH_CODE = /^[A-Za-z0-9/_.~-]{10,2048}$/;
 
 /**
- * A pasted return URL, accepted only when it is exactly the callback this
- * flow's agent is waiting for: http, the same 127.0.0.1 host, port and path
- * as its `redirect_uri`, the same single `state`, and one Google response
- * (a `code` or an `error`). Returns the URL to forward, or an error sentence.
+ * What the user pasted: the code Antigravity's page shows, or that page's full
+ * address. An address must be Antigravity's code page with this flow's single
+ * `state` and one `code`. Returns the line to hand the CLI, or an error sentence.
  */
-export function validateAntigravityCallbackUrl(
-  pending: PendingRedirect,
+export function readAntigravityLoginPaste(
+  expectedState: string,
   raw: string,
-): { ok: true; url: URL } | { ok: false; error: string } {
-  const notOurs = "This address does not belong to the current Antigravity sign-in. Paste the full address the Google page ended on.";
+): { ok: true; line: string } | { ok: false; error: string } {
+  const notOurs = "This address does not belong to the current Antigravity sign-in. Paste the code the Antigravity page shows.";
   const trimmed = raw.trim();
-  if (!trimmed || trimmed.length > MAX_URL_LENGTH) return { ok: false, error: notOurs };
+  if (!trimmed || trimmed.length > MAX_URL_LENGTH) return { ok: false, error: "Paste the code the Antigravity page shows." };
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return AUTH_CODE.test(trimmed)
+      ? { ok: true, line: trimmed }
+      : { ok: false, error: "That is not an Antigravity sign-in code. Copy the whole code from the Antigravity page." };
+  }
   let url: URL;
   try {
     url = new URL(trimmed);
   } catch {
-    return { ok: false, error: "Paste the full address the Google page ended on, starting with http://127.0.0.1." };
+    return { ok: false, error: notOurs };
   }
-  if (
-    url.protocol !== "http:"
-    || url.hostname !== pending.redirectUri.hostname
-    || url.port !== pending.redirectUri.port
-    || url.pathname !== pending.redirectUri.pathname
-    || url.username || url.password || url.hash
-  ) {
+  if (`${url.origin}${url.pathname}` !== ANTIGRAVITY_LOGIN_REDIRECT_URI || url.username || url.password) {
     return { ok: false, error: notOurs };
   }
   const states = url.searchParams.getAll("state");
-  if (states.length !== 1 || states[0] !== pending.state) return { ok: false, error: notOurs };
-  const codes = url.searchParams.getAll("code");
+  if (states.length !== 1 || states[0] !== expectedState) return { ok: false, error: notOurs };
   const errors = url.searchParams.getAll("error");
-  const oneResponse = (codes.length === 1 && Boolean(codes[0]) && errors.length === 0)
-    || (errors.length === 1 && Boolean(errors[0]) && codes.length === 0);
-  if (!oneResponse) return { ok: false, error: "That address carries no Google sign-in response. Paste the full address, including everything after ?." };
-  const issuers = url.searchParams.getAll("iss");
-  if (issuers.length > 1 || (issuers.length === 1 && issuers[0] !== "https://accounts.google.com")) {
-    return { ok: false, error: notOurs };
+  if (errors.length) return { ok: false, error: "Google sign-in was not approved. Start sign-in again." };
+  const codes = url.searchParams.getAll("code");
+  if (codes.length !== 1 || !AUTH_CODE.test(codes[0] ?? "")) {
+    return { ok: false, error: "That address carries no sign-in code. Paste the code the Antigravity page shows." };
   }
-  return { ok: true, url };
-}
-
-/** One GET to the agent's listener on this machine. No proxy, no redirects, nothing logged. */
-function forwardCallback(url: URL): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const request = http.request(
-      {
-        protocol: "http:",
-        hostname: url.hostname,
-        port: url.port,
-        path: `${url.pathname}${url.search}`,
-        method: "GET",
-        agent: false,
-        timeout: FORWARD_TIMEOUT_MS,
-      },
-      (response) => {
-        response.resume();
-        response.once("end", () => {
-          const status = response.statusCode ?? 0;
-          if (status >= 200 && status < 400) resolve();
-          else reject(new Error(`listener answered ${status}`));
-        });
-        response.once("error", reject);
-      },
-    );
-    request.once("timeout", () => request.destroy(new Error("timed out")));
-    request.once("error", reject);
-    request.end();
-  });
+  return { ok: true, line: url.toString() };
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -244,8 +192,8 @@ async function snapshot(flow: Flow | null): Promise<AntigravitySignInState> {
         method: flow.method,
         phase: flow.phase,
         authorizationUrl: flow.phase === "waiting" ? flow.authorizationUrl : null,
-        licensePickerUrl: flow.phase === "waiting" || flow.phase === "verifying" ? flow.licensePickerUrl : null,
-        acceptsCallbackUrl: flow.phase === "waiting" && Boolean(flow.pending) && !flow.callbackSent,
+        licensePickerUrl: null,
+        acceptsCallbackUrl: flow.phase === "waiting" && Boolean(flow.state) && !flow.codeSent,
         message: flow.message,
         expiresAt: flow.done ? null : new Date(flow.expiresAtMs).toISOString(),
       }
@@ -258,30 +206,39 @@ async function snapshot(flow: Flow | null): Promise<AntigravitySignInState> {
   };
 }
 
+function stopChild(flow: Flow): void {
+  const child = flow.child;
+  flow.child = null;
+  if (child && child.exitCode === null && child.signalCode === null) child.kill();
+  if (flow.scratchDir) removeAcpScratchDir(flow.scratchDir);
+  flow.scratchDir = null;
+}
+
 function finish(flow: Flow, phase: "succeeded" | "failed" | "cancelled", message: string): void {
   if (flow.done) return;
   flow.done = true;
   flow.phase = phase;
   flow.message = message;
-  flow.pending = null;
+  flow.state = null;
   flow.authorizationUrl = null;
   if (flow.timer) clearTimeout(flow.timer);
   flow.timer = null;
+  stopChild(flow);
   flow.connection?.dispose(`antigravity sign-in ${phase}`);
   flow.connection = null;
   invalidateAntigravityAuthCache();
   logger?.info("antigravity.sign_in_finished", { method: flow.method, phase });
 }
 
-/** The user-facing sentence for a failed `authenticate` or verify. Never echoes a URL. */
+/** The user-facing sentence for a failed sign-in or verify. Never echoes a URL or code. */
 function failureSentence(method: AntigravityAuthMethod, error: unknown): string {
   const text = error instanceof AcpRpcError
     ? `${error.message} ${typeof error.data === "string" ? error.data : JSON.stringify(error.data ?? "")}`
     : getErrorMessage(error);
   if (/SUBSCRIPTION_REQUIRED/i.test(text)) return "Google requires an eligible Antigravity subscription for this account.";
   if (/access_denied|denied access|cancelled|canceled/i.test(text)) return "Google sign-in was not approved. Start sign-in again.";
-  if (/ge_license_cancelled/i.test(text)) return "No Gemini Enterprise license was chosen. Start sign-in again to choose one.";
-  if (/ge_license_failed|license/i.test(text) && method === "oauth-business") {
+  if (/invalid_grant|code.*(invalid|expired)/i.test(text)) return "Google did not accept that code. Start sign-in again and paste the new code.";
+  if (/license/i.test(text) && method === "oauth-business") {
     return "Gemini Enterprise could not find a license for this account. Check the account, or ask your Google Cloud administrator.";
   }
   if (method === "gemini-api-key") return "Antigravity did not accept the Gemini API key. Check the key saved on this page.";
@@ -291,66 +248,118 @@ function failureSentence(method: AntigravityAuthMethod, error: unknown): string 
   return "Google sign-in failed. Start sign-in again.";
 }
 
-function readUrlLine(flow: Flow, line: string): void {
+async function pinnedExecutable(): Promise<AcpExecutableResolution> {
+  return requirePinnedProviderExecutable("antigravity", () => resolveAntigravityExecutable());
+}
+
+/** One `session/new` on a fresh agent: the proof that the new login works. */
+async function verifySession(flow: Flow, executable: AcpExecutableResolution): Promise<void> {
+  const spawnPlan = buildAntigravitySpawnPlan({
+    binaryPath: executable.path,
+    ...(executable.args?.length ? { binaryArgs: executable.args } : {}),
+    cwd: os.homedir(),
+    baseEnv: { ...process.env, ...providerSelfUpdateEnv("antigravity") },
+  }, flow.method);
+  const connection = createAcpConnection({ dialect: antigravityDialect, spawnPlan, ...(logger ? { logger } : {}) });
+  flow.connection = connection;
+  connection.onExit(() => {
+    if (!flow.done) finish(flow, "failed", "Antigravity stopped before the sign-in finished. Start sign-in again.");
+  });
+  await initializeAcpConnection({ connection, dialect: antigravityDialect, timeoutMs: HANDSHAKE_TIMEOUT_MS });
   if (flow.done) return;
-  const authAt = line.indexOf(ANTIGRAVITY_AUTH_URL_PREFIX);
-  if (authAt >= 0) {
-    const parsed = parseAntigravityAuthorizationUrl(line.slice(authAt + ANTIGRAVITY_AUTH_URL_PREFIX.length).trim());
-    if (!parsed) {
-      logger?.warn("antigravity.sign_in_url_rejected", { method: flow.method });
+  const remaining = Math.max(1_000, flow.expiresAtMs - Date.now());
+  if (!browserMethod(flow.method) || flow.method === "oauth-business") {
+    // Enterprise and the key methods sign in through `authenticate`, which
+    // records the method in the CLI's settings. Enterprise opens the browser
+    // on this machine by itself.
+    await connection.request(ACP_METHOD.authenticate, { methodId: flow.method }, { timeoutMs: remaining });
+    if (flow.done) return;
+  }
+  flow.phase = "verifying";
+  flow.authorizationUrl = null;
+  flow.state = null;
+  flow.message = "Checking Antigravity access.";
+  // `authenticate` succeeds for an API-key method even without a key; the
+  // real check is a session.
+  await connection.request(
+    ACP_METHOD.sessionNew,
+    { cwd: os.homedir(), mcpServers: [] },
+    { timeoutMs: Math.min(VERIFY_TIMEOUT_MS, remaining) },
+  );
+}
+
+/**
+ * `agy acp --login`: read the printed link, wait for the pasted code
+ * (`completeAntigravitySignIn` writes it to stdin), and resolve when the CLI
+ * exits. Output is scanned, never logged: it carries the link.
+ */
+function runTerminalLogin(flow: Flow, executable: AcpExecutableResolution): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const scratchDir = allocateAcpScratchDir("antigravity");
+    flow.scratchDir = scratchDir;
+    prepareAcpScratchDir(scratchDir);
+    const env = antigravitySpawnEnv({
+      baseEnv: { ...process.env, ...providerSelfUpdateEnv("antigravity") },
+      scratchDir,
+      method: flow.method,
+    });
+    let child: ChildProcess;
+    try {
+      child = spawn(executable.path, [...(executable.args ?? []), "acp", "--login"], {
+        cwd: os.homedir(),
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (error) {
+      reject(error);
       return;
     }
-    flow.authorizationUrl = parsed.url;
-    flow.pending = parsed.pending;
-    flow.callbackSent = false;
-    flow.phase = "waiting";
-    flow.message = "Open the Google sign-in page. On another computer, paste the address it ends on here.";
-    return;
-  }
-  const licenseAt = line.indexOf(ANTIGRAVITY_LICENSE_URL_PREFIX);
-  if (licenseAt >= 0) {
-    const url = parseLicensePickerUrl(line.slice(licenseAt + ANTIGRAVITY_LICENSE_URL_PREFIX.length).trim());
-    if (!url) return;
-    flow.licensePickerUrl = url;
-    flow.phase = "waiting";
-    flow.message = "Choose your Gemini Enterprise license on the page Antigravity opened. It is served by this machine, so open it in a browser here.";
-  }
+    flow.child = child;
+    let tail = "";
+    const scan = (chunk: Buffer) => {
+      if (flow.done) return;
+      tail = `${tail}${chunk.toString("utf8")}`.slice(-MAX_URL_LENGTH * 2);
+      if (flow.authorizationUrl) return;
+      for (const token of tail.split(/\s+/)) {
+        if (!token.startsWith("https://accounts.google.com/")) continue;
+        const parsed = parseAntigravityLoginUrl(token);
+        if (!parsed) continue;
+        flow.authorizationUrl = parsed.url;
+        flow.state = parsed.state;
+        flow.codeSent = false;
+        flow.phase = "waiting";
+        flow.message = "Open the Google sign-in page, then paste the code the Antigravity page shows.";
+        return;
+      }
+    };
+    child.stdout?.on("data", scan);
+    child.stderr?.on("data", scan);
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      flow.child = null;
+      if (flow.done) return resolve();
+      if (code === 0) return resolve();
+      // Only a fixed sentence leaves this function; the output may hold the link.
+      reject(new Error(/invalid_grant/i.test(tail) ? "invalid_grant" : `antigravity login exited (${signal ?? code})`));
+    });
+  });
 }
 
 async function runFlow(flow: Flow): Promise<void> {
   try {
-    const executable = await requirePinnedProviderExecutable("antigravity", () => resolveAntigravityExecutable());
+    const executable = await pinnedExecutable();
     if (flow.done) return;
-    const spawnPlan = buildAntigravitySpawnPlan({
-      binaryPath: executable.path,
-      ...(executable.args?.length ? { binaryArgs: executable.args } : {}),
-      ...(executable.files ? { binaryFiles: executable.files } : {}),
-      // `authenticate` opens no session; any existing directory will do.
-      cwd: os.homedir(),
-      baseEnv: process.env,
-    }, flow.method);
-    const connection = createAcpConnection({ dialect: antigravityDialect, spawnPlan, ...(logger ? { logger } : {}) });
-    flow.connection = connection;
-    connection.onDiagnosticLine((line) => readUrlLine(flow, line));
-    connection.onExit(() => {
-      if (!flow.done) finish(flow, "failed", "Antigravity stopped before the sign-in finished. Start sign-in again.");
-    });
-    await initializeAcpConnection({ connection, dialect: antigravityDialect, timeoutMs: HANDSHAKE_TIMEOUT_MS });
+    if (flow.method === "oauth-personal") {
+      await runTerminalLogin(flow, executable);
+      if (flow.done) return;
+      if (!flow.codeSent) throw new Error("antigravity login ended before a code was entered");
+      stopChild(flow);
+    } else if (flow.method === "oauth-business") {
+      flow.message = "Finish the Gemini Enterprise sign-in in the browser Antigravity opened on this computer.";
+    }
+    await verifySession(flow, executable);
     if (flow.done) return;
-    const remaining = () => Math.max(1_000, flow.expiresAtMs - Date.now());
-    await connection.request(ACP_METHOD.authenticate, { methodId: flow.method }, { timeoutMs: remaining() });
-    if (flow.done) return;
-    flow.phase = "verifying";
-    flow.authorizationUrl = null;
-    flow.pending = null;
-    flow.message = "Checking Antigravity access.";
-    // `authenticate` succeeds for an API-key method even without a key; the
-    // real check is a session.
-    await connection.request(
-      ACP_METHOD.sessionNew,
-      { cwd: os.homedir(), mcpServers: [] },
-      { timeoutMs: Math.min(VERIFY_TIMEOUT_MS, remaining()) },
-    );
     finish(flow, "succeeded", browserMethod(flow.method) ? "Signed in to Antigravity." : "Antigravity is connected.");
     void refreshAfterSignIn();
   } catch (error) {
@@ -392,12 +401,13 @@ export async function startAntigravitySignIn(args: AntigravitySignInStartArgs): 
     method,
     phase: "starting",
     authorizationUrl: null,
-    licensePickerUrl: null,
-    pending: null,
-    callbackSent: false,
+    state: null,
+    codeSent: false,
     message: browserMethod(method) ? "Starting Google sign-in." : "Checking credentials.",
     expiresAtMs: Date.now() + SIGN_IN_TIMEOUT_MS,
     connection: null,
+    child: null,
+    scratchDir: null,
     timer: null,
     done: false,
   };
@@ -447,18 +457,13 @@ export async function completeAntigravitySignIn(args: AntigravitySignInCompleteA
     finish(flow, "failed", "Google sign-in expired. Start sign-in again.");
     throw new Error("Google sign-in expired. Start sign-in again.");
   }
-  if (!flow.pending) throw new Error("Wait for the Google sign-in link before you paste an address.");
-  if (flow.callbackSent) throw new Error("The address was already sent. Wait for Google to finish.");
-  const checked = validateAntigravityCallbackUrl(flow.pending, String(args.callbackUrl ?? ""));
+  if (!flow.state || !flow.child?.stdin) throw new Error("Wait for the Google sign-in link before you paste a code.");
+  if (flow.codeSent) throw new Error("The code was already sent. Wait for Antigravity to finish.");
+  const checked = readAntigravityLoginPaste(flow.state, String(args.callbackUrl ?? ""));
   if (!checked.ok) throw new Error(checked.error);
-  flow.callbackSent = true;
+  flow.codeSent = true;
   flow.message = "Finishing Google sign-in.";
-  try {
-    await forwardCallback(checked.url);
-  } catch {
-    finish(flow, "failed", "ADE could not hand the address to Antigravity. Start sign-in again.");
-    throw new Error("ADE could not hand the address to Antigravity. Start sign-in again.");
-  }
+  flow.child.stdin.write(`${checked.line}\n`);
   return snapshot(flow);
 }
 

@@ -495,6 +495,20 @@ export type AcpDialectBase = {
   /** Whether failure to apply the native mode must abort runtime setup. */
   readonly modeSetupRequired?: boolean;
 
+  /**
+   * True when the agent has no full-access mode of its own: ADE's Full access
+   * opens it in an asking mode and ADE answers every permission request.
+   */
+  readonly hostAnswersFullAccess?: boolean;
+
+  /**
+   * The `_meta` that adds text to the agent's system prompt, for an agent
+   * with that channel. ADE's lane guidance then rides `session/new`,
+   * `session/resume` and `session/load` (sent again on each, since the agent
+   * does not keep it) instead of the first user turn.
+   */
+  readonly systemPromptMeta?: (append: string) => Record<string, unknown>;
+
   readonly cancelStyle: AcpCancelStyle;
 
   /**

@@ -205,6 +205,11 @@ export type AcpSession = {
   readonly initialConfigOptions: AcpSessionConfigOption[];
   readonly initialModeId: string | null;
   /**
+   * The system-prompt text the entry call carried (`systemPromptAppend`), or
+   * null when the dialect has no such channel or there was none to send.
+   */
+  readonly systemPromptAppended: string | null;
+  /**
    * True once ADE has published the "this agent gates itself" notice. The
    * caller persists it so a runtime restart does not repeat the line.
    */
@@ -297,6 +302,11 @@ export type OpenAcpSessionArgs = {
   requestedModelId?: string | null;
   /** MCP servers to offer. The caller already removed anything unsafe. */
   mcpServers?: AcpMcpServer[];
+  /**
+   * Text for the agent's system prompt, sent with the entry call when the
+   * dialect has `systemPromptMeta`; ignored otherwise.
+   */
+  systemPromptAppend?: string | null;
   callbacks: AcpSessionCallbacks;
   logger?: Logger;
   pool?: AcpSessionPool;
@@ -483,12 +493,15 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
 
   let initialConfigOptions: AcpSessionConfigOption[] = [];
   let initialModeId: string | null = null;
+  const systemPromptAppend = args.systemPromptAppend?.trim() || null;
+  const entryMeta = systemPromptAppend && dialect.systemPromptMeta ? dialect.systemPromptMeta(systemPromptAppend) : null;
+  const withEntryMeta = <T extends object>(params: T): T => (entryMeta ? { ...params, _meta: entryMeta } : params);
 
   const openNewSession = async (): Promise<void> => {
-    const response = await connection.request<AcpNewSessionResponse>(ACP_METHOD.sessionNew, {
+    const response = await connection.request<AcpNewSessionResponse>(ACP_METHOD.sessionNew, withEntryMeta({
       cwd: args.cwd,
       mcpServers: effectiveMcpServers,
-    });
+    }));
     sessionId = response.sessionId;
     initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
     initialModeId = response.modes?.currentModeId ?? null;
@@ -511,7 +524,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       const call = behavior({ sessionId: storedId, cwd: args.cwd, mcpServers: effectiveMcpServers });
       suppressUpdates = entryPlan.suppressReplay;
       try {
-        const response = await connection.request<AcpNewSessionResponse>(call.method, call.params);
+        const response = await connection.request<AcpNewSessionResponse>(call.method, withEntryMeta(call.params));
         sessionId = response.sessionId ?? storedId;
         initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
         initialModeId = response.modes?.currentModeId ?? null;
@@ -582,6 +595,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     connection,
     initialConfigOptions,
     initialModeId,
+    systemPromptAppended: entryMeta ? systemPromptAppend : null,
     get unsupervised() {
       return supervision.unsupervised;
     },

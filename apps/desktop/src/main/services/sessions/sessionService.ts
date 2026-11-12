@@ -756,6 +756,7 @@ export function createSessionService({
       "grok",
       "copilot",
       "devin",
+      "antigravity",
       "qwen-chat",
       "kimi-chat",
       "grok-chat",

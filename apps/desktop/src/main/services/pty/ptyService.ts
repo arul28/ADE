@@ -1585,6 +1585,7 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "grok",
     "copilot",
     "devin",
+    "antigravity",
     "qwen-chat",
     "kimi-chat",
     "grok-chat",

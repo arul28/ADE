@@ -10,7 +10,8 @@
  * - `parse` returns secrets only inside `files`, `parts` and `familySecret`.
  *   The caller hashes `familySecret` and never logs any of them.
  * - A login in an OS keychain or keyring is never read here. `osStore` only
- *   says that one exists, for `status`.
+ *   says that one exists, for `status`. It is read only when the person
+ *   allows it (Antigravity's Allow, `providerLoginAllow.ts`), never in a pass.
  * - Claude's own login and Pi's Anthropic login are never carried.
  *
  * A row with `carry: "fallback"` is built where the format is known and stays
@@ -34,6 +35,7 @@ import {
 import { kimiCodeLoginInKeyring, parseKimiConfigToml, resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import { isClassicGitHubToken, readGhHostsGithubCom } from "./providerLoginGhCli";
 import { parseQwenUserSettings } from "../ai/qwenUserSettings";
+import { ANTIGRAVITY_TOKEN_FILE, peekAntigravityKeyringPresent } from "../ai/antigravityAuth";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -59,7 +61,7 @@ export type CarryRoot =
   | "copilotHome"
   | "ghConfig"
   | "qwenHome"
-  | "geminiHome"
+  | "antigravityHome"
   | "piAgent";
 
 export type CarryContext = {
@@ -152,8 +154,26 @@ export function parseAntigravitySettings(raw: string): Record<string, unknown> |
   }
 }
 
-/** The agent's own settings file, under its private folder (not Gemini CLI's `<GEMINI_HOME>/settings.json`). */
-export const ANTIGRAVITY_SETTINGS_REL = "antigravity-acp/settings.json";
+/**
+ * The agy CLI's own folder under `<home>/.gemini` (the `antigravityHome`
+ * root): its settings (read, never written) and, when it uses its file
+ * store, the Google sign-in.
+ * Not Gemini CLI's `<GEMINI_HOME>/settings.json`; agy ignores GEMINI_HOME.
+ */
+export const ANTIGRAVITY_SETTINGS_REL = "antigravity-cli/settings.json";
+export const ANTIGRAVITY_TOKEN_REL = `antigravity-cli/${ANTIGRAVITY_TOKEN_FILE}`;
+
+/**
+ * agy's stored sign-in (verified, 1.5.6 on Windows): `{ token: { access_token,
+ * refresh_token, expiry, … }, auth_method, id_token_email }`, the same JSON in
+ * the keyring item and in the file store. `auth_method` is `consumer` for a
+ * Google account; anything naming a business or enterprise login is the
+ * Gemini Enterprise slot. agy keeps one item for both, so this picks the slot.
+ */
+export function antigravitySlotFromLogin(login: Record<string, unknown> | null): "personal" | "business" {
+  const method = typeof login?.auth_method === "string" ? login.auth_method.toLowerCase() : "";
+  return /business|enterprise/.test(method) ? "business" : "personal";
+}
 
 function str(record: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = record?.[key];
@@ -578,44 +598,44 @@ const ROWS: CarryRow[] = [
   {
     provider: "antigravity",
     carry: "carried",
-    message: "ADE copies Antigravity's Google sign-in. On a Mac it is in the Keychain, and ADE reads it only when you allow it.",
+    message: "ADE copies Antigravity's Google sign-in. When the agy CLI keeps it in this computer's OS keyring "
+      + "(the Keychain, Credential Manager or the keyring), ADE reads it only when you allow it.",
     locate: (ctx) => {
-      // macOS keeps it in the Keychain: never read in the background. The
-      // person's Allow (`provider_logins.allowKeychain`) reads it once.
-      if (ctx.platform === "darwin") return [];
-      return (["personal", "business"] as const).map((slot) => antigravityBundle(ctx, slot));
+      // The file store (no working keyring, WSL, a container, every cloud
+      // computer) is read in the background like any login file.
+      const bundle = antigravityBundle(ctx);
+      if (ctx.cloudComputer || exists(bundle.files[0]!.abs)) return [bundle];
+      // No file: the sign-in may be in the OS keyring, read only on the
+      // person's Allow (`provider_logins.allowKeychain`). Not looked at, so an
+      // allowed copy is not "gone from this computer". Only a keyring known
+      // to be empty makes the missing file "not signed in".
+      return peekAntigravityKeyringPresent() === false ? [bundle] : [];
     },
     parse: (bundle, contents) => {
-      const slot = bundle.id.endsWith("business") ? "business" : "personal";
       const tokenSpec = bundle.files[0]!;
       const raw = text(contents, tokenSpec.rel);
       const data = json(contents, tokenSpec.rel);
       if (!raw || !data) return { unreadable: true };
-      const settingsText = text(contents, ANTIGRAVITY_SETTINGS_REL);
-      const settings = settingsText == null ? null : parseAntigravitySettings(settingsText);
-      const auth = isRecord(settings?.auth) ? settings.auth : null;
-      const gcp = isRecord(settings?.gcp) ? settings.gcp : null;
+      const token = isRecord(data.token) ? data.token : null;
+      // The Allow names its slot in the bundle id; otherwise the login says.
+      const slot = bundle.id.endsWith("/business") ? "business"
+        : bundle.id.endsWith("/personal") ? "personal"
+          : antigravitySlotFromLogin(data);
+      const email = str(data, "id_token_email");
       return {
         logins: [{
           slot,
           class: "fixed",
-          familySecret: str(data, "refresh_token") ?? raw,
-          account: null,
+          familySecret: str(token, "refresh_token") ?? raw,
+          account: email ? { email, id: null } : null,
           expiresAt: null,
           files: carriedFiles(bundle, contents),
-          parts: {
-            antigravitySettings: {
-              authType: slot === "personal" ? "oauth-personal" : "oauth-business",
-              ...(str(auth, "type") ? { selected: str(auth, "type") } : {}),
-              ...(str(gcp, "project") ? { gcpProject: str(gcp, "project") } : {}),
-              ...(str(gcp, "location") ? { gcpLocation: str(gcp, "location") } : {}),
-            },
-          },
         }],
         skipped: [],
       };
     },
-    osStore: (ctx) => ctx.platform === "darwin",
+    // A keyring item, known from the cached presence check (no secret read, no process here).
+    osStore: (ctx) => !ctx.cloudComputer && peekAntigravityKeyringPresent() === true,
   },
   {
     provider: "muse",
@@ -627,17 +647,17 @@ const ROWS: CarryRow[] = [
 export const PROVIDER_LOGIN_CARRY: ReadonlyArray<CarryRow> = ROWS;
 
 /**
- * Antigravity's bundle for one slot: its token file and the agent's settings.
- * On a Mac the Allow action fills the token file's part from the Keychain
- * item instead of the file (the file is not there).
+ * Antigravity's bundle: the agy CLI's token file. agy keeps one sign-in for
+ * both Google methods. Without a slot it is the background bundle (the login
+ * names its slot); the Allow names its slot and fills the token file's part
+ * from the OS keyring item instead of the file.
  */
-export function antigravityBundle(ctx: CarryContext, slot: "personal" | "business"): CarryBundle {
-  const geminiHome = carryRootDir("geminiHome", ctx)!;
+export function antigravityBundle(ctx: CarryContext, slot?: "personal" | "business"): CarryBundle {
+  const home = carryRootDir("antigravityHome", ctx)!;
   return {
-    id: `antigravity/${slot}`,
+    id: `antigravity/${slot ?? "google"}`,
     files: [
-      file("geminiHome", geminiHome, slot === "personal" ? "antigravity-acp/acp_token.json" : "antigravity-acp/acp_business_token.json"),
-      file("geminiHome", geminiHome, ANTIGRAVITY_SETTINGS_REL, { carry: false, required: false }),
+      file("antigravityHome", home, ANTIGRAVITY_TOKEN_REL),
     ],
   };
 }
@@ -677,7 +697,8 @@ export function carryRootDir(root: CarryRoot, ctx: CarryContext): string | null 
     case "qwenHome": return qwenConfigHome(args);
     case "piAgent": return piAgentDir(args);
     case "cursorSdk": return path.join(ctx.homeDir, ".cursor", "sdk");
-    case "geminiHome": return ctx.env.GEMINI_HOME?.trim() ? path.resolve(ctx.env.GEMINI_HOME.trim()) : path.join(ctx.homeDir, ".gemini");
+    // agy keeps its folder under `<home>/.gemini` whatever GEMINI_HOME says.
+    case "antigravityHome": return path.join(ctx.homeDir, ".gemini");
     case "devinData": {
       const credentials = devinCredentialFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
       return path.dirname(credentials.find(exists) ?? credentials[0]!);
@@ -699,7 +720,7 @@ const APPLY_FILES: Partial<Record<ProviderLoginProvider, { root: CarryRoot; rel:
   kimi: [{ root: "kimiHome", rel: /^credentials\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/ }, { root: "kimiHome", rel: /^device_id$/ }],
   qwen: [{ root: "qwenHome", rel: /^settings\.json$/ }, { root: "qwenHome", rel: /^\.env$/ }],
   devin: [{ root: "devinData", rel: /^credentials\.toml$/ }],
-  antigravity: [{ root: "geminiHome", rel: /^antigravity-acp\/acp_(business_)?token\.json$/ }],
+  antigravity: [{ root: "antigravityHome", rel: /^antigravity-cli\/antigravity-oauth-token$/ }],
 };
 
 export function isApplyFileAllowed(provider: ProviderLoginProvider, root: string, rel: string): boolean {

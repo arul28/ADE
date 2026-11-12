@@ -28,6 +28,7 @@ import {
   readClaudePasses,
   adeCloudTile,
   cloudSignInsOn,
+  keyringAllowWords,
   type AdeCloudTile,
 } from "./adeCloudSignInModel";
 import { useAdeCloudSignIns, type AdeCloudSignInsState } from "./useAdeCloudSignIns";
@@ -74,7 +75,7 @@ export function AdeCloudProvidersView({
   // Remove waits on its toast; the page and the list share one set, so leaving either runs it.
   const heldWrites = useHeldWrites();
   const signIns = useMemo(() => withoutHeld(readSignIns, heldWrites.held), [heldWrites.held, readSignIns]);
-  const { account, cloud, saved, signInStatus, candidates, reporting, accountPin, keychainIsThisMac } = signIns;
+  const { account, cloud, saved, signInStatus, candidates, reporting, accountPin, keyringIsThisComputer } = signIns;
   const passUse = useMemo(() => accountPassUse(signInStatus?.passes), [signInStatus?.passes]);
   const navigate = useNavigate();
   const location = useLocation();
@@ -104,14 +105,14 @@ export function AdeCloudProvidersView({
         account,
         cloud,
         saved,
-        keychainIsThisMac,
+        keyringIsThisComputer,
         passUse,
         now,
       }),
     })),
     // `now` changes every render; the tiles only need it when a read lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [account, cloud, descriptors, keychainIsThisMac, passUse, saved],
+    [account, cloud, descriptors, keyringIsThisComputer, passUse, saved],
   );
 
   // ── The order: set while the place opens and on Re-check, never by a switch or a change event ──
@@ -170,6 +171,9 @@ export function AdeCloudProvidersView({
   }, [accountPin, runWrite]);
 
   const { allowing, allow: allowKeychain } = useAllowAntigravityKeychain(runWrite, accountPin);
+  const keyringWords = keyringAllowWords(
+    account.state === "ok" ? account.status.providers.find((row) => row.provider === "antigravity")?.keychain?.store : null,
+  );
 
   // ── The Claude pass approve: one sheet for the tile and Claude's page ──
   const [passRequest, setPassRequest] = useState<ClaudePassRequest | null>(null);
@@ -234,7 +238,7 @@ export function AdeCloudProvidersView({
           : { kind: "button", label: "Sign in", aria: `Sign in to ${descriptor.label} on this computer`, run: () => openOnThisComputer(descriptor.id) };
       case "allow-keychain":
         // A short label leaves the tile room for its line; the full words are its name.
-        return { kind: "button", label: "Allow", aria: "Allow on this Mac: ADE copies the Antigravity sign-in from this Mac's Keychain", busy: allowing, run: allowKeychain };
+        return { kind: "button", label: "Allow", aria: keyringWords.aria, busy: allowing, run: allowKeychain };
       // The page has the sign-in on the cloud computer, through that computer's pin.
       case "sign-in-cloud":
         return onProviderChange

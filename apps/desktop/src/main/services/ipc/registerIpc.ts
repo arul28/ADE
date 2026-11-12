@@ -12671,7 +12671,7 @@ export function registerIpc({
         action,
         ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
       }, {
-        // The Keychain and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
+        // The OS keyring and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
         timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action),
       });
       return response?.result;

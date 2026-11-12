@@ -13300,12 +13300,7 @@ export function AgentChatPane({
     if (desc.family === "cursor" && desc.cursorAvailability?.cli !== true) {
       throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
     }
-    const resolvedProvider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
-    if (resolvedProvider === "antigravity") {
-      // Google ships Antigravity's agent for ACP only; there is no terminal CLI.
-      throw new Error("Antigravity runs as a chat only. Start a chat with this model instead of a CLI session.");
-    }
-    const provider = resolvedProvider;
+    const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
     const supportsFastMode = modelSupportsFastMode(desc);
     const launchFastMode = fastModeAllowedForComposer && supportsFastMode

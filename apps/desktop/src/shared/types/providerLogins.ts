@@ -45,7 +45,7 @@ export function isProviderLoginProvider(value: unknown): value is ProviderLoginP
  * user-only action.
  */
 export const PROVIDER_LOGIN_ACCOUNT_WRITES = ["use", "setCloud", "setCloudAll", "setCloudBalance", "remove"] as const;
-/** Every action but `status`: the person's (copy now, the Keychain read, the GitHub CLI switch, and the account writes). */
+/** Every action but `status`: the person's (copy now, the OS keyring read, the GitHub CLI switch, and the account writes). */
 export const PROVIDER_LOGIN_PERSON_ACTIONS = ["captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES] as const;
 export const PROVIDER_LOGIN_ACTIONS = ["status", ...PROVIDER_LOGIN_PERSON_ACTIONS] as const;
 export type ProviderLoginAction = (typeof PROVIDER_LOGIN_ACTIONS)[number];
@@ -170,20 +170,26 @@ export type ProviderLoginProviderStatus = {
     writtenBack?: { at: string; renewedBy: string } | null;
   };
   /**
-   * A sign-in ADE copies from this Mac's Keychain only when the person allows
-   * it (Antigravity on macOS). Absent everywhere else.
+   * A sign-in ADE copies from this computer's OS keyring only when the person
+   * allows it (Antigravity's agy CLI login, on a person's own macOS, Windows or
+   * Linux desktop). Absent on a cloud computer and for other providers.
    */
   keychain?: {
+    /** Which OS store the read asks. Absent from an older ADE (say "the OS keyring"). */
+    store?: ProviderLoginKeyringStore;
     /** True when an Allow can run now (capture is on). */
     canAllow: boolean;
     /** The last Allow that put the sign-in in the account; null before the first. */
     allowedAt: string | null;
-    /** Plain words for the tile, such as "Copied from this Mac on Nov 10, 2026. Allow again to update." */
+    /** Plain words for the tile, such as "Copied from this computer on Nov 10, 2026. Allow again to update." */
     message: string;
   };
   /** Copilot only, on a person's own computer: this computer's GitHub CLI login (P5 G1). Absent elsewhere. */
   ghCli?: ProviderLoginGhCliStatus;
 };
+
+/** The OS store of a keyring Allow: the macOS Keychain, Windows Credential Manager, or a Linux Secret Service keyring. */
+export type ProviderLoginKeyringStore = "keychain" | "credential_manager" | "keyring";
 
 /**
  * This computer's GitHub CLI login for github.com, which ADE copies for

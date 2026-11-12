@@ -12,7 +12,7 @@
  * - Renewal (`providerLoginTakeover.ts`): the owner computer renews ahead of
  *   expiry; when it is off, a cloud computer takes the renewal over, and the
  *   origin writes the newer copy back when it wakes.
- * - The person's reads (`providerLoginAllow.ts`): the Keychain on a Mac and
+ * - The person's reads (`providerLoginAllow.ts`): the OS keyring (Antigravity) and
  *   Copilot's GitHub CLI login.
  * - The person's writes (`providerLoginWrites.ts`) and the status
  *   (`providerLoginStatus.ts`).

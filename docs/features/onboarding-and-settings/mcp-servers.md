@@ -321,7 +321,8 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 | Pi | Every server that is on, except SSE ones (Pi has no legacy SSE client). The chat worker registers them in Pi's own MCP support (`pi.registerMcpServer`), values over the worker IPC only; the servers in Pi's own `mcp.json` load too. None in plan mode or a side chat. MCP calls ask in the modes where `bash` asks and in edit mode; full access runs them. See [Agent Routing › Pi MCP servers](../chat/agent-routing.md#pi-mcp-servers). |
 | Kimi | Every server that is on (stdio, HTTP and SSE), through ACP `session/new`. The servers in Kimi's own config also load, and a same-named one there wins. |
 | Copilot | Every server that is on (stdio, HTTP and SSE), through the SDK session's `mcpServers`. The servers in the user's own Copilot config and the workspace `.mcp.json` also run in interactive chats, and when one of those asks for a sign-in ADE hands over the registry's sign-in for the same URL (matched ignoring host case, a default port and a trailing slash), so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
-| Grok, Qwen, Devin, Antigravity | None yet. Their configs are still scanned, so their servers can be imported for the other agents. |
+| Antigravity | Every stdio server that is on, through ACP `session/new` (`agy acp` advertises no `mcpCapabilities`, so HTTP and SSE servers are left out). The servers in its own `mcp_config.json` also load, and a same-named one there wins. |
+| Grok, Qwen, Devin | None yet. Their configs are still scanned, so their servers can be imported for the other agents. |
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
 
 A change reaches chats started after it. A running chat keeps what it started
@@ -361,8 +362,8 @@ registry server and lets Pi drop the duplicate; it does not need a
 | Devin | `mcp_config.json` / `mcp_config.local.json` (3000.3+) and `config.json` / `config.local.json` (older) under `~/.config/devin` (`%APPDATA%\devin`) and `.devin` |
 | Antigravity | `~/.gemini/config/mcp_config.json`, `.agents/mcp_config.json` |
 
-ADE hands Qwen, Grok, Devin and Antigravity chats no servers today (the ACP
-session gets an empty list), so for them the check only matters once it does.
+ADE hands Qwen, Grok and Devin chats no servers today (the ACP session gets
+an empty list), so for them the check only matters once it does.
 
 ## Your servers on ADE accounts
 

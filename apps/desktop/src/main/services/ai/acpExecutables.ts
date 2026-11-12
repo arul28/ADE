@@ -51,9 +51,8 @@ const ACP_EXECUTABLE_ENV_KEYS: Record<ResolvableCliProvider, readonly string[]> 
   grok: ["GROK_EXECUTABLE", "XAI_GROK_EXECUTABLE"],
   copilot: ["COPILOT_EXECUTABLE", "GITHUB_COPILOT_EXECUTABLE"],
   devin: ["DEVIN_EXECUTABLE", "DEVIN_CLI_EXECUTABLE"],
-  // The harness travels beside the server; an override names the server and
-  // the dialect finds `localharness_external` next to it.
-  antigravity: ["ANTIGRAVITY_ACP_EXECUTABLE", "AGY_ACP_SERVER_EXECUTABLE"],
+  // An override names an `agy` CLI binary (1.5.0+); ADE runs it as `agy acp`.
+  antigravity: ["ANTIGRAVITY_CLI_EXECUTABLE", "ANTIGRAVITY_ACP_EXECUTABLE"],
 };
 
 /** The tools-cache name of each provider's pinned CLI (Copilot's terminal CLI; chats use the runtime). */
@@ -130,11 +129,7 @@ export function resolveGrokExecutable(args?: {
   return resolveAcpExecutable("grok", args);
 }
 
-/**
- * Resolves ADE's Antigravity ACP server (`agy_acp_server`). Its `files.harness`
- * is the `localharness_external` the server runs; the dialect exports it as
- * `ANTIGRAVITY_HARNESS_PATH`.
- */
+/** Resolves ADE's Antigravity CLI (`agy`), which chats run as `agy acp` and terminals run as its TUI. */
 export function resolveAntigravityExecutable(args?: {
   auth?: DetectedAuth[];
   env?: NodeJS.ProcessEnv;

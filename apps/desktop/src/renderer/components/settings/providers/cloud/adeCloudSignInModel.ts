@@ -23,6 +23,7 @@ import type { AiSettingsStatus } from "../../../../../shared/types";
 import {
   isClaudePassKey,
   type ProviderLoginApplied,
+  type ProviderLoginKeyringStore,
   type ProviderLoginProvider,
   type ProviderLoginProviderStatus,
   type ProviderLoginSignIn,
@@ -37,6 +38,35 @@ import { DAY_MS, endsInDaysText, parseTime, shortDate } from "./adeCloudTime";
 export const ADE_CLOUD_REACH_LINE = "Sign-ins from your computers reach each cloud computer in about a minute.";
 export const ADE_CLOUD_OFF_BANNER = "Sign-ins are off for ADE Cloud. Cloud chats sign in on each cloud computer.";
 export const COPILOT_REPO_LINE = "This login also gives access to your GitHub repos.";
+
+/**
+ * The words for Antigravity's OS keyring Allow on the computer that owns the
+ * keyring. `store` comes from that computer's status; an older ADE does not
+ * send it, so the words fall back to "the OS keyring".
+ */
+export function keyringAllowWords(store: ProviderLoginKeyringStore | null | undefined): {
+  /** "this Mac's Keychain", "this computer's Credential Manager", … */
+  where: string;
+  label: string;
+  aria: string;
+  /** The button while the read waits. */
+  waiting: string;
+} {
+  const where = store === "keychain" ? "this Mac's Keychain"
+    : store === "credential_manager" ? "this computer's Credential Manager"
+      : store === "keyring" ? "this computer's keyring"
+        : "this computer's OS keyring";
+  const label = store === "keychain" ? "Allow on this Mac" : "Allow on this computer";
+  return {
+    where,
+    label,
+    aria: `${label}: ADE copies the Antigravity sign-in from ${where}`,
+    waiting: store === "keychain" ? "Waiting for macOS…"
+      : store === "credential_manager" ? "Reading Credential Manager…"
+        : store === "keyring" ? "Waiting for the keyring…"
+          : "Reading…",
+  };
+}
 
 /** A sign-in that ends within this many days warns on its tile (T12). */
 const ENDS_SOON_DAYS = 3;
@@ -282,7 +312,7 @@ export type AdeCloudTileAction =
   | { kind: "recheck" }
   /** Sign in on this computer (carried providers). */
   | { kind: "sign-in-here" }
-  /** Copy Antigravity's sign-in from this Mac's Keychain. */
+  /** Copy Antigravity's sign-in from this computer's OS keyring. */
   | { kind: "allow-keychain" }
   /** Sign in on the reporting cloud computer (fallback providers). */
   | { kind: "sign-in-cloud" }
@@ -308,8 +338,8 @@ export type AdeCloudTileInput = {
   cloud: AdeCloudCloudPart;
   /** The saved ADE Cloud keys (`cloud.cloudSignInStatus`); null before the read. */
   saved: CloudSignInStatus["saved"] | null;
-  /** The account read reached the Mac in front of the person, so its Keychain state is this Mac's. */
-  keychainIsThisMac: boolean;
+  /** The account read reached the computer in front of the person, so its OS keyring state is this computer's. */
+  keyringIsThisComputer: boolean;
   /** The account side's use of each pass (`accountPassUse`); empty before the read. */
   passUse?: ReadonlyMap<string, ClaudePassUseView>;
   now: number;
@@ -405,8 +435,8 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
     return signedIn("T3", [{ text: email ? `${email} · ${originLine(inUse)}` : originLine(inUse) }, ...repoLine], action);
   }
   if (signIns.length > 0) return notSignedIn("T9", "Off for ADE Cloud", switchFor(only));
-  if (provider === "antigravity" && input.keychainIsThisMac && row?.keychain?.canAllow) {
-    return notSignedIn("T11", "It is in this Mac's Keychain", { kind: "allow-keychain" });
+  if (provider === "antigravity" && input.keyringIsThisComputer && row?.keychain?.canAllow) {
+    return notSignedIn("T11", `It is in ${keyringAllowWords(row.keychain.store).where}`, { kind: "allow-keychain" });
   }
   // Copilot comes from a computer's GitHub CLI login, once it is turned on there (this computer's page).
   if (provider === "copilot") {

@@ -1683,14 +1683,6 @@ struct WorkNewChatScreen: View {
       namingAttachmentRefs = attachmentRefs
       if sessionMode == .cli {
         let cliProvider = workResolveCliProvider(for: modelId, provider: provider)
-        if cliProvider == "antigravity" {
-          // Google ships Antigravity's agent for ACP only: there is no terminal CLI.
-          throw NSError(
-            domain: "ADE.Work",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Antigravity runs as a chat only. Switch to Chat to use this model."]
-          )
-        }
         let cliReasoningEffort = workCliSupportsReasoningSelection(provider: cliProvider) && !normalizedReasoning.isEmpty
           ? normalizedReasoning
           : nil
@@ -1962,6 +1954,7 @@ private func workCliToolType(provider: String) -> String {
   case "kimi": return "kimi"
   case "grok": return "grok"
   case "copilot": return "copilot"
+  case "antigravity": return "antigravity"
   case "shell": return "shell"
   default: return "opencode"
   }

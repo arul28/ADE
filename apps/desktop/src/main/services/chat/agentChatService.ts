@@ -7662,7 +7662,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   if (toolType === "devin" || toolType === "devin-chat") return "devin";
-  if (toolType === "antigravity-chat") return "antigravity";
+  if (toolType === "antigravity" || toolType === "antigravity-chat") return "antigravity";
   return "codex";
 }
 
@@ -36769,6 +36769,8 @@ export function createAgentChatService(args: {
     mode: AgentChatAcpPermissionMode,
   ): boolean => {
     if (mode !== "yolo") return false;
+    // Antigravity's CLI has no full-access mode: it opens in `default` and asks.
+    if (dialect.hostAnswersFullAccess) return true;
     // Qwen and Kimi take the whole posture through the `mode` config option,
     // so the agent stops asking and there is nothing for ADE
     // to auto-answer. Grok sets only model and effort through
@@ -37133,6 +37135,17 @@ export function createAgentChatService(args: {
       supervisionPreflight,
       supervisionAlreadyNotified: managed.acpSupervisionNoticeShown === true,
       mcpServers: acpMcpServersFor(managed),
+      // An agent with a system-prompt channel hears ADE's guidance there, on
+      // every session it opens; the turn below then finds it delivered.
+      ...(dialect.systemPromptMeta && !devinCloud && !isPersonalSession(managed.session)
+        ? {
+            systemPromptAppend: buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            ),
+          }
+        : {}),
       logger,
       runtimeBudget,
       existingRuntime: existing?.kind === "acp" ? existing : null,
@@ -37214,6 +37227,9 @@ export function createAgentChatService(args: {
           managed.acpReasoningEffortInvalidated = false;
           managed.seededAcpSessionId = runtime.session.sessionId;
           managed.session.acpPermissionMode = permissionMode;
+          if (runtime.session.systemPromptAppended) {
+            markLaneGuidanceDelivered(managed, runtime.session.sessionId, runtime.session.systemPromptAppended);
+          }
           if (devinCloud) {
             // The ACP id and the web id name one session; the panel,
             // the header link and `devin ssh` all key on the bare form.

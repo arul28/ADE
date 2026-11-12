@@ -1743,9 +1743,10 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     allowKeychain: {
       description:
-        "On a Mac: copy Antigravity's Google sign-in from this Mac's Keychain into the account, once. macOS asks the "
-        + "person first; ADE never reads the Keychain in the background. Refused off macOS and for another computer. "
-        + "Only the ADE desktop app on this Mac calls it.",
+        "Copy Antigravity's Google sign-in (the agy CLI login) from this computer's OS keyring into the account, once: "
+        + "the macOS Keychain, Windows Credential Manager, or a Linux keyring through secret-tool. macOS, or a locked "
+        + "keyring, asks the person first; ADE never reads the keyring in the background. Refused on a cloud computer "
+        + "and for another computer. Only the ADE desktop app on this computer calls it.",
       input: "object { provider: \"antigravity\", slot?: \"personal\" | \"business\" }",
       example: "(desktop only) provider_logins.allowKeychain {\"provider\":\"antigravity\"}",
     },

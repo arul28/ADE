@@ -388,7 +388,7 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   android_emulator: ANDROID_PERSON_ONLY_ACTIONS,
   // Another machine's chat owns each copy; only a person deletes one for it.
   remote_work: ["list", "delete"],
-  // Which sign-ins ADE Cloud uses, removing one from the account, and the one Keychain read on a Mac (P5).
+  // Which sign-ins ADE Cloud uses, removing one from the account, and the one OS keyring read on the person's desktop (P5).
   provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain", "allowGitHubCli"],
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.

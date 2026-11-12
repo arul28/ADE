@@ -106,11 +106,11 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
   {
     ...ACP_PROVIDER_METADATA.antigravity,
     id: "antigravity",
-    tagline: "Google's Antigravity agent, with your Google sign-in.",
+    tagline: "ADE's pinned Antigravity CLI (agy), with your Google sign-in.",
     logoFamily: "antigravity",
-    credentialSource: "Antigravity's own sign-in (Google account or Gemini Enterprise), kept by the agent under ~/.gemini/antigravity-acp (the macOS keychain on a Mac); or a Gemini API key / Agent Platform credentials. Separate from the Antigravity app's and the agy CLI's login.",
-    setup: "ADE downloads Google's Antigravity ACP agent for this machine and signs it in here: pick a method and choose Sign in. ADE does not write ~/.gemini; the agent saves its own login there, shared with other apps that run it.",
-    degradation: "No rewind or edit of earlier turns, and no read-only Plan mode (use Antigravity's /plan). Subagent work shows as tool activity.",
+    credentialSource: "The agy CLI's own sign-in (Google account or Gemini Enterprise), kept in the OS keyring (Credential Manager, Keychain, Secret Service) or, where none works, ~/.gemini/antigravity-cli; or a Gemini API key / Agent Platform credentials. The same login as agy in your terminal.",
+    setup: "ADE downloads the Antigravity CLI for this machine and signs it in here: pick a method and choose Sign in. For a Google account, approve in a browser on any computer and paste the code Google shows. ADE does not write ~/.gemini; the CLI saves its own login.",
+    degradation: "No rewind or edit of earlier turns. Subagent work shows as tool activity.",
   },
 ];
 

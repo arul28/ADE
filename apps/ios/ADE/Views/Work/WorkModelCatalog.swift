@@ -231,7 +231,6 @@ func workResolveCliProvider(for modelId: String, provider: String) -> String {
   case "grok": return "grok"
   case "copilot": return "copilot"
   case "devin": return "devin"
-  // ACP-only: Antigravity has a chat runtime and no terminal CLI.
   case "antigravity": return "antigravity"
   default: return "opencode"
   }
