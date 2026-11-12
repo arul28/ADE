@@ -801,9 +801,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   // Delete progress is kept by the tab copy's lane ids, so it listens there.
   // A lane on another machine is followed through the union instead.
-  const tabLanePinKey = tabLanePin?.key ?? null;
-  const tabLanePinRef = useRef(tabLanePin);
-  tabLanePinRef.current = tabLanePin;
   useEffect(() => {
     const pin = tabLanePinRef.current;
     if (!active || !pin) return;
