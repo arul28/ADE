@@ -262,6 +262,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and the one that produced no telemetry at all last time.
   "machine_removed",
   "machine_register_refused",
+  // The person shares this computer's gh sign-in with the account, or takes it
+  // off, from Settings › GitHub (feature "connections"), once the vault accepts
+  // it: outcome completed only. The background sync never records these. Never
+  // the login, the account, or an error.
+  "github_cli_shared",
+  "github_cli_removed",
   // "New cloud machine" (feature "connections"): whether installations make
   // cloud boxes from ADE at all, and how often a create fails. completed (it
   // joined) | partial (signed in, still starting) | cancelled | failed. Never
