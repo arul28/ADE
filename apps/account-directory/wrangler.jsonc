@@ -63,6 +63,16 @@
   // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` and `user.deleted` pointing
   // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
   // secret and the public `phc_…` project token. Unset, the route answers 503 (a `user.deleted` needs only the signing secret).
+  //
+  // SECRETS — GITHUB_APP_CLIENT_SECRET, GITHUB_APP_TOKEN_KEY (GitHub App sign-in)
+  // `/github/app/*` (src/githubApp) keeps each account's ADE GitHub App user
+  // token chain and renews it. GITHUB_APP_CLIENT_SECRET is a client secret
+  // generated on the App's settings page; GITHUB_APP_TOKEN_KEY is 32 random
+  // bytes, base64 (`openssl rand -base64 32`), that seals the tokens at rest.
+  // Set both out of band, here and with `--env production`. Rotating the key
+  // makes every stored grant unreadable (each account connects GitHub again).
+  // Unset or malformed, every `/github/app/*` bearer route answers 503
+  // `github_app_not_configured` and nothing else changes.
   "vars": {
     "ONLINE_WINDOW_MS": "150000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
@@ -131,7 +141,13 @@
     "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
     "STRIPE_DISK_PRICE_ID": "price_1UadQVBsy4QVYccDH47NVQxH",
     "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-    "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD"
+    "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
+    // The ADE GitHub App's public client id (also a constant in the desktop),
+    // and the two GitHub bases the sign-in calls. The bases are settings so a
+    // local run can point at a fake GitHub; leave them at GitHub's own.
+    "GITHUB_APP_CLIENT_ID": "Iv23liy35Ed4L0oQODtl",
+    "GITHUB_WEB_BASE_URL": "https://github.com",
+    "GITHUB_API_BASE_URL": "https://api.github.com"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -214,7 +230,12 @@
         "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
         "STRIPE_DISK_PRICE_ID": "price_1UadQVBsy4QVYccDH47NVQxH",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-        "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD"
+        "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
+        // GitHub App sign-in, restated for the same reason. The two secrets
+        // are set with `wrangler secret put … --env production`.
+        "GITHUB_APP_CLIENT_ID": "Iv23liy35Ed4L0oQODtl",
+        "GITHUB_WEB_BASE_URL": "https://github.com",
+        "GITHUB_API_BASE_URL": "https://api.github.com"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

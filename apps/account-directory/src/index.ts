@@ -34,6 +34,8 @@ import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type Jev
 import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
 import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
 import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
+import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
+import { runGithubAppCron } from "./githubApp/grants";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -42,7 +44,7 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -99,6 +101,10 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // route (machines only). Matched before the directory, which owns only
   // `/account/machines`.
   if (isAccountProjectRequest(url)) return handleAccountProjectRequest(request, env);
+  // The account's GitHub App sign-in (src/githubApp): account bearer and the
+  // same exact-origin CORS, except the callback and Setup URL pages that a
+  // browser opens. 503 for every bearer route until its two secrets are set.
+  if (isGithubAppRequest(url)) return handleGithubAppRequest(request, env, held.waitUntil);
   return handleRequest(request, env);
 }
 
@@ -126,7 +132,7 @@ export default Sentry.withSentry(sentryOptions, {
     }
   },
 
-  async scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     // Each cleanup settles on its own: one table that throws logs a line and
     // leaves the other sweeps to finish, instead of failing the whole tick.
     const settle = (task: string, run: () => Promise<unknown>): Promise<void> =>
@@ -183,6 +189,10 @@ export default Sentry.withSentry(sentryOptions, {
         // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
         // indexed read when no account has extra hours on.
         settle("cloud_extra_hours", () => reportExtraHours(env)),
+        // GitHub App sign-in: minute 17 of each hour prunes old sign-ins and
+        // limit windows; 03:17 UTC also renews up to 50 grants whose refresh
+        // token ends within 30 days. Every other tick makes no query.
+        settle("github_app", () => runGithubAppCron(env, event.scheduledTime)),
       ]);
     } catch (error) {
       status = "error";
