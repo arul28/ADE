@@ -43,6 +43,7 @@ import {
   chatLaunchErrorMessage,
   chatLaunchHasWarnings,
   chatLaunchStageDurationMs,
+  chatLaunchStartedAt,
   chatLaunchStageLabel,
   formatChatLaunchDuration,
   isChatLaunchPending,
@@ -169,12 +170,12 @@ function StageDuration({ stage, className }: { stage: ChatLaunchStage; className
 
 function LaunchElapsed({ snapshot, className }: { snapshot: ChatLaunchSnapshot; className?: string }) {
   const live = !snapshot.endedAt && (snapshot.phase === "running" || snapshot.phase === "awaiting-client");
-  const text = useLaunchDurationText(snapshot.startedAt, snapshot.endedAt, live);
+  const text = useLaunchDurationText(chatLaunchStartedAt(snapshot), snapshot.endedAt, live);
   return <span className={cn("shrink-0 tabular-nums", className)} data-testid="lane-setup-elapsed">{text}</span>;
 }
 
 function launchDurationMs(snapshot: ChatLaunchSnapshot, nowMs: number): number | null {
-  return chatLaunchStageDurationMs({ startedAt: snapshot.startedAt, endedAt: snapshot.endedAt }, nowMs);
+  return chatLaunchStageDurationMs({ startedAt: chatLaunchStartedAt(snapshot), endedAt: snapshot.endedAt }, nowMs);
 }
 
 /* ── Copy ──────────────────────────────────────────────────────────────── */

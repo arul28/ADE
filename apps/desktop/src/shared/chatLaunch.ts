@@ -387,6 +387,26 @@ export function chatLaunchStageDurationMs(stage: Pick<ChatLaunchStage, "startedA
   return Math.max(0, end - start);
 }
 
+/**
+ * When the launch really began: its own start, or an earlier step's. An ADE
+ * Cloud launch makes the computer, joins it and clones there before the
+ * computer's brain takes the launch over with a clock of its own, so the
+ * brain's `startedAt` alone would leave those steps out of the total.
+ */
+export function chatLaunchStartedAt(snapshot: Pick<ChatLaunchSnapshot, "startedAt" | "stages">): string {
+  let earliest = snapshot.startedAt;
+  let earliestMs = Date.parse(snapshot.startedAt);
+  for (const stage of snapshot.stages) {
+    if (!stage.startedAt) continue;
+    const ms = Date.parse(stage.startedAt);
+    if (Number.isFinite(ms) && (!Number.isFinite(earliestMs) || ms < earliestMs)) {
+      earliest = stage.startedAt;
+      earliestMs = ms;
+    }
+  }
+  return earliest;
+}
+
 export function formatChatLaunchDuration(ms: number | null): string {
   if (ms == null) return "";
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -449,8 +469,9 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
   const failed = snapshot.phase === "failed"
     || (snapshot.phase !== "completed" && snapshot.stages.some((stage) => stage.status === "failed"));
   const warned = !failed && chatLaunchHasWarnings(snapshot);
+  // The whole launch, from its first step to the agent's start.
   const durationMs = snapshot.endedAt
-    ? chatLaunchStageDurationMs({ startedAt: snapshot.startedAt, endedAt: snapshot.endedAt }, nowMs)
+    ? chatLaunchStageDurationMs({ startedAt: chatLaunchStartedAt(snapshot), endedAt: snapshot.endedAt }, nowMs)
     : null;
   const durationText = formatChatLaunchDuration(durationMs);
   const base = snapshot.baseRef ? ` from ${snapshot.baseRef}` : "";
