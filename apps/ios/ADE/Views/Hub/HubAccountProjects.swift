@@ -47,7 +47,7 @@ struct HubAccountJoin: Equatable {
 /// 2. its GitHub `owner/name` is the project's address or an old address.
 /// The first card that claims a project keeps it; a later card stays a card
 /// of its own. A card that matches no live project but names a removed one
-/// is hidden. Only github.com addresses match by name, because a machine's
+/// (by a copy it had, or by its address) is hidden. Only github.com addresses match by name, because a machine's
 /// catalog drops the host.
 func hubJoinAccountProjects(
   cards: [HubAccountJoinCard],
@@ -79,6 +79,10 @@ func hubJoinAccountProjects(
       if claimed.insert(projectId).inserted {
         join.accountIdByCardId[card.cardId] = projectId
       }
+      continue
+    }
+    if card.copies.contains(where: { index.removedByCopy[$0] != nil }) {
+      join.hiddenCardIds.insert(card.cardId)
       continue
     }
     if let identity = card.gitHubIdentity {
@@ -147,21 +151,23 @@ struct HubAccountResolver {
   var mergedTargets: [String: String] = [:]
   var projectByCopy: [HubAccountCopyRef: String] = [:]
   var projectByIdentity: [String: String] = [:]
+  /// The copies a removed project had (`AccountProjectListState.removedCopies`).
+  var removedByCopy: [HubAccountCopyRef: String] = [:]
   var removedByIdentity: [String: String] = [:]
   /// Fleet key -> account machine key.
   var accountMachineKey: (String) -> String? = { _ in nil }
 
   /// In order: the id the machine sent (a merged id becomes the project it
-  /// became); the copy table; the GitHub `owner/name` of a live project, then
-  /// of a removed one (so the join hides it). Nil when nothing names it.
+  /// became); the copy table; the GitHub `owner/name` of a live project; then
+  /// a removed project by a copy it had or by its address (so the join hides
+  /// it). Nil when nothing names it.
   func accountProjectId(fleetKey: String?, checkoutId: String, gitHubIdentity: String?, sentId: String?) -> String? {
     if let sentId, !sentId.isEmpty { return mergedTargets[sentId] ?? sentId }
-    if let accountKey = fleetKey.flatMap(accountMachineKey),
-       let id = projectByCopy[HubAccountCopyRef(accountMachineKey: accountKey, checkoutId: checkoutId)] {
-      return id
-    }
-    guard let gitHubIdentity else { return nil }
-    return projectByIdentity[gitHubIdentity] ?? removedByIdentity[gitHubIdentity]
+    let copy = fleetKey.flatMap(accountMachineKey).map { HubAccountCopyRef(accountMachineKey: $0, checkoutId: checkoutId) }
+    if let copy, let id = projectByCopy[copy] { return id }
+    if let gitHubIdentity, let id = projectByIdentity[gitHubIdentity] { return id }
+    if let copy, let id = removedByCopy[copy] { return id }
+    return gitHubIdentity.flatMap { removedByIdentity[$0] }
   }
 }
 
@@ -188,6 +194,10 @@ func hubAccountResolver(
     }
   }
   for project in removed {
+    for copy in project.copies {
+      let ref = HubAccountCopyRef(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
+      if resolver.projectByCopy[ref] == nil, resolver.removedByCopy[ref] == nil { resolver.removedByCopy[ref] = project.id }
+    }
     for identity in accountProjectGitHubIdentities(project)
     where resolver.projectByIdentity[identity] == nil && resolver.removedByIdentity[identity] == nil {
       resolver.removedByIdentity[identity] = project.id

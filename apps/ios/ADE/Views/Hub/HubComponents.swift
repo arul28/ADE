@@ -1123,6 +1123,9 @@ struct HubProjectTile: View, Equatable {
   var canForget = true
   /// An account project: "Remove from ADE…" opens the Delete sheet.
   var canRemoveFromADE = false
+  /// The card's account project. The menu actions name it, so a card whose
+  /// project changes (a merge) must redraw them.
+  var accountProjectId: String? = nil
   let onOpenProject: () -> Void
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
@@ -1297,6 +1300,7 @@ struct HubProjectTile: View, Equatable {
       && lhs.canMoveToTop == rhs.canMoveToTop
       && lhs.canForget == rhs.canForget
       && lhs.canRemoveFromADE == rhs.canRemoveFromADE
+      && lhs.accountProjectId == rhs.accountProjectId
   }
 }
 

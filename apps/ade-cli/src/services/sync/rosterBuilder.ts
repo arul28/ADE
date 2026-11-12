@@ -1148,5 +1148,14 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
       });
     }),
   );
+  // The account changed while the build ran: its links were made for the
+  // account read above, so none of them goes out.
+  if (accountUserId !== undefined && (args.accountUserId?.() ?? null) !== accountUserId) {
+    return projects.map((project) => {
+      const unlinked = { ...project };
+      delete unlinked.accountProjectId;
+      return unlinked;
+    });
+  }
   return projects;
 }

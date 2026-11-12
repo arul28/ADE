@@ -100,12 +100,21 @@ func hubComposerProjectEntries(_ copies: [(copy: HubComposerCopy, accountProject
   }.map(\.element)
 }
 
-/// Pure: the copy a pick of `entry` starts on: the computer this phone used
-/// last for the project, else the primary's copy, else the first.
-func hubComposerDefaultCopy(_ entry: HubComposerProjectEntry, lastAccountMachineKey: String?) -> HubComposerCopy? {
+/// Pure: the copy a pick of `entry` starts on, in the Start-on order
+/// (`resolveStartOn`): the computer this phone used last for the project,
+/// else the account's main copy, else the primary's copy, else the first.
+func hubComposerDefaultCopy(
+  _ entry: HubComposerProjectEntry,
+  lastAccountMachineKey: String?,
+  mainCopy: AccountProjectCopy? = nil
+) -> HubComposerCopy? {
   if let lastAccountMachineKey,
      let last = entry.copies.first(where: { $0.accountMachineKey == lastAccountMachineKey }) {
     return last
+  }
+  if let mainCopy,
+     let main = entry.copies.first(where: { $0.accountMachineKey == mainCopy.machineKey && $0.project.id == mainCopy.checkoutId }) {
+    return main
   }
   return entry.copies.first { $0.machineKey == nil } ?? entry.copies.first
 }

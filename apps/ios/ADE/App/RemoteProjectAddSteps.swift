@@ -91,15 +91,17 @@ struct ProjectGitHubRepoPicker: View {
   }
 
   private func load() async {
+    let query = search
     loading = true
     errorMessage = nil
-    defer { loading = false }
+    // Only the current search ends the spinner or shows an error.
+    defer { if query == search { loading = false } }
     do {
-      let query = search
       let next = try await syncService.listMachineGitHubRepos(search: query, onMachine: machineKey)
       guard query == search else { return }
       repos = next
     } catch {
+      guard query == search, !Task.isCancelled, !(error is CancellationError) else { return }
       errorMessage = SyncUserFacingError.message(for: error)
     }
   }

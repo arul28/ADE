@@ -61,6 +61,8 @@ struct HubInlineComposer: View {
   static let bottomPadding: CGFloat = 8
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  /// The account list: a project removed from ADE leaves the destination.
+  @ObservedObject private var accountProjects = AccountProjectStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
 
@@ -352,6 +354,7 @@ struct HubInlineComposer: View {
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
     .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
     .onChange(of: machineFleet.machines) { _, _ in reconcileDestination() }
+    .onChange(of: accountProjects.removedProjects.map(\.id)) { _, _ in reconcileDestination() }
     .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -553,14 +556,14 @@ struct HubInlineComposer: View {
     guard let resolver = syncService.accountProjectResolver() else { return nil }
     let account = AccountService.shared
     let liveById = Dictionary(
-      AccountProjectStore.shared.liveProjects.map { ($0.id, $0) },
+      accountProjects.liveProjects.map { ($0.id, $0) },
       uniquingKeysWith: { first, _ in first }
     )
     var copies: [(copy: HubComposerCopy, accountProject: AccountProject?)] = []
     func add(_ copy: HubComposerCopy) {
       let id = syncService.accountProjectId(forCheckout: copy.project, onMachine: copy.machineKey, resolver: resolver)
       // A folder of a project removed from ADE: the Hub hides its card, so
-      // the picker does not offer it either.
+      // the picker does not offer it either (`removedFromAccount`).
       if let id, resolver.removedIds.contains(id) { return }
       copies.append((copy, id.flatMap { liveById[$0] }))
     }
@@ -608,7 +611,10 @@ struct HubInlineComposer: View {
     Button {
       guard !isSelected else { return }
       let last = entry.accountProjectId.flatMap { StartOnMemory.lastMachine(for: $0) }
-      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last) { pick(copy) }
+      let main = entry.accountProjectId.flatMap { id in
+        accountProjects.liveProjects.first { $0.id == id }?.copies.first(where: \.isMain)
+      }
+      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last, mainCopy: main) { pick(copy) }
     } label: {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: entry.iconDataUrl, isActive: isSelected)
@@ -909,10 +915,11 @@ struct HubInlineComposer: View {
       if !busy { holdsDestination = false }
       return
     }
-    // The computer this send starts on is the project's next default.
-    if let accountProjectId = pickedAccountProject?.id,
-       let accountMachineKey = AccountService.shared.machine(forFleetKey: pickedMachineKey ?? syncService.focusedMachineKey)?.machineKey {
-      StartOnMemory.remember(accountMachineKey, for: accountProjectId)
+    // A folder of a project removed from ADE while the composer was open.
+    if let picked = pickedProject, removedFromAccount()(picked, pickedMachineKey) {
+      holdsDestination = false
+      reconcileDestination()
+      return
     }
     // Another machine's project: make that machine primary first, before the
     // draft is cleared, then send as usual.
@@ -929,6 +936,12 @@ struct HubInlineComposer: View {
       }
       return
     }
+    // The computer this send starts on, saved as the project's next default
+    // only when the chat starts.
+    let remembered: (machine: String, project: String)? = pickedAccountProject.flatMap { project in
+      AccountService.shared.machine(forFleetKey: pickedMachineKey ?? syncService.focusedMachineKey)
+        .map { (machine: $0.machineKey, project: project.id) }
+    }
     let restoredDraft = draft
     let restoredAttachments = attachments
     collapse()
@@ -940,6 +953,7 @@ struct HubInlineComposer: View {
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
       holdsDestination = false
+      if started, let remembered { StartOnMemory.remember(remembered.machine, for: remembered.project) }
       if !started {
         draft = restoredDraft
         attachments = restoredAttachments
@@ -1357,8 +1371,23 @@ struct HubInlineComposer: View {
   /// Reconciles the (possibly persisted) destination against the live project +
   /// lane lists: keep a still-valid choice, else fall back to the active project
   /// (then first) and that project's primary/first lane.
+  /// A test for folders of projects removed from ADE, built once for a pass.
+  /// The picker hides them, so the composer neither keeps nor sends to one.
+  private func removedFromAccount() -> (MobileProjectSummary, String?) -> Bool {
+    guard let resolver = syncService.accountProjectResolver(), !resolver.removedIds.isEmpty else { return { _, _ in false } }
+    return { project, machineKey in
+      syncService.accountProjectId(forCheckout: project, onMachine: machineKey, resolver: resolver)
+        .map { resolver.removedIds.contains($0) } ?? false
+    }
+  }
+
   private func reconcileDestination() {
     guard !holdsDestination else { return }
+    let isRemoved = removedFromAccount()
+    if let picked = pickedProject, isRemoved(picked, pickedMachineKey) {
+      pickedMachineKey = nil
+      pickedProjectId = ""
+    }
     if let key = pickedMachineKey {
       if key == syncService.focusedMachineKey {
         // That machine became primary: the same project id names it there.
@@ -1374,14 +1403,15 @@ struct HubInlineComposer: View {
         pickedProjectId = ""
       }
     }
-    let projects = syncService.projects
+    let projects = syncService.projects.filter { !isRemoved($0, nil) }
     guard !projects.isEmpty else {
       pickedProjectId = ""
       selectedLaneId = ""
       return
     }
     if pickedProjectId.isEmpty || !projects.contains(where: { $0.id == pickedProjectId }) {
-      let resolvedProjectId = syncService.activeProject?.id ?? projects[0].id
+      let active = syncService.activeProject.flatMap { active in projects.first { $0.id == active.id } }
+      let resolvedProjectId = active?.id ?? projects[0].id
       pickedProjectId = resolvedProjectId
       selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
       return

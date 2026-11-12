@@ -113,8 +113,9 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
 /// `accountCopies` maps a machine (fleet key) to the registry ids of its
 /// folders that the account names as copies of the project: they match even
 /// when the computer still names the repository by an old GitHub address.
-/// The account's main copy on that machine wins the pick, because new lanes
-/// go there (Location shows it as "Used for new lanes").
+/// An account copy wins over a folder that matches only by address, and the
+/// account's main copy wins over the others, because new lanes go there
+/// (Location shows it as "Used for new lanes").
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
   identity: String?,
@@ -133,8 +134,9 @@ func workRemoteMachineRepos(
         otherFolder: hubProjectFolderKey(project.rootPath, displayName: project.displayName)
       )
     }
-    let mainCopy = copies.main.flatMap { main in matches.first { $0.projectId == main } }
-    guard let project = mainCopy ?? workPickLiveCheckout(matches) else { continue }
+    let accountMatches = matches.filter { copies.ids.contains($0.projectId) }
+    let mainCopy = copies.main.flatMap { main in accountMatches.first { $0.projectId == main } }
+    guard let project = mainCopy ?? workPickLiveCheckout(accountMatches.isEmpty ? matches : accountMatches) else { continue }
     repos.append(WorkRemoteMachineRepo(
       machineKey: machine.machineKey,
       machineName: machine.name,

@@ -366,8 +366,8 @@ struct RemoteProjectAddSheet: View {
   }
 
   private var canGoBack: Bool {
-    // A running step finishes on the computer it started on.
-    guard !isSubmitting else { return false }
+    // A running step or connect finishes on the computer it started on.
+    guard !isSubmitting, connectingTargetId == nil else { return false }
     switch screen {
     case .chooser, .putCopies, .success: return false
     default: return true
@@ -501,7 +501,7 @@ struct RemoteProjectAddSheet: View {
     return targets.filter { target in
       // A computer this step copied to stays, with its result, until the
       // user leaves the step (its roster soon lists the new folder).
-      if copyJobs[target.id] != nil { return true }
+      if copyJobs[copyKey(target)] != nil { return true }
       guard let key = target.accountMachineKey, !held.contains(key), key != usedAccountKey else { return false }
       if let phoneKey = target.phoneKey, syncService.liveRosterHasFolder(of: project, phoneKey: phoneKey) { return false }
       return true
@@ -521,7 +521,7 @@ struct RemoteProjectAddSheet: View {
         ForEach(candidates) { target in
           Button {
             guard !started else { return }
-            if copyChoices.contains(target.id) { copyChoices.remove(target.id) } else { copyChoices.insert(target.id) }
+            if copyChoices.contains(copyKey(target)) { copyChoices.remove(copyKey(target)) } else { copyChoices.insert(copyKey(target)) }
           } label: {
             HubCopyRow(
               name: target.name,
@@ -546,7 +546,7 @@ struct RemoteProjectAddSheet: View {
         .disabled(running)
         if !started {
           Button("Put copies") {
-            startCopies(result, candidates: candidates.filter { copyChoices.contains($0.id) })
+            startCopies(result, candidates: candidates.filter { copyChoices.contains(copyKey($0)) })
           }
           .buttonStyle(ProjectPrimaryButtonStyle())
           .disabled(copyChoices.isEmpty)
@@ -579,7 +579,7 @@ struct RemoteProjectAddSheet: View {
   }
 
   private func copyReach(_ target: ProjectAddTarget) -> HubCopyReach {
-    switch copyJobs[target.id] {
+    switch copyJobs[copyKey(target)] {
     case .copying: return .copying
     case .waiting: return target.isLive ? .live : .online
     default: return target.isLive ? .live : .online
@@ -587,7 +587,7 @@ struct RemoteProjectAddSheet: View {
   }
 
   private func copyDetail(_ target: ProjectAddTarget) -> String? {
-    switch copyJobs[target.id] {
+    switch copyJobs[copyKey(target)] {
     case .waiting: return "Waiting"
     case .done(let folder, _): return folder.rootPath ?? "Copied"
     case .failed(let message): return message
@@ -596,13 +596,13 @@ struct RemoteProjectAddSheet: View {
   }
 
   private func copyDetailIsPath(_ target: ProjectAddTarget) -> Bool {
-    if case .done(let folder, _) = copyJobs[target.id] { return folder.rootPath != nil }
+    if case .done(let folder, _) = copyJobs[copyKey(target)] { return folder.rootPath != nil }
     return false
   }
 
   @ViewBuilder
   private func copyTrailing(_ target: ProjectAddTarget) -> some View {
-    switch copyJobs[target.id] {
+    switch copyJobs[copyKey(target)] {
     case .copying:
       ProgressView().controlSize(.small)
     case .done:
@@ -612,28 +612,35 @@ struct RemoteProjectAddSheet: View {
     case .waiting:
       Image(systemName: "clock").foregroundStyle(ADEColor.textMuted)
     case nil:
-      Image(systemName: copyChoices.contains(target.id) ? "checkmark.square.fill" : "square")
+      Image(systemName: copyChoices.contains(copyKey(target)) ? "checkmark.square.fill" : "square")
         .font(.system(size: 18))
-        .foregroundStyle(copyChoices.contains(target.id) ? ADEColor.accent : ADEColor.textMuted)
+        .foregroundStyle(copyChoices.contains(copyKey(target)) ? ADEColor.accent : ADEColor.textMuted)
     }
+  }
+
+  /// The key of a computer in the copy step: its account machine key, which
+  /// stays the same when `putAccountProjectCopy` pairs it (its row id then
+  /// becomes the phone key).
+  private func copyKey(_ target: ProjectAddTarget) -> String {
+    target.accountMachineKey ?? target.id
   }
 
   /// One computer at a time, so two clones never race for the same link.
   private func startCopies(_ result: ProjectAddOutcome, candidates: [ProjectAddTarget]) {
     guard let project = result.accountProject, !candidates.isEmpty else { return }
-    for target in candidates { copyJobs[target.id] = .waiting }
+    for target in candidates { copyJobs[copyKey(target)] = .waiting }
     Task { @MainActor in
       for target in candidates {
-        copyJobs[target.id] = .copying
+        copyJobs[copyKey(target)] = .copying
         guard let accountMachineKey = target.accountMachineKey else {
-          copyJobs[target.id] = .failed("ADE does not know this computer on your account.")
+          copyJobs[copyKey(target)] = .failed("ADE does not know this computer on your account.")
           continue
         }
         switch await syncService.putAccountProjectCopy(project, onAccountMachine: accountMachineKey) {
         case .failure(let failure):
-          copyJobs[target.id] = .failed(failure.message)
+          copyJobs[copyKey(target)] = .failed(failure.message)
         case .success(let copy):
-          copyJobs[target.id] = .done(copy.folder, phoneKey: copy.phoneKey)
+          copyJobs[copyKey(target)] = .done(copy.folder, phoneKey: copy.phoneKey)
         }
       }
     }
@@ -644,6 +651,7 @@ struct RemoteProjectAddSheet: View {
   private func successTitle(_ result: ProjectAddOutcome) -> String {
     switch result.kind {
     case .added: return "Added \(result.name)"
+    case .copy where result.folder == nil: return "\(result.name) is already on your ADE account"
     case .copy: return "Added a copy of \(result.name) on \(result.computerName ?? "the computer")"
     case .computerOnly: return "Added \(result.name)"
     }

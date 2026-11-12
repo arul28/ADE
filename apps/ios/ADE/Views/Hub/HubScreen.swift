@@ -498,6 +498,7 @@ struct HubScreen: View {
           canMoveToTop: projectOrder.first != orderKey,
           canForget: accountId == nil,
           canRemoveFromADE: accountProjects.governsHub && accountId != nil,
+          accountProjectId: accountId,
           onOpenProject: {
             if let accountOnly {
               accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)

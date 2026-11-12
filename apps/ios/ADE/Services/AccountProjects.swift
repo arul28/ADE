@@ -124,6 +124,11 @@ struct AccountProjectDisplay: Codable, Equatable {
 struct AccountProjectListState: Codable, Equatable {
   var cursor: Int?
   var rows: [String: AccountProject] = [:]
+  /// The copies a project had before the account removed it (the directory
+  /// drops them), kept on this phone only. A folder that matched only by its
+  /// copy (a GitHub Enterprise project) then still names the removed project,
+  /// so its card hides. Nil in a cache from an older build.
+  var removedCopies: [String: [AccountProjectCopy]]?
 
   /// Projects on the account now, oldest first (a stable order for new cards).
   var liveProjects: [AccountProject] {
@@ -135,7 +140,14 @@ struct AccountProjectListState: Codable, Equatable {
   /// Rows that were removed from the account (not merged ones: a merged row's
   /// addresses belong to the project it merged into).
   var removedProjects: [AccountProject] {
-    rows.values.filter { $0.removedAt != nil && $0.mergedInto == nil }.sorted { $0.id < $1.id }
+    rows.values.filter { $0.removedAt != nil && $0.mergedInto == nil }.sorted { $0.id < $1.id }.map { row in
+      guard row.copies.isEmpty, let copies = removedCopies?[row.id] else { return row }
+      return AccountProject(
+        id: row.id, host: row.host, repoId: row.repoId, repoKey: row.repoKey, owner: row.owner, name: row.name,
+        defaultBranch: row.defaultBranch, addedAt: row.addedAt, removedAt: row.removedAt,
+        mergedInto: row.mergedInto, aliases: row.aliases, copies: copies
+      )
+    }
   }
 
   /// Merged project id -> the live project it now is. A chain of merges is
@@ -161,10 +173,27 @@ struct AccountProjectListState: Codable, Equatable {
     var next = self
     if response.reset { next.rows = [:] }
     for project in response.projects {
-      next.rows[project.id] = project
+      next.put(project, previous: rows[project.id])
+    }
+    if response.reset, let kept = next.removedCopies {
+      let held = kept.filter { next.rows[$0.key] != nil }
+      next.removedCopies = held.isEmpty ? nil : held
     }
     next.cursor = response.cursor
     return next
+  }
+
+  /// Puts one row. A row that turns removed keeps the copies it had (see
+  /// `removedCopies`); any other row drops what was kept for it.
+  mutating func put(_ project: AccountProject, previous: AccountProject?) {
+    rows[project.id] = project
+    var kept = removedCopies ?? [:]
+    if project.removedAt != nil, project.mergedInto == nil, project.copies.isEmpty {
+      if let previous, !previous.copies.isEmpty { kept[project.id] = previous.copies }
+    } else {
+      kept[project.id] = nil
+    }
+    removedCopies = kept.isEmpty ? nil : kept
   }
 }
 
@@ -448,16 +477,19 @@ final class AccountProjectStore: ObservableObject {
     refreshIfStale(readyFloor: Self.foregroundRefreshFloor)
   }
 
-  private func refreshIfStale(readyFloor: TimeInterval) {
-    guard userId != nil else { return }
+  /// True when a read starts.
+  @discardableResult
+  private func refreshIfStale(readyFloor: TimeInterval) -> Bool {
+    guard userId != nil else { return false }
     let floor: TimeInterval
     switch phase {
     case .unsupported: floor = Self.unsupportedRetryFloor
     case .offline: floor = Self.failureFloors[min(max(failureCount - 1, 0), Self.failureFloors.count - 1)]
     default: floor = readyFloor
     }
-    if let lastAttemptAt, Date().timeIntervalSince(lastAttemptAt) < floor { return }
+    if let lastAttemptAt, Date().timeIntervalSince(lastAttemptAt) < floor { return false }
     Task { await refresh() }
+    return true
   }
 
   /// A machine shows GitHub repositories the list does not name. Reads once
@@ -466,8 +498,9 @@ final class AccountProjectStore: ObservableObject {
     guard phase == .ready, !identities.isEmpty else { return }
     let fresh = identities.subtracting(askedUnknownIdentities)
     guard !fresh.isEmpty else { return }
+    // A read held back by the floor asks again on a later Hub pass.
+    guard refreshIfStale(readyFloor: Self.eventRefreshFloor) else { return }
     askedUnknownIdentities.formUnion(fresh)
-    refreshIfStale()
   }
 
   /// Reads the changes since the cursor now. A read already running is
@@ -539,7 +572,7 @@ final class AccountProjectStore: ObservableObject {
       var next = state.applying(response)
       for (id, change) in pendingChanges {
         if response.cursor < change.cursor {
-          next.rows[id] = change.row
+          next.put(change.row, previous: next.rows[id])
         } else {
           pendingChanges[id] = nil
         }
@@ -623,9 +656,13 @@ final class AccountProjectStore: ObservableObject {
   }
 
   private func applyChanged(_ project: AccountProject, cursor: Int) {
+    // A list read or an earlier change already holds this change or a later
+    // one: an older answer must not undo it.
+    if let applied = state.cursor, applied >= cursor { return }
+    if let pending = pendingChanges[project.id], pending.cursor >= cursor { return }
     pendingChanges[project.id] = (project, cursor)
     var next = state
-    next.rows[project.id] = project
+    next.put(project, previous: state.rows[project.id])
     publish(state: next, display: display, lastSuccessAt: lastSuccessAt, phase: phase == .loading ? .ready : phase)
 #if DEBUG
     if isPreviewSeeded { return }

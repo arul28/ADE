@@ -44,6 +44,9 @@ struct AddLaneSheet: View {
   @State private var selectedMachineId: String?
   @State private var selectedStartOnId: String?
   @State private var busyStartOnIds = Set<String>()
+  /// Counts the picks, so a connect or copy that ends after a newer pick
+  /// does not take the selection back.
+  @State private var startOnPicks = 0
   @State private var startOnError: String?
 
   init(
@@ -156,6 +159,7 @@ struct AddLaneSheet: View {
   /// A pick: the row is chosen at once. A computer with a copy that is not
   /// live yet connects; one with no copy waits for "Copy".
   private func pick(_ candidate: StartOnCandidate) {
+    startOnPicks += 1
     selectedStartOnId = candidate.id
     startOnError = nil
     guard candidate.kind == .copy, laneMachine(for: candidate) == nil, let startOn else { return }
@@ -166,9 +170,11 @@ struct AddLaneSheet: View {
     guard !busyStartOnIds.contains(candidate.id) else { return }
     busyStartOnIds.insert(candidate.id)
     startOnError = nil
+    let pickAtStart = startOnPicks
     Task { @MainActor in
       let failure = await step(candidate)
       busyStartOnIds.remove(candidate.id)
+      guard startOnPicks == pickAtStart else { return }
       if let failure {
         startOnError = failure
         ADEHaptics.warning()

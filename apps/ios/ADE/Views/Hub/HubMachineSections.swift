@@ -156,6 +156,12 @@ func hubMergeFleetRosters(
         }
       let location = HubRemoteOwner(machineKey: machine.machineKey, project: ownerProject, lane: nil)
       if let focusedId = matchedFocusedId {
+        // A focused card the account did not name takes this folder's project,
+        // so a folder of another account project cannot join it later.
+        if let accountId, merge.accountIdByCardId[focusedId] == nil {
+          merge.accountIdByCardId[focusedId] = accountId
+          if focusedByAccount[accountId] == nil { focusedByAccount[accountId] = focusedId }
+        }
         merge.projectLocations[focusedId, default: []].append(location)
         var target = merge.mergedRosters[focusedId]
           ?? focusedRosterById[focusedId].flatMap { $0 }
