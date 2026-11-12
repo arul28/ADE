@@ -334,6 +334,11 @@ final class GitHubDirectClient {
   private var rateLimit: (limit: Int, remaining: Int, resetAt: Date?)?
   private var blockedUntil: Date?
   private let session: URLSession
+#if DEBUG
+  /// Fixture screens: canned answers instead of requests
+  /// (`GitHubDirectPreviewAnswers`, `HubAccountPreviews.swift`).
+  var preview: GitHubDirectPreviewAnswers?
+#endif
 
   init() {
     let configuration = URLSessionConfiguration.ephemeral
@@ -373,14 +378,20 @@ final class GitHubDirectClient {
   // MARK: Reads
 
   func listPulls(_ repo: GitHubDirectRepoRef, background: Bool = false) async -> Result<(pulls: [GitHubDirectPull], truncated: Bool), GitHubDirectError> {
-    await read(repo: repo, background: background) { token, scope in
+    #if DEBUG
+    if let preview { return preview.listPulls() }
+    #endif
+    return await read(repo: repo, background: background) { token, scope in
       let items = try await self.list(path: "/repos/\(repo.owner)/\(repo.name)/pulls", query: ["state": "open", "per_page": "50"], maxPages: Self.listMaxPages, token: token, scope: scope, repo: repo)
       return .success((items.items.compactMap(Self.pull), items.truncated))
     }
   }
 
   func getPull(_ repo: GitHubDirectRepoRef, number: Int) async -> Result<GitHubDirectPullDetail, GitHubDirectError> {
-    await read(repo: repo, background: false) { token, scope in
+    #if DEBUG
+    if let preview { return preview.getPull(number) }
+    #endif
+    return await read(repo: repo, background: false) { token, scope in
       let body = try await self.single(path: "/repos/\(repo.owner)/\(repo.name)/pulls/\(number)", token: token, scope: scope, repo: repo)
       guard let detail = Self.pullDetail(body) else { return .failure(GitHubDirectError(kind: .notFound)) }
       return .success(detail)
@@ -388,6 +399,9 @@ final class GitHubDirectClient {
   }
 
   func listChecks(_ repo: GitHubDirectRepoRef, sha: String) async -> Result<GitHubDirectChecks, GitHubDirectError> {
+    #if DEBUG
+    if let preview { return .success(preview.checks) }
+    #endif
     guard sha.range(of: "^[0-9a-fA-F]{7,40}$", options: .regularExpression) != nil else {
       return .failure(GitHubDirectError(kind: .invalidRequest))
     }
@@ -414,14 +428,20 @@ final class GitHubDirectClient {
   }
 
   func listReviews(_ repo: GitHubDirectRepoRef, number: Int) async -> Result<[GitHubDirectReview], GitHubDirectError> {
-    await read(repo: repo, background: false) { token, scope in
+    #if DEBUG
+    if let preview { return .success(preview.reviews) }
+    #endif
+    return await read(repo: repo, background: false) { token, scope in
       let items = try await self.list(path: "/repos/\(repo.owner)/\(repo.name)/pulls/\(number)/reviews", query: ["per_page": "100"], maxPages: Self.sublistMaxPages, token: token, scope: scope, repo: repo)
       return .success(items.items.compactMap(Self.review))
     }
   }
 
   func listComments(_ repo: GitHubDirectRepoRef, number: Int) async -> Result<[GitHubDirectComment], GitHubDirectError> {
-    await read(repo: repo, background: false) { token, scope in
+    #if DEBUG
+    if let preview { return .success(preview.comments) }
+    #endif
+    return await read(repo: repo, background: false) { token, scope in
       let issue = try await self.list(path: "/repos/\(repo.owner)/\(repo.name)/issues/\(number)/comments", query: ["per_page": "100"], maxPages: Self.sublistMaxPages, token: token, scope: scope, repo: repo)
       let review = try await self.list(path: "/repos/\(repo.owner)/\(repo.name)/pulls/\(number)/comments", query: ["per_page": "100"], maxPages: Self.sublistMaxPages, token: token, scope: scope, repo: repo)
       let comments = issue.items.compactMap { Self.comment($0, kind: "issue") } + review.items.compactMap { Self.comment($0, kind: "review") }
