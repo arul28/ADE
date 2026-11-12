@@ -1671,7 +1671,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     const groups = new Map<string, SettleMachineGroup>();
     for (const id of sessionIds) {
       const foreign = localIds.has(id) ? undefined : foreignRowBySessionId.get(id);
-      const pin = foreign?.binding ?? null;
+      // The tab's own rows carry the tab's copy as their address.
+      const pin = foreign ? foreign.binding ?? null : projectBinding;
       if (foreign && !pin) continue;
       const key = pin?.key ?? "";
       const group = groups.get(key)
@@ -1680,7 +1681,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       groups.set(key, group);
     }
     return [...groups.values()];
-  }, [allSessions, foreignRowBySessionId]);
+  }, [allSessions, foreignRowBySessionId, projectBinding]);
   const settleSessions = useCallback(async (sessionIds: string[]) => {
     const groups = groupSessionsByMachine(sessionIds);
     const results = await Promise.allSettled(groups.map((group) => (
