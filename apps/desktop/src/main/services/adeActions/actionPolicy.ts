@@ -433,6 +433,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // service checks the caller the RPC server stamps). No agent widens a
   // share, sends an invite again, reads or leaves shares given to the
   // account, or moves a chat to or from the other person (`move*`).
+  // Watching or driving a browser tab on another machine is a person's view:
+  // it skips the ownership and access checks agent browser commands keep.
+  work_tools: ["readBrowserTabFrame", "sendBrowserTabInput"],
   lane_share: [
     "updateRights", "resendInvite", "listReceived", "leave",
     "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
@@ -1417,6 +1420,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "probePort",
     "stopDevServer",
     "noteWatching",
+    // A person watching a browser tab from another machine or the phone, and
+    // their input when they take control. User clients only (adeRpcServer).
+    "readBrowserTabFrame",
+    "sendBrowserTabInput",
   ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands

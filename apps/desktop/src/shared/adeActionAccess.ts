@@ -571,9 +571,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     live: "all",
     read: [
       "getLaneState", "readObservationPreview", "listDevServers", "probePort", "noteWatching",
+      "readBrowserTabFrame",
     ],
     write: [
-      "setActiveTool", "show", "acknowledgeShow", "stopDevServer",
+      "setActiveTool", "show", "acknowledgeShow", "stopDevServer", "sendBrowserTabInput",
     ],
   },
   computer_use_artifacts: {

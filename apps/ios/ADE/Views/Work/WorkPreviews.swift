@@ -1447,6 +1447,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   case toolsClose = "tools-close"
   /// The same, opened with one tab's close waiting on Undo.
   case toolsClosePending = "tools-close-pending"
+  case toolsLive = "tools-live"
   /// The real chat with the lane tool chips (simulator, browser, App Control)
   /// in its floating badge row.
   case toolChips = "tool-chips"
@@ -1736,6 +1737,14 @@ struct ADEPreviewScreenHost: View {
         previewFrame: WorkProofPreviewData.toolsFrame,
         previewAllowsTabClose: true,
         previewPendingCloseTabId: WorkProofPreviewData.toolsState.browser?.tabs.last?.id
+      )
+    case .toolsLive:
+      WorkToolsSheet(
+        laneId: WorkProofPreviewData.laneId,
+        tool: .browser,
+        previewState: WorkProofPreviewData.toolsState,
+        previewFrame: WorkProofPreviewData.toolsFrame,
+        previewLiveBrowser: true
       )
     case .chatLinks:
       NavigationStack {
