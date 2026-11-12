@@ -1519,6 +1519,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   { domain: "github", action: "getRepoOrThrow", label: "Get GitHub repo (or throw)", description: "Return the detected GitHub repo or throw if missing.", params: [] },
   { domain: "github", action: "getStatus", label: "Get GitHub status", description: "Return the GitHub auth status (source, scopes, repo).", params: [] },
   { domain: "github", action: "setToken", label: "Set GitHub PAT", description: "Advanced action — pass arguments as JSON.", params: [] },
+  { domain: "github", action: "setGhAccountSharing", label: "Share GitHub CLI sign-in with the account", description: "Share this computer's GitHub CLI sign-in with your ADE account (enabled: true), or take it off the account (enabled: false). Advanced action — pass arguments as JSON.", params: [] },
 
   // ---------------------------------------------------------------------------
   // usage

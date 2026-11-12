@@ -433,7 +433,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "clearToken", "clearAppUserAuth", "detectRepo", "createRepoAutolink", "createIssue",
       "linkSubIssue", "updateIssue", "commentOnIssue", "pollAppUserDeviceAuth",
-      "publishCurrentProject", "setToken", "startAppUserDeviceAuth",
+      "publishCurrentProject", "setGhAccountSharing", "setToken", "startAppUserDeviceAuth",
     ],
   },
   jira: {

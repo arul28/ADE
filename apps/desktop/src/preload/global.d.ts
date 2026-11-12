@@ -4650,6 +4650,11 @@ declare global {
         }) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
+        /**
+         * Optional: an older ADE does not have it. `enabled: false` takes the
+         * gh login off the ADE account; `enabled: true` shares this machine's.
+         */
+        setGhAccountSharing?: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
         startAppUserDeviceAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthStartResult>;
         pollAppUserDeviceAuth: (args: {

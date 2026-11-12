@@ -13037,6 +13037,23 @@ const adeBridge = {
             ipcRenderer.invoke(IPC.githubClearToken),
           ),
       ),
+    // Shares this machine's gh login with the ADE account, or takes the gh
+    // login off the account. Runs on the pinned machine: its gh login, its
+    // credential store, its brain's account vault.
+    setGhAccountSharing: async (
+      args: { enabled: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitHubStatus> =>
+      clearAround(
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
+        () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "setGhAccountSharing", { args }, () =>
+            ipcRenderer.invoke(IPC.githubSetGhAccountSharing, args),
+          ),
+      ),
     getAppUserAuthStatus: async (pin?: OpenProjectBinding | null): Promise<GitHubAppUserAuthStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "github", "getAppUserAuthStatus", {}, () =>
         ipcRenderer.invoke(IPC.githubGetAppUserAuthStatus),
