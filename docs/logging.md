@@ -2064,8 +2064,10 @@ reason: one row per press.
 
 Chat goals, stop-mode choices, waits, and restart resume add no analytics.
 Setting a goal is an ordinary `chat.send` (`/goal …`); a goal ending, a waiter
-firing, and a chat continuing after a restart are things the app does with no
-person behind them; and a Stop press is high-frequency enough that which of
+firing, a chat continuing after a restart, and an agent CLI reopened after a
+planned or unclean stop are things the app does with no person behind them
+(the CLI reopen writes one local line per start with counts only,
+`agent_chat.cli_reopened_after_restart` or `agent_chat.cli_reopen_skipped`); and a Stop press is high-frequency enough that which of
 six modes it used would be a typing signal, not a product decision.
 
 Whether a merge also deleted the head branch is deliberately **not** a property.

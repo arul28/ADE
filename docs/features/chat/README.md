@@ -1684,24 +1684,52 @@ accepted update alike, and the update dialog shows its answer per chat:
   what it still needs instead of waiting for a report that cannot come.
 - Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h).
 - Tracked agent CLIs (Claude Code, Codex, … in a terminal) follow the same
-  setting. When a runtime stops on purpose (an update, a reboot, the brain
-  quitting), `ptyService.disposeAll({ reopenAfterRestart: true })` saves the
-  CLIs it still has open to its own file,
-  `.ade/cache/reopen-cli-after-restart.<pid>.json`
-  (`apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`), and marks
-  one that is still printing and not at its prompt as mid-turn. Two runtimes
-  of one project that stop together never overwrite each other's list. The
-  project's next runtime claims each file with a rename before it reads it,
-  so a list is acted on once (`reopenCliSessionsAfterRestart`). A CLI is
-  reopened at its prompt (`ptyService.resumeSession`), and a mid-turn one gets
-  the durable "continue" row instead, which reopens it with
-  `RESTART_RESUME_PROMPT`. The "continue" counts toward the same restart streak
-  as a chat's (`MAX_CONSECUTIVE_RESTART_RESUMES`); past it, the CLI only
-  reopens. Removing a project deletes its lists. Archived CLIs, ones
-  already open, ones another runtime owns, and lists older than 6 h are
-  skipped. A crash writes no list, so a crash never reopens a CLI. A brain
-  that does this reports `cliSessionsReopen: true` in `runtime.updateImpact`,
-  and the update dialog then says CLI sessions reopen.
+  setting (`reopenCliSessionsAfterRestart`, store in
+  `apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`). Two
+  sources:
+  - **A stop on purpose** (an update, a reboot, the brain quitting):
+    `ptyService.disposeAll({ reopenAfterRestart: true })` saves the CLIs it
+    still has open to its own file,
+    `.ade/cache/reopen-cli-after-restart.<pid>.json`, and marks one that is
+    still printing and not at its prompt as mid-turn. Two runtimes of one
+    project that stop together never overwrite each other's list. The next
+    runtime claims each file with a rename before it reads it.
+  - **A crash, force quit, kill or power loss** writes nothing at exit. The
+    next runtime reads the session rows instead
+    (`findCliSessionsCutOffByCrash`): tracked agent CLI rows, `running` or
+    `detached`, whose owner is in this computer's process registry
+    (`runtime_processes`, never synced), is not this process, and no longer
+    runs. The session table syncs between machines, so another machine's
+    rows never qualify. "Recent" is the dead owner's last heartbeat. Mid-turn
+    comes from `.ade/cache/cli-reopen/turns.<pid>.json`, which the live
+    runtime keeps current from the CLI's own exact turn signal (Claude Code
+    hooks, Codex OSC); a turn only guessed from output does not count, so that
+    CLI reopens at its prompt.
+  The planned list wins: its ids are left out of the crash list. Both sources
+  take one claim per session and dead owner
+  (`.ade/cache/cli-reopen/<session>.<owner>.claim`, created with `wx`) right
+  before that session's reopen, so a session never reopens twice and a stop
+  during the reopens leaves the rest to the next start. After unclean stops a
+  session reopens at most `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row
+  (`.ade/cache/cli-reopen/<session>.json`, written before the reopen starts);
+  a planned stop or a resume by hand starts that count again. A brain in a
+  restart loop (`brainStartIsInRestartLoop`, from `brain-starts.json`)
+  reopens nothing. With the setting off or in a loop, the crash candidates
+  are claimed and stay closed, so a later start does not reopen them.
+  A CLI reopens at its prompt (`ptyService.resumeSession`). A mid-turn one,
+  unless it waits on the user's answer, then gets the durable "continue" row
+  (`RESTART_RESUME_PROMPT`), which fires once the CLI is at its prompt; it
+  counts toward the same restart streak as a chat's. Every reopened CLI shows
+  one line in its own terminal (`ptyService.showSessionNotice`,
+  `cliReopenedNotice`): "ADE restarted (unexpectedly) and reopened this
+  session", with "during a turn … tells the agent to continue" when it is
+  continued. Every viewer of the session sees it. Removing a project deletes
+  its lists and crash state. Archived CLIs, ones already open, ones another
+  runtime owns, and stops older than 6 h are skipped. The log lines are
+  `agent_chat.cli_reopened_after_restart` and `agent_chat.cli_reopen_skipped`,
+  with counts only. A brain that reopens CLIs reports
+  `cliSessionsReopen: true` in `runtime.updateImpact`, and the update dialog
+  then says CLI sessions reopen.
   A cut-off turn counts by its row's end time (none counts as now: the dead
   owner was only just found). A chat at rest must also have gone quiet within
   that time, by its idle time or, when a graceful shutdown cleared that, by its

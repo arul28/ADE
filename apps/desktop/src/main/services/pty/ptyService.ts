@@ -64,7 +64,7 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
-import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
+import { createCliTurnRecorder, recordCliSessionsToReopen, resetCliCrashReopenCount, type CliReopenEntry } from "./cliReopenAfterRestart";
 import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
@@ -2853,6 +2853,28 @@ export function createPtyService({
   const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
   const ownerPid = processRegistry?.pid ?? null;
   const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
+  /**
+   * Which tracked CLIs have a turn running, by their own exact signal, kept on
+   * disk so the next runtime can tell them to continue after a crash
+   * (`cliReopenAfterRestart.ts`). Keyed by the same owner the session rows get.
+   */
+  let cliTurnRecordFailureLogged = false;
+  const cliTurnRecorder = ownerPid != null
+    ? createCliTurnRecorder(projectRoot, { pid: ownerPid, ownerStartedAt: ownerProcessStartedAt }, (error) => {
+        if (cliTurnRecordFailureLogged) return;
+        cliTurnRecordFailureLogged = true;
+        logger.warn("pty.cli_turn_record_failed", { error: error instanceof Error ? error.message : String(error) });
+      })
+    : null;
+  /** Only an exact signal counts: a turn guessed from output is not evidence enough to continue it. */
+  const recordCliTurnRunning = (entry: PtyEntry): void => {
+    if (!cliTurnRecorder || !entry.tracked) return;
+    const turn = entry.cliTurn;
+    cliTurnRecorder.setRunning(
+      entry.sessionId,
+      !entry.disposed && turn != null && isExactCliTurnSource(turn.source) && turn.phase === "working",
+    );
+  };
   const piLeaseIdentity = processRegistry
     ? {
         processStartedAt: ownerProcessStartedAt,
@@ -5144,6 +5166,7 @@ export function createPtyService({
     entry.openCodeLease?.release();
     entry.openCodeLease = null;
     entry.disposed = true;
+    recordCliTurnRunning(entry);
     entry.attentionRequested = false;
     // The process that was serving those ports is gone, so the launchpad chips
     // must go with it rather than pointing at a dead port.
@@ -5645,6 +5668,9 @@ export function createPtyService({
     if (exact && !wasExact) {
       logger.info("pty.cli_turn_exact_source", { sessionId: entry.sessionId, source: turn.source });
     }
+    // Before the transition check: the first exact signal can confirm a turn
+    // the output already marked as working, with no phase change.
+    recordCliTurnRunning(entry);
     if (!transition) return;
     if (exact) {
       const runtimeState = exactCliRuntimeState(entry, turn);
@@ -8134,6 +8160,7 @@ export function createPtyService({
           // Its hooks stopped arriving: guess again until one does.
           entry.cliTurn.source = "heuristic";
           entry.cliTurn.awaitingHookSince = null;
+          recordCliTurnRunning(entry);
           logger.warn("pty.cli_turn_hooks_overdue", { sessionId });
         }
         const exactTurn = entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? entry.cliTurn : null;
@@ -8837,9 +8864,31 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
-    async resumeSession(args: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> {
+    async resumeSession(
+      args: PtyResumeSessionArgs,
+      options?: {
+        /**
+         * Set only by the reopen after a restart. Any other resume (a person, a
+         * failed move) breaks the row of reopens after crashes, so it starts
+         * that count again (`cliReopenAfterRestart.ts`).
+         */
+        reopenAfterRestart?: boolean;
+      },
+    ): Promise<PtyResumeSessionResult> {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
+      if (!options?.reopenAfterRestart) {
+        try {
+          resetCliCrashReopenCount(projectRoot, [sessionId]);
+        } catch (error) {
+          // The count left behind only keeps this session from reopening after
+          // more crashes until it expires; the resume goes on.
+          logger.warn("pty.cli_reopen_count_reset_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "resumed");
@@ -8872,6 +8921,21 @@ export function createPtyService({
       const { flight } = getOrCreateResumeFlight(resumableSession, resumeLaunch, args);
       const created = await flight;
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
+    },
+
+    /**
+     * Write one line of ADE's own into a live session's terminal, as the line
+     * for a CLI download does: every viewer of the session (this desktop,
+     * another computer, a phone) sees it, and the transcript keeps it. False
+     * when the session has no live terminal here.
+     */
+    showSessionNotice(sessionId: string, text: string): boolean {
+      const live = liveEntryBySessionId(sessionId.trim());
+      const line = text.replace(/[\r\n]+/g, " ").trim();
+      if (!live || live[1].disposed || !line || !live[1].processOutputData) return false;
+      // On a line of its own: the output before it may not end in a newline.
+      live[1].processOutputData(`\r\n${line}\r\n`);
+      return true;
     },
 
     /**
@@ -10183,6 +10247,7 @@ export function createPtyService({
       entry.openCodeLease?.release();
       entry.openCodeLease = null;
       entry.disposed = true;
+      recordCliTurnRunning(entry);
       entry.attentionRequested = false;
       // Same rule as closeEntry: the process serving those ports is going away.
       devServerRegistry.forgetSession(entry.sessionId);
@@ -10252,6 +10317,8 @@ export function createPtyService({
      * (`cliReopenAfterRestart.ts`). A failed save never blocks the stop.
      */
     disposeAll(options?: { reopenAfterRestart?: boolean }): void {
+      // An orderly stop: no turn of this runtime is cut off by a crash.
+      cliTurnRecorder?.close();
       if (options?.reopenAfterRestart) {
         try {
           const entries: CliReopenEntry[] = [];
