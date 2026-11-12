@@ -662,6 +662,8 @@ import {
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
+import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
+import { takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -21533,12 +21535,55 @@ function buildProxyPlan(args: string[]): CliPlan {
  * login to land in the new directory, and `remove` signs the account out, then
  * forgets the entry; the directory itself is never deleted.
  */
+/**
+ * `ade providers sign-in <provider> --remote --json`: starts the provider's
+ * own sign-in in this machine's brain for a person on another screen (ADE's
+ * server runs it over exec for the phone and the web) and answers with the
+ * link and code. `sign-in-code <job> --stdin` passes a code pasted from the
+ * provider's page (stdin, so it never sits in the process list);
+ * `sign-in-status <job>` reads where it stands. Only `--remote` exists: a
+ * sign-in on this screen is Settings › Providers.
+ */
+function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-status", args: string[]): CliPlan {
+  if (group === "sign-in") {
+    if (!readFlag(args, ["--remote"])) {
+      throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
+    }
+    const provider = requireValue(firstPositional(args), "provider").trim().toLowerCase();
+    return {
+      kind: "execute",
+      label: "providers sign-in",
+      steps: [{ key: "result", method: "providers.remoteSignInStart", params: { provider } }],
+      machineOnly: true,
+      minTimeoutMs: 30_000,
+    };
+  }
+  const jobId = requireValue(firstPositional(args), "sign-in job id").trim();
+  if (group === "sign-in-status") {
+    return {
+      kind: "execute",
+      label: "providers sign-in-status",
+      steps: [{ key: "result", method: "providers.remoteSignInStatus", params: { jobId } }],
+      machineOnly: true,
+    };
+  }
+  const code = readFlag(args, ["--stdin"]) ? readAllStdinSync().trim() : readValue(args, ["--code"])?.trim() ?? "";
+  if (!code) throw new CliUsageError("ade providers sign-in-code <job> --stdin (the code on stdin)");
+  return {
+    kind: "execute",
+    label: "providers sign-in-code",
+    steps: [{ key: "result", method: "providers.remoteSignInCode", params: { jobId, code } }],
+    machineOnly: true,
+  };
+}
+
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
   if (group === "opencode") return buildOpenCodeProvidersPlan(args);
+  if (group === "sign-in" || group === "sign-in-code" || group === "sign-in-status") return buildRemoteSignInPlan(group, args);
   if (group === "actions") {
     return {
       kind: "execute",
@@ -25811,6 +25856,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "cloud.prepareStop" ||
     method === "cloud.pushWork" ||
     method === "cloud.workState" ||
+    method.startsWith("providers.remoteSignIn") ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -30641,6 +30687,107 @@ async function runServe(
     });
   }
 
+  // A provider sign-in a person finishes on another screen (`ade providers
+  // sign-in --remote`): the login runners live here, in the brain, so they
+  // outlive the short command ADE's server runs over exec.
+  const remoteProviderSignIn = embedded ? null : createRemoteProviderSignIn({
+    providerAccounts: async () => (await import("../../desktop/src/main/services/providerAccounts/machineProviderLoginRunner")).getMachineProviderLoginRunner(),
+    defaultInstanceId: async (provider) => {
+      const { getMachineProviderInstanceStore } = await import("./services/providerInstances/providerInstanceStore");
+      return getMachineProviderInstanceStore().getDefault(provider).id;
+    },
+    agentClis: async () => {
+      const runner = (await import("../../desktop/src/main/services/ai/machineAgentCliLoginRunner")).getMachineAgentCliLoginRunner();
+      return {
+        start: (args) => runner.start(args as Parameters<typeof runner.start>[0]),
+        status: (loginId) => runner.status(loginId),
+        submitCode: (loginId, code) => runner.submitCode(loginId, code),
+      };
+    },
+  });
+
+  // A server launch (C6): ADE's server made this computer for a caller with
+  // no computer and named the launch in its env. The computer signs itself
+  // in with its one-time join code and runs the launch here. The code leaves
+  // this process's env now, so nothing the brain starts inherits it.
+  const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunchEnv(process.env) : null;
+  if (bootLaunchEnv) {
+    void (async () => {
+      const [{ runCloudBootLaunch }, { createCloudApiClient }, headless, { setUpRepositoryOnThisMachine }, { enableCloudSleep }, { recordCloudMachineKey }] = await Promise.all([
+        import("./services/account/cloudBootLaunch"),
+        import("../../desktop/src/shared/cloudApiClient"),
+        import("./services/account/cloudHeadlessApproval"),
+        import("./multiProjectRpcServer"),
+        import("../../desktop/src/main/services/adeCloud/cloudSleep"),
+        import("../../desktop/src/main/services/adeCloud/cloudMachines"),
+      ]);
+      const chromium = headless.findHeadlessChromium();
+      await runCloudBootLaunch({
+        launchId: bootLaunchEnv.launchId,
+        joinCode: bootLaunchEnv.joinCode,
+        instanceId: cloudInstanceId,
+        stateFile: path.join(layout.adeDir, "cloud", "boot-launch.json"),
+        logger: headlessProjectLogger,
+        api: () => {
+          const base = getSharedAccountDirectoryBaseUrl();
+          return base
+            ? createCloudApiClient({
+                baseUrl: base,
+                accessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken().catch(() => null) : null),
+              })
+            : null;
+        },
+        account: {
+          isSignedIn: () => brainAccountAuthService.getStatus().signedIn,
+          // A computer that just booted can start its sign-in before its network is up.
+          startDeviceLogin: () => brainAccountAuthService.startDeviceLogin({ retryUnreachableForMs: 60_000 }),
+          pollDeviceLogin: (sessionId) => brainAccountAuthService.pollDeviceLogin(sessionId),
+        },
+        approveHeadless: chromium
+          ? (url, signal) => headless.approveInHeadlessChromium({ url, signal, binary: chromium, logger: headlessProjectLogger })
+          : null,
+        setUpProject: async (originUrl) => await setUpRepositoryOnThisMachine(projectRegistry, originUrl, holdCloudWork),
+        launches: async (projectId) => {
+          const service = (await scopeRegistry.get(projectId)).runtime.chatLaunchService;
+          if (!service) throw new Error("This ADE runtime can't run a lane launch.");
+          return {
+            start: (args) => service.start(args),
+            get: async (launchId) => service.get({ launchId }),
+            subscribe: (listener) => service.subscribe(listener),
+          };
+        },
+        afterJoin: async () => {
+          const client = await (await getCloudBrainAccess()).client();
+          if (!client) return;
+          await enableCloudSleep(client, cloudInstanceId, { logger: headlessProjectLogger });
+          // The same file the desktop's join reads over exec (cloudMachineCreator.ts);
+          // written once the signed-in brain registers, so it is read for up to a minute.
+          const readMachineKey = (): string => {
+            try {
+              const relay = JSON.parse(fs.readFileSync(path.join(layout.secretsDir, "sync-cloud-relay.json"), "utf8")) as { machineKey?: unknown; config?: { machineKey?: unknown } };
+              const value = relay.config?.machineKey ?? relay.machineKey;
+              return typeof value === "string" ? value.trim() : "";
+            } catch {
+              return "";
+            }
+          };
+          // Off the launch's path: the clone and the agent don't wait on it.
+          void (async () => {
+            let machineKey = readMachineKey();
+            for (let tries = 0; !machineKey && tries < 20; tries += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 3_000));
+              machineKey = readMachineKey();
+            }
+            if (machineKey) await recordCloudMachineKey(client, cloudInstanceId, machineKey, headlessProjectLogger);
+          })();
+        },
+        hold: holdCloudWork ? (run) => holdCloudWork("lane_launch", 30 * 60_000, run) : undefined,
+      });
+    })().catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud_boot_launch.failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
@@ -30666,6 +30813,7 @@ async function runServe(
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
+      remoteProviderSignIn,
       pushCloudWork: holdCloudWork
         ? async ({ check }: { check: boolean }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");

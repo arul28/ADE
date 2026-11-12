@@ -84,7 +84,7 @@ export type CloudMachineCreatorDeps = {
   handOffApproval?: (args: { url: string; userCode: string; name: string }) => void;
   /**
    * A brain with no window: the one-time link opened in a headless Chromium
-   * on this machine (cloudHeadlessApproval.ts). Used only when the sign-in
+   * on this machine (ade-cli services/account/cloudHeadlessApproval.ts). Used only when the sign-in
    * passes `selfApproval`; anything short of signed in falls back to
    * `handOffApproval` with a fresh code.
    */

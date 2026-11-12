@@ -391,6 +391,8 @@ export type MultiProjectRpcHandlerOptions = {
   pushCloudWork?: ((args: { check: boolean }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
+  /** `ade providers sign-in --remote` and its code and status companions (remoteProviderSignIn.ts). */
+  remoteProviderSignIn?: import("./services/account/remoteProviderSignIn").RemoteProviderSignIn | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
@@ -621,6 +623,9 @@ const RUNTIME_METHODS = new Set([
   "cloud.prepareStop",
   "cloud.pushWork",
   "cloud.workState",
+  "providers.remoteSignInStart",
+  "providers.remoteSignInStatus",
+  "providers.remoteSignInCode",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -1534,6 +1539,40 @@ async function cloneRepositoryForRemoteAgent(
   return projectRegistry.add(result.rootPath, asked);
 }
 
+type HoldCloudWork = <T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>;
+
+/**
+ * A clone into this machine's projects folder with no project open. A second
+ * request for the same folder joins the first (the scaffold service), and a
+ * folder that already holds this repository is the answer. Nothing on a cloud
+ * computer's busy list sees such a clone, so it is held while it runs; the
+ * hold wraps only a real clone.
+ */
+function machineCloneIntoFolder(holdCloudWork: HoldCloudWork | null) {
+  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
+    holdCloudWork ? holdCloudWork("first_clone", 30 * 60_000, run) : run();
+  return async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
+    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
+      reuseExistingCheckout: true,
+      beforeClone,
+      wrapClone: whileFirstCloneHeld,
+    });
+}
+
+/**
+ * `machines.cloneForAgent`'s work, for this machine's own brain: a new cloud
+ * computer of a server launch sets its lane's repository up at boot, with the
+ * same rules (GitHub only, its canonical URL, this machine's own Git
+ * sign-in, an existing checkout wins).
+ */
+export async function setUpRepositoryOnThisMachine(
+  projectRegistry: ProjectRegistry,
+  originUrl: string,
+  holdCloudWork: HoldCloudWork | null,
+): Promise<ProjectRecord> {
+  return await cloneRepositoryForRemoteAgent(projectRegistry, originUrl, machineCloneIntoFolder(holdCloudWork));
+}
+
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
   return isRemoteRuntimeEventCategory(value) ? value : null;
 }
@@ -1566,19 +1605,7 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
   registerAccountProjects();
-  // A clone another machine asked for runs with no project open, so nothing on
-  // a cloud computer's busy list sees it.
-  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
-    options.holdCloudWork ? options.holdCloudWork("first_clone", 30 * 60_000, run) : run();
-  // Another machine asked: a second request for the same folder joins the
-  // first (the scaffold service), and a folder that already holds this
-  // repository is the answer. The hold wraps only a real clone.
-  const cloneIntoFolder = async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
-    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
-      reuseExistingCheckout: true,
-      beforeClone,
-      wrapClone: whileFirstCloneHeld,
-    });
+  const cloneIntoFolder = machineCloneIntoFolder(options.holdCloudWork ?? null);
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
@@ -3145,6 +3172,21 @@ export function createMultiProjectRpcRequestHandler(
       const prepare = options.prepareCloudStop;
       if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
       return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
+    }
+
+    // A provider sign-in a person finishes on another screen (`ade providers
+    // sign-in --remote`, which ADE's server runs over exec for the phone and
+    // the web). The person starts it; an agent never does.
+    if (method === "providers.remoteSignInStart" || method === "providers.remoteSignInStatus" || method === "providers.remoteSignInCode") {
+      if (callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Only the person starts a provider sign-in.");
+      }
+      const signIn = options.remoteProviderSignIn;
+      if (!signIn) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't run a provider sign-in for another screen.");
+      if (method === "providers.remoteSignInStart") return await signIn.start(readOptionalString(params.provider) ?? "");
+      const jobId = readOptionalString(params.jobId) ?? "";
+      if (method === "providers.remoteSignInStatus") return await signIn.status(jobId);
+      return await signIn.submitCode(jobId, typeof params.code === "string" ? params.code : "");
     }
 
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.

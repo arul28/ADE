@@ -65,7 +65,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Area | File (under `services/adeCloud/`) |
 |---|---|
 | Machine list and box actions | `cloudMachines.ts` |
-| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`, `cloudHeadlessApproval.ts` |
+| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the headless approval a brain runs is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` |
 | Half-made machines after a quit | `cloudPendingCreates.ts` |
 | Copy and move | `cloudMachineCopy.ts` |
 | Reconnect a machine removed from ADE | `cloudReconnect.ts` |
@@ -625,6 +625,54 @@ a terminal in.
   `ADE Cloud · <computer>`. `--json`: `{ok, launchId, phase, laneId, laneName,
   sessionId, machine {name, instanceId, machineKey}, approvalUrl, launch}`. A
   failed or cancelled launch exits non-zero with the card's sentence.
+
+### A new lane with no computer of your own (the server launcher)
+
+A person with a computer launches from it, as above. A caller with none (the
+web client, the phone, an automation on ADE Cloud) starts the lane through
+ADE's server, and the new computer runs its own launch
+(`apps/account-directory/src/cloud/launches.ts`, migration `0028`; plan:
+`docs/plans/cloud-6/c6-c8-launcher-spec.md`).
+
+- **Start.** Files first (`PUT /cloud/launches/:id/files/:fileId`, at most 10,
+  25 MB each, kept in R2 under `launches/<user>/<launch>/`), then
+  `POST /cloud/launches` with `CloudServerLaunchRequest`. The launch id is the
+  create's request id: the same id answers the same launch and never makes a
+  second computer. The create is the one create path (`createComputer` in
+  `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
+- **Join.** The computer's env carries `ADE_LAUNCH_ID` and a one-time
+  `ADE_LAUNCH_JOIN` code; the server keeps only its SHA-256. At brain start
+  with no account session (`apps/ade-cli/src/services/account/cloudBootLaunch.ts`)
+  the brain drops both from its env, starts ADE's device sign-in and calls
+  `POST /cloud/launches/:id/join` with no account token. The code is single
+  use, valid 30 minutes, and only from the launch's computer (`x-ade-instance`
+  plus the provider's metadata); the answer is a sign-in link for the
+  launch's account only, opened in the computer's headless Chromium
+  (`cloudHeadlessApproval.ts`, now in `apps/ade-cli`). When the page stops on
+  a confirm step, the launch shows `needs_approval` with the device page and
+  code, and the caller offers one Approve tap in the person's own browser.
+- **Run.** Signed in, the computer reads the facts (`GET /cloud/launches/:id`),
+  sets the repository up with its own Git sign-in, and runs `chat.startLaunch`
+  in its own brain with the same launch and lane ids. It posts a stage
+  update only when a stage changes (`PUT .../stages`); the caller reads the
+  record while it watches. A cancel before the agent starts deletes the
+  computer. The minute cron deletes a record a week after its start (a draft
+  after a day), with its files.
+- **Not yet:** the server can't check for a git credential before it makes
+  the computer (no vault access here); a private repository with none fails
+  at the clone with the usual sentence.
+
+Provider sign-ins on a cloud computer from the phone or the web:
+`POST /cloud/instances/:id/sign-ins { provider }` runs
+`ade providers sign-in <provider> --remote --json` there over exec, and
+`.../sign-ins/:job` and `.../code` read it and pass a pasted code (on stdin).
+The login runners live in the computer's brain. Which providers can do this
+is `CLOUD_REMOTE_SIGN_IN` in `contract.ts`; a `none` row is refused with its
+reason. `POST /cloud/projects/computers/delete { origin, dryRun? }` starts a
+job the minute cron runs: wake, push every lane's work, delete; a computer
+whose push failed is kept with why. The typed client for all of these is
+`apps/desktop/src/shared/cloudApiClient.ts` (fetch only). Every `/cloud/*`
+route answers a browser only on `WEB_CLIENT_ORIGIN`.
 
 ### The life of a lane's computer
 
