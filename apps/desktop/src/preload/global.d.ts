@@ -2083,100 +2083,100 @@ declare global {
         complete: (pin?: OpenProjectBinding | null) => Promise<OnboardingStatus>;
       };
       automations: {
-        list: (pin?: OpenProjectBinding | null) => Promise<AutomationRuleSummary[]>;
+        list: (pin: OpenProjectBinding) => Promise<AutomationRuleSummary[]>;
         toggle: (
           args: {
             id: string;
             enabled: boolean;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRuleSummary[]>;
         deleteRule: (
           args: AutomationDeleteRuleRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRuleSummary[]>;
         triggerManually: (
           args: AutomationManualTriggerRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRun>;
         planTest: (
           args: AutomationTestRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationTestPlan>;
         runTest: (
           args: AutomationTestRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRun>;
         cleanUpTestRun: (
           args: { runId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationTestCleanupResult>;
         getHistory: (
           args: {
             id: string;
             limit?: number;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRun[]>;
         listRuns: (
-          args?: AutomationRunListArgs,
-          pin?: OpenProjectBinding | null,
+          args: AutomationRunListArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRun[]>;
         getRunDetail: (
           runId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationRunDetail | null>;
-        getIngressStatus: (pin?: OpenProjectBinding | null) => Promise<AutomationIngressStatus>;
-        refreshWebhookGatewayStatus: (pin?: OpenProjectBinding | null) => Promise<AutomationWebhookGatewayStatus>;
+        getIngressStatus: (pin: OpenProjectBinding) => Promise<AutomationIngressStatus>;
+        refreshWebhookGatewayStatus: (pin: OpenProjectBinding) => Promise<AutomationWebhookGatewayStatus>;
         setWebhookGatewayPublicUrl: (args: {
           publicUrl?: string | null;
-        }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookGatewayStatus>;
-        listIngressEvents: (args?: {
+        }, pin: OpenProjectBinding) => Promise<AutomationWebhookGatewayStatus>;
+        listIngressEvents: (args: {
           limit?: number;
-        }, pin?: OpenProjectBinding | null) => Promise<AutomationIngressEventRecord[]>;
+        } | undefined, pin: OpenProjectBinding) => Promise<AutomationIngressEventRecord[]>;
         parseNaturalLanguage: (
           req: AutomationParseNaturalLanguageRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationParseNaturalLanguageResult>;
         validateDraft: (
           req: AutomationValidateDraftRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationValidateDraftResult>;
         saveDraft: (
           req: AutomationSaveDraftRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationSaveDraftResult>;
         simulate: (
           req: AutomationSimulateRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutomationSimulateResult>;
-        listScheduledCleanups: (pin?: OpenProjectBinding | null) => Promise<AutomationScheduledCleanup[]>;
-        cancelScheduledCleanup: (id: string, pin?: OpenProjectBinding | null) => Promise<boolean>;
+        listScheduledCleanups: (pin: OpenProjectBinding) => Promise<AutomationScheduledCleanup[]>;
+        cancelScheduledCleanup: (id: string, pin: OpenProjectBinding) => Promise<boolean>;
         linearIngress: {
-          getStatus: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
-          setup: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
-          teardown: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
-          pollNow: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
+          getStatus: (pin: OpenProjectBinding) => Promise<AutomationLinearIngressStatus>;
+          setup: (pin: OpenProjectBinding) => Promise<AutomationLinearIngressStatus>;
+          teardown: (pin: OpenProjectBinding) => Promise<AutomationLinearIngressStatus>;
+          pollNow: (pin: OpenProjectBinding) => Promise<AutomationLinearIngressStatus>;
         };
         /** Custom webhook URLs. `pin` targets the machine the rule runs on. */
         webhooks: {
           /** Every webhook automation with its URL, secret state and last delivery. */
-          list: (pin?: OpenProjectBinding | null) => Promise<AutomationWebhookListEntry[]>;
-          createEndpoint: (args?: { label?: string | null }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
-          getEndpoint: (args: { hookId: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
-          rotateEndpoint: (args: { hookId: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookEndpoint>;
-          listDeliveries: (args: { hookId: string; limit?: number }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDeliverySummary[]>;
-          getDelivery: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDelivery | null>;
-          replayDelivery: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<AutomationWebhookDeliverySummary | null>;
+          list: (pin: OpenProjectBinding) => Promise<AutomationWebhookListEntry[]>;
+          createEndpoint: (args: { label?: string | null } | undefined, pin: OpenProjectBinding) => Promise<AutomationWebhookEndpoint>;
+          getEndpoint: (args: { hookId: string }, pin: OpenProjectBinding) => Promise<AutomationWebhookEndpoint>;
+          rotateEndpoint: (args: { hookId: string }, pin: OpenProjectBinding) => Promise<AutomationWebhookEndpoint>;
+          listDeliveries: (args: { hookId: string; limit?: number }, pin: OpenProjectBinding) => Promise<AutomationWebhookDeliverySummary[]>;
+          getDelivery: (args: { id: string }, pin: OpenProjectBinding) => Promise<AutomationWebhookDelivery | null>;
+          replayDelivery: (args: { id: string }, pin: OpenProjectBinding) => Promise<AutomationWebhookDeliverySummary | null>;
           sendTest: (
             args: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null },
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<AutomationWebhookTestResult>;
         };
-        onEvent: (cb: (ev: AutomationsEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
+        onEvent: (cb: (ev: AutomationsEventPayload) => void, pin: OpenProjectBinding) => () => void;
       };
       actions: {
-        listRegistry: (pin?: OpenProjectBinding | null) => Promise<AdeActionRegistryEntry[]>;
+        listRegistry: (pin: OpenProjectBinding) => Promise<AdeActionRegistryEntry[]>;
       };
       attention: {
         /**
@@ -4227,7 +4227,7 @@ declare global {
         probePort: (port: number, pin?: OpenProjectBinding | null) => Promise<boolean>;
       };
       search: {
-        query: (args: SearchQueryArgs, pin?: OpenProjectBinding | null) => Promise<SearchQueryResult>;
+        query: (args: SearchQueryArgs, pin: OpenProjectBinding) => Promise<SearchQueryResult>;
         indexStatus: (pin?: OpenProjectBinding | null) => Promise<SearchIndexStatus | null>;
         rebuildIndex: (pin?: OpenProjectBinding | null) => Promise<SearchRebuildResult>;
       };
@@ -5197,12 +5197,12 @@ declare global {
       };
       history: {
         listOperations: (
-          args?: ListOperationsArgs,
-          pin?: OpenProjectBinding | null,
+          args: ListOperationsArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<OperationRecord[]>;
         exportOperations: (
           args: ExportHistoryArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ExportHistoryResult>;
       };
       layout: {
@@ -5256,12 +5256,12 @@ declare global {
         ) => Promise<{ ok: boolean }>;
       };
       tests: {
-        listSuites: (pin?: OpenProjectBinding | null) => Promise<TestSuiteDefinition[]>;
-        run: (args: RunTestSuiteArgs, pin?: OpenProjectBinding | null) => Promise<TestRunSummary>;
-        stop: (args: StopTestRunArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        listRuns: (args?: ListTestRunsArgs, pin?: OpenProjectBinding | null) => Promise<TestRunSummary[]>;
-        getLogTail: (args: GetTestLogTailArgs, pin?: OpenProjectBinding | null) => Promise<string>;
-        onEvent: (cb: (ev: TestEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        listSuites: (pin: OpenProjectBinding) => Promise<TestSuiteDefinition[]>;
+        run: (args: RunTestSuiteArgs, pin: OpenProjectBinding) => Promise<TestRunSummary>;
+        stop: (args: StopTestRunArgs, pin: OpenProjectBinding) => Promise<void>;
+        listRuns: (args: ListTestRunsArgs | undefined, pin: OpenProjectBinding) => Promise<TestRunSummary[]>;
+        getLogTail: (args: GetTestLogTailArgs, pin: OpenProjectBinding) => Promise<string>;
+        onEvent: (cb: (ev: TestEvent) => void, pin: OpenProjectBinding) => () => void;
       };
       projectConfig: {
         get: (pin?: OpenProjectBinding | null) => Promise<ProjectConfigSnapshot>;

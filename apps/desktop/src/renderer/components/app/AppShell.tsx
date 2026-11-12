@@ -18,6 +18,7 @@ import { useProjectTabShortcuts } from "./useProjectTabShortcuts";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import { TabBackground } from "../ui/TabBackground";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { APP_BANNER_PRIORITY, AppBannerHost, useAppBanner } from "../ui/notice";
 import { ProjectMoveHost } from "../projectMove/ProjectMoveHost";
 import type {
@@ -274,6 +275,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // The tab's copy: the shell's AI status reads its machine, so its chat
+  // events say when to read again.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  // The copy that reads this repository's GitHub state for the banner.
+  const githubReaderPin = useActiveRepositoryReader();
+  const githubReaderPinRef = useRef(githubReaderPin);
+  githubReaderPinRef.current = githubReaderPin;
   const projectRevision = useAppStore((s) => s.projectRevision);
   // One launch feed for the whole window; the slide-out renders only when it
   // has a background chat or CLI launch of ours to show.
@@ -315,13 +325,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const githubReconnectContextRef = useRef({
     currentProjectRoot,
     isRemoteProject,
-    bindingKey: projectBinding?.key,
+    bindingKey: githubReaderPin?.key,
     pathname: location.pathname,
   });
   githubReconnectContextRef.current = {
     currentProjectRoot,
     isRemoteProject,
-    bindingKey: projectBinding?.key,
+    bindingKey: githubReaderPin?.key,
     pathname: location.pathname,
   };
   const isPersonalChatsRoute =
@@ -806,7 +816,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    const unsubscribeChatEvents = window.ade.agentChat.onEvent((envelope) => {
+    const chatEventPin = tabCopyPinRef.current;
+    const unsubscribeChatEvents = chatEventPin ? window.ade.agentChat.onEvent((envelope) => {
       if (isRemoteProject) {
         const eventTimestamp = Date.parse(envelope.timestamp);
         if (Number.isFinite(eventTimestamp) && eventTimestamp < chatEventSubscriptionStartedAt - 10_000) {
@@ -818,7 +829,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (now - lastChatEventRefreshAt < AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS) return;
       lastChatEventRefreshAt = now;
       refreshAiStatus({ force: true });
-    });
+    }, chatEventPin) : () => {};
     const onAiStatusCacheInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
       if (detail && !detail.allProjects && detail.projectRoot !== aiStatusProjectRoot) return;
@@ -833,11 +844,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
     };
-  }, [currentProjectRoot, isRemoteProject, location.pathname]);
+  }, [currentProjectRoot, isRemoteProject, location.pathname, tabCopyPin?.key]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
+    const readerPin = githubReaderPinRef.current;
+    if (!currentProjectRoot || !readerPin || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
       githubStatusScopeRef.current = null;
       setGithubStatus(null);
       return;
@@ -853,7 +865,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const request = ++githubStatusRequestRef.current;
       void window.ade.github.getStatus({
         forceRefresh: false,
-      }).then((status) => {
+      }, readerPin).then((status) => {
         if (cancelled || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
@@ -868,7 +880,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [
     currentProjectRoot,
     githubStatusScope,
-    projectBinding?.key,
+    githubReaderPin?.key,
     isRemoteProject,
     location.pathname,
   ]);
@@ -894,9 +906,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       );
     };
     const githubTimer = window.setTimeout(() => {
-      if (!isCurrentContext()) return;
+      const readerPin = githubReaderPinRef.current;
+      if (!isCurrentContext() || !readerPin) return;
       const request = ++githubStatusRequestRef.current;
-      void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
+      void window.ade.github.getStatus({ forceRefresh: true }, readerPin).then((status) => {
         if (!isCurrentContext() || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
@@ -910,10 +923,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [githubConnectionGeneration]);
 
   // Local events may arrive while this tab owns a remote project. Treat those
-  // as refresh signals and read through the bound route instead of accepting
+  // as refresh signals and read through the reader copy instead of accepting
   // a status payload from a different machine.
   useEffect(() => {
     let cancelled = false;
+    const readerPin = githubReaderPinRef.current;
+    if (!readerPin) return;
     const off = window.ade.github?.onStatusChanged?.((status) => {
       if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) return;
       const request = ++githubStatusRequestRef.current;
@@ -921,14 +936,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setGithubStatus(status);
         return;
       }
-      void window.ade.github.getStatus().then((boundStatus) => {
+      void window.ade.github.getStatus(undefined, readerPin).then((boundStatus) => {
         if (!cancelled && request === githubStatusRequestRef.current) setGithubStatus(boundStatus);
       }).catch((error: unknown) => {
         if (!cancelled && request === githubStatusRequestRef.current) captureError(error, { fingerprint: ["github", "bound-status-refresh"] });
       });
-    });
+    }, readerPin);
     return () => { cancelled = true; off?.(); };
-  }, [currentProjectRoot, projectBinding?.key, isRemoteProject, location.pathname]);
+  }, [currentProjectRoot, githubReaderPin?.key, isRemoteProject, location.pathname]);
 
   const relocateMissingProject = useCallback(() => {
     void openRepo()

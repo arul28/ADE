@@ -26,6 +26,7 @@ import {
   type HistoryCtoRoute,
 } from "./historyActivitySources";
 import { withMachineTimeout } from "../../state/projectMachines";
+import { rootAppStoreApi } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason, shouldShowMachineChips } from "../../state/laneMachineRouting";
 import { machineScopedId, type MachineReadLoad } from "../../state/foreignMachineReads";
 
@@ -554,6 +555,14 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
       }
       const local = activeMachine();
       const localKey = local?.machineId ?? IMPLICIT_ACTIVE_KEY;
+      // The tab machine's own copy. Before the page publishes its machines, the
+      // tab's copy is that same machine. With neither, nothing is online.
+      const localPin = local ? local.pin : rootAppStoreApi.getState().projectBinding ?? null;
+      if (!localPin) {
+        set({ loading: false });
+        commitSegment(localKey, []);
+        return;
+      }
       const seq = nextReadSeq(localKey);
       try {
         const skipSupplemental = Boolean(opts?.skipSupplemental) || Boolean(opts?.kind);
@@ -562,8 +571,8 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
             laneId: opts?.laneId,
             kind: opts?.kind,
             limit,
-          }),
-          skipSupplemental ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit, get().ctoRoute),
+          }, localPin),
+          skipSupplemental ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit, get().ctoRoute, localPin),
         ]);
         if (!isLatestRead(localKey, seq)) return;
         if (skipSupplemental) {

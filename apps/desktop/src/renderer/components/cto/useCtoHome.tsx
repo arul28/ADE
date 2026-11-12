@@ -23,7 +23,7 @@ import {
  * `status`:
  *  - `loading`  — the stored choice or the machine list is still arriving.
  *  - `choose`   — no home yet; show the first-run chooser.
- *  - `ready`    — `pin` addresses the home machine (null = the tab's binding).
+ *  - `ready`    — `pin` addresses the home machine. It is never null when ready.
  *  - `offline`  — a home is chosen but cannot be reached from here right now.
  *
  * Every CTO call must use `pin` and only when `status === "ready"`. Anything
@@ -202,9 +202,9 @@ export function useCtoHome(active: boolean): CtoHomeState {
       if (!settled) {
         return { ...base, status: "loading", pin: null, home: null, homeName: null, offlineReason: null };
       }
-      if (implicitThisMachine && thisMachine?.isActiveBinding) {
-        // No other machine: the tab's own binding is the only possible home.
-        return { ...base, status: "ready", pin: null, home: thisMachine, homeName: thisMachine.machineName, offlineReason: null };
+      if (implicitThisMachine && thisMachine?.isActiveBinding && thisMachine.pin) {
+        // No other machine: this computer's copy is the only possible home.
+        return { ...base, status: "ready", pin: thisMachine.pin, home: thisMachine, homeName: thisMachine.machineName, offlineReason: null };
       }
       return { ...base, status: "choose", pin: null, home: null, homeName: null, offlineReason: null };
     }
@@ -223,7 +223,7 @@ export function useCtoHome(active: boolean): CtoHomeState {
     if (!home.online) {
       return { ...base, status: "offline", pin: null, home, homeName, offlineReason: `${home.machineName} is offline.` };
     }
-    if (!home.hasRepo || !home.routable) {
+    if (!home.hasRepo || !home.routable || !home.pin) {
       return {
         ...base,
         status: "offline",
@@ -260,14 +260,14 @@ export function useCtoHome(active: boolean): CtoHomeState {
 // ── Context for the CTO subtree ────────────────────────────────────────────
 
 export type CtoHomeScope = {
-  /** Pass to every CTO preload call. Null = the tab's binding. */
+  /** Pass to every CTO preload call. Null until the home is reachable: call nothing then. */
   pin: OpenProjectBinding | null;
   machineName: string | null;
   /** False until the home is resolved and reachable; calls must wait. */
   ready: boolean;
 };
 
-const FALLBACK_SCOPE: CtoHomeScope = { pin: null, machineName: null, ready: true };
+const FALLBACK_SCOPE: CtoHomeScope = { pin: null, machineName: null, ready: false };
 const CtoHomeContext = createContext<CtoHomeScope | null>(null);
 
 export function CtoHomeProvider({ scope, children }: { scope: CtoHomeScope; children: React.ReactNode }) {
@@ -276,7 +276,7 @@ export function CtoHomeProvider({ scope, children }: { scope: CtoHomeScope; chil
 
 /**
  * The CTO's machine for a component inside the CTO page. Outside the page
- * (tests, previews) it is the tab's binding.
+ * (tests, previews) there is no home: `pin` is null and nothing is called.
  */
 export function useCtoHomeScope(): CtoHomeScope {
   return useContext(CtoHomeContext) ?? FALLBACK_SCOPE;

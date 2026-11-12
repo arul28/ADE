@@ -41,6 +41,10 @@ export function RuleHistory({
       setError(offlineMessage);
       return;
     }
+    if (!pin) {
+      setError("No computer with this project is online.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -61,6 +65,7 @@ export function RuleHistory({
     const requestId = detailRequestId.current + 1;
     detailRequestId.current = requestId;
     setSelectedRunId(runId);
+    if (!pin) return;
     setDetailLoading(true);
     setError(null);
     try {
@@ -88,14 +93,14 @@ export function RuleHistory({
 
   useEffect(() => {
     // The event feed is the tab machine's own; another machine's runs refresh
-    // on the Refresh button instead.
-    if (pin) return undefined;
+    // on the Refresh button instead, so no new event pump starts for them.
+    if (!pin || !isActiveBinding) return undefined;
     const unsubscribe = window.ade.automations.onEvent(() => {
       void load();
       if (selectedRunId) void loadDetail(selectedRunId);
-    });
+    }, pin);
     return () => unsubscribe();
-  }, [load, loadDetail, pin, selectedRunId]);
+  }, [isActiveBinding, load, loadDetail, pin, selectedRunId]);
 
   useEffect(() => {
     if (selectedRunId && !detail) void loadDetail(selectedRunId);

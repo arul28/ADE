@@ -55,6 +55,14 @@ export function waitForCtoHomeResolution(
   });
 }
 
+/** Calls `listener` with the scope key each time the CTO page publishes a resolution. */
+export function subscribeCtoHomeResolution(listener: (scopeKey: string) => void): () => void {
+  resolutionListeners.add(listener);
+  return () => {
+    resolutionListeners.delete(listener);
+  };
+}
+
 export function cachedCtoHomeResolution(scopeKey: string | null): CtoHomeResolution | null {
   if (!scopeKey) return null;
   return resolutionByScope.get(scopeKey) ?? null;

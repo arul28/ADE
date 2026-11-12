@@ -39,6 +39,7 @@ import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchT
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { showToast } from "./toast/toastStore";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { useTabCopyPin } from "../../state/repositoryScope";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -89,13 +90,17 @@ function safeSaveDefaultPrompt(projectRoot: string | null | undefined, prompt: s
   }
 }
 
-async function loadProjectDefaultPrompt(projectRoot: string | null | undefined): Promise<string | null> {
+/** The default prompt lives in the project's local config on the tab's copy (`pin`). */
+async function loadProjectDefaultPrompt(
+  projectRoot: string | null | undefined,
+  pin: OpenProjectBinding | null,
+): Promise<string | null> {
   const localFallback = safeLoadDefaultPrompt(projectRoot);
-  if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get) {
+  if (!projectRoot?.trim() || !pin || typeof window === "undefined" || !window.ade?.projectConfig?.get) {
     return localFallback;
   }
   try {
-    const snapshot = await window.ade.projectConfig.get();
+    const snapshot = await window.ade.projectConfig.get(pin);
     const prompt = snapshot.effective.ui?.linearBatchLaunchDefaultPrompt?.trim();
     return prompt || localFallback;
   } catch {
@@ -103,10 +108,14 @@ async function loadProjectDefaultPrompt(projectRoot: string | null | undefined):
   }
 }
 
-async function persistProjectDefaultPrompt(projectRoot: string | null | undefined, prompt: string): Promise<void> {
+async function persistProjectDefaultPrompt(
+  projectRoot: string | null | undefined,
+  prompt: string,
+  pin: OpenProjectBinding | null,
+): Promise<void> {
   const value = prompt.trim();
   safeSaveDefaultPrompt(projectRoot, value);
-  if (!projectRoot?.trim() || typeof window === "undefined" || !window.ade?.projectConfig?.get || !window.ade?.projectConfig?.save) {
+  if (!projectRoot?.trim() || !pin || typeof window === "undefined" || !window.ade?.projectConfig?.get || !window.ade?.projectConfig?.save) {
     return;
   }
   await saveProjectLocalConfig((snapshot) => {
@@ -123,7 +132,7 @@ async function persistProjectDefaultPrompt(projectRoot: string | null | undefine
       delete nextLocal.ui;
     }
     return nextLocal;
-  });
+  }, pin);
 }
 
 function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIssueState {
@@ -236,6 +245,10 @@ export function BatchLaunchModal({
 }) {
   // Always asks where the batch goes; one choice for every lane in it.
   const machineChoice = useLaneMachineChoice(open);
+  // The tab's copy holds the project's default prompt.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
   const { selectedMachineId, targetPin, selectedTarget, adeCloud, adeCloudPicked } = machineChoice;
   // "Existing lane" targets and conflicts are read from the chosen machine's
   // own lanes: a lane id from the tab's machine means nothing over there.
@@ -330,7 +343,7 @@ export function BatchLaunchModal({
     const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
     const initialPrompt = fallbackPrompt ?? defaultKickoffPrompt();
 
-    void loadProjectDefaultPrompt(projectRoot).then((savedPrompt) => {
+    void loadProjectDefaultPrompt(projectRoot, tabCopyPinRef.current).then((savedPrompt) => {
       if (cancelled) return;
       setProjectDefaultPrompt(savedPrompt);
       if (!savedPrompt || savedPrompt === initialPrompt) return;
@@ -425,7 +438,7 @@ export function BatchLaunchModal({
   const savePromptAsDefault = useCallback((prompt: string) => {
     const value = prompt.trim();
     setProjectDefaultPrompt(value || null);
-    void persistProjectDefaultPrompt(projectRoot, value).catch(() => {});
+    void persistProjectDefaultPrompt(projectRoot, value, tabCopyPinRef.current).catch(() => {});
   }, [projectRoot]);
 
   const includedIssues = useMemo(

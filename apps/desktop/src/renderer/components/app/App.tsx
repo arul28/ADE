@@ -181,6 +181,7 @@ import {
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { BootSplashReveal, useBootSplashHold } from "./BootSplashReveal";
@@ -486,7 +487,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   // `ade ui show` for this project's runtime. Answered here, whatever tab is
   // showing, so the agent hears "held" instead of "no desktop" while the user
   // is somewhere else; the pane showing the chat takes it when it mounts.
-  useWorkToolShowRequestListener(Boolean(active && projectRoot));
+  // `ade ui show` requests come from the tab's copy, and the answer goes back there.
+  const showRequestPin = useTabCopyPin();
+  useWorkToolShowRequestListener(Boolean(active && projectRoot && showRequestPin), showRequestPin);
 
   // The account's Fast-mode permission, once per window and again whenever the
   // window regains focus (another machine may have turned it on or off). The
@@ -1285,6 +1288,10 @@ function AppNavigationBridge() {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectBindingRef = React.useRef(projectBinding ?? null);
   projectBindingRef.current = projectBinding ?? null;
+  // The tab's copy: the store's lanes and the "local" chat lookup are its machine's.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = React.useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
   const [otherMachineLookups, setOtherMachineLookups] = React.useState(0);
 
   const readOtherMachinesNow = React.useCallback(
@@ -1297,9 +1304,10 @@ function AppNavigationBridge() {
 
   const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
     const lane = lanesRef.current[0];
-    if (!lane) return null;
+    const pin = tabCopyPinRef.current;
+    if (!lane || !pin) return null;
     try {
-      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id });
+      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id }, pin);
       return parseGithubRemoteUrl(remote?.remoteUrl ?? null);
     } catch {
       return null;
@@ -1382,7 +1390,10 @@ function AppNavigationBridge() {
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
-        const localSession = await window.ade?.sessions?.get?.(target.sessionId).catch(() => null);
+        const tabPin = tabCopyPinRef.current;
+        const localSession = tabPin
+          ? await window.ade?.sessions?.get?.(target.sessionId, tabPin).catch(() => null)
+          : null;
         // Work lists the chats of every connected machine, so a chat that one
         // of them holds opens there like a local one.
         const sessionId = target.sessionId;

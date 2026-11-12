@@ -155,6 +155,7 @@ import {
   settingsTabLabel,
 } from "../settings/settingsManifest";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { InlineErrorNotice } from "../ui/notice";
 
@@ -286,10 +287,12 @@ export function CommandPalette({
   const selectedLane = lanes.find((lane) => lane.id === selectedLaneId) ?? null;
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // The tab's copy: the active Work session and the lane tools' support are read there.
+  const tabCopyPin = useTabCopyPin();
   const selectedLanePr = useCommandPaletteLanePr({ active: open, lane: selectedLane, pin: projectBinding });
-  const runtimePinRef = useRef(projectBinding);
-  runtimePinRef.current = projectBinding;
-  const runtimePinKey = projectBinding?.key ?? null;
+  const runtimePinRef = useRef(tabCopyPin);
+  runtimePinRef.current = tabCopyPin;
+  const runtimePinKey = tabCopyPin?.key ?? null;
   const selectLane = useAppStore((s) => s.selectLane);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
@@ -337,9 +340,9 @@ export function CommandPalette({
     ? threadSessions.find((session) => session.id === activeSessionId) ?? null
     : null;
   useEffect(() => {
-    if (!open || !activeSessionId || cachedActiveSession) return;
+    if (!open || !activeSessionId || cachedActiveSession || !tabCopyPin) return;
     let cancelled = false;
-    void window.ade.sessions.get(activeSessionId)
+    void window.ade.sessions.get(activeSessionId, tabCopyPin)
       .then((detail) => {
         if (!cancelled) setFetchedActiveSession(detail ? { id: detail.id, toolType: detail.toolType } : null);
       })
@@ -347,7 +350,8 @@ export function CommandPalette({
         if (!cancelled) setFetchedActiveSession(null);
       });
     return () => { cancelled = true; };
-  }, [activeSessionId, cachedActiveSession, open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId, cachedActiveSession, open, tabCopyPin?.key]);
   const activeSessionTarget: Pick<TerminalSessionSummary, "id" | "toolType"> | null = cachedActiveSession
     ?? (fetchedActiveSession?.id === activeSessionId ? fetchedActiveSession : null);
   // The Work sidebar is a union across every connected machine, always. The
@@ -645,9 +649,9 @@ export function CommandPalette({
   useEffect(() => {
     // The Apple tool works on a project's lanes; with no project open there is
     // no runtime to ask (and no tool to offer).
-    if (!projectBinding) return undefined;
+    if (!tabCopyPin) return undefined;
     let cancelled = false;
-    void window.ade?.iosSimulator?.getStatus()?.then((status) => {
+    void window.ade?.iosSimulator?.getStatus(tabCopyPin)?.then((status) => {
       if (!cancelled && typeof status.supported === "boolean") {
         setSupportsIosSimulator(status.supported);
       }
@@ -655,7 +659,8 @@ export function CommandPalette({
     return () => {
       cancelled = true;
     };
-  }, [projectBinding]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabCopyPin?.key]);
   // The lane-screen tool follows the HOST platform, from the same cached
   // support read the Work tools use: a Windows host offers Windows Desktop
   // only, a Mac host Mac Desktop only.
@@ -1236,7 +1241,7 @@ export function CommandPalette({
     flatEntities,
     expandedKinds,
     toggleExpandKind,
-  } = useUniversalSearch(q, canEntitySearch);
+  } = useUniversalSearch(q, canEntitySearch, open && hasActiveProject);
 
   const workResults = useMemo(
     () =>

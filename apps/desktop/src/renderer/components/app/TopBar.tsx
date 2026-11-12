@@ -55,6 +55,7 @@ import {
 } from "../../../shared/projectRecord";
 
 import { useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -221,9 +222,16 @@ function connectedWebClients(snapshot: SyncRoleSnapshot | null) {
 function HeaderAccountAvatar() {
   const { status } = useAccountStatus();
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  // The GitHub sign-in of the copy that reads this repository. Null when no
+  // computer is online: the avatar then shows the account picture only.
+  const readerPin = useActiveRepositoryReader();
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
 
   useEffect(() => {
-    if (!status.signedIn || status.imageUrl) {
+    const pin = readerPinRef.current;
+    if (!status.signedIn || status.imageUrl || !pin) {
       setGithubStatus(null);
       return;
     }
@@ -232,13 +240,13 @@ function HeaderAccountAvatar() {
       if (cancelled) return;
       setGithubStatus(next);
     };
-    void window.ade.github?.getStatus?.().then(apply).catch(() => {});
-    const unsubscribe = window.ade.github?.onStatusChanged?.(apply);
+    void window.ade.github?.getStatus?.(undefined, pin).then(apply).catch(() => {});
+    const unsubscribe = window.ade.github?.onStatusChanged?.(apply, pin);
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [status.imageUrl, status.signedIn]);
+  }, [readerPinKey, status.imageUrl, status.signedIn]);
 
   return (
     <AccountAvatar
@@ -817,6 +825,7 @@ export function TopBar({
   const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const tabCopyPin = useTabCopyPin();
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
@@ -1517,12 +1526,15 @@ export function TopBar({
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
       if (project?.rootPath !== projectRootPath) return true;
+      // The work that stops is the work on the copy this tab closes.
+      const closingPin = tabCopyPin;
+      if (!closingPin) return true;
 
       try {
         const [runningSessions, agentChats] =
           await Promise.all([
-            window.ade.sessions.list({ status: "running" }),
-            window.ade.agentChat.list(),
+            window.ade.sessions.list({ status: "running" }, closingPin),
+            window.ade.agentChat.list(undefined, closingPin),
           ]);
 
         const activeSessionCount = runningSessions.filter(
@@ -1562,7 +1574,7 @@ export function TopBar({
         return true;
       }
     },
-    [project?.rootPath],
+    [project?.rootPath, tabCopyPin],
   );
 
   const handleOpenNew = useCallback(() => {

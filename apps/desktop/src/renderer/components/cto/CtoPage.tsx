@@ -16,6 +16,7 @@ import type { ComposerMachineChipAction } from "../chat/AgentChatComposer";
 import { useChatMachineLanes } from "../chat/ChatRuntimeScope";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { pinKey } from "../../state/pinKey";
+import { useStableBinding } from "../../state/laneMachineRouting";
 import { CtoHomeChooser } from "./CtoHomeChooser";
 import { CtoHomeProvider, useCtoHome, type CtoHomeScope } from "./useCtoHome";
 import { cn } from "../ui/cn";
@@ -51,9 +52,10 @@ function readCrossMachineCapability(snapshot: Pick<CtoSnapshot, "capabilities"> 
 
 export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const ctoHome = useCtoHome(active);
-  const homeReady = ctoHome.status === "ready";
-  /** Every CTO call carries this. Null = the tab's binding is the home. */
-  const ctoPin = ctoHome.pin;
+  /** Every CTO call carries this. Null until the home is reachable: call nothing then. */
+  // Held by its key, so a rebuilt pin for the same machine restarts nothing.
+  const ctoPin = useStableBinding(ctoHome.status === "ready" ? ctoHome.pin : null);
+  const homeReady = ctoPin != null;
   const scopeKey = useAppStore(selectActiveProjectStateKey);
   const sessionCacheKey = `${scopeKey ?? ""}|${pinKey(ctoPin)}`;
   // The home machine's lanes, not the tab's: the CTO's primary lane is there.
@@ -115,7 +117,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   /* ── Data loading ── */
 
   const loadSummary = useCallback(async () => {
-    if (!window.ade?.cto || !homeReady) return;
+    if (!window.ade?.cto || !ctoPin) return;
     const key = sessionCacheKey;
     try {
       const snapshot = await window.ade.cto.getState({ recentLimit: 0 }, ctoPin);
@@ -130,7 +132,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   }, [ctoPin, homeReady, sessionCacheKey]);
 
   const loadHistory = useCallback(async () => {
-    if (!window.ade?.cto || !homeReady) return;
+    if (!window.ade?.cto || !ctoPin) return;
     const key = sessionCacheKey;
     try {
       const snapshot = await window.ade.cto.getState({ recentLimit: 20 }, ctoPin);
@@ -152,7 +154,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * an offer, not an alarm, so it does not need to be true to the second.
    */
   const loadThreadHealth = useCallback(async () => {
-    if (!isAdeAvailable(window.ade?.cto?.getThreadHealth) || !homeReady) return;
+    if (!isAdeAvailable(window.ade?.cto?.getThreadHealth) || !ctoPin) return;
     const key = sessionCacheKey;
     try {
       const health = await window.ade.cto!.getThreadHealth(ctoPin);
@@ -196,7 +198,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // Ensure the persistent session. Re-runs when the primary lane hydrates (D6
   // race) so a slow lanes store shows the waking state, never an error card.
   useEffect(() => {
-    if (!active || !window.ade?.cto || !homeReady) return;
+    if (!active || !window.ade?.cto || !ctoPin) return;
     if (!identityLoaded || needsModelPick || !primaryLaneId) return;
 
     let cancelled = false;
@@ -235,7 +237,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   /* ── Callbacks ── */
 
   const refreshSession = useCallback(async () => {
-    if (!window.ade?.cto || !primaryLaneId || !homeReady) return null;
+    if (!window.ade?.cto || !primaryLaneId || !ctoPin) return null;
     const next = await window.ade.cto.ensureSession({}, ctoPin);
     ctoPrimarySessions.set(sessionCacheKey, next);
     setSession(next);
@@ -249,7 +251,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   followRolloverRef.current = () => {
     const key = sessionCacheKey;
     const ensure = window.ade?.cto?.ensureSession;
-    if (!ensure || !primaryLaneId || !homeReady) return;
+    if (!ensure || !primaryLaneId || !ctoPin) return;
     void ensure({}, ctoPin)
       .then((next) => {
         // The person may have moved to another home while this was in flight.
@@ -265,13 +267,14 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const currentSessionId = session?.id ?? null;
   useEffect(() => {
     const onEvent = window.ade?.agentChat?.onEvent;
-    if (!active || !homeReady || !onEvent) return;
+    const pin = ctoPinRef.current;
+    if (!active || !pin || !onEvent) return;
     return onEvent((envelope) => {
       const event = envelope.event;
       if (event.type !== "system_notice" || event.status !== CTO_THREAD_ROLLED_OVER_STATUS) return;
       if (envelope.sessionId === currentSessionId) return;
       followRolloverRef.current();
-    }, ctoPinRef.current);
+    }, pin);
     // Keyed on the pin's key (inside sessionCacheKey), not the pin object.
   }, [active, homeReady, sessionCacheKey, currentSessionId]);
 
@@ -289,7 +292,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * durable record holding what the user picked rather than what they replaced.
    */
   const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
-    if (!window.ade?.cto || switchingModel || !homeReady) return;
+    if (!window.ade?.cto || switchingModel || !ctoPin) return;
     const selection = resolveModelSelection(modelId, reasoningEffort);
     if (!selection) return;
     // Fast mode is a property of the model, not of the picker: carrying a true
@@ -341,7 +344,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * normalized on the way in.
    */
   const handleIdentityChange = useCallback(async (patch: CtoIdentityPatch) => {
-    if (!window.ade?.cto || !homeReady) return;
+    if (!window.ade?.cto || !ctoPin) return;
     setError(null);
     try {
       const snapshot = await window.ade.cto.updateIdentity({ patch }, ctoPin);
@@ -352,7 +355,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   }, [ctoPin, homeReady]);
 
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
-    if (!window.ade?.cto || switchingModel || !homeReady) return;
+    if (!window.ade?.cto || switchingModel || !ctoPin) return;
     setSwitchingModel(true);
     setError(null);
     try {
@@ -381,7 +384,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
     const startFresh = window.ade?.cto?.startFreshSession;
     if (!isAdeAvailable(startFresh)) throw new Error("The CTO isn't available in this window.");
-    if (!homeReady) throw new Error("The CTO's machine isn't reachable right now.");
+    if (!ctoPin) throw new Error("The CTO's machine isn't reachable right now.");
     setRotating(true);
     try {
       const result = await startFresh(ctoPin);

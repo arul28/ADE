@@ -1,7 +1,9 @@
+import { useMemo } from "react";
 import { ChatsCircle } from "@phosphor-icons/react";
 import type { DeletedLaneChatsSummary } from "../../../shared/types/storage";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { formatBytes } from "../../lib/format";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { useSnoozedReminderBanner } from "./useSnoozedReminderBanner";
 
 /**
@@ -27,8 +29,6 @@ export function deletedChatsReminderTitle(summary: DeletedLaneChatsSummary): str
   return `${chats} from deleted lanes (${formatBytes(summary.bytes)}) are no longer tracked`;
 }
 
-// Unpinned on purpose: the project tab's own machine owns these files.
-const readSummary = () => window.ade.storage.deletedLaneChatsSummary();
 
 export function useDeletedChatsReminderBanner({
   projectRoot,
@@ -39,6 +39,16 @@ export function useDeletedChatsReminderBanner({
   enabled: boolean;
   onReview: () => void;
 }): void {
+  // The tab's copy owns these files. No copy online: no read, no banner.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
+  const readSummary = useMemo(
+    () => (tabCopyPin && isAdeAvailable(window.ade?.storage?.deletedLaneChatsSummary)
+      ? () => window.ade.storage.deletedLaneChatsSummary(tabCopyPin)
+      : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tabCopyPinKey],
+  );
   useSnoozedReminderBanner({
     projectRoot,
     enabled,
@@ -47,7 +57,8 @@ export function useDeletedChatsReminderBanner({
     snoozeMs: 14 * 24 * 3_600_000,
     firstCheckDelayMs: 45_000,
     recheckIntervalMs: 6 * 3_600_000,
-    read: isAdeAvailable(window.ade?.storage?.deletedLaneChatsSummary) ? readSummary : null,
+    read: readSummary,
+    readKey: tabCopyPinKey,
     qualifies: deletedChatsWorthReminding,
     icon: <ChatsCircle size={13} weight="bold" />,
     title: deletedChatsReminderTitle,
