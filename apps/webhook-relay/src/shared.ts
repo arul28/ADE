@@ -35,6 +35,12 @@ export type RelayEnv = {
    */
   HOOK_FORWARD_ORIGINS?: string;
   /**
+   * The account directory, over a service binding. A Worker can't fetch
+   * another Worker of the same account on workers.dev (error 1042), so a
+   * forward to the directory goes through this when it is bound.
+   */
+  ACCOUNT_DIRECTORY?: { fetch: typeof fetch };
+  /**
    * Optional worker-level Cursor Cloud webhook signing secret. Tried before
    * per-account secrets registered in D1. Cursor signs with HMAC-SHA256 of the
    * raw body as `X-Webhook-Signature: sha256=<hex>`.

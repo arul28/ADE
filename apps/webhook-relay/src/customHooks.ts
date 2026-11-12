@@ -116,7 +116,8 @@ async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hoo
   const body = JSON.stringify(hookRowToEvent(row));
   const timestamp = String(Date.now());
   try {
-    const response = await fetch(hook.forward_url!, {
+    const send = env.ACCOUNT_DIRECTORY ? env.ACCOUNT_DIRECTORY.fetch.bind(env.ACCOUNT_DIRECTORY) : fetch;
+    const response = await send(hook.forward_url!, {
       method: "POST",
       headers: {
         "content-type": "application/json",

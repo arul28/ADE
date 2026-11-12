@@ -36,6 +36,9 @@
       "new_sqlite_classes": ["RepoEventsDurableObject"]
     }
   ],
+  // Forwards to the account directory go over this binding: a fetch of
+  // another workers.dev Worker in the same account is refused (error 1042).
+  "services": [{ "binding": "ACCOUNT_DIRECTORY", "service": "ade-account-directory" }],
   "d1_databases": [
     {
       "binding": "DB",
