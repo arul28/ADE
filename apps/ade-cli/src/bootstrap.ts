@@ -3478,6 +3478,7 @@ export async function createAdeRuntime(args: {
         }));
       }
       void registrar.reconcile();
+      teardown.push(() => registrar.dispose());
     }
     teardown.push(() => automationService?.dispose());
     const automationSecretService = createAutomationSecretService({

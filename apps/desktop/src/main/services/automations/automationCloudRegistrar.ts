@@ -118,6 +118,10 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
   const unsent = new Set<string>();
   let running = false;
   let again = false;
+  /** Set by `dispose`: no pass starts after it. */
+  let disposed = false;
+  /** The pass running now, for `dispose` to wait on. */
+  let current: Promise<void> | null = null;
   const now = deps.now ?? Date.now;
   /** The server's rules of this project, by account id, from the last read. */
   let states: Map<string, AutomationCloudHomeState> | null = null;
@@ -238,21 +242,32 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
   return {
     /** One pass, after an account sync. A pass asked for while one runs runs once more after it. */
     async reconcile(): Promise<void> {
+      if (disposed) return;
       if (running) {
         again = true;
         return;
       }
       running = true;
-      try {
-        do {
-          again = false;
-          await pass();
-        } while (again);
-      } catch (error) {
-        deps.logger.warn("automations.cloud_home_pass_failed", { error: message(error) });
-      } finally {
-        running = false;
-      }
+      current = (async () => {
+        try {
+          do {
+            again = false;
+            await pass();
+          } while (again && !disposed);
+        } catch (error) {
+          deps.logger.warn("automations.cloud_home_pass_failed", { error: message(error) });
+        } finally {
+          running = false;
+          current = null;
+        }
+      })();
+      await current;
+    },
+
+    /** The runtime is closing: no pass starts again, and the one running is waited on. */
+    async dispose(): Promise<void> {
+      disposed = true;
+      await current;
     },
 
     /**
