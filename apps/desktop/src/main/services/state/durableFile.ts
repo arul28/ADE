@@ -99,6 +99,31 @@ function replaceFailure(filePath: string, renameError: unknown, copyError: unkno
 const COPY_RECOVERABLE_RENAME_CODES = new Set(["EXDEV", "EPERM", "EACCES", "EBUSY"]);
 
 /**
+ * Windows refuses to rename onto a file that any other process has open at
+ * that instant, whatever sharing it opened with (EPERM). A reader holds it for
+ * microseconds, so a few short waits nearly always let the atomic rename land;
+ * going straight to the copy fallback let a reader see an empty or zero-filled
+ * file. At most 32 ms in all, and only when the rename was refused.
+ */
+const WINDOWS_RENAME_RETRY_WAITS_MS = [0, 0, 0, 0, 1, 1, 2, 4, 8, 16];
+const WINDOWS_TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+function renameRetryingOnWindows(tempPath: string, filePath: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tempPath, filePath);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || !code || !WINDOWS_TRANSIENT_RENAME_CODES.has(code)
+        || attempt >= WINDOWS_RENAME_RETRY_WAITS_MS.length) throw error;
+      const waitMs = WINDOWS_RENAME_RETRY_WAITS_MS[attempt]!;
+      if (waitMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+  }
+}
+
+/**
  * Replace the target with the temp file.
  *
  * `rename` is the atomic path on every platform this ships to, including
@@ -115,7 +140,7 @@ const COPY_RECOVERABLE_RENAME_CODES = new Set(["EXDEV", "EPERM", "EACCES", "EBUS
  */
 function replaceViaRename(tempPath: string, filePath: string, mode?: number): void {
   try {
-    fs.renameSync(tempPath, filePath);
+    renameRetryingOnWindows(tempPath, filePath);
     return;
   } catch (renameError) {
     const code = (renameError as NodeJS.ErrnoException).code;
