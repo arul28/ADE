@@ -84,7 +84,7 @@ export function AgentLaunchSetup({
         : await primaryLaneId(launchPin);
       const target = config.presetId ? resolveHarnessLaunchTarget(config.presetId, harnessPresets) : null;
       if (config.presetId && !target) throw new Error("That custom provider is no longer available. Pick another one.");
-      await ensureHarnessPresetOnBrain(config.presetId ?? null, { targetsAnotherMachine: pin != null });
+      await ensureHarnessPresetOnBrain(config.presetId ?? null, { targetsAnotherMachine: launchPin.kind === "remote" });
       const { permissionMode, ...launchArgs } = issueChatLaunchArgs({
         laneId,
         config: {

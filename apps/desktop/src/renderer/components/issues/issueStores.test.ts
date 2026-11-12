@@ -193,18 +193,18 @@ describe("GitHub list rows are partial copies", () => {
     await vi.waitFor(() => expect(peekGitHubIssue(root, "acme", "ade", 9)?.title).toBe("From the list"));
 
     // A list row holds only the first labels; it must not count as read.
-    await loadGitHubIssue(root, "acme", "ade", 9);
+    await loadGitHubIssue(root, "acme", "ade", 9, { pin: TEST_PIN });
     expect(getIssue).toHaveBeenCalledTimes(1);
     expect(peekGitHubIssue(root, "acme", "ade", 9)?.labels.map((label) => label.name)).toEqual(["a", "b"]);
 
     // The whole issue, once read, is served from the cache.
-    await loadGitHubIssue(root, "acme", "ade", 9);
+    await loadGitHubIssue(root, "acme", "ade", 9, { pin: TEST_PIN });
     expect(getIssue).toHaveBeenCalledTimes(1);
   });
 
   it("an open issue that a list refresh made partial is read again", async () => {
     const root = `/root/${Math.random()}`;
-    useAppStore.setState({ project: { rootPath: root, displayName: "ADE" }, projectBinding: null } as never);
+    useAppStore.setState({ project: { rootPath: root, displayName: "ADE" }, projectBinding: { ...TEST_PIN, key: `local:${root}`, rootPath: root } } as never);
     const getIssue = vi.fn(async () => rawGitHubIssue(11, "Whole", { updated_at: "2026-10-01T00:00:00Z" }));
     const listRepoIssueList = vi.fn(async () => [rawGitHubIssue(11, "Edited on GitHub", { updated_at: "2026-10-02T00:00:00Z" })]);
     (window as any).ade = { github: { getIssue, listRepoIssueList } };

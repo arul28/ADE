@@ -26,13 +26,19 @@ function openOnGithub(url: string | null): void {
 const formatTime = (epochMs: number) => new Date(epochMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 /** The state of a direct read (not connected, app missing, rate limit, GitHub down) as one status notice. */
-function DirectGithubStateNotice({ error, repo, onRetry }: { error: GithubDirectError; repo: PrsRepoRef; onRetry: () => void }) {
+function DirectGithubStateNotice({ error, repo, items, onRetry }: {
+  error: GithubDirectError;
+  repo: PrsRepoRef;
+  items: "pull requests" | "issues";
+  onRetry: () => void;
+}) {
   const app = useGithubAccountApp();
   const copy = githubDirectStateCopy(error, {
     owner: repo.owner,
     name: repo.name,
     githubLogin: app.status?.githubLogin ?? null,
     formatTime,
+    items,
   });
   // `not_found` and `invalid_request` need no notice: the list is empty.
   if (!copy) return null;
@@ -83,7 +89,7 @@ function DirectList({
 }: {
   repo: PrsRepoRef;
   note: string;
-  noun: string;
+  noun: "pull requests" | "issues";
   rows: DirectRow[];
   error: GithubDirectError | null;
   loading: boolean;
@@ -111,7 +117,7 @@ function DirectList({
       </div>
       {error ? (
         <div className="shrink-0 px-4 pt-3">
-          <DirectGithubStateNotice error={error} repo={repo} onRetry={onRefresh} />
+          <DirectGithubStateNotice error={error} repo={repo} items={noun} onRetry={onRefresh} />
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="list" aria-label={noun}>

@@ -252,6 +252,11 @@ function rememberOrigins(
   }
 }
 
+/** The origin the memory holds for a folder on this computer, or null. */
+export function rememberedLocalOrigin(rootPath: string | null | undefined): string | null {
+  return rootPath ? originByLocalRoot.get(rootPath) ?? null : null;
+}
+
 /** Origin stamped on the binding, else the recents/snapshot identity for that checkout. */
 export function originUrlForBinding(
   binding: OpenProjectBinding | null | undefined,

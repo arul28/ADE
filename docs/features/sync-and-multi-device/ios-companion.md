@@ -1628,6 +1628,52 @@ A project is one GitHub repository. Each computer can hold copies of it.
 - The brain sends `accountProjectId` only to its signed-in owner, and never
   sends the account user id. The new fields are optional on both sides, so an
   old phone and an old brain still work together.
+- "Use for new lanes" on the Location page sends `projects.setMainCheckout`
+  (runtime scope, controller only) to the computer that holds the folder.
+  Only the brain that publishes that computer's projects answers it; it
+  publishes the new main copy at once. When that upload does not reach the
+  account, the brain answers `published: false` (the choice stays saved on
+  the computer and goes out on the retry) and the phone says so instead of
+  showing the folder as used. A brain without the action shows
+  "Update ADE on <computer> to change this from your phone." and no button.
+- Create can publish the new project to GitHub ("Publish to GitHub", on by
+  default). The phone sends the computer's `github.publishCurrentProject`
+  (project scope, the new folder) with the computer's own GitHub sign-in. A
+  computer without that action shows the switch off with a reason.
+
+### GitHub on the phone
+
+The account can hold one GitHub sign-in (the ADE GitHub App). The phone uses
+it to read pull requests and repositories straight from GitHub, with no
+computer on.
+
+- `GitHubAccountConnection` (`Services/GitHubAccountCredential.swift`) reads
+  `/github/app/status`, starts the sign-in in a web sheet
+  (`/github/app/sign-in`, back on `ade://github/connected`), and asks
+  `/github/app/token` for a token. It keeps the token in the keychain
+  (this device only, not in backups) for one account only, until
+  `useForSec` runs out. An account switch, a disconnect or a new sign-in
+  drops the token and any token answer still on its way. A dropped token
+  never comes back: when the keychain refuses the delete (it is locked), a
+  marker in `UserDefaults` (`ade.githubAccount.droppedTokenPendingDelete`)
+  keeps the delete pending across a restart. Each load (account start,
+  unlock, app active) deletes the record first and never reads it. The
+  marker clears when the delete or a save of a new token succeeds. After a 401 it asks once more
+  with the rejected token's hash; a second 401 shows "GitHub connection
+  ended".
+- `GitHubDirectClient` (`Services/GitHubDirectClient.swift`) reads
+  api.github.com with `If-None-Match` (an ETag cache of 200 pages), so an
+  unchanged page costs a 304. It follows `Link: rel="next"` only on
+  api.github.com (5 pages for a list), pauses background reads below 10% of
+  the rate limit, and waits for the reset after a rate limit.
+- The PRs tab reads GitHub directly when the project's computer is not
+  connected. It reads once when it shows, then once a minute while it is in
+  front and the app is active, and never while hidden. The project home has
+  the same list under "Pull requests".
+- Settings → Account has Connect and Disconnect. Disconnect deletes the grant
+  and offers "Revoke on GitHub".
+- Add project → From GitHub lists the account's repositories directly when
+  GitHub is connected, or when no computer is online.
 
 ## Architectural pattern
 
@@ -2314,6 +2360,30 @@ yet arrived in the catchup batch.
   aliases.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
+- Reads tell "not there" (`errSecItemNotFound`) from "could not read" (any
+  other error, such as a launch before the first unlock), and a failed read
+  never creates, writes over, or forgets anything:
+  - A pairing secret (`readPairedSecret`): a failed read of the computer's
+    own slot stops the search, so an older name or the last paired secret
+    is never used or copied over it, and a saved computer whose secret could
+    not be read is not re-keyed. The pairing stays; the phone connects again
+    when protected data becomes available.
+  - The Relay device key and ownership epoch: registration and revocation
+    wait (the revocation marker stays) and run again when protected data
+    becomes available. The epoch is never written lower.
+  - The DPoP key is created only when none exists.
+  - The GitHub token: a token fetched meanwhile stays in memory only, and
+    the stored one is read again when protected data becomes available.
+- `KeychainService` makes its Security calls through a `KeychainBackend`
+  (`SecurityKeychainBackend` in the app), the boundary the read-failure test
+  fakes.
+- The device id (`syncResolveDeviceId`): the keychain copy wins and is
+  mirrored to `ade.sync.deviceId`. After a failed read the phone uses the
+  saved copy and writes nothing. With no saved copy either, the id is
+  provisional: it is stored nowhere, the phone does not pair with it, and an
+  "unknown device" answer does not drop a pairing. The phone reads the
+  keychain again when protected data becomes available or the app becomes
+  active (no timer).
 
 ### PIN pairing flow
 

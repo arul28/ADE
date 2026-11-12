@@ -3805,7 +3805,7 @@ function AgentChatComposerImpl({
     } catch {
       // warming is best-effort
     }
-  }, [chatRuntimePinKey, sessionId]);
+  }, [chatPaneScope?.kind, chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -8404,7 +8404,7 @@ function AgentChatComposerImpl({
         ) : null
       ) : null}
     </>
-  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, onHandoffToDevinCloud, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, showAppControlToggle, showIosSimulatorToggle, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, onHandoffToDevinCloud, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, showAppControlToggle, showIosSimulatorToggle, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
   const sendControls = useMemo(() => (turnActive ? (
 
         <>

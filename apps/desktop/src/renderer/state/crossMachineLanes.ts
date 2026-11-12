@@ -2487,6 +2487,9 @@ export function resetCrossMachineLaneSyncForTest(): void {
 export function useCrossMachineLaneSync(active = true): void {
   const projectBinding = useAppStore((state) => state.projectBinding);
   const tabBinding = useStableBinding(projectBinding);
+  // Read by the identity effect below, which restarts only on the binding's ids.
+  const tabBindingRef = useRef(tabBinding);
+  tabBindingRef.current = tabBinding;
   const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
@@ -2582,7 +2585,25 @@ export function useCrossMachineLaneSync(active = true): void {
       // dropping This Mac's chats on every reconnect blip. A connected target
       // that no longer lists the project has genuinely dropped it, and the same
       // module treats that as removable in `applyReachability`; clear then.
-      if (!boundProject && connection?.state !== "connected") return;
+      if (!boundProject && connection?.state !== "connected") {
+        // The bound machine is offline or still dialing, so it names no
+        // origin. The tab still knows its repository (the origin on the
+        // binding, or the one the recents and account copies remembered):
+        // seed the identity from it, so this computer's copy and other
+        // machines' copies stay listed while the tab's own copy is offline.
+        const knownOrigin = originUrlForBinding(tabBindingRef.current);
+        if (!knownOrigin) return;
+        setLocalRepoIdentity((current) =>
+          current && current.scopeKey === scopeKey && current.originUrl
+            ? current
+            : {
+              scopeKey,
+              originUrl: knownOrigin,
+              accountProjectId: null,
+              thisMachineBinding: resolveThisMachineBindingForOrigin(projects, knownOrigin),
+            });
+        return;
+      }
       commitIdentity({
         originUrl: boundProject?.gitOriginUrl ?? null,
         accountProjectId: boundProject?.accountProjectId ?? null,

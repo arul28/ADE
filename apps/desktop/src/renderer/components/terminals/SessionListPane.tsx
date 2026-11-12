@@ -5,6 +5,7 @@ import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNot
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
@@ -2810,6 +2811,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneAppControl={options?.laneAppControl ?? (showLaneIdentity && !foreignRow && laneToolUse.appControl.has(session.laneId))}
         laneBrowserTabs={options?.laneBrowserTabs ?? (showLaneIdentity && !foreignRow ? laneToolUse.browserTabs.get(session.laneId) : 0) ?? 0}
         suppressMachineChip={options?.suppressMachineChip}
+        machineNamed={listShowsSeveralComputers}
         suppressStatusLabel={options?.suppressStatusLabel}
         subagentMark={options?.subagentMark ?? null}
         deltaEnabled={!foreignRow}
@@ -4429,6 +4431,15 @@ export const SessionListPane = React.memo(function SessionListPane({
                 ? "Connect a computer to see this project's chats"
                 : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
+            {!tabCopyPin ? (
+              <button
+                type="button"
+                className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
+                onClick={() => openConnectionsPanel("machines")}
+              >
+                Connect a computer
+              </button>
+            ) : null}
           </div>
         ) : isByTime ? (
           byTimeList

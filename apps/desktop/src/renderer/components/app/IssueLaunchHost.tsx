@@ -179,13 +179,13 @@ export function IssueLaunchHost() {
           contextAttachments: args.contextAttachments,
           ...(args.presetId ? { presetId: args.presetId } : {}),
         };
-        await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
+        await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: callPin.kind === "remote" });
         const session = await window.ade.agentChat.launch(launchArgs, callPin);
         if (projectRoot && !pin) announceWorkChatSessionCreated(projectRoot, session);
         return session;
       },
       launchCli: async (args) => {
-        await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
+        await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: callPin.kind === "remote" });
         const cliArgs: Parameters<typeof window.ade.agentChat.launchCli>[0] = {
           laneId: args.laneId,
           provider: args.provider,

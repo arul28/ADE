@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Desktop, FolderSimple, WifiSlash } from "@phosphor-icons/react";
 import {
@@ -18,6 +18,7 @@ import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 import { repoRefForTab } from "../prs/state/prsReader";
 import { PullRequestsCard } from "./ProjectWelcomeHome";
 import { Banner } from "../ui/notice";
+import { extractError } from "../../lib/format";
 import { useDirectHomePullRequests } from "./useDirectHomePullRequests";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
@@ -88,13 +89,19 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
   const tried = useRef(new Set<string>());
+  // A failed open shows as an error banner, which also reports it.
+  const [openFailure, setOpenFailure] = useState<{ copy: RepositoryCopy; detail: string } | null>(null);
+  const openCopyAndReport = useCallback((copy: RepositoryCopy) => {
+    setOpenFailure(null);
+    void openCopy(copy).catch((error: unknown) => setOpenFailure({ copy, detail: extractError(error) }));
+  }, []);
   const defaultAddress = resolveDefaultCopy({ copies });
   useEffect(() => {
     if (!defaultAddress || tried.current.has(defaultAddress.key)) return;
     tried.current.add(defaultAddress.key);
     const copy = copies.find((entry) => entry.address?.key === defaultAddress.key);
-    if (copy) void openCopy(copy).catch(() => undefined);
-  }, [copies, defaultAddress]);
+    if (copy) openCopyAndReport(copy);
+  }, [copies, defaultAddress, openCopyAndReport]);
 
   const addLocalCopy = () => {
     const local = copyMachines(null, { includeLocal: true })[0];
@@ -229,7 +236,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                       {openingCopyKey === copyKey ? "Opening…" : "Open"}
                     </button>
                   ) : !webMode && copy.online && copy.address ? (
-                    <button type="button" className="kit-btn" data-size="sm" onClick={() => void openCopy(copy).catch(() => undefined)}>
+                    <button type="button" className="kit-btn" data-size="sm" onClick={() => openCopyAndReport(copy)}>
                       Open
                     </button>
                   ) : (
@@ -252,10 +259,30 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
               }}
             />
           ) : null}
-          {failed ? (
-            <span className="text-[12px]" style={{ color: "var(--kit-crit)" }}>
-              The copy on this computer could not be added. {failed.failure?.reason ?? ""}
-            </span>
+          {openFailure ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "no-machine-open-copy",
+                tone: "error",
+                title: `Couldn't open the copy on ${openFailure.copy.machineName}`,
+                actions: [{ label: "Try again", onClick: () => openCopyAndReport(openFailure.copy) }],
+                report: { surface: "repository_tab_no_machine", code: "open_copy_failed", technicalDetail: openFailure.detail },
+              }}
+            />
+          ) : null}
+          {/* The add button below is the retry. */}
+          {failed && !adding ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "no-machine-add-copy",
+                tone: "error",
+                title: "Couldn't add a copy on this computer",
+                detail: failed.failure?.reason ?? undefined,
+                report: { surface: "repository_tab_no_machine", code: "add_local_copy_failed" },
+              }}
+            />
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {canAddLocal ? (

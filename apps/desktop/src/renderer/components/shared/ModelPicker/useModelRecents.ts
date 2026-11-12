@@ -3,21 +3,43 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
+import { captureError } from "../../../../shared/sentry/capture";
 
 // Recents belong to this client (`localStorage`), not to a machine: the same
-// list on every project tab. A client that has never saved a list reads it
-// once from the tab's copy, where older versions kept it, and then keeps it
-// here. Nothing writes back to a machine.
+// list on every project tab. Older versions kept the list on the tab's
+// machine, so this client reads it once from there and merges it after its
+// own picks. Nothing writes back to a machine.
 const STORAGE_KEY = "ade.modelPicker.recents.v1";
+/** Set once the machine's list was merged in; until then each start tries again. */
+const IMPORTED_KEY = "ade.modelPicker.recents.imported.v1";
 const MAX_RECENTS = 10;
 
-function hasPersisted(): boolean {
+function importDone(): boolean {
   try {
-    return window.localStorage.getItem(STORAGE_KEY) != null;
+    return window.localStorage.getItem(IMPORTED_KEY) != null;
   } catch {
     return false;
   }
 }
+
+function markImportDone(): void {
+  try {
+    window.localStorage.setItem(IMPORTED_KEY, "1");
+  } catch {
+    // Not saved: the next start merges the same list again, which changes nothing.
+  }
+}
+
+/** This client's picks first (newest), then the machine's older ones. */
+function mergeRecents(local: readonly string[], imported: readonly string[]): string[] {
+  const merged: string[] = [];
+  for (const value of [...local, ...imported]) {
+    if (typeof value === "string" && value.length > 0 && !merged.includes(value)) merged.push(value);
+  }
+  return merged.slice(0, MAX_RECENTS);
+}
+
+let importInFlight: Promise<void> | null = null;
 
 function readPersisted(): string[] {
   try {
@@ -63,32 +85,38 @@ const useRecentsStore = create<RecentsState>((set, get) => ({
     const current = get().recents;
     const filtered = current.filter((entry) => entry !== id);
     const next = [id, ...filtered].slice(0, MAX_RECENTS);
-    set({ recents: next, hydrated: true });
+    set({ recents: next });
     persistCache(next);
   },
   hydrateFromRemote: async () => {
-    if (hasPersisted()) {
+    if (importDone()) {
       set({ hydrated: true });
       return;
     }
+    if (importInFlight) return importInFlight;
     // The one-time import reads the old list from the tab's copy.
     const pin = useAppStore.getState().projectBinding;
     const getRecents = getImportApi();
     // No tab open or no bridge yet: stay unhydrated so a later mount imports.
     if (!pin || !getRecents) return;
-    try {
-      const result = await getRecents(pin);
-      const imported = Array.isArray(result?.recents) ? result.recents.slice(0, MAX_RECENTS) : [];
-      // A pick made while the import was in flight wins.
-      if (hasPersisted()) {
+    importInFlight = (async () => {
+      try {
+        const result = await getRecents(pin);
+        const imported = Array.isArray(result?.recents) ? result.recents : [];
+        // A pick made while the import ran stays in front: the lists merge.
+        const next = mergeRecents(get().recents, imported);
+        set({ recents: next, hydrated: true });
+        persistCache(next);
+        markImportDone();
+      } catch (error) {
+        // The list here stays as it is; the next start tries the import again.
+        captureError(error, { fingerprint: ["model-picker", "recents-import"], level: "warning", handled: true });
         set({ hydrated: true });
-        return;
+      } finally {
+        importInFlight = null;
       }
-      set({ recents: imported, hydrated: true });
-      persistCache(imported);
-    } catch {
-      set({ hydrated: true });
-    }
+    })();
+    return importInFlight;
   },
 }));
 

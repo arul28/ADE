@@ -19,6 +19,7 @@
  */
 import { useEffect } from "react";
 import { coerceAccountProjectView, type AccountProjectView } from "../../shared/accountProject";
+import { captureError } from "../../shared/sentry/capture";
 import { isWebClientMode } from "../lib/webClientMode";
 import { publishAccountProjectList, type AccountProjectListState } from "./useRepositoryCopies";
 
@@ -108,9 +109,14 @@ function withPendingChanges(projects: readonly AccountProjectView[]): AccountPro
  */
 export function noteAccountProjectChange(change: { added: AccountProjectView } | { removedId: string }): void {
   const id = "added" in change ? change.added.id : change.removedId;
-  pendingChanges.set(id, { project: "added" in change ? change.added : null, at: Date.now() });
+  const added = "added" in change ? change.added : null;
+  pendingChanges.set(id, { project: added, at: Date.now() });
   if (current.state !== "ready") return;
-  const projects = withPendingChanges(current.projects.filter((project) => project.id !== id));
+  // Lay the change over the shown list directly. `withPendingChanges` would
+  // read the edited list as the brain's agreement and drop the pending
+  // change; only a fresh answer from the brain may clear it.
+  const others = current.projects.filter((project) => project.id !== id);
+  const projects = added ? [...others, added] : others;
   publish({ ...current, projects });
   writeCache({ v: 1, userId: currentUserId, projects, machineNames: { ...(current.machineNames ?? {}) } });
 }
@@ -153,10 +159,15 @@ async function readList(): Promise<void> {
   lastReadAt = Date.now();
   const status = await window.ade?.account?.status?.().catch(() => null);
   const userId = status?.userId ?? null;
-  const answer = await accountList().catch(() => null);
+  const answer = await accountList().catch((error: unknown) => {
+    // The cached list stays on screen; the next focus reads again.
+    captureError(error, { fingerprint: ["account-projects", "list-read"], level: "warning", handled: true });
+    return null;
+  });
   if (!answer) return;
   if (answer.state === "signed_out") {
     currentUserId = null;
+    pendingChanges.clear();
     writeCache(null);
     publish({ state: "signed_out", projects: [] });
     return;
@@ -166,11 +177,14 @@ async function readList(): Promise<void> {
     // this account left, and only that account's copy.
     if (current.state === "ready" && currentUserId && userId && currentUserId !== userId) {
       currentUserId = userId;
+      pendingChanges.clear();
       writeCache(null);
       publish({ state: "unknown", projects: [] });
     }
     return;
   }
+  // Another account's adds and removes never lay over this account's list.
+  if (currentUserId && userId && currentUserId !== userId) pendingChanges.clear();
   currentUserId = userId;
   const machineNames = current.machineNames ?? {};
   const projects = withPendingChanges(answer.projects);

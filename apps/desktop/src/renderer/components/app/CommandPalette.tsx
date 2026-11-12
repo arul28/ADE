@@ -664,8 +664,9 @@ export function CommandPalette({
   // The lane-screen tool follows the HOST platform, from the same cached
   // support read the Work tools use: a Windows host offers Windows Desktop
   // only, a Mac host Mac Desktop only.
-  // Lane tools need a project; with none open there is no runtime to ask.
-  const macDesktopSupport = useMacDesktopSupport({ runtimePin: projectBinding, enabled: open && projectBinding != null });
+  // Lane tools need an online copy of the project; with none there is no
+  // runtime to ask. The tab's copy, as for the iOS read above.
+  const macDesktopSupport = useMacDesktopSupport({ runtimePin: tabCopyPin, enabled: open && tabCopyPin != null });
   // Unpinned: the bound machine, the same cache entry the Work pane reads.
   const androidSupport = useAndroidEmulatorSupport({
     runtimePin: null,

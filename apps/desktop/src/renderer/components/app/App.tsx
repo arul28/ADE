@@ -69,7 +69,7 @@ import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
 import {
   originUrlForBinding,
-  projectOriginMemoryVersion,
+  rememberedLocalOrigin,
   subscribeProjectOriginMemory,
 } from "../lanes/laneMachines";
 
@@ -883,11 +883,14 @@ function ProjectTabHost() {
   const isLegacyHubRoute = location.pathname === "/hub";
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
   // The origin memory fills from the recents after a tab opens, so a local
-  // binding is built again when it changes (same key, origin added).
-  const originMemoryVersion = React.useSyncExternalStore(
+  // binding is built again when its folder's origin changes (same key, origin
+  // added). Other changes to the memory do not render the app again.
+  const activeRootPath = activeProject?.rootPath ?? null;
+  const readActiveLocalOrigin = React.useCallback(() => rememberedLocalOrigin(activeRootPath), [activeRootPath]);
+  const activeLocalOrigin = React.useSyncExternalStore(
     subscribeProjectOriginMemory,
-    projectOriginMemoryVersion,
-    projectOriginMemoryVersion,
+    readActiveLocalOrigin,
+    readActiveLocalOrigin,
   );
   const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
   // Same fields, same object: a new binding object for a project that did not
@@ -907,9 +910,9 @@ function ProjectTabHost() {
       }
       return stableLocalBinding(activeProject);
     },
-    // originMemoryVersion: the memory changed, so read the origin again.
+    // activeLocalOrigin: the folder's origin changed, so build the binding again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeProject, activeProjectBinding, originMemoryVersion, showWelcome, stableLocalBinding],
+    [activeProject, activeProjectBinding, activeLocalOrigin, showWelcome, stableLocalBinding],
   );
   const activeSurfaceKey = activeBinding?.key ?? null;
   const previousActiveSurfaceKeyRef = React.useRef<string | null>(null);
@@ -994,6 +997,17 @@ function ProjectTabHost() {
     setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
   }, [activeSurfaceKey, location]);
 
+  // The origins of the open local tabs, as one string: a change to another
+  // folder's origin in the memory does not render the app again.
+  const readOpenLocalOrigins = React.useCallback(
+    () => openProjectTabRoots.map((root) => rememberedLocalOrigin(root) ?? "").join("\n"),
+    [openProjectTabRoots],
+  );
+  const openLocalOrigins = React.useSyncExternalStore(
+    subscribeProjectOriginMemory,
+    readOpenLocalOrigins,
+    readOpenLocalOrigins,
+  );
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
     const entries: ProjectSurfaceEntry[] = [];
     const activeRemoteRoot =
@@ -1030,15 +1044,15 @@ function ProjectTabHost() {
       });
     }
     return entries;
-    // originMemoryVersion: the memory changed, so build the local bindings again.
+    // openLocalOrigins: a folder's origin changed, so build the local bindings again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeBinding,
     activeProject,
     activeProjectBinding,
+    openLocalOrigins,
     openProjectTabRoots,
     openRemoteProjectTabs,
-    originMemoryVersion,
     projectInfoByRoot,
     stableLocalBinding,
   ]);

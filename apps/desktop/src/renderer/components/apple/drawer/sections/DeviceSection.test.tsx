@@ -7,7 +7,7 @@ import {
   DeviceSection,
 } from "./DeviceSection";
 import { DEVICE_LOCATION_PRESETS } from "../../../device/locationPresets";
-import { SETTINGS, controlsIn, installAdeMock, makeActions, makeCtx } from "../drawerTestHarness";
+import { SETTINGS, controlsIn, installAdeMock, makeActions, makeCtx, DRAWER_PIN } from "../drawerTestHarness";
 
 afterEach(cleanup);
 
@@ -38,7 +38,7 @@ describe("DeviceSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dark" }));
     await waitFor(() => expect(iosSimulator.setAppearance).toHaveBeenCalledWith(
       { laneId: "lane-1", deviceUdid: "UDID-1", chatSessionId: null, appearance: "dark" },
-      null,
+      DRAWER_PIN,
     ));
   });
 
@@ -52,7 +52,7 @@ describe("DeviceSection", () => {
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Large" }));
     await waitFor(() => expect(iosSimulator.setContentSize).toHaveBeenCalledWith(
       expect.objectContaining({ contentSize: "large" }),
-      null,
+      DRAWER_PIN,
     ));
   });
 
@@ -63,7 +63,7 @@ describe("DeviceSection", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Reduce Motion" }));
     await waitFor(() => expect(iosSimulator.setAccessibilityOption).toHaveBeenCalledWith(
       expect.objectContaining({ option: "reduce-motion", enabled: false }),
-      null,
+      DRAWER_PIN,
     ));
   });
 
@@ -76,7 +76,7 @@ describe("DeviceSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Set" }));
     await waitFor(() => expect(iosSimulator.setLocation).toHaveBeenCalledWith(
       expect.objectContaining({ latitude: 48.8, longitude: 2.35 }),
-      null,
+      DRAWER_PIN,
     ));
 
     fireEvent.keyDown(screen.getByRole("button", { name: "Preset" }), { key: "Enter" });
@@ -84,7 +84,7 @@ describe("DeviceSection", () => {
     const tokyo = DEVICE_LOCATION_PRESETS.find((preset) => preset.label === "Tokyo")!;
     await waitFor(() => expect(iosSimulator.setLocation).toHaveBeenCalledWith(
       expect.objectContaining({ latitude: tokyo.latitude, longitude: tokyo.longitude }),
-      null,
+      DRAWER_PIN,
     ));
 
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
@@ -108,7 +108,7 @@ describe("DeviceSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "9:41" }));
     await waitFor(() => expect(iosSimulator.setStatusBar).toHaveBeenCalledWith(
       expect.objectContaining({ ...APPLE_STATUS_BAR_DEMO, laneId: "lane-1", deviceUdid: "UDID-1" }),
-      null,
+      DRAWER_PIN,
     ));
     view.unmount();
 
@@ -119,7 +119,7 @@ describe("DeviceSection", () => {
     fireEvent.click(clear);
     await waitFor(() => expect(iosSimulator.clearStatusBar).toHaveBeenCalledWith(
       { laneId: "lane-1", deviceUdid: "UDID-1", chatSessionId: null },
-      null,
+      DRAWER_PIN,
     ));
   });
 

@@ -1549,7 +1549,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (set) {
       const preset = edge === "left" || edge === "right" ? "columns" : "rows";
       const tree: PaneSplit = buildWorkSessionTilingTree(set.sessionIds, preset);
-      writeClientLayout("tiling", set.layoutId, tree);
+      writeClientLayout("tiling", set.layoutId, tree, projectBinding);
     }
     work.setGridSets(next);
     work.openSessionTab(draggedId);
@@ -1577,11 +1577,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const detached = ids.reduce((sets, id) => removeSessionFromGrids(sets, id), work.gridSets);
     const id = makeGridSetId();
     const layoutId = makeGridLayoutId(projectStateKey, id);
-    writeClientLayout("tiling", layoutId, buildWorkSessionTilingTree(ids));
+    writeClientLayout("tiling", layoutId, buildWorkSessionTilingTree(ids), projectBinding);
     work.setGridSets([...detached, { id, layoutId, sessionIds: ids }]);
     work.openSessionTab(ids[0]!);
     work.setActiveItemId(ids[0]!);
-  }, [projectStateKey, work]);
+  }, [projectBinding, projectStateKey, work]);
 
   const handleRemoveSessionsFromGrid = useCallback((sessionIds: string[]) => {
     work.setGridSets((prev) => sessionIds.reduce((sets, id) => removeSessionFromGrids(sets, id), prev));

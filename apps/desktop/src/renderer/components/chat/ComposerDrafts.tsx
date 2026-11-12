@@ -213,6 +213,8 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   latestAttachmentsRef.current = attachments;
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
+  /** The machine each draft saved here went to, for `consume`. */
+  const savedDraftBindingsRef = useRef(new Map<string, OpenProjectBinding | null>());
   const [draftSnapshot, setDraftSnapshot] = useState<{
     entries: DraftEntry[];
     ownerBinding: OpenProjectBinding | null;
@@ -429,6 +431,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         modelId,
         ...(schedule ? { schedule } : {}),
       }, chatPin));
+      savedDraftBindingsRef.current.set(created.id, operationBinding);
       if (storedAttachments.length > 0) {
         const confirmedAttachments = draftAttachments(created);
         const runtimeConfirmedImages = storedAttachments.every((stored) => (
@@ -555,9 +558,12 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     });
   }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh, runDraftOperation, setError]);
 
-  const remove = useCallback(async (entry: DraftEntry): Promise<boolean> => {
+  const remove = useCallback(async (
+    entry: DraftEntry,
+    binding: OpenProjectBinding | null = entriesOwnerBinding,
+  ): Promise<boolean> => {
     if (operationInFlightRef.current) return false;
-    const operationBinding = entriesOwnerBinding;
+    const operationBinding = binding;
     const operationBindingKey = operationBinding?.key ?? null;
     operationInFlightRef.current = true;
     refreshSequenceRef.current += 1;
@@ -683,7 +689,13 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     },
     activatePreservingDraft: () => save(true),
     activateScheduled: (input: DraftScheduleInput) => persistComposerDraft(input, false),
-    consume: remove,
+    // A history stash is consumed after its save resolves, maybe after the
+    // composer moved on or unmounted: delete it on the machine that saved it.
+    consume: (entry: DraftEntry) => {
+      const savedOn = savedDraftBindingsRef.current.get(entry.id);
+      savedDraftBindingsRef.current.delete(entry.id);
+      return remove(entry, savedOn ?? latestComposerMachineBindingRef.current);
+    },
     reload: () => {
       void refresh();
     },

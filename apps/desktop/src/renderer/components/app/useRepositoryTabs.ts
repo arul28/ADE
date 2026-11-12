@@ -17,6 +17,7 @@
  * takes new work is the "Start on" rule (`resolveStartOn`), not the tab.
  */
 import { useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
+import { captureError } from "../../../shared/sentry/capture";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -371,4 +372,86 @@ export function useNoMachineTabCleanup(tabGroups: readonly ProjectTabGroup[]): v
       if (openIds.has(tab.id)) useAppStore.getState().closeNoMachineTab(tab.id);
     }
   }, [noMachineTabs, tabGroups]);
+}
+
+/**
+ * The tab in front of a saved strip could not open again (its folder is gone,
+ * its computer refused). The strip stays as it is; Sentry hears about it.
+ */
+export function reportStripRestoreFailure(error: unknown): void {
+  captureError(error, { fingerprint: ["repository-tabs", "strip-restore-open"], level: "warning", handled: true });
+}
+
+/**
+ * The strip's rules, in one place for the top bar: one open copy per
+ * repository, no-machine tabs that leave once a copy opens, this window's
+ * memory across a reload, and the strip main saves for the next launch (S5).
+ */
+export function useRepositoryTabStrip(args: {
+  windowSessionRestored: boolean;
+  projectBusy: boolean;
+  webMode: boolean;
+  tabGroups: readonly ProjectTabGroup[];
+  activeBindingKey: string | null;
+  openProjectTabRoots: readonly string[];
+  openRemoteProjectTabs: RemoteOpenProjectBinding[];
+  setOpenProjectTabRoots: (update: (prev: string[]) => string[]) => void;
+  setOpenRemoteProjectTabs: (update: (prev: RemoteOpenProjectBinding[]) => RemoteOpenProjectBinding[]) => void;
+  setTabOrder: Dispatch<SetStateAction<string[]>>;
+  preferredBindingKeyByGroup: Record<string, string>;
+  tabOrder: string[];
+  noMachineTabs: readonly NoMachineRepositoryTab[];
+  activeNoMachineTabId: string | null;
+  noTabInFront: boolean;
+  recordNameFor: (group: ProjectTabGroup) => string | null | undefined;
+}): void {
+  const {
+    windowSessionRestored,
+    projectBusy,
+    webMode,
+    tabGroups,
+    activeBindingKey,
+    openProjectTabRoots,
+    openRemoteProjectTabs,
+    preferredBindingKeyByGroup,
+    tabOrder,
+    noMachineTabs,
+    activeNoMachineTabId,
+    noTabInFront,
+    recordNameFor,
+  } = args;
+  // A repository has one tab and one open copy. No rule moves the tab to this
+  // computer's copy: "Start on" picks the machine for new work.
+  useOneCopyPerRepository({
+    enabled: windowSessionRestored && !projectBusy,
+    tabGroups,
+    activeBindingKey,
+    openProjectTabRoots,
+    openRemoteProjectTabs,
+    setOpenProjectTabRoots: args.setOpenProjectTabRoots,
+    setOpenRemoteProjectTabs: args.setOpenRemoteProjectTabs,
+    setTabOrder: args.setTabOrder,
+  });
+  useNoMachineTabCleanup(tabGroups);
+  useWindowStripMemory({
+    enabled: windowSessionRestored,
+    remoteTabs: openRemoteProjectTabs,
+    preferredBindingKeyByGroup,
+    tabOrder,
+  });
+  // Main saves the strip by repository and reopens it on the next launch (S5).
+  const savedRepositoryTabs = useMemo(
+    () => buildSavedWindowRepositoryTabs({
+      groups: tabGroups,
+      openLocal: new Set(openProjectTabRoots),
+      openRemote: new Set(openRemoteProjectTabs.map((entry) => entry.key)),
+      noMachineTabs,
+      activeBindingKey,
+      activeNoMachineTabId,
+      noTabInFront,
+      nameFor: (group) => recordNameFor(group) ?? group.displayName,
+    }),
+    [activeBindingKey, activeNoMachineTabId, noMachineTabs, noTabInFront, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, tabGroups],
+  );
+  useWindowRepositoryTabsSync(windowSessionRestored && !webMode, savedRepositoryTabs);
 }

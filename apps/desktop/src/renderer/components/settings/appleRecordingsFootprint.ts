@@ -24,15 +24,16 @@ export function sumFileTreeBytes(nodes: readonly FileTreeNode[]): number {
 }
 
 /**
- * `pin` is the copy whose folder the fallback walks (the page machine's copy,
- * else this computer's). With none, the fallback reads nothing.
+ * `pin` is the copy whose machine holds the recordings (the page machine's
+ * copy, else this computer's). Both reads go to it. With none, nothing is read.
  */
 export async function readAppleRecordingsTotalBytes(projectRoot: string, pin: OpenProjectBinding | null): Promise<number> {
+  if (!pin) return 0;
   const root = projectRoot.trim();
-  const total = await window.ade?.iosSimulator?.recordingsTotalBytes?.({}).catch(() => null);
+  const total = await window.ade?.iosSimulator?.recordingsTotalBytes?.({}, pin).catch(() => null);
   if (typeof total === "number" && Number.isFinite(total) && total >= 0) return total;
   const files = window.ade?.files;
-  if (!root || !pin || !files?.listWorkspaces || !files.listTree) return 0;
+  if (!root || !files?.listWorkspaces || !files.listTree) return 0;
   try {
     const workspaces = await files.listWorkspaces({}, pin);
     const workspace = workspaces.find((entry) => entry.rootPath === root)

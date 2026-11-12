@@ -2729,13 +2729,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // owns the lane, out of the same account-settings copy the renderer
       // syncs. Make sure that copy holds the preset before the spawn, or the
       // CLI starts on the harness's own sign-in and reports the preset gone.
-      await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
-        targetsAnotherMachine: args.pin?.kind === "remote",
-      });
       // The lane's machine starts the shell. A lane with no known machine has
       // nowhere to start it.
       const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
       if (!createPin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+      await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
+        targetsAnotherMachine: createPin.kind === "remote",
+      });
       const result = await window.ade.pty.create(createArgs, createPin);
       machineRouter.rememberSessionPin(result, args.pin);
       if (!canMutatePinnedProjectUi(args.pin)) {

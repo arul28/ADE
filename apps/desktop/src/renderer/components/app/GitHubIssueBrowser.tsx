@@ -94,7 +94,13 @@ export function GitHubIssueBrowser({
         setError("No computer is online. ADE reads issues through a computer that has this project.");
         return;
       }
-      if (!projectRepoRef.current.checked) return;
+      // The repository check is not done yet: show no rows of the last
+      // repository while it runs. The check's answer loads again.
+      if (!projectRepoRef.current.checked) {
+        setRepo(null);
+        setIssues(selectedIssue ? [selectedIssue] : []);
+        return;
+      }
       const detected = projectRepoRef.current.repo;
       setRepo(detected);
       notifyRepoChange?.(detected);

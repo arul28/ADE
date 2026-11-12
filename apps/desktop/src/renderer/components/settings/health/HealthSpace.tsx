@@ -423,9 +423,8 @@ export function HealthSpace({ data }: { data: HealthData }) {
                 onRequestCleanup={setCleanup}
               />
               <DatabaseDetails category={database} snapshot={snapshot} />
-              {/* Reads through unpinned simulator/file calls, so only for the tab's machine. */}
-              {pin ? null : <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />}
-              {/* One pinned runtime read, so it is right for whichever machine this page shows. */}
+              {/* Pinned reads, so both are right for whichever machine this page shows. */}
+              <AppleRecordingsWarning projectRoot={snapshot.projectRoot} pin={pin} />
               <AndroidRecordingsWarning pin={pin} />
             </div>
           ) : null}

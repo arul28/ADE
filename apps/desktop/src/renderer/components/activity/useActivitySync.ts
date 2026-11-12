@@ -307,13 +307,14 @@ async function reportPresence(
 export function useActivitySync(routeSurfaceVisible: boolean): void {
   const { status: accountStatus, loading: accountLoading } = useAccountStatus();
   const accountUserId = accountStatus.signedIn ? accountStatus.userId : null;
-  const itemsById = useActivityStore((state) => state.itemsById);
+  // Only the ids are used. Selecting the joined ids, not the item map, keeps an
+  // item's content change (a chat that streams) from rendering the shell.
+  const visibleItemIdsKey = useActivityStore((state) => Object.keys(state.itemsById).join("\u001f"));
   const headerSurfaceVisible = useActivityStore((state) => state.headerSurfaceVisible);
   const visibleItemIds = useMemo(
-    () => Object.keys(itemsById),
-    [itemsById],
+    () => (visibleItemIdsKey ? visibleItemIdsKey.split("\u001f") : []),
+    [visibleItemIdsKey],
   );
-  const visibleItemIdsKey = visibleItemIds.join("\u001f");
   const ambientSurfaceVisible = routeSurfaceVisible || headerSurfaceVisible;
   const ambientSurfaceVisibleRef = useRef(ambientSurfaceVisible);
   const visibleItemIdsRef = useRef(visibleItemIds);

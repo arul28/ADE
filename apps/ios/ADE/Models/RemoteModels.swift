@@ -399,6 +399,17 @@ struct MobileGitHubRepoSummary: Codable, Equatable, Identifiable {
   var sshUrl: String
 }
 
+/// `github.publishCurrentProject`'s answer (desktop `PublishProjectResult`).
+struct MobilePublishProjectResult: Codable, Equatable {
+  /// `pushed` or `remote_added`.
+  var state: String
+  var owner: String
+  var name: String
+  var fullName: String
+  var htmlUrl: String
+  var isPrivate: Bool? = nil
+}
+
 struct MobileListMyGitHubReposResult: Codable, Equatable {
   var repos: [MobileGitHubRepoSummary]
 }

@@ -21,11 +21,11 @@ export const SEARCH_PANEL_SURFACE: React.CSSProperties = {
   boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
 };
 
-/** Shared dimmed backdrop for the centred Files modals. */
+/** Shared dimmed backdrop for the centred Files modals: inside the Files pane, so an in-surface layer (notices.md). */
 export function Backdrop({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
   return (
     <div
-      className="absolute inset-0 z-50 flex items-start justify-center pt-[10vh]"
+      className="absolute inset-0 z-40 flex items-start justify-center pt-[10vh]"
       style={{ background: "rgba(0,0,0,0.4)" }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();

@@ -421,11 +421,51 @@ extension SyncService {
   }
 
   /// The `onMachine` value for a phone key: nil for the primary.
+  /// "Use for new lanes": connects the computer when it is not live, then
+  /// asks its brain to make `checkoutId` the folder its new lanes start from
+  /// (`projects.setMainCheckout`, runtime scope, on that computer only). The
+  /// account list shows the change after the brain's next publish, which the
+  /// brain sends at once.
+  func setAccountProjectMainFolder(
+    checkoutId: String,
+    onAccountMachine accountMachineKey: String
+  ) async -> Result<Void, SyncPairAlongsideFailure> {
+    let machineName = AccountService.shared.machines.first { $0.machineKey == accountMachineKey }?.displayName ?? "that computer"
+    switch await connectForStartOn(accountMachineKey: accountMachineKey) {
+    case .failure(let failure):
+      return .failure(failure)
+    case .success(let key):
+      let callKey = machineCallKey(key)
+      guard machineAllowsPhoneAction(accountProjectSetMainAction, onMachine: callKey) else {
+        return .failure(SyncPairAlongsideFailure(message: "Update ADE on \(machineName) to change this from your phone."))
+      }
+      do {
+        let raw = try await sendMachineCommand(action: accountProjectSetMainAction, args: ["checkoutId": checkoutId], onMachine: callKey)
+        let answer = raw as? [String: Any] ?? [:]
+        if answer["ok"] as? Bool == true {
+          // Saved on the computer, but your account does not have it yet.
+          if answer["published"] as? Bool == false {
+            return .failure(SyncPairAlongsideFailure(message: "\(machineName) saved this, but could not send it to your ADE account yet. It tries again on its own."))
+          }
+          return .success(())
+        }
+        let message = (answer["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+          ?? "\(machineName) did not change the folder for new lanes."
+        return .failure(SyncPairAlongsideFailure(message: message))
+      } catch {
+        return .failure(SyncPairAlongsideFailure(message: SyncUserFacingError.message(for: error)))
+      }
+    }
+  }
+
   func machineCallKey(_ phoneKey: String?) -> String? {
     guard let phoneKey, phoneKey != focusedMachineKey else { return nil }
     return phoneKey
   }
 }
+
+/// The brain action behind "Use for new lanes". Older brains lack it.
+let accountProjectSetMainAction = "projects.setMainCheckout"
 
 /// The HTTPS clone address of an account project.
 func accountProjectCloneURL(_ project: AccountProject) -> String {

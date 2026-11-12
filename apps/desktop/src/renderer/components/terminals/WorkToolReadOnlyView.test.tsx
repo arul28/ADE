@@ -123,6 +123,10 @@ function installAde(
   };
 }
 
+
+/** The lane's machine: the view always reads one. */
+const LANE_PIN = { kind: "remote", key: "remote:studio:project-1", targetId: "studio", projectId: "project-1", runtimeName: "Mac Studio", rootPath: "/repo", displayName: "repo" } as const;
+
 describe("WorkToolReadOnlyView", () => {
   beforeEach(() => {
     (window as unknown as { ade?: unknown }).ade = undefined;
@@ -147,7 +151,7 @@ describe("WorkToolReadOnlyView", () => {
       readObservationPreview,
     });
 
-    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByText("Sign in · Example")).toBeTruthy();
     expect(screen.getByText("https://example.test/login")).toBeTruthy();
@@ -160,7 +164,7 @@ describe("WorkToolReadOnlyView", () => {
       expect(screen.getByRole("img")).toHaveProperty("src", DATA_URL);
     });
     // Bytes are fetched by path, never carried in the state payload.
-    expect(readObservationPreview).toHaveBeenCalledWith("/tmp/obs/obs-2.png");
+    expect(readObservationPreview).toHaveBeenCalledWith("/tmp/obs/obs-2.png", LANE_PIN);
   });
 
   it("renders the App Control app and status when asked for that tool", async () => {
@@ -169,7 +173,7 @@ describe("WorkToolReadOnlyView", () => {
       readObservationPreview: vi.fn(async () => null),
     });
 
-    render(<WorkToolReadOnlyView tool="app-control" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="app-control" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByText("ADE Dev")).toBeTruthy();
     expect(screen.getByText("connected · cdp")).toBeTruthy();
@@ -180,7 +184,7 @@ describe("WorkToolReadOnlyView", () => {
   it("says where the tools actually run when no desktop is attached", async () => {
     installAde({ getLaneState: vi.fn(async () => null) });
 
-    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(
       await screen.findByText("Tools run on the desktop. Open ADE on your Mac to see them here."),
@@ -194,7 +198,7 @@ describe("WorkToolReadOnlyView", () => {
       })),
     });
 
-    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByText("No browser tabs are open in this lane.")).toBeTruthy();
   });
@@ -211,7 +215,7 @@ describe("WorkToolReadOnlyView", () => {
       })),
     });
 
-    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(
       await screen.findByText(
@@ -224,14 +228,14 @@ describe("WorkToolReadOnlyView", () => {
     installAde({
       getLaneState: vi.fn(async () => laneState({ browser: null, browserUnavailable: "unsupported" })),
     });
-    const { unmount } = render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    const { unmount } = render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
     expect(await screen.findByText("The browser isn't available on this machine.")).toBeTruthy();
     unmount();
 
     installAde({
       getLaneState: vi.fn(async () => laneState({ browser: null, browserUnavailable: "error" })),
     });
-    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
     expect(await screen.findByText("Couldn't read the browser's state.")).toBeTruthy();
   });
 
@@ -239,7 +243,7 @@ describe("WorkToolReadOnlyView", () => {
     const getLaneState = vi.fn(async () => laneState());
     installAde({ getLaneState });
 
-    render(<WorkToolReadOnlyView tool="browser" laneId={null} />);
+    render(<WorkToolReadOnlyView tool="browser" laneId={null} runtimePin={LANE_PIN} />);
 
     expect(await screen.findByText("Select a lane to see what its tools are doing.")).toBeTruthy();
     expect(getLaneState).not.toHaveBeenCalled();
@@ -256,7 +260,7 @@ describe("WorkToolReadOnlyView", () => {
       api,
     );
 
-    const { unmount } = render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    const { unmount } = render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByTestId("ios-h264-canvas")).toBeTruthy();
     await waitFor(() => expect(api.streamSubscribe).toHaveBeenCalledTimes(1));
@@ -283,7 +287,7 @@ describe("WorkToolReadOnlyView", () => {
       { ...liveApi() },
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByRole("img")).toHaveProperty("src", DATA_URL);
     expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
@@ -303,7 +307,7 @@ describe("WorkToolReadOnlyView", () => {
       { supportsLiveStream: () => false },
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByRole("img")).toHaveProperty("src", DATA_URL);
     expect(screen.queryByTestId("ios-h264-canvas")).toBeNull();
@@ -323,7 +327,7 @@ describe("WorkToolReadOnlyView", () => {
       { ...liveApi({ start, stop }) },
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     const startButton = await screen.findByRole("button", { name: "Start desktop" });
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
@@ -341,7 +345,7 @@ describe("WorkToolReadOnlyView", () => {
       { ...liveApi({ stop }) },
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByRole("button", { name: "Stop" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start desktop" })).toBeNull();
@@ -403,7 +407,7 @@ describe("WorkToolReadOnlyView", () => {
       },
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByText("Control from the desktop")).toBeTruthy();
     expect(screen.queryByTestId("mac-desktop-web-takeover")).toBeNull();
@@ -419,7 +423,7 @@ describe("WorkToolReadOnlyView", () => {
       api,
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     // The affordance and the hint change together: the host advertised both
     // halves, so the pane must not still claim control is elsewhere.
@@ -460,7 +464,7 @@ describe("WorkToolReadOnlyView", () => {
     }));
     installAde({ getLaneState, readObservationPreview: vi.fn(async () => null) }, controlApi());
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect((await screen.findByTestId("mac-desktop-web-owner")).textContent).toBe("Agent driving");
     expect(screen.getByTestId("mac-desktop-web-recording").textContent).toBe("Recording");
@@ -475,7 +479,7 @@ describe("WorkToolReadOnlyView", () => {
       controlApi(),
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(await screen.findByTestId("mac-desktop-web-takeover")).toBeTruthy();
     expect(screen.queryByTestId("mac-desktop-web-owner")).toBeNull();
@@ -492,7 +496,7 @@ describe("WorkToolReadOnlyView", () => {
       api,
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
     fireEvent.click(await screen.findByTestId("mac-desktop-web-takeover"));
     await act(async () => {});
 
@@ -528,7 +532,7 @@ describe("WorkToolReadOnlyView", () => {
     }));
     installAde({ getLaneState, readObservationPreview: vi.fn(async () => null) }, api);
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
     await act(async () => {});
     const takeButton = screen.getByTestId("mac-desktop-web-takeover");
     fireEvent.click(takeButton);
@@ -569,7 +573,7 @@ describe("WorkToolReadOnlyView", () => {
     (Element.prototype as unknown as { setPointerCapture: () => void }).setPointerCapture = vi.fn();
     (Element.prototype as unknown as { releasePointerCapture: () => void }).releasePointerCapture = vi.fn();
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
     fireEvent.click(await screen.findByTestId("mac-desktop-web-takeover"));
     await act(async () => {});
 
@@ -602,7 +606,7 @@ describe("WorkToolReadOnlyView", () => {
       api,
     );
 
-    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+    render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
     fireEvent.click(await screen.findByTestId("mac-desktop-web-takeover"));
     await act(async () => {});
     expect(screen.getByText("Esc")).toBeTruthy();
@@ -853,7 +857,7 @@ describe("WorkToolReadOnlyView live Mac Desktop stream", () => {
         .filter((delay) => delay === WORK_TOOL_READ_ONLY_POLL_MS || delay === WORK_TOOL_READ_ONLY_LIVE_POLL_MS)
         .map((delay) => ({ delay }));
 
-      const { unmount } = render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" />);
+      const { unmount } = render(<WorkToolReadOnlyView tool="mac-desktop" laneId="lane-1" runtimePin={LANE_PIN} />);
 
       // Before the picture: one still fetch and the four-second poll.
       await waitFor(() => expect(readObservationPreview).toHaveBeenCalledTimes(1));

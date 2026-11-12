@@ -164,10 +164,16 @@ export function useLanesPageMachines({
     }
     return { ok: true, laneId: key, pin: route.pin, machineId: null, name: local.lane.name };
   }, []);
-  const liveMachines = useMemo(
-    () => (goneMachineIds.size ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)) : allMachineLanes.machines),
-    [allMachineLanes.machines, goneMachineIds],
-  );
+  // The tab's own machine has no union slice, so `online` stays true after it
+  // drops; its copy pin is null then, and the filter chip shows it offline.
+  const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null;
+  const liveMachines = useMemo(() => {
+    const live = goneMachineIds.size
+      ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId))
+      : allMachineLanes.machines;
+    if (!tabMachineOffline) return live;
+    return live.map((machine) => (machine.isActiveBinding ? { ...machine, online: false } : machine));
+  }, [allMachineLanes.machines, goneMachineIds, tabMachineOffline]);
   const multiMachine = shouldShowMachineChips(liveMachines.length);
 
   /* ---- Selection ---- */

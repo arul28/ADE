@@ -289,10 +289,11 @@ export function LaneBranchComposerChip({
   laneId: string | null | undefined;
 }) {
   // The chip reads the tab copy's lane list, so it speaks for a chat of the
-  // tab's copy only. A chat on another machine (a chat scope pin) shows none.
-  const chatPin = useChatRuntimeScope().pin;
+  // tab's copy only. A chat on another machine shows none. The scope pin also
+  // names the tab's own copy, so the test is `isActiveBinding`, not the pin.
+  const chatOnTabCopy = useChatRuntimeScope().isActiveBinding;
   const tabPin = useTabCopyPin();
-  const pin = chatPin ? null : tabPin;
+  const pin = chatOnTabCopy ? tabPin : null;
   const pinKey = pin?.key ?? null;
   const storeDrift = useLaneBranchDrift(pin ? laneId : null);
   const armed = useLaneBranchDriftArmed(laneId);

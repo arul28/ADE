@@ -12,7 +12,7 @@
  * answer while the tab has one, so a page that moves to these hooks still
  * reaches the machine it reached before.
  */
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { accountRepoScopeKey } from "../../shared/accountSettingsScope";
 import {
   repositoryTabFromAccountProject,
@@ -23,11 +23,7 @@ import {
 } from "../../shared/repositoryTab";
 import type { OpenProjectBinding } from "../../shared/types";
 import { useAppStore } from "./appStore";
-import {
-  originUrlForBinding,
-  projectOriginMemoryVersion,
-  subscribeProjectOriginMemory,
-} from "../components/lanes/laneMachines";
+import { originUrlForBinding, subscribeProjectOriginMemory } from "../components/lanes/laneMachines";
 import { useStableBinding } from "./laneMachineRouting";
 import { useRemoteTargetState, withMachineTimeout } from "./projectMachines";
 import {
@@ -88,13 +84,13 @@ export function useActiveRepositoryTab(): RepositoryTab | null {
   const binding = useAppStore((state) => state.projectBinding);
   const list = useAccountProjectList();
   // The origin memory fills from the recents after the tab opens; a local
-  // binding has no origin of its own, so the tab follows the memory.
-  const originVersion = useSyncExternalStore(subscribeProjectOriginMemory, projectOriginMemoryVersion, projectOriginMemoryVersion);
+  // binding has no origin of its own, so the tab follows the memory. Only a
+  // change to this binding's origin renders the caller again.
+  const readOrigin = useCallback(() => originUrlForBinding(binding), [binding]);
+  const originUrl = useSyncExternalStore(subscribeProjectOriginMemory, readOrigin, readOrigin);
   const tab = useMemo(
-    () => repositoryTabForBinding(binding, list, originUrlForBinding(binding)),
-    // originVersion: the memory changed, so read the origin again.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [binding, list, originVersion],
+    () => repositoryTabForBinding(binding, list, originUrl),
+    [binding, list, originUrl],
   );
   const held = useRef(tab);
   if (tabIdentity(held.current) !== tabIdentity(tab)) held.current = tab;

@@ -2,7 +2,37 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { SecretsSection } from "./SecretsSection";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { SecretsSection as SectionUnderTest } from "./SecretsSection";
+import { SettingsMachineScopeProvider, settingsMachineScope } from "./SettingsMachineScope";
+
+/** The project copy the Secrets page reads, as the page's copy scope provides it. */
+const COPY_PIN: OpenProjectBinding = {
+  kind: "remote",
+  key: "remote:studio:project-1",
+  targetId: "studio",
+  projectId: "project-1",
+  runtimeName: "Mac Studio",
+  rootPath: "/repo",
+  displayName: "repo",
+};
+
+function SecretsSection() {
+  return (
+    <SettingsMachineScopeProvider
+      scope={settingsMachineScope({
+        machineId: "studio",
+        machineName: "Mac Studio",
+        target: { kind: "pinned", binding: COPY_PIN },
+        isThisMachine: false,
+        isActiveBinding: true,
+        online: true,
+      })}
+    >
+      <SectionUnderTest />
+    </SettingsMachineScopeProvider>
+  );
+}
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -73,7 +103,7 @@ describe("SecretsSection env import and export", () => {
 
     await waitFor(() => expect(importEnv).toHaveBeenCalledWith({
       secrets: [{ name: "NEW_SECRET", value: "visible value" }],
-    }));
+    }, COPY_PIN));
     expect(await screen.findByText("Imported 1 secret.")).toBeTruthy();
   });
 
@@ -91,7 +121,7 @@ describe("SecretsSection env import and export", () => {
       name: "NEW_SECRET",
       value: "new",
       storage: "device",
-    }));
+    }, COPY_PIN));
   });
 
   it("requires plaintext confirmation and reports the remote machine Downloads path after export", async () => {
@@ -105,7 +135,7 @@ describe("SecretsSection env import and export", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm plaintext export" }));
 
     await waitFor(() => expect(exportEnv).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText(/\/Users\/remote\/Downloads\/ade-secrets\.env on the active machine/)).toBeTruthy();
+    expect(await screen.findByText(/\/Users\/remote\/Downloads\/ade-secrets\.env on Mac Studio/)).toBeTruthy();
   });
 
   it("clears revealed and copied values when import replaces a secret", async () => {

@@ -61,6 +61,7 @@ import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { captureError } from "../../../shared/sentry/capture";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
@@ -91,16 +92,13 @@ import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import {
-  buildSavedWindowRepositoryTabs,
   carryRouteToCopy,
   readWindowStripMemory,
   renameInTabOrder,
+  reportStripRestoreFailure,
   restoredStripFromSaved,
-  useWindowRepositoryTabsSync,
-  useWindowStripMemory,
-  useNoMachineTabCleanup,
-  useOneCopyPerRepository,
   useRepositoryIdentity,
+  useRepositoryTabStrip,
 } from "./useRepositoryTabs";
 import { NoMachineRepositoryTabs } from "./NoMachineRepositoryTabs";
 import { useAccountProjectListClient } from "../../state/accountProjectListClient";
@@ -1336,10 +1334,11 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
-  // A repository has one tab and one open copy. No rule moves the tab to this
-  // computer's copy: "Start on" picks the machine for new work.
-  useOneCopyPerRepository({
-    enabled: windowSessionRestored && !isProjectBusy,
+  // One tab and one open copy per repository, kept across a reload and a launch.
+  useRepositoryTabStrip({
+    windowSessionRestored,
+    projectBusy: isProjectBusy,
+    webMode,
     tabGroups,
     activeBindingKey: activeTabBindingKey,
     openProjectTabRoots,
@@ -1347,29 +1346,13 @@ export function TopBar({
     setOpenProjectTabRoots,
     setOpenRemoteProjectTabs,
     setTabOrder,
-  });
-  useNoMachineTabCleanup(tabGroups);
-  useWindowStripMemory({
-    enabled: windowSessionRestored,
-    remoteTabs: openRemoteProjectTabs,
     preferredBindingKeyByGroup,
     tabOrder,
+    noMachineTabs,
+    activeNoMachineTabId,
+    noTabInFront: showWelcome === true || isNewTabOpen === true,
+    recordNameFor,
   });
-  // Main saves the strip by repository and reopens it on the next launch (S5).
-  const savedRepositoryTabs = useMemo(
-    () => buildSavedWindowRepositoryTabs({
-      groups: tabGroups,
-      openLocal: new Set(openProjectTabRoots),
-      openRemote: new Set(openRemoteProjectTabs.map((entry) => entry.key)),
-      noMachineTabs,
-      activeBindingKey: activeTabBindingKey,
-      activeNoMachineTabId,
-      noTabInFront: showWelcome === true || isNewTabOpen === true,
-      nameFor: (group) => recordNameFor(group) ?? group.displayName,
-    }),
-    [activeNoMachineTabId, activeTabBindingKey, isNewTabOpen, noMachineTabs, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, showWelcome, tabGroups],
-  );
-  useWindowRepositoryTabsSync(windowSessionRestored && !webMode, savedRepositoryTabs);
 
   useEffect(() => {
     let cancelled = false;
@@ -1449,9 +1432,9 @@ export function TopBar({
           if (!active.copy) {
             store.showNoMachineTab({ id: active.id, displayName: active.displayName, iconDataUrl: null });
           } else if (active.copy.kind === "local") {
-            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(() => {});
+            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(reportStripRestoreFailure);
           } else {
-            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(() => {});
+            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(reportStripRestoreFailure);
           }
         }
       })
@@ -1854,12 +1837,12 @@ export function TopBar({
         }
         const lines: string[] = [];
         if (stayingTabs.length > 0) {
-          const plural = stayingTabs.length === 1 ? "" : "s";
+          const one = stayingTabs.length === 1;
           lines.push(
-            `${stayingTabs.length} open project tab${plural} also exist${stayingTabs.length === 1 ? "s" : ""} elsewhere:`,
+            `${stayingTabs.length} open project tab${one ? " has a copy" : "s have copies"} on another computer:`,
             stayingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
             "",
-            `${stayingTabs.length === 1 ? "It stays" : "They stay"} open. ${action === "remove" ? "Removing" : "Disconnecting"} ${targetName} only removes its work from inside ${stayingTabs.length === 1 ? "it" : "them"}.`,
+            `${one ? "It stays open and switches to that copy" : "They stay open and switch to those copies"}.`,
           );
         }
         if (waitingTabs.length > 0) {
@@ -2227,8 +2210,9 @@ export function TopBar({
           if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath);
           else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId);
         }
-      } catch {
+      } catch (error) {
         // The switch failed: the tab closes rather than pointing at a removed copy.
+        captureError(error, { fingerprint: ["repository-tabs", "remove-fallback-open"], level: "warning", handled: true });
         await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
         return;
       }
@@ -2872,7 +2856,8 @@ export function TopBar({
                           if (isProjectBusy) return;
                           handleRemoveTab(rp.rootPath);
                         }}
-                        title="Remove project"
+                        // Closes the tab; "Remove project…" in the copies menu removes it.
+                        title="Close project"
                       >
                         <X size={13} weight="regular" />
                       </button>
@@ -3018,11 +3003,10 @@ export function TopBar({
           data-variant="ghost"
           onClick={handleOpenNew}
           disabled={isProjectBusy}
+          // The tooltip names the action; the glow and the count say other computers are online.
           title={
-            webMode
-              ? "Open another project"
-              : remoteStatusCount > 0
-              ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
+            !webMode && remoteStatusCount > 0
+              ? `Open another project (${remoteStatusCount} other computer${remoteStatusCount === 1 ? "" : "s"} online)`
               : "Open another project"
           }
           style={

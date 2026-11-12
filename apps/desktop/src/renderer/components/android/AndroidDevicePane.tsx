@@ -44,14 +44,9 @@ import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
 import { useAndroidOrientation } from "./useAndroidOrientation";
 import { useAndroidScreenCaptures } from "./useAndroidScreenCaptures";
 import { androidCatalogColor, androidCatalogEntry, androidCatalogEntryForAvd, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
-import type { Device3DFailure } from "../device/Device3DView";
 import { ANDROID_DEFAULT_BODY_COLOR, androidBodyColor, type AndroidBodySpec } from "./androidDeviceBody";
-import {
-  androidScreenAspect,
-  readAndroidViewMode,
-  writeAndroidViewMode,
-  type AndroidViewMode,
-} from "./androidDeviceState";
+import { androidScreenAspect } from "./androidDeviceState";
+import { useAndroidViewMode } from "./useAndroidViewMode";
 import { AndroidRenderSheet } from "./AndroidRenderSheet";
 import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
@@ -201,24 +196,9 @@ function AndroidDevicePaneOnMachine({
   /* ── P1 look: the view mode (3D / flat), as on the Apple pane ──────────── */
 
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
-  const [viewMode, setViewModeState] = useState<AndroidViewMode>(() => readAndroidViewMode(projectRoot));
-  const [threeFailure, setThreeFailure] = useState<Device3DFailure | null>(null);
-  const [viewNonce, setViewNonce] = useState(0);
-  useEffect(() => {
-    setViewModeState(readAndroidViewMode(projectRoot));
-    setThreeFailure(null);
-  }, [projectRoot]);
-  const setViewMode = useCallback((next: AndroidViewMode) => {
-    setViewModeState(next);
-    if (next === "3d") setThreeFailure(null);
-    writeAndroidViewMode(projectRoot, next);
-  }, [projectRoot]);
-  /** The 3D view cannot draw here: fall back to flat and say so once (Apple §A1). */
-  const handleThreeUnavailable = useCallback((reason: Device3DFailure) => {
-    setThreeFailure(reason);
-    setViewModeState("flat");
-  }, []);
-  const threeD = viewMode === "3d" && threeFailure === null;
+  const {
+    threeD, threeFailure, viewNonce, setViewMode, handleThreeUnavailable, retry3D, dismiss3DFailure, resetView,
+  } = useAndroidViewMode(projectRoot);
   /** A colour picked here, shown at once while the brain records it. */
   const [colorOverride, setColorOverride] = useState<string | null>(null);
 
@@ -701,8 +681,8 @@ function AndroidDevicePaneOnMachine({
       onError={setError}
       onChoose={() => setPickerRequested(true)}
       onReconnect={() => stream.reconnect()}
-      onRetry3D={() => { setThreeFailure(null); setViewMode("3d"); setViewNonce((nonce) => nonce + 1); }}
-      onDismiss3D={() => setThreeFailure(null)}
+      onRetry3D={retry3D}
+      onDismiss3D={dismiss3DFailure}
       onDismissAcceleration={() => setNoAccelDismissed(true)}
       cloudNeedsFullComputer={cloudNoAndroid != null}
       renderCloudNotice={cloudBox
@@ -912,7 +892,7 @@ function AndroidDevicePaneOnMachine({
                 threeDisabledReason={threeFailure}
                 onRender={renders.openRender}
                 rendering={renders.rendering}
-                onResetView={() => setViewNonce((nonce) => nonce + 1)}
+                onResetView={resetView}
                 colors={laneEntry?.colors}
                 colorId={bodySpec?.colorId ?? null}
                 onColor={noPicker ? undefined : setColor}
