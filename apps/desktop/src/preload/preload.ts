@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { AccountProjectListResult } from "../shared/accountProject";
+import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
   LaneShareAcceptResult,
@@ -5163,6 +5164,7 @@ const adeBridge = {
       binding: OpenProjectBinding | null;
       openProjectTabs: ProjectInfo[];
       openProjectTabRoots?: string[];
+      repositoryTabs?: SavedWindowRepositoryTabs | null;
     }> => {
       const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
         windowId: number | null;
@@ -5170,6 +5172,7 @@ const adeBridge = {
         binding: OpenProjectBinding | null;
         openProjectTabs?: ProjectInfo[];
         openProjectTabRoots?: string[];
+        repositoryTabs?: SavedWindowRepositoryTabs | null;
       };
       rememberProjectBinding(session.binding);
       return { ...session, openProjectTabs: session.openProjectTabs ?? [] };
@@ -5196,6 +5199,8 @@ const adeBridge = {
       rootPaths: string[],
     ): Promise<{ openProjectTabs: ProjectInfo[] }> =>
       ipcRenderer.invoke(IPC.appSetWindowProjectTabs, { rootPaths }),
+    setWindowRepositoryTabs: async (tabs: SavedWindowRepositoryTabs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetWindowRepositoryTabs, { tabs }),
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (

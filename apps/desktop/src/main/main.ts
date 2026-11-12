@@ -9,6 +9,7 @@ import {
   whenSystemCertificateReadSettles,
 } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
+import { coerceSavedWindowRepositoryTabs, type SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
@@ -2476,6 +2477,45 @@ app.whenReady().then(async () => {
   };
   const windowPendingProjectRoots = new Map<number, Map<string, number>>();
   const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
+  /** Each window's repository tabs, as its renderer last sent them (S5). */
+  const windowRepositoryTabs = new Map<number, SavedWindowRepositoryTabs>();
+  /**
+   * The saved tabs a window reopens: only the first window of a launch, or a
+   * window opened when none is open, with no project asked for. Its session
+   * hands them out until the renderer sends its own strip.
+   */
+  const windowRestoreRepositoryTabs = new Map<number, SavedWindowRepositoryTabs>();
+  const parseSavedRepositoryTabs = (value: unknown): SavedWindowRepositoryTabs | null =>
+    coerceSavedWindowRepositoryTabs(value, (binding) => {
+      const parsed = sanitizeRendererProjectBinding(binding);
+      return parsed?.kind === "remote" ? parsed : null;
+    });
+  const markWindowRepositoryTabsRestore = (windowId: number): void => {
+    const saved = parseSavedRepositoryTabs(readGlobalState(globalStatePath).lastRepositoryTabs);
+    if (saved && saved.tabs.length > 0) windowRestoreRepositoryTabs.set(windowId, saved);
+  };
+  const persistWindowRepositoryTabs = (windowId: number): void => {
+    // The update quit and the shutdown close every window; what they leave
+    // must not replace the strip the person had.
+    if (shutdownRequested || autoUpdateService.isInstallQuitArmed()) return;
+    const tabs = windowRepositoryTabs.get(windowId);
+    if (!tabs) return;
+    writeGlobalState(globalStatePath, {
+      ...readGlobalState(globalStatePath),
+      lastRepositoryTabs: { ...tabs, updatedAt: new Date().toISOString() },
+    });
+  };
+  const setWindowRepositoryTabs = (windowId: number | null, value: unknown): void => {
+    if (windowId == null) return;
+    const tabs = parseSavedRepositoryTabs(value);
+    if (!tabs) return;
+    windowRepositoryTabs.set(windowId, tabs);
+    windowRestoreRepositoryTabs.delete(windowId);
+    const openWindows = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
+    if (BrowserWindow.getFocusedWindow()?.id === windowId || openWindows.length === 1) {
+      persistWindowRepositoryTabs(windowId);
+    }
+  };
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
@@ -9683,6 +9723,7 @@ app.whenReady().then(async () => {
     win.webContents.on("did-finish-load", () => sendWindowFocus(win.isFocused()));
     win.on("focus", () => {
       sendWindowFocus(true);
+      persistWindowRepositoryTabs(win.id);
       const focusedRemoteBinding = windowProjectBindings.get(win.id) ?? null;
       const focusedRoot = windowProjectRoots.get(win.id) ?? null;
       if (focusedRemoteBinding) {
@@ -9727,6 +9768,9 @@ app.whenReady().then(async () => {
       windowKnownLocalProjectRoots.delete(win.id);
       windowPendingProjectRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
+      // The saved strip stays: closing the last window is how a person quits.
+      windowRepositoryTabs.delete(win.id);
+      windowRestoreRepositoryTabs.delete(win.id);
       if (activeProjectRoot === previousRoot) {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
@@ -9735,7 +9779,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; openProjectTabRoots: string[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; openProjectTabRoots: string[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[]; repositoryTabs?: SavedWindowRepositoryTabs | null } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -9755,6 +9799,9 @@ app.whenReady().then(async () => {
     // only projects with a live context, and an idle project's context can be
     // released while its tab stays open.
     const openProjectTabRoots = Array.from(windowProjectTabRoots.get(windowId) ?? []);
+    // The saved strip this window reopens (a launch or the first window
+    // after all closed), until its renderer sends a strip of its own.
+    const repositoryTabs = windowRestoreRepositoryTabs.get(windowId) ?? null;
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
@@ -9764,6 +9811,7 @@ app.whenReady().then(async () => {
       openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
+      repositoryTabs,
     };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
@@ -9774,6 +9822,7 @@ app.whenReady().then(async () => {
       openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
+      repositoryTabs,
     };
   };
 
@@ -9814,6 +9863,11 @@ app.whenReady().then(async () => {
       onCreated: (createdWindow) => {
         attachWheelZoom(createdWindow);
         registerWindowSession(createdWindow, null, restoredRemoteBinding);
+        // The first window after every window closed reopens the saved tabs,
+        // unless it was opened for one project.
+        if (openWindows.length === 0 && !args.projectRoot && !requestedRemote) {
+          markWindowRepositoryTabsRestore(createdWindow.id);
+        }
         args.onWindow?.(createdWindow);
       },
       onCloseRequested: handleMainWindowCloseRequested,
@@ -10749,6 +10803,7 @@ app.whenReady().then(async () => {
     getProjectContext: (projectRoot) =>
       projectContexts.get(normalizeProjectRoot(projectRoot)) ?? null,
     setWindowProjectTabs: rememberWindowProjectTabs,
+    setWindowRepositoryTabs,
     bindRemoteProject: bindWindowToRemoteProject,
     localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()
       ? null
@@ -10951,6 +11006,8 @@ app.whenReady().then(async () => {
     onCreated: (createdWindow) => {
       attachWheelZoom(createdWindow);
       registerWindowSession(createdWindow, null, initialRemoteProjectBinding);
+      // Every launch reopens the saved repository tabs, after an update too.
+      markWindowRepositoryTabsRestore(createdWindow.id);
     },
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,

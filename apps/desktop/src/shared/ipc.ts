@@ -49,6 +49,7 @@ export const IPC = {
   appGetLaunchGateState: "ade.app.getLaunchGateState",
   appResolveLaunchGate: "ade.app.resolveLaunchGate",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",
+  appSetWindowRepositoryTabs: "ade.app.setWindowRepositoryTabs",
   appNewWindow: "ade.app.newWindow",
   appOpenProjectInNewWindow: "ade.app.openProjectInNewWindow",
   appProjectTabDragStart: "ade.app.projectTabDragStart",

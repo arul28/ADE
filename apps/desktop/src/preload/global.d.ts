@@ -1,5 +1,6 @@
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { AccountProjectListResult } from "../shared/accountProject";
+import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -1322,6 +1323,8 @@ declare global {
           openProjectTabRoots?: string[];
           /** Hosted web persists remote machine/project tabs in this browser. */
           openProjectBindings?: OpenProjectBinding[];
+          /** Desktop: the saved repository tabs this window reopens after a launch (S5). */
+          repositoryTabs?: SavedWindowRepositoryTabs | null;
         }>;
         getWelcomeVideoState: () => Promise<AppWelcomeVideoState>;
         markWelcomeVideoSeen: (
@@ -1340,6 +1343,8 @@ declare global {
         setWindowProjectTabs: (
           rootPaths: string[],
         ) => Promise<{ openProjectTabs: ProjectInfo[] }>;
+        /** Desktop: the window's repository tabs, which main saves and reopens on the next launch (S5). Absent on web. */
+        setWindowRepositoryTabs?: (tabs: SavedWindowRepositoryTabs) => Promise<{ ok: true }>;
         /** Hosted-web-only retained binding persistence; absent on native desktop. */
         setWindowProjectBindings?: (
           bindings: OpenProjectBinding[],

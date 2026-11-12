@@ -16,11 +16,17 @@
  * Nothing here moves a tab to this computer's copy on its own: which machine
  * takes new work is the "Start on" rule (`resolveStartOn`), not the tab.
  */
-import { useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
+import {
+  savedRepositoryCopyKey,
+  type SavedRepositoryTab,
+  type SavedRepositoryTabCopy,
+  type SavedWindowRepositoryTabs,
+} from "../../../shared/windowRepositoryTabs";
 import { START_ON_LAST_MACHINE_STORAGE_KEY, useAccountProjectList } from "../../state/useRepositoryCopies";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import type { ProjectTabGroup } from "./projectTabGrouping";
@@ -185,6 +191,90 @@ export function useWindowStripMemory(args: WindowStripMemory & { enabled: boolea
       // Storage full or unavailable: a reload then keeps what the main process keeps.
     }
   }, [enabled, preferredBindingKeyByGroup, remoteTabs, tabOrder]);
+}
+
+/**
+ * The window's repository tabs as main saves them (S5): each open tab by its
+ * repository id, with the copy it shows, then the tabs with no computer
+ * online. Main reopens them on the next launch, also after an update.
+ */
+export function buildSavedWindowRepositoryTabs(args: {
+  groups: readonly ProjectTabGroup[];
+  openLocal: ReadonlySet<string>;
+  openRemote: ReadonlySet<string>;
+  noMachineTabs: readonly NoMachineRepositoryTab[];
+  activeBindingKey: string | null;
+  activeNoMachineTabId: string | null;
+  /** True while Home, a new tab or a page with no project is in front. */
+  noTabInFront: boolean;
+  nameFor: (group: ProjectTabGroup) => string;
+}): SavedWindowRepositoryTabs {
+  const tabs: SavedRepositoryTab[] = [];
+  const seen = new Set<string>();
+  let activeId: string | null = null;
+  for (const group of args.groups) {
+    const open = group.machines.filter((machine) =>
+      (machine.isLocal ? args.openLocal : args.openRemote).has(machine.bindingKey));
+    if (open.length === 0 || seen.has(group.id)) continue;
+    const shown = open.find((machine) => machine.bindingKey === args.activeBindingKey) ?? open[0]!;
+    let copy: SavedRepositoryTabCopy | null = null;
+    if (shown.isLocal) copy = { kind: "local", rootPath: shown.rootPath };
+    else if (shown.binding?.kind === "remote") copy = { kind: "remote", binding: { ...shown.binding, iconDataUrl: null } };
+    if (!copy) continue;
+    seen.add(group.id);
+    tabs.push({ id: group.id, displayName: args.nameFor(group), copy });
+    if (!args.noTabInFront && shown.bindingKey === args.activeBindingKey) activeId = group.id;
+  }
+  for (const tab of args.noMachineTabs) {
+    if (seen.has(tab.id)) continue;
+    seen.add(tab.id);
+    tabs.push({ id: tab.id, displayName: tab.displayName, copy: null });
+  }
+  if (args.activeNoMachineTabId && seen.has(args.activeNoMachineTabId)) activeId = args.activeNoMachineTabId;
+  return { tabs, activeId };
+}
+
+/** Sends the window's repository tabs to main when they change (desktop only). */
+export function useWindowRepositoryTabsSync(enabled: boolean, tabs: SavedWindowRepositoryTabs): void {
+  const serialized = enabled ? JSON.stringify(tabs) : null;
+  const lastSentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (serialized == null || serialized === lastSentRef.current) return;
+    const send = window.ade?.app?.setWindowRepositoryTabs;
+    if (typeof send !== "function") return;
+    lastSentRef.current = serialized;
+    void send(JSON.parse(serialized) as SavedWindowRepositoryTabs).catch(() => {
+      lastSentRef.current = null;
+    });
+  }, [serialized]);
+}
+
+/** The renderer state that reopens a saved strip: open copies, no-machine tabs and the order. */
+export function restoredStripFromSaved(saved: SavedWindowRepositoryTabs): {
+  localRoots: string[];
+  remoteBindings: RemoteOpenProjectBinding[];
+  noMachineTabs: NoMachineRepositoryTab[];
+  tabOrder: string[];
+  active: SavedRepositoryTab | null;
+} {
+  const localRoots: string[] = [];
+  const remoteBindings: RemoteOpenProjectBinding[] = [];
+  const noMachineTabs: NoMachineRepositoryTab[] = [];
+  const tabOrder: string[] = [];
+  for (const tab of saved.tabs) {
+    const key = savedRepositoryCopyKey(tab.copy);
+    if (tab.copy?.kind === "local") localRoots.push(tab.copy.rootPath);
+    else if (tab.copy?.kind === "remote") remoteBindings.push(tab.copy.binding);
+    else noMachineTabs.push({ id: tab.id, displayName: tab.displayName, iconDataUrl: null });
+    if (key) tabOrder.push(key);
+  }
+  return {
+    localRoots,
+    remoteBindings,
+    noMachineTabs,
+    tabOrder,
+    active: saved.tabs.find((tab) => tab.id === saved.activeId) ?? null,
+  };
 }
 
 /** Records the machine this client last used for a tab, for "Start on" (`ade.startOn.lastMachine.v1`). */

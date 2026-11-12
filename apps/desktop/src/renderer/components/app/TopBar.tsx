@@ -89,9 +89,12 @@ import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import {
+  buildSavedWindowRepositoryTabs,
   carryRouteToCopy,
   readWindowStripMemory,
   renameInTabOrder,
+  restoredStripFromSaved,
+  useWindowRepositoryTabsSync,
   useWindowStripMemory,
   useNoMachineTabCleanup,
   useOneCopyPerRepository,
@@ -838,6 +841,7 @@ export function TopBar({
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const activeNoMachineTabId = useAppStore((s) => s.activeNoMachineTabId);
+  const noMachineTabs = useAppStore((s) => s.noMachineTabs);
   const noMachineTabCount = useAppStore((s) => s.noMachineTabs.length);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   // Which open tabs have a loaded project: only those switch at once.
@@ -1332,6 +1336,21 @@ export function TopBar({
     preferredBindingKeyByGroup,
     tabOrder,
   });
+  // Main saves the strip by repository and reopens it on the next launch (S5).
+  const savedRepositoryTabs = useMemo(
+    () => buildSavedWindowRepositoryTabs({
+      groups: tabGroups,
+      openLocal: new Set(openProjectTabRoots),
+      openRemote: new Set(openRemoteProjectTabs.map((entry) => entry.key)),
+      noMachineTabs,
+      activeBindingKey: activeTabBindingKey,
+      activeNoMachineTabId,
+      noTabInFront: showWelcome === true || isNewTabOpen === true,
+      nameFor: (group) => recordNameFor(group) ?? group.displayName,
+    }),
+    [activeNoMachineTabId, activeTabBindingKey, isNewTabOpen, noMachineTabs, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, showWelcome, tabGroups],
+  );
+  useWindowRepositoryTabsSync(windowSessionRestored && !webMode, savedRepositoryTabs);
 
   useEffect(() => {
     let cancelled = false;
@@ -1347,7 +1366,22 @@ export function TopBar({
           setPreferredBindingKeyByGroup((current) => ({ ...strip.preferredBindingKeyByGroup, ...current }));
           setTabOrder((current) => (current.length > 0 ? current : strip.tabOrder));
         }
-        const sessionBindings = [...(session.openProjectBindings ?? []), ...(strip?.remoteTabs ?? [])];
+        // A launch: main hands back the strip it saved, by repository (S5).
+        // A reload reads the window's own memory above instead.
+        const launchStrip = !strip && session.repositoryTabs && session.repositoryTabs.tabs.length > 0
+          ? restoredStripFromSaved(session.repositoryTabs)
+          : null;
+        if (launchStrip) {
+          setTabOrder((current) => (current.length > 0 ? current : launchStrip.tabOrder));
+          for (const tab of launchStrip.noMachineTabs) {
+            useAppStore.getState().showNoMachineTab(tab, { activate: false });
+          }
+        }
+        const sessionBindings = [
+          ...(session.openProjectBindings ?? []),
+          ...(strip?.remoteTabs ?? []),
+          ...(launchStrip?.remoteBindings ?? []),
+        ];
         if (sessionBindings.length) {
           const restoredRemoteBindings = sessionBindings.filter(
             (entry): entry is RemoteOpenProjectBinding => entry.kind === "remote",
@@ -1363,8 +1397,11 @@ export function TopBar({
         // Restore every local tab root, loaded or not: an idle project's
         // context may be released while its tab stays open. Hosted web sends
         // only the loaded list.
-        const restored = session.openProjectTabRoots
-          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        const restored = [...(session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath))];
+        for (const root of launchStrip?.localRoots ?? []) {
+          if (!restored.includes(root)) restored.push(root);
+        }
         if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
@@ -1385,6 +1422,19 @@ export function TopBar({
           setOpenProjectTabRoots([]);
         }
         setWindowSessionRestored(true);
+        // The tab that was in front comes back in front, unless the launch
+        // already opened a project (a startup project, an update restore).
+        const active = launchStrip?.active ?? null;
+        if (active && !session.binding && !session.project) {
+          const store = useAppStore.getState();
+          if (!active.copy) {
+            store.showNoMachineTab({ id: active.id, displayName: active.displayName, iconDataUrl: null });
+          } else if (active.copy.kind === "local") {
+            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(() => {});
+          } else {
+            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(() => {});
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) {
