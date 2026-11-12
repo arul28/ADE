@@ -49,6 +49,8 @@ export type SnoozedReminderConfig<T> = {
   recheckIntervalMs: number;
   /** Null when this build or host cannot answer; the reminder then stays quiet. */
   read: (() => Promise<T>) | null;
+  /** Restarts the checks when it changes: the key of the machine `read` asks. */
+  readKey?: string | null;
   qualifies: (summary: T) => boolean;
   icon: ReactNode;
   title: (summary: T) => string;
@@ -58,7 +60,7 @@ export type SnoozedReminderConfig<T> = {
 };
 
 export function useSnoozedReminderBanner<T>(config: SnoozedReminderConfig<T>): void {
-  const { projectRoot, enabled, storageKey, snoozeMs, firstCheckDelayMs, recheckIntervalMs, read, qualifies } = config;
+  const { projectRoot, enabled, storageKey, snoozeMs, firstCheckDelayMs, recheckIntervalMs, read, readKey, qualifies } = config;
   const [summary, setSummary] = useState<T | null>(null);
 
   useEffect(() => {
@@ -82,10 +84,10 @@ export function useSnoozedReminderBanner<T>(config: SnoozedReminderConfig<T>): v
       window.clearTimeout(first);
       window.clearInterval(interval);
     };
-    // `read` and `qualifies` are module-level or stable per caller; the timers
-    // restart only when the project, its enablement or the cadence changes.
+    // `read` and `qualifies` are stable per caller and machine; the timers
+    // restart only when the project, its machine, its enablement or the cadence changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, projectRoot, storageKey, firstCheckDelayMs, recheckIntervalMs]);
+  }, [enabled, projectRoot, readKey, storageKey, firstCheckDelayMs, recheckIntervalMs]);
 
   const later = useCallback(() => {
     if (projectRoot) snooze(storageKey, projectRoot, snoozeMs);

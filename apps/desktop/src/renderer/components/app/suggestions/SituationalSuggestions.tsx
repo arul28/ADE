@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { GitHubStatus, LaneSummary, OpenProjectBinding, UsageSnapshot } from "../../../../shared/types";
 import type { AttentionItem } from "../../../../shared/types/attention";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
@@ -21,6 +21,7 @@ import { isSuggestionOff, markSuggestionDone } from "../../../onboarding/situati
 import { useChatSendSignals, type IssueTracker } from "./chatSendSignals";
 import { useSituationalSuggestion } from "./useSituationalSuggestion";
 import { useFeatureTipCard } from "./useFeatureTipCard";
+import { useActiveRepositoryReader } from "../../../state/repositoryScope";
 
 /**
  * The situational suggestions' signals (tier 3 of onboarding), each a small
@@ -174,6 +175,10 @@ function useChatSecretSuggestion({ enabled, navigate }: Props): void {
 function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigate }: Props): void {
   const { issueTrackers, issueSeq } = useChatSendSignals();
   const [unconnected, setUnconnected] = useState<IssueTracker | null>(null);
+  // Linear is the repository's: ask the reader copy. None online: treat it as connected (no nag).
+  const linearReaderPin = useActiveRepositoryReader();
+  const linearReaderPinRef = useRef(linearReaderPin);
+  linearReaderPinRef.current = linearReaderPin;
   // An unreadable credential store may still hold a working sign-in: not "unconnected".
   const githubConnected = githubStatus
     ? githubStatus.connected || githubStatus.credentialStoreUnreadable === true
@@ -185,7 +190,9 @@ function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigat
     const isConnected = async (tracker: IssueTracker): Promise<boolean> => {
       if (tracker === "github") return githubConnected !== false;
       if (tracker === "jira") return (await loadJiraConnectionStatus(projectRoot))?.connected !== false;
-      const status = await window.ade?.cto?.getLinearConnectionStatus?.(null);
+      const pin = linearReaderPinRef.current;
+      if (!pin) return true;
+      const status = await window.ade?.cto?.getLinearConnectionStatus?.(pin);
       return status?.connected !== false;
     };
     void (async () => {

@@ -27,6 +27,7 @@ import {
 } from "../../lib/issueLaunchRequests";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { useActiveProjectRoot, useAppStore, workViewStoreForProject } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { BatchLaunchModal, type BatchLaunchMachine, type BatchLaunchSubmit } from "./BatchLaunchModal";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
@@ -56,6 +57,15 @@ export function IssueLaunchHost() {
   const projectBinding = useAppStore((state) => state.projectBinding);
   const [request, setRequest] = useState<PendingIssueLaunchRequest | null>(null);
   const [states, setStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
+  // A batch with no machine pin goes to the tab's copy. Readiness events come
+  // from the machine the last batch went to.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const [batchEventPin, setBatchEventPin] = useState<OpenProjectBinding | null>(null);
+  const readinessPin = batchEventPin ?? tabCopyPin;
+  const readinessPinRef = useRef(readinessPin);
+  readinessPinRef.current = readinessPin;
   const statesRef = useRef(states);
   const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
@@ -82,7 +92,10 @@ export function IssueLaunchHost() {
     });
   }, [updateStates]);
 
-  useEffect(() => window.ade.agentChat.onEvent((envelope) => {
+  useEffect(() => {
+    const eventPin = readinessPinRef.current;
+    if (!eventPin) return undefined;
+    return window.ade.agentChat.onEvent((envelope) => {
     const transition = batchAgentReadinessRef.current.observe(envelope);
     if (!transition) return;
     updateStates((current) => {
@@ -93,7 +106,9 @@ export function IssueLaunchHost() {
       next.set(transition.issueId, { ...state, ...transition.outcome });
       return next;
     });
-  }), [updateStates]);
+    }, eventPin);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateStates, readinessPin?.key]);
 
   const launchBatch = useCallback(async (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
     if (!entries.length) return;
@@ -108,7 +123,11 @@ export function IssueLaunchHost() {
       }
       return;
     }
+    // `machine.pin` null means the tab's machine (the machine choice's rule).
     const pin = machine.pin;
+    const callPin = pin ?? tabCopyPinRef.current;
+    if (!callPin) throw new Error("No computer with this project is online.");
+    setBatchEventPin(callPin);
     for (const { issue } of entries) batchMachineByIssueRef.current.set(launchIssueIdentity(issue), machine);
     batchAgentReadinessRef.current.beginBatch();
     if (launchPromptClipboardEnabled) {
@@ -137,7 +156,7 @@ export function IssueLaunchHost() {
     });
 
     const result = await runBatchLaunch(entries, {
-      createLane: (args) => pin ? window.ade.lanes.create(args, pin) : window.ade.lanes.create(args),
+      createLane: (args) => window.ade.lanes.create(args, callPin),
       launch: async (args) => {
         const launchArgs: Parameters<typeof window.ade.agentChat.launch>[0] = {
           laneId: args.laneId,
@@ -161,9 +180,7 @@ export function IssueLaunchHost() {
           ...(args.presetId ? { presetId: args.presetId } : {}),
         };
         await ensureHarnessPresetOnBrain(args.presetId, { targetsAnotherMachine: pin?.kind === "remote" });
-        const session = pin
-          ? await window.ade.agentChat.launch(launchArgs, pin)
-          : await window.ade.agentChat.launch(launchArgs);
+        const session = await window.ade.agentChat.launch(launchArgs, callPin);
         if (projectRoot && !pin) announceWorkChatSessionCreated(projectRoot, session);
         return session;
       },
@@ -180,9 +197,9 @@ export function IssueLaunchHost() {
           ...(args.linearIssues ? { linearIssues: args.linearIssues } : {}),
           ...(args.presetId ? { presetId: args.presetId } : {}),
         };
-        return pin ? window.ade.agentChat.launchCli(cliArgs, pin) : window.ade.agentChat.launchCli(cliArgs);
+        return window.ade.agentChat.launchCli(cliArgs, callPin);
       },
-      deleteLane: (args) => (pin ? window.ade.lanes.delete(args, pin) : window.ade.lanes.delete(args)).then(() => undefined),
+      deleteLane: (args) => window.ade.lanes.delete(args, callPin).then(() => undefined),
     }, {
       onItem: (issueId, patch) => {
         if (patch.laneId) {

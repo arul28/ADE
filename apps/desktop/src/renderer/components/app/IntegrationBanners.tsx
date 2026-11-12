@@ -26,6 +26,7 @@ import {
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { showToast } from "./toast/toastStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { githubReminderKey, clearGithubAlarms, migrateGithubReminder, githubAccessWasWorking, rememberGithubWorkingAccess, useBannerDismissals } from "../../lib/bannerDismiss";
 import {
   APP_BANNER_PRIORITY,
@@ -150,19 +151,26 @@ export function IntegrationBanners({
   const currentRootRef = useRef<string | null>(currentProjectRoot);
   currentRootRef.current = currentProjectRoot;
   const [loadedRoot, setLoadedRoot] = useState<string | null>(null);
+  // The GitHub App state is the repository's: read it from the reader copy.
+  // No copy online: nothing is read and the App block stays hidden.
+  const readerPin = useActiveRepositoryReader();
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
 
   // Fetch the two independent GitHub App axes (per-repo install + account token).
   // Mirrors GitHubAppInstallPanel.loadStatus: read auth AFTER the install check,
   // since an expired token can be cleared during that check.
   const loadAppStatus = useCallback(async (forceRefresh = false) => {
     const api = window.ade?.github;
-    if (!api?.getAppInstallationStatus) return;
+    const pin = readerPinRef.current;
+    if (!api?.getAppInstallationStatus || !pin) return;
     const seq = seqRef.current + 1;
     seqRef.current = seq;
     const requestedRoot = currentRootRef.current;
     const isCurrent = () => mountedRef.current && seqRef.current === seq && currentRootRef.current === requestedRoot;
     try {
-      const install = await api.getAppInstallationStatus({ forceRefresh });
+      const install = await api.getAppInstallationStatus({ forceRefresh }, pin);
       if (!isCurrent()) return;
       setAppInstall(install);
     } catch {
@@ -170,7 +178,7 @@ export function IntegrationBanners({
       setAppInstall(null);
     }
     try {
-      const auth = (await api.getAppUserAuthStatus?.()) ?? null;
+      const auth = (await api.getAppUserAuthStatus?.(pin)) ?? null;
       if (!isCurrent()) return;
       setAppAuth(auth);
     } catch {
@@ -196,7 +204,7 @@ export function IntegrationBanners({
   useEffect(() => {
     setAppStatusLoaded(false);
     void loadAppStatus(false);
-  }, [currentProjectRoot, loadAppStatus]);
+  }, [currentProjectRoot, loadAppStatus, readerPinKey]);
 
   // Coalesced refresh on PR/GitHub activity — cheap, and seq-guarded against stale
   // responses. Both subscriptions are optional (browser-mock / tests may omit them).
@@ -209,6 +217,8 @@ export function IntegrationBanners({
   const prRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const disposers: Array<() => void> = [];
+    const pin = readerPinRef.current;
+    if (!pin) return undefined;
     const onPrEvent = (event: PrEventPayload) => {
       // Reconcile progress pings never carry App install/auth changes — skip them
       // so a focus reconcile doesn't trigger two forced status calls.
@@ -220,9 +230,9 @@ export function IntegrationBanners({
         void loadAppStatus(false);
       }, 1_500);
     };
-    const offPrs = window.ade?.prs?.onEvent?.(onPrEvent);
+    const offPrs = window.ade?.prs?.onEvent?.(onPrEvent, pin);
     if (offPrs) disposers.push(offPrs);
-    const offGithub = window.ade?.github?.onStatusChanged?.(() => void loadAppStatus(true));
+    const offGithub = window.ade?.github?.onStatusChanged?.(() => void loadAppStatus(true), pin);
     if (offGithub) disposers.push(offGithub);
     return () => {
       if (prRefreshTimerRef.current != null) {
@@ -231,7 +241,7 @@ export function IntegrationBanners({
       }
       for (const dispose of disposers) dispose();
     };
-  }, [loadAppStatus]);
+  }, [loadAppStatus, readerPinKey]);
 
   // Relay outage crosses its grace threshold on wall-clock time, not on an
   // incoming event, so nothing would re-render us at the two-minute mark. Arm a
