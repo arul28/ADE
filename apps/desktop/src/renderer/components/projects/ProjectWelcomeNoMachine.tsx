@@ -58,7 +58,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
   const tried = useRef(new Set<string>());
-  const defaultAddress = resolveDefaultCopy(repositoryTab, { copies });
+  const defaultAddress = resolveDefaultCopy({ copies });
   useEffect(() => {
     if (!defaultAddress || tried.current.has(defaultAddress.key)) return;
     tried.current.add(defaultAddress.key);

@@ -766,8 +766,9 @@ export function AutomationsWorkspace({
         const validation = await validateDraft(draft);
         if (!validation.ok) return;
         const target = draftTarget;
+        if (!draftPin) throw new Error(NO_COMPUTER_ONLINE);
         const saved = await onMachine(
-          window.ade.automations.saveDraft({ draft: { ...draft, home: "ade-cloud" }, confirmations: [...acceptedConfirmations] }, target?.pin ?? null),
+          window.ade.automations.saveDraft({ draft: { ...draft, home: "ade-cloud" }, confirmations: [...acceptedConfirmations] }, draftPin),
           target,
         );
         commitMachineRules(target, saved.rules);
@@ -827,7 +828,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftTarget, machinePin, moveRule, refreshForeign, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftPin, draftTarget, machinePin, moveRule, refreshForeign, validateDraft]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;

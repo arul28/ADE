@@ -28,7 +28,7 @@ import { showToast } from "../app/toast/toastStore";
 import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/CrossMachineHandoffBanner";
 import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuStatus } from "../ui/MenuSubmenu";
 import { cn } from "../ui/cn";
-import { withChatPin } from "../chat/chatMachinePin";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -157,7 +157,7 @@ export function CrossMachineMoveSubmenu({
         mode: "fork",
         ...(changeCount > 0 ? { includeChanges: true } : {}),
         ...(busy ? { whenTurnEnds: true } : {}),
-      }, binding);
+      }, requireChatPin(binding));
       showToast({
         tone: "info",
         title: started.state === "pending"
@@ -182,7 +182,7 @@ export function CrossMachineMoveSubmenu({
   const workHereInstead = async (handoffId: string) => {
     onClose();
     try {
-      await window.ade.agentChat.acknowledgeCrossMachineHandoff({ sourceSessionId: session.id, handoffId }, binding);
+      await window.ade.agentChat.acknowledgeCrossMachineHandoff({ sourceSessionId: session.id, handoffId }, requireChatPin(binding));
       showToast({ tone: "info", title: "Working here again", message: "Resume starts this CLI here." });
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't keep it here", message: errorText(error) });

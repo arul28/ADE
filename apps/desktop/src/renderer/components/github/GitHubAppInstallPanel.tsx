@@ -326,7 +326,7 @@ export function GitHubAppInstallPanel({
     setDeviceMessage("GitHub is connected to your ADE account. Checking repository access...");
     onAccountAppChanged?.();
     void loadStatus(true, { retryAfterAuthorization: true });
-    void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
+    if (pin) void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
   }, [loadStatus, onAccountAppChanged, pin]);
 
   const startAccountSignIn = useCallback(() => {

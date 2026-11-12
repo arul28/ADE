@@ -20,7 +20,7 @@ import {
 } from "../../lib/sessionSnooze";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
-import { withChatPin } from "../chat/chatMachinePin";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -498,9 +498,7 @@ export async function archiveAgentCliSession(
   pin?: OpenProjectBinding | null,
 ): Promise<boolean> {
   try {
-    await (pin
-      ? window.ade.agentChat.archive({ sessionId: session.id }, pin)
-      : window.ade.agentChat.archive({ sessionId: session.id }));
+    await window.ade.agentChat.archive({ sessionId: session.id }, requireChatPin(pin));
     showToast({
       id: `archive-cli:${session.id}`,
       title: "CLI session archived",
@@ -529,7 +527,7 @@ export async function handoffAgentCliSession(
   showToast({ id: toastId, title: mode === "fork" ? "Forking into a chat…" : "Handing off to a chat…" });
   try {
     const args = { sourceSessionId: session.id, targetModelId: "", mode };
-    const result = pin ? await window.ade.agentChat.handoff(args, pin) : await window.ade.agentChat.handoff(args);
+    const result = await window.ade.agentChat.handoff(args, requireChatPin(pin));
     window.dispatchEvent(new CustomEvent("ade:work:select-session", {
       detail: { sessionId: result.session.id, laneId: result.session.laneId, ...(pin ? { binding: pin } : {}) },
     }));
