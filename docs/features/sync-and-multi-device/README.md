@@ -4607,7 +4607,11 @@ route needs from loopback:
 
 The shared listener re-checks loopback every
 `SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request) and on
-`healNow()`. On a shadow it names the holder (`shadowedBy`, program name
+`healNow()`. It also probes this machine's own external IPv4 addresses on
+the port, since a program can bind `<lan-ip>:<port>` the same way; only a
+foreign answer counts there, never a timeout or refusal. With loopback and
+LAN healthy and no project host attached, it moves back to the preferred
+port (normally 8787) once that frees. On a shadow it names the holder (`shadowedBy`, program name
 only), logs `sync_listener.loopback_shadowed_at_runtime`, and moves to the
 next free port that validates (24 ports up, then an OS-assigned one),
 emitting `sync_listener.moved_off_shadowed_port` and `onPortChanged`.

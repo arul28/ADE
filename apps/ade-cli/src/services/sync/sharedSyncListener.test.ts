@@ -264,6 +264,84 @@ describe("shared sync listener upgrade policy", () => {
     }
   });
 
+  // The same trick works on the machine's LAN address: a program bound to
+  // <lan-ip>:<port> answers LAN peers there instead of ADE. Only a foreign
+  // answer counts; an address that times out or refuses never moves the port.
+  it("moves when another program answers on one of this machine's LAN addresses", async () => {
+    const answers = new Map<string, "ade" | "foreign" | "silent">([
+      ["10.9.8.7", "silent"],
+      ["192.0.2.10", "ade"],
+    ]);
+    let shadowedPort: number | null = null;
+    const listener = createSharedSyncListener({
+      bindHost: "0.0.0.0",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({ port, holders: [] }),
+      localAddresses: () => [...answers.keys()],
+      addressProbe: async (host, port, expectedNonce) => {
+        const answer = port === shadowedPort ? answers.get(host) : "ade";
+        return {
+          ok: answer === "ade",
+          port,
+          statusCode: answer === "silent" ? null : answer === "ade" ? 426 : 200,
+          statusMessage: null,
+          markerValue: answer === "ade" ? expectedNonce : null,
+          checkedAt: new Date().toISOString(),
+          reason: answer === "ade" ? null : `not ADE on ${host}`,
+          ...(answer === "silent" ? { timedOut: true } : {}),
+        };
+      },
+    });
+    const moves: Array<{ from: number; to: number; reason: string }> = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const originalPort = await listener.ensureListening([0]);
+      shadowedPort = originalPort;
+      // A silent interface alone is not evidence: no move.
+      await listener.healNow();
+      expect(listener.getPort()).toBe(originalPort);
+
+      answers.set("192.0.2.10", "foreign");
+      await listener.healNow();
+      expect(listener.getPort()).not.toBe(originalPort);
+      expect(moves).toEqual([{ from: originalPort, to: listener.getPort(), reason: "loopback-shadowed" }]);
+    } finally {
+      await listener.close();
+    }
+  });
+
+  // After a move, the port comes back to the preferred one once it frees, even
+  // with no project host attached to do it.
+  it("returns to its preferred port once that port frees", async () => {
+    const blocker = http.createServer();
+    blocker.listen(0, "127.0.0.1");
+    await once(blocker, "listening");
+    const address = blocker.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP blocker.");
+    const preferredPort = address.port;
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({ port, holders: [{ pid: 999_996, command: "/usr/bin/python3", startTime: null }] }),
+    });
+    const moves: Array<{ from: number; to: number; reason: string }> = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const fallbackPort = await listener.ensureListening([preferredPort, 0]);
+      expect(fallbackPort).not.toBe(preferredPort);
+      await listener.healNow();
+      expect(listener.getPort()).toBe(fallbackPort);
+
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      await listener.healNow();
+      expect(listener.getPort()).toBe(preferredPort);
+      expect(moves).toEqual([{ from: fallbackPort, to: preferredPort, reason: "canonical" }]);
+    } finally {
+      await listener.close();
+      if (blocker.listening) await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+
   it("names the program holding a shadowed port while it cannot move", async () => {
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",

@@ -1,4 +1,5 @@
 import http from "node:http";
+import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type {
@@ -19,6 +20,7 @@ import {
   assertAdeLoopbackListener,
   generateLoopbackNonce,
   isLoopbackShadowedError,
+  probeAdeListenerAt,
   probeAdeLoopbackListener,
   programNameFromCommandLine,
   writeAdeLoopbackUpgradeResponse,
@@ -410,12 +412,33 @@ function hasValidRelayBridgeProof(request: http.IncomingMessage, expectedProof: 
   return timingSafeEqual(expectedProof, decoded);
 }
 
+/** This machine's external IPv4 addresses, skipping link-local ones. */
+function defaultLocalAddresses(): string[] {
+  const addresses = new Set<string>();
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.internal || entry.family !== "IPv4") continue;
+      if (entry.address.startsWith("169.254.")) continue;
+      addresses.add(entry.address);
+    }
+  }
+  return [...addresses].slice(0, 8);
+}
+
 export function createSharedSyncListener(options: {
   logger?: SharedSyncListenerLogger;
   bindHost?: string;
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
   loopbackProbe?: (port: number, expectedNonce: string, timeoutMs?: number) => Promise<SyncLoopbackProbeResult>;
+  /**
+   * This machine's own non-loopback addresses the self-check also probes
+   * (default: every external IPv4 interface address). A program can bind
+   * `<address>:<port>` over the wildcard just as it can loopback.
+   */
+  localAddresses?: () => string[];
+  /** Identity probe against one local address; defaults to an HTTP 426 probe. */
+  addressProbe?: (host: string, port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
   inspectPort?: (port: number) => SyncListenerPortDiagnosis | Promise<SyncListenerPortDiagnosis>;
   activeServicePid?: () => number | null;
   terminatePid?: (pid: number) => Promise<void>;
@@ -425,6 +448,8 @@ export function createSharedSyncListener(options: {
   const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
   const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
   const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
+  const localAddresses = options.localAddresses ?? defaultLocalAddresses;
+  const addressProbe = options.addressProbe ?? probeAdeListenerAt;
   const inspectPort = options.inspectPort ?? inspectSyncListenerPort;
   const activeServicePid = options.activeServicePid ?? getRuntimeServiceMainPid;
   const serviceCommand = resolveAdeServeCommand();
@@ -500,6 +525,9 @@ export function createSharedSyncListener(options: {
   const retiredServers = new Set<WebSocketServer>();
   let selfHealTimer: ReturnType<typeof setInterval> | null = null;
   let healInFlight: Promise<void> | null = null;
+  // The port this listener prefers (the first candidate of its first bind,
+  // normally 8787). After a move, the self-check returns here once it frees.
+  let canonicalPort: number | null = null;
 
   const notifyLoopbackValidated = (): void => {
     for (const next of loopbackValidatedHandlers) {
@@ -1065,6 +1093,47 @@ export function createSharedSyncListener(options: {
     return nextPort;
   };
 
+  /**
+   * The first of this machine's own addresses where another program, not this
+   * listener, answers on `port`; null when every one answers as ADE. Only a
+   * foreign answer counts: a timeout or refusal on some interface (a VPN, a
+   * firewall) says nothing about who owns the port and must never move it.
+   */
+  const bindsLoopbackOnly = ["127.0.0.1", "::1", "localhost"].includes(bindHost.trim().toLowerCase());
+  const findShadowedLocalAddress = async (port: number): Promise<string | null> => {
+    // A loopback-only bind serves no other address to shadow.
+    if (bindsLoopbackOnly) return null;
+    let addresses: string[];
+    try {
+      addresses = localAddresses();
+    } catch {
+      return null;
+    }
+    for (const host of addresses) {
+      if (closed) return null;
+      let result: SyncLoopbackProbeResult;
+      try {
+        result = await addressProbe(host, port, expectedLoopbackNonce);
+      } catch {
+        continue;
+      }
+      if (!result.ok && result.statusCode != null) return host;
+    }
+    return null;
+  };
+
+  /**
+   * Back to the preferred port once nothing holds it. A brain hosting a
+   * project also does this from its sync service; doing it here covers a brain
+   * with no project, and tryMigrateToPort shares one in-flight move.
+   */
+  const returnToCanonicalPort = async (port: number): Promise<void> => {
+    if (canonicalPort == null || port === canonicalPort || handler !== null || closed) return;
+    const moved = await api.tryMigrateToPort(canonicalPort).catch(() => null);
+    if (moved == null || moved === port || closed) return;
+    notifyPortChanged({ from: port, to: moved, reason: "canonical" });
+  };
+
   const runSelfHeal = async (): Promise<void> => {
     if (closed || !server) return;
     // A move already in flight (canonical or a previous heal) owns the port.
@@ -1076,10 +1145,16 @@ export function createSharedSyncListener(options: {
     if (port == null) return;
     const wasValidated = loopbackValidationStatus.port === port
       && loopbackValidationStatus.loopbackAdeValidated;
+    let shadowedAddress = "127.0.0.1";
     try {
       await validateLoopback(port);
       if (!wasValidated) notifyLoopbackValidated();
-      return;
+      const lanShadow = await findShadowedLocalAddress(port);
+      if (lanShadow == null) {
+        await returnToCanonicalPort(port);
+        return;
+      }
+      shadowedAddress = lanShadow;
     } catch (error) {
       if (!isLoopbackShadowedError(error) || closed) return;
     }
@@ -1091,8 +1166,9 @@ export function createSharedSyncListener(options: {
     }
     logger.warn?.("sync_listener.loopback_shadowed_at_runtime", {
       port,
+      address: shadowedAddress,
       holder,
-      reason: loopbackValidationStatus.reason,
+      reason: shadowedAddress === "127.0.0.1" ? loopbackValidationStatus.reason : null,
     });
     const move = moveOffShadowedPort(port);
     migratePromise = move.finally(() => {
@@ -1129,9 +1205,13 @@ export function createSharedSyncListener(options: {
     selfHealTimer.unref?.();
   };
 
-  return {
+  const api: SharedSyncListener = {
     async ensureListening(portCandidates: number[]): Promise<number> {
       if (closed) throw new Error("The shared sync listener has been closed.");
+      if (canonicalPort == null) {
+        const first = portCandidates[0];
+        canonicalPort = typeof first === "number" && first > 0 ? first : null;
+      }
       if (!listeningPromise) {
         listeningPromise = bindOnce(portCandidates).catch((error) => {
           // A failed bind must not poison future attempts.
@@ -1419,4 +1499,5 @@ export function createSharedSyncListener(options: {
       });
     },
   };
+  return api;
 }
