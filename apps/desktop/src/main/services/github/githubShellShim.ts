@@ -39,12 +39,16 @@ import { installWindowsCliLauncher, resolveWindowsCliLauncherSource } from "../c
  *     cmd.exe and Git Bash all find `gh.exe` through PATH and PATHEXT.
  *   - `git-credential-ade-github` (sh) or `git-credential-ade-github.exe`
  *     (launcher) answers git's `get` for https://github.com with the same
- *     token, so a `git push` typed in the shell works after a renewal.
+ *     token, so a `git push` typed in the shell works after a renewal. The
+ *     session also gets `credential.https://github.com.interactive=false`,
+ *     so a Git Credential Manager configured before it declines for
+ *     github.com instead of opening a sign-in window (other hosts keep theirs).
  * - The shim steps aside (runs the real `gh` with the environment as it is)
  *   when the shell has its own GitHub token, `gh` has its own login, the
  *   endpoint is gone, or ADE has no token for the owner. With no real `gh`
- *   installed it prints the shell's usual "not found" and exits 127 (9009 on
- *   Windows, as cmd.exe does).
+ *   installed it prints the shell's usual "not found" and exits 127 (on
+ *   Windows: 9009 as cmd.exe does, 127 under Git Bash). PowerShell's own
+ *   not-found error cannot be copied; it gets cmd.exe's text.
  *
  * Off by default: a process turns it on with `configureGithubShellShim`
  * (desktop main and the brain do at start). Until then, and wherever the shim
@@ -56,6 +60,8 @@ export const GH_TOKEN_ENDPOINT_ENV = "ADE_GH_TOKEN_ENDPOINT";
 export const GH_SHIM_OWNER_ENV = "ADE_GH_SHIM_OWNER";
 const GIT_CREDENTIAL_HELPER_NAME = "git-credential-ade-github";
 const GIT_HELPER_CONFIG_KEY = "credential.https://github.com.helper";
+/** Git Credential Manager's switch for its sign-in prompts, for github.com only. */
+const GIT_INTERACTIVE_CONFIG_KEY = "credential.https://github.com.interactive";
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 /**
  * How long the endpoint waits for a token. Normally a cache hit
@@ -232,8 +238,27 @@ function realDir(dir) {
   }
 }
 
+// PATH entries as cmd.exe, Git Bash and gh's own Go runtime read them: on
+// Windows an entry may be quoted ("C:\\some dir"), and ";" inside quotes does
+// not split.
+function pathEntries(value) {
+  if (!isWin) return value.split(path.delimiter);
+  const entries = [];
+  let current = "";
+  let quoted = false;
+  for (const ch of value) {
+    if (ch === '"') quoted = !quoted;
+    else if (ch === ";" && !quoted) {
+      entries.push(current);
+      current = "";
+    } else current += ch;
+  }
+  entries.push(current);
+  return entries;
+}
+
 function findRealGh() {
-  const entries = (envValue("PATH") || "").split(path.delimiter);
+  const entries = pathEntries(envValue("PATH") || "");
   const names = isWin
     ? (envValue("PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase())
       .filter((ext) => ext === ".exe" || ext === ".com").map((ext) => "gh" + ext)
@@ -303,7 +328,8 @@ function askToken() {
 }
 
 function notFound() {
-  if (isWin) {
+  // Git Bash / MSYS2 (MSYSTEM set) reports a missing command as bash does.
+  if (isWin && !envValue("MSYSTEM")) {
     process.stderr.write("'gh' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n");
     process.exit(9009);
   }
@@ -311,7 +337,14 @@ function notFound() {
   process.exit(127);
 }
 
-function runGh(real, args, childEnv) {
+function runGh(real, args, baseEnv) {
+  // ELECTRON_RUN_AS_NODE is set only to run this script under the app's
+  // runtime (the Windows launcher, the POSIX fallback). ADE keeps it out of
+  // terminals; gh and what gh starts (an editor, a browser) must not get it.
+  const childEnv = Object.assign({}, baseEnv);
+  for (const key of Object.keys(childEnv)) {
+    if (key.toUpperCase() === "ELECTRON_RUN_AS_NODE") delete childEnv[key];
+  }
   const child = spawn(real, args, { stdio: "inherit", env: childEnv, windowsHide: true });
   // The terminal sends Ctrl+C to the whole group (the console on Windows):
   // the real gh decides, this wrapper only waits. Signals sent to this
@@ -736,18 +769,32 @@ export function githubShellShimEnv(env: NodeJS.ProcessEnv, owner: string, platfo
     [GH_TOKEN_ENDPOINT_ENV]: state.server.endpoint,
     [GH_SHIM_OWNER_ENV]: owner,
   };
-  // git's config environment: reuse the slot an earlier ADE shim took, else append.
+  // git's config environment: each entry reuses the slot an earlier ADE shim
+  // took for it, else appends, so a session started from a session does not
+  // stack them.
   const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? "0", 10);
-  const existing = Number.isFinite(count) && count > 0 ? count : 0;
-  let slot = existing;
-  for (let index = 0; index < existing; index += 1) {
-    if (env[`GIT_CONFIG_KEY_${index}`] === GIT_HELPER_CONFIG_KEY && (env[`GIT_CONFIG_VALUE_${index}`] ?? "").includes(GIT_CREDENTIAL_HELPER_NAME)) {
-      slot = index;
-      break;
+  let total = Number.isFinite(count) && count > 0 ? count : 0;
+  const setGitConfig = (key: string, value: string, isOurs: (current: string) => boolean): void => {
+    let slot = total;
+    for (let index = 0; index < total; index += 1) {
+      if (env[`GIT_CONFIG_KEY_${index}`] === key && isOurs(env[`GIT_CONFIG_VALUE_${index}`] ?? "")) {
+        slot = index;
+        break;
+      }
     }
-  }
-  result[`GIT_CONFIG_KEY_${slot}`] = GIT_HELPER_CONFIG_KEY;
-  result[`GIT_CONFIG_VALUE_${slot}`] = state.install.credentialHelper;
-  result.GIT_CONFIG_COUNT = String(Math.max(existing, slot + 1));
+    result[`GIT_CONFIG_KEY_${slot}`] = key;
+    result[`GIT_CONFIG_VALUE_${slot}`] = value;
+    total = Math.max(total, slot + 1);
+  };
+  setGitConfig(GIT_HELPER_CONFIG_KEY, state.install.credentialHelper, (current) => current.includes(GIT_CREDENTIAL_HELPER_NAME));
+  // Git asks helpers in config order, so a system or global Git Credential
+  // Manager (`credential.helper=manager`, the Git for Windows default) runs
+  // before this helper. With nothing stored it would open a sign-in window in
+  // an agent's shell; not interactive for github.com, it declines and git
+  // asks this helper. A credential the person stored in it still answers
+  // first. Other hosts (Azure DevOps, GitLab) keep their sign-in, and a
+  // GCM_INTERACTIVE the person sets wins over this config.
+  setGitConfig(GIT_INTERACTIVE_CONFIG_KEY, "false", () => true);
+  result.GIT_CONFIG_COUNT = String(total);
   return result;
 }
