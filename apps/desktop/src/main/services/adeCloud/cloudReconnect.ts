@@ -17,8 +17,9 @@ import { getErrorMessage } from "../shared/utils";
 import {
   CloudCreateCancelled,
   approveCloudMachineSignIn,
+  cloudSignInNotStartedMessage,
   readCloudBoxAuth,
-  startCloudBoxSignIn,
+  startCloudBoxSignInWhenReady,
   waitForCloudAccountRow,
   waitForCloudBoxAuth,
 } from "./cloudMachineCreator";
@@ -75,10 +76,10 @@ async function reconnect(
   const auth = await waitForCloudBoxAuth(client, instance.id, { signal, sleep, machine: name });
   if (!inAccount(auth)) {
     progress("signing_in", `Signing ${name} back in to your account…`, instance.id);
-    const started = await startCloudBoxSignIn(client, instance.id, "reconnect", signal);
+    const started = await startCloudBoxSignInWhenReady(client, instance.id, "reconnect", { signal, sleep, logger });
     if (!started.userCode) {
-      logger.warn?.("cloud.reconnect_no_code", { instanceId: instance.id, exitCode: started.exitCode });
-      throw new Error(`${name} didn't start its sign-in.`);
+      logger.warn?.("cloud.reconnect_no_code", { instanceId: instance.id, exitCode: started.exitCode, reason: started.reason });
+      throw new Error(cloudSignInNotStartedMessage(name, started));
     }
     await approveCloudMachineSignIn(deps, {
       userCode: started.userCode,

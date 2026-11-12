@@ -31,6 +31,10 @@ const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
+/** The longest a device sign-in start keeps retrying an unreachable account directory (`retryUnreachableForMs`). */
+const DEVICE_START_RETRY_MAX_MS = 60_000;
+const DEVICE_START_RETRY_FIRST_DELAY_MS = 1_000;
+const DEVICE_START_RETRY_MAX_DELAY_MS = 8_000;
 /**
  * Local lifetime of a directory-minted pairing grant. Mirrors the directory's
  * own `PAIRING_GRANT_TTL_MS`; if the two ever drift, the shorter one wins and
@@ -274,10 +278,47 @@ class AccountTokenRequestError extends Error {
   }
 }
 
+export type DeviceLoginStartOptions = {
+  ignoreEnvCredential?: boolean;
+  /**
+   * Keep trying for this long (capped at a minute) when the account directory
+   * can't be reached, times out, or answers without JSON. A computer that just
+   * booted can start its sign-in before its network or DNS is up. Without it,
+   * one try.
+   */
+  retryUnreachableForMs?: number;
+};
+
+/** Why `/device/code` gave no usable answer: what a retry may fix. */
+type DeviceBridgeStartFailure =
+  | { kind: "network"; code: string | null }
+  | { kind: "timeout" }
+  | { kind: "not_json"; status: number };
+
+function deviceBridgeFetchFailure(error: unknown): DeviceBridgeStartFailure {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "TimeoutError" || name === "AbortError") return { kind: "timeout" };
+  // Node's fetch puts the socket's error code (ENOTFOUND, EAI_AGAIN,
+  // ECONNREFUSED…) on `cause`. Only a bare code goes out, never a host or body.
+  // A host with several addresses fails with an AggregateError of one per address.
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : null;
+  const record = cause && typeof cause === "object" ? cause as { code?: unknown; errors?: unknown } : null;
+  const first = Array.isArray(record?.errors) ? record.errors[0] as { code?: unknown } | undefined : undefined;
+  const code = record?.code ?? first?.code ?? null;
+  return { kind: "network", code: typeof code === "string" && /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? code : null };
+}
+
+/** An action's `retryUnreachableForMs`, as a whole number of milliseconds, or none. */
+function readDeviceStartRetryMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.min(DEVICE_START_RETRY_MAX_MS, Math.trunc(value))
+    : undefined;
+}
+
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
-  startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(options?: DeviceLoginStartOptions): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
   /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
@@ -325,7 +366,7 @@ export type AccountAccessTokenOptions = {
 export type AccountActionDomainService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(args: { sessionId?: string }): Promise<AccountLoginPollResult>;
-  startDeviceLogin(args?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(args?: { ignoreEnvCredential?: boolean; retryUnreachableForMs?: number }): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(args: { sessionId?: string }): Promise<AccountDeviceLoginPollResult>;
   status(): AccountAuthStatus;
   cancelLogin(args: { sessionId?: string }): void;
@@ -877,6 +918,7 @@ export function createAccountActionDomainService(
     },
     startDeviceLogin: (args) => service.startDeviceLogin({
       ignoreEnvCredential: args?.ignoreEnvCredential === true,
+      retryUnreachableForMs: readDeviceStartRetryMs(args?.retryUnreachableForMs),
     }),
     pollDeviceLogin: async (args) => {
       const result = await service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? "");
@@ -922,6 +964,7 @@ export async function callAccountAction(args: {
   } else if (action === "startDeviceLogin") {
     result = await domain.startDeviceLogin({
       ignoreEnvCredential: actionArgs.ignoreEnvCredential === true,
+      retryUnreachableForMs: readDeviceStartRetryMs(actionArgs.retryUnreachableForMs),
     });
   } else if (action === "status") {
     result = domain.status();
@@ -2050,17 +2093,52 @@ export function createAccountAuthService(args: {
     signal: AbortSignal.timeout(deviceBridgeRequestTimeoutMs),
   });
 
-  const deviceBridgeStartError = (error: unknown): Error => {
-    const errorName = error instanceof Error ? error.name : "";
-    return new Error(
-      errorName === "TimeoutError" || errorName === "AbortError"
-        ? "ADE account device service timed out. Check the account directory connection and retry."
-        : "ADE account device service could not be reached. Check the account directory connection and retry.",
-    );
+  /**
+   * Why the account directory gave no usable answer, in the words the person
+   * (and the cloud setup card, which reads the last line of `ade login`) sees.
+   * The two prefixes stay as they were: the desktop maps them
+   * (`accountBridge.ts`). Only a network error code goes in, never a URL or a body.
+   */
+  const deviceBridgeStartError = (failure: DeviceBridgeStartFailure, triedForMs: number): Error => {
+    const tried = triedForMs >= 1_000 ? ` ADE kept trying for ${Math.round(triedForMs / 1_000)} s.` : "";
+    if (failure.kind === "timeout") {
+      return new Error(`ADE account device service timed out.${tried} Check this computer's network connection and the account directory, then retry.`);
+    }
+    const why = failure.kind === "not_json"
+      ? ` (it answered HTTP ${failure.status} without JSON)`
+      : failure.code ? ` (network error ${failure.code})` : " (network error)";
+    return new Error(`ADE account device service could not be reached${why}.${tried} Check this computer's network connection and the account directory, then retry.`);
+  };
+
+  /** One POST to `/device/code`: the answer, or why it gave none that a retry may fix. */
+  const requestDeviceCode = async (
+    url: string,
+    body: string,
+  ): Promise<{ response: Response; payload: Record<string, unknown> } | { failure: DeviceBridgeStartFailure }> => {
+    let response: Response;
+    try {
+      response = await requestDeviceBridge(url, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body,
+      });
+    } catch (error) {
+      return { failure: deviceBridgeFetchFailure(error) };
+    }
+    try {
+      return { response, payload: asRecord(await response.json()) };
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "";
+      return {
+        failure: name === "TimeoutError" || name === "AbortError"
+          ? { kind: "timeout" }
+          : { kind: "not_json", status: response.status },
+      };
+    }
   };
 
   const startDeviceLogin = async (
-    options: { ignoreEnvCredential?: boolean } = {},
+    options: DeviceLoginStartOptions = {},
   ): Promise<AccountDeviceLoginStartResult> => {
     if (readAcceptedEnvCredential() && !options.ignoreEnvCredential) {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
@@ -2098,26 +2176,36 @@ export function createAccountAuthService(args: {
         machineName = null;
       }
     }
-    let response: Response;
-    try {
-      response = await requestDeviceBridge(`${bridgeUrl}/device/code`, {
-        method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json" },
-        body: JSON.stringify({
-          device_secret: deviceSecret,
-          ...(machineKey ? { machine_key: machineKey } : {}),
-          ...(machineName ? { machine_name: machineName } : {}),
-        }),
-      });
-    } catch (error) {
-      throw deviceBridgeStartError(error);
+    const requestBody = JSON.stringify({
+      device_secret: deviceSecret,
+      ...(machineKey ? { machine_key: machineKey } : {}),
+      ...(machineName ? { machine_name: machineName } : {}),
+    });
+    // A retry sends the same secret: each answer is its own device code, and
+    // one the directory made for a lost answer just expires unused.
+    const retryForMs = Math.min(DEVICE_START_RETRY_MAX_MS, Math.max(0, options.retryUnreachableForMs ?? 0));
+    // Wall-clock time: the window is real waiting, whatever clock the session reads.
+    const startedAtMs = Date.now();
+    let retryDelayMs = DEVICE_START_RETRY_FIRST_DELAY_MS;
+    let attempt = await requestDeviceCode(`${bridgeUrl}/device/code`, requestBody);
+    while ("failure" in attempt) {
+      const elapsedMs = Date.now() - startedAtMs;
+      // The last wait is cut to what is left, so the whole window is used.
+      const waitMs = Math.min(retryDelayMs, retryForMs - elapsedMs);
+      if (waitMs < 250) {
+        logger.warn("account.device_login_start_unreachable", {
+          kind: attempt.failure.kind,
+          ...(attempt.failure.kind === "network" && attempt.failure.code ? { code: attempt.failure.code } : {}),
+          ...(attempt.failure.kind === "not_json" ? { status: attempt.failure.status } : {}),
+          elapsedMs,
+        });
+        throw deviceBridgeStartError(attempt.failure, elapsedMs);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+      retryDelayMs = Math.min(DEVICE_START_RETRY_MAX_DELAY_MS, retryDelayMs * 2);
+      attempt = await requestDeviceCode(`${bridgeUrl}/device/code`, requestBody);
     }
-    let payload: Record<string, unknown>;
-    try {
-      payload = asRecord(await response.json());
-    } catch (error) {
-      throw deviceBridgeStartError(error);
-    }
+    const { response, payload } = attempt;
     if (!response.ok) {
       throw new Error(
         readNonEmptyString(payload.error_description)

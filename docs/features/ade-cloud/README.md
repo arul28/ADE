@@ -557,7 +557,16 @@ a terminal in.
 - **The join.** The same rule as a brain's make: the brain approves itself
   only for an unattended yes with a headless browser here (a cloud computer);
   otherwise the sign-in link goes to the agent's chat and to the CLI (stderr,
-  and `approvalUrl` in the status).
+  and `approvalUrl` in the status). A computer's ADE answers before its
+  network is always up, so the sign-in start is retried: `ade login`
+  (device mode) keeps trying an account directory it can't reach, that times
+  out or answers without JSON for 45 s, and says which it was; the launcher
+  starts the sign-in again for up to a minute while the computer's reason is
+  one of those (`startCloudBoxSignInWhenReady`, for computers made from an
+  older image). A sign-in that still didn't start puts the computer's own
+  reason (the last line of `cloud-sign-in.log` that says something, without
+  colour codes, tokens, links or ids: `cloudSignInFailureReason`) on the join
+  step and in Copy details.
 - **One computer per id.** The launch id is printed first (stderr, `--json`
   too). The same `--launch-id` again answers that launch, and a failed one
   goes on from its failed step; the server returns the same computer for a

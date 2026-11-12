@@ -39224,6 +39224,9 @@ async function recoverAccountMachineReconnect(
   return true;
 }
 
+/** How long `ade login`'s device sign-in keeps trying an account directory it can't reach yet. */
+const DEVICE_SIGN_IN_START_RETRY_MS = 45_000;
+
 /**
  * Interactive machine-account authorization. The daemon owns either the
  * loopback listener or the device-code secret, token exchange, and credential
@@ -39360,6 +39363,10 @@ async function runAccountLogin(
       const answer = await runAccountAction("startDeviceLogin", {
         projectRoot,
         ignoreEnvCredential: plan.explicitHeadless || options.headless,
+        // Nobody can click Retry here (a fresh ADE Cloud computer signs in this
+        // way seconds after boot, before its network is up): the brain keeps
+        // trying an unreachable account directory for a while first.
+        retryUnreachableForMs: DEVICE_SIGN_IN_START_RETRY_MS,
       });
       const device = readDeviceSignInStart(answer);
       if (!device) {
