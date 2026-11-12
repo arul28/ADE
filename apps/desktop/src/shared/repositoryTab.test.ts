@@ -107,6 +107,7 @@ describe("copyAddress", () => {
     ["an offline machine", { ...remoteCopy, checkoutId: "project_b" }, machine("m1", [row("project_b", "/srv/app")], { online: false }), null],
     ["a machine that does not list the folder", { ...remoteCopy, checkoutId: "project_b" }, machine("m1", [row("project_x", "/srv/elsewhere")]), null],
     ["no connection", { ...remoteCopy, checkoutId: "project_b" }, null, null],
+    ["a folder the machine reports as gone", { ...remoteCopy, checkoutId: "project_b" }, machine("m1", [row("project_b", "/srv/app", { exists: false })]), null],
   ])("addresses %s", (_label, copy, connection, expectedKey) => {
     expect(copyAddress(copy, connection)?.key ?? null).toBe(expectedKey);
   });
@@ -126,12 +127,14 @@ describe("resolveDefaultCopy", () => {
     ["second clone on this computer in use stays", { local: [recent("/Users/me/app"), recent("/Users/me/app-2")], accountCopies: [accountCopy("mk-this", "pa", "/Users/me/app", true), accountCopy("mk-this", "pb", "/Users/me/app-2", false)] }, { current: "local:/Users/me/app-2" }, "local:/Users/me/app-2"],
     ["two clones on this computer, none in use: the main one", { local: [recent("/Users/me/app-2"), recent("/Users/me/app")], accountCopies: [accountCopy("mk-this", "pa", "/Users/me/app", true), accountCopy("mk-this", "pb", "/Users/me/app-2", false)] }, {}, "local:/Users/me/app"],
     ["this computer only project", { local: [recent("/Users/me/notes", { gitOriginUrl: null })] }, {}, "local:/Users/me/notes"],
+    ["an account copy whose folder this computer reports as gone", { local: [recent("/Users/me/app", { exists: false })], accountCopies: [accountCopy("mk-this", "pa", "/Users/me/app", true)] }, { current: "local:/Users/me/app" }, null],
+    ["an account copy whose folder another machine reports as gone", { connections: [machine("m1", [row("p1", "/srv/app", { exists: false })])], accountCopies: [accountCopy("mk-m1", "p1", "/srv/app", true)] }, {}, null],
   ])("%s", (label, setup, keys, expectedKey) => {
     const subject = label === "this computer only project"
       ? thisComputerOnlyTab({ rootPath: "/Users/me/notes", displayName: "notes" })
       : tab;
     const copies = buildRepositoryCopies(subject, inputsFor(setup));
-    expect(resolveDefaultCopy(subject, { copies, explicitPickKey: keys.pick, currentKey: keys.current })?.key ?? null).toBe(expectedKey);
+    expect(resolveDefaultCopy({ copies, explicitPickKey: keys.pick, currentKey: keys.current })?.key ?? null).toBe(expectedKey);
   });
 
   it("joins on an equal account project id OR an equal origin", () => {

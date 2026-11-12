@@ -1,7 +1,7 @@
 import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 // Deep import rather than the `services/tools` barrel: the barrel pulls the
 // whole fetch/install stack with it.
-import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { pinnedToolFetchInFlight } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { pinnedToolNotReadyError } from "./pinnedProviderTools";
 import type { Logger } from "../logging/logger";
@@ -147,13 +147,13 @@ export async function probeClaudeRuntimeHealth(args: {
     return;
   }
 
-  // No copy of ADE's pinned Claude Code here yet: start (or join) its
-  // download and spawn nothing. The connection status already reports the
-  // download state, so this is neither cached nor published as runtime health,
-  // which would outlive the download.
+  // No copy of ADE's pinned Claude Code here yet: spawn nothing, and download
+  // nothing (a probe is a status read; the first turn downloads it). The
+  // connection status already reports the download state, so this is neither
+  // cached nor published as runtime health, which would outlive the download.
   const claudeExecutable = resolveClaudeCodeExecutable();
   if (claudeExecutable.source === "fallback-command") {
-    const downloading = pinnedToolDownload(CLAUDE_TOOL_NAME) != null;
+    const downloading = pinnedToolFetchInFlight(CLAUDE_TOOL_NAME);
     args.logger?.info?.("ai.claude_runtime_probe.skipped_not_downloaded", {
       projectRoot,
       message: downloading ? CLAUDE_RUNTIME_FETCH_PENDING_ERROR : pinnedToolNotReadyError(CLAUDE_TOOL_NAME, "Claude Code").message,

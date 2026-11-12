@@ -137,6 +137,7 @@ import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
 import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 import { withChatPin } from "../chat/chatMachinePin";
+import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -978,6 +979,40 @@ function StickyGroupHeader({
  * (`useLanePrsByLaneId` moved to ./useLanePrs so the Work session hook can
  * answer the "Has PR" chip filter from the same PR data that badge renders.)
  */
+
+/** The selected rows that live on one machine, and how to reach it. */
+type SettleMachineGroup = {
+  /** The machine the rows live on; the tab's own copy has a pin too. */
+  pin: OpenProjectBinding;
+  machineName: string;
+  ids: string[];
+};
+
+/** The machine a settle toast names: this computer, or the other one by name. */
+function settleMachineName(pin: OpenProjectBinding): string {
+  return pin.kind === "remote" ? pin.runtimeName || "another computer" : "this computer";
+}
+
+/** One error toast naming every machine a bulk settle (or its undo) did not reach. */
+function reportSettleFailures(
+  action: string,
+  groups: SettleMachineGroup[],
+  results: PromiseSettledResult<unknown>[],
+): void {
+  const failed = groups.filter((_, index) => results[index]?.status === "rejected");
+  if (!failed.length) return;
+  const firstError = (results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason;
+  console.error(`[SessionListPane] ${action} failed`, {
+    machines: failed.map((group) => group.machineName),
+    error: firstError,
+  });
+  showToast({
+    title: `${action} failed on ${failed.map((group) => group.machineName).join(", ")}`,
+    message: firstError instanceof Error ? firstError.message : String(firstError),
+    tone: "error",
+  });
+}
+
 export const SessionListPane = React.memo(function SessionListPane({
   lanes: lanesProp,
   runningFiltered,
@@ -1250,12 +1285,29 @@ export const SessionListPane = React.memo(function SessionListPane({
   // roster on purpose: ownership is a shape question, not a visibility one, and
   // passing the visible rows would make a chip-filtered session reappear as a
   // foreign row.
-  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(
+  const { foreignRows: unionForeignRows, markersByLaneId } = useCrossMachineLaneUnion(
     crossMachineSyncActive,
     allSessionsUnfiltered,
     workLaneSortMode,
     workLaneOrder,
   );
+  // Lanes of ADE Cloud computers that are really gone (`computerGone`, from the
+  // account's computer list) are listed once, in the deleted-computers place
+  // above the list (`CloudLanesOnDeletedComputers`), never among live lanes.
+  // Each of their saved chats is listed under its lane there, newest first, and
+  // opens from the roster, which still holds them.
+  const goneMachineIds = useRootAppStore((state) => {
+    let key = "";
+    for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
+      if (entry.computerGone === true) key += `${entry.machineId}\u0000`;
+    }
+    return key;
+  });
+  const foreignRows = useMemo(() => {
+    if (!goneMachineIds) return unionForeignRows;
+    const gone = new Set(goneMachineIds.split("\u0000").filter(Boolean));
+    return unionForeignRows.filter((row) => !gone.has(row.machineId));
+  }, [goneMachineIds, unionForeignRows]);
   // Lanes from more than one computer are on screen: a lane header that is not
   // on this computer names its computer (see `LaneMachineMarker`).
   const listShowsSeveralComputers = foreignRows.length > 0;
@@ -1324,10 +1376,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     },
     [effectiveFilingBucketsProp, foreignFilingNowMs],
   );
-  const [settleUndo, setSettleUndo] = useState<{
-    groups: Array<{ pin: OpenProjectBinding; ids: string[] }>;
-    count: number;
-  } | null>(null);
+  const [settleUndo, setSettleUndo] = useState<{ groups: SettleMachineGroup[]; count: number } | null>(null);
   const {
     trigger: triggerLaneContextMenu,
     triggerForeign: triggerForeignLaneContextMenu,
@@ -1361,7 +1410,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   const machineLabelOf = useAdeCloudMachineLabel();
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     const others = Object.values(crossMachineEntries)
-      .filter((entry) => entry.machineId !== activeMachineId)
+      // A deleted cloud computer is no machine to filter by: its lanes have their own place.
+      .filter((entry) => entry.machineId !== activeMachineId && entry.computerGone !== true)
       // A sleeping cloud computer is not listed as offline: a send wakes it.
       .map((entry) => ({ id: entry.machineId, name: machineLabelOf({ machineId: entry.machineId, binding: entry.binding, name: entry.machineName }), online: machineShowsConnected(entry) }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -1600,16 +1650,27 @@ export const SessionListPane = React.memo(function SessionListPane({
   const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
   // Bulk settle targets at-rest rows only — actively working sessions are not
   // "done" merely because they lack a settled marker.
+  // Which machine each selected row lives on, for the bulk settle: the tab's
+  // own roster takes the unpinned route (pin null); another machine's row goes
+  // to that machine through its `foreignRow.binding`. A foreign row with no
+  // binding cannot be reached at all, so it is left out of the settle.
+  const foreignRowBySessionId = useMemo(() => {
+    const map = new Map<string, CrossMachineLaneRow>();
+    for (const row of foreignRows) {
+      for (const session of row.sessions) map.set(session.id, row);
+    }
+    return map;
+  }, [foreignRows]);
   const selectedSettleableSessions = useMemo(() => {
     // Bulk settle stays scoped to the host roster's rows; each machine's
     // share goes to that machine (see `settleSessions`).
     const localIds = new Set(allSessions.map((session) => session.id));
     return selectedSessions.filter((session) =>
-      localIds.has(session.id)
+      (localIds.has(session.id) || foreignRowBySessionId.get(session.id)?.binding != null)
       && !session.settledAt
       && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"
       && !sessionNeedsYou(canonicalInputFromSummary(session)));
-  }, [allSessions, selectedSessions]);
+  }, [allSessions, foreignRowBySessionId, selectedSessions]);
   const quietlyAwaitingSessions = useMemo(
     () => awaitingInputFiltered.filter(
       (session) => !sessionNeedsYou(canonicalInputFromSummary(session)),
@@ -1618,36 +1679,36 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
   const selectedSettleCount = selectedSettleableSessions.length;
   // `settleMany` takes the ids of one machine, so the selection is split by
-  // the machine each row lives on. A row with no known machine is not sent.
+  // the machine each row lives on, and every machine gets its call at once. A
+  // machine that fails does not stop the others; the toast names it. A row
+  // with no known machine is not sent.
   const settleSessions = useCallback(async (sessions: readonly TerminalSessionSummary[]) => {
-    const { groups, unrouted } = groupByMachine(sessions, resolveSessionRuntimePin);
+    const { groups: byMachine, unrouted } = groupByMachine(sessions, resolveSessionRuntimePin);
     if (unrouted.length > 0) {
       console.warn("[SessionListPane] bulk settle skipped rows with no machine", { count: unrouted.length });
     }
-    const settled = await Promise.all(groups.map(async ({ pin, items }) => {
-      const sessionIds = items.map((session) => session.id);
-      try {
-        return { pin, ids: await window.ade.sessions.settleMany(sessionIds, pin) };
-      } catch (error) {
-        console.error("[SessionListPane] bulk settle failed", { sessionIds, error });
-        return { pin, ids: [] as string[] };
-      }
+    const groups: SettleMachineGroup[] = byMachine.map(({ pin, items }) => ({
+      pin,
+      machineName: settleMachineName(pin),
+      ids: items.map((session) => session.id),
     }));
-    const undoGroups = settled.filter((group) => group.ids.length > 0);
-    const count = undoGroups.reduce((total, group) => total + group.ids.length, 0);
-    if (count > 0) setSettleUndo({ groups: undoGroups, count });
+    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.settleMany(group.ids, group.pin)));
+    const settledGroups: SettleMachineGroup[] = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled" && result.value.length > 0) {
+        settledGroups.push({ ...groups[index]!, ids: result.value });
+      }
+    });
+    const count = settledGroups.reduce((total, group) => total + group.ids.length, 0);
+    if (count > 0) setSettleUndo({ groups: settledGroups, count });
+    reportSettleFailures("Settle", groups, results);
   }, [resolveSessionRuntimePin]);
   const undoSettle = useCallback(async () => {
     const groups = settleUndo?.groups ?? [];
     if (!groups.length) return;
     setSettleUndo(null);
-    await Promise.all(groups.map(async ({ pin, ids }) => {
-      try {
-        await window.ade.sessions.unsettleMany(ids, pin);
-      } catch (error) {
-        console.error("[SessionListPane] undo settle failed", { sessionIds: ids, error });
-      }
-    }));
+    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.unsettleMany(group.ids, group.pin)));
+    reportSettleFailures("Undo settle", groups, results);
   }, [settleUndo]);
   useEffect(() => {
     if (!settleUndo) return;
@@ -4300,6 +4361,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           />
         </div>
       ))}
+
+      <CloudLanesOnDeletedComputers className="mx-2 mt-1.5" />
 
       {/* Session list */}
       <div

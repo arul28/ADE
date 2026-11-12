@@ -323,6 +323,7 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 | Copilot | Every server that is on (stdio, HTTP and SSE), through the SDK session's `mcpServers`. The servers in the user's own Copilot config and the workspace `.mcp.json` also run in interactive chats, and when one of those asks for a sign-in ADE hands over the registry's sign-in for the same URL (matched ignoring host case, a default port and a trailing slash), so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
 | Grok, Qwen, Devin, Antigravity | None yet. Their configs are still scanned, so their servers can be imported for the other agents. |
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
+| Tracked CLI terminals | See [below](#tracked-cli-terminals). Claude and Copilot get every server that is on and has its values; Codex gets the ones with no secret value; the other CLIs none. |
 
 A change reaches chats started after it. A running chat keeps what it started
 with. Its composer then shows the **Refresh chat** chip
@@ -398,6 +399,32 @@ so no secret rides on it: Claude's servers go in a private file ADE writes
 under `<ADE home>/mcp-launch/` (named by its contents), and a Codex server
 whose env, headers, arguments or URL look like they hold a secret
 (`mcpPlainTextSecretFindings`) is left to start as the user configured it.
+
+### Tracked CLI terminals
+
+A tracked agent CLI (a Work terminal ADE launches, resumes or reattaches,
+including `ade new chat --mode cli`) gets the registry's servers from the same
+resolver as a chat (`resolveMcpRegistryForLaunch`, then
+`chatUserMcp.registryServers`, so a server the CLI's own config already starts
+is left to it). The seam is `resolveTrackedCliUserMcp` in
+`trackedCliUserMcp.ts`, which every launch and resume path calls. A terminal's
+command line is kept for resume and can be typed into a shell, so:
+
+| CLI | How | What |
+|---|---|---|
+| Claude | `--mcp-config <file>`, the private file under `<ADE home>/mcp-launch/` that already carries the login's servers | Every server that is on, env and header values included. |
+| Copilot | `--additional-mcp-config=@<file>`, a private file in the same folder (`copilot-<hash>.json`; `type: local` for stdio, `tools: ["*"]` unless the server names its tools) | Every server that is on, values included. |
+| Codex | `-c mcp_servers.<name>.…` flags | Only servers with no env value, header, credential-looking argument or URL query (`codexEntryCarriesSecret`); the rest are left out. |
+| Cursor, Droid, Pi, Kimi, Qwen, Grok, Devin, Muse | none | No per-launch MCP flag or file ADE can use without writing the user's own config (Droid's `--settings` file takes runtime settings, not servers). Their own config's servers still load. |
+| OpenCode | none | The terminal attaches to ADE's shared OpenCode server and uses that server's config. |
+
+A terminal has no line to say a server started without its key, so a server
+whose value this computer does not hold, or whose sign-in ran out, is left out
+of a terminal launch (a chat starts it and says so). Values come from the
+account vault through `setTrackedCliRegistrySecretReader`, which the brain sets
+at boot; a desktop that runs a project without a brain has no reader and leaves
+those servers out. A server with a per-tool filter is left out for Claude and
+Codex, whose config cannot carry it.
 
 ## `npx` servers start without npm's launcher
 

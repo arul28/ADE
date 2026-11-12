@@ -40,13 +40,20 @@ import {
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
-import { ModelRowLogo } from "../shared/ProviderLogos";
-import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
+import { CliLaunchChips } from "./CliLaunchChips";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
+import { CliActionsScope, CliActionsSidePane, CliActionsToggle, CliPromptSlot } from "./CliAgentPane";
+import { CliInputModeToggle, WorkCliInputBox } from "./WorkCliInputBox";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
+import {
+  CLI_CONTINUE_DRAFT_CHANGED_EVENT,
+  moveCliInputQueueToContinueDraft,
+  useCliInputMode,
+} from "./cliInputBoxState";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import { isChatToolType, primarySessionLabel, providerFromChatToolType, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -324,19 +331,27 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   return "agent CLI";
 }
 
-function continuationPermissionLabel(launch: TerminalResumeLaunchConfig | null): string | null {
-  if (launch?.codexApprovalPolicy === "on-request") return "Ask first";
-  if (launch?.codexApprovalPolicy === "on-failure") return "On failure";
-  if (launch?.codexApprovalPolicy === "untrusted") return "Restricted";
-  if (launch?.codexApprovalPolicy === "never" && launch.codexSandbox === "danger-full-access") return "Full access";
-  const mode = launch?.permissionMode;
-  if (mode === "full-auto") return "Full access";
-  if (mode === "plan") return "Plan";
-  if (mode === "edit") return "Edit";
-  if (mode === "auto") return "Auto";
-  if (mode === "config-toml") return "Config";
-  if (mode === "default") return "Default";
-  return null;
+// The continue box's unsent text, per session, so switching tabs or tiles does
+// not lose it. The component is keyed by session id, so one instance only ever
+// reads and writes its own session's key.
+const CLI_CONTINUE_DRAFT_KEY_PREFIX = "ade.work.cliContinueDraft.";
+
+function readCliContinueDraft(sessionId: string): string {
+  try {
+    return window.localStorage.getItem(`${CLI_CONTINUE_DRAFT_KEY_PREFIX}${sessionId}`) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeCliContinueDraft(sessionId: string, text: string): void {
+  try {
+    const key = `${CLI_CONTINUE_DRAFT_KEY_PREFIX}${sessionId}`;
+    if (text.trim()) window.localStorage.setItem(key, text);
+    else window.localStorage.removeItem(key);
+  } catch {
+    // Storage full or unavailable: the draft just is not kept.
+  }
 }
 
 function WorkCliContinuationComposer({
@@ -374,14 +389,23 @@ function WorkCliContinuationComposer({
   const recoveryIdentity = `${session.id}:${provider ?? ""}:${importedProvider ?? ""}:${importedTargetId}:${storedLaunchFingerprint}`;
   const appliedRecoveryIdentityRef = useRef<string | null>(null);
   const [resolvedLaunch, setResolvedLaunch] = useState<TerminalResumeLaunchConfig | null>(storedLaunch);
-  const modelId = resolvedLaunch?.model?.trim() || null;
-  const modelDescriptor = modelId
-    ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? createUnknownModelPlaceholder(modelId))
-    : null;
-  const permissionLabel = continuationPermissionLabel(resolvedLaunch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => readCliContinueDraft(session.id));
+  useEffect(() => {
+    writeCliContinueDraft(session.id, draft);
+  }, [draft, session.id]);
+  // Texts the running CLI's input box still had waiting when the CLI ended
+  // land here, where sending continues the session.
+  useEffect(() => {
+    const reread = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (detail?.sessionId === session.id) setDraft(readCliContinueDraft(session.id));
+    };
+    window.addEventListener(CLI_CONTINUE_DRAFT_CHANGED_EVENT, reread);
+    moveCliInputQueueToContinueDraft(session.id);
+    return () => window.removeEventListener(CLI_CONTINUE_DRAFT_CHANGED_EVENT, reread);
+  }, [session.id]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
@@ -519,38 +543,7 @@ function WorkCliContinuationComposer({
         className="mx-auto w-full max-w-[var(--chat-column,46rem)]"
         footer={(
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              {modelDescriptor ? (
-                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-2 py-1 text-[11px] text-fg/80">
-                  <ModelRowLogo
-                    modelFamily={modelDescriptor.family}
-                    cliCommand={modelDescriptor.cliCommand}
-                    modelId={modelDescriptor.id}
-                    providerModelId={modelDescriptor.providerModelId}
-                    size={13}
-                    className="shrink-0"
-                  />
-                  <span className="min-w-0 truncate font-medium leading-none">{modelDescriptor.displayName}</span>
-                </span>
-              ) : (
-                <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
-              )}
-              {resolvedLaunch?.reasoningEffort ? (
-                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
-                  {resolvedLaunch.reasoningEffort}
-                </span>
-              ) : null}
-              {(resolvedLaunch?.fastMode ?? resolvedLaunch?.codexFastMode) ? (
-                <span className="rounded-md border border-amber-300/15 bg-amber-500/[0.06] px-1.5 py-1 text-[10px] font-semibold text-amber-100/80">
-                  Fast
-                </span>
-              ) : null}
-              {permissionLabel ? (
-                <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
-                  {permissionLabel}
-                </span>
-              ) : null}
-            </div>
+            <CliLaunchChips launch={resolvedLaunch} providerLabel={providerLabel} />
             <button
               type="button"
               disabled={sending || !draft.trim()}
@@ -589,6 +582,14 @@ function WorkCliContinuationComposer({
           onChange={(event) => updateDraft(event.currentTarget.value, event.currentTarget)}
           onKeyDown={(event) => {
             if (commandMenuTrigger && handleCommandMenuKeyDown(event, commandMenuRef, () => setCommandMenuTrigger(null))) {
+              return;
+            }
+            // Enter with the menu open but nothing matching closes the menu
+            // instead of sending a half-typed `/comp` to the CLI; a second
+            // Enter sends the text as typed.
+            if (commandMenuTrigger && event.key === "Enter" && !event.shiftKey && !isImeComposing(event)) {
+              event.preventDefault();
+              setCommandMenuTrigger(null);
               return;
             }
             if (event.key === "Enter" && !event.shiftKey && !isImeComposing(event)) {
@@ -693,7 +694,9 @@ function ClosedCliSessionSurface({
     || session.summary
     || "No transcript was captured for this session.";
 
+  const agentCli = Boolean(session.tracked && isTrackedAgentCliToolType(session.toolType));
   return (
+    <CliActionsScope session={session} runtimePin={runtimePin} enabled={agentCli}>
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-[color:var(--chat-canvas-bg)]">
       {layoutVariant !== "grid-tile" ? (
         <CliSessionWorkSurfaceHeader
@@ -704,9 +707,10 @@ function ClosedCliSessionSurface({
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
           onOpenFullView={onOpenFullView}
+          leadingTrailingAction={agentCli ? <CliActionsToggle /> : undefined}
         />
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
+      <div className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-fg/[0.06] pb-2">
           <div className="min-w-0 truncate text-[11px] text-muted-fg/60">
             {endedLabel}
@@ -738,13 +742,16 @@ function ClosedCliSessionSurface({
         )}
         {showComposer ? (
           <WorkCliContinuationComposer
+            key={session.id}
             session={session}
             runtimePin={runtimePin}
             onContinue={onContinue}
           />
         ) : null}
+        {agentCli && layoutVariant !== "grid-tile" ? <CliActionsSidePane /> : null}
       </div>
     </div>
+    </CliActionsScope>
   );
 }
 
@@ -785,7 +792,15 @@ function CliSessionSurface({
   toolsPaneOpen?: boolean;
 }) {
   const workSidebar = useWorkSidebarTool(session.laneId, runtimePin);
+  // The ADE input box is for a tracked agent CLI only; a raw CLI ADE does not
+  // track has no prompt ADE can tell is free.
+  const inputBoxAvailable = session.tracked && isTrackedAgentCliToolType(session.toolType);
+  const inputMode = useCliInputMode();
+  const showInputBox = inputBoxAvailable && inputMode === "box";
+  const inputProvider = continuationProviderForSession(session);
+  const showSidePane = inputBoxAvailable && layoutVariant !== "grid-tile";
   return (
+    <CliActionsScope session={session} runtimePin={runtimePin} enabled={inputBoxAvailable}>
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       {layoutVariant !== "grid-tile" ? (
         <CliSessionWorkSurfaceHeader
@@ -802,6 +817,12 @@ function CliSessionSurface({
           prPaneOpen={workSidebar.tool === "pr"}
           runtimePin={runtimePin}
           prBadgeOnly
+          leadingTrailingAction={inputBoxAvailable ? (
+            <>
+              <CliActionsToggle />
+              <CliInputModeToggle sessionId={session.id} />
+            </>
+          ) : undefined}
         />
       ) : null}
       <div className="relative min-h-0 w-full flex-1 overflow-hidden">
@@ -816,8 +837,25 @@ function CliSessionSurface({
           imagePasteMode="agent-cli"
           className="h-full w-full"
         />
+        {showSidePane ? <CliActionsSidePane /> : null}
       </div>
+      <CliPromptSlot>
+      {showInputBox ? (
+        <WorkCliInputBox
+          key={session.id}
+          sessionId={session.id}
+          laneId={session.laneId || null}
+          provider={inputProvider}
+          providerLabel={continuationProviderLabel(inputProvider)}
+          runtimeState={session.runtimeState}
+          pin={runtimePin}
+          autoFocus={surfaceActive}
+          launch={session.resumeMetadata?.launch ?? null}
+        />
+      ) : null}
+      </CliPromptSlot>
     </div>
+    </CliActionsScope>
   );
 }
 

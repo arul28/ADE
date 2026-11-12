@@ -325,8 +325,10 @@ let queue: Promise<void> = Promise.resolve();
 
 /**
  * Refresh one provider's live list in the background when it is missing or
- * older than the TTL. Call only for a provider whose pinned copy is on this
- * machine and signed in; a missing copy fails the warm (retried later). Never throws, never blocks: the read that calls this serves the cache.
+ * older than the TTL. Call for a signed-in provider. Only from ADE's copy
+ * already on this machine: while it is not here yet (it downloads on first
+ * use) this does nothing and counts no failure. Never throws, never blocks:
+ * the read that calls this serves the cache.
  */
 export function warmAcpModelCatalog(
   provider: AcpModelProviderGroup,
@@ -338,6 +340,17 @@ export function warmAcpModelCatalog(
   if (inFlight.has(provider)) return;
   if (!providerFailureBackoff(provider).canAttempt()) return;
   if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
+  // A model list read never downloads an agent; the curated rows stand in until it is here.
+  let onDisk = false;
+  try {
+    onDisk = resolveAcpExecutable(provider, { env: options?.env ?? process.env }).source !== "fallback-command";
+  } catch (error) {
+    options?.logger?.warn?.("ai.acp_model_discovery.resolve_failed", {
+      provider,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+    });
+  }
+  if (!onDisk) return;
   inFlight.add(provider);
   queue = queue.then(async () => {
     // A chat may have refreshed the list while this warm waited its turn.

@@ -2346,6 +2346,7 @@ function AgentChatComposerImpl({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  composerMachineLabel = null,
   scheduledSendContext = null,
   machineChipAction = null,
   cursorRuntime = null,
@@ -2592,6 +2593,11 @@ function AgentChatComposerImpl({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /**
+   * Where the chat runs when its binding cannot say yet: an ADE Cloud launch
+   * still being set up runs on its new computer, not on the tab's machine.
+   */
+  composerMachineLabel?: string | null;
   /** Makes the machine chip a host-owned control (the CTO's home machine). */
   machineChipAction?: ComposerMachineChipAction | null;
   /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
@@ -6042,7 +6048,8 @@ function AgentChatComposerImpl({
       ? cloudTargetLabel
       : adeCloudLane
         ? ADE_CLOUD_NAME
-        : chatPaneScope?.machineName
+        : composerMachineLabel
+        ?? chatPaneScope?.machineName
         ?? (composerMachineBinding?.kind === "remote"
           ? composerMachineBinding.runtimeName
           : THIS_MACHINE_NAME)

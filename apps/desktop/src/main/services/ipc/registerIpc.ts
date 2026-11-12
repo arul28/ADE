@@ -123,7 +123,7 @@ import type { MachineInventoryDetail } from "../../../shared/types/machineInvent
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
-import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
+import { buildClaudeAvailabilityFromConnection, connectionListable } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
@@ -140,7 +140,7 @@ import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { inspectProjectPathCached } from "../projects/projectPathInspector";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   parseSettleOverrideArg,
   parseSnoozeDeadline,
@@ -563,6 +563,8 @@ import type {
   DraftDeleteArgs,
   DraftEntry,
   DraftUpdateArgs,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatRegenerateSessionMetadataArgs,
@@ -960,6 +962,8 @@ import {
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
+import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
+import type { MachineWakeResult } from "../machines/machineConnector";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
@@ -983,7 +987,7 @@ import { createAccountSettingsSyncService } from "../account/accountSettingsSync
 import { createDesktopProjectRecords } from "../projects/desktopProjectRecords";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureGhAccountSharingAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -1649,9 +1653,9 @@ async function buildGlobalAiStatus(args?: { force?: boolean; onPhase?: (phase: s
     mode: hasConfirmedSubscriptionProvider ? "subscription" : "guest",
     availableProviders: {
       claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
-      codex: providerConnections.codex.runtimeAvailable,
-      cursor: providerConnections.cursor.runtimeAvailable,
-      droid: providerConnections.droid.runtimeAvailable,
+      codex: connectionListable(providerConnections.codex),
+      cursor: connectionListable(providerConnections.cursor),
+      droid: connectionListable(providerConnections.droid),
     },
     models: {
       claude: [],
@@ -8056,19 +8060,24 @@ export function registerIpc({
     return await ctx.laneService.rebaseAbort(arg);
   });
 
+  // `projectRoot` names a project on this computer that a pin chose (checked
+  // by `leftoverProjectRoot`); without one, the window's own project.
   const readLaneWorktreePath = async (
     event: { sender: Electron.WebContents },
     laneId: string,
+    projectRoot: string | null = null,
   ): Promise<string | null> => {
-    const ctx = getCtx();
-    if (ctx.laneService) return ctx.laneService.getLaneWorktreePath(laneId);
-    const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx();
+    if (ctx?.laneService) return ctx.laneService.getLaneWorktreePath(laneId);
+    const call = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
       pool.callActionForRoot(rootPath, {
         domain: "lane",
         action: "list",
         args: { includeArchived: true, includeStatus: false },
-      }),
-    );
+      });
+    const response = projectRoot
+      ? (localRuntimeConnectionPool ? await call(localRuntimeConnectionPool, projectRoot) : null)
+      : await tryLocalRuntimeSync(event, call);
     const lanes = Array.isArray(response?.result) ? (response.result as LaneSummary[]) : [];
     return lanes.find((lane) => lane.id === laneId)?.worktreePath ?? null;
   };
@@ -8120,8 +8129,8 @@ export function registerIpc({
     return laneService?.getLeftoverWorktree(laneId) ?? null;
   };
 
-  handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
-    const worktreePath = await readLaneWorktreePath(event, arg.laneId);
+  handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+    const worktreePath = await readLaneWorktreePath(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!worktreePath) throw new Error("Lane worktree path is not available.");
     if (!fs.existsSync(worktreePath)) throw new Error("Lane worktree is missing.");
     shell.showItemInFolder(worktreePath);
@@ -8146,24 +8155,8 @@ export function registerIpc({
     return laneService.deleteLeftoverWorktree(arg.laneId);
   });
 
-  handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {
-    const ctx = getCtx();
-    let worktreePath: string | null = null;
-    if (ctx.laneService) {
-      worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    } else {
-      // Runtime-backed (daemon) mode: the in-process laneService is null, so
-      // resolve the worktree path from the project's runtime via the pool.
-      const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-        pool.callActionForRoot(rootPath, {
-          domain: "lane",
-          action: "list",
-          args: { includeArchived: true, includeStatus: false },
-        }),
-      );
-      const lanes = Array.isArray(response?.result) ? (response.result as LaneSummary[]) : [];
-      worktreePath = lanes.find((lane) => lane.id === arg.laneId)?.worktreePath ?? null;
-    }
+  handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+    const worktreePath = await readLaneWorktreePath(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!worktreePath) {
       throw new Error("Lane worktree path is not available.");
     }
@@ -8276,9 +8269,9 @@ export function registerIpc({
 
   // --- Per-Lane Hostname Isolation & Preview (Phase 5 W4) --------------------
 
-  const ensureLanePreviewInfo = async (laneId: string) => {
-    const ctx = ensureLaneContext();
-    if (!ctx.laneProxyService || !ctx.portAllocationService) return null;
+  const ensureLanePreviewInfo = async (laneId: string, projectRoot: string | null = null) => {
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : ensureLaneContext();
+    if (!ctx?.laneService || !ctx.laneProxyService || !ctx.portAllocationService) return null;
 
     const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find(
       (item) => item.id === laneId
@@ -8376,12 +8369,12 @@ export function registerIpc({
     ctx.laneProxyService?.removeRoute(args.laneId);
   });
 
-  handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string }) => {
-    return ensureLanePreviewInfo(args.laneId);
+  handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string; rootPath?: string }) => {
+    return ensureLanePreviewInfo(args.laneId, leftoverProjectRoot(args?.rootPath));
   });
 
-  handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string }) => {
-    const info = await ensureLanePreviewInfo(args.laneId);
+  handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string; rootPath?: string }) => {
+    const info = await ensureLanePreviewInfo(args.laneId, leftoverProjectRoot(args?.rootPath));
     if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
     const { shell } = await import("electron");
     await shell.openExternal(info.previewUrl);
@@ -8883,10 +8876,11 @@ export function registerIpc({
     if (!sessionId) {
       throw new Error("Session id is required.");
     }
-    deleteTerminalSessionWithRuntimeCleanup({
+    await deleteSessionRowWithRuntimeCleanup({
       sessionId,
       sessionService: ctx.sessionService,
       ptyService: requirePtyService(),
+      agentChatService: ctx.agentChatService ?? null,
     });
   });
 
@@ -9397,6 +9391,18 @@ export function registerIpc({
     arg: DraftDeleteArgs,
   ): Promise<{ ok: boolean; error?: string }> => {
     return await ensureAgentChatContext().agentChatService.sendDraftNow(arg?.id ?? "");
+  });
+
+  handle(IPC.agentChatTypeIntoCli, async (
+    _event,
+    arg: AgentCliTypeArgs,
+  ): Promise<AgentCliTypeResult> => {
+    return await ensureAgentChatContext().agentChatService.typeIntoAgentCliWhenFree({
+      sessionId: arg?.sessionId ?? "",
+      text: arg?.text ?? "",
+      holdUntilFree: arg?.holdUntilFree === true,
+      ...(typeof arg?.clientMessageId === "string" ? { clientMessageId: arg.clientMessageId } : {}),
+    });
   });
 
   handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
@@ -10066,6 +10072,11 @@ export function registerIpc({
   handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listSubagents(arg);
+  });
+
+  handle(IPC.agentChatListPendingInputs, async (_event, arg: { sessionId: string }): Promise<{ requests: import("../../../shared/types").PendingInputRequest[] }> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.listPendingInputs(arg);
   });
 
   handle(IPC.agentChatKillDroidWorker, async (_event, arg: AgentChatKillDroidWorkerArgs): Promise<void> => {
@@ -12211,17 +12222,35 @@ export function registerIpc({
 
   handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
     const ctx = getCtx();
-    ctx.githubService.setToken(arg.token);
+    const { accountCopy } = ctx.githubService.setToken(arg.token);
     const status = await ctx.githubService.getStatus();
     const credentialVerification = await ctx.githubService.verifyStoredPat(status);
     const verifiedStatus = { ...status, credentialVerification };
     broadcastGithubStatus(verifiedStatus);
+    // Told again once the account's copy is written: a reader of that copy
+    // (the ADE Cloud git preflight) can race the first broadcast.
+    void accountCopy
+      .then(() => broadcastGithubStatus(verifiedStatus))
+      .catch((error: unknown) => {
+        ctx.logger.warn("github.status_rebroadcast_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
     return verifiedStatus;
   });
 
   handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.clearToken();
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
+  });
+
+  handle(IPC.githubSetGhAccountSharing, async (_event, arg: { enabled?: boolean }): Promise<GitHubStatus> => {
+    const ctx = getCtx();
+    const enabled = arg?.enabled === true;
+    await ctx.githubService.setGhAccountSharing({ enabled });
+    // Reached only after the vault accepted the change; a refusal throws above.
+    captureGhAccountSharingAnalytics({ analytics: productAnalyticsService, surface: "desktop", enabled });
     const status = await ctx.githubService.getStatus();
     broadcastGithubStatus(status);
     return status;
@@ -12757,8 +12786,27 @@ export function registerIpc({
     }
   });
 
+  // Contract C2: any machine of the account by its key (machineConnector.ts).
+  // ADE Cloud's handlers (just below) supply the wake before a pairing.
+  let cloudWakeForPair: ((machineKey: string) => Promise<MachineWakeResult>) | null = null;
+  const machineConnector = registerMachineConnectIpc({
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity()?.machineKey ?? null,
+    signedIn: () => accountBridge.status().signedIn,
+    savedTarget: (machineKey) => {
+      const id = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
+      return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
+    },
+    isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
+    listAccountMachines: () => accountBridge.listMachines(),
+    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
+    connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
+    logger: getMachineMainLogger(),
+  });
+
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient } = registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn } = registerCloudIpc({
+    machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
     vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
@@ -12836,6 +12884,7 @@ export function registerIpc({
     },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
+  cloudWakeForPair = cloudWakeForPairFn;
 
   // "ADE Cloud" picked for a new lane: this app makes the computer, then
   // hands the launch to that computer's brain. Machine-wide, so its log is
@@ -12849,8 +12898,7 @@ export function registerIpc({
     forgetMachineConnections: (machine) => {
       runtimeBridge.removeTargetsForMachine({ machineKey: machine.machineKey, hostname: machine.instanceId });
     },
-    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
-    targetIdForMachine: (machineKey) => runtimeBridge.resolveTargetIdForMachineKey(machineKey),
+    machineConnector,
     remote: runtimeBridge.remoteForMain,
     analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
@@ -12865,6 +12913,8 @@ export function registerIpc({
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     remote: runtimeBridge.remoteForMain,
     analytics: productAnalyticsService ?? null,
+    // C4: the account's GitHub sign-in, checked before a computer is made.
+    gitPreflight: cloudGitPreflightFn,
     logger: getMachineMainLogger(),
   });
 
@@ -14467,15 +14517,12 @@ export function registerIpc({
       const machineKey = args.machineKey.trim();
       if (!machineKey) throw new Error("Activity machine identity is required.");
       // Seeing the item already proves the machine is on this account, so an
-      // unknown machine is paired rather than refused.
-      let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
-      if (!targetId) {
-        try {
-          targetId = (await accountBridge.pairMachine(machineKey)).targetId;
-        } catch (error) {
-          throw describeAttentionOpenFailure(error, "pair", args.machineName);
-        }
-      }
+      // unknown machine is paired rather than refused (contract C2; the open
+      // below connects).
+      const reached = await machineConnector.connect(machineKey, { connect: false });
+      if (!reached.ok) throw describeAttentionOpenFailure(new Error(reached.message), "pair", args.machineName);
+      if (reached.address.kind !== "remote") throw describeAttentionOpenFailure(new Error("That is this computer."), "pair", args.machineName);
+      const targetId = reached.address.targetId;
       try {
         return await runtimeBridge.openRemoteProjectForWindow({
           targetId,

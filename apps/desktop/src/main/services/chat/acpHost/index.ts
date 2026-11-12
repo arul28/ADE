@@ -51,10 +51,8 @@ export {
   AcpRpcError,
   createAcpConnection,
   initializeAcpConnection,
-  readAcpStderrTailFromError,
   type AcpConnection,
   type AcpConnectionExit,
-  type AcpStderrCarryingError,
 } from "./acpConnection";
 export {
   ACP_IDLE_TTL_MS,

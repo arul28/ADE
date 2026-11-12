@@ -445,7 +445,6 @@ export function CommitHistoryView({
   const lanePrMap = useLanePrsByLaneId();
   const prsByLaneId = useMemo(() => {
     const map = new Map<string, PrSummary>();
-    // The PR map knows the tab machine's lanes only.
     if (!pinTargetsTab) return map;
     for (const lane of liveLanes) {
       const prs = prsForLaneBranch(boundMachineLanePrs(lanePrMap, lane.id), lane);

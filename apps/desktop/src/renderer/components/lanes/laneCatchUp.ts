@@ -11,7 +11,7 @@ import { showToast } from "../app/toast/toastStore";
 import type { LaneTabPrTag } from "./lanePageModel";
 import { requestLaneRebaseNeedsRescan, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { laneBranchLabel } from "./sidebar/laneSidebarModel";
-import { cacheScopePin } from "../../lib/tabBindingKey";
+import { cacheScopeKey, cacheScopePin } from "../../lib/tabBindingKey";
 
 /**
  * The conflict check a catch-up waits for: `git merge-tree` against the base,
@@ -175,7 +175,7 @@ const listeners = new Set<() => void>();
 
 /** One key per lane per machine: lane ids are only unique on their machine. */
 export function laneCatchUpKey(laneId: string, pin: OpenProjectBinding | null): string {
-  return `${cacheScopePin(pin)?.key ?? "tab"}::${laneId}`;
+  return `${cacheScopeKey(pin) ?? "tab"}::${laneId}`;
 }
 
 function emit(): void {
@@ -349,9 +349,9 @@ export async function runLaneCatchUpDirect(args: {
     return { ok: false, failure };
   } finally {
     try {
-      // Another machine has no change feed here; the tab's own copy re-reads its list.
-      const otherPin = cacheScopePin(pin);
-      if (otherPin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(otherPin));
+      // A pin that names the tab's own copy refreshes the tab's lanes.
+      const foreignPin = cacheScopePin(pin);
+      if (foreignPin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(foreignPin));
       else {
         await args.refreshLanes();
         requestLaneRebaseNeedsRescan();

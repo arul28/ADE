@@ -170,7 +170,7 @@ export function buildCloudAccountStatus(input: {
       // The lane size's own name: the older shape names call a full 4 CPU / 8 GB "Medium".
       sizeLabel: tier
         ? `${tier.label} · ${tier.type === "vm" ? "full computer" : "standard"} · ${tier.cpu} CPU · ${tier.memoryGb} GB`
-        : describeCloudMachineSize(box),
+        : describeCloudMachineSize(box, catalog),
       hoursRate: tier ? tier.multiplierMilli / 1000 : box.hoursRate,
       state: box.state,
       lastUsedAt: box.lastActiveAtMs != null ? new Date(box.lastActiveAtMs).toISOString() : null,

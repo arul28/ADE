@@ -183,7 +183,7 @@ export async function updateBlocked(env: CloudEnv, userId: string, now: number):
  * automatic update) keeps its start, so its earlier minutes stay free too.
  * Asleep, the 30-day delete clock stays where it was: an update isn't use.
  */
-function freeWindowStatements(env: CloudEnv, computer: ComputerRow, status: string, now: number): D1PreparedStatement[] {
+function freeWindowStatements(env: CloudEnv, computer: ComputerRow, status: string, now: number, freeUntil = now + UPDATE_FREE_WINDOW_MS): D1PreparedStatement[] {
   const guard = statusGuard(computer);
   const meteredNow = computer.awake_since != null && computer.awake_since <= now;
   const windowOpen = computer.free_wake_started_at != null && computer.free_wake_until != null && computer.free_wake_until > now;
@@ -193,7 +193,6 @@ function freeWindowStatements(env: CloudEnv, computer: ComputerRow, status: stri
     ...(!windowOpen ? freeWakeStatements(env, computer, now, guard) : []),
   ];
   const freeStart = windowOpen ? computer.free_wake_started_at! : now;
-  const freeUntil = now + UPDATE_FREE_WINDOW_MS;
   const lastAwakeAt = meteredNow ? now : computer.last_awake_at;
   computer.status = status;
   computer.status_changed_at = now;
@@ -212,10 +211,32 @@ function freeWindowStatements(env: CloudEnv, computer: ComputerRow, status: stri
   ];
 }
 
+/**
+ * The tick saw an asleep computer awake. When an automatic update left it
+ * asleep ("it boots on its next wake") and the provider booted it inside the
+ * update's window (Agent 37 does, about a minute later), that boot is the
+ * update's: free until the boot report, as for an update of an awake computer,
+ * and recorded in `free_ms` so the daily reconcile matches the provider. Null
+ * for any other wake, which `statusChangeStatements` meters as usual.
+ */
+export function updateBootStatements(env: CloudEnv, computer: ComputerRow, status: string, now: number): D1PreparedStatement[] | null {
+  if (computer.update_state !== "updating" || computer.update_started_at == null) return null;
+  if (!computer.update_reason || !AUTOMATIC_REASONS.has(computer.update_reason as CloudUpdateReason)) return null;
+  if (computer.awake_since != null || !isMeteredStatus(status)) return null;
+  // The same end the boot report looks for, so the report closes this window too.
+  const windowEnd = computer.update_started_at + UPDATE_FREE_WINDOW_MS;
+  if (now >= windowEnd) return null;
+  return [
+    ...freeWindowStatements(env, computer, status, now, windowEnd),
+    powerLogStatement(env, computer, "wake", "update_boot", now),
+  ];
+}
+
 /** After the provider took the update: the status, the meter and the power log. */
 function startedStatements(env: CloudEnv, computer: ComputerRow, status: string, reason: CloudUpdateReason, now: number): D1PreparedStatement[] {
   const log = powerLogStatement(env, computer, "update", `update_${reason}`, now);
-  // A computer the provider left asleep with the new image boots on its next wake; no free window then.
+  // A computer the provider left asleep with the new image boots on its next wake: the
+  // tick opens the free window then, if that boot comes inside the update's window (`updateBootStatements`).
   if (AUTOMATIC_REASONS.has(reason) && isMeteredStatus(status)) return [...freeWindowStatements(env, computer, status, now), log];
   return [...statusChangeStatements(env, computer, status, now, "update"), log];
 }

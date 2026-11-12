@@ -6,7 +6,7 @@ import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from ".
 import { showToast } from "../app/toast/toastStore";
 import { nextFilesOpenNonce, requestFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
-import { cacheScopePin } from "../../lib/tabBindingKey";
+import { cacheScopeKey } from "../../lib/tabBindingKey";
 import { withChatPin } from "./chatMachinePin";
 
 /**
@@ -324,7 +324,7 @@ export type ChatWorkspacePathContextValue = {
 const BOUND_MACHINE_CACHE_KEY = "bound";
 
 function machineCacheKey(pin: OpenProjectBinding | null | undefined): string {
-  return cacheScopePin(pin)?.key ?? BOUND_MACHINE_CACHE_KEY;
+  return cacheScopeKey(pin) ?? BOUND_MACHINE_CACHE_KEY;
 }
 
 const cachedFilesWorkspaces = new Map<string, FilesWorkspace[]>();

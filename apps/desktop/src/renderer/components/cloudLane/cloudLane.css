@@ -54,32 +54,6 @@
   background: var(--adec-tile-bg);
   color: var(--adec-tile-fg);
 }
-.adecl-tier-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
-.adecl-tier-opt {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 8px;
-  align-items: center;
-  padding: 8px 10px;
-  border-radius: 9px;
-  border: 1px solid var(--kit-panel-edge);
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.adecl-tier-opt > svg { grid-row: span 2; }
-.adecl-tier-opt b { font-size: 12px; font-weight: 600; }
-.adecl-tier-opt .kit-num { font-size: 11px; color: var(--kit-text-3); }
-.adecl-tier-opt:hover { background: var(--kit-hover); }
-.adecl-tier-opt[aria-checked="true"] {
-  border-color: color-mix(in srgb, var(--adec-400) 45%, transparent);
-  background: color-mix(in srgb, var(--adec-600) 12%, transparent);
-}
-.adecl-tier-opt:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
-.adecl-tier-now { position: absolute; top: 6px; right: 8px; font-size: 10px; color: var(--kit-text-3); }
-
 .adecl-tier-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .adecl-tier-size { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--kit-text-2); }
 .adecl-tier-size[data-to="true"] { color: var(--adec-pill-fg); }
@@ -97,14 +71,17 @@
 }
 .adecl-tier-facts dt { font-size: 11.5px; color: var(--kit-text-3); }
 .adecl-tier-facts dd { margin: 0; font-size: 12px; line-height: 1.45; color: var(--color-fg); }
+.adecl-tier-grow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; color: var(--kit-text-2); }
+.adecl-tier-grow input[type="checkbox"] { accent-color: var(--adec-400); }
+.adecl-tier-grow .kit-input { width: auto; min-width: 84px; }
+.adecl-tier-sub { display: block; margin-top: 4px; font-size: 11.5px; color: var(--kit-text-3); }
 
 .adecl-tier-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .adecl-tier-actions .kit-btn { white-space: nowrap; }
-/* The note takes its own line above the buttons, so the three buttons stay together on one. */
-.adecl-tier-when { flex: 1 0 100%; text-align: right; }
 
-/* The fold toggle of the job card above the prompt box. */
-.adecl-job-fold {
+/* The fold toggle of the job card above the prompt box, and a job's dismiss ×, which shares its look. */
+.adecl-job-fold,
+.adecl-job-dismiss {
   display: grid;
   place-items: center;
   flex: none;
@@ -114,8 +91,10 @@
   border-radius: 6px;
   color: var(--kit-text-3);
 }
-.adecl-job-fold:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
-.adecl-job-fold:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-job-fold:hover,
+.adecl-job-dismiss:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.adecl-job-fold:focus-visible,
+.adecl-job-dismiss:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 .adecl-job-fold svg { transition: transform 160ms ease; }
 .adecl-job-fold svg[data-open="0"] { transform: rotate(-90deg); }
 @media (prefers-reduced-motion: reduce) { .adecl-job-fold svg { transition: none; } }
@@ -135,6 +114,8 @@
   border: 1px solid var(--kit-panel-edge);
   background: var(--kit-panel-bg);
 }
+/* Inside the corner panel's row, which already draws the panel. */
+.adecl-jobpanel.adecl-jobpanel-bare { padding: 0; border: 0; border-radius: 0; background: none; }
 
 /* A lane without a computer. */
 .adecl-nocomp {
@@ -156,6 +137,39 @@
 .adecl-nocomp-list { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 8px; }
 .adecl-nocomp-list-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--kit-text-3); }
 
+/* Lanes on deleted computers: one folded line in the Lanes tab, opened to a row per lane. */
+.adecl-deleted-head {
+  align-self: flex-start;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+.adecl-deleted-head:hover { color: var(--color-fg); background: var(--kit-hover); }
+.adecl-deleted-head:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-deleted-rows { display: flex; flex-direction: column; gap: 6px; }
+/* A lane's saved chats, newest first, under its row. */
+.adecl-deleted-chats { display: flex; flex: 1 1 100%; flex-direction: column; gap: 1px; margin: 0; padding: 0 0 0 22px; list-style: none; }
+.adecl-deleted-chat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.adecl-deleted-chat:hover:not(:disabled) { background: var(--kit-hover); }
+.adecl-deleted-chat:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-deleted-chat:disabled { cursor: default; opacity: 0.6; }
+.adecl-deleted-chat-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Connections: one row per lane's computer. */
 .adecl-cx-row { display: flex; flex-direction: column; }
 .adecl-cx-main {
@@ -174,3 +188,7 @@
 .adecl-cx-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--adec-asleep); }
 .adecl-cx-state[data-awake="true"] i { background: var(--adec-lamp); box-shadow: 0 0 6px color-mix(in srgb, var(--adec-lamp) 60%, transparent); }
 .adecl-cx-more { padding: 0 0 6px 32px; }
+
+/* The change-size dialog uses the ADE Cloud page's size cards (B14-23). */
+.adecl-tier-cards { margin-bottom: 12px; }
+.adecl-tier-now-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); margin-right: auto; }

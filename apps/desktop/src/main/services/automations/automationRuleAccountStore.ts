@@ -64,6 +64,28 @@ function keySuffix(ruleId: string): string {
   return `h.${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
 }
 
+/** A rule's id as the account (and ADE Cloud's server) carries it. Ids the relay cannot carry are hashed. */
+export function automationRuleAccountId(ruleId: string): string {
+  return keySuffix(ruleId);
+}
+
+/**
+ * A rule's id on ADE Cloud's server. The server keeps one row per account and
+ * id, while the account files rules per repository, so two repositories'
+ * `nightly` rules would share a row: the repository goes in the id. It reads
+ * the repository the way the account scope does, so every checkout of it
+ * (an SSH alias, an HTTPS remote) names the same row. Null when the project
+ * has no repository the account can name.
+ */
+export function automationRuleCloudId(accountId: string, origin: string | null | undefined): string | null {
+  const scope = accountRepoScopeKey(origin);
+  if (!scope) return null;
+  const repo = createHash("sha256").update(scope).digest("hex").slice(0, 12);
+  const id = `${accountId}.r${repo}`;
+  if (SAFE_ID.test(id)) return id;
+  return `h.${createHash("sha256").update(`${scope}\n${accountId}`).digest("hex").slice(0, 32)}.r${repo}`;
+}
+
 /** The account key a rule is stored under. Ids the relay cannot carry are hashed. */
 export function automationRuleAccountKey(ruleId: string): string {
   return `${AUTOMATION_RULE_KEY_PREFIX}${keySuffix(ruleId)}`;
@@ -107,6 +129,8 @@ export type AutomationAccountRow = {
   home: unknown;
   /** Runs counted so far across every home, when the rule has a run limit. */
   runCount?: number;
+  /** The newer of the rule's and its home's stored times: ADE Cloud keeps the newest it was sent (C9). */
+  version?: string;
 };
 
 /**
@@ -246,12 +270,18 @@ export function createAutomationRuleAccountStore(args: {
     const rules = new Map<string, unknown>();
     const homes = new Map<string, unknown>();
     const runs = new Map<string, number>();
+    const versions = new Map<string, string>();
+    const noteVersion = (suffix: string, updatedAt: string) => {
+      if ((versions.get(suffix) ?? "") < updatedAt) versions.set(suffix, updatedAt);
+    };
     let fingerprint = where;
     for (const row of args.backend.list(where)) {
       if (row.key.startsWith(AUTOMATION_RULE_KEY_PREFIX)) {
         rules.set(row.key.slice(AUTOMATION_RULE_KEY_PREFIX.length), row.value);
+        noteVersion(row.key.slice(AUTOMATION_RULE_KEY_PREFIX.length), row.updatedAt);
       } else if (row.key.startsWith(AUTOMATION_HOME_KEY_PREFIX)) {
         homes.set(row.key.slice(AUTOMATION_HOME_KEY_PREFIX.length), row.value);
+        noteVersion(row.key.slice(AUTOMATION_HOME_KEY_PREFIX.length), row.updatedAt);
       } else if (row.key.startsWith(AUTOMATION_RUNS_KEY_PREFIX)) {
         const count = row.value && typeof row.value === "object" ? (row.value as { count?: unknown }).count : null;
         if (typeof count === "number" && Number.isFinite(count) && count > 0) {
@@ -266,6 +296,7 @@ export function createAutomationRuleAccountStore(args: {
       value,
       home: homes.get(suffix),
       ...(runs.has(suffix) ? { runCount: runs.get(suffix)! } : {}),
+      ...(versions.has(suffix) ? { version: versions.get(suffix)! } : {}),
     }));
     return { fingerprint, rows };
   };
@@ -368,8 +399,10 @@ export function createAutomationRuleAccountStore(args: {
      * Every stored rule in this repository's scope with its home, plus a
      * fingerprint of the rows so a caller can cache what it derives. Signed
      * out, the last signed-in copy (read-only). Null when there is no remote.
+     * `unreadable`: the account's rows couldn't be read, so `rows` is empty
+     * for want of an answer, not because there are none.
      */
-    read(): { fingerprint: string; rows: AutomationAccountRow[]; signedOut: boolean } | null {
+    read(): { fingerprint: string; rows: AutomationAccountRow[]; signedOut: boolean; unreadable?: true } | null {
       const where = scope();
       if (!where) return null;
       const state = readState();
@@ -391,7 +424,7 @@ export function createAutomationRuleAccountStore(args: {
         args.logger?.warn("automations.account_rules.read_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return { fingerprint: "unreadable", rows: [], signedOut: false };
+        return { fingerprint: "unreadable", rows: [], signedOut: false, unreadable: true };
       }
       const copy = state.copy;
       // An unfinished copy after a remote change keeps the old scope, so the

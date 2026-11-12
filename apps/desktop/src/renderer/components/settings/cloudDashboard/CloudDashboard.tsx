@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
   cloudAccountBanner,
@@ -20,6 +20,7 @@ import { formatAgo, ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
+import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { usageLeftLevel } from "../../usage/usageDesign";
@@ -41,9 +42,10 @@ import {
   type DashLane,
 } from "./cloudDashboardModel";
 import { clearCloudLaneCaches, cloudLaneLifeAvailable, freeCloudLane } from "../../cloudLane/cloudLaneActions";
-import { deleteCloudLaneWithCheck } from "../../cloudLane/deleteCloudLane";
+import { deleteCloudLaneWithCheck, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
-import { CloudLaneJobCard } from "../../cloudLane/CloudLaneJobCard";
+import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
+import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
 
@@ -115,8 +117,21 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     refreshCloudLanesWithoutComputer();
   }, [listKey]);
   const jobs = useCloudLaneJobs(cloudLaneLifeAvailable());
+  const deletes = useCloudLaneDeletes();
 
-  const lanes = useMemo(() => dashLanes({ machines: list, account, without, now }), [list, account, without, now]);
+  // A lane whose delete went through leaves at once (its building sinks), before the next read of the list.
+  const lanes = useMemo(
+    () => dashLanes({ machines: list, account, without, now }).filter((lane) => !lane.instanceId || deletes.get(lane.instanceId) !== "deleted"),
+    [list, account, without, now, deletes],
+  );
+  /** A lane's row says where its size change or its delete is, in place. */
+  const rowStatus = useCallback((lane: DashLane): RowStatus | null => {
+    const deleting = lane.instanceId ? deletes.get(lane.instanceId) : undefined;
+    if (deleting) return deleteRowStatus(deleting);
+    if (!lane.instanceId) return null;
+    const job = cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.machine?.lane?.laneId ?? null });
+    return job ? jobRowStatus(job, account) : null;
+  }, [account, deletes, jobs]);
   const selected = lanes.find((lane) => lane.key === selectedKey) ?? null;
   const selectedJob = selected?.instanceId ? cloudLaneJobFor(jobs, { instanceId: selected.instanceId, laneId: selected.machine?.lane?.laneId ?? null }) : null;
   const otherJobs = useMemo(() => [...jobs.values()].filter((job) => cloudLaneJobVisible(job) && job.phase !== "online"
@@ -258,18 +273,21 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
               selectedKey={selected?.key ?? null}
               onSelect={(key) => setSelectedKey((current) => (current === key ? null : key))}
               onOpen={openInside}
+              rowStatus={rowStatus}
               renderActions={(lane) => (
-                <LaneActions
-                  lane={lane}
-                  account={account}
-                  job={lane.key === selected?.key ? selectedJob : null}
-                  busy={busyKey === lane.key}
-                  onLookInside={() => openInside(lane.key)}
-                  onSize={() => setSizing(lane)}
-                  onFree={() => void freeLane(lane)}
-                  onDelete={() => void deleteLane(lane)}
-                />
+                <LaneActions lane={lane} account={account} job={lane.key === selected?.key ? selectedJob : null} />
               )}
+              menuActions={(lane) => {
+                const job = lane.instanceId ? cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.machine?.lane?.laneId ?? null }) : null;
+                return laneMenuActions(lane, {
+                  jobRunning: job != null && (job.phase === "waiting" || job.phase === "running"),
+                  busy: busyKey === lane.key,
+                  onLookInside: () => openInside(lane.key),
+                  onSize: () => setSizing(lane),
+                  onFree: () => void freeLane(lane),
+                  onDelete: () => void deleteLane(lane),
+                });
+              }}
             />
           )}
         </div>
@@ -277,11 +295,15 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       <CloudPlans account={account} onChanged={refresh} />
       <CloudSizes account={account} />
-      <CloudInviteCard account={account} onChanged={refresh} />
 
+      {/* Sign-ins on the left; the shorter agent limits and the invite card
+          stack on the right, so the two columns end near one height (B14-2). */}
       <div className="adecd-pair">
         <CloudSignIns />
-        <CloudAgentLimitsCard />
+        <div className="adecd-stack">
+          <CloudAgentLimitsCard />
+          <CloudInviteCard account={account} onChanged={refresh} />
+        </div>
       </div>
 
       {freeing ? (
@@ -443,16 +465,26 @@ function LaneTable({
   selectedKey,
   onSelect,
   onOpen,
+  rowStatus,
   renderActions,
+  menuActions,
 }: {
   lanes: readonly DashLane[];
   now: number;
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
+  /** A size change or delete under way, shown in the row's State cell in place of the computer's state. */
+  rowStatus: (lane: DashLane) => RowStatus | null;
+  /** What shows under the open row: its job card and notices, or null. */
   renderActions: (lane: DashLane) => ReactNode;
+  /** The row's actions, behind its ⋯ button at the right end (B14-22). */
+  menuActions: (lane: DashLane) => MachineAction[];
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // The listbox keeps focus itself (`aria-activedescendant`): keys from a
+    // row's ⋯ button or its open menu (a portal, so they bubble here) are theirs.
+    if (event.target !== event.currentTarget) return;
     if (!lanes.length) return;
     const at = Math.max(0, lanes.findIndex((lane) => lane.key === selectedKey));
     let next = at;
@@ -481,10 +513,13 @@ function LaneTable({
       onKeyDown={onKeyDown}
     >
       <div className="adecd-tr adecd-th" aria-hidden="true">
-        <span>Lane</span><span>Size</span><span>Disk</span><span>State</span><span>Last run</span>
+        <span>Lane</span><span>Size</span><span>Disk</span><span>State</span><span>Last run</span><span />
       </div>
       {lanes.map((lane) => {
         const open = lane.key === selectedKey;
+        const status = rowStatus(lane);
+        const actions = menuActions(lane);
+        const below = open ? renderActions(lane) : null;
         return (
           <div key={lane.key} className="adecd-row-wrap" data-open={open || undefined} data-key={cssId(lane.key)}>
             <div
@@ -506,10 +541,21 @@ function LaneTable({
               </span>
               <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
               <span className="kit-num">{lane.state === "none" ? "—" : formatCloudGb(lane.diskGb)}</span>
-              <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+              {status ? (
+                <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
+              ) : (
+                <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+              )}
               <span className="adecd-when">{lastRunText(lane, now)}</span>
+              {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
+              <span aria-hidden="true" />
             </div>
-            {open ? <div className="adecd-row-actions">{renderActions(lane)}</div> : null}
+            {actions.length ? (
+              <span className="adecd-row-menu">
+                <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
+              </span>
+            ) : null}
+            {open && below ? <div className="adecd-row-actions">{below}</div> : null}
           </div>
         );
       })}
@@ -517,53 +563,67 @@ function LaneTable({
   );
 }
 
+/** What shows under an open row: the lane's size-change job and the notices about it. Its actions are in the row's ⋯ menu. */
 function LaneActions({
   lane,
   account,
   job,
-  busy,
-  onLookInside,
-  onSize,
-  onFree,
-  onDelete,
 }: {
   lane: DashLane;
   account: CloudAccountState;
   job: ReturnType<typeof cloudLaneJobFor>;
+}) {
+  if (!job && !lane.without && !lane.noLane) return null;
+  return (
+    <>
+      {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
+      {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
+      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
+    </>
+  );
+}
+
+/** A lane row's actions for its ⋯ menu; the delete sits last, after a rule. */
+function laneMenuActions(lane: DashLane, args: {
+  jobRunning: boolean;
   busy: boolean;
   onLookInside: () => void;
   onSize: () => void;
   onFree: () => void;
   onDelete: () => void;
-}) {
+}): MachineAction[] {
+  if (!lane.instanceId) return [];
   const life = cloudLaneLifeAvailable();
-  const jobRunning = job != null && (job.phase === "waiting" || job.phase === "running");
-  return (
-    <>
-      {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
-      {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
-      {lane.instanceId ? (
-        <div className="adecd-actions">
-          <button type="button" className="kit-btn" data-size="sm" onClick={onLookInside}><MagnifyingGlass size={12} />What uses the disk</button>
-          {life && !lane.noLane ? (
-            <>
-              <button type="button" className="kit-btn" data-size="sm" disabled={busy || jobRunning} onClick={onSize}>Change size</button>
-              <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={onFree}>Keep lane, free its computer</button>
-            </>
-          ) : null}
-          {life ? (
-            <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busy} onClick={onDelete}>
-              <Trash size={12} />{lane.noLane ? "Delete computer" : "Delete lane"}
-            </button>
-          ) : null}
-          {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
-        </div>
-      ) : null}
-    </>
-  );
+  const actions: MachineAction[] = [
+    { key: "disk", label: "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside },
+  ];
+  if (life && !lane.noLane) {
+    actions.push(
+      { key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning },
+      { key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy },
+    );
+  }
+  if (life) {
+    actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });
+  }
+  return actions;
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/** What a row's State cell says while its lane changes size or is deleted. */
+type RowStatus = { state: "starting" | "failed" | "awake"; label: string; title: string | null };
+
+function deleteRowStatus(phase: CloudLaneDeletePhase): RowStatus {
+  return phase === "checking"
+    ? { state: "starting", label: "Checking work", title: "ADE checks that its work is on GitHub before it deletes the lane." }
+    : { state: "starting", label: "Deleting", title: null };
+}
+
+function jobRowStatus(job: CloudLaneJobSnapshot, account: CloudAccountState | null): RowStatus | null {
+  const { row, stepLine } = cloudLaneJobPresentation(job, account);
+  return row ? { ...row, title: stepLine } : null;
+}
 
 /** What uses a lane's disk, as its computer last measured itself while awake. */
 function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now: number; busy: boolean; onBack: () => void; onClear: () => void }) {

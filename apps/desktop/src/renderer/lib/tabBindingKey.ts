@@ -13,6 +13,15 @@ export function setTabBindingKey(key: string | null): void {
   tabBindingKey = key;
 }
 
+/**
+ * The key of the copy a read goes to: the pin's own key, or the tab's current
+ * copy when there is no pin. A tab-copy pin and no pin share one entry, and a
+ * rebind to another copy starts a new one. Null before the tab has a copy.
+ */
+export function cacheScopeKey(pin: { key: string } | null | undefined): string | null {
+  return pin?.key ?? tabBindingKey;
+}
+
 /** The pin a renderer cache keys on: null when it names the tab's own copy. */
 export function cacheScopePin<T extends { key: string }>(pin: T | null | undefined): T | null {
   if (!pin) return null;

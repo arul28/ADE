@@ -13,7 +13,7 @@ import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCom
 import { isAdeProviderHomePath } from "../../../../desktop/src/shared/parentAgentEnv";
 import { isClaudePassAccountId, isClaudePassKey } from "../../../../desktop/src/shared/types/providerLogins";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
-import { isCloudMachine } from "../power/cloudKeepAwake";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import {
   ensurePrivateDirectory,
   type WindowsAclRunner,
@@ -533,7 +533,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const records: StoredInstance[] = [];
     // A pass account exists on a cloud computer only. A registry copied from
     // one (a forked disk, a moved ADE home) shows none of its passes here.
-    const passesHere = isCloudMachine(env);
+    const passesHere = isAdeCloudComputer(env);
     for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
       records.push(baseInstanceRecord(provider, file));
       for (const instance of file.instances) {
@@ -1027,7 +1027,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    */
   function cloudPassOf(id: string): StoredCloudPass | null {
     const trimmed = typeof id === "string" ? id.trim() : "";
-    if (!isClaudePassAccountId(trimmed) || !isCloudMachine(env)) return null;
+    if (!isClaudePassAccountId(trimmed) || !isAdeCloudComputer(env)) return null;
     return readFile().instances.find((entry) => entry.id === trimmed)?.cloudPass ?? null;
   }
 
@@ -1047,7 +1047,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     smartBalance: boolean | null;
   }): { added: string[]; removed: string[]; changed: string[]; wrote: boolean } {
     const result = { added: [] as string[], removed: [] as string[], changed: [] as string[], wrote: false };
-    if (!isCloudMachine(env)) return result;
+    if (!isAdeCloudComputer(env)) return result;
     const file = readFile();
     const wanted = new Map(args.passes.filter((pass) => isClaudePassAccountId(pass.id)).map((pass) => [pass.id, pass]));
     let dirty = false;

@@ -3507,6 +3507,10 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_deleted_chats_deleted_at on deleted_chats(deleted_at desc)");
+  // A deleted agent CLI terminal (Claude Code, Codex, …) rides the same list:
+  // `kind` 'cli' (null is a chat) and the terminal row it reopens as.
+  safeAddColumn(db, "alter table deleted_chats add column kind text");
+  safeAddColumn(db, "alter table deleted_chats add column cli_json text");
 
   // Test suite config and history tables.
   db.run(`

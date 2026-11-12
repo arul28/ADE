@@ -81,7 +81,7 @@ export function RuleHistory({
     } finally {
       if (detailRequestId.current === requestId) setDetailLoading(false);
     }
-  }, [machineName, pin]);
+  }, [isActiveBinding, machineName, pin]);
 
   useEffect(() => {
     detailRequestId.current += 1;

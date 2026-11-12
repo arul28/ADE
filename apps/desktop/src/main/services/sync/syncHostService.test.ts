@@ -23,6 +23,7 @@ import type { SyncFileRequest } from "../../../shared/types";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
+import { windowsScaledTimeout } from "../../../../vitest.timeouts";
 
 const { execFileMock, spawnMock, spawnSyncMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
@@ -984,7 +985,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     });
 
     await expect(host.waitUntilListening()).rejects.toMatchObject({ code: "EADDRINUSE" });
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("advertises the mobile project catalog and handles project switch requests", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-project-catalog-"), createLogger() as any);
@@ -1442,7 +1443,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(broadcastProjects).toHaveLength(projects.length);
 
     await client.close();
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("authenticates peers, relays CRDT changes, and rebroadcasts to other peers", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-brain-"), createLogger() as any);
@@ -1644,7 +1645,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(legacyPayload.batchId).toBeTruthy();
     expect(legacyPayload.changes.length).toBeGreaterThan(0);
     await waitFor(() => host.getPeerStates().find((peer) => peer.deviceId === "peer-legacy")?.syncLag === 0);
-  }, 60_000);
+  }, windowsScaledTimeout(60_000));
 
   it("serves workspace file operations and artifact reads while blocking .git access", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-files-"), createLogger() as any);

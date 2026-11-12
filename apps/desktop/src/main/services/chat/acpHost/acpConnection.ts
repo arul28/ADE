@@ -50,6 +50,8 @@ import {
 import type { AcpDialect, AcpSpawnPlan } from "./acpHostTypes";
 import { prepareAcpScratchDir, removeAcpScratchDir } from "./acpScratchDirs";
 import { redactProcessOutput } from "../../../utils/redaction";
+import { attachAgentStderrTail } from "../agentProcessStderr";
+import { holdToolInstallsWhileRunning } from "../../../../../../ade-cli/src/services/tools/inUse";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -309,6 +311,8 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       }) as ChildProcessWithoutNullStreams);
+  // An ACP agent can outlive any record of use: its copy stays while it runs.
+  if (!args.spawnOverride) holdToolInstallsWhileRunning([spawnPlan.command, spawnPlan.args[0]], child);
 
   const pending = new Map<AcpRpcId, PendingRequest>();
   const sessionUpdateHandlers = new Set<(notification: AcpSessionNotification) => void>();
@@ -745,19 +749,6 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
  * The client capabilities come from the dialect, and they are honest: ADE
  * claims only what it actually serves.
  */
-/** Error shape `initializeAcpConnection` augments with the agent's last stderr. */
-export type AcpStderrCarryingError = { acpStderrTail?: string };
-
-/**
- * Recover the stderr tail `initializeAcpConnection` attached to a handshake
- * failure. Returns `""` for any error that carries none.
- */
-export function readAcpStderrTailFromError(error: unknown): string {
-  if (!error || typeof error !== "object") return "";
-  const tail = (error as AcpStderrCarryingError).acpStderrTail;
-  return typeof tail === "string" ? tail : "";
-}
-
 export async function initializeAcpConnection(args: {
   connection: AcpConnection;
   dialect: AcpDialect;
@@ -801,10 +792,7 @@ export async function initializeAcpConnection(args: {
   } catch (error) {
     // A crash during the handshake precedes every exit handler, so the pool's
     // rethrow is the only chance to pass the agent's stderr to the caller.
-    const tail = connection.readStderrTail();
-    if (tail.trim() && error && typeof error === "object") {
-      (error as AcpStderrCarryingError).acpStderrTail = tail;
-    }
-    throw error;
+    // `readAgentStderrTail` reads it back.
+    throw attachAgentStderrTail(error, connection.readStderrTail());
   }
 }

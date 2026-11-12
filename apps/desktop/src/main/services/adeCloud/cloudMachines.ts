@@ -64,6 +64,8 @@ export type CloudMachinesDeps = {
   knownClient?: () => CloudProvider | null;
   /** Removes a machine from the ADE account directory (the "Remove from ADE" half of a delete). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** Every good read of the account's computers (the lane follower, `cloudLaneFollow.ts`). */
+  onInstancesRead?: (instances: CloudInstance[]) => void;
   logger?: Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -107,6 +109,7 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLa
     diskUsage: instance.diskUsage ?? null,
     laneWork: instance.laneWork ?? null,
     ...(lane ? { lane } : {}),
+    replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
   };
 }
 
@@ -283,6 +286,11 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   function recordRead(instances: CloudInstance[]): void {
     knownMachineKeys = liveMachineKeys(instances);
     lastRead = { instances, atMs: now() };
+    try {
+      deps.onInstancesRead?.(instances);
+    } catch (error) {
+      logger.warn?.("cloud.instances_read_listener_failed", { error: getErrorMessage(error) });
+    }
   }
 
   /** One bounded read of the account's computers, shared by concurrent callers. True when it worked. */

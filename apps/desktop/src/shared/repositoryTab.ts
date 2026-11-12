@@ -1,6 +1,6 @@
 import { accountRepoScopeKey } from "./accountSettingsScope";
 import type { AccountProjectCopy, AccountProjectId, AccountProjectView } from "./accountProject";
-import { pickLiveCheckout } from "./crossMachineHandoff";
+import { normalizeGitRemoteIdentity, pickLiveCheckout } from "./crossMachineHandoff";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "./machineIdentity";
 import { remoteProjectBindingKey } from "./projectIdentity";
 import type { OpenProjectBinding, RecentProjectSummary } from "./types/core";
@@ -142,6 +142,14 @@ type AddressableCopy = Pick<
   "projectId" | "isThisMachine" | "rootPath" | "displayName" | "checkoutId" | "gitOriginUrl"
 >;
 
+/** A row at the copy's folder whose origin does not name another repository. */
+function isSameRepositoryAtPath(project: RemoteRuntimeProjectRecord, copy: AddressableCopy): boolean {
+  if (project.rootPath !== copy.rootPath) return false;
+  const rowOrigin = normalizeGitRemoteIdentity(project.gitOriginUrl);
+  const copyOrigin = normalizeGitRemoteIdentity(copy.gitOriginUrl);
+  return !rowOrigin || !copyOrigin || rowOrigin === copyOrigin;
+}
+
 /**
  * The address of one copy. A copy on this computer gets a local binding. A
  * copy on another machine gets a remote binding only while that machine is
@@ -169,8 +177,9 @@ export function copyAddress(
       project.accountProjectId != null
       && project.accountProjectId === copy.projectId
       && project.rootPath === copy.rootPath))
-    ?? pickLiveCheckout(projects.filter((project) => project.rootPath === copy.rootPath));
-  if (!row) return null;
+    ?? pickLiveCheckout(projects.filter((project) => isSameRepositoryAtPath(project, copy)));
+  // A folder the machine reports as gone has nothing to work in.
+  if (!row || row.exists === false) return null;
   const target = connection.target;
   return {
     kind: "remote",
@@ -338,14 +347,18 @@ export function buildRepositoryCopies(
       if (thisMachine && thisKey && entry.machineKey === thisKey) {
         const recent = thisMachine.localProjects.find((project) => project.kind !== "remote" && project.rootPath === entry.rootPath);
         if (has(THIS_MACHINE_ID, entry.rootPath, entry.checkoutId)) continue;
-        copies.push(localCopy({
+        const copy = localCopy({
           rootPath: entry.rootPath,
           displayName: recent?.displayName || folderName(entry.rootPath),
           checkoutId: entry.checkoutId,
           gitOriginUrl: recent?.gitOriginUrl ?? null,
           isMain: entry.isMain,
           lastSeenAt: entry.lastSeenAt,
-        }));
+        });
+        // The account still lists a folder this computer reports as gone: the
+        // copy stays in the list, but nothing can start or read there.
+        if (recent?.exists === false) copy.address = null;
+        copies.push(copy);
         continue;
       }
       const connection = connectionByKey.get(entry.machineKey) ?? null;
@@ -493,10 +506,7 @@ export type DefaultCopyInputs = {
  * 4. another online copy (main first, newest next, ADE Cloud lane computers last);
  * 5. null: no copy is online.
  */
-export function resolveDefaultCopy(
-  _tab: RepositoryTab | null,
-  inputs: DefaultCopyInputs,
-): MachineAddress | null {
+export function resolveDefaultCopy(inputs: DefaultCopyInputs): MachineAddress | null {
   const routable = inputs.copies.filter(isRoutable);
   if (routable.length === 0) return null;
   const byKey = (key: string | null | undefined) => (key ? routable.find((copy) => copy.address.key === key) : undefined);

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { automationCloudProblem, parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { automationCloudProblem, isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
@@ -730,6 +730,8 @@ function normalizeDraft(args: {
     }
     const branch = safeTrim(raw?.branch);
     if (branch) trigger.branch = branch;
+    const timezone = safeTrim(raw?.timezone);
+    if (timezone && isIanaTimeZone(timezone)) trigger.timezone = timezone;
     const targetBranch = safeTrim(raw?.targetBranch);
     if (targetBranch) trigger.targetBranch = targetBranch;
     const event = safeTrim(raw?.event);

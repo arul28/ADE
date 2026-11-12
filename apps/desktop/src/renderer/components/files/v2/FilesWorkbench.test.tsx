@@ -62,6 +62,9 @@ const testState = vi.hoisted(() => ({
   },
 }));
 
+// The tab's own copy: calls for it carry its address, not a null pin.
+const TAB_PIN = testState.appState.projectBinding;
+
 vi.mock("../../ui/dialog/confirm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../ui/dialog/confirm")>()),
   confirmDialog: vi.fn(async () => true),
@@ -321,7 +324,7 @@ describe("FilesWorkbench", () => {
 
     fireEvent.click(await screen.findByTestId("open-file"));
     await waitFor(() => expect(screen.getByTestId("tab-count").textContent).toBe("1"));
-    expect(window.ade.files.readFile).toHaveBeenCalledWith({ workspaceId: "workspace-a", path: "src/a.ts" }, null);
+    expect(window.ade.files.readFile).toHaveBeenCalledWith({ workspaceId: "workspace-a", path: "src/a.ts" }, TAB_PIN);
 
     fireEvent.click(screen.getByTestId("mark-dirty"));
     await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
@@ -343,7 +346,7 @@ describe("FilesWorkbench", () => {
       expect(window.ade.files.readFile).toHaveBeenCalledWith({
         workspaceId: "workspace-b",
         path: "src/a.ts",
-      }, null);
+      }, TAB_PIN);
     });
 
     // There is no longer any "Enable editing" affordance.
@@ -368,7 +371,7 @@ describe("FilesWorkbench", () => {
       expect(window.ade.files.readFile).toHaveBeenCalledWith({
         workspaceId: "workspace-b",
         path: "src/from-chat.ts",
-      }, null);
+      }, TAB_PIN);
     });
     // A chat navigation resolves through the workspace roster, never through
     // the local-only external-path API (which cannot cross machines).
@@ -439,15 +442,14 @@ describe("FilesWorkbench", () => {
     await waitFor(() => {
       expect(window.ade.files.listTreeChildren).toHaveBeenCalledWith(
         expect.objectContaining({ parentPath: "docs" }),
-        null,
+        TAB_PIN,
       );
     });
-    // First argument only: `expect.anything()` does not match the explicit
-    // `null` pin every unpinned call passes, so a two-argument negative here
-    // would pass even if the read really happened.
-    expect(window.ade.files.readFile).not.toHaveBeenCalledWith(
-      expect.objectContaining({ path: "docs/features" }),
-    );
+    // Read the first argument of every call: a one-argument
+    // `toHaveBeenCalledWith` never matches a call that also passes a pin.
+    const readPaths = (window.ade.files.readFile as ReturnType<typeof vi.fn>).mock.calls
+      .map(([args]) => (args as { path?: string } | undefined)?.path);
+    expect(readPaths).not.toContain("docs/features");
   });
 
   it("gives the embedded pane a breadcrumb that reveals a directory in the tree", async () => {
@@ -603,7 +605,7 @@ describe("FilesWorkbench", () => {
     await waitFor(() => {
       expect(window.ade.files.readFile).toHaveBeenCalledWith(
         { workspaceId: "workspace-b", path: "src/from-chat.ts" },
-        null,
+        TAB_PIN,
       );
     });
   });
@@ -855,7 +857,7 @@ describe("FilesWorkbench", () => {
 
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
     expect(listTreeChildren).toHaveBeenCalledTimes(1);
-    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 0 }), null);
+    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 0 }), TAB_PIN);
     // Correct pagination cursor: the rest stays reachable via "Load more".
     expect(screen.getByTestId("bigdir-load-more-offset").textContent).toBe("2000");
   });
@@ -870,7 +872,7 @@ describe("FilesWorkbench", () => {
     fireEvent.click(screen.getByTestId("load-more-bigdir"));
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"), largeDirectoryPage);
     expect(listTreeChildren).toHaveBeenCalledTimes(2);
-    expect(listTreeChildren).toHaveBeenLastCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 2000 }), null);
+    expect(listTreeChildren).toHaveBeenLastCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 2000 }), TAB_PIN);
     expect(screen.getByTestId("bigdir-load-more-offset").textContent).toBe("4000");
   });
 
@@ -901,8 +903,8 @@ describe("FilesWorkbench", () => {
     // git decorations alone.)
     await waitFor(() => expect(listTreeChildren).toHaveBeenCalledTimes(2), { timeout: 3_000 });
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"), largeDirectoryPage);
-    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 }), null);
-    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 2000 }), null);
+    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 }), TAB_PIN);
+    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 2000 }), TAB_PIN);
   });
 
   it("serializes a watcher refresh behind an in-flight load-more so the grown window is preserved", async () => {

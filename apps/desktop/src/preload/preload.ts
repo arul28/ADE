@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
+import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
@@ -113,6 +115,7 @@ import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMetho
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -579,6 +582,16 @@ import type {
   GitHubIssueCreateResult,
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
+  GitHubAccountAppAccountStatus,
+  GitHubAccountAppSignInReadResult,
+  GitHubAccountAppSignInStartResult,
+  GitHubAccountAppSignOutResult,
+  GithubDirectClientState,
+  GithubDirectData,
+  GithubDirectOp,
+  GithubDirectRequest,
+  GithubDirectRequestOptions,
+  GithubDirectResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -817,6 +830,8 @@ import type {
   CodexThreadGoal,
   AgentChatSteerArgs,
   AgentChatSteerResult,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatMoveSteerArgs,
@@ -2395,6 +2410,18 @@ function isBoundCopyPin(pin: OpenProjectBinding | null | undefined): pin is Open
 }
 
 /**
+ * A lane call that main answers on this computer: a local pin adds its
+ * project's root, so main looks the lane up in that project and not in the
+ * window's. Main accepts only a project root it knows.
+ */
+function withLocalPinRoot<T extends object>(
+  args: T,
+  pin: OpenProjectBinding | null | undefined,
+): T | (T & { rootPath: string }) {
+  return pin?.kind === "local" && pin.rootPath ? { ...args, rootPath: pin.rootPath } : args;
+}
+
+/**
  * The fetch of a cached read made through a pin that names the bound copy:
  * the read shares the bound cache entry, and the request goes by its pin.
  */
@@ -2490,18 +2517,6 @@ async function callPinnedOrBoundRuntimeActionIfBound<T>(
   return callProjectRuntimeActionIfBound<T>(domain, action, request);
 }
 
-/** `callProjectRuntimeActionStrictOr` for a member that takes a pin. */
-function callPinnedOrBoundRuntimeActionStrictOr<T>(
-  pin: OpenProjectBinding | null | undefined,
-  domain: string,
-  action: string,
-  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
-  local: () => Promise<T>,
-): Promise<T> {
-  if (pin) return callPinnedRuntimeAction<T>(pin, domain, action, request);
-  return callProjectRuntimeActionStrictOr<T>(domain, action, request, local);
-}
-
 /**
  * A sync method on an explicit machine. It addresses the runtime as the bound
  * sync helpers do, but by the pin, so a project switch cannot misroute it.
@@ -2526,15 +2541,25 @@ async function callPinnedRuntimeSync<T>(
   })) as T;
 }
 
-/** `callProjectRuntimeSyncOr` for a member that takes a pin. */
-function callPinnedOrBoundRuntimeSyncOr<T>(
+/**
+ * `callProjectRuntimeSyncOr` for a member that takes a pin. A pin on this
+ * computer keeps the unpinned call's repair fallback: an isolated brain with
+ * no sync service sends the call to main, which reaches this computer's sync
+ * service. A pin on another machine has no such fallback.
+ */
+async function callPinnedOrBoundRuntimeSyncOr<T>(
   pin: OpenProjectBinding | null | undefined,
   method: string,
   params: Record<string, unknown>,
   local: () => Promise<T>,
 ): Promise<T> {
-  if (pin) return callPinnedRuntimeSync<T>(pin, method, params);
-  return callProjectRuntimeSyncOr<T>(method, params, local);
+  if (!pin) return callProjectRuntimeSyncOr<T>(method, params, local);
+  try {
+    return await callPinnedRuntimeSync<T>(pin, method, params);
+  } catch (error) {
+    if (pin.kind === "remote" || !isSyncServiceUnavailableError(error)) throw error;
+    return await local();
+  }
 }
 
 /**
@@ -3746,8 +3771,11 @@ async function setPtyDataSubscriptions(
     return;
   }
   ptyDataSubscriptionsConfigured = true;
-  if (pin) boundCopyPinPtyDataIds = { key: pin.key, ids: ptyIds };
-  else subscribedPtyDataIds = ptyIds;
+  if (pin) {
+    boundCopyPinPtyDataIds = { key: pin.key, ids: ptyIds };
+    // A listener that started while this copy was another machine keeps its pump.
+    pinnedRuntimeEvents.updateOpenPinnedPtyDataSubscriptions(pin, ptyIds);
+  } else subscribedPtyDataIds = ptyIds;
   ensureRemoteRuntimeEventPump();
   await syncPtyDataSubscriptions();
 }
@@ -4309,21 +4337,59 @@ function subscribeAgentChatEvents(
   };
 }
 
+/**
+ * A PTY listener through a pin that names the bound copy shares the active
+ * stream. That stream follows the window, so when the window binds to another
+ * copy the listener moves to its own copy's pump and takes its PTY ids along.
+ * (A pinned listener whose copy becomes bound keeps its pump: it still hears
+ * its copy.)
+ */
+function followBoundCopyPtyEvents(
+  pin: OpenProjectBinding,
+  subscribeActive: () => () => void,
+  subscribePinned: () => () => void,
+): () => void {
+  let remove = subscribeActive();
+  const pinKey = pin.key;
+  const onBindingChanged = () => {
+    if (currentProjectBinding?.key === pinKey) return;
+    projectBindingChangedCallbacks.delete(onBindingChanged);
+    remove();
+    remove = subscribePinned();
+    const entry = boundCopyPinPtyDataIds;
+    if (!entry || entry.key !== pinKey) return;
+    boundCopyPinPtyDataIds = null;
+    void pinnedRuntimeEvents.setPinnedPtyDataSubscriptions(pin, entry.ids).catch((error: unknown) => {
+      console.warn("[preload] could not move terminal output to its own machine", error);
+    });
+  };
+  projectBindingChangedCallbacks.add(onBindingChanged);
+  return () => {
+    projectBindingChangedCallbacks.delete(onBindingChanged);
+    remove();
+  };
+}
+
 function subscribePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
-  // A pin that names the bound copy listens on the active stream, as no pin does.
   if (pin && !isBoundCopyPin(pin)) return pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb);
-  const filteredCb = (payload: PtyDataEvent) => {
-    if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+  const subscribeActive = () => {
+    const filteredCb = (payload: PtyDataEvent) => {
+      if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+    };
+    const removeLocal = ptyDataEventFanout(filteredCb);
+    const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
-  const removeLocal = ptyDataEventFanout(filteredCb);
-  const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
-  return () => {
-    removeRemote();
-    removeLocal();
-  };
+  // A pin that names the bound copy listens on the active stream, as no pin does.
+  return pin
+    ? followBoundCopyPtyEvents(pin, subscribeActive, () => pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb))
+    : subscribeActive();
 }
 
 function subscribePtyExitEvents(
@@ -4331,12 +4397,17 @@ function subscribePtyExitEvents(
   pin?: OpenProjectBinding | null,
 ): () => void {
   if (pin && !isBoundCopyPin(pin)) return pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb);
-  const removeLocal = ptyExitEventFanout(cb);
-  const removeRemote = subscribeRemotePtyExitEvents(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
+  const subscribeActive = () => {
+    const removeLocal = ptyExitEventFanout(cb);
+    const removeRemote = subscribeRemotePtyExitEvents(cb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
+  return pin
+    ? followBoundCopyPtyEvents(pin, subscribeActive, () => pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb))
+    : subscribeActive();
 }
 
 function subscribeUsageUpdateEvents(
@@ -4877,6 +4948,7 @@ function clearProjectScopedReadCaches(): void {
   githubRemoteStatusCache.clear();
   githubAppInstallationStatusCache.clear();
   projectConfigSnapshotCache.clear();
+  aiStatusCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
   imageDataUrlCache.clear();
@@ -7821,7 +7893,8 @@ const adeBridge = {
           "Remote lane folders cannot be opened on this machine. Copy the remote path instead.",
         );
       }
-      await ipcRenderer.invoke(IPC.lanesOpenFolder, args);
+      // A local pin names its project, which may not be the window's.
+      await ipcRenderer.invoke(IPC.lanesOpenFolder, withLocalPinRoot(args, pin));
     },
     revealWorktree: async (args: { laneId: string }, pin?: OpenProjectBinding | null): Promise<void> => {
       if (!pin) noteDefaultMachineRoute("lane", "revealWorktree", "lanes.revealWorktree");
@@ -7831,7 +7904,7 @@ const adeBridge = {
           "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
         );
       }
-      await ipcRenderer.invoke(IPC.lanesRevealWorktree, args);
+      await ipcRenderer.invoke(IPC.lanesRevealWorktree, withLocalPinRoot(args, pin));
     },
     revealLeftoverWorktree: async (
       args: { laneId: string; rootPath?: string },
@@ -8047,7 +8120,7 @@ const adeBridge = {
           await callPinnedRuntimeAction<LanePreviewInfo | null>(pin, "lane", "proxyGetPreviewInfo", { args }),
         );
       }
-      if (pin) return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args);
+      if (pin) return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, withLocalPinRoot(args, pin));
       const binding = await getProjectRuntimeBinding();
       if (binding?.kind === "remote") {
         const runtime =
@@ -8077,7 +8150,7 @@ const adeBridge = {
         return;
       }
       if (pin) {
-        await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
+        await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, withLocalPinRoot(args, pin));
         return;
       }
       const binding = await getProjectRuntimeBinding();
@@ -8332,23 +8405,32 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId }),
       );
     },
-    settleMany: async (sessionIds: string[], pin?: OpenProjectBinding | null): Promise<string[]> => {
-      const runtime = await callPinnedOrBoundRuntimeActionIfBound<string[]>(pin,
+    // `pin` sends the batch to the machine its rows live on, like the
+    // single-row `settle`; every id in one call must belong to that machine.
+    settleMany: async (
+      sessionIds: string[],
+      pin?: OpenProjectBinding | null,
+    ): Promise<string[]> => {
+      const settled = await callPinnedOrBoundRuntimeActionOr<string[] | null | undefined>(
+        pin,
         "session",
         "settleSessions",
         { args: { sessionIds } },
+        () => ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds }),
       );
-      return runtime.handled
-        ? runtime.result ?? []
-        : ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds });
+      return settled ?? [];
     },
-    unsettleMany: async (sessionIds: string[], pin?: OpenProjectBinding | null): Promise<void> => {
-      const runtime = await callPinnedOrBoundRuntimeActionIfBound<unknown>(pin,
+    unsettleMany: async (
+      sessionIds: string[],
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "unsettleSessions",
         { args: { sessionIds } },
+        () => ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds }),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
     },
     snoozeSession: async (
       sessionId: string,
@@ -8966,6 +9048,17 @@ const adeBridge = {
         if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatSend, args);
       }
       agentChatSummaryCache.clear();
+    },
+    // The Work input box's text for a running agent CLI, on the CLI's own
+    // machine. Typed only at a free prompt; `deferred` means nothing was typed.
+    typeIntoCli: async (
+      args: AgentCliTypeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentCliTypeResult> => {
+      const stamped = { ...args, inputOrigin: await sessionInputOriginFor(pin) };
+      return callPinnedOrBoundRuntimeActionOr<AgentCliTypeResult>(pin, "chat", "typeIntoCli", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.agentChatTypeIntoCli, args),
+      );
     },
     steer: async (
       args: AgentChatSteerArgs,
@@ -9763,6 +9856,14 @@ const adeBridge = {
     ): Promise<AgentChatSubagentSnapshot[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "listSubagents", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+      ),
+    // The open cards of a chat or a tracked agent CLI (`cliCardInputs.ts`).
+    listPendingInputs: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ requests: import("../shared/types").PendingInputRequest[] }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "listPendingInputs", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListPendingInputs, args),
       ),
     killDroidWorker: async (
       args: AgentChatKillDroidWorkerArgs,
@@ -13260,6 +13361,17 @@ const adeBridge = {
       ),
     onEvent: subscribeConflictEvents,
   },
+  // Direct GitHub reads with the ADE account's GitHub App sign-in. Account-
+  // scoped: no machine is involved, so no pin; this window's main process
+  // reads api.github.com and keeps the token (githubDirectIpc.ts).
+  githubDirect: {
+    request: async <O extends GithubDirectOp>(
+      request: Extract<GithubDirectRequest, { op: O }>,
+      options?: GithubDirectRequestOptions,
+    ): Promise<GithubDirectResult<GithubDirectData[O]>> =>
+      ipcRenderer.invoke(IPC.githubDirectRequest, request, options ?? {}),
+    getState: async (): Promise<GithubDirectClientState> => ipcRenderer.invoke(IPC.githubDirectGetState),
+  },
   github: {
     getStatus: async (opts?: {
       forceRefresh?: boolean;
@@ -13336,6 +13448,23 @@ const adeBridge = {
             ipcRenderer.invoke(IPC.githubClearToken),
           ),
       ),
+    // Shares this machine's gh login with the ADE account, or takes the gh
+    // login off the account. Runs on the pinned machine: its gh login, its
+    // credential store, its brain's account vault.
+    setGhAccountSharing: async (
+      args: { enabled: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitHubStatus> =>
+      clearAround(
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
+        () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "setGhAccountSharing", { args }, () =>
+            ipcRenderer.invoke(IPC.githubSetGhAccountSharing, args),
+          ),
+      ),
     getAppUserAuthStatus: async (pin?: OpenProjectBinding | null): Promise<GitHubAppUserAuthStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "github", "getAppUserAuthStatus", {}, () =>
         ipcRenderer.invoke(IPC.githubGetAppUserAuthStatus),
@@ -13366,6 +13495,29 @@ const adeBridge = {
           callPinnedOrBoundRuntimeActionOr(pin, "github", "clearAppUserAuth", {}, () =>
             ipcRenderer.invoke(IPC.githubClearAppUserAuth),
           ),
+      ),
+    // The ADE account's GitHub App sign-in. Account-scoped: it lives in the
+    // account directory, not on a machine, so these take no pin and always
+    // go to this window's main process (registerGithubAccountAppIpc.ts).
+    getAccountAppStatus: async (): Promise<GitHubAccountAppAccountStatus> =>
+      ipcRenderer.invoke(IPC.githubGetAccountAppStatus),
+    startAccountAppSignIn: async (): Promise<GitHubAccountAppSignInStartResult> =>
+      ipcRenderer.invoke(IPC.githubStartAccountAppSignIn),
+    readAccountAppSignIn: async (args: { signInId: string }): Promise<GitHubAccountAppSignInReadResult> => {
+      const result = await ipcRenderer.invoke(IPC.githubReadAccountAppSignIn, args) as GitHubAccountAppSignInReadResult;
+      if (result.ok && result.status === "done") {
+        githubStatusCache.clear();
+        githubAppInstallationStatusCache.clear();
+      }
+      return result;
+    },
+    signOutAccountApp: async (): Promise<GitHubAccountAppSignOutResult> =>
+      clearAround(
+        () => {
+          githubStatusCache.clear();
+          githubAppInstallationStatusCache.clear();
+        },
+        () => ipcRenderer.invoke(IPC.githubSignOutAccountApp),
       ),
     detectRepo: async (pin?: OpenProjectBinding | null): Promise<{ owner: string; name: string } | null> => {
       if (pin) {
@@ -13622,6 +13774,14 @@ const adeBridge = {
         throw new Error("Jira needs a connected ADE runtime.");
       }),
   },
+  // Contract C2 (shared/machineAddress.ts): an address for one machine of the
+  // account, by machine key. Never reads or changes the tab's machine.
+  machines: {
+    connect: (machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> =>
+      ipcRenderer.invoke(IPC.machinesConnect, { machineKey, connect: options?.connect !== false }),
+    addressFor: (machineKey: string): Promise<MachineAddress | null> =>
+      ipcRenderer.invoke(IPC.machinesAddressFor, { machineKey }),
+  },
   // Machine-owned ADE account (Clerk identity). Token-free surface only — the
   // raw bearer stays in the main process and is never exposed here.
   account: {
@@ -13750,6 +13910,15 @@ const adeBridge = {
       ipcRenderer.on(IPC.cloudLaneJobEvent, listener);
       return () => ipcRenderer.removeListener(IPC.cloudLaneJobEvent, listener);
     },
+    // Contract C3 (shared/laneComputer.ts): a lane follows its computer. Account level, by lane id.
+    laneComputer: (laneId: string): Promise<LaneComputer | null> => ipcRenderer.invoke(IPC.cloudLaneComputer, { laneId }),
+    followLane: (laneId: string, options?: { connect?: boolean }): Promise<LaneFollowResult> =>
+      ipcRenderer.invoke(IPC.cloudFollowLane, { laneId, connect: options?.connect !== false }),
+    onLaneMoved: (cb: (move: LaneMovedEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, move: LaneMovedEvent) => cb(move);
+      ipcRenderer.on(IPC.cloudLaneMoved, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudLaneMoved, listener);
+    },
     machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
       ipcRenderer.invoke(IPC.cloudMachineAction, args),
     getAgentLimits: (): Promise<CloudAgentLimits | null> => ipcRenderer.invoke(IPC.cloudGetAgentLimits),
@@ -13778,6 +13947,8 @@ const adeBridge = {
       read: (args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null> => ipcRenderer.invoke(IPC.cloudSavedChatsRead, args),
       delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
+    /** C4: account-level (the account's GitHub sign-in), so no pin. */
+    gitPreflight: (args: { originUrl: string }): Promise<CloudGitPreflight | null> => ipcRenderer.invoke(IPC.cloudGitPreflight, args),
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {

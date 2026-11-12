@@ -487,3 +487,61 @@ export async function setChatGoal(
     reportFailure("Set goal", session.id, error);
   }
 }
+
+/**
+ * Archive an agent CLI (Claude Code, Codex, …) on the machine that owns it,
+ * like a chat: one at its prompt stops and resumes later; one mid-turn
+ * finishes first. Settings › Archive brings it back.
+ */
+export async function archiveAgentCliSession(
+  session: Pick<TerminalSessionSummary, "id">,
+  pin?: OpenProjectBinding | null,
+): Promise<boolean> {
+  try {
+    await (pin
+      ? window.ade.agentChat.archive({ sessionId: session.id }, pin)
+      : window.ade.agentChat.archive({ sessionId: session.id }));
+    showToast({
+      id: `archive-cli:${session.id}`,
+      title: "CLI session archived",
+      message: "Restore it from Settings › Archive.",
+    });
+    return true;
+  } catch (error) {
+    reportFailure("Archive", session.id, error);
+    return false;
+  }
+}
+
+/**
+ * Hand off or fork an agent CLI into a new chat on the CLI's own machine, on
+ * the model the CLI ran. A fork copies the CLI's own conversation when ADE
+ * knows it; a handoff sends a brief (from the terminal's output when ADE
+ * cannot read the conversation). Opens the new chat.
+ */
+export async function handoffAgentCliSession(
+  session: Pick<TerminalSessionSummary, "id" | "laneId">,
+  mode: "brief" | "fork",
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const action = mode === "fork" ? "Fork into a chat" : "Hand off to a chat";
+  const toastId = `cli-handoff:${session.id}`;
+  showToast({ id: toastId, title: mode === "fork" ? "Forking into a chat…" : "Handing off to a chat…" });
+  try {
+    const args = { sourceSessionId: session.id, targetModelId: "", mode };
+    const result = pin ? await window.ade.agentChat.handoff(args, pin) : await window.ade.agentChat.handoff(args);
+    window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+      detail: { sessionId: result.session.id, laneId: result.session.laneId, ...(pin ? { binding: pin } : {}) },
+    }));
+    showToast({
+      id: toastId,
+      tone: "success",
+      title: mode === "fork" ? "Forked into a chat" : "Handed off to a chat",
+      message: result.cliContextSource === "terminal_output"
+        ? "ADE couldn't read the CLI's conversation, so the chat starts from its last terminal output."
+        : "The chat carries the CLI's conversation. The CLI is left as it was.",
+    });
+  } catch (error) {
+    reportFailure(action, session.id, error);
+  }
+}

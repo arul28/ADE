@@ -2,6 +2,7 @@ import type { PendingInputRequest } from "../../desktop/src/shared/types/chat";
 import { optionsForQuestion } from "../../desktop/src/shared/pendingInputAnswers";
 import { pendingInputIsAnswerable, pendingInputItemId } from "../../desktop/src/shared/pendingInputCommand";
 import { isChatToolType } from "../../desktop/src/shared/sessionSpawnNesting";
+import { isTrackedAgentCliToolType, type TerminalToolType } from "../../desktop/src/shared/types/sessions";
 import { buildDeeplink, parseDeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
 import {
   actionStep,
@@ -30,7 +31,8 @@ const MAX_DETAILED_CHATS = 12;
 const MAX_TEXT_CHARS = 600;
 const MAX_OPTIONS = 12;
 
-type ChatInboxKind = "question" | "approval" | "plan" | "ask";
+/** `terminal`: an agent CLI session waits on a key or a line in its terminal. */
+type ChatInboxKind = "question" | "approval" | "plan" | "ask" | "terminal";
 
 export type ChatInboxQuestion = {
   id: string;
@@ -79,12 +81,23 @@ function inboxKind(request: Pick<PendingInputRequest, "kind">): ChatInboxKind {
   return pendingInputIsAnswerable(request) ? "question" : "approval";
 }
 
-/** The Work rows that wait on the person: a card, or an `ade chat ask`. */
+function isAgentCliRow(row: JsonObject): boolean {
+  return !isChatToolType(asString(row.toolType))
+    && isTrackedAgentCliToolType((asString(row.toolType) ?? null) as TerminalToolType | null);
+}
+
+/**
+ * The Work rows that wait on the person: a chat's card or `ade chat ask`, or a
+ * live agent CLI session whose hand is raised (its own permission prompt, an
+ * agent's ask, a question on its screen).
+ */
 function waitingChats(values: JsonObject): JsonObject[] {
   return firstArray(unwrapActionEnvelope(values.sessions), ["sessions", "items"])
-    .filter((row) => isChatToolType(asString(row.toolType)) && !asString(row.archivedAt))
-    .filter((row) => Boolean(asString(row.pendingInputItemId) || asString(row.attentionRequestedAt)
-      || row.attentionSource === "provider_structured"))
+    .filter((row) => !asString(row.archivedAt))
+    .filter((row) => isChatToolType(asString(row.toolType))
+      ? Boolean(asString(row.pendingInputItemId) || asString(row.attentionRequestedAt)
+        || row.attentionSource === "provider_structured")
+      : isAgentCliRow(row) && asString(row.status) === "running" && Boolean(asString(row.attentionRequestedAt)))
     .sort((a, b) => sinceOf(b).localeCompare(sinceOf(a)));
 }
 
@@ -95,6 +108,7 @@ function sinceOf(row: JsonObject): string {
 /** Chats waiting on a card, in the order their `pending<i>` steps read them. */
 function chatsWithCards(values: JsonObject): JsonObject[] {
   return waitingChats(values)
+    .filter((row) => !isAgentCliRow(row))
     .filter((row) => asString(row.pendingInputItemId) || row.attentionSource === "provider_structured")
     .slice(0, MAX_DETAILED_CHATS);
 }
@@ -184,6 +198,25 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
     };
     const link = chatLink(sessionId, laneId, values);
     const since = asString(row.attentionRequestedAt) ?? asString(row.lastActivityAt);
+    if (isAgentCliRow(row)) {
+      // A CLI is answered in its terminal: a key for a menu, a line for a question.
+      const message = asString(row.attentionMessage);
+      items.push({
+        ...chat,
+        model: chat.model ?? asString(row.toolType),
+        kind: "terminal",
+        requestId: null,
+        text: message ? clip(message) : "The CLI session is waiting for you.",
+        since,
+        respond: [
+          `ade terminal read ${sessionId} --text`,
+          `ade terminal write --terminal ${sessionId} --data "<keys, e.g. 1 or y>"`,
+          `ade chat send ${sessionId} --text "<answer>"`,
+        ],
+        link,
+      });
+      continue;
+    }
     const index = detailed.indexOf(row);
     const listed = index >= 0 ? unwrapActionEnvelope(values[`pending${index}`]) : null;
     const requests = isRecord(listed) && listed.ok !== false
@@ -297,7 +330,8 @@ function formatChatInbox(value: unknown): string {
       item.model,
       ago(item.since),
     ].filter(Boolean).join(" · ");
-    lines.push("", heading, `  ${item.kind} · chat ${item.sessionId}${item.requestId ? ` · request ${item.requestId}` : ""}`);
+    const noun = item.kind === "terminal" ? "CLI session" : "chat";
+    lines.push("", heading, `  ${item.kind} · ${noun} ${item.sessionId}${item.requestId ? ` · request ${item.requestId}` : ""}`);
     lines.push(`  ${item.text}`);
     if (item.detail) lines.push(`  ${item.detail}`);
     (item.questions ?? []).forEach((question, index) => {

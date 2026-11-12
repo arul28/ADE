@@ -211,6 +211,12 @@ export type AccountVaultWrite = {
   refreshOwner?: string | null;
   /** When this machine made the write, on its clock; see `AccountWriteResult`. */
   writtenAt?: string;
+  /**
+   * The revision (an `updatedAt` the relay returned, or `absent`) this write
+   * replaces. A relay that knows revisions answers `stale` when the row moved
+   * on since; an older relay ignores it and writes as before.
+   */
+  ifRevision?: string;
 };
 
 export type AccountVaultPage = {

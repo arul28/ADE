@@ -30,6 +30,19 @@ import {
   SignInSuccess,
   type SignInStage,
 } from "../signInSheetParts";
+import { isCheckingCode, verifyingHintFor } from "../signInSheetFrame";
+
+type ClaudePassStage = SignInStage | "pick" | "reading" | "saving" | "succeeded" | "saved_here";
+
+/** The sheet's stage for each state of a Claude sign-in that is past running. */
+const CLAUDE_FLOW_STAGES: Partial<Record<NonNullable<CloudSignInStatus["claude"]>["state"], ClaudePassStage>> = {
+  verifying: "verifying",
+  saving: "saving",
+  mismatch: "mismatch",
+  succeeded: "succeeded",
+  saved_here: "saved_here",
+  failed: "failed",
+};
 
 /** How often the sheet reads the approve while it runs (the cloud sign-ins card's own rate). */
 const APPROVE_POLL_MS = 1_500;
@@ -203,18 +216,12 @@ export function ClaudePassSignInSheet({
   // ── What the sheet shows ──
   const flow = joined ? claude : null;
   const expected = flow?.forEmail ?? lastArgsRef.current.forEmail ?? null;
-  const stage: SignInStage | "pick" | "reading" | "saving" | "succeeded" | "saved_here" =
-    starting ? "starting"
+  const stage: ClaudePassStage = starting ? "starting"
     : !flow
       ? (status ? (needsPick ? "pick" : error ? "failed" : "starting") : "reading")
-      : flow.state === "running" ? (flow.url || flow.awaitingCode ? "waiting" : "starting")
-        : flow.state === "verifying" ? "verifying"
-          : flow.state === "saving" ? "saving"
-            : flow.state === "mismatch" ? "mismatch"
-              : flow.state === "succeeded" ? "succeeded"
-                : flow.state === "saved_here" ? "saved_here"
-                  : flow.state === "failed" ? "failed"
-                    : "starting";
+      : flow.state === "running"
+        ? (isCheckingCode(flow) ? "verifying" : flow.url || flow.awaitingCode ? "waiting" : "starting")
+        : CLAUDE_FLOW_STAGES[flow.state] ?? "starting";
   const running = stage === "starting" || stage === "waiting" || stage === "verifying" || stage === "saving";
   const title = request.renewKey ? "Renew your Claude pass" : "Sign in to Claude";
   const closeLabel = "Close Claude sign-in";
@@ -262,7 +269,7 @@ export function ClaudePassSignInSheet({
       closeOnScrimClick={!running && !waitingOnPerson}
       closeLabel={closeLabel}
       onClose={close}
-      footerStatus={stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? "Checking the account…" : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
+      footerStatus={stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? (verifyingHintFor(flow) ?? "Checking the account…") : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
       actions={actions}
       testId="claude-pass-sign-in"
     >

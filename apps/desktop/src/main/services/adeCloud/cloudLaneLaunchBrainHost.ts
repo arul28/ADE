@@ -24,6 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { CloudLaneLaunchStatus } from "../../../shared/cloudLaneLaunch";
 import type {
   ChatLaunchArgs,
@@ -171,6 +172,8 @@ export function createCloudLaneLaunchBrainHost(deps: {
   onComputerCreated?: () => void;
   /** How each launch ends, one coarse outcome (cloudLaneAnalytics.ts). */
   analytics?: CloudLaneAnalyticsCapture;
+  /** C4: can a new cloud computer clone the repository (`cloudGitPreflight`)? Unset: no check. */
+  gitPreflight?: (originUrl: string) => Promise<CloudGitPreflight>;
 }): CloudLaneLaunchBrainHost {
   const { logger } = deps;
   const countOutcome = cloudLaneLaunchOutcomes(deps.analytics, "api");
@@ -237,6 +240,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
     },
     removeAccountMachine: deps.base.removeAccountMachine,
     ...(deps.onComputerCreated ? { onComputerCreated: deps.onComputerCreated } : {}),
+    ...(deps.gitPreflight ? { gitPreflight: deps.gitPreflight } : {}),
     onApprovalLink: (launchId, url) => {
       approvalLinks.set(launchId, url);
       const name = service.facts(launchId)?.computerName ?? "the new computer";

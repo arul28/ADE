@@ -1531,6 +1531,21 @@ Mac Studio against a private test repo, 2026-11-09:
 | `#` references for a repo: GraphQL requests | 1 per repo per 2 minutes, however many writers type | not set yet; needs approval |
 | Opening a PR with task boxes when the viewer is not its author | 1 permission read, shared with the mention cache; 0 otherwise | not set yet; needs approval |
 
+Account PR list read straight from GitHub (`useAccountGithubPulls`, the
+direct client with the account's GitHub App sign-in), 2026-11-11. No screen
+draws it yet, so this is the request budget only: the store driven by a
+virtual clock for one hour against a local fake GitHub that answers ETags
+like GitHub (scratch harness, not committed). Not the baseline machine.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| Visible, list unchanged, one page (40 PRs), two components on it | 61 requests per hour, 1 counts (60 are `304`) | not set yet; needs approval |
+| Visible, list unchanged, three pages (120 PRs) | 180 requests per hour, 0 count | not set yet; needs approval |
+| Visible, three pages, a change every 10 minutes | 180 requests per hour, 18 count | not set yet; needs approval |
+| Window hidden | 0 requests and no timer; one read when it shows again | 0 |
+| App not installed on the owner, visible | 14 requests per hour (a retry every 5 minutes, diagnosis cached 5 minutes) | not set yet; needs approval |
+| Requests in flight | at most 6 (the desktop shares the main-process gate) | 6 |
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio
@@ -2881,8 +2896,8 @@ average of the Mac was 7–17 in all runs, so read CPU as a range.
 
 | Row | Before (S2) | After (S3) | Ceiling |
 | --- | --- | --- | --- |
-| Idle, 2 machines, Work + Lanes open: runtime event IPC per minute, Work scene | 361 (local 79, remote 282) | 111 (local 79, remote 32) | 150 (proposed) |
-| Same, Lanes scene | 127 (local 80, remote 47) | 109 (local 79, remote 30) | 150 (proposed) |
+| Idle, 2 machines, Work + Lanes open: runtime event IPC per minute, Work scene | 361 (local 79, remote 282) | 111 (local 79, remote 32) | 150 |
+| Same, Lanes scene | 127 (local 80, remote 47) | 109 (local 79, remote 30) | 150 |
 | Processes, Work scene, CPU main / renderer | 0.7–0.8% / 1.3–2.0% | 0.5–1.3% / 1.0–1.9% | the Processes table |
 | Same, RSS main / renderer | 187–241 / 224–362 MB | 188–269 / 241–464 MB | the Processes table |
 | Processes, Lanes scene, CPU main / renderer | 0.5–1.2% / 2.9–3.2% | 0.4–1.5% / 2.6–4.3% | the Processes table |
@@ -2894,7 +2909,7 @@ The new row counts every `streamEvents` call (local and remote) in a
 active-binding pump at its 750 ms idle rate, which S3 does not change. The
 remote share was one pump for each listener (about 18 to 25 on the Work page).
 S3 runs one pump for each machine, so about 2 remote pumps poll at the 5 s
-idle rate. The ceiling of 150 is a proposal for the owner.
+idle rate. The owner approved the ceiling of 150 on 2026-11-12.
 
 CPU and RSS show no change outside the noise of the busy Mac. Two S3 samples
 on the same steps read renderer RSS 241–275 MB and 436–464 MB; the S2 samples

@@ -363,8 +363,10 @@ command (`ade shell start -- <command>`: without `--lane` it runs in the
 project's primary lane, then `ade terminal read`), look at PRs and CI
 (`prs_*`), check usage (`usage_limits`). The refusals below stay.
 
-`ade chat inbox [--json|--text]` lists every chat in the project that waits on
-the person. It composes `session.list` (the Work rows, with their needs-you
+`ade chat inbox [--json|--text]` lists every chat and live agent CLI session
+in the project that waits on the person. A CLI item has kind `terminal`, the
+CLI's own words (a permission or question it reported), and is answered in its
+terminal (`ade terminal write --terminal <id> --data …` or `ade chat send`). It composes `session.list` (the Work rows, with their needs-you
 signals) with `chat.listPendingInputs` for up to 12 chats. An item is one
 question, approval or plan, with its options inline and the `requestId` that
 `chat respond --item` takes, or an `ask` (from `ade chat ask`), which has no

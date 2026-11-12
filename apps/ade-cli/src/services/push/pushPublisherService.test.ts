@@ -2183,14 +2183,17 @@ describe("createPushPublisherService flush", () => {
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "waiting-input" });
     await vi.advanceTimersByTimeAsync(2_500);
     expect(titledAlerts()).toHaveLength(0);
-    // A CLI at its prompt is its resting state — it must not badge the icon.
+    // A CLI at its prompt is its resting state: it is published as stale,
+    // which never badges the icon.
+    const resting = publisher._debug.runs.get("cli-1");
+    expect(resting?.phase).toBe("stale");
+    expect(countAwaitingAttentionRuns([resting!])).toBe(0);
+    // A CLI whose hand is raised (a permission prompt, an ask) waits on the
+    // person and badges like a chat does.
     expect(countAwaitingAttentionRuns([
       run({ sessionId: "cli-1", kind: "cli", phase: "waiting_for_input" }),
-    ])).toBe(0);
-    expect(countAwaitingAttentionRuns([
       run({ sessionId: "s-1", kind: "chat", phase: "waiting_for_input" }),
-    ])).toBe(1);
-    expect(publisher._debug.runs.get("cli-1")?.phase).toBe("stale");
+    ])).toBe(2);
 
     publisher.dispose();
   });

@@ -113,6 +113,14 @@ async function cloneOnMachine(job: CopyJob): Promise<CopyOpenTarget> {
     const clone = window.ade?.remoteRuntime?.cloneProject;
     if (typeof clone !== "function") throw new Error("copy_unsupported: this ADE cannot clone on another machine.");
     const record = await clone(targetId, input);
+    if (record.githubSignInMissing) {
+      // The clone used this computer's GitHub sign-in once; nothing of it stays there.
+      showToast({
+        id: `project-copy-github:${job.key}`,
+        tone: "warning",
+        title: `${job.machine.name} has no GitHub sign-in of its own, so fetch and push there won't sign in until you connect GitHub on it.`,
+      });
+    }
     return {
       kind: "remote",
       targetId,

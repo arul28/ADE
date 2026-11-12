@@ -19,6 +19,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { AccountProjectView } from "../../shared/accountProject";
+import { captureError } from "../../shared/sentry/capture";
 import {
   buildRepositoryCopies,
   repositoryReaderAddress,
@@ -88,7 +89,12 @@ function readThisMachineKey(): Promise<string | null> {
       thisMachineKeyCache = identity?.machineKey?.trim() || null;
       return thisMachineKeyCache;
     })
-    .catch(() => null)
+    .catch((error: unknown) => {
+      // Without the key, this computer's account copies read as another
+      // computer's until the next read; say so instead of hiding it.
+      captureError(error, { fingerprint: ["repository-copies", "machine-identity-read"], level: "warning", handled: true });
+      return null;
+    })
     .finally(() => { thisMachineKeyRead = null; });
   return thisMachineKeyRead;
 }
@@ -106,19 +112,25 @@ function useThisComputer(active: boolean): ThisComputer | null {
   useEffect(() => {
     if (!active || web) return undefined;
     let cancelled = false;
+    let latestRead = 0;
     const listRecent = window.ade?.project?.listRecent;
     const read = () => {
       void readThisMachineKey().then((key) => {
         if (!cancelled && key) setMachineKey(key);
       });
       if (typeof listRecent !== "function") return;
+      const readId = ++latestRead;
       void listRecent().then(
         (rows) => {
           // A local tab binding takes its git origin from this memory.
           rememberProjectOriginSummaries(rows, { replace: true });
-          if (!cancelled) setLocalProjects(rows);
+          // An older read that finishes last must not replace a newer list.
+          if (!cancelled && readId === latestRead) setLocalProjects(rows);
         },
-        () => undefined,
+        // The last list stays; the next focus reads again.
+        (error: unknown) => {
+          captureError(error, { fingerprint: ["repository-copies", "recent-projects-read"], level: "warning", handled: true });
+        },
       );
     };
     read();

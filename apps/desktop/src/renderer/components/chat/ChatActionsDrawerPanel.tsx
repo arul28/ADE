@@ -146,6 +146,7 @@ function DrawerSectionRegion({
 export function ChatActionsDrawerPanel({
   sections,
   footer,
+  emptyCopy = CHAT_ACTIONS_DRAWER_EMPTY_COPY,
 }: {
   sections: ReadonlyArray<ChatActionsDrawerSection | null | false | undefined>;
   /**
@@ -154,6 +155,8 @@ export function ChatActionsDrawerPanel({
    * null leaves no divider behind.
    */
   footer?: ReactNode;
+  /** The line shown when no section has anything. */
+  emptyCopy?: string;
 }) {
   const present = sections.filter((section): section is ChatActionsDrawerSection => Boolean(section));
   const [emptyKeys, setEmptyKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -194,7 +197,7 @@ export function ChatActionsDrawerPanel({
             data-testid="chat-actions-drawer-empty"
             className={cn("px-4 py-4 font-sans text-[12px] leading-5 text-fg/40", shown.length > 0 && "hidden")}
           >
-            {CHAT_ACTIONS_DRAWER_EMPTY_COPY}
+            {emptyCopy}
           </p>
         </div>
       </div>

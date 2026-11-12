@@ -385,9 +385,25 @@ export function createGithubStackStore(args: {
    * True when writing `decoded` would change what readers see: the stack
    * itself, or one of its PRs still filed under another stack.
    */
+  /** One stored stack and its entries, without reading the rest of the repository. */
+  const readStoredStack = (repo: GitHubRepoRef, stackNumber: number): GitHubPrStack | null => {
+    const params = [projectId, repo.owner, repo.name, stackNumber];
+    const where = `where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_stack_number = ?`;
+    const row = db.get<GitHubPrStackRow>(`select * from github_pr_stacks ${where} limit 1`, params);
+    if (!row) return null;
+    const entries = db.all<GitHubPrStackEntryRow>(
+      `select * from github_pr_stack_entries ${where} order by position asc`,
+      params,
+    );
+    return stackFromRows(row, entries);
+  };
+
   const decodedStackChanges = (repo: GitHubRepoRef, decoded: DecodedGithubStack): boolean => {
     const stackNumber = Number(decoded.row.github_stack_number);
-    const stored = list(repo).find((stack) => stack.number === stackNumber);
+    const stored = readStoredStack(repo, stackNumber);
     if (!stored) return true;
     if (stackSignature(stored) !== stackSignature(stackFromRows(decoded.row, decoded.entries))) return true;
     if (decoded.entries.length === 0) return false;

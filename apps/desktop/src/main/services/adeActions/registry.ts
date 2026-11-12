@@ -255,7 +255,7 @@ import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { resolveSmartLinkImage } from "../chat/smartLinkPreviewService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
 import { removeProviderAccount, signOutProviderAccount } from "../providerAccounts/signOutProviderAccount";
@@ -266,6 +266,7 @@ import {
 } from "../sessions/sessionLifecycleSettings";
 import {
   getSessionWithChatProjection,
+  isChatToolType,
   listSessionsWithChatProjection,
 } from "../sessions/chatSessionProjection";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
@@ -275,6 +276,7 @@ import {
   captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  captureGhAccountSharingAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
@@ -312,6 +314,7 @@ import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
+import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
@@ -326,7 +329,8 @@ import {
   hasCloudLaneLaunchRecords,
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
+import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
+import { approveInHeadlessChromium, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
@@ -406,10 +410,10 @@ function withoutHostOnlyChatMetadata(
 type AutomationsDomainService = {
   list(): AutomationRuleSummary[];
   get(args: { id: string }): AutomationRule | null;
-  saveRule(args: AutomationSaveDraftRequest): AutomationSaveDraftResult;
+  saveRule(args: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult>;
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
-  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null }): AutomationRuleSummary[];
+  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null; cloud?: boolean }): Promise<AutomationRuleSummary[]>;
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
   planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
   runTest(args: AutomationTestRequest): Promise<AutomationRun>;
@@ -449,6 +453,11 @@ function requireWebhooks(runtime: AdeRuntime) {
   return runtime.automationIngressService.webhooks;
 }
 
+/** ADE Cloud as a rule's home needs the account to have it: refused here, as the editor hides the choice. */
+async function requireAdeCloudHome(runtime: AdeRuntime): Promise<void> {
+  if (!(await cloudAccessEnabled(cloudAccessDeps(runtime)))) throw new Error(ADE_CLOUD_HOME_UNAVAILABLE);
+}
+
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
   const automationService = runtime.automationService;
   const plannerService = runtime.automationPlannerService;
@@ -461,10 +470,16 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       if (!trimmed) return null;
       return projectConfigService.get().effective.automations.find((r) => r.id === trimmed) ?? null;
     },
-    saveRule: (args) => plannerService.saveDraft(args),
+    saveRule: async (args) => {
+      if (args?.draft?.home === "ade-cloud") await requireAdeCloudHome(runtime);
+      return plannerService.saveDraft(args);
+    },
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
-    setRunOn: (args) => automationService.setRunOn(args),
+    setRunOn: async (args) => {
+      if (args?.cloud) await requireAdeCloudHome(runtime);
+      return automationService.setRunOn(args);
+    },
     triggerManually: (args) => automationService.triggerManually(args),
     planTest: (args) => automationService.planTest(args),
     runTest: async (args) => {
@@ -650,6 +665,10 @@ const ADE_MCP_ACCOUNT_ROWS_REFUSED =
  * MCP service reads and writes them in-process (remoteMcpShared.ts), never
  * through this domain.
  */
+function vaultWriteWireAnswer(answer: "queued" | "stale" | "refused"): boolean | "stale" {
+  return answer === "stale" ? "stale" : answer === "queued";
+}
+
 function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueService | null {
   const store = runtime.accountVaultStore;
   if (!store) return null;
@@ -663,13 +682,15 @@ function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueSe
       guard(args[1]);
       return store.get(...args);
     },
-    set: (...args: Parameters<Store["set"]>) => {
+    // `true`, `false` (refused), or `"stale"` when the write named a revision
+    // the item no longer has; the desktop bridge reads all three.
+    set: (...args: Parameters<Store["trySet"]>) => {
       guard(args[1]);
-      return store.set(...args);
+      return vaultWriteWireAnswer(store.trySet(...args));
     },
-    remove: (...args: Parameters<Store["remove"]>) => {
+    remove: (...args: Parameters<Store["tryRemove"]>) => {
       guard(args[1]);
-      return store.remove(...args);
+      return vaultWriteWireAnswer(store.tryRemove(...args));
     },
     sync: (...args: Parameters<Store["sync"]>) => store.sync(...args),
     pendingKeys: (...args: Parameters<Store["pendingKeys"]>) => {
@@ -1028,6 +1049,25 @@ function readSendText(record: Record<string, unknown>): string {
   return requireNonEmptyString(record.text, "text");
 }
 
+/**
+ * Refuse a scheduled send aimed at a plain shell while the person is still
+ * there to pick another target. Delivery refuses it too (`blocked`), but only
+ * at fire time, when nobody is watching. Checked only when the row is known
+ * here: a target on another machine is judged by that machine at delivery.
+ */
+function assertDraftTargetHasAnAgent(runtime: AdeRuntime, schedule: unknown): void {
+  if (!schedule || typeof schedule !== "object") return;
+  const { targetKind, targetSessionId } = schedule as { targetKind?: unknown; targetSessionId?: unknown };
+  if (targetKind !== "existing" || typeof targetSessionId !== "string" || !targetSessionId.trim()) return;
+  const row = runtime.sessionService?.get(targetSessionId.trim());
+  if (!row || isChatToolType(row.toolType)) return;
+  if (row.tracked && isTrackedAgentCliToolType(row.toolType)) return;
+  throw new AdeExpectedError(
+    "A scheduled send can go only to a chat or an agent CLI session; this one is a plain terminal.",
+    "user",
+  );
+}
+
 function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const agentChatService = runtime.agentChatService;
   if (!agentChatService) return null;
@@ -1261,6 +1301,26 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         text,
       } as never);
     },
+    // A person's text for a running agent CLI (the Work input box): typed at
+    // its prompt only while the prompt is free; `deferred` means nothing was
+    // typed and the box keeps it queued.
+    typeIntoCli: async (args?: unknown) => {
+      const { inputOrigin, ...record } = readObjectActionArg(args, "chat.typeIntoCli");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const text = requireNonEmptyString(record.text, "text");
+      if (typeof agentChatService.typeIntoAgentCliWhenFree !== "function") {
+        throw new Error("Typing into a CLI session is not available in this runtime.");
+      }
+      noteSessionInputOrigin(sessionId, inputOrigin);
+      return agentChatService.typeIntoAgentCliWhenFree({
+        sessionId,
+        text,
+        holdUntilFree: record.holdUntilFree === true,
+        ...(typeof record.clientMessageId === "string" && record.clientMessageId.trim()
+          ? { clientMessageId: record.clientMessageId.trim().slice(0, 128) }
+          : {}),
+      });
+    },
     steer: async (args?: unknown) => {
       const { inputOrigin, ...record } = readObjectActionArg(args, "chat.steer");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
@@ -1290,6 +1350,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     createDraft: (args?: DraftCreateArgs) => {
       const record = readObjectActionArg(args, "chat.createDraft");
+      assertDraftTargetHasAnAgent(runtime, record.schedule);
       // The service owns validation for both text and attachment-only drafts.
       // Keeping the full object intact is essential on the daemon path: this is
       // the path every runtime-backed desktop uses.
@@ -1308,6 +1369,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     updateDraft: (args?: DraftUpdateArgs) => {
       const record = readObjectActionArg(args, "chat.updateDraft");
+      assertDraftTargetHasAnAgent(runtime, record.schedule);
       const updated = updateDraft(runtime.db, record);
       agentChatService.refreshDraftScheduler?.();
       return updated;
@@ -1509,6 +1571,16 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       return agentChatService.continueUsageLimitOnAlternate({
         sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
       });
+    };
+  }
+  if (typeof base.updateSession === "function") {
+    // A tracked agent CLI answers `ade chat update` too (title, pin, and a
+    // relaunch for a new model, effort or permission mode); a chat goes on to
+    // the chat service's own update.
+    service.updateSession = async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.updateSession");
+      const cli = await agentChatService.updateAgentCliSession?.(record as never);
+      return cli ?? await agentChatService.updateSession(record as never);
     };
   }
   if (typeof base.switchAccount === "function") {
@@ -2035,6 +2107,24 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId, value };
     },
+    /**
+     * A tracked CLI's own turn signal (a Claude hook, run as
+     * `ade __ade-cli-turn-hook`). It goes to the runtime that owns the
+     * terminal, which reads it as working / done / needs you
+     * (pty/cliTurnSignals.ts). Unknown sessions answer `ok: false` instead of
+     * failing: the hook runs after the terminal may already be gone.
+     */
+    reportCliTurnSignal: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.reportCliTurnSignal");
+      const sessionId = requireCallerSessionId(record.sessionId);
+      const provider = optionalNonEmptyString(record.provider) ?? "";
+      const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+        ? record.payload as Record<string, unknown>
+        : {};
+      const token = optionalNonEmptyString(record.token) ?? null;
+      const accepted = runtime.ptyService?.reportCliTurnHookEvent?.({ sessionId, provider, payload, token }) ?? false;
+      return { ok: accepted, sessionId };
+    },
     // -----------------------------------------------------------------------
     // There is deliberately NO `settleSelfSession` / `unsettleSelfSession`
     // pair here any more (removed 2026-07). An agent used to be able to file
@@ -2179,10 +2269,11 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = typeof arg === "string"
         ? requireNonEmptyString(arg, "sessionId")
         : requireNonEmptyString(arg?.sessionId, "sessionId");
-      return deleteTerminalSessionWithRuntimeCleanup({
+      return deleteSessionRowWithRuntimeCleanup({
         sessionId,
         sessionService,
         ptyService: requireService(runtime.ptyService, "Terminal service not available."),
+        agentChatService: runtime.agentChatService ?? null,
       });
     },
     readTranscriptTail: (args?: ReadTranscriptTailArgs) => {
@@ -3557,6 +3648,13 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       githubService.clearToken();
       return githubService.getStatus();
     },
+    async setGhAccountSharing(args?: unknown) {
+      const enabled = asActionRecord(args).enabled === true;
+      await githubService.setGhAccountSharing({ enabled });
+      // Reached only after the vault accepted the change; a refusal throws above.
+      captureGhAccountSharingAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", enabled });
+      return githubService.getStatus();
+    },
   };
 }
 
@@ -4267,6 +4365,12 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
     analytics: runtime.productAnalyticsService ?? null,
+    // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
+    gitPreflight: (originUrl) => cloudGitPreflight({
+      vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
+        ? cloudVaultFromStore(runtime.accountVaultStore, key)
+        : null),
+    }, originUrl),
   });
   return cloudLaneLaunchHost;
 }
