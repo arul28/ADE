@@ -37,6 +37,7 @@ import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
 import { ProjectCopiesMenu } from "../projects/ProjectCopiesMenu";
 import { RemoveProjectDialog, type RemoveProjectResult } from "../projects/RemoveProjectDialog";
+import { REQUEST_REMOVE_PROJECT_EVENT, type RemoveProjectRequest } from "../projects/removeProjectRequest";
 import { repoCopyMayRemain } from "../projects/projectCopies";
 import { subscribeCopyJobReady } from "../projects/projectCopyJobs";
 import { useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
@@ -2091,6 +2092,7 @@ export function TopBar({
     addLocalCopyFromTab,
     removeTarget,
     openRemoveDialog,
+    openRemoveNoMachineDialog,
     closeRemoveDialog,
     handleCopiesMenuSwitch,
     openCopiesMenuFor,
@@ -2109,6 +2111,23 @@ export function TopBar({
     handleSwitchRemoteProject,
   });
 
+  // The Location page and a no-machine tab's page ask for the dialog here.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const request = (event as CustomEvent<RemoveProjectRequest>).detail;
+      if (!request) return;
+      if (request.kind === "no-machine") {
+        openRemoveNoMachineDialog({ id: request.id, displayName: request.displayName });
+        return;
+      }
+      const group = tabGroupsRef.current.find((entry) =>
+        entry.machines.some((machine) => machine.bindingKey === request.bindingKey));
+      if (group) openRemoveDialog(group.id, { currentBindingKey: request.bindingKey });
+    };
+    window.addEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
+    return () => window.removeEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
+  }, [openRemoveDialog, openRemoveNoMachineDialog]);
+
   /**
    * After a removal: the tab moves to another copy of the repository when
    * one remains (resolveProjectTabFallback), else it closes. A copy whose
@@ -2118,6 +2137,14 @@ export function TopBar({
    */
   const handleProjectCopiesRemoved = useCallback(
     async (groupId: string, recordScope: string | null, repoKey: string | null, result: RemoveProjectResult) => {
+      if (result.accountRemoved) {
+        // The account no longer lists it: its tab closes on every copy,
+        // including a tab with no computer online.
+        useAppStore.getState().closeNoMachineTab(groupId);
+        if (tabGroupsRef.current.some((entry) => entry.id === groupId)) {
+          await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        }
+      }
       const removed = new Set(result.removedBindingKeys);
       if (removed.size === 0) return;
       // This computer's recents: the main process already forgot its own

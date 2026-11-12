@@ -12,6 +12,8 @@ import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
+import { requestRemoveProject } from "./removeProjectRequest";
+import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
 function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
@@ -84,6 +86,10 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   };
 
   const canAddLocal = !webMode && copyRepoKey != null && !copies.some((copy) => copy.isThisMachine);
+  // Leaving the account needs the account project id and this computer's account call (desktop).
+  const canLeaveAccount = !webMode
+    && ACCOUNT_PROJECT_ID_PATTERN.test(tab.id)
+    && typeof window.ade?.project?.accountRemove === "function";
 
   return (
     <div className="flex h-full min-h-0 w-full items-center justify-center p-6">
@@ -149,6 +155,17 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
             >
               Close tab
             </button>
+            {canLeaveAccount ? (
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                data-tone="crit"
+                style={{ marginLeft: "auto" }}
+                onClick={() => requestRemoveProject({ kind: "no-machine", id: tab.id, displayName: tab.displayName })}
+              >
+                Remove from account…
+              </button>
+            ) : null}
           </div>
         </div>
       </section>
