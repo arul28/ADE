@@ -450,7 +450,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-table:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-400); border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 .adecd-tr {
   display: grid;
-  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) 64px minmax(0, 0.9fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) 64px minmax(0, 0.9fr) minmax(0, 1fr) 28px;
   align-items: center;
   gap: 12px;
   min-height: 40px;
@@ -686,3 +686,5 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 /* The same box in Settings › Account. */
 .adecd-acct-invite { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
 @container adecd (max-width: 700px) { .adecd-invite-body { grid-template-columns: 1fr; } }
+
+.adecd-row-menu { display: flex; justify-content: flex-end; }

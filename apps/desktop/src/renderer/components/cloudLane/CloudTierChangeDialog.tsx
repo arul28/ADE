@@ -38,7 +38,7 @@ export function CloudTierChangeDialog({
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       title={`Change the size of ${laneName}`}
-      size="md"
+      size="lg"
       actions={[]}
     >
       <CloudTierChangeCard

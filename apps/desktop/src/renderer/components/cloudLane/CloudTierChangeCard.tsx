@@ -5,6 +5,8 @@ import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/
 import { cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
+import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
+import "../settings/cloudDashboard/cloudDashboard.css";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { noticeTone } from "../ui/notice/noticeTones";
@@ -14,9 +16,9 @@ import "./cloudLane.css";
 
 /**
  * The one tier-change card: what changes, why, the new rate, what the hours
- * left mean at that size, and the wait. "Yes, when idle" starts once the
- * agent finishes its turn; "Do it now" stops the turn first; "Not now"
- * leaves the size as it is.
+ * left mean at that size, and the wait. "Change size" starts once the
+ * agent finishes its turn, or at once with "Stop the running turn and do it
+ * now" ticked; "Not now" leaves the size as it is.
  *
  * The same card serves a person's change (Settings › ADE Cloud, the chat's
  * ADE Cloud chip), with the four sizes to pick from, and an agent's request
@@ -82,6 +84,8 @@ export function CloudTierChangeCard({
   const tiers = useMemo(() => cloudTiers(cloudCatalogOf(account)), [account]);
   const [picked, setPicked] = useState<CloudTierId | null>(facts.toSizeId);
   const [busy, setBusy] = useState<CloudLaneTierTiming | null>(null);
+  // One action: by default the change starts once the agent finishes its turn.
+  const [stopTurn, setStopTurn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const from = tiers.find((tier) => tier.id === facts.fromSizeId) ?? null;
   const to = tiers.find((tier) => tier.id === picked) ?? null;
@@ -132,22 +136,17 @@ export function CloudTierChangeCard({
       )}
 
       {pickable ? (
-        <div className="adecl-tier-pick" role="radiogroup" aria-label="New size">
-          {tiers.map((tier) => (
-            <button
-              key={tier.id}
-              type="button"
-              role="radio"
-              aria-checked={tier.id === picked}
-              className="adecl-tier-opt"
-              onClick={() => setPicked(tier.id)}
-            >
-              <CloudSizeIcon tier={tier.id} size={20} />
-              <b>{tier.label}</b>
-              <span className="kit-num">{rateText(tier)}</span>
-              {tier.id === facts.fromSizeId ? <span className="adecl-tier-now">now</span> : null}
-            </button>
-          ))}
+        <div className="adecl-tier-cards">
+          <CloudSizeCards
+            tiers={tiers}
+            picked={picked}
+            onPick={setPicked}
+            leftMilli={(account as Partial<CloudAccountState> | null)?.hours?.leftMilli ?? 0}
+            extraHourCents={account?.extraHours?.available ? cloudCatalogOf(account).extraHourCents : null}
+            markId={facts.fromSizeId}
+            markLabel="Now"
+            ariaLabel="New size"
+          />
         </div>
       ) : null}
 
@@ -220,13 +219,15 @@ export function CloudTierChangeCard({
       {!available ? <p className="adecl-muted">{CLOUD_LANE_LIFE_UNAVAILABLE}</p> : null}
 
       <div className="adecl-tier-actions">
-        {changed ? <span className="adecl-muted adecl-tier-when">&quot;Yes, when idle&quot; starts when the agent finishes this turn.</span> : <span />}
+        {changed ? (
+          <label className="adecl-tier-now-check">
+            <input type="checkbox" checked={stopTurn} onChange={(event) => setStopTurn(event.target.checked)} />
+            <span>Stop the running turn and do it now</span>
+          </label>
+        ) : <span />}
         <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={busy != null} onClick={onNotNow}>Not now</button>
-        <button type="button" className="kit-btn" data-size="sm" disabled={!changed || !available || busy != null} onClick={() => void start("now")}>
-          {busy === "now" ? "Starting…" : "Do it now"}
-        </button>
-        <button type="button" className="kit-btn adecl-btn-sky" data-size="sm" disabled={!changed || !available || busy != null} onClick={() => void start("idle")}>
-          {busy === "idle" ? "Starting…" : "Yes, when idle"}
+        <button type="button" className="kit-btn adecl-btn-sky" data-size="sm" disabled={!changed || !available || busy != null} onClick={() => void start(stopTurn ? "now" : "idle")}>
+          {busy ? "Starting…" : move ? "Move it" : "Change size"}
         </button>
       </div>
     </div>

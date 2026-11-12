@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
   cloudAccountBanner,
@@ -20,6 +20,7 @@ import { formatAgo, ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
+import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { usageLeftLevel } from "../../usage/usageDesign";
@@ -274,17 +275,19 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
               onOpen={openInside}
               rowStatus={rowStatus}
               renderActions={(lane) => (
-                <LaneActions
-                  lane={lane}
-                  account={account}
-                  job={lane.key === selected?.key ? selectedJob : null}
-                  busy={busyKey === lane.key}
-                  onLookInside={() => openInside(lane.key)}
-                  onSize={() => setSizing(lane)}
-                  onFree={() => void freeLane(lane)}
-                  onDelete={() => void deleteLane(lane)}
-                />
+                <LaneActions lane={lane} account={account} job={lane.key === selected?.key ? selectedJob : null} />
               )}
+              menuActions={(lane) => {
+                const job = lane.instanceId ? cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.machine?.lane?.laneId ?? null }) : null;
+                return laneMenuActions(lane, {
+                  jobRunning: job != null && (job.phase === "waiting" || job.phase === "running"),
+                  busy: busyKey === lane.key,
+                  onLookInside: () => openInside(lane.key),
+                  onSize: () => setSizing(lane),
+                  onFree: () => void freeLane(lane),
+                  onDelete: () => void deleteLane(lane),
+                });
+              }}
             />
           )}
         </div>
@@ -464,6 +467,7 @@ function LaneTable({
   onOpen,
   rowStatus,
   renderActions,
+  menuActions,
 }: {
   lanes: readonly DashLane[];
   now: number;
@@ -472,7 +476,10 @@ function LaneTable({
   onOpen: (key: string) => void;
   /** A size change or delete under way, shown in the row's State cell in place of the computer's state. */
   rowStatus: (lane: DashLane) => RowStatus | null;
+  /** What shows under the open row: its job card and notices, or null. */
   renderActions: (lane: DashLane) => ReactNode;
+  /** The row's actions, behind its ⋯ button at the right end (B14-22). */
+  menuActions: (lane: DashLane) => MachineAction[];
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!lanes.length) return;
@@ -503,11 +510,13 @@ function LaneTable({
       onKeyDown={onKeyDown}
     >
       <div className="adecd-tr adecd-th" aria-hidden="true">
-        <span>Lane</span><span>Size</span><span>Disk</span><span>State</span><span>Last run</span>
+        <span>Lane</span><span>Size</span><span>Disk</span><span>State</span><span>Last run</span><span />
       </div>
       {lanes.map((lane) => {
         const open = lane.key === selectedKey;
         const status = rowStatus(lane);
+        const actions = menuActions(lane);
+        const below = open ? renderActions(lane) : null;
         return (
           <div key={lane.key} className="adecd-row-wrap" data-open={open || undefined} data-key={cssId(lane.key)}>
             <div
@@ -535,8 +544,12 @@ function LaneTable({
                 <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
               )}
               <span className="adecd-when">{lastRunText(lane, now)}</span>
+              {/* The menu opens without selecting the row. */}
+              <span className="adecd-row-menu" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+                {actions.length ? <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} /> : null}
+              </span>
             </div>
-            {open ? <div className="adecd-row-actions">{renderActions(lane)}</div> : null}
+            {open && below ? <div className="adecd-row-actions">{below}</div> : null}
           </div>
         );
       })}
@@ -544,50 +557,50 @@ function LaneTable({
   );
 }
 
+/** What shows under an open row: the lane's size-change job and the notices about it. Its actions are in the row's ⋯ menu. */
 function LaneActions({
   lane,
   account,
   job,
-  busy,
-  onLookInside,
-  onSize,
-  onFree,
-  onDelete,
 }: {
   lane: DashLane;
   account: CloudAccountState;
   job: ReturnType<typeof cloudLaneJobFor>;
+}) {
+  if (!job && !lane.without && !lane.noLane) return null;
+  return (
+    <>
+      {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
+      {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
+      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
+    </>
+  );
+}
+
+/** A lane row's actions for its ⋯ menu; the delete sits last, after a rule. */
+function laneMenuActions(lane: DashLane, args: {
+  jobRunning: boolean;
   busy: boolean;
   onLookInside: () => void;
   onSize: () => void;
   onFree: () => void;
   onDelete: () => void;
-}) {
+}): MachineAction[] {
+  if (!lane.instanceId) return [];
   const life = cloudLaneLifeAvailable();
-  const jobRunning = job != null && (job.phase === "waiting" || job.phase === "running");
-  return (
-    <>
-      {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
-      {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
-      {lane.instanceId ? (
-        <div className="adecd-actions">
-          <button type="button" className="kit-btn" data-size="sm" onClick={onLookInside}><MagnifyingGlass size={12} />What uses the disk</button>
-          {life && !lane.noLane ? (
-            <>
-              <button type="button" className="kit-btn" data-size="sm" disabled={busy || jobRunning} onClick={onSize}>Change size</button>
-              <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={onFree}>Keep lane, free its computer</button>
-            </>
-          ) : null}
-          {life ? (
-            <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busy} onClick={onDelete}>
-              <Trash size={12} />{lane.noLane ? "Delete computer" : "Delete lane"}
-            </button>
-          ) : null}
-          {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
-        </div>
-      ) : null}
-    </>
-  );
+  const actions: MachineAction[] = [
+    { key: "disk", label: "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside },
+  ];
+  if (life && !lane.noLane) {
+    actions.push(
+      { key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning },
+      { key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy },
+    );
+  }
+  if (life) {
+    actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });
+  }
+  return actions;
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");

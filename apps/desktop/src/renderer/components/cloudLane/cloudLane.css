@@ -216,3 +216,7 @@
 .adecl-cx-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--adec-asleep); }
 .adecl-cx-state[data-awake="true"] i { background: var(--adec-lamp); box-shadow: 0 0 6px color-mix(in srgb, var(--adec-lamp) 60%, transparent); }
 .adecl-cx-more { padding: 0 0 6px 32px; }
+
+/* The change-size dialog uses the ADE Cloud page's size cards (B14-23). */
+.adecl-tier-cards { margin-bottom: 12px; }
+.adecl-tier-now-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); margin-right: auto; }
