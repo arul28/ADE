@@ -66,9 +66,10 @@ export function useAttachedTerminalShells(
       return undefined;
     }
     const terminal = window.ade?.terminal;
-    if (!terminal?.list) return undefined;
+    const pin = pinRef.current;
+    if (!terminal?.list || !pin) return undefined;
     let cancelled = false;
-    void terminal.list({ chatSessionId: owner, limit: 20 }, pinRef.current)
+    void terminal.list({ chatSessionId: owner, limit: 20 }, pin)
       .then((sessions) => {
         if (cancelled) return;
         setTitles(

@@ -237,6 +237,7 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { requireChatPin } from "./chatMachinePin";
 import { ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
@@ -5791,6 +5792,10 @@ export function AgentChatPane({
     // machine. The probe used to be skipped for a remote project entirely,
     // which left the toggle permanently hidden — and hiding the toggle is what
     // kept the panel from ever opening to un-skip it.
+    if (!chatRuntimePin) {
+      setAppControlAvailable(false);
+      return;
+    }
     let cancelled = false;
     void api.getStatus({ laneId: laneId ?? null }, chatRuntimePin)
       .then((status) => {
@@ -8982,7 +8987,7 @@ export function AgentChatPane({
       try {
         const snapshot = await window.ade.computerUse.getOwnerSnapshot({
           owner: { kind: "chat_session", id: sessionId },
-        }, chatRuntimePinRef.current);
+        }, requireChatPin(chatRuntimePinRef.current));
         // An older desktop host can answer null; treat it as a failed read
         // so the pane never stores (and renders) an empty snapshot.
         if (!snapshot) throw new Error("No computer-use snapshot for this chat.");
@@ -11194,7 +11199,8 @@ export function AgentChatPane({
   }, [isPersonalPane, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
-    if (!isTileActive) return undefined;
+    const eventPin = chatRuntimePinRef.current;
+    if (!isTileActive || !eventPin) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       const belongsToSelectedChat = event.owner?.kind === "chat_session"
@@ -11223,7 +11229,7 @@ export function AgentChatPane({
       } else if (belongsToSelectedChat) {
         void refreshComputerUseSnapshot(selectedSessionId, { force: true });
       }
-    }, chatRuntimePinRef.current);
+    }, eventPin);
     return unsubscribe;
     // The pin is read through the ref, but its key must re-subscribe: a pin
     // that resolves after mount would otherwise leave the drawer on the bound

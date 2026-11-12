@@ -76,7 +76,7 @@ export function closeWorkToolForReal(
     }
     case "app-control": {
       const appControl = window.ade?.appControl;
-      if (!appControl?.stop) return;
+      if (!appControl?.stop || !pin) return;
       // The lane's session: App Control keeps one per lane, and a stop that
       // names no lane is refused.
       void appControl.stop({ laneId, chatSessionId }, pin)

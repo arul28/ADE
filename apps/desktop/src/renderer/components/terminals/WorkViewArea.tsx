@@ -66,6 +66,7 @@ import type {
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { isImeComposing } from "../../lib/imeComposition";
+import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -672,7 +673,7 @@ function ClosedCliSessionSurface({
     const args = { terminalId: session.id, maxBytes: 160_000 };
     void (runtimePin
       ? window.ade.terminal.preview(args, runtimePin)
-      : window.ade.terminal.preview(args))
+      : Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE)))
       .then((result) => {
         if (!cancelled) setPreview(result);
       })

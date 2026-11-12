@@ -282,7 +282,7 @@ function showTerminal(
  * host, the hosted web), the raw output, cleaned by `shellRunResultMessage`.
  */
 async function readRunOutput(terminalId: string, pin: OpenProjectBinding | null): Promise<string> {
-  const preview = await window.ade.terminal.preview({ terminalId }, pin).catch(() => null);
+  const preview = pin ? await window.ade.terminal.preview({ terminalId }, pin).catch(() => null) : null;
   const snapshot = preview?.snapshot;
   if (snapshot?.serialized) {
     const text = await terminalSnapshotText(snapshot).catch(() => null);

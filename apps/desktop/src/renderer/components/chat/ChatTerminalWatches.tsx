@@ -5,6 +5,7 @@ import type { OpenProjectBinding, TerminalSessionChangedEvent } from "../../../s
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { showToast } from "../app/toast/toastStore";
+import { requireChatPin, withChatPin } from "./chatMachinePin";
 
 /**
  * A chat's live terminal watches (`ade terminal watch`), read from the chat's
@@ -49,7 +50,7 @@ export function useChatTerminalWatches(
     const load = async () => {
       const request = ++latest;
       try {
-        const rows = await list({ chatSessionId: chatId }, pinRef.current);
+        const rows = await list({ chatSessionId: chatId }, requireChatPin(pinRef.current));
         if (cancelled || request !== latest) return;
         setWatches(Array.isArray(rows) ? rows.filter((row) => row.status === "active") : []);
         setLoadError(false);
@@ -83,7 +84,7 @@ export function useChatTerminalWatches(
     const scope = scopeRef.current;
     // Optimistic: the row goes now; the brain's change event confirms it.
     setWatches((current) => current.filter((row) => row.watchId !== watch.watchId));
-    void unwatch({ watchId: watch.watchId, chatSessionId: watch.chatSessionId }, pinRef.current).catch((error: unknown) => {
+    void withChatPin(pinRef.current, (pin) => unwatch({ watchId: watch.watchId, chatSessionId: watch.chatSessionId }, pin)).catch((error: unknown) => {
       console.error("[ChatTerminalWatches] stop failed", { watchId: watch.watchId, error });
       // It may still be waking the chat: put the row back so Stop can be tried
       // again, unless another chat is on screen by now.

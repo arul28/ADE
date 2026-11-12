@@ -254,7 +254,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
   if (isReadOnlyWorkTool("browser", toolContext)) {
     return (
       <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="browser" laneId={laneId} />
+        <WorkToolReadOnlyView tool="browser" laneId={laneId} runtimePin={runtimePin} />
       </div>
     );
   }
@@ -784,7 +784,7 @@ function WorkAppControlTool({
   if (isReadOnlyWorkTool("app-control", toolContext)) {
     return (
       <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="app-control" laneId={laneId} />
+        <WorkToolReadOnlyView tool="app-control" laneId={laneId} runtimePin={runtimePin} />
       </div>
     );
   }
@@ -850,7 +850,7 @@ function WorkMacDesktopTool({
   if (isReadOnlyWorkTool("mac-desktop", toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
     return (
       <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />
+        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} runtimePin={runtimePin} />
       </div>
     );
   }
@@ -878,7 +878,7 @@ function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
   if (isReadOnlyWorkTool("windows-desktop", toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
     return (
       <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} />
+        <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} runtimePin={runtimePin} />
       </div>
     );
   }

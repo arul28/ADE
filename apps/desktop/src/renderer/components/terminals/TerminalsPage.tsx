@@ -1303,6 +1303,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (!workSidebarVisible) setWorkToolsMaximized(false);
   }, [workSidebarVisible]);
 
+  // The tools pane publishes its tool to the lane's machine, also for a draft
+  // with no session yet: the session's machine, else the lane's.
+  const workToolsLanePin = useMemo(
+    () => activeWorkSessionRuntimePin ?? (activeLaneId ? resolveSessionRuntimePin({ laneId: activeLaneId }) : null),
+    [activeLaneId, activeWorkSessionRuntimePin, resolveSessionRuntimePin],
+  );
   // Which tool the tools pane shows is per LANE, so it hangs off the lane this
   // page has resolved rather than off the project-wide work view state.
   const {
@@ -1314,7 +1320,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(
     activeLaneId,
-    activeWorkSessionRuntimePin,
+    workToolsLanePin,
     // The chat the pane's tools are attached to, so closing a tab can stop the
     // tool with the right owner.
     contextTarget?.kind === "chat" ? contextTarget.sessionId : null,

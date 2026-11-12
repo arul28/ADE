@@ -83,6 +83,7 @@ import {
 } from "./appControlTrace";
 import { isImeComposing } from "../../lib/imeComposition";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { NO_CHAT_MACHINE_MESSAGE, requireChatPin } from "./chatMachinePin";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -351,6 +352,8 @@ export function ChatAppControlPanel({
   // cross-machine merge, and the panel is keyed on the pin at its render sites.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
+  // The event feed follows the chat's machine: a new machine is a new feed.
+  const runtimePinKey = runtimePin?.key ?? null;
   /**
    * Which lane every call acts on. App Control keeps one session per lane, and
    * a call that names no lane is refused, so the pane names its lane — or, in
@@ -596,8 +599,9 @@ export function ChatAppControlPanel({
           scrollRafRef.current = null;
           const next = scrollPendingRef.current;
           scrollPendingRef.current = null;
-          if (!next || controlsDisabled) return;
-          void window.ade.appControl.scroll({ ...laneArgsRef.current, ...next }, runtimePinRef.current).catch(() => {});
+          const pin = runtimePinRef.current;
+          if (!next || controlsDisabled || !pin) return;
+          void window.ade.appControl.scroll({ ...laneArgsRef.current, ...next }, pin).catch(() => {});
         });
       }
     };
@@ -661,14 +665,14 @@ export function ChatAppControlPanel({
   }, [mode]);
 
   const refreshStatus = useCallback(async () => {
-    const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
+    const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, requireChatPin(runtimePinRef.current));
     setStatus(nextStatus);
     return nextStatus;
   }, []);
 
   const refreshTargets = useCallback(async () => {
     try {
-      const list = await window.ade.appControl.listTargets(laneArgsRef.current, runtimePinRef.current);
+      const list = await window.ade.appControl.listTargets(laneArgsRef.current, requireChatPin(runtimePinRef.current));
       setTargets(list);
       // Clear the optimistic pick once the backend confirms it's active —
       // OR if the picked target disappeared entirely (window closed mid-attach),
@@ -685,7 +689,7 @@ export function ChatAppControlPanel({
   }, []);
 
   const refreshSnapshot = useCallback(async () => {
-    const nextSnapshot = await window.ade.appControl.getSnapshot({ ...laneArgsRef.current, projectRoot }, runtimePinRef.current);
+    const nextSnapshot = await window.ade.appControl.getSnapshot({ ...laneArgsRef.current, projectRoot }, requireChatPin(runtimePinRef.current));
     setSnapshot(nextSnapshot);
     setSelectedElement(nextSnapshot.hitElement);
     return nextSnapshot;
@@ -696,7 +700,7 @@ export function ChatAppControlPanel({
   // signal to re-read. No timer — an idle app costs nothing.
   const refreshTrace = useCallback(async () => {
     try {
-      const result = await window.ade.appControl.getTrace({ ...laneArgsRef.current, limit: 20 }, runtimePinRef.current);
+      const result = await window.ade.appControl.getTrace({ ...laneArgsRef.current, limit: 20 }, requireChatPin(runtimePinRef.current));
       setTraceEntries(result.entries);
       const latest = result.entries[result.entries.length - 1] ?? null;
       if (!latest || latest.id === cursorTraceIdRef.current) return;
@@ -745,7 +749,8 @@ export function ChatAppControlPanel({
         void refreshSnapshot().catch(() => {});
       }
     }).catch(() => {});
-    const unsubscribe = window.ade.appControl.onEvent((event) => {
+    const eventPin = runtimePinRef.current;
+    const unsubscribe = !eventPin ? () => {} : window.ade.appControl.onEvent((event) => {
       // Another lane's app is not this pane's. Before the first status names
       // the lane of a lane-less chat, only its own chat's session counts.
       const followed = eventLaneIdRef.current;
@@ -800,7 +805,7 @@ export function ChatAppControlPanel({
       if (event.type === "frame") {
         onLiveFrame(event.frame, activeTargetIdRef.current);
       }
-    }, runtimePinRef.current);
+    }, eventPin);
     return () => {
       cancelled = true;
       unsubscribe();
@@ -811,7 +816,7 @@ export function ChatAppControlPanel({
       scrollPendingRef.current = null;
     };
     // `laneId`: a different lane is a different session, read afresh.
-  }, [clearLiveFrame, laneId, onLiveFrame, refreshSnapshot, refreshStatus, refreshTrace, resetLiveFrame]);
+  }, [clearLiveFrame, laneId, onLiveFrame, refreshSnapshot, refreshStatus, refreshTrace, resetLiveFrame, runtimePinKey]);
 
   // Refresh the list of CDP targets while the session is connected so the
   // user can switch to a freshly-opened window without restarting App Control.
@@ -835,9 +840,10 @@ export function ChatAppControlPanel({
   // Driver capabilities are static per machine, so this reads once per session
   // rather than on a timer.
   useEffect(() => {
-    if (!sessionConnected) return undefined;
+    const pin = runtimePinRef.current;
+    if (!sessionConnected || !pin) return undefined;
     let cancelled = false;
-    void window.ade.appControl.listDrivers(laneArgsRef.current, runtimePinRef.current)
+    void window.ade.appControl.listDrivers(laneArgsRef.current, pin)
       .then((result) => {
         if (!cancelled) setDrivers(result);
       })
@@ -894,9 +900,9 @@ export function ChatAppControlPanel({
           cwd: cwd.length ? cwd : null,
           chatSessionId: sessionId,
           force: true,
-        }, runtimePinRef.current);
+        }, requireChatPin(runtimePinRef.current));
         rememberLaunch(command, cwd.length ? cwd : null);
-        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
+        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, requireChatPin(runtimePinRef.current));
         setStatus({ ...nextStatus, activeSession: launched });
         setMode("control");
         if (launched.terminalSessionId && launched.terminalPtyId) {
@@ -933,10 +939,10 @@ export function ChatAppControlPanel({
           // minted against the previous document stop resolving. Fall back to
           // the older attach path when it is not reachable.
           try {
-            const result = await window.ade.appControl.switchWindow({ ...laneArgsRef.current, targetId }, runtimePinRef.current);
+            const result = await window.ade.appControl.switchWindow({ ...laneArgsRef.current, targetId }, requireChatPin(runtimePinRef.current));
             setTargets(result.windows);
           } catch {
-            const session = await window.ade.appControl.attachToTarget({ ...laneArgsRef.current, targetId }, runtimePinRef.current);
+            const session = await window.ade.appControl.attachToTarget({ ...laneArgsRef.current, targetId }, requireChatPin(runtimePinRef.current));
             setStatus((current) => (current ? { ...current, activeSession: session } : current));
             await refreshTargets();
           }
@@ -967,8 +973,8 @@ export function ChatAppControlPanel({
           cdpPort: port,
           chatSessionId: sessionId,
           force: true,
-        }, runtimePinRef.current);
-        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
+        }, requireChatPin(runtimePinRef.current));
+        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, requireChatPin(runtimePinRef.current));
         setStatus({ ...nextStatus, activeSession: connected });
         setMode("control");
         await refreshSnapshot();
@@ -989,7 +995,7 @@ export function ChatAppControlPanel({
             cdpPort: Number(port),
             chatSessionId: sessionId,
             force: true,
-          }, runtimePinRef.current);
+          }, requireChatPin(runtimePinRef.current));
           setStatus((current) => (current ? { ...current, activeSession: connected } : current));
         }
         await refreshStatus();
@@ -1005,8 +1011,8 @@ export function ChatAppControlPanel({
         setConfirmStop(false);
         const stopping = activeSessionRef.current;
         const quits = appControlStopQuitsApp(stopping);
-        await window.ade.appControl.stop({ ...laneArgsRef.current, chatSessionId: sessionIdRef.current }, runtimePinRef.current);
-        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, runtimePinRef.current);
+        await window.ade.appControl.stop({ ...laneArgsRef.current, chatSessionId: sessionIdRef.current }, requireChatPin(runtimePinRef.current));
+        const nextStatus = await window.ade.appControl.getStatus(laneArgsRef.current, requireChatPin(runtimePinRef.current));
         setStatus(nextStatus);
         setSnapshot(null);
         setSelectedElement(null);
@@ -1022,7 +1028,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("focus-window", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.focusWindow(laneArgsRef.current, runtimePinRef.current);
+        await window.ade.appControl.focusWindow(laneArgsRef.current, requireChatPin(runtimePinRef.current));
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -1031,7 +1037,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("minimize-window", async () => {
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
-        await window.ade.appControl.minimizeWindow(laneArgsRef.current, runtimePinRef.current);
+        await window.ade.appControl.minimizeWindow(laneArgsRef.current, requireChatPin(runtimePinRef.current));
       }),
     [controlsDisabled, controlsDisabledMessage, runBusy],
   );
@@ -1056,7 +1062,7 @@ export function ChatAppControlPanel({
           includeDom: true,
           includeDiagnostics: true,
           includeDataUrl: false,
-        }, runtimePinRef.current);
+        }, requireChatPin(runtimePinRef.current));
         setObservation(result);
         observationElementsRef.current = result.dom?.elements ?? [];
         setObserveMapOn(true);
@@ -1069,7 +1075,7 @@ export function ChatAppControlPanel({
     () =>
       runBusy("screenshot", async () => {
         if (!onAddAttachment) throw new Error("Attachments are not available in this panel.");
-        const shot = await window.ade.appControl.screenshot(laneArgsRef.current, runtimePinRef.current);
+        const shot = await window.ade.appControl.screenshot(laneArgsRef.current, requireChatPin(runtimePinRef.current));
         const { path } = await window.ade.agentChat.saveTempAttachment({
           data: stripDataUrlPrefix(shot.dataUrl),
           filename: "app-control-screenshot.png",
@@ -1101,7 +1107,7 @@ export function ChatAppControlPanel({
         y,
         coordinateSpace: "viewport",
         includeScreenshot: false,
-      }, runtimePinRef.current);
+      }, requireChatPin(runtimePinRef.current));
       const element = result.snapshot?.hitElement ?? null;
       let attachmentPath: string | null = null;
       let screenshotDataUrl = result.item.screenshotDataUrl ?? null;
@@ -1226,8 +1232,13 @@ export function ChatAppControlPanel({
       // the snapshot. The screencast is live, so the rendered image already
       // updates on its own; gating busy/disabled state through every click
       // makes the picker and Stop button flash and feel locked.
+      const pin = runtimePinRef.current;
+      if (!pin) {
+        setMessage({ tone: "error", text: NO_CHAT_MACHINE_MESSAGE });
+        return;
+      }
       window.ade.appControl
-        .click({ ...laneArgsRef.current, x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, runtimePinRef.current)
+        .click({ ...laneArgsRef.current, x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, pin)
         .catch((error) => {
           setMessage({ tone: "error", text: `Click failed: ${errorMessage(error)}` });
         });
@@ -1247,6 +1258,8 @@ export function ChatAppControlPanel({
       hoverInspectSeqRef.current = requestSeq;
       hoverInspectTimerRef.current = window.setTimeout(() => {
         hoverInspectTimerRef.current = null;
+        const pin = runtimePinRef.current;
+        if (!pin) return;
         void window.ade.appControl
           .inspectPoint({
             ...laneArgsRef.current,
@@ -1255,7 +1268,7 @@ export function ChatAppControlPanel({
             y: point.viewportY,
             coordinateSpace: "viewport",
             includeScreenshot: false,
-          }, runtimePinRef.current)
+          }, pin)
           .then((result) => {
             if (hoverInspectSeqRef.current !== requestSeq || modeRef.current !== "inspect") return;
             setHoverElement(result.snapshot.hitElement);
@@ -1274,7 +1287,7 @@ export function ChatAppControlPanel({
         if (controlsDisabled) throw new Error(controlsDisabledMessage);
         if (modeRef.current !== "control") throw new Error("Switch to Control mode to type into the app.");
         if (!typeText.trim()) return;
-        await window.ade.appControl.typeText({ ...laneArgsRef.current, text: typeText }, runtimePinRef.current);
+        await window.ade.appControl.typeText({ ...laneArgsRef.current, text: typeText }, requireChatPin(runtimePinRef.current));
         setTypeText("");
         try {
           await refreshSnapshot();

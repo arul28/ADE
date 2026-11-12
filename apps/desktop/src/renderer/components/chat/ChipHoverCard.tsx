@@ -422,7 +422,9 @@ export async function loadChipCardData(
       : { kind: "skill", name: target.name, description: null, source: "Slash command", argumentHint: null };
   }
   if (target.kind === "artifact") {
-    const records = await window.ade.computerUse.listArtifacts({ artifactId: target.artifactId, limit: 1 }, sources.pin).catch(() => [] as ComputerUseArtifactView[]);
+    const records = sources.pin
+      ? await window.ade.computerUse.listArtifacts({ artifactId: target.artifactId, limit: 1 }, sources.pin).catch(() => [] as ComputerUseArtifactView[])
+      : [];
     const artifact = records.find((row) => row.id === target.artifactId);
     if (!artifact) return null;
     return {
