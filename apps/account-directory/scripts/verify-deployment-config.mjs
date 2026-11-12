@@ -80,6 +80,14 @@ export const OPTIONAL_SECRETS = [
     name: "CLERK_SECRET_KEY",
     effect: "approving a sign-in from the ADE phone app answers 503, and the app offers the browser page",
   },
+  {
+    name: "GITHUB_APP_CLIENT_SECRET",
+    effect: "connecting the ADE GitHub App to an ADE account answers 503 (/github/app/*)",
+  },
+  {
+    name: "GITHUB_APP_TOKEN_KEY",
+    effect: "connecting the ADE GitHub App to an ADE account answers 503 (/github/app/*)",
+  },
 ];
 export const ENVIRONMENTS = ["default", "production"];
 /** A well-formed code that no sign-in holds; the page must carry it through. */

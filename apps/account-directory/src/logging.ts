@@ -355,3 +355,38 @@ export function logAccountProject(args: {
     ...(args.code ? { code: args.code } : {}),
   }));
 }
+
+/**
+ * One line per GitHub App sign-in event (src/githubApp). Events and numbers
+ * only: never a token, a code, a state, a verifier, or the client secret.
+ * `oauthError` is GitHub's short error code (`bad_verification_code`), never
+ * its description.
+ */
+export function logGithubApp(args: {
+  event:
+    | "github_app.sign_in_started"
+    | "github_app.sign_in_completed"
+    | "github_app.sign_in_failed"
+    | "github_app.sign_in_refused"
+    | "github_app.token_served"
+    | "github_app.refreshed"
+    | "github_app.refresh_failed"
+    | "github_app.refresh_unpersisted"
+    | "github_app.needs_reauth"
+    | "github_app.rejected_checked"
+    | "github_app.adopted"
+    | "github_app.retired"
+    | "github_app.disconnected"
+    | "github_app.keepalive";
+  userId: string;
+  [field: string]: string | number | boolean | undefined;
+}): void {
+  const { event, userId, ...fields } = args;
+  const line: Record<string, unknown> = { ts: new Date().toISOString(), svc: SERVICE, event, userId };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    line[key] = typeof value === "string" ? value.slice(0, 64) : value;
+  }
+  const failed = event === "github_app.refresh_failed" || event === "github_app.refresh_unpersisted";
+  (failed ? console.error : console.log)(JSON.stringify(line));
+}
