@@ -508,7 +508,12 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
   if (existing && existing.rule_version > registration.ruleVersion) {
     return json({ ruleId, changed: false, current: false, nextFireAt: existing.next_fire_at, forward: await forwardOf(env, existing, origin) } satisfies CloudAutomationRegistered);
   }
-  const { spec } = registration;
+  // The update track only moves up within one version: a Stable (or older) brain sending the
+  // version a Beta brain sent never takes the rule back to the Stable image, which can't run it.
+  const sameVersion = existing != null && registration.ruleVersion === existing.rule_version;
+  const spec: CloudAutomationSpec = sameVersion && existing && specOf(existing)?.channel === "beta" && registration.spec.channel !== "beta"
+    ? { ...registration.spec, channel: "beta" }
+    : registration.spec;
   // Read on every registration (each version a brain sends, and each brain start), so a change of the
   // agent limits or the GitHub sign-in reaches rules that didn't change.
   const vault = await vaultColumns(await readVaultFacts(env, request.headers.get("authorization")), spec.project.origin, existing);

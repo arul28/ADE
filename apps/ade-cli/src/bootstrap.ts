@@ -3505,7 +3505,9 @@ export async function createAdeRuntime(args: {
           const compiled = automationService.cloudHomeSpec(ruleId, origin);
           if (!("spec" in compiled)) return compiled;
           // Runs are made on this ADE's update track (the machine's saved one, else this build's).
-          const track = resolveSelectedUpdateTrack(process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null);
+          const version = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null;
+          // An Alpha build makes Beta computers, as every other cloud create does (`cloudAccess.updateChannel`).
+          const track = /-alpha\b/i.test(version ?? "") ? "beta" : resolveSelectedUpdateTrack(version);
           return { spec: { ...compiled.spec, channel: track } };
         },
         api: () => {
