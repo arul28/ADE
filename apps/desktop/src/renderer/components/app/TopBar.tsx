@@ -90,9 +90,12 @@ import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import {
+  buildSavedWindowRepositoryTabs,
   carryRouteToCopy,
   readWindowStripMemory,
   renameInTabOrder,
+  restoredStripFromSaved,
+  useWindowRepositoryTabsSync,
   useWindowStripMemory,
   useNoMachineTabCleanup,
   useOneCopyPerRepository,
@@ -847,6 +850,7 @@ export function TopBar({
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const activeNoMachineTabId = useAppStore((s) => s.activeNoMachineTabId);
+  const noMachineTabs = useAppStore((s) => s.noMachineTabs);
   const noMachineTabCount = useAppStore((s) => s.noMachineTabs.length);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   // Which open tabs have a loaded project: only those switch at once.
@@ -1119,6 +1123,13 @@ export function TopBar({
     if (remoteBinding) {
       return;
     }
+    // A local binding for another folder means `project` is stale: the
+    // binding of a new local project can arrive before the project, and the
+    // old `project` may be a remote copy's folder. Adding it would make a
+    // local tab for a folder that exists only on the other machine.
+    if (projectBinding?.kind === "local" && projectBinding.rootPath !== rootPath) {
+      return;
+    }
     // Skip while a transition targeting a *different* root is in flight.
     // During switch/close, `project` briefly points at the OLD root before
     // the await resolves; re-adding it here would resurrect a tab the user
@@ -1129,7 +1140,7 @@ export function TopBar({
     setOpenProjectTabRoots((prev) =>
       prev.includes(rootPath) ? prev : [...prev, rootPath],
     );
-  }, [project?.rootPath, remoteBinding, projectTransition]);
+  }, [project?.rootPath, projectBinding, remoteBinding, projectTransition]);
 
   useEffect(() => {
     if (!remoteBinding) return;
@@ -1341,6 +1352,21 @@ export function TopBar({
     preferredBindingKeyByGroup,
     tabOrder,
   });
+  // Main saves the strip by repository and reopens it on the next launch (S5).
+  const savedRepositoryTabs = useMemo(
+    () => buildSavedWindowRepositoryTabs({
+      groups: tabGroups,
+      openLocal: new Set(openProjectTabRoots),
+      openRemote: new Set(openRemoteProjectTabs.map((entry) => entry.key)),
+      noMachineTabs,
+      activeBindingKey: activeTabBindingKey,
+      activeNoMachineTabId,
+      noTabInFront: showWelcome === true || isNewTabOpen === true,
+      nameFor: (group) => recordNameFor(group) ?? group.displayName,
+    }),
+    [activeNoMachineTabId, activeTabBindingKey, isNewTabOpen, noMachineTabs, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, showWelcome, tabGroups],
+  );
+  useWindowRepositoryTabsSync(windowSessionRestored && !webMode, savedRepositoryTabs);
 
   useEffect(() => {
     let cancelled = false;
@@ -1356,7 +1382,22 @@ export function TopBar({
           setPreferredBindingKeyByGroup((current) => ({ ...strip.preferredBindingKeyByGroup, ...current }));
           setTabOrder((current) => (current.length > 0 ? current : strip.tabOrder));
         }
-        const sessionBindings = [...(session.openProjectBindings ?? []), ...(strip?.remoteTabs ?? [])];
+        // A launch: main hands back the strip it saved, by repository (S5).
+        // A reload reads the window's own memory above instead.
+        const launchStrip = !strip && session.repositoryTabs && session.repositoryTabs.tabs.length > 0
+          ? restoredStripFromSaved(session.repositoryTabs)
+          : null;
+        if (launchStrip) {
+          setTabOrder((current) => (current.length > 0 ? current : launchStrip.tabOrder));
+          for (const tab of launchStrip.noMachineTabs) {
+            useAppStore.getState().showNoMachineTab(tab, { activate: false });
+          }
+        }
+        const sessionBindings = [
+          ...(session.openProjectBindings ?? []),
+          ...(strip?.remoteTabs ?? []),
+          ...(launchStrip?.remoteBindings ?? []),
+        ];
         if (sessionBindings.length) {
           const restoredRemoteBindings = sessionBindings.filter(
             (entry): entry is RemoteOpenProjectBinding => entry.kind === "remote",
@@ -1372,8 +1413,11 @@ export function TopBar({
         // Restore every local tab root, loaded or not: an idle project's
         // context may be released while its tab stays open. Hosted web sends
         // only the loaded list.
-        const restored = session.openProjectTabRoots
-          ?? session.openProjectTabs.map((entry) => entry.rootPath);
+        const restored = [...(session.openProjectTabRoots
+          ?? session.openProjectTabs.map((entry) => entry.rootPath))];
+        for (const root of launchStrip?.localRoots ?? []) {
+          if (!restored.includes(root)) restored.push(root);
+        }
         if (restored.length > 0) {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
@@ -1394,6 +1438,19 @@ export function TopBar({
           setOpenProjectTabRoots([]);
         }
         setWindowSessionRestored(true);
+        // The tab that was in front comes back in front, unless the launch
+        // already opened a project (a startup project, an update restore).
+        const active = launchStrip?.active ?? null;
+        if (active && !session.binding && !session.project) {
+          const store = useAppStore.getState();
+          if (!active.copy) {
+            store.showNoMachineTab({ id: active.id, displayName: active.displayName, iconDataUrl: null });
+          } else if (active.copy.kind === "local") {
+            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(() => {});
+          } else {
+            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(() => {});
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -2518,9 +2575,9 @@ export function TopBar({
                         if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
                       }}
                       onContextMenu={(event) => openTabMenu(event, group.id)}
-                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
+                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive && !isNewTabOpen ? "active" : undefined}
                       data-remote-state={remoteTabState}
-                      aria-current={isCurrentRemote ? "true" : undefined}
+                      aria-current={isCurrentRemote && !isNewTabOpen ? "true" : undefined}
                       // A project tab looks the same wherever its checkout
                       // lives. The machine is in the tooltip; only a connection
                       // problem, which stops the tab from loading, is marked.
@@ -2631,9 +2688,9 @@ export function TopBar({
                 let projectTabState: string | undefined;
                 if (isRelocating) projectTabState = "open";
                 else if (isMissing) projectTabState = "missing";
-                // While the Chats machine tab is the foreground surface, the
+                // While the Chats machine tab or a New Tab is in front, the
                 // bound project tab stays rendered but must not also read active.
-                else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
+                else if (isCurrent && !machineRouteActive && !hubRouteActive && !isNewTabOpen) projectTabState = "active";
                 const indicator = terminalAttention?.indicator;
                 const localTabPress = pressActivation(() => {
                   if (projectTabDrag.isDragClick()) return;
@@ -2650,7 +2707,7 @@ export function TopBar({
                         ? "project.activeTab"
                         : undefined
                     }
-                    aria-current={isCurrent ? "true" : undefined}
+                    aria-current={isCurrent && !isNewTabOpen ? "true" : undefined}
                     aria-disabled={
                       isRelocating || isProjectBusy ? true : undefined
                     }
@@ -2783,7 +2840,7 @@ export function TopBar({
                 );
               })}
               <NoMachineRepositoryTabs
-                activeSurfaceHidden={machineRouteActive || accountRouteActive || hubRouteActive}
+                activeSurfaceHidden={machineRouteActive || accountRouteActive || hubRouteActive || isNewTabOpen}
                 onSelect={leaveMachineRoute}
               />
               {personalChatsTabOpen ? (

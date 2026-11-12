@@ -1828,6 +1828,7 @@ export function registerIpc({
   waitForStartupProjectOpen,
   getProjectContext,
   setWindowProjectTabs,
+  setWindowRepositoryTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
   projectRecoveryConnectionPool,
@@ -1869,6 +1870,8 @@ export function registerIpc({
   waitForStartupProjectOpen?: () => Promise<void>;
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
+  /** Keeps the window's repository tabs; main rebuilds the value field by field (S5). */
+  setWindowRepositoryTabs?: (windowId: number | null, tabs: unknown) => void;
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   projectRecoveryConnectionPool?: LocalRuntimeConnectionPool | null;
@@ -3617,6 +3620,12 @@ export function registerIpc({
       ? setWindowProjectTabs(windowId, rootPaths)
       : [];
     return { openProjectTabs };
+  });
+
+  handle(IPC.appSetWindowRepositoryTabs, async (event, arg: { tabs?: unknown } = {}) => {
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    setWindowRepositoryTabs?.(windowId, arg?.tabs);
+    return { ok: true as const };
   });
 
   handle(IPC.appNewWindow, async () => {
