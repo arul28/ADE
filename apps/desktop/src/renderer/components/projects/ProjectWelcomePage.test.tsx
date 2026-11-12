@@ -313,7 +313,7 @@ describe("ProjectWelcomePage web zero-machines state", () => {
     renderWebWelcome(accountSnapshot({ state: "signed_in" }));
 
     expect(
-      await screen.findByText(/No machines on this account yet/),
+      await screen.findByText(/No computer is on your account yet/),
     ).toBeTruthy();
     expect(screen.queryByText("Retry")).toBeNull();
   });
@@ -328,7 +328,7 @@ describe("ProjectWelcomePage web zero-machines state", () => {
 
     expect(await screen.findByText("Couldn't load your machines.")).toBeTruthy();
     expect(screen.getByText("Machine directory returned 403.")).toBeTruthy();
-    expect(screen.queryByText(/No machines on this account yet/)).toBeNull();
+    expect(screen.queryByText(/No computer is on your account yet/)).toBeNull();
 
     fireEvent.click(screen.getByText("Retry"));
     await waitFor(() => expect(retryDirectory).toHaveBeenCalledTimes(1));

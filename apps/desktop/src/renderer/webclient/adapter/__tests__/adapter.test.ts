@@ -48,6 +48,15 @@ const TEST_PIN: OpenProjectBinding = {
   displayName: "Repo",
 };
 
+/** The same machine, after a test binds `project-2`. */
+const PROJECT_TWO_PIN: OpenProjectBinding = {
+  ...TEST_PIN,
+  key: "remote:env-1:project-2",
+  projectId: "project-2",
+  rootPath: "/repo-2",
+  displayName: "Repo Two",
+};
+
 function chatEvent(sessionId: string, seq: number, marker: string): SyncChatEventPayload {
   return {
     sessionId,
@@ -1750,10 +1759,10 @@ describe("createAdeWebAdapter", () => {
       "chat-project-one-7",
     ]));
 
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" }, TEST_PIN);
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" }, PROJECT_TWO_PIN);
     for (let index = 1; index <= 8; index += 1) {
       fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-two-${index}` });
-      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` }, TEST_PIN);
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` }, PROJECT_TWO_PIN);
     }
 
     expect(fake.chatUnsubscribeCalls).toContain("chat-project-two-1");
@@ -2612,10 +2621,10 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(boundProject, "project-2");
 
-    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN)).resolves.toEqual(workspaces);
+    await expect(adapter.ade.files.listWorkspaces(undefined, PROJECT_TWO_PIN)).resolves.toEqual(workspaces);
     await expect(Promise.all([
-      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, TEST_PIN),
-      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never, TEST_PIN),
+      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, PROJECT_TWO_PIN),
+      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never, PROJECT_TWO_PIN),
     ])).resolves.toEqual([tree, tree]);
 
     expect(fake.fileCalls).toEqual([
@@ -2624,17 +2633,17 @@ describe("createAdeWebAdapter", () => {
     ]);
 
     const fileEvents: Array<{ workspaceId: string }> = [];
-    adapter.ade.files.onChange((event) => fileEvents.push(event), TEST_PIN);
+    adapter.ade.files.onChange((event) => fileEvents.push(event), PROJECT_TWO_PIN);
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
     expect(fileEvents).toEqual([expect.objectContaining({ workspaceId: "primary" })]);
-    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, TEST_PIN);
+    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, PROJECT_TWO_PIN);
     expect(fake.fileCalls.filter((call) => call.action === "listTree")).toHaveLength(2);
 
     fake.fileErrors.set("listWorkspaces", new Error("wrong project scope"));
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
-    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN)).rejects.toThrow("wrong project scope");
+    await expect(adapter.ade.files.listWorkspaces(undefined, PROJECT_TWO_PIN)).rejects.toThrow("wrong project scope");
 
     adapter.dispose();
   });
@@ -2683,7 +2692,7 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("lanes.list", [{ id: "lane-new" }]);
     adapter.replaceProject(projectTwo, "project-2");
     await expect(adapter.ade.app.getProject()).resolves.toEqual(projectTwo);
-    await expect(adapter.ade.lanes.list(undefined, TEST_PIN)).resolves.toEqual([{ id: "lane-new" }]);
+    await expect(adapter.ade.lanes.list(undefined, PROJECT_TWO_PIN)).resolves.toEqual([{ id: "lane-new" }]);
 
     expect(projects).toEqual([projectTwo]);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toEqual([
@@ -2982,7 +2991,7 @@ describe("createAdeWebAdapter", () => {
     } as const;
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    const unsupported = /cross-machine web routing is not implemented/;
+    const unsupported = /to another machine.s connection; it was not run/;
 
     await expect(adapter.ade.pty.create({
       laneId: "lane-1",
@@ -3062,7 +3071,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/to another machine.s connection; it was not run/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();
@@ -3236,7 +3245,7 @@ describe("createAdeWebAdapter", () => {
       title: "Pinned shell",
       cols: 80,
       rows: 24,
-    }, otherProjectPin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    }, otherProjectPin)).rejects.toThrow(/to another machine.s connection; it was not run/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();
