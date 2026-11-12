@@ -29,14 +29,19 @@ function markImportDone(): void {
   }
 }
 
-/** The machine's list with this client's own picks added after it. */
-function mergeFavorites(imported: readonly string[], local: readonly string[]): string[] {
-  const merged = imported.filter((value) => typeof value === "string" && value.length > 0);
+/**
+ * The machine's list with this client's own picks added after it. A model
+ * removed here while the import ran stays removed.
+ */
+function mergeFavorites(imported: readonly string[], local: readonly string[], removed: ReadonlySet<string>): string[] {
+  const merged = imported.filter((value) => typeof value === "string" && value.length > 0 && !removed.has(value));
   for (const value of local) if (!merged.includes(value)) merged.push(value);
   return merged;
 }
 
 let importInFlight: Promise<void> | null = null;
+/** Models removed while the import runs; the merge must not add them back. */
+const removedDuringImport = new Set<string>();
 
 function readPersisted(): string[] {
   try {
@@ -79,7 +84,12 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
     const id = modelId.trim();
     if (!id) return;
     const current = get().favorites;
-    const next = current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id];
+    const removing = current.includes(id);
+    const next = removing ? current.filter((entry) => entry !== id) : [...current, id];
+    if (importInFlight) {
+      if (removing) removedDuringImport.add(id);
+      else removedDuringImport.delete(id);
+    }
     set({ favorites: next });
     persist(next);
   },
@@ -99,8 +109,8 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
       try {
         const result = await getFavorites(pin);
         const imported = Array.isArray(result?.favorites) ? result.favorites : [];
-        // A toggle made while the import ran is kept: the lists merge.
-        const next = mergeFavorites(imported, get().favorites);
+        // A toggle made while the import ran is kept: the lists merge, and a removal stays.
+        const next = mergeFavorites(imported, get().favorites, removedDuringImport);
         set({ favorites: next, hydrated: true });
         persist(next);
         markImportDone();
@@ -110,6 +120,7 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
         set({ hydrated: true });
       } finally {
         importInFlight = null;
+        removedDuringImport.clear();
       }
     })();
     return importInFlight;
