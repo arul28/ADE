@@ -67,7 +67,7 @@ export function savedChatLocation(
  * whose pin names a connection this window no longer has ("Remote target was
  * not found"): the chat is the same on any machine that saved it.
  */
-function savedChatLocationForSession(sessionId: string): SavedChatLocation | null {
+export function savedChatLocationForSession(sessionId: string): SavedChatLocation | null {
   for (const location of locations.values()) {
     if (location.chatId === sessionId) return location;
   }
