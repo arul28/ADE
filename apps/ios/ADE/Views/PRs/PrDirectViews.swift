@@ -218,6 +218,9 @@ final class PrDirectPullsModel: ObservableObject {
 
   private var repoKey: String?
   private var nextBackgroundAt: Date = .distantPast
+  /// The repository of the read in flight, and which read is the newest.
+  private var inFlightKey: String?
+  private var generation = 0
 
   /// One read. A timed read (`background`) is skipped while a person state
   /// or a rate limit says to wait.
@@ -231,11 +234,21 @@ final class PrDirectPullsModel: ObservableObject {
       nextBackgroundAt = .distantPast
     }
     if background && Date() < nextBackgroundAt { return }
-    guard !refreshing else { return }
+    // One read per repository; a read of the old repository does not hold
+    // up the new one (its answer is dropped below).
+    guard inFlightKey != repo.key else { return }
+    generation += 1
+    let current = generation
+    inFlightKey = repo.key
     refreshing = true
-    defer { refreshing = false }
+    defer {
+      if generation == current {
+        inFlightKey = nil
+        refreshing = false
+      }
+    }
     let result = await GitHubDirectClient.shared.listPulls(repo, background: background)
-    guard repoKey == repo.key else { return }
+    guard repoKey == repo.key, generation == current else { return }
     loaded = true
     switch result {
     case .success(let answer):
@@ -437,6 +450,8 @@ struct PrDirectDetailScreen: View {
   @State private var comments: [GitHubDirectComment] = []
   @State private var error: GitHubDirectError?
   @State private var loading = false
+  /// A checks, reviews or comments read failed: that section is empty, not current.
+  @State private var partial = false
 
   var body: some View {
     ScrollView {
@@ -479,6 +494,12 @@ struct PrDirectDetailScreen: View {
         if loading && detail == nil {
           ProgressView().frame(maxWidth: .infinity).padding(.top, 12)
         }
+        if partial {
+          Text("Some parts of this PR did not load. Pull down to try again.")
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.warning)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         footer
       }
       .padding(.horizontal, 16)
@@ -492,6 +513,9 @@ struct PrDirectDetailScreen: View {
     .task(id: pull.number) { await load() }
   }
 
+  /// The newest read of the PR: a refresh updates the title, state and branches.
+  private var current: GitHubDirectPull { detail?.pull ?? pull }
+
   private var header: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 6) {
@@ -501,28 +525,28 @@ struct PrDirectDetailScreen: View {
         Text(stateTitle)
           .font(.system(size: 12, weight: .semibold))
           .foregroundStyle(prStateColor(stateLabel))
-        Text(verbatim: "#\(pull.number)")
+        Text(verbatim: "#\(current.number)")
           .font(.adeMono(12, weight: .medium))
           .foregroundStyle(ADEColor.textMuted)
       }
-      Text(pull.title)
+      Text(current.title)
         .font(.system(size: 19, weight: .bold))
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 6) {
-        Text(pull.headRef)
+        Text(current.headRef)
           .font(.adeMono(12))
           .lineLimit(1)
           .truncationMode(.middle)
         Image(systemName: "arrow.right")
           .font(.system(size: 9, weight: .semibold))
-        Text(pull.baseRef)
+        Text(current.baseRef)
           .font(.adeMono(12))
           .lineLimit(1)
       }
       .foregroundStyle(ADEColor.textSecondary)
       HStack(spacing: 10) {
-        if let author = pull.author {
+        if let author = current.author {
           Text(author).font(.system(size: 12.5)).foregroundStyle(ADEColor.textSecondary)
         }
         if let detail, let additions = detail.additions, let deletions = detail.deletions {
@@ -533,7 +557,7 @@ struct PrDirectDetailScreen: View {
           Text(files == 1 ? "1 file" : "\(files) files").font(.system(size: 12.5)).foregroundStyle(ADEColor.textMuted)
         }
       }
-      if let url = pull.htmlUrl.flatMap(URL.init(string:)) {
+      if let url = current.htmlUrl.flatMap(URL.init(string:)) {
         Button {
           openURL(url)
         } label: {
@@ -554,11 +578,11 @@ struct PrDirectDetailScreen: View {
   }
 
   private var stateLabel: String {
-    pull.merged ? "merged" : pull.draft ? "draft" : pull.state
+    current.merged ? "merged" : current.draft ? "draft" : current.state
   }
 
   private var stateTitle: String {
-    pull.merged ? "Merged" : pull.draft ? "Draft" : pull.state == "closed" ? "Closed" : "Open"
+    current.merged ? "Merged" : current.draft ? "Draft" : current.state == "closed" ? "Closed" : "Open"
   }
 
   private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -648,9 +672,20 @@ struct PrDirectDetailScreen: View {
     async let checkAnswer = client.listChecks(repo, sha: sha)
     async let reviewAnswer = client.listReviews(repo, number: pull.number)
     async let commentAnswer = client.listComments(repo, number: pull.number)
-    if case .success(let value) = await checkAnswer { checks = value }
-    if case .success(let value) = await reviewAnswer { reviews = value.filter { !$0.body.isEmpty || $0.state != "COMMENTED" } }
-    if case .success(let value) = await commentAnswer { comments = value }
+    var failed = false
+    switch await checkAnswer {
+    case .success(let value): checks = value
+    case .failure: checks = nil; failed = true  // older checks may belong to another commit
+    }
+    switch await reviewAnswer {
+    case .success(let value): reviews = value.filter { !$0.body.isEmpty || $0.state != "COMMENTED" }
+    case .failure: reviews = []; failed = true
+    }
+    switch await commentAnswer {
+    case .success(let value): comments = value
+    case .failure: comments = []; failed = true
+    }
+    partial = failed
   }
 }
 

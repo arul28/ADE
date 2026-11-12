@@ -524,7 +524,8 @@ struct RemoteProjectCreateForm: View {
         : "It stays on \(computerName) only. You can publish it later with ADE on that computer.")
     return ADESettingsRows {
       ADESettingsRow(title: "Publish to GitHub", hint: hint) {
-        Toggle("Publish to GitHub", isOn: publish)
+        // A computer that cannot publish shows the switch off, as it acts.
+        Toggle("Publish to GitHub", isOn: publishUnavailable == nil ? publish : .constant(false))
           .labelsHidden()
           .tint(ADEColor.accent)
           .disabled(publishUnavailable != nil || isSubmitting)
