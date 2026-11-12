@@ -1,3 +1,5 @@
+import { cacheScopePin } from "./tabBindingKey";
+
 type ProjectConfigSnapshot = Awaited<ReturnType<typeof window.ade.projectConfig.get>>;
 type OpenProjectBinding = import("../../shared/types/core").OpenProjectBinding;
 
@@ -14,8 +16,9 @@ function getProjectRootKey(projectRoot: string | null | undefined, pin?: OpenPro
   return projectRoot?.trim() || pin?.rootPath?.trim() || "__no_project__";
 }
 
-function getCacheKey(projectRoot: string | null | undefined, pin?: OpenProjectBinding | null): string {
-  const rootKey = getProjectRootKey(projectRoot, pin);
+function getCacheKey(projectRoot: string | null | undefined, rawPin?: OpenProjectBinding | null): string {
+  const rootKey = getProjectRootKey(projectRoot, rawPin);
+  const pin = cacheScopePin(rawPin);
   return pin?.key ? `${rootKey}::pin:${pin.key}` : rootKey;
 }
 

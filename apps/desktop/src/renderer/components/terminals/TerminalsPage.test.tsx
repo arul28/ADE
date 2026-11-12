@@ -26,7 +26,6 @@ import {
 import { setProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
 import {
   forgetWorkPtyLaunchPin,
-  rememberWorkPtyLaunchPin,
   workPtyLaunchPinFor,
 } from "./cliLaunch";
 import {
@@ -910,43 +909,6 @@ describe("TerminalsPage chat session activation", () => {
 
     expect(workPtyLaunchPinFor(session)).toBeNull();
     expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)?.key).toBe(studioBinding.key);
-  });
-
-  it("leaves a session on the tab's own machine unpinned", async () => {
-    workMocks.projectRoot = "/repo";
-    workMocks.projectBinding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "repo",
-    };
-    // A foreign machine is present, so the lane index is non-empty and the null
-    // below is a real "this lane is on the active binding", not an empty map.
-    workMocks.crossMachineLanesByMachineId = {
-      "target-studio": studioMachine("lane-foreign", []),
-    };
-    mockBrowserEvents();
-    render(<TerminalsPage />);
-    await screen.findByTestId("session-list-pane");
-
-    const local = workMocks.makeTerminalSession("shell-local", "lane-primary", "shell");
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(local)).toBeNull();
-  });
-
-  it("drops a remembered pin when that binding is now active", async () => {
-    const activeBinding = STUDIO_BINDING;
-    const session = workMocks.makeTerminalSession("shell-now-active", "lane-primary", "shell");
-    // This pin was remembered while the same binding was foreign. After the
-    // project tab rebinds to it, lane routing returns null and the registry is
-    // the fallback that must also collapse to the unpinned fast path.
-    rememberWorkPtyLaunchPin(session, activeBinding);
-    workMocks.projectBinding = activeBinding;
-    mockBrowserEvents();
-
-    render(<TerminalsPage />);
-    await screen.findByTestId("session-list-pane");
-
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBeNull();
   });
 
   it("opens a foreign CLI session in place even when that checkout is not an open tab", async () => {
@@ -1857,7 +1819,7 @@ describe("TerminalsPage chat session activation", () => {
     await screen.findByTestId("work-view-area");
     expect(miniPlayerProps.latest?.surface).toEqual({
       laneId: "lane-background",
-      runtimePin: null,
+      runtimePin: bound,
       boundBinding: bound,
     });
   });

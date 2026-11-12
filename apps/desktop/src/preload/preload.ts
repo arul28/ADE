@@ -158,6 +158,7 @@ import {
   createRemoteRuntimeFanout,
   dispatchRemoteRuntimeFanouts,
   hasRemoteRuntimeFanoutSubscribers,
+  type RemoteRuntimeFanout,
   type RemoteRuntimeFanoutEntry,
 } from "./remoteRuntimeFanout";
 import {
@@ -1337,9 +1338,16 @@ if (process.argv.includes(SENTRY_ENABLED_ARGV)) {
   (require("@sentry/electron/preload-namespaced") as typeof import("@sentry/electron/preload-namespaced")).hookupIpc();
 }
 
+/**
+ * `load` replaces the cache's own loader for this one fetch: a read through a
+ * pin that names the window's bound copy shares the bound entry (one IPC for
+ * both) but is sent by its pin (see `boundCopyCacheLoad`).
+ */
+type ShortIpcCacheGetOptions<T> = { force?: boolean; load?: () => Promise<T> };
+
 type ShortIpcCache<T> = {
   clear: () => void;
-  get: (opts?: { force?: boolean }) => Promise<T>;
+  get: (opts?: ShortIpcCacheGetOptions<T>) => Promise<T>;
 };
 
 function createShortIpcCache<T>(
@@ -1356,14 +1364,14 @@ function createShortIpcCache<T>(
       promise = null;
       expiresAt = 0;
     },
-    get: async (opts?: { force?: boolean }) => {
+    get: async (opts?: ShortIpcCacheGetOptions<T>) => {
       const now = Date.now();
       if (!opts?.force) {
         if (value !== undefined && expiresAt > now) return value;
         if (promise) return promise;
       }
 
-      const req = loader()
+      const req = (opts?.load ?? loader)()
         .then((next) => {
           if (promise === req) {
             value = next;
@@ -1393,7 +1401,7 @@ function createKeyedShortIpcCache<T>(
   options: { maxEntries?: number } = {},
 ): {
   clear: (key?: string) => void;
-  get: (key: string, opts?: { force?: boolean }) => Promise<T>;
+  get: (key: string, opts?: ShortIpcCacheGetOptions<T>) => Promise<T>;
 } {
   const maxEntries = options.maxEntries ?? KEYED_IPC_CACHE_MAX_ENTRIES;
   const caches = new Map<string, ShortIpcCache<T>>();
@@ -1429,7 +1437,7 @@ function createKeyedShortIpcCache<T>(
       }
       caches.delete(key);
     },
-    get: (key: string, opts?: { force?: boolean }) => getCache(key).get(opts),
+    get: (key: string, opts?: ShortIpcCacheGetOptions<T>) => getCache(key).get(opts),
   };
 }
 
@@ -1451,10 +1459,13 @@ function parseIpcCacheArgs<T>(key: string, fallback: T): T {
 // Every cached read is namespaced by the binding it was resolved against.
 const BOUND_READ_CACHE_KEY_SEPARATOR = "\u0000";
 
-function boundReadCacheKey(args?: unknown): string {
-  const bindingKey = currentProjectBinding
-    ? projectBindingKey(currentProjectBinding)
-    : "";
+/**
+ * The cache key of a read on one copy: the pin's copy, else the bound one. A pin
+ * that names the bound copy gets the bound key, so both share one entry.
+ */
+function boundReadCacheKey(args?: unknown, pin?: OpenProjectBinding | null): string {
+  const binding = pin ?? currentProjectBinding;
+  const bindingKey = binding ? projectBindingKey(binding) : "";
   return `${bindingKey}${BOUND_READ_CACHE_KEY_SEPARATOR}${serializeIpcCacheArgs(args)}`;
 }
 
@@ -1486,7 +1497,8 @@ const aiStatusCache = (() => {
     promiseIncludesOpenCodeInventory = false;
   };
 
-  const get = async (key: string): Promise<AiSettingsStatus> => {
+  /** `pin`: set only for a pin that names the bound copy, which shares this cache. */
+  const get = async (key: string, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
     const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(
       key,
       {},
@@ -1508,19 +1520,11 @@ const aiStatusCache = (() => {
     }
 
     promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
-    const request = callProjectRuntimeActionOr(
-      "ai",
-      "getStatus",
-      {
-        args: {
-          refreshOpenCodeInventory: wantsOpenCodeInventory,
-        },
-      },
-      () =>
-        ipcRenderer.invoke(IPC.aiGetStatus, {
-          refreshOpenCodeInventory: wantsOpenCodeInventory,
-        }),
-    )
+    const statusArgs = { refreshOpenCodeInventory: wantsOpenCodeInventory };
+    const request = (pin
+      ? callPinnedRuntimeAction<AiSettingsStatus>(pin, "ai", "getStatus", { args: statusArgs })
+      : callProjectRuntimeActionOr<AiSettingsStatus>("ai", "getStatus", { args: statusArgs }, () =>
+        ipcRenderer.invoke(IPC.aiGetStatus, statusArgs)))
       .then((status: AiSettingsStatus) => {
         if (promise === request) {
           value = status;
@@ -1999,6 +2003,7 @@ async function callRemoteProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  noteDefaultMachineRoute(domain, action);
   assertWritesAllowedDuringProjectSwitch(domain, action);
   const guardBinding = guardsProjectBinding(domain, action);
   const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
@@ -2025,6 +2030,8 @@ const remoteTargetGate = createRemoteTargetGate({
       resumeRemoteRuntimeEventPollAfterReconnect();
     }
   },
+  // The pinned pumps parked while the machine was offline poll again at once.
+  onBackOnline: (targetId) => pinnedRuntimeEvents.resumePinnedRuntimeEventPumps(targetId),
 });
 
 function isValidPreviewTargetPort(value: unknown): value is number {
@@ -2152,6 +2159,7 @@ async function callLocalProjectActionIfBound<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
   options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  noteDefaultMachineRoute(domain, action);
   assertWritesAllowedDuringProjectSwitch(domain, action);
   const guardBinding = guardsProjectBinding(domain, action);
   const checkBeforeBind = captureProjectBinding(guardBinding && Boolean(currentProjectBinding));
@@ -2172,6 +2180,7 @@ async function callLocalProjectActionStrictIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  noteDefaultMachineRoute(domain, action);
   assertWritesAllowedDuringProjectSwitch(domain, action);
   const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
@@ -2358,6 +2367,53 @@ async function callProjectRuntimeActionStrictOr<T>(
   if (remote.handled) return remote.result;
   const localRuntime = await callLocalProjectActionStrictIfBound<T>(domain, action, request);
   return localRuntime.handled ? localRuntime.result : local();
+}
+
+declare const __ADE_RELEASE_BUILD__: boolean | undefined;
+
+/** The tripwire below runs in development builds only (`tsup.config.ts`). */
+const DEFAULT_MACHINE_ROUTE_TRIPWIRE = !(typeof __ADE_RELEASE_BUILD__ === "boolean" && __ADE_RELEASE_BUILD__);
+const defaultMachineRoutesNoted = new Set<string>();
+
+/**
+ * Dev diagnostic while calls move to explicit machine addresses: a call that
+ * named no machine, so it went to the copy this window is bound to. It logs
+ * `renderer.default_machine_route` once per method per window to the main log.
+ * It is not a test seam; no test reads it. It goes with the bound helpers.
+ */
+function noteDefaultMachineRoute(domain: string, action: string, method = `${domain}.${action}`): void {
+  if (!DEFAULT_MACHINE_ROUTE_TRIPWIRE || defaultMachineRoutesNoted.has(method)) return;
+  defaultMachineRoutesNoted.add(method);
+  try {
+    ipcRenderer.send(IPC.appLogDebugEvent, { event: "default_machine_route", payload: { method } });
+  } catch {
+    // A diagnostic never breaks the call it describes.
+  }
+}
+
+/**
+ * Whether `pin` names the copy this window is bound to. Such a pin must get
+ * what no pin got (same result, same IPC count, same speed). The pinned call
+ * reaches the same runtime through the same main handler, with no binding
+ * refresh before a chat read and without the switch guard, which an explicit
+ * pin does not need. Only the bound read caches and the active event stream
+ * need this check, so a pinned read or listener shares them.
+ */
+function isBoundCopyPin(pin: OpenProjectBinding | null | undefined): pin is OpenProjectBinding {
+  return Boolean(pin && currentProjectBinding && pin.key === currentProjectBinding.key);
+}
+
+/**
+ * The fetch of a cached read made through a pin that names the bound copy:
+ * the read shares the bound cache entry, and the request goes by its pin.
+ */
+function boundCopyCacheLoad<T>(
+  pin: OpenProjectBinding | null | undefined,
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+): ShortIpcCacheGetOptions<T> | undefined {
+  return pin ? { load: () => callPinnedRuntimeAction<T>(pin, domain, action, request) } : undefined;
 }
 
 // Route a runtime action to an EXPLICIT project binding, bypassing the mutable
@@ -3017,6 +3073,7 @@ async function callRemoteProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  noteDefaultMachineRoute("sync", method, method);
   const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getRemoteProjectBinding();
   checkBeforeBind();
@@ -3036,6 +3093,7 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  noteDefaultMachineRoute("sync", method, method);
   const checkBeforeBind = captureProjectBinding(Boolean(currentProjectBinding));
   const binding = await getLocalProjectBinding();
   checkBeforeBind();
@@ -3204,6 +3262,17 @@ const remotePtyExitEventFanout = createRemoteRuntimeFanout<PtyExitEvent>({
 });
 let ptyDataSubscriptionsConfigured = false;
 let subscribedPtyDataIds = new Set<string>();
+/**
+ * The PTY ids asked for through a pin that names the bound copy. They join the
+ * active filter (the same stream no pin uses) for as long as that copy stays
+ * bound, without replacing the ids the unpinned terminals asked for.
+ */
+let boundCopyPinPtyDataIds: { key: string; ids: Set<string> } | null = null;
+
+function activeBoundCopyPinPtyDataIds(): ReadonlySet<string> | null {
+  const entry = boundCopyPinPtyDataIds;
+  return entry && entry.key === currentProjectBinding?.key ? entry.ids : null;
+}
 const remoteTestEventFanout = createRemoteRuntimeFanout<TestEvent>({
   eventType: "test_event",
   label: "test",
@@ -3506,6 +3575,7 @@ const pinnedRuntimeEvents = createPinnedRuntimeEvents({
   toWrappedEvent,
   syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
   isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
+  isRemoteTargetOffline: (targetId) => remoteTargetGate.isOffline(targetId),
 });
 const startPinnedRuntimeEventPump =
   pinnedRuntimeEvents.startPinnedRuntimeEventPump;
@@ -3580,11 +3650,12 @@ function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
 
 function shouldDispatchPtyDataEvent(payload: PtyDataEvent): boolean {
   if (!ptyDataSubscriptionsConfigured) return true;
-  return subscribedPtyDataIds.has(payload.ptyId);
+  return subscribedPtyDataIds.has(payload.ptyId) || (activeBoundCopyPinPtyDataIds()?.has(payload.ptyId) ?? false);
 }
 
 function collectPtyDataSubscriptionIds(): string[] {
   const ids = new Set(subscribedPtyDataIds);
+  for (const ptyId of activeBoundCopyPinPtyDataIds() ?? []) ids.add(ptyId);
   for (const ptyId of pinnedRuntimeEvents.collectPinnedPtyDataSubscriptionIds()) {
     ids.add(ptyId);
   }
@@ -3606,12 +3677,16 @@ async function setPtyDataSubscriptions(
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   const ptyIds = normalizePtyDataSubscriptionIds(args?.ptyIds);
-  if (pin) {
+  if (pin && !isBoundCopyPin(pin)) {
     await pinnedRuntimeEvents.setPinnedPtyDataSubscriptions(pin, ptyIds);
     return;
   }
   ptyDataSubscriptionsConfigured = true;
-  subscribedPtyDataIds = ptyIds;
+  if (pin) {
+    boundCopyPinPtyDataIds = { key: pin.key, ids: ptyIds };
+    // A listener that started while this copy was another machine keeps its pump.
+    pinnedRuntimeEvents.updateOpenPinnedPtyDataSubscriptions(pin, ptyIds);
+  } else subscribedPtyDataIds = ptyIds;
   ensureRemoteRuntimeEventPump();
   await syncPtyDataSubscriptions();
 }
@@ -4173,38 +4248,85 @@ function subscribeAgentChatEvents(
   };
 }
 
+/**
+ * A PTY listener through a pin that names the bound copy shares the active
+ * stream. That stream follows the window, so when the window binds to another
+ * copy the listener moves to its own copy's pump and takes its PTY ids along.
+ * (A pinned listener whose copy becomes bound keeps its pump: it still hears
+ * its copy.)
+ */
+function followBoundCopyPtyEvents(
+  pin: OpenProjectBinding,
+  subscribeActive: () => () => void,
+  subscribePinned: () => () => void,
+): () => void {
+  let remove = subscribeActive();
+  const pinKey = pin.key;
+  const onBindingChanged = () => {
+    if (currentProjectBinding?.key === pinKey) return;
+    projectBindingChangedCallbacks.delete(onBindingChanged);
+    remove();
+    remove = subscribePinned();
+    const entry = boundCopyPinPtyDataIds;
+    if (!entry || entry.key !== pinKey) return;
+    boundCopyPinPtyDataIds = null;
+    void pinnedRuntimeEvents.setPinnedPtyDataSubscriptions(pin, entry.ids).catch((error: unknown) => {
+      console.warn("[preload] could not move terminal output to its own machine", error);
+    });
+  };
+  projectBindingChangedCallbacks.add(onBindingChanged);
+  return () => {
+    projectBindingChangedCallbacks.delete(onBindingChanged);
+    remove();
+  };
+}
+
 function subscribePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
-  if (pin) return pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb);
-  const filteredCb = (payload: PtyDataEvent) => {
-    if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+  if (pin && !isBoundCopyPin(pin)) return pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb);
+  const subscribeActive = () => {
+    const filteredCb = (payload: PtyDataEvent) => {
+      if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+    };
+    const removeLocal = ptyDataEventFanout(filteredCb);
+    const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
-  const removeLocal = ptyDataEventFanout(filteredCb);
-  const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
-  return () => {
-    removeRemote();
-    removeLocal();
-  };
+  // A pin that names the bound copy listens on the active stream, as no pin does.
+  return pin
+    ? followBoundCopyPtyEvents(pin, subscribeActive, () => pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb))
+    : subscribeActive();
 }
 
 function subscribePtyExitEvents(
   cb: (payload: PtyExitEvent) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
-  if (pin) return pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb);
-  const removeLocal = ptyExitEventFanout(cb);
-  const removeRemote = subscribeRemotePtyExitEvents(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
+  if (pin && !isBoundCopyPin(pin)) return pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb);
+  const subscribeActive = () => {
+    const removeLocal = ptyExitEventFanout(cb);
+    const removeRemote = subscribeRemotePtyExitEvents(cb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
+  return pin
+    ? followBoundCopyPtyEvents(pin, subscribeActive, () => pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb))
+    : subscribeActive();
 }
 
 function subscribeUsageUpdateEvents(
   cb: (payload: UsageSnapshot) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedFanoutEvents(pin, remoteUsageUpdateEventFanout, cb, "usage.onUpdate");
+  if (removePinned) return removePinned;
   const removeLocal = subscribeLocalUsageUpdateEvents((payload) => {
     if (!currentProjectBinding) cb(payload);
   });
@@ -4219,7 +4341,10 @@ function subscribeUsageUpdateEvents(
 
 function subscribeAutomationsEvents(
   cb: (payload: AutomationsEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedFanoutEvents(pin, remoteAutomationsEventFanout, cb, "automations.onEvent");
+  if (removePinned) return removePinned;
   const removeLocal = subscribeLocalAutomationsEvents(cb);
   const removeRemote = subscribeRemoteAutomationsEvents(cb);
   return () => {
@@ -4230,7 +4355,10 @@ function subscribeAutomationsEvents(
 
 function subscribeConflictEvents(
   cb: (payload: ConflictEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedFanoutEvents(pin, remoteConflictEventFanout, cb, "conflicts.onEvent");
+  if (removePinned) return removePinned;
   const removeLocal = subscribeLocalConflictEvents(cb);
   const removeRemote = subscribeRemoteConflictEvents(cb);
   return () => {
@@ -4271,6 +4399,28 @@ function subscribePinnedProjectRuntimeEvents<T>(
       cb(payload);
     },
   });
+}
+
+/**
+ * A domain that followed only the tab's machine, heard from `pin`'s machine:
+ * the copy's shared pump when the pin names another copy. Returns null for no
+ * pin or a pin that names the bound copy, and the caller keeps its unpinned
+ * path (main's push plus the active pump). A call with no pin is noted once in
+ * the dev tripwire as `sub:<member>`, like an unpinned call.
+ */
+function subscribePinnedFanoutEvents<T>(
+  pin: OpenProjectBinding | null | undefined,
+  fanout: RemoteRuntimeFanout<T>,
+  cb: (payload: T) => void,
+  member: string,
+): (() => void) | null {
+  if (!pin) noteDefaultMachineRoute("sub", member, `sub:${member}`);
+  return subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => (isRecord(payload) ? fanout.decode(payload) : null),
+    cb,
+    member,
+  );
 }
 
 function subscribeComputerUseEvents(
@@ -4709,6 +4859,7 @@ function clearProjectScopedReadCaches(): void {
   githubRemoteStatusCache.clear();
   githubAppInstallationStatusCache.clear();
   projectConfigSnapshotCache.clear();
+  aiStatusCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
   imageDataUrlCache.clear();
@@ -5460,7 +5611,9 @@ const adeBridge = {
       ipcRenderer.on(IPC.projectMissing, listener);
       return () => ipcRenderer.removeListener(IPC.projectMissing, listener);
     },
-    onStateEvent: (cb: (event: AdeProjectEvent) => void) => {
+    onStateEvent: (cb: (event: AdeProjectEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteProjectStateEventFanout, cb, "project.onStateEvent");
+      if (removePinned) return removePinned;
       const removeLocal = projectStateEventFanout(cb);
       const removeRemote = subscribeRemoteProjectStateEvents(cb);
       return () => {
@@ -5874,7 +6027,8 @@ const adeBridge = {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
-      if (pin) {
+      // A pin that names the bound copy shares the bound cache (one read per 10 s).
+      if (pin && !isBoundCopyPin(pin)) {
         return callPinnedRuntimeAction<AiSettingsStatus>(
           pin,
           "ai",
@@ -5885,11 +6039,12 @@ const adeBridge = {
       const cacheKey = getAiStatusCacheKey(args);
       if (args?.force === true) {
         aiStatusCache.clear();
+        if (pin) return callPinnedRuntimeAction<AiSettingsStatus>(pin, "ai", "getStatus", { args });
         return callProjectRuntimeActionOr("ai", "getStatus", { args }, () =>
           ipcRenderer.invoke(IPC.aiGetStatus, args),
         );
       }
-      return aiStatusCache.get(cacheKey);
+      return aiStatusCache.get(cacheKey, pin);
     },
     getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
       callProjectRuntimeActionOr("ai", "getOpenCodeRuntimeDiagnostics", {}, () =>
@@ -6657,7 +6812,9 @@ const adeBridge = {
       callProjectRuntimeSyncOr("sync.getCloudRelayStatus", {}, () =>
         ipcRenderer.invoke(IPC.syncGetCloudRelayStatus),
       ),
-    onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
+    onEvent: (cb: (event: SyncStatusEventPayload) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteSyncStatusEventFanout, cb, "sync.onEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: SyncStatusEventPayload,
@@ -7456,7 +7613,9 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.lanesDeleteEvent, listener);
       };
     },
-    onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => {
+    onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneLifecycleEventFanout, cb, "lanes.onLifecycleEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneLifecycleEvent,
@@ -7666,7 +7825,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "getOverlay", { args }, () =>
         ipcRenderer.invoke(IPC.lanesGetOverlay, args),
       ),
-    onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => {
+    onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneEnvEventFanout, cb, "lanes.onEnvEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneEnvInitEvent,
@@ -7775,7 +7936,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "portRecoverOrphans", {}, () =>
         ipcRenderer.invoke(IPC.lanesPortRecoverOrphans),
       ),
-    onPortEvent: (cb: (ev: PortAllocationEvent) => void) => {
+    onPortEvent: (cb: (ev: PortAllocationEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLanePortEventFanout, cb, "lanes.onPortEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: PortAllocationEvent,
@@ -7858,7 +8021,9 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
     },
-    onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => {
+    onProxyEvent: (cb: (ev: LaneProxyEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneProxyEventFanout, cb, "lanes.onProxyEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneProxyEvent,
@@ -7907,7 +8072,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "oauthListSessions", {}, () =>
         ipcRenderer.invoke(IPC.lanesOAuthListSessions),
       ),
-    onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => {
+    onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneOAuthEventFanout, cb, "lanes.onOAuthEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: OAuthRedirectEvent,
@@ -7965,7 +8132,9 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.lanesDiagnosticsDeactivateFallback, args),
       );
     },
-    onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void) => {
+    onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneDiagnosticsEventFanout, cb, "lanes.onDiagnosticsEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: RuntimeDiagnosticsEvent,
@@ -8269,14 +8438,14 @@ const adeBridge = {
       sessionId: string,
       pin?: OpenProjectBinding | null,
     ): Promise<SessionDeltaSummary | null> =>
-      pin
+      pin && !isBoundCopyPin(pin)
         ? callPinnedRuntimeAction<SessionDeltaSummary | null>(
             pin,
             "session",
             "getDelta",
             { args: { sessionId } },
           )
-        : sessionDeltaCache.get(sessionId),
+        : sessionDeltaCache.get(sessionId, boundCopyCacheLoad(pin, "session", "getDelta", { args: { sessionId } })),
     onChanged: (cb: (ev: TerminalSessionChangedEvent) => void, pin?: OpenProjectBinding | null) => {
       // A pinned terminal drawer holds sessions on another machine; only that
       // machine's feed says when one of them is deleted.
@@ -9884,14 +10053,17 @@ const adeBridge = {
       args: ComputerUseOwnerSnapshotArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<ComputerUseOwnerSnapshot> =>
-      pin
+      pin && !isBoundCopyPin(pin)
         ? callPinnedRuntimeAction<ComputerUseOwnerSnapshot>(
             pin,
             "computer_use_artifacts",
             "getOwnerSnapshot",
             { args },
           )
-        : computerUseOwnerSnapshotCache.get(serializeIpcCacheArgs(args)),
+        : computerUseOwnerSnapshotCache.get(
+            serializeIpcCacheArgs(args),
+            boundCopyCacheLoad(pin, "computer_use_artifacts", "getOwnerSnapshot", { args }),
+          ),
     deleteArtifacts: async (
       args: ComputerUseArtifactDeleteArgs,
       pin?: OpenProjectBinding | null,
@@ -9984,25 +10156,25 @@ const adeBridge = {
     getStatus: async (
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStatus> =>
-      pin
+      pin && !isBoundCopyPin(pin)
         ? callPinnedRuntimeAction<IosSimulatorStatus>(
             pin,
             "ios_simulator",
             "getStatus",
             {},
           )
-        : iosSimulatorStatusCache.get(boundReadCacheKey()),
+        : iosSimulatorStatusCache.get(boundReadCacheKey(undefined, pin), boundCopyCacheLoad(pin, "ios_simulator", "getStatus")),
     listDevices: async (
       pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorDevice[]> =>
-      pin
+      pin && !isBoundCopyPin(pin)
         ? callPinnedRuntimeAction<IosSimulatorDevice[]>(
             pin,
             "ios_simulator",
             "listDevices",
             {},
           )
-        : iosSimulatorDevicesCache.get(boundReadCacheKey()),
+        : iosSimulatorDevicesCache.get(boundReadCacheKey(undefined, pin), boundCopyCacheLoad(pin, "ios_simulator", "listDevices")),
     listLaunchTargets: async (
       args: IosSimulatorListLaunchTargetsArgs = {},
       pin?: OpenProjectBinding | null,
@@ -10710,14 +10882,14 @@ const adeBridge = {
       args: AppControlLaneArgs = {},
       pin?: OpenProjectBinding | null,
     ): Promise<AppControlStatus> =>
-      pin
+      pin && !isBoundCopyPin(pin)
         ? callPinnedRuntimeAction<AppControlStatus>(
             pin,
             "app_control",
             "getStatus",
             { args },
           )
-        : appControlStatusCache.get(boundReadCacheKey(args)),
+        : appControlStatusCache.get(boundReadCacheKey(args, pin), boundCopyCacheLoad(pin, "app_control", "getStatus", { args })),
     launch: async (
       args: AppControlLaunchArgs = {},
       pin?: OpenProjectBinding | null,
@@ -13330,7 +13502,9 @@ const adeBridge = {
             () => ipcRenderer.invoke(IPC.githubPublishCurrentProject, input),
           ),
       ),
-    onStatusChanged: (cb: (status: GitHubStatus) => void): (() => void) => {
+    onStatusChanged: (cb: (status: GitHubStatus) => void, pin?: OpenProjectBinding | null): (() => void) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteGitHubStatusChangedFanout, cb, "github.onStatusChanged");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: GitHubStatus,
@@ -14457,7 +14631,9 @@ const adeBridge = {
         ? runtime.result
         : ipcRenderer.invoke(IPC.testsGetLogTail, args);
     },
-    onEvent: (cb: (ev: TestEvent) => void) => {
+    onEvent: (cb: (ev: TestEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteTestEventFanout, cb, "tests.onEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: TestEvent,

@@ -60,7 +60,7 @@ export function SceneDataFeed({
   const wantPrs = sources.includes("prs");
   const lanes = useChatMachineLanes(scope.pin);
   // Run counts exist only in the tab's own Lanes snapshots.
-  const snapshots = useAppStore((state) => (scope.pin ? NO_SNAPSHOTS : state.laneSnapshots));
+  const snapshots = useAppStore((state) => (scope.isActiveBinding ? state.laneSnapshots : NO_SNAPSHOTS));
   const sessionsForPin = useSessionsForPin(scope.binding);
   // A project transition can leave the chat unpinned with a null binding while
   // the project's session cache still holds its rows; read that cache by root

@@ -134,13 +134,12 @@ export function resolveLaneBindingKey(
 }
 
 /**
- * The `OpenProjectBinding` a chat's runtime calls must be pinned to, or `null`
- * when no pin is needed.
+ * The `OpenProjectBinding` a chat's runtime calls go to: the copy that owns
+ * the lane, the tab's own included.
  *
- * `null` means "take the existing bound path", which is correct for all three
- * of: the chat lives on the active binding, the lane's owner is unknown, and
- * the lane's owner is not open in this window (nothing to route to — the bound
- * path's own fallbacks are strictly better than inventing a target).
+ * `null` means "no known address": the lane's owner is unknown, or it is not
+ * open in this window. Such a call still takes the bound path, whose own
+ * fallbacks beat inventing a target (the preload tripwire lists it).
  */
 export function resolveChatRuntimePin(
   state: ChatMachineRoutingState,
@@ -148,8 +147,16 @@ export function resolveChatRuntimePin(
 ): OpenProjectBinding | null {
   const bindingKey = resolveLaneBindingKey(state, laneId);
   if (!bindingKey) return null;
-  if (state.activeBinding && state.activeBinding.key === bindingKey) return null;
+  if (state.activeBinding && state.activeBinding.key === bindingKey) return state.activeBinding;
   return state.openBindings.find((binding) => binding.key === bindingKey) ?? null;
+}
+
+/** Whether `pin` names the copy the tab is bound to. Read this, not a null pin. */
+export function isActiveBindingPin(
+  pin: { key: string } | null | undefined,
+  activeBinding: { key: string } | null | undefined,
+): boolean {
+  return Boolean(pin && activeBinding && pin.key === activeBinding.key);
 }
 
 /**
@@ -174,8 +181,8 @@ export function isLivePinnedBinding(
 /**
  * The machine a session's Work tools actually talk to.
  *
- * `pin === null` means "this session lives on the tab's bound machine", not
- * "no machine". Tool React keys and drawer UI state must use this effective
+ * `pin === null` means "no known address", which still takes the tab's bound
+ * machine, not "no machine". Tool React keys and drawer UI state must use this effective
  * binding so switching the tab dropdown under an open session does not remount
  * Git/Terminal/Browser onto the new tab. Git caches use
  * `projectStateKeyForBinding` of the same effective binding so a local
@@ -206,7 +213,7 @@ export function laneOnMachineKey(
 }
 
 export type ChatMachineRouter = {
-  /** Resolved pin for a chat on `laneId`, or null for the active binding. */
+  /** Resolved pin for a chat on `laneId` (the tab's own copy included), or null when unknown. */
   pinForLane: (laneId: string | null | undefined) => OpenProjectBinding | null;
   /** See `isLivePinnedBinding`. */
   isLivePin: (pin: { key: string } | null | undefined) => boolean;

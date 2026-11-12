@@ -610,7 +610,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const session = work.sessionsById.get(sessionId) ?? null;
     const laneId = laneHint ?? session?.laneId ?? null;
     const runtimePin = resolveSessionRuntimePin(session ?? { id: sessionId, sessionId, laneId });
-    if (laneId && !runtimePin) work.selectLane(laneId);
+    // Only the tab's own copy has its lanes in the tab's lane list.
+    if (laneId && (!runtimePin || runtimePin.key === projectBinding?.key)) work.selectLane(laneId);
     work.focusSession(sessionId);
     work.openSessionTab(sessionId);
     work.setSelectedSessionId(sessionId);
@@ -1171,7 +1172,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // Work view flips to TerminalView immediately. A pinned session belongs
       // to the cross-machine union, so its own sync round owns that snapshot and
       // lane selection instead of inventing a local lane here.
-      if (result.session && !pin) work.upsertSessionSnapshot(result.session);
+      const onTabCopy = !pin || pin.key === projectBinding?.key;
+      if (result.session && onTabCopy) work.upsertSessionSnapshot(result.session);
       if (pin) {
         machineRouter.rememberSessionPin(
           { sessionId: result.sessionId, ptyId: result.session?.ptyId ?? session.ptyId },
@@ -1183,11 +1185,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       } catch {
         // Best-effort after reattach; the PTY events will also refresh state.
       }
-      if (!pin) work.selectLane(session.laneId);
+      if (onTabCopy) work.selectLane(session.laneId);
       work.focusSession(result.sessionId);
       work.setActiveItemId(result.sessionId);
     },
-    [machineRouter, work],
+    [machineRouter, projectBinding?.key, work],
   );
 
   const runCliResumeRequest = useCallback(
@@ -1270,6 +1272,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes, work.draftLaneId]);
   // A chat on another machine is keyed by its machine, as its lane's delete was (see SessionListPane).
   const activeLaneDeleteKey = activeLaneId && activeWorkSessionRuntimePin
+    && activeWorkSessionRuntimePin.key !== projectBinding?.key
     ? foreignLaneKey(machineIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
     : activeLaneId;
   const activeLaneDeleteProgress = useAppStore((state) => (
@@ -2347,7 +2350,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onChangeStatus={(session, target, runtimePin) => {
           // A row on another machine is re-read after the move and after an
           // undo, as a board drag does, so the card does not sit stale.
-          const refreshForeign = runtimePin
+          const refreshForeign = runtimePin && runtimePin.key !== projectBinding?.key
             ? () => requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin))
             : undefined;
           moveSessionOnBoard({

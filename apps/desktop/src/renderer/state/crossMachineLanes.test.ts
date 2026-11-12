@@ -7,8 +7,11 @@ import type {
   AgentChatSession,
   LaneSummary,
   OpenProjectBinding,
+  RemoteRuntimeConnectionStatus,
+  RemoteRuntimeProjectRecord,
   TerminalSessionSummary,
 } from "../../shared/types";
+import { deriveLaneMachineOptions } from "../components/lanes/laneMachines";
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
@@ -430,6 +433,42 @@ describe("This computer counterpart resolution", () => {
       displayName: "Repo A",
       gitOriginUrl: "git@github.com:Acme/ADE.git",
     });
+  });
+});
+
+describe("another machine's checkout of the repository", () => {
+  const ORIGIN = "git@github.com:acme/app.git";
+  const record = (projectId: string, extra: Partial<RemoteRuntimeProjectRecord>): RemoteRuntimeProjectRecord => ({
+    projectId,
+    rootPath: `/srv/${projectId}`,
+    displayName: "app",
+    addedAt: 1,
+    lastOpenedAt: 1,
+    gitOriginUrl: null,
+    ...extra,
+  });
+  const studio = (projects: RemoteRuntimeProjectRecord[]) => ({
+    target: { id: "target-studio", name: "Mac Studio", hostname: "studio.local", transport: "paired" },
+    state: "connected",
+    projects,
+  }) as unknown as RemoteRuntimeConnectionStatus;
+
+  it.each([
+    ["the account project id when the origins differ", [record("renamed", { accountProjectId: "ap_1", gitOriginUrl: "git@github.com:acme/app-renamed.git" })], "renamed"],
+    ["the origin when the copy carries no account id", [record("by-origin", { gitOriginUrl: ORIGIN })], "by-origin"],
+    ["a live origin match over a deleted copy that carries the id", [record("gone", { accountProjectId: "ap_1", exists: false }), record("live", { gitOriginUrl: ORIGIN })], "live"],
+  ])("joins on %s", (_label, projects, expectedProjectId) => {
+    const options = deriveLaneMachineOptions({
+      connections: [studio(projects)],
+      boundTargetId: null,
+      repoOriginUrl: ORIGIN,
+      repoAccountProjectId: "ap_1",
+      repoDisplayName: "app",
+    });
+    const option = options.find((entry) => entry.id === "target-studio");
+    expect(option?.repoMatch).toBe("matched");
+    expect(option?.project?.projectId).toBe(expectedProjectId);
+    expect(option?.project?.rootPath).toBe(`/srv/${expectedProjectId}`);
   });
 });
 
@@ -2660,9 +2699,16 @@ describe("lane actions resolve against the lane's machine", () => {
     hostname: "studio.local",
   };
 
+  const tabBinding: OpenProjectBinding = {
+    kind: "local",
+    key: "local:/Users/me/repo",
+    rootPath: "/Users/me/repo",
+    displayName: "Repo",
+  };
+
   function routerForForeignLane(bindingOverride: OpenProjectBinding | null) {
     const all = buildAllMachineLanes({
-      activeBinding: null,
+      activeBinding: tabBinding,
       activeLanes: [makeLane({ id: "shared-lane", name: "Local lane" })],
       machines: {
         "target-studio": {
@@ -2692,7 +2738,8 @@ describe("lane actions resolve against the lane's machine", () => {
     const unknownMachine = routable.route("shared-lane", "not-listed");
     const unroutable = routerForForeignLane(null).route("shared-lane", "target-studio");
 
-    expect(local.kind).toBe("bound");
+    // The tab's own lane routes to the tab's copy by its own address.
+    expect(local).toMatchObject({ kind: "pinned", pin: tabBinding, machine: { isActiveBinding: true } });
     expect(foreign).toMatchObject({ kind: "pinned", pin: binding, machine: { machineId: "target-studio" } });
     expect(unknownLane.kind).toBe("unknown");
     expect(unknownMachine.kind).toBe("unknown");

@@ -22,7 +22,7 @@ import {
   useWorkToolContextInsertion,
   type WorkSidebarContextTarget,
 } from "./workToolContextInsertion";
-import { useLanesForPin } from "../../state/crossMachineLanes";
+import { useLanesForPin, usePinTargetsTab } from "../../state/crossMachineLanes";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { isChatToolType, isPtyContextInsertableToolType, primarySessionLabel } from "../../lib/sessions";
@@ -248,7 +248,9 @@ export function WorkSidebar({
     [laneId, scopedLanes],
   );
   const laneRoot = activeLane?.worktreePath ?? null;
-  const pinnedMachineName = runtimePin ? machineNameForBinding(runtimePin) : null;
+  // Named only for another machine: the tab's own copy shows no machine chrome.
+  const runsOnTab = usePinTargetsTab(runtimePin);
+  const pinnedMachineName = runtimePin && !runsOnTab ? machineNameForBinding(runtimePin) : null;
 
   useEffect(() => {
     setSelectedPath(null);

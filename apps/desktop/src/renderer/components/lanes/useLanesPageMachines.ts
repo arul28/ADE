@@ -40,6 +40,10 @@ const machineFilterByProject = new Map<string, string>();
 
 /** Where one row's lane lives: its real id on its machine, and the pin to use. */
 export type LaneTarget =
+  /**
+   * `pin` addresses the lane's copy, the tab's own included. `machineId` is
+   * null for the tab's own machine: only another machine's rows carry one.
+   */
   | { ok: true; laneId: string; pin: OpenProjectBinding | null; machineId: string | null; name: string }
   | { ok: false; reason: string };
 
@@ -133,7 +137,7 @@ export function useLanesPageMachines({
     const foreignRow = foreignRowByKeyRef.current.get(key);
     if (foreignRow) {
       const route = router.route(foreignRow.lane.id, foreignRow.machineId);
-      if (route.kind !== "pinned" && route.kind !== "bound") {
+      if (route.kind !== "pinned") {
         return { ok: false, reason: `${foreignRow.machineName} is unavailable` };
       }
       const blocked = machineBlockedReason(route.machine);
@@ -142,10 +146,10 @@ export function useLanesPageMachines({
     }
     const local = allMachineLanesRef.current.lanesByKey.get(key) ?? null;
     const route = router.route(key, allMachineLanesRef.current.machines[0]?.machineId ?? null);
-    if (route.kind !== "bound" || !local?.isActiveBinding) {
+    if (route.kind !== "pinned" || !route.machine.isActiveBinding || !local?.isActiveBinding) {
       return { ok: false, reason: "That lane is no longer listed." };
     }
-    return { ok: true, laneId: key, pin: null, machineId: null, name: local.lane.name };
+    return { ok: true, laneId: key, pin: route.pin, machineId: null, name: local.lane.name };
   }, []);
   const liveMachines = useMemo(
     () => (goneMachineIds.size ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)) : allMachineLanes.machines),

@@ -156,6 +156,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // This toolbar also renders from the CLI session header, which has no chat
   // scope above it, so the scope is derived from the pin it is handed.
   const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
+  // The pin when it names another copy than the tab's own: UI that means "another machine" reads this.
+  const foreignPin = scope.isActiveBinding ? null : runtimePin;
   const isRemote = scope.isRemote;
   const projectRoot = scope.rootPath;
   // Scopes the cached PR list when there is no pin (the tab's own machine).
@@ -376,7 +378,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     // same thing from either machine. The local branch keeps this surface's
     // richer route (it also selects the lane), so it passes its own path.
     openLanePr(pr, {
-      foreign: Boolean(runtimePin),
+      foreign: Boolean(foreignPin),
       navigate,
       localPath: `/prs${buildPrsRouteSearch({
         activeTab: "normal",
@@ -387,7 +389,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         selectedLaneId: laneId,
       })}`,
     });
-  }, [laneId, navigate, runtimePin]);
+  }, [laneId, navigate, foreignPin]);
 
   /**
    * Focus grid: always the PRs tab, never GitHub. A lane on another machine has
@@ -397,13 +399,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const openPrInPrsTab = useCallback((pr: PrSummary) => {
     navigate(`/prs${buildPrsRouteSearch({
       activeTab: "normal",
-      selectedPrId: runtimePin ? null : pr.id,
+      selectedPrId: foreignPin ? null : pr.id,
       selectedPrNumber: pr.githubPrNumber,
       repoOwner: pr.repoOwner,
       repoName: pr.repoName,
-      selectedLaneId: runtimePin ? null : laneId,
+      selectedLaneId: foreignPin ? null : laneId,
     })}`);
-  }, [laneId, navigate, runtimePin]);
+  }, [laneId, navigate, foreignPin]);
 
   const handlePr = useCallback(async () => {
     // A PR operation is about to run against this worktree — arm the drift
@@ -426,7 +428,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     // Creating a PR is a write against the lane's worktree and the create form
     // derives its branches from the bound machine's lanes, so it is offered only
     // on the machine that owns the lane. Reading one is not so restricted.
-    if (runtimePin) return;
+    if (foreignPin) return;
 
     const params = new URLSearchParams({
       tab: "normal",
@@ -435,7 +437,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       target: "primary",
     });
     navigate(`/prs?${params.toString()}`);
-  }, [laneId, linkedPr, openPr, prLoaded, refreshPr, runtimePin]);
+  }, [foreignPin, laneId, linkedPr, navigate, openPr, prLoaded, refreshPr]);
 
   const handlePrClick = useCallback(() => {
     if (prActionBusy) return;
@@ -496,8 +498,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     if (!linkedPr) return;
     setPrMenuOpen(false);
     // Same rule as the pill: a PR id only resolves on the machine that owns it.
-    openLanePr(linkedPr, { foreign: Boolean(runtimePin), navigate });
-  }, [linkedPr, navigate, runtimePin]);
+    openLanePr(linkedPr, { foreign: Boolean(foreignPin), navigate });
+  }, [linkedPr, navigate, foreignPin]);
 
   const handleOpenInGitHub = useCallback(async () => {
     if (!linkedPr) return;
@@ -530,8 +532,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // Set only when the create affordance cannot do anything: a lane on another
   // machine, on a surface whose PR pane (which explains the same thing) is
   // absent. With a pane present the click opens it and the pane speaks.
-  const createBlockedReason = runtimePin && !linkedPr && !onTogglePrPane
-    ? `Switch to ${runtimePin.kind === "remote" ? runtimePin.runtimeName : "this lane's machine"} to open a pull request for it.`
+  const createBlockedReason = foreignPin && !linkedPr && !onTogglePrPane
+    ? `Switch to ${foreignPin.kind === "remote" ? foreignPin.runtimeName : "this lane's machine"} to open a pull request for it.`
     : null;
   const prPillActive = onTogglePrPane ? Boolean(prPaneOpen) : prMenuOpen;
   const prBadge = useMemo(() => {
@@ -616,7 +618,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
               type="button"
               className="mt-0.5 flex w-full items-center rounded-md border-t border-fg/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
               onClick={() => {
-                if (runtimePin) {
+                if (foreignPin) {
                   // The local PR tab cannot resolve a foreign machine's rows,
                   // so this opens the owning machine's primary PR instead.
                   openPr(linkedPr);
@@ -629,7 +631,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
                 })}`);
               }}
             >
-              {runtimePin ? "Open on its machine" : "Show all in Pull requests"}
+              {foreignPin ? "Open on its machine" : "Show all in Pull requests"}
             </button>
           </div>
         )}
@@ -637,7 +639,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         {pill}
       </HoverCard>
     );
-  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, openPrInPrsTab, prOpensPrsTab, prPillActive, runtimePin]);
+  }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, openPrInPrsTab, prOpensPrsTab, prPillActive, foreignPin]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {

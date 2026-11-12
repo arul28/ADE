@@ -5604,6 +5604,7 @@ export function AgentChatPane({
   const {
     chatScopeLaneId,
     chatRuntimePin,
+    chatForeignPin,
     chatEffectiveBinding,
     isRemoteChat,
     chatMachineName,
@@ -5639,7 +5640,7 @@ export function AgentChatPane({
     // Read when the notice renders: the saved-chats read marks a chat whose
     // cloud computer no longer exists (no connection, or gone from the list).
     chatNotice != null && selectedSessionId != null
-      && savedChatComputerGone(chatRuntimePin, selectedSessionId),
+      && savedChatComputerGone(chatForeignPin, selectedSessionId),
     chatCloudLane ? (chatCloudLane.laneName.trim() || laneLabel?.trim() || null) : null,
   );
   // A project chat on another machine, shown here: this desktop runs its
@@ -5667,7 +5668,7 @@ export function AgentChatPane({
     : null;
   // The offer reads the setting and the plugins of this tab's own project, so a
   // chat pinned to another runtime (another machine, another open project) gets none.
-  useClaudeModsPrompt(chatRuntimePin ? null : claudeModUiSessionId);
+  useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
@@ -5980,8 +5981,8 @@ export function AgentChatPane({
       // own and the host resolves the worktree, or fails loudly saying so.
       return chatLaneWorktreePath ?? null;
     }
-    return chatRuntimePin ? chatRuntimePin.rootPath : projectRoot;
-  }, [chatLaneWorktreePath, chatRuntimePin, chatScopeLaneId, laneId, projectRoot, selectedSession?.laneId]);
+    return chatForeignPin ? chatForeignPin.rootPath : projectRoot;
+  }, [chatLaneWorktreePath, chatForeignPin, chatScopeLaneId, laneId, projectRoot, selectedSession?.laneId]);
   // `selectedSessionId` is internal state synced from props in an effect, so it
   // trails the incoming selection by one render. Deriving the transcript from
   // it painted the OUTGOING chat's events for a beat after the pane was pointed
@@ -8073,7 +8074,7 @@ export function AgentChatPane({
   // never the tab's, while a pinned machine's lanes are still loading); a lane
   // that machine doesn't know is not read at all, rather than being sent to the
   // tab's machine, where it can only fail as "Lane not found".
-  const chatMachineLanes = useLanesForPin(chatRuntimePin);
+  const chatMachineLanes = useLanesForPin(chatForeignPin);
 
   // Same gate the composer uses for drafts: a scoped pane (personal chats,
   // embedders) has no project runtime to schedule against. Called at the top
@@ -8093,9 +8094,9 @@ export function AgentChatPane({
       laneId: laneIdForChat,
       laneName: sourceLanes.find((lane) => lane.id === laneIdForChat)?.name ?? null,
       lanes: sourceLanes.map((lane) => ({ id: lane.id, name: lane.name })),
-      machineName: chatRuntimePin?.displayName ?? null,
+      machineName: chatForeignPin?.displayName ?? null,
     };
-  }, [chatMachineLanes, chatRuntimePin?.displayName, laneId, lanes, personalScope, schedulePaneScope, selectedSession?.laneId]);
+  }, [chatMachineLanes, chatForeignPin?.displayName, laneId, lanes, personalScope, schedulePaneScope, selectedSession?.laneId]);
   const cloudReadinessLaneId = useMemo(() => {
     const sourceLanes = chatMachineLanes ?? lanes;
     if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {
@@ -8158,8 +8159,8 @@ export function AgentChatPane({
     const composerPin = selectedSessionIdRef.current
       ? (chatRuntimePinRef.current ?? projectBinding)
       : (draftExecutionBindingRef.current ?? chatRuntimePinRef.current);
-    const pin = composerPin && composerPin.key !== projectBinding?.key ? composerPin : null;
-    void getAiStatusCached({ projectRoot: composerPin?.rootPath ?? projectRoot ?? null, pin })
+    // The tab's own copy is named too; the status cache shares its entry with no pin.
+    void getAiStatusCached({ projectRoot: composerPin?.rootPath ?? projectRoot ?? null, pin: composerPin ?? null })
       .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
       .catch((error: unknown) => {
         console.warn("[chat] reading Devin Cloud's sign-in failed", error);
@@ -14103,7 +14104,7 @@ export function AgentChatPane({
       return false;
     }
     // The chat's machine launches it, through its own (shared) Cursor sign-in.
-    const { pin: cloudPin, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
+    const { pin: cloudPin, isActiveBinding: cloudOnTab, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     if (cursorCloudLaunchInFlightRef.current) return false;
     cursorCloudLaunchInFlightRef.current = true;
     setError(null);
@@ -14217,7 +14218,7 @@ export function AgentChatPane({
       }, cloudPin);
       // The lane now lives on Cursor Cloud: the agent works on its branch.
       {
-        const targetLane = laneOnLaunchMachine(targetLaneId, cloudPin, chatMachineLanes, lanes);
+        const targetLane = laneOnLaunchMachine(targetLaneId, cloudOnTab, chatMachineLanes, lanes);
         if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("cursor"))) {
           void window.ade.lanes.updateAppearance({
             laneId: targetLaneId,
@@ -14373,7 +14374,7 @@ export function AgentChatPane({
     // The chat's machine launches it, through its own (shared) Devin sign-in.
     // A hand-off from an open chat goes from that chat's machine.
     const launchBinding = selectedSessionId ? chatRuntimePinRef.current ?? projectBinding ?? null : draftExecutionBindingRef.current;
-    const { pin: cloudPin, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
+    const { pin: cloudPin, isActiveBinding: cloudOnTab, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     devinCloudLaunchInFlightRef.current = true;
     setError(null);
 
@@ -14444,7 +14445,7 @@ export function AgentChatPane({
       if (!targetLaneId) throw new Error("Select a lane before sending.");
       // The lane now lives on Devin Cloud: its branch is where the VM works,
       // and every chat in it is a Devin Cloud chat.
-      const targetLane = laneOnLaunchMachine(targetLaneId, cloudPin, chatMachineLanes, lanes);
+      const targetLane = laneOnLaunchMachine(targetLaneId, cloudOnTab, chatMachineLanes, lanes);
       if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("devin"))) {
         await window.ade.lanes.updateAppearance({
           laneId: targetLaneId,

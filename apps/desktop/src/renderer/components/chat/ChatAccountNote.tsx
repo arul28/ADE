@@ -19,6 +19,7 @@ import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../ui/pan
 import { useAgentChatApi } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { extractError } from "../../lib/format";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -247,13 +248,14 @@ export function ChatAccountNote({
   credentialId?: string | null;
   preset?: HarnessPreset | null;
   events: readonly AgentChatEventEnvelope[];
-  /** The chat's machine; null is the tab's own binding. */
+  /** The chat's copy, the tab's own included; null when unknown (the tab's machine). */
   runtimePin: OpenProjectBinding | null;
   /** A turn is running; switching waits for it to end. */
   busy?: boolean;
   onSwitched?: () => void;
 }) {
   const agentChatApi = useAgentChatApi();
+  const runsOnTab = usePinTargetsTab(runtimePin);
   const turnAccount = useMemo(() => latestTurnAccount(events), [events]);
   const multi = isProviderInstanceProvider(provider) ? provider : null;
   const boundInstanceId = multi ? (clean(instanceId) ?? multi) : null;
@@ -321,7 +323,7 @@ export function ChatAccountNote({
     setOpen(next);
     setError(null);
     // Usage numbers are this machine's; a chat on another machine shows none.
-    if (next && !runtimePin) {
+    if (next && runsOnTab) {
       window.ade?.usage?.getSnapshot().then(setUsage).catch(() => undefined);
     }
   };

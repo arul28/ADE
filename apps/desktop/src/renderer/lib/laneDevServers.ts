@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DevServerRecord, OpenProjectBinding } from "../../shared/types";
-import { pinKey } from "../state/pinKey";
+import { cacheScopeKey } from "./tabBindingKey";
 import { isUnsupportedAdeActionError } from "../../shared/codedError";
 
 /**
@@ -77,6 +77,15 @@ function syncRecheck(): void {
     stopWindowListeners();
     stopWindowListeners = null;
   }
+}
+
+/**
+ * The machine part of an entry key: the copy the read goes to. The tab's own
+ * copy is keyed by its own key, so a switch to another copy never reuses an
+ * entry (or the pin saved in it) from the copy before.
+ */
+function pinKey(pin: OpenProjectBinding | null | undefined): string {
+  return cacheScopeKey(pin) ?? "bound";
 }
 
 function entryKey(pin: OpenProjectBinding | null, laneId: string): string {

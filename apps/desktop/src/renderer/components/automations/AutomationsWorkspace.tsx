@@ -527,12 +527,15 @@ export function AutomationsWorkspace({
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.
   const draftPin: OpenProjectBinding | null = draftTarget?.pin ?? null;
+  // The tab's own copy has a pin too; its suites and ingress are the ones this
+  // page already reads.
+  const draftForeignTarget = draftTarget && !draftTarget.isActiveBinding ? draftTarget : null;
   useEffect(() => {
     setDraftMachineSuites(null);
     setDraftMachineIngress(null);
-    if (!active || !draftTarget?.pin || !draftTarget.online) return;
+    if (!active || !draftForeignTarget?.pin || !draftForeignTarget.online) return;
     let cancelled = false;
-    const target = draftTarget;
+    const target = draftForeignTarget;
     void onMachine(window.ade.tests.listSuites(target.pin), target)
       .then((next) => { if (!cancelled) setDraftMachineSuites(next); })
       .catch(() => { if (!cancelled) setDraftMachineSuites([]); });
@@ -542,7 +545,7 @@ export function AutomationsWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [active, draftMachineReadNonce, draftTarget]);
+  }, [active, draftMachineReadNonce, draftForeignTarget]);
 
   const filteredRules = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -813,7 +816,7 @@ export function AutomationsWorkspace({
         }
         setManualRunRule(null);
         setManualRunLaneId("");
-        if (entry.machine.pin) refreshMachine(entry.machine.machineId);
+        if (!entry.machine.isActiveBinding) refreshMachine(entry.machine.machineId);
         else await refresh();
       } catch (err) {
         setError(explainError(err));
@@ -890,8 +893,8 @@ export function AutomationsWorkspace({
   const delivery = ingressStatus?.delivery ?? null;
   const manualRunEntry = manualRunRule ? entryByRule.get(manualRunRule) ?? null : null;
   const builderLanes = lanesForMachine(draftTarget);
-  const builderSuites = draftTarget?.pin ? draftMachineSuites ?? [] : suites;
-  const builderIngress = draftTarget?.pin ? draftMachineIngress : ingressStatus;
+  const builderSuites = draftForeignTarget?.pin ? draftMachineSuites ?? [] : suites;
+  const builderIngress = draftForeignTarget?.pin ? draftMachineIngress : ingressStatus;
   const draftMachineBlocked = blockedReason(draftTarget);
   // The machine the draft runs on, and whether its ADE is new enough for it.
   // This window's own machine always is; an unknown version is not guessed at.
@@ -1084,6 +1087,7 @@ export function AutomationsWorkspace({
                 automationId={selectedRule.id}
                 ruleName={selectedRule.name}
                 pin={selectedEntry?.machine.pin ?? null}
+                isActiveBinding={selectedEntry?.machine.isActiveBinding ?? true}
                 machineName={selectedEntry?.machine.machineName ?? null}
                 offlineMessage={blockedReason(selectedEntry?.machine ?? null)}
               />
@@ -1118,7 +1122,7 @@ export function AutomationsWorkspace({
                 runBlockedReason={selectedRule ? ruleElsewhereReason(selectedRule) : null}
                 onIngressChanged={() => {
                   // The draft's machine owns its ingress status.
-                  if (draftTarget?.pin) setDraftMachineReadNonce((n) => n + 1);
+                  if (draftForeignTarget?.pin) setDraftMachineReadNonce((n) => n + 1);
                   else void refresh();
                 }}
                 runtimePin={draftPin}
@@ -1195,7 +1199,7 @@ export function AutomationsWorkspace({
           onStarted={() => {
             setTestKind(null);
             setDetailView("history");
-            if (selectedEntry.machine.pin) refreshMachine(selectedEntry.machine.machineId);
+            if (!selectedEntry.machine.isActiveBinding) refreshMachine(selectedEntry.machine.machineId);
             else void refresh();
           }}
         />

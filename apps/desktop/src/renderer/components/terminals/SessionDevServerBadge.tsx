@@ -9,6 +9,7 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MENU_LABEL_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "./workTools";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 /** `localhost:5173`, the way every surface names a dev server. */
 export function devServerLabel(server: Pick<DevServerRecord, "url" | "port">): string {
@@ -31,7 +32,7 @@ function keepFromRow(event: React.SyntheticEvent): void {
  * The list is the machine's own (see `useSessionDevServers`): no request per
  * row, no timer. Nothing renders until the chat has a server. The mark opens
  * a small menu: a server opens in the ADE Browser, and Stop asks the chat's
- * machine to stop it (`runtimePin` is the row's machine; null keeps the tab's).
+ * machine to stop it (`runtimePin` is the row's copy, the tab's own included).
  * That machine checks again that the process on the port is still this
  * chat's, so a port taken over by something else is refused there.
  */
@@ -50,6 +51,7 @@ export function SessionDevServerBadge({
   size?: number;
 }) {
   const servers = useSessionDevServers(sessionId, runtimePin);
+  const runsOnTab = usePinTargetsTab(runtimePin);
   const [open, setOpen] = React.useState(false);
   const [stopping, setStopping] = React.useState<ReadonlySet<number>>(() => new Set());
   const anchorRef = React.useRef<HTMLButtonElement | null>(null);
@@ -149,7 +151,7 @@ export function SessionDevServerBadge({
       >
         {/* The globe's tooltip already says who started these; a heading is
             only worth its row when the servers are on another machine. */}
-        {runtimePin ? <div className={MENU_LABEL_CLASS}>{`On ${machine}`}</div> : null}
+        {!runsOnTab ? <div className={MENU_LABEL_CLASS}>{`On ${machine}`}</div> : null}
         {servers.map((server) => {
           const label = devServerLabel(server);
           const busy = stopping.has(server.port);
