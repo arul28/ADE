@@ -3615,7 +3615,7 @@ export function createProjectConfigService({
     const keyed = withoutNewPlaintextKeys(candidateLocal);
     // A changed setting that follows the account goes there; the file keeps
     // the account's values for older ADE processes on this computer.
-    const routing = accountLayer ? accountLayer.routeSave(keyed, readLocalFileConfig()) : { local: keyed, refused: [] };
+    const routing = accountLayer ? accountLayer.routeSave(keyed, readLocalFileConfig()) : { local: keyed, refused: [], commit: () => {} };
     if (routing.refused.length > 0) {
       // Writing only the file would look saved, but the account's value
       // wins on the next read. Fail the save so the person can try again.
@@ -3633,6 +3633,7 @@ export function createProjectConfigService({
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
     writeFileAtomicSync(localPath, localYaml);
     cachedLocalFile = null;
+    routing.commit();
 
     logger.info("projectConfig.save", {
       localPath,
@@ -3649,7 +3650,10 @@ export function createProjectConfigService({
   const mirrorAccountSettings = (): void => {
     try {
       const mirrored = accountLayer?.mirror(readLocalFileConfig());
-      if (mirrored) writeLocalFile(mirrored);
+      if (!mirrored) return;
+      // The marks follow the file: a failed write keeps the old ones.
+      if (mirrored.file) writeLocalFile(mirrored.file);
+      mirrored.commit();
     } catch (error) {
       logger.warn("projectConfig.account_mirror_failed", { error: error instanceof Error ? error.name : "unknown" });
     }
@@ -3695,9 +3699,12 @@ export function createProjectConfigService({
      */
     resolveAccountSettingNotice(args: { key: string; choice: "use_local" | "keep" }): ProjectConfigSnapshot {
       const choice = args?.choice === "use_local" ? "use_local" : "keep";
-      if (accountLayer && typeof args?.key === "string" && accountLayer.resolve(args.key, choice)) {
-        mirrorAccountSettings();
+      const outcome = accountLayer && typeof args?.key === "string" ? accountLayer.resolve(args.key, choice) : "missing";
+      if (outcome === "refused") {
+        // The notice stays; the person can try again.
+        throw new Error("ADE couldn't save this computer's value to your ADE account. Try again.");
       }
+      if (outcome === "resolved") mirrorAccountSettings();
       return readSnapshotFromDisk();
     },
 

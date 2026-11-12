@@ -57,6 +57,30 @@ const SAVED_VALUE_REGEX = `^[[:space:]]*[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt]
   Buffer.from(ADE_CREDENTIAL_PREFIX, "utf8").toString("base64")
 }`;
 
+/** A path that is not there. Any other error (EIO, EACCES) can pass, so the run fails and is tried again. */
+function isMissing(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+async function statOrNull(file: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.promises.stat(file);
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+}
+
+async function readOrNull(file: string): Promise<string | null> {
+  try {
+    return await fs.promises.readFile(file, "utf8");
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw error;
+  }
+}
+
 /**
  * The repository's local config file, or null when `root` is in no Git
  * checkout. Like Git, looks in `root` and then its parents for `.git` (a
@@ -69,13 +93,13 @@ async function localConfigPath(root: string): Promise<string | null> {
   let gitDir: string | null = null;
   for (;;) {
     const dotGit = path.join(dir, ".git");
-    const stat = await fs.promises.stat(dotGit).catch(() => null);
+    const stat = await statOrNull(dotGit);
     if (stat?.isDirectory()) {
       gitDir = dotGit;
       break;
     }
     if (stat?.isFile()) {
-      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(await fs.promises.readFile(dotGit, "utf8").catch(() => ""));
+      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec((await readOrNull(dotGit)) ?? "");
       if (!pointer) return null;
       gitDir = path.resolve(dir, pointer[1]!);
       break;
@@ -85,7 +109,7 @@ async function localConfigPath(root: string): Promise<string | null> {
     dir = parent;
   }
   // Not a linked worktree when there is no `commondir`: the config is in gitDir itself.
-  const common = (await fs.promises.readFile(path.join(gitDir, "commondir"), "utf8").catch(() => "")).trim();
+  const common = ((await readOrNull(path.join(gitDir, "commondir"))) ?? "").trim();
   if (common) gitDir = path.resolve(gitDir, common);
   return path.join(gitDir, "config");
 }
@@ -94,8 +118,9 @@ async function localConfigPath(root: string): Promise<string | null> {
 async function mayHoldSavedHeader(root: string): Promise<boolean> {
   const file = await localConfigPath(root);
   if (!file) return false;
-  // An unreadable config: git cannot read it either, so there is nothing to do.
-  return /extraheader/i.test(await fs.promises.readFile(file, "utf8").catch(() => ""));
+  // No config file: nothing saved. A read that fails otherwise throws, and
+  // the run counts as failed.
+  return /extraheader/i.test((await readOrNull(file)) ?? "");
 }
 
 type ProjectCleanup = "none" | "removed" | "failed";
@@ -135,7 +160,11 @@ async function cleanProject(root: string, runGit: RunGit, logger: CleanupLogger)
     }
     return failed ? "failed" : removedKeys.size > 0 ? "removed" : "none";
   } catch (error) {
-    logger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.name : "unknown" });
+    const code = (error as { code?: unknown } | null)?.code;
+    logger.warn("github.saved_header_cleanup_failed", {
+      error: error instanceof Error ? error.name : "unknown",
+      ...(typeof code === "string" ? { code } : {}),
+    });
     return "failed";
   }
 }

@@ -23,6 +23,7 @@ import type {
   GithubDirectReview,
   GithubDirectUser,
 } from "../types";
+import { GITHUB_DIRECT_ACCOUNT_CHANGED } from "../types/githubDirect";
 import type { AccountAppTokenClient } from "./accountAppTokenClient";
 import { appGrantMissingPermissions, appGrantNeedsApproval, appInstallationGrantForOwner } from "./githubAppGrant";
 
@@ -865,7 +866,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
     // account's data nor the new account's token may cross over.
     const scope = options.credential.scopeKey() ?? "anonymous";
     const accountChanged = (): boolean => (options.credential.scopeKey() ?? "anonymous") !== scope;
-    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: "The ADE account changed during the read." } };
+    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: "The ADE account changed during the read.", reason: GITHUB_DIRECT_ACCOUNT_CHANGED } };
     const tokenAnswer = await options.credential.getToken().catch(() => null);
     if (accountChanged()) return changedAnswer;
     if (!tokenAnswer) return { ok: false, error: { kind: "github_unavailable", message: "The GitHub sign-in could not be read." } };

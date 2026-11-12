@@ -1510,18 +1510,19 @@ describe("projectConfigService - settings that follow the account", () => {
       [...set].filter((entry) => entry.startsWith(`${scope}|`)).map((entry) => ({ key: entry.slice(scope.length + 1) }));
     const store = {
       rows,
-      /** The store could not save (its cache file failed): writes return false. */
-      refuse: false,
+      /** The store could not save (its cache file failed): writes return false. A function refuses only the keys it names. */
+      refuse: false as boolean | ((key: string) => boolean),
+      refuses: (key: string) => (typeof store.refuse === "function" ? store.refuse(key) : store.refuse),
       backend: {
         get: (scope: string, key: string) => structuredClone(rows.get(id(scope, key))),
         set: (scope: string, key: string, value: unknown) => {
-          if (store.refuse) return false;
+          if (store.refuses(key)) return false;
           rows.set(id(scope, key), structuredClone(value));
           deleted.delete(id(scope, key));
           return true;
         },
         remove: (scope: string, key: string) => {
-          if (store.refuse) return false;
+          if (store.refuses(key)) return false;
           rows.delete(id(scope, key));
           deleted.add(id(scope, key));
           return true;
@@ -1586,6 +1587,12 @@ describe("projectConfigService - settings that follow the account", () => {
     b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
     expect(store.rows.get("repo:github.com/acme/other|prs.pollIntervalSeconds")).toBeUndefined();
     b.origin.url = ORIGIN;
+
+    // A refused answer fails, and the notice stays for another try.
+    store.refuse = true;
+    expect(() => b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" })).toThrow();
+    expect(b.service.get().accountNotices).toEqual([expect.objectContaining({ key: "prs.pollIntervalSeconds" })]);
+    store.refuse = false;
 
     const answered = b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
     expect(answered.accountNotices ?? []).toEqual([]);
@@ -1739,6 +1746,14 @@ describe("projectConfigService - settings that follow the account", () => {
     store.refuse = true;
     const before = b.file();
     expect(() => b.edit((local) => { local.github.prPollingIntervalSeconds = 300; })).toThrow();
+    expect(b.file()).toEqual(before);
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+    // One refused row fails the whole save: a row it already wrote goes back.
+    store.refuse = (key) => key === "jira.projectKeys";
+    expect(() => b.edit((local) => {
+      local.github.prPollingIntervalSeconds = 300;
+      local.issueTrackers = { jira: { projectKeys: ["OPS"] } };
+    })).toThrow();
     expect(b.file()).toEqual(before);
     expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
     store.refuse = false;

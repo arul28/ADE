@@ -304,17 +304,23 @@ export function createProjectConfigAccountLayer(args: {
      * Returns the config to write to the file, which carries the account's
      * value for every moved key (the one-release mirror), and the labels of
      * the settings the account store refused: the caller fails the save, as
-     * the account's value would hide the change on the next read.
+     * the account's value would hide the change on the next read. A refused
+     * row puts back the rows this save already wrote. The caller writes the
+     * file, then calls `commit`, so the layer's marks never describe a file
+     * write that failed.
      */
-    routeSave(candidate: ProjectConfigFile, file: ProjectConfigFile): { local: ProjectConfigFile; refused: string[] } {
+    routeSave(candidate: ProjectConfigFile, file: ProjectConfigFile): { local: ProjectConfigFile; refused: string[]; commit: () => void } {
+      const nothing = (): void => {};
       const target = active();
-      if (!target) return { local: candidate, refused: [] };
+      if (!target) return { local: candidate, refused: [], commit: nothing };
       const saved = readState(target);
       // Before the first move the file is the setting; the move takes it.
-      if (!saved.moved) return { local: candidate, refused: [] };
+      if (!saved.moved) return { local: candidate, refused: [], commit: nothing };
       let toFile = candidate;
       const written: string[] = [];
       const refused: string[] = [];
+      // The account's value before this save, for each row it wrote.
+      const previous: Array<{ row: string; value: unknown }> = [];
       for (const key of keysFor(target, [candidate, file])) {
         const raw = key.read(candidate);
         // It stays in this file (a secret, a folder here, too large).
@@ -327,8 +333,10 @@ export function createProjectConfigAccountLayer(args: {
         const cleared = raw === undefined
           || (wanted === undefined && key.localParts !== undefined && isDeepStrictEqual(raw, key.localOnly(raw)));
         if (cleared && current !== undefined && before !== undefined) {
-          if (attempt(() => target.backend.remove(target.scope, key.row))) written.push(key.row);
-          else {
+          if (attempt(() => target.backend.remove(target.scope, key.row))) {
+            written.push(key.row);
+            previous.push({ row: key.row, value: current });
+          } else {
             args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
             refused.push(key.label);
           }
@@ -337,6 +345,7 @@ export function createProjectConfigAccountLayer(args: {
         if (wanted !== undefined && !isDeepStrictEqual(wanted, before) && !isDeepStrictEqual(wanted, current)) {
           if (attempt(() => target.backend.set(target.scope, key.row, wanted))) {
             written.push(key.row);
+            previous.push({ row: key.row, value: current });
             markMirrored(saved, key, wanted);
           } else {
             args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
@@ -349,13 +358,23 @@ export function createProjectConfigAccountLayer(args: {
           markMirrored(saved, key, current);
         }
       }
+      if (refused.length > 0) {
+        // The save fails as a whole: put back what it already wrote, so no
+        // other computer sees half of it. The marks stay as they were.
+        for (const entry of previous) {
+          const restored = attempt(() => entry.value === undefined
+            ? target.backend.remove(target.scope, entry.row)
+            : target.backend.set(target.scope, entry.row, entry.value));
+          if (!restored) args.logger.warn("projectConfig.account_setting_restore_failed", { key: entry.row });
+        }
+        return { local: candidate, refused, commit: nothing };
+      }
       if (written.length > 0) {
         args.logger.info("projectConfig.account_settings_saved", { keys: written });
         // A save of the key settles its notice.
         saved.conflicts = saved.conflicts.filter((entry) => !written.includes(entry.row));
       }
-      writeState(saved);
-      return { local: toFile, refused };
+      return { local: toFile, refused, commit: () => writeState(saved) };
     },
 
     /**
@@ -426,11 +445,13 @@ export function createProjectConfigAccountLayer(args: {
     /**
      * The file with the account's value for each moved key (and without the
      * values deleted elsewhere), or null when the file already matches. The
-     * one-release mirror; it also records which rows the file now mirrors.
+     * one-release mirror. `commit` records which rows the file now mirrors:
+     * the caller calls it after the file write succeeds (or when `file` is
+     * null), so a failed write leaves the old marks.
      */
-    mirror(file: ProjectConfigFile): ProjectConfigFile | null {
+    mirror(file: ProjectConfigFile): { file: ProjectConfigFile | null; commit: () => void } {
       const target = active();
-      if (!target) return null;
+      if (!target) return { file: null, commit: () => {} };
       const saved = readState(target);
       const now = Date.now();
       saved.firstWrites = saved.firstWrites.filter((entry) => now - entry.at < FIRST_WRITE_WATCH_MS);
@@ -470,8 +491,7 @@ export function createProjectConfigAccountLayer(args: {
         next = key.write(next, combined);
         changed = true;
       }
-      writeState(saved);
-      return changed ? next : null;
+      return { file: changed ? next : null, commit: () => writeState(saved) };
     },
 
     /**
@@ -503,24 +523,28 @@ export function createProjectConfigAccountLayer(args: {
     /**
      * The person's answer to a notice: `use_local` puts this computer's value
      * in the account; `keep` keeps the account's. Either way the notice goes.
+     * `refused`: the account store refused the value, and the notice stays.
      */
-    resolve(row: string, choice: "use_local" | "keep"): boolean {
+    resolve(row: string, choice: "use_local" | "keep"): "resolved" | "missing" | "refused" {
       const target = active();
-      if (!target) return false;
+      if (!target) return "missing";
       const pending = readState(target);
       const entry = pending.conflicts.find((candidate) => candidate.row === row);
-      if (!entry) return false;
+      if (!entry) return "missing";
       if (choice === "use_local") {
         const key = keysFor(target, []).find((candidate) => candidate.row === row)
           ?? buildCollectionKeys(rules, [], [row])[0];
         const value = key?.coerce(entry.localValue);
-        if (!key || value === undefined) return false;
-        if (!attempt(() => target.backend.set(target.scope, key.row, value))) return false;
+        if (!key || value === undefined) return "missing";
+        if (!attempt(() => target.backend.set(target.scope, key.row, value))) {
+          args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
+          return "refused";
+        }
       }
       pending.conflicts = pending.conflicts.filter((candidate) => candidate.row !== row);
       writeState(pending);
       args.logger.info("projectConfig.account_move_notice_resolved", { key: row, choice });
-      return true;
+      return "resolved";
     },
   };
 }

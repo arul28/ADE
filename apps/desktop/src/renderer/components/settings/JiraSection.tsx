@@ -238,7 +238,14 @@ export function JiraSection() {
             : "Saved for this repository. Signed in to ADE, your other computers get it too."}
         </p>
       ) : null}
-      <AccountSettingNotices pin={pin} keys={JIRA_ACCOUNT_KEYS} onResolved={() => { void loadProjectBinding(); }} />
+      <AccountSettingNotices
+        pin={pin}
+        keys={JIRA_ACCOUNT_KEYS}
+        onResolved={() => {
+          // The applied value changes the bindings, as a save here does.
+          void loadProjectBinding().then(() => window.dispatchEvent(new Event(JIRA_PROJECT_BINDINGS_CHANGED_EVENT)));
+        }}
+      />
       {projectError ? <Banner layout="inline" model={{ id: "jira-project-binding-error", tone: "error", title: "Couldn't load or save the projects", detail: projectError, actions: [{ label: "Retry", onClick: () => { void loadProjectBinding(); if (connected) void loadProjects(); } }] }} /> : null}
     </IntegrationCard>
   );

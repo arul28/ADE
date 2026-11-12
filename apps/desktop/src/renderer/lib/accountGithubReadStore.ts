@@ -6,6 +6,7 @@ import type {
   GithubDirectRequestOptions,
   GithubDirectResult,
 } from "../../shared/types";
+import { GITHUB_DIRECT_ACCOUNT_CHANGED } from "../../shared/types";
 import { isGithubDirectUserState } from "../../shared/github/directClient";
 
 /**
@@ -144,8 +145,9 @@ export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
         ? now() + USER_STATE_RETRY_MS
         : Math.max(now() + refreshMs, retryAt ?? 0);
       // A background read the client skipped (rate limit low) keeps the data;
-      // a state only a person can fix (signed out, say) does not.
-      if (isGithubDirectUserState(error.kind)) {
+      // a state only a person can fix (signed out, say) and an account
+      // switch during the read do not.
+      if (isGithubDirectUserState(error.kind) || error.reason === GITHUB_DIRECT_ACCOUNT_CHANGED) {
         entry.scope = null;
         emit(entry, { data: null, error, loading: false, refreshing: false, fetchedAt: null, truncated: false });
       } else {

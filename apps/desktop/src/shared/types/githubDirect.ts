@@ -39,6 +39,9 @@ export type GithubDirectErrorKind =
   | "forbidden"
   | "invalid_request";
 
+/** `reason` of a read whose ADE account changed while it ran: its old data is another account's. */
+export const GITHUB_DIRECT_ACCOUNT_CHANGED = "account_changed";
+
 export type GithubDirectError = {
   kind: GithubDirectErrorKind;
   /** Technical detail for logs; the screen uses `githubDirectStateCopy`. */

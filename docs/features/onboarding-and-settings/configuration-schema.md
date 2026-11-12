@@ -92,7 +92,9 @@ computer signed in to the account gets them
   row, and the other computers remove their copy only when it came from the
   account. This computer's own parts (the `writablePaths` lists) stay. When
   the account store refuses the write, the whole save fails with an error, so
-  the person can try again; nothing is written to the file alone. Notices
+  the person can try again; nothing is written to the file alone, and the
+  rows the save already wrote get their earlier account values back. A
+  notice answer the store refuses fails too, and the notice stays. Notices
   belong to one repository: after `origin` changes, the old ones are gone. For one release ADE also writes the account values back into
   `local.yaml` (the mirror), so an older ADE on the same computer still reads
   them.

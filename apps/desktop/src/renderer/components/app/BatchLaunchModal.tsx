@@ -276,6 +276,12 @@ export function BatchLaunchModal({
   const multiIssue = issues.length > 1;
   const allLinear = issues.every((issue) => issue.tracker === "linear");
   const issueSeedKey = useMemo(() => issues.map((issue) => `${issue.tracker}:${issue.id}`).join("\0"), [issues]);
+  // The project and issues a prompt read was for: an answer that comes back
+  // after the modal moved on is dropped.
+  const promptScopeRef = useRef("");
+  useEffect(() => {
+    promptScopeRef.current = `${open ? 1 : 0}\0${projectRoot ?? ""}\0${issueSeedKey}`;
+  }, [open, projectRoot, issueSeedKey]);
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
   // On ADE Cloud each issue gets a new lane on a new computer: no existing lane.
   const selectableLanes = useMemo(
@@ -570,7 +576,9 @@ export function BatchLaunchModal({
             keys={LINEAR_PROMPT_ACCOUNT_KEYS}
             onResolved={() => {
               const previous = projectDefaultPrompt;
+              const scope = promptScopeRef.current;
               void loadProjectDefaultPrompt(projectRoot).then((saved) => {
+                if (promptScopeRef.current !== scope) return;
                 setProjectDefaultPrompt(saved);
                 if (!saved || previous == null || saved === previous) return;
                 // Rows still on the old default take the applied one; an edited prompt stays.
