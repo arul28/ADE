@@ -6469,7 +6469,7 @@ describe("adeRpcServer", () => {
     expect(getLaneState).not.toHaveBeenCalled();
   });
 
-  it("lets an elevated agent-shaped caller read every lane's pane but never write the active tool", async () => {
+  it("lets an elevated agent-shaped caller read every lane's pane but never write the active tool or watch and drive a tab", async () => {
     // The CTO carve-out on `work_tools` is a READ carve-out. `setActiveTool` is
     // the domain's one write and it belongs to the human at the desktop, so the
     // carve-out must not smuggle it through — it used to, by skipping the
@@ -6483,7 +6483,17 @@ describe("adeRpcServer", () => {
     const getLaneState = vi.fn(async (args: unknown) => args);
     const readObservationPreview = vi.fn(async (args: unknown) => args);
     const setActiveTool = vi.fn(() => ({ ok: true }));
-    fixture.runtime.workToolsStateService = { getLaneState, setActiveTool, readObservationPreview };
+    // Watching and driving a tab on another machine skip every ownership and
+    // access check agent browser commands keep: person-only, CTO included.
+    const readBrowserTabFrame = vi.fn(async () => ({ tabId: "tab-1", frame: null }));
+    const sendBrowserTabInput = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.workToolsStateService = {
+      getLaneState,
+      setActiveTool,
+      readObservationPreview,
+      readBrowserTabFrame,
+      sendBrowserTabInput,
+    };
 
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "cto-run", role: "cto", runId: "run-1", stepId: "step-1" });
@@ -6505,10 +6515,25 @@ describe("adeRpcServer", () => {
     expect(write.isError).toBe(true);
     expect(setActiveTool).not.toHaveBeenCalled();
 
+    const watch = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "readBrowserTabFrame",
+      args: { tabId: "tab-1" },
+    });
+    const drive = await callTool(handler, "run_ade_action", {
+      domain: "work_tools",
+      action: "sendBrowserTabInput",
+      args: { tabId: "tab-1", event: { type: "text", text: "hi" } },
+    });
+    expect(watch.isError).toBe(true);
+    expect(drive.isError).toBe(true);
+    expect(readBrowserTabFrame).not.toHaveBeenCalled();
+    expect(sendBrowserTabInput).not.toHaveBeenCalled();
+
     // The human's own desktop is elevated too but carries no run/step/chat
     // identity, so it is still a user client and still owns the write.
     const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" }, { clientName: "ade-desktop-local" });
     const humanWrite = await callTool(desktop, "run_ade_action", {
       domain: "work_tools",
       action: "setActiveTool",
@@ -6516,6 +6541,13 @@ describe("adeRpcServer", () => {
     });
     expect(humanWrite?.isError).toBeUndefined();
     expect(setActiveTool).toHaveBeenCalledWith({ laneId: "lane-b", tool: "browser" });
+    const humanDrive = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "sendBrowserTabInput",
+      args: { tabId: "tab-1", event: { type: "text", text: "hi" } },
+    });
+    expect(humanDrive?.isError).toBeUndefined();
+    expect(sendBrowserTabInput).toHaveBeenCalledTimes(1);
   });
 
   it("pins mac_desktop to the caller's own chat session and lane", async () => {

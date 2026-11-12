@@ -4457,6 +4457,15 @@ function scopeWorkToolsAdeActionArgs(
   }
   // The desktop's once-a-minute "still watching" for a cloud computer; carries no lane.
   if (action === "noteWatching") return workToolsArgs;
+  if (action === "readBrowserTabFrame" || action === "sendBrowserTabInput") {
+    // A person watching (or driving) a tab from another machine. An agent
+    // reads pages with `ade browser observe` and acts with its own commands,
+    // which keep ownership, presence and access checks; these keep none.
+    if (!isUserClient) {
+      scopeAccessDenied(`work_tools.${action} is limited to user clients`, method);
+    }
+    return workToolsArgs;
+  }
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -5238,7 +5247,17 @@ export const APP_CONTROL_AGENT_DRIVING_ACTIONS = new Set<string>(
 );
 
 /** `work_tools` actions scoped for every role, the CTO's included. */
-const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow", "stopDevServer"]);
+// The person-only actions are scoped for a CTO caller too: watching or
+// driving a tab carries none of the ownership or access checks agent browser
+// commands keep, so the CTO's cross-lane read carve-out must not reach them.
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set([
+  "setActiveTool",
+  "show",
+  "acknowledgeShow",
+  "stopDevServer",
+  "readBrowserTabFrame",
+  "sendBrowserTabInput",
+]);
 
 /**
  * `ios_simulator` actions that mean an agent is driving the device, so the

@@ -1,5 +1,7 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
+import { installNoticeLayer, placeNoticeLayer } from "./services/noticeLayer/noticeLayerWindow";
+import type { NoticeLayerRect } from "../shared/noticeLayer";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import {
@@ -514,7 +516,7 @@ import { createDemoEngineSet } from "./services/demoVideo/demoEngines";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
-import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
+import { BUILT_IN_BROWSER_DISK_CACHE_BYTES, BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
@@ -939,6 +941,11 @@ stripInheritedProviderHomeEnv(process.env);
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.
   app.commandLine.appendSwitch("disable-http-cache");
+} else {
+  // Each profile's HTTP cache, the ADE browser's included, is capped and
+  // evicted least-recently-used, as Chrome does under storage pressure.
+  // Without a cap the shared browser profile's cache grew past 800 MB.
+  app.commandLine.appendSwitch("disk-cache-size", String(BUILT_IN_BROWSER_DISK_CACHE_BYTES));
 }
 
 function getRendererUrl(): string {
@@ -1455,8 +1462,9 @@ async function createWindow(args: {
     }
   }
 
-  // Block unexpected external navigation/window creation.
-  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // Block unexpected external navigation/window creation. The one window the
+  // renderer may open is its own notice layer (`installNoticeLayer`).
+  installNoticeLayer(win);
   win.webContents.on("will-navigate", (event, url) => {
     const allowed = getRendererUrl();
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -2155,6 +2163,14 @@ app.whenReady().then(async () => {
       }
     },
   );
+
+  // The bottom-right cards' own window over a live browser page (`noticeLayer`).
+  ipcMain.handle(IPC.appPlaceNoticeLayer, (event, arg: { rect?: NoticeLayerRect | null } = {}): boolean => {
+    if (!isTrustedAdeRendererSender(event)) return false;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return false;
+    return placeNoticeLayer(win, arg?.rect ?? null);
+  });
 
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
     if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");

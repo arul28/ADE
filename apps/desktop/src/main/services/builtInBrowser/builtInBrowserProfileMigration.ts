@@ -15,10 +15,19 @@ const MIGRATION_FILE_NAME = "ade-browser-profile-migration-v1.json";
 type MigrationState = {
   version: typeof MIGRATION_VERSION;
   completedPartitions: string[];
+  /**
+   * Partitions whose every live persistent cookie was found in the shared
+   * profile after migration. They are deleted from disk at the START of the
+   * next run, before anything opens them: a session cannot be closed, and on
+   * Windows its open cookie database cannot be removed while it is held.
+   */
+  retiredPartitions?: string[];
   updatedAt: string;
 };
 
 export type BuiltInBrowserProfileMigrationResult = {
+  /** Old per-project profiles removed from disk this run. */
+  deletedPartitionCount: number;
   discoveredPartitionCount: number;
   completedPartitionCount: number;
   migratedCookieCount: number;
@@ -32,9 +41,31 @@ export async function migrateLegacyBuiltInBrowserProfiles(args: {
   getLogger?: () => Logger | null;
 }): Promise<BuiltInBrowserProfileMigrationResult> {
   const markerPath = path.join(args.userDataPath, MIGRATION_FILE_NAME);
-  const completed = new Set(loadMigrationState(markerPath).completedPartitions);
-  const legacyPartitions = await listLegacyPartitions(args.userDataPath);
+  const state = loadMigrationState(markerPath);
+  const completed = new Set(state.completedPartitions);
+  const retired = new Set(state.retiredPartitions ?? []);
+  // Delete what the last run proved was fully copied, before any session can
+  // open it. A failed delete keeps the name and tries again next launch.
+  let deletedPartitionCount = 0;
+  for (const partitionName of Array.from(retired)) {
+    const partitionPath = path.join(args.userDataPath, "Partitions", partitionName);
+    try {
+      await fs.rm(partitionPath, { recursive: true, force: true, maxRetries: 2 });
+      retired.delete(partitionName);
+      completed.delete(partitionName);
+      deletedPartitionCount += 1;
+    } catch (error) {
+      logger(args)?.warn("built_in_browser.profile_partition_delete_failed", {
+        legacyPartition: partitionName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const legacyPartitions = (await listLegacyPartitions(args.userDataPath)).filter((partition) => !retired.has(partition));
   const pendingPartitions = legacyPartitions.filter((partition) => !completed.has(partition));
+  // Completed in an earlier version that never retired anything: check them
+  // once more now, so their disk space comes back on the next launch.
+  const unverifiedPartitions = legacyPartitions.filter((partition) => completed.has(partition));
   const globalSession = args.getSession(BUILT_IN_BROWSER_PARTITION);
   const globalCookies = await globalSession.cookies.get({});
   const globalCookieKeys = new Set(globalCookies.map(cookieKey));
@@ -86,12 +117,41 @@ export async function migrateLegacyBuiltInBrowserProfiles(args: {
   }
 
   if (migratedCookieCount > 0) await globalSession.cookies.flushStore();
+
+  // Retire a completed partition only when every live persistent cookie it
+  // holds is now in the shared profile, read back from the shared store
+  // rather than trusted from the copy loop above.
+  const sharedKeysAfter = new Set((await globalSession.cookies.get({})).map(cookieKey));
+  for (const partitionName of [...pendingPartitions, ...unverifiedPartitions]) {
+    if (!completed.has(partitionName)) continue;
+    try {
+      const cookies = await args.getSession(`persist:${partitionName}`).cookies.get({});
+      const missing = cookies.filter(isMigratablePersistentCookie).filter((cookie) => !sharedKeysAfter.has(cookieKey(cookie)));
+      if (missing.length === 0) retired.add(partitionName);
+      else {
+        // Something was not copied after all: copy it again next run.
+        completed.delete(partitionName);
+        logger(args)?.warn("built_in_browser.profile_partition_not_retired", {
+          legacyPartition: partitionName,
+          missingCookieCount: missing.length,
+        });
+      }
+    } catch (error) {
+      logger(args)?.warn("built_in_browser.profile_partition_verify_failed", {
+        legacyPartition: partitionName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   await writeMigrationState(markerPath, {
     version: MIGRATION_VERSION,
     completedPartitions: [...completed].sort(),
+    retiredPartitions: [...retired].sort(),
     updatedAt: new Date().toISOString(),
   });
   const result = {
+    deletedPartitionCount,
     discoveredPartitionCount: legacyPartitions.length,
     completedPartitionCount: legacyPartitions.filter((partition) => completed.has(partition)).length,
     migratedCookieCount,
@@ -184,10 +244,17 @@ function loadMigrationState(filePath: string): MigrationState {
       completedPartitions: parsed.completedPartitions.filter((value): value is string => (
         typeof value === "string" && LEGACY_PARTITION_RE.test(value)
       )),
+      // The regex is what keeps a hand-edited marker from naming the shared
+      // profile (or any path) for deletion.
+      retiredPartitions: Array.isArray(parsed.retiredPartitions)
+        ? parsed.retiredPartitions.filter((value): value is string => (
+          typeof value === "string" && LEGACY_PARTITION_RE.test(value)
+        ))
+        : [],
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
     };
   } catch {
-    return { version: MIGRATION_VERSION, completedPartitions: [], updatedAt: new Date(0).toISOString() };
+    return { version: MIGRATION_VERSION, completedPartitions: [], retiredPartitions: [], updatedAt: new Date(0).toISOString() };
   }
 }
 

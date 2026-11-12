@@ -57,7 +57,7 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 | Project | Surface | Started in |
 |---|---|---|
-| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
+| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process (the notice layer window shares the renderer's process and runs none of its own code, so its errors are the renderer's) | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
 | `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
 | `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
 | `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
@@ -458,7 +458,11 @@ desktop (an `ade browser status` tab list, a lane's release) add
 and `built_in_browser.owner_names_failed` (warnings), and the debug lines
 `built_in_browser.list_tabs_local_skipped`,
 `built_in_browser.release_lane_local_skipped` and
-`built_in_browser.machine_name_unavailable`. The desktop adds
+`built_in_browser.machine_name_unavailable`. The desktop's tab lifecycle writes
+`built_in_browser.tab_kept` (tab id, `input` or `keep`),
+`built_in_browser.tab_auto_closed` (tab id, `idle`, `ended`, `lane` or `stale`),
+`built_in_browser.tab_auto_close_failed` and `built_in_browser.tab_sleep_failed`
+(warnings), `built_in_browser.tab_slept` and `built_in_browser.tab_woke`. The desktop adds
 `built_in_browser.action_observation_failed` (warning) when an agent's action
 ran but the observation after it failed, and `built_in_browser.tabs_restore_skipped`
 (collection, agent tabs dropped) at start. The event-loop watchdog
@@ -840,6 +844,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `connections` | `github_cli_shared`, `github_cli_removed` (the person shares this computer's gh sign-in with the account, or takes it off, from Settings › GitHub; the background sync records nothing) | `completed` (the vault accepted it) | omitted; never the login, the account, or an error. Per action, at most one an hour |
 | `connections` | `github_app_connected` (how a connect of the account's ADE GitHub App sign-in ended, read in Settings once the server settles it), `github_app_disconnected` | `completed` (connected, or disconnected), `cancelled` (declined on GitHub or on ADE's confirm page, or the link ran out), `failed` | omitted; never the login, the account, the sign-in id, or an error. Per action and outcome, at most one an hour |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
+| `browser` | `tab_kept` (a person pressed Keep on an agent's tab, or Keep tabs on a chat group), `remote_tab_watched` (picked a tab on another machine to watch; the automatic show of the chat's own tab is not counted), `remote_tab_controlled` (took control of one) | `completed` | omitted; never the URL, title, tab, chat, lane or machine. Per action, at most one a day (`browser:<action>`) |
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
 | `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |

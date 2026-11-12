@@ -11289,6 +11289,11 @@ export function registerIpc({
     return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab), win);
   });
 
+  handle(IPC.builtInBrowserKeepTab, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserKeepTab, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().keepTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserKeepTab), win);
+  });
+
   handle(IPC.builtInBrowserHandTabToChat, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserHandTabToChat, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().handTabToChat(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserHandTabToChat), win);
