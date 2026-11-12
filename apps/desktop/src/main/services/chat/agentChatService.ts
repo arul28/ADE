@@ -75310,6 +75310,8 @@ export function createAgentChatService(args: {
   }) ?? null;
   // Its finished turns too: an agent CLI waits at its prompt rather than
   // exiting, so the exit alone left a parent waiting forever.
+  /** Long enough for the pty to finish the output chunk that ended the turn, and the CLI to print its last lines. */
+  const ARCHIVED_CLI_STOP_DELAY_MS = 1_000;
   const unsubscribeCliChildTurnEnded = ptyService?.onTrackedCliTurnEnded?.((event) => {
     // A turn end guessed from quiet output is taken only when the CLI's
     // composer is visibly back (the check scheduled work uses), so a CLI that
@@ -75329,8 +75331,14 @@ export function createAgentChatService(args: {
       crossMachineHandoff?.onTurnSettled(event.sessionId);
     }
     mirrorClaudeCliScheduledWork(event.sessionId);
-    // Archived mid-turn: the turn it was let finish is over, so it stops now.
-    if (!event.outcome || event.outcome === "done") cliLifecycle.stopArchivedAfterTurn(event.sessionId);
+    // Archived mid-turn: the turn it was let finish is over, so it stops. Not
+    // inside this callback, which runs while the pty is still handling the
+    // output chunk that ended the turn: stopping here would save the terminal
+    // without its last reply.
+    if (!event.outcome || event.outcome === "done") {
+      const sessionId = event.sessionId;
+      setTimeout(() => cliLifecycle.stopArchivedAfterTurn(sessionId), ARCHIVED_CLI_STOP_DELAY_MS).unref?.();
+    }
   }) ?? null;
   const unsubscribeCliChildTurnStarted = ptyService?.onTrackedCliTurnStarted?.((event) => {
     reopenCliChildCardOnTurnStart(event.sessionId);

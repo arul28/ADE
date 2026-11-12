@@ -317,9 +317,11 @@ and in tests.
   (`completed` / `failed` / `disposed`·`detached` → stopped), the run key
   (`cli-exit:<endedAt>`), and the report (the CLI's own last message from the
   Codex rollout or Claude Code JSONL when ADE can locate it, else the last
-  meaningful terminal lines). `agentChatService` subscribes to `ptyService.onExit`
-  and closes the parent's card through the same delivery path chat children use;
-  `ade chat status` / `ade chat read` / `ade chat list` answer for these ids.
+  meaningful terminal lines). The reports themselves live in
+  `chat/cliChildReports.ts` (`createCliChildReports`): `agentChatService`
+  subscribes to `ptyService.onExit` and closes the parent's card through the
+  same delivery path chat children use; `ade chat status` / `ade chat read` /
+  `ade chat list` answer for these ids.
   An agent CLI waits at its prompt rather than exiting, so each **finished
   turn** reports too (`reportCliChildTurnEnded`, on
   `ptyService.onTrackedCliTurnEnded`): the parent's card closes with the CLI's
@@ -344,10 +346,15 @@ and in tests.
   command waiting in the terminal gets the answer as its result. The CLI's exit
   or a brain shutdown cancels them; they are in memory, like a chat's local
   cards.
-- `apps/desktop/src/renderer/components/terminals/CliAgentPane.tsx` — the
-  pane under a tracked agent CLI's terminal (live and ended), shown only when
-  it has something: the CLI's open cards (rendered with the chat's own
-  composers: secret, connect, MCP server, question), the agents it started
+- `apps/desktop/src/renderer/components/terminals/CliAgentPane.tsx` — a
+  chat's actions pane for a tracked agent CLI (live and ended): the header
+  button (`CliActionsToggle`, the chat's glyph and badges), the pane floated
+  over the terminal's top-right corner (`CliActionsSidePane`, the chat's
+  `ChatActionsDrawerPanel`; open state per session, opened once by itself the
+  first time the CLI starts an agent or files proof), and the CLI's open cards
+  in the prompt box's place (`CliPromptSlot`, the chat's own composers:
+  secret, connect, MCP server, question; the box comes back when the last card
+  closes). The pane lists the agents it started
   (`useCliParentChildRows`: every session on the CLI's machine whose
   `orchestrationParentSessionId` is the CLI, in the chat's `ChatSubagentsPanel`
   with open, status and a Stop that interrupts a child chat or closes a child
@@ -355,7 +362,9 @@ and in tests.
   `chat_session` owner). Every read and answer carries the CLI's `runtimePin`;
   cards are re-read when the row's attention fields change, proof follows
   `computerUse.onEvent` for this owner, and children come from the store's
-  session list, so nothing polls. The Work list keeps a CLI's children as
+  session list, so nothing polls. A failed card or proof read, a failed answer
+  or a failed Stop shows as an error `Banner` above the prompt box, with Try
+  again for a read. The Work list keeps a CLI's children as
   top-level rows (only a chat files its subagents), so they stay reachable
   there too. The web client lists cards through `chat.listPendingInputs`;
   iOS does not show this pane yet.

@@ -455,13 +455,9 @@ async function step(sessionId: string): Promise<void> {
     return;
   }
   runner.inFlight = true;
-  // A retry while the machine looked offline stays shown as waiting for it.
-  updateItem(sessionId, head.id, {
-    state: head.state === "offline" ? "offline" : "sending",
-    error: null,
-    claimedBy: WINDOW_ID,
-    claimedAt: Date.now(),
-  });
+  // In flight is always `sending`, even a retry while the machine looked
+  // offline: Edit and Remove are off while a send may still reach the CLI.
+  updateItem(sessionId, head.id, { state: "sending", error: null, claimedBy: WINDOW_ID, claimedAt: Date.now() });
   try {
     const { pin } = runner.route;
     // The item's id makes the send idempotent on the host: another window

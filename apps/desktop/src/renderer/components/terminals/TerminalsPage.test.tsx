@@ -2209,18 +2209,20 @@ describe("TerminalsPage chat session activation", () => {
     }));
 
     await waitFor(() => {
-      // The session-delete service stops the runtime and removes the record in one call;
-      // the chat-delete path must not be touched for a non-chat session.
-      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
+      // An agent CLI is deleted through the chat delete, which stops it and
+      // keeps it in Recently deleted; the raw terminal delete would lose it.
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-single");
       expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
     });
-    expect(agentChatDelete).not.toHaveBeenCalled();
+    expect(sessionDelete).not.toHaveBeenCalled();
   });
 
-  it("keeps a foreign runtime pin after the context menu closes for confirmation", async () => {
+  it("keeps a foreign runtime pin after the context menu closes, and falls back on an older machine", async () => {
     const runningCli = workMocks.makeTerminalSession("cli-studio", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    // An older ADE on that machine has no chat delete for a CLI.
+    const agentChatDelete = vi.fn().mockRejectedValue(new Error("Session 'cli-studio' is not an agent chat session."));
     vi.mocked(confirmDialog).mockResolvedValue(true);
     const binding: OpenProjectBinding = {
       kind: "remote",
@@ -2235,7 +2237,7 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
-        agentChat: { delete: vi.fn() },
+        agentChat: { delete: agentChatDelete },
         builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
         sessions: { delete: sessionDelete },
       },
@@ -2265,6 +2267,7 @@ describe("TerminalsPage chat session activation", () => {
     }));
 
     await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-studio" }, binding);
       expect(sessionDelete).toHaveBeenCalledWith(
         { sessionId: "cli-studio" },
         binding,
@@ -2417,7 +2420,7 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => {
       // The running CLI session is stopped+deleted via the session-delete service,
       // and the chat is removed via the chat delete flow — both in one action.
-      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
       expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" });
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");

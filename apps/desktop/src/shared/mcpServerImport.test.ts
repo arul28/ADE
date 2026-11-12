@@ -79,6 +79,21 @@ describe("mcpPlainTextSecretFindings", () => {
       expected: [{ where: "url", kind: "value" }],
     },
     {
+      label: "a token in the URL fragment",
+      server: { url: "https://mcp.example.test/sse#access_token=placeholder" },
+      expected: [{ where: "url", kind: "value" }],
+    },
+    {
+      label: "a bare token as the whole URL fragment",
+      server: { url: "https://mcp.example.test/mcp#ghp_0123456789abcdefABCDEF0123456789abcd" },
+      expected: [{ where: "url", kind: "value" }],
+    },
+    {
+      label: "an ordinary anchor in the URL fragment",
+      server: { url: "https://mcp.example.test/mcp#tools" },
+      expected: [],
+    },
+    {
       label: "ordinary arguments and a plain URL",
       server: { args: ["server.js", "--port", "8080"], url: "https://mcp.example.test/mcp" },
       expected: [],

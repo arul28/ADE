@@ -430,7 +430,7 @@ the roster all read that phase.
 | CLI | working | done | needs you |
 | --- | --- | --- | --- |
 | Claude Code | `UserPromptSubmit` hook | `Stop` / `StopFailure` hook | `PermissionRequest` hook (tool permission, `AskUserQuestion`, `ExitPlanMode`), `Notification` `permission_prompt` / `elicitation_dialog`, `Elicitation` |
-| Codex 0.167+ | OSC `7501;state=working` | `state=done`, or `idle` after working (an interrupt) | `state=blocked` (`kind=permission`) |
+| Codex 0.167+ | OSC `7501;state=working`, or a launch that carries the prompt (`promptSubmittedAtLaunch`) | `state=done`, or `idle` after working (an interrupt); every report in an output chunk is applied in order | `state=blocked` (`kind=permission`) |
 | Others | output (heuristic) | 12.5 s of quiet (heuristic) | the Jev screen check, `ade chat ask` |
 
 - **Claude hooks.** A tracked Claude launch gets `--settings` with ADE's hooks.
@@ -446,8 +446,11 @@ the roster all read that phase.
   and message (never the transcript path or the last message). It sends them
   with `--socket $ADE_CLI_TURN_HOOK_SOCKET`, the runtime that owns the
   terminal, to `session.reportCliTurnSignal`. It never starts a brain, prints
-  nothing, gives up after 5 s and always exits 0. The action is scoped to the
-  caller's own session (or a terminal its chat owns).
+  nothing, gives up after 5 s and exits 0 (the process exits even when the
+  report is still in flight). Each hooked launch also gets a random
+  `ADE_CLI_TURN_HOOK_TOKEN`; the hook sends it back, and
+  `reportCliTurnHookEvent` drops a report without that launch's token, so
+  another CLI under the same chat cannot report this one's turn.
 - **Ordering.** Async hooks can land out of order. A `UserPromptSubmit` for a
   prompt id whose `Stop` already arrived is dropped.
 - **Gaps Claude leaves, and their fallbacks.** Claude fires no hook for an

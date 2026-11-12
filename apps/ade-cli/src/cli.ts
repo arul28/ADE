@@ -3062,7 +3062,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
                                                     own conversation file; without --model it keeps the CLI's model.
                                                     handoff <cli-session> sends a brief instead (its terminal output when
-                                                    ADE can't read the conversation). A CLI can't --machine move: fork first.
+                                                    ADE can't read the conversation).
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
     $ ade chat side <session> "Why did we pick Redis?"
