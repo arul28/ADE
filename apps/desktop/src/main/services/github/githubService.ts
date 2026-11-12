@@ -1234,7 +1234,7 @@ export function createGithubService({
       }
       return (await readGhAuthToken()).token;
     },
-    onTokenChanged: () => {
+    onChanged: () => {
       const previous = lastAccountGhToken;
       lastAccountGhToken = ghAccountSync.readAccountToken();
       credentialsChanged({ tokensToClear: [previous, lastAccountGhToken] });
@@ -2904,7 +2904,7 @@ export function createGithubService({
     async setGhAccountSharing(args: { enabled: boolean }): Promise<void> {
       if (args?.enabled === true) await ghAccountSync.shareWithAccount();
       else await ghAccountSync.removeFromAccount();
-      invalidateStatusCache();
+      // A change reaches onChanged above, which drops the cached status.
     },
 
     clearToken(): void {

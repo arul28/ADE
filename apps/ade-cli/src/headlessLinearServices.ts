@@ -2066,7 +2066,7 @@ export function createHeadlessGitHubService(
       const gh = await Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync());
       return gh.token;
     },
-    onTokenChanged: () => {
+    onChanged: () => {
       const previous = lastAccountGhToken;
       lastAccountGhToken = ghAccountSync.readAccountToken();
       if (previous) clearGithubCredentialHealth(previous);
@@ -2593,8 +2593,7 @@ export function createHeadlessGitHubService(
     async setGhAccountSharing(args: { enabled: boolean }): Promise<void> {
       if (args?.enabled === true) await ghAccountSync.shareWithAccount();
       else await ghAccountSync.removeFromAccount();
-      resetStatusCache();
-      emitStatusChanged();
+      // A change reaches onChanged above, which resets and pushes the status.
     },
     /** See the desktop service: a signed-URL cache keys on the effective token. */
     async getCredentialRevision(): Promise<string> {
