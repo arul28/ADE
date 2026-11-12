@@ -12,6 +12,7 @@ import type {
   AiProviderAccountSummary,
   AiCustomProviderConfig,
   AiLocalProviderConfigs,
+  AiProviderConnectionStatus,
   AiProviderConnections,
   AiRuntimeConnections,
   AiRuntimeConnectionStatus,
@@ -123,7 +124,12 @@ import {
   resetProviderRuntimeHealth,
 } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
-import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, withReportedClaudeVersion } from "./claudeAvailability";
+import {
+  buildClaudeAvailabilityFromConnection,
+  connectionListable,
+  resolveBundledClaudeBinary,
+  withReportedClaudeVersion,
+} from "./claudeAvailability";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
@@ -140,8 +146,7 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
-import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
-import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
+import { pinnedToolInstallGeneration, retryPinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   openCursorCloudCredentialStore,
@@ -1275,7 +1280,8 @@ export function createAiIntegrationService(args: {
       // The provider's own list (persisted from the last chat or probe) is the
       // picker; curated rows are only the fallback before one exists. Refresh
       // it in the background when it is missing or old, so this read never
-      // blocks on a subprocess.
+      // blocks on a subprocess. A signed-in provider still waiting for its
+      // first-use download lists curated rows (the warm skips it).
       warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
@@ -2342,14 +2348,11 @@ export function createAiIntegrationService(args: {
             force: options?.force,
             shallowCliAuth: true,
           }));
-          // A provider signed in since launch whose pinned tool was never
-          // downloaded starts downloading now, before the reads below, so its
-          // status reads "downloading"; the refresh after it lands sees the tool.
-          const startedToolFetches = startDemandedAgentToolFetches({
-            enabled: (provider) => !isProviderDisabled(projectConfigService.get().effective.ai, provider),
-            opencodeBacked: auth.some((entry) => entry.type === "api-key" || entry.type === "openrouter" || entry.type === "local"),
-          });
-          if (startedToolFetches.length) logger.info("ai.pinned_tool_fetch_started", { tools: startedToolFetches.join(",") });
+          // A status read never downloads an agent: a signed-in provider whose
+          // pinned tool is not here yet reads "downloads on first use" and
+          // still lists its models (`detectAllAuth`), and its first turn
+          // downloads it. Downloading here fetched every signed-in agent on a
+          // computer whose sign-ins were all copied over (ADE Cloud).
           // No live sign-in check here: Copilot's comes from its own config
           // file, and the SDK's answer only from the one-provider check
           // (`verifyProviderSignIn`), through runtime health.
@@ -2423,21 +2426,25 @@ export function createAiIntegrationService(args: {
           // connection status, so the switch stays findable.
           const disabledProviders = disabledProviderSet(projectConfigService.get().effective.ai);
           const enabled = (provider: string): boolean => !disabledProviders.has(provider);
+          // Signed in with ADE's copy still to download lists its models like
+          // a ready one, so the first turn can start (and download it).
+          const listable = (provider: string, connection: AiProviderConnectionStatus | null | undefined): boolean =>
+            enabled(provider) && connectionListable(connection);
           const availability: AiIntegrationStatus["availableProviders"] = {
             claude: buildClaudeAvailabilityFromConnection(
               providerConnections.claude,
               { disabled: !enabled("claude") },
             ),
-            codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
-            cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
-            droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
-            muse: enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable),
-            qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
-            kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
-            grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
-            copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
-            devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
-            antigravity: enabled("antigravity") && Boolean(providerConnections.antigravity?.runtimeAvailable),
+            codex: listable("codex", providerConnections.codex),
+            cursor: listable("cursor", providerConnections.cursor),
+            droid: listable("droid", providerConnections.droid),
+            muse: listable("muse", providerConnections.muse),
+            qwen: listable("qwen", providerConnections.qwen),
+            kimi: listable("kimi", providerConnections.kimi),
+            grok: listable("grok", providerConnections.grok),
+            copilot: listable("copilot", providerConnections.copilot),
+            devin: listable("devin", providerConnections.devin),
+            antigravity: listable("antigravity", providerConnections.antigravity),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
@@ -2445,10 +2452,10 @@ export function createAiIntegrationService(args: {
             // does not speak for them. The catalog gate handles those groups.
             if (!descriptor.isCliWrapped) return true;
             if (descriptor.family === "anthropic") return availability.claude.auth.ready;
-            if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
-            if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
-            if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
-            if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
+            if (descriptor.family === "openai") return availability.codex;
+            if (descriptor.family === "cursor") return availability.cursor;
+            if (descriptor.family === "factory") return availability.droid;
+            if (descriptor.family === "muse") return availability.muse === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.qwen) return availability.qwen === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true;
@@ -2619,6 +2626,10 @@ export function createAiIntegrationService(args: {
     storeApiKey(provider: string, key: string): void {
       storeStoredApiKey(provider, key);
       if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
+      // A saved key's models run on OpenCode, and its model list needs
+      // OpenCode on this machine. Saving one is the person setting that up,
+      // so this (not a status read) is where OpenCode starts downloading.
+      else if (!isProviderDisabled(projectConfigService.get().effective.ai, "opencode")) void retryPinnedToolDownload("opencode");
       invalidateProviderReadinessCaches();
     },
     deleteApiKey(provider: string): void {

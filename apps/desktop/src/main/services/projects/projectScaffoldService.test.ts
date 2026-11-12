@@ -409,14 +409,16 @@ describe("cloneRepository", () => {
     expect(cloneCall).toBeDefined();
     const args = cloneCall?.[0] as string[];
     const expectedBasic = Buffer.from("x-access-token:ghp_secret_token", "utf8").toString("base64");
-    expect(args).toEqual([
-      "clone",
-      "-c",
-      `http.https://github.com/.extraheader=AUTHORIZATION: basic ${expectedBasic}`,
-      "--",
-      "https://github.com/octocat/Hello-World",
-      path.join(parentDir, "Hello-World"),
-    ]);
+    // The header reaches git for this one command through its config environment,
+    // never as `clone -c`, which would save the token in the new .git/config.
+    expect(args).toEqual(["clone", "--", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
+    expect(cloneCall?.[1]?.env).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${expectedBasic}`,
+    });
   });
 
   it("uses an explicit one-shot GitHub auth header for remote clone requests", async () => {
@@ -438,14 +440,14 @@ describe("cloneRepository", () => {
     });
 
     const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
-    expect(cloneCall?.[0]).toEqual([
-      "clone",
-      "-c",
-      "http.https://github.com/.extraheader=AUTHORIZATION: basic one-shot",
-      "--",
-      "https://github.com/octocat/Hello-World",
-      path.join(parentDir, "Hello-World"),
-    ]);
+    expect(cloneCall?.[0]).toEqual(["clone", "--", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
+    expect(cloneCall?.[1]?.env).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: "AUTHORIZATION: basic one-shot",
+    });
   });
 
   it("falls back to a plain clone (no extraheader) when no token is stored", async () => {

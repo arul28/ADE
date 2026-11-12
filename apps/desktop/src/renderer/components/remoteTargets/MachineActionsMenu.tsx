@@ -20,7 +20,16 @@ export type MachineAction = {
  * name, its state and at most one primary button. Destructive items sit last,
  * after a rule, never next to Rename.
  */
-export function MachineActionsMenu({ label, actions }: { label: string; actions: MachineAction[] }) {
+export function MachineActionsMenu({
+  label,
+  actions,
+  trigger,
+}: {
+  label: string;
+  actions: MachineAction[];
+  /** Another look for the button (a header icon); the ⋯ by default. */
+  trigger?: { icon: ReactNode; className: string; title: string };
+}) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -68,15 +77,15 @@ export function MachineActionsMenu({ label, actions }: { label: string; actions:
       <button
         ref={anchorRef}
         type="button"
-        className="ade-cx-kebab"
+        className={trigger?.className ?? "ade-cx-kebab"}
         aria-label={label}
-        title="More"
+        title={trigger?.title ?? "More"}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         onKeyDown={closeOnEscape}
       >
-        <DotsThree size={18} weight="bold" />
+        {trigger?.icon ?? <DotsThree size={18} weight="bold" />}
       </button>
       <AnchoredMenu
         open={open}

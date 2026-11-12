@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
+import { captureError } from "../../../shared/sentry/capture";
 import { extractError } from "../../lib/format";
 import { noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
 import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
@@ -126,6 +127,28 @@ function subscribeWith(listener: () => void, settle: boolean): () => void {
  */
 export function watchedCloudMachines(): CloudMachinesResult | null {
   return listeners.size > 0 ? snapshot.result : null;
+}
+
+/**
+ * Reads the list again now, after an action taken where no surface watches it
+ * (a cloud lane's chat header). With a surface open this is its own read;
+ * without one, a single read that only refreshes the lane computer index and
+ * the account, so a menu built from them stops offering what was just done.
+ */
+export function refreshCloudMachines(): void {
+  if (listeners.size > 0) {
+    load();
+    return;
+  }
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (!listMachines) return;
+  void listMachines().then(
+    (result) => {
+      if (result?.state === "ok") noteCloudLaneMachines(result.machines);
+      noteCloudAccountRead(result);
+    },
+    (error: unknown) => captureError(error, { fingerprint: ["cloud", "machines_refresh"], handled: true }),
+  );
 }
 
 const subscribe = (listener: () => void) => subscribeWith(listener, true);

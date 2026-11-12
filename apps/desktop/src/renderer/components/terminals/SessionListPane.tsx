@@ -135,6 +135,7 @@ import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1248,12 +1249,29 @@ export const SessionListPane = React.memo(function SessionListPane({
   // roster on purpose: ownership is a shape question, not a visibility one, and
   // passing the visible rows would make a chip-filtered session reappear as a
   // foreign row.
-  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(
+  const { foreignRows: unionForeignRows, markersByLaneId } = useCrossMachineLaneUnion(
     crossMachineSyncActive,
     allSessionsUnfiltered,
     workLaneSortMode,
     workLaneOrder,
   );
+  // Lanes of ADE Cloud computers that are really gone (`computerGone`, from the
+  // account's computer list) are listed once, in the deleted-computers place
+  // above the list (`CloudLanesOnDeletedComputers`), never among live lanes.
+  // Each of their saved chats is listed under its lane there, newest first, and
+  // opens from the roster, which still holds them.
+  const goneMachineIds = useRootAppStore((state) => {
+    let key = "";
+    for (const entry of Object.values(state.crossMachineLanesByMachineId)) {
+      if (entry.computerGone === true) key += `${entry.machineId}\u0000`;
+    }
+    return key;
+  });
+  const foreignRows = useMemo(() => {
+    if (!goneMachineIds) return unionForeignRows;
+    const gone = new Set(goneMachineIds.split("\u0000").filter(Boolean));
+    return unionForeignRows.filter((row) => !gone.has(row.machineId));
+  }, [goneMachineIds, unionForeignRows]);
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
   // its own timer; this fallback timer prevents a foreign snooze from staying
@@ -1351,7 +1369,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   const machineLabelOf = useAdeCloudMachineLabel();
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     const others = Object.values(crossMachineEntries)
-      .filter((entry) => entry.machineId !== activeMachineId)
+      // A deleted cloud computer is no machine to filter by: its lanes have their own place.
+      .filter((entry) => entry.machineId !== activeMachineId && entry.computerGone !== true)
       // A sleeping cloud computer is not listed as offline: a send wakes it.
       .map((entry) => ({ id: entry.machineId, name: machineLabelOf({ machineId: entry.machineId, binding: entry.binding, name: entry.machineName }), online: machineShowsConnected(entry) }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -4280,6 +4299,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           />
         </div>
       ))}
+
+      <CloudLanesOnDeletedComputers className="mx-2 mt-1.5" />
 
       {/* Session list */}
       <div

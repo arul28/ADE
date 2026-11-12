@@ -17,6 +17,7 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure, fireAndForgetVaultWrite } from "../account/vaultWrite";
+import { ACCOUNT_GITHUB_VAULT_KIND, GITHUB_PAT_VAULT_KEY, decodeAccountGithubToken } from "./accountGithubTokenItem";
 import {
   describeIntegrationCredentialStorage,
   type IntegrationCredentialStorage,
@@ -27,24 +28,11 @@ const GITHUB_PAT_MACHINE_KEY = "github.token.v1";
 const GITHUB_PAT_SOURCE_KEY = "github.token.source.v1";
 /** The account user id an account copy came from. A copy from before this key has none. */
 const GITHUB_PAT_OWNER_KEY = "github.token.owner.v1";
-const GITHUB_PAT_VAULT_KIND = "integration";
-const GITHUB_PAT_VAULT_KEY = "github";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
   warn?(event: string, meta?: Record<string, unknown>): void;
 } | null | undefined;
-
-function decodeToken(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || parsed.v !== 1) return null;
-    return typeof parsed.token === "string" && parsed.token.trim() ? parsed.token.trim() : null;
-  } catch {
-    return null;
-  }
-}
 
 export type GithubPatAccountSyncArgs = {
   credentialStore: SyncCredentialStore | null | undefined;
@@ -89,16 +77,20 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
 
   const vaultOptions = { getAccountVault: args.getAccountVault, logger: args.logger, logEvent: "github.account_vault_sync_failed" };
 
-  const vaultRef = { scope: ACCOUNT_SCOPE_ALL, kind: GITHUB_PAT_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY };
+  const vaultRef = { scope: ACCOUNT_SCOPE_ALL, kind: ACCOUNT_GITHUB_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY };
 
-  /** Share a token pasted here with the account's other machines. */
-  const publish = (token: string): void => {
+  /**
+   * Share a token pasted here with the account's other machines. Resolves
+   * once the account's copy settled (written, or every attempt failed), for a
+   * caller that tells others to read it again; never rejects.
+   */
+  const publish = async (token: string): Promise<void> => {
     if (!accountUserId()) return;
     const clean = token.trim();
     if (!clean) return;
-    fireAndForgetVaultWrite(vaultOptions, "set", (vault) => vault.set(
+    await fireAndForgetVaultWrite(vaultOptions, "set", (vault) => vault.set(
       ACCOUNT_SCOPE_ALL,
-      GITHUB_PAT_VAULT_KIND,
+      ACCOUNT_GITHUB_VAULT_KIND,
       GITHUB_PAT_VAULT_KEY,
       JSON.stringify({ v: 1, token: clean }),
     ));
@@ -114,7 +106,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     const vault = resolveVault();
     if (!accountUserId() || !previous || !vault) return;
     void (async () => {
-      const read = await readAccountVaultItem(vault, vaultRef, decodeToken, logFailure);
+      const read = await readAccountVaultItem(vault, vaultRef, decodeAccountGithubToken, logFailure);
       if (read?.value !== previous) return;
       fireAndForgetVaultWrite(vaultOptions, "remove", (target) => target.remove(vaultRef.scope, vaultRef.kind, vaultRef.key));
     })();
@@ -158,7 +150,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
       }
       const vault = resolveVault();
       if (!vault) return;
-      const read = await readAccountVaultItem(vault, vaultRef, decodeToken, logFailure);
+      const read = await readAccountVaultItem(vault, vaultRef, decodeAccountGithubToken, logFailure);
       if (!read) return;
       if (accountUserId() !== userId) return;
       const deleted = read.item?.deleted === true;
@@ -174,7 +166,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
         }
         if (!remote) {
           if (present && remoteRaw !== null) return;
-          if (local && !fromAccount) publish(local);
+          if (local && !fromAccount) void publish(local);
           return;
         }
         if (!local) {

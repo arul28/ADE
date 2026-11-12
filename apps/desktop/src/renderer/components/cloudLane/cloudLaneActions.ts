@@ -71,6 +71,8 @@ export async function changeCloudLaneTier(input: {
   instanceId: string;
   sizeId: CloudTierId;
   timing: CloudLaneTierTiming;
+  /** A resize only: grow the disk to this many GB in the same step. */
+  diskGb?: number | null;
   /** An agent's request card the person confirmed. */
   requestId?: string | null;
   requestedByChat?: string | null;
@@ -90,6 +92,11 @@ export async function retryCloudLaneJob(jobId: string): Promise<void> {
 
 export async function cancelCloudLaneJob(jobId: string): Promise<void> {
   await call("cancelJob", { jobId });
+}
+
+/** Closes a finished or failed job's card in every window. The computer stays as the job left it. */
+export async function dismissCloudLaneJob(jobId: string): Promise<void> {
+  await call("dismissJob", { jobId });
 }
 
 /** The lanes kept without a computer (a server read, no wake). Empty when this ADE can't ask. */

@@ -3968,6 +3968,9 @@ export async function handleDirectoryAccountPurge(
 ): Promise<Response | null> {
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts[0] !== "directory" || parts[1] !== "accounts") return null;
+  if (parts.length === 4 && parts[3] === "notify" && request.method === "POST") {
+    return await handleDirectoryAccountNotify(request, env, decodePathSegment(parts[2]));
+  }
   if (parts.length !== 3 || request.method !== "DELETE") return attentionRouteNotFound();
   const provenance = assertDirectoryProvenance(request, env);
   if ("response" in provenance) return provenance.response;
@@ -3988,6 +3991,45 @@ export async function handleDirectoryAccountPurge(
     .filter((_, index) => index % 2 === offset)
     .reduce((sum, result) => sum + (result?.meta?.changes ?? 0), 0);
   return json({ ok: true, vaultItems: changes(0), settings: changes(1) });
+}
+
+/**
+ * `POST /directory/accounts/<userId>/notify`: ADE Cloud's server tells a
+ * person something with nobody watching (an automation on ADE Cloud whose
+ * run couldn't start). The same notification `POST /attention/account/notify`
+ * sends, with its quota and the person's quiet hours and previews setting,
+ * for each of the account's relay keys. Directory provenance is the only
+ * credential: the cron that asks has no account token.
+ */
+async function handleDirectoryAccountNotify(
+  request: Request,
+  env: AttentionRelayEnv,
+  clerkUserIdRaw: string | null,
+): Promise<Response> {
+  const provenance = assertDirectoryProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  const clerkUserId = requiredString(clerkUserIdRaw, 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  const accountKeys = await relayAccountKeysForClerkUser(env, clerkUserId);
+  if (accountKeys.length === 0) return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+  let delivered = 0;
+  for (const accountKey of accountKeys) {
+    const response = await handleCustomNotification(
+      new Request("https://relay.invalid/notify", { method: "POST", body: JSON.stringify(payload) }),
+      env,
+      accountKey,
+    );
+    if (!response.ok) return response;
+    const body = await response.json().catch(() => null) as { delivered?: unknown } | null;
+    delivered += typeof body?.delivered === "number" ? body.delivered : 0;
+  }
+  return json({ ok: true, delivered });
 }
 
 async function deleteAttentionDeviceOwnership(

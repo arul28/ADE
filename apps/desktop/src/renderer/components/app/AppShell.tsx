@@ -57,6 +57,7 @@ import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/terminalRuntimeLifecycle";
 import { ToastViewport } from "./toast/ToastViewport";
 import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunchesSlideOut";
+import { CloudLaneJobsSlideOut, useCloudLaneJobsSlideOutVisible } from "../cloudLane/CloudLaneJobsSlideOut";
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { AppBundleOwnershipBanner } from "./AppBundleOwnershipBanner";
@@ -279,6 +280,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // has a background chat or CLI launch of ours to show.
   useChatLaunchSync();
   const chatLaunchesVisible = useChatLaunchSlideOutVisible();
+  const cloudLaneJobsVisible = useCloudLaneJobsSlideOutVisible();
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -1177,8 +1179,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {children}
           </div>
           <ToastViewport
-            slot={chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null}
-            slotKey="chat-launches"
+            slots={[
+              { key: "cloud-lane-jobs", node: cloudLaneJobsVisible ? <CloudLaneJobsSlideOut /> : null },
+              { key: "chat-launches", node: chatLaunchesVisible ? <ChatLaunchesSlideOut /> : null },
+            ]}
           />
         </main>
       </div>

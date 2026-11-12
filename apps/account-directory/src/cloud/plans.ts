@@ -43,6 +43,11 @@ export function cloudSizeFor(type: unknown, cpu: unknown, memoryGb: unknown): Cl
   return CLOUD_SIZES.find((size) => size.type === type && size.cpu === cpu && size.memoryGb === memoryGb) ?? null;
 }
 
+/** One of the four sizes of the main list by its id (`small`…`xlarge`), or null. */
+export function cloudSizeForTier(tier: unknown): CloudSize | null {
+  return typeof tier === "string" ? CLOUD_SIZES.find((size) => size.tier === tier) ?? null : null;
+}
+
 /** A size's tier for analytics: one of the main four, or `other`. */
 export const tierOf = (size: Pick<CloudSize, "tier"> | null): CloudTierId | "other" => size?.tier ?? "other";
 

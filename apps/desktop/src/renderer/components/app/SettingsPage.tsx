@@ -111,6 +111,14 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   sharing: UsersThree,
 };
 
+/** Shown in the top row, right under General, whatever their group. */
+const UNDER_GENERAL_TAB_IDS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(["ade-cloud"]);
+
+/** The group a tab is listed in: its own, or General's for a tab shown under General. */
+function shownGroup(tab: { id: SettingsTabId; group: string }): string {
+  return UNDER_GENERAL_TAB_IDS.has(tab.id) ? "overview" : tab.group;
+}
+
 /** Tabs whose content sits in the centred `SettingsColumn`. */
 const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
   "general",
@@ -686,7 +694,9 @@ export function SettingsPage({
   const sectionList = (
     <>
       {SETTINGS_GROUPS.map((group) => {
-        const groupTabs = tabs.filter((tab) => tab.group === group.id);
+        // ADE Cloud sits right under General (owner, B14-7); its scope stays
+        // the App group's (the account). General comes first in `tabs`.
+        const groupTabs = tabs.filter((tab) => shownGroup(tab) === group.id);
         // A group with nothing reachable in it is not rendered (the hosted web
         // client drops whole pages whose writes have nowhere to land).
         if (!groupTabs.length) return null;

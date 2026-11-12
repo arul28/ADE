@@ -1202,9 +1202,11 @@ Automations
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows

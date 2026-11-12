@@ -1001,8 +1001,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     setRunOn: {
       description:
         "Choose which computer runs a rule that follows the ADE account (\"Run on\"). Every computer with the repository shows the rule; "
-        + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name.",
-      input: "object { id: string, deviceId?: string, name?: string (required with deviceId) }",
+        + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name. "
+        + "cloud: true makes ADE Cloud the home: ADE's server watches its schedule or webhook and starts each run on a new cloud computer.",
+      input: "object { id: string, deviceId?: string, name?: string (required with deviceId), cloud?: boolean }",
       example: "ade automations run-on nightly-review --text",
     },
     triggerManually: {

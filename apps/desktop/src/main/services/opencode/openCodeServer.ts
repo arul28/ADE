@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -491,6 +492,8 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
     windowsVerbatimArguments: launchSpec.windowsVerbatimArguments,
     shell: launchSpec.useShell,
   });
+  // A long-lived server outlives any record of use: its copy stays while it runs.
+  holdToolInstallsWhileRunning([launchSpec.executable], proc);
   if (proc.pid) {
     const configFile = launchSpec.env.OPENCODE_CONFIG;
     writeManagedServerRecord({

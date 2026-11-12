@@ -36,6 +36,15 @@
       "new_sqlite_classes": ["RepoEventsDurableObject"]
     }
   ],
+  // Forwards to the account directories go over these bindings: a fetch of
+  // another workers.dev Worker in the same account is refused (error 1042).
+  // A binding ignores the URL's host, so customHooks.ts picks one by the
+  // forward URL's origin: production desktops register on the production
+  // directory, development builds on the default one.
+  "services": [
+    { "binding": "ACCOUNT_DIRECTORY", "service": "ade-account-directory" },
+    { "binding": "ACCOUNT_DIRECTORY_PRODUCTION", "service": "ade-account-directory-production" }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

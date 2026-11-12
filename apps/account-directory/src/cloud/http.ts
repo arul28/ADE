@@ -9,6 +9,9 @@ export const fail = (code: string, message: string, status: number, extra?: Reco
 
 export const UNREADABLE_REQUEST_MESSAGE = "That request could not be read.";
 
+/** A lowercase 8-4-4-4-12 UUID: a launch, a lane on a launch, a delete job. Callers lowercase first. */
+export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** `CLOUD_ACCESS_ACCOUNTS`: comma list of Clerk ids, or `*`. Unset is nobody. The router, the referrals and the plan cleanup all ask it. */
 export function cloudAccessAllows(env: { CLOUD_ACCESS_ACCOUNTS?: string }, userId: string): boolean {
   const list = (env.CLOUD_ACCESS_ACCOUNTS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);

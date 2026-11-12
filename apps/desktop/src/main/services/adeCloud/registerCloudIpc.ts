@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import path from "node:path";
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
   cloudKindLabel,
@@ -19,6 +20,7 @@ import {
   type CloudInviteRedeemOutcome,
 } from "../../../shared/adeCloud";
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -43,6 +45,7 @@ import {
   watchCloudAccessForSkills,
   type CloudAccessDeps,
 } from "./cloudAccess";
+import { cloudGitPreflight } from "./cloudGitCredential";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
@@ -60,9 +63,11 @@ import {
   wakeCloudMachineForUse,
 } from "./cloudSleep";
 import { openExternalUrl } from "../shared/externalLinks";
-import { getErrorMessage } from "../shared/utils";
+import { getErrorMessage, isRecord } from "../shared/utils";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
+import { createLaneFollower } from "./cloudLaneFollow";
+import type { MachineConnector, MachineWakeResult } from "../machines/machineConnector";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
@@ -97,6 +102,8 @@ export function registerCloudIpc(args: {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** Forgets this desktop's saved connections to a machine a move deleted (the remote connection service). */
   forgetMachineConnections?: (machine: { machineKey: string | null; instanceId: string }) => void;
+  /** Contract C2: reaches any machine of the account by key (`machines/machineConnector.ts`). */
+  machineConnector?: () => MachineConnector | null;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
@@ -114,6 +121,14 @@ export function registerCloudIpc(args: {
   machines: ReturnType<typeof createCloudMachines>;
   copyDeps: CloudCopyDeps;
   client: () => Promise<CloudProvider>;
+  /** Contract C2's wake before a pairing (`machines/machineConnector.ts`). */
+  wakeForPair: (machineKey: string) => Promise<MachineWakeResult>;
+  /**
+   * Contract C4 (`cloudGitPreflight`): the account's GitHub sign-in, read
+   * only while ADE is signed in, else one unauthenticated visibility read.
+   * The lane launch checks it before a computer is made.
+   */
+  gitPreflight: (originUrl: string | null) => Promise<CloudGitPreflight>;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -196,6 +211,16 @@ export function registerCloudIpc(args: {
     [IPC.cloudSignInSaveKey, "cloud_sign_in_save_key", (arg) => ({ id: arg?.id, key: arg?.key })],
     [IPC.cloudSignInRemove, "cloud_sign_in_remove", (arg) => ({ id: arg?.id })],
   ];
+  // C4: the account's GitHub sign-in (no pin), else one unauthenticated visibility read.
+  const gitPreflight = (originUrl: string | null): Promise<CloudGitPreflight> =>
+    cloudGitPreflight({ vault: (key) => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, key) : null) }, originUrl);
+  // The same check as a published call (`window.ade.cloud.gitPreflight`). The
+  // launch runs it itself; no renderer surface calls it yet.
+  ipcMain.handle(IPC.cloudGitPreflight, async (event, arg?: { originUrl?: unknown }): Promise<CloudGitPreflight | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGitPreflight)) return null;
+    const originUrl = typeof arg?.originUrl === "string" && arg.originUrl.length <= 2_048 ? arg.originUrl : null;
+    return await gitPreflight(originUrl);
+  });
   for (const [channel, action, toArgs] of cloudSignInHandlers) {
     ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<CloudSignInStatus | null> => {
       if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) return null;
@@ -224,13 +249,36 @@ export function registerCloudIpc(args: {
   const savedClient = () => getCloudProvider(credentials);
 
 
+  // Contract C3: a lane follows its computer (cloudLaneFollow.ts). It reads
+  // nothing of its own: every good read of the account's computers reaches it.
+  let readMachinesNow: () => Promise<boolean> = async () => false;
+  const laneFollower = createLaneFollower({
+    readNow: () => readMachinesNow(),
+    connector: () => args.machineConnector?.() ?? null,
+    forgetMachine: (machine) => args.forgetMachineConnections?.(machine),
+    statePath: path.join(app.getPath("userData"), "cloud-lane-computers.json"),
+    emit: (move) => sendToAllWindows(IPC.cloudLaneMoved, move),
+    logger,
+  });
   const machines = createCloudMachines({
     whyNoClient: () => cloudNoProviderSentence(credentials),
     client: savedClient,
     // A miss refreshes the known computers only on a known yes to access.
     knownClient: () => knownCloudProvider(credentials),
     removeAccountMachine: args.removeAccountMachine,
+    onInstancesRead: (instances) => laneFollower.note(instances),
     logger,
+  });
+  readMachinesNow = async () => (await machines.list()).state === "ok";
+  ipcMain.handle(IPC.cloudLaneComputer, async (event, raw: unknown) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneComputer)) throw new Error("ADE can't do that from here.");
+    const request = isRecord(raw) ? raw : {};
+    return await laneFollower.laneComputer(typeof request.laneId === "string" ? request.laneId : "");
+  });
+  ipcMain.handle(IPC.cloudFollowLane, async (event, raw: unknown) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFollowLane)) throw new Error("ADE can't do that from here.");
+    const request = isRecord(raw) ? raw : {};
+    return await laneFollower.follow(typeof request.laneId === "string" ? request.laneId : "", { connect: request.connect !== false });
   });
   // Off the list this asks nothing: access is read at sign-in and on focus only.
   startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
@@ -599,7 +647,20 @@ export function registerCloudIpc(args: {
   });
 
   // The ADE Cloud lane launch makes its computer with these same pieces.
-  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials) };
+  /** Contract C2's wake before a pairing: a sleeping cloud computer of this account, by machine key. */
+  const wakeForPair = async (machineKey: string): Promise<MachineWakeResult> => {
+    // Not `knowsBox`: it answers no until this app has read ADE Cloud access,
+    // and a pairing is rare and started by a person. One bounded list read.
+    const client = await savedClient().catch((error: unknown) => {
+      logger.warn("cloud.wake_for_pair_client_failed", { error: getErrorMessage(error) });
+      return null;
+    });
+    if (!client) return { state: "not_cloud" };
+    const result = await wakeCloudMachineForUse(client, { machineKey }, { logger });
+    if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
+    return result.state === "refused" ? { state: "refused", message: result.message } : { state: result.state };
+  };
+  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair, gitPreflight };
 }
 
 /** This app's ADE release, or null for a development build (whose version may not be published). */

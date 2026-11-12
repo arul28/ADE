@@ -80,6 +80,12 @@ export type CliAuthStatus = {
   pinnedState?: PinnedToolState;
   /** The sentence for that state, when not installed. */
   pinnedBlocker?: string | null;
+  /**
+   * Not installed, but ADE downloads it on this machine's first use (or is
+   * downloading it now). A signed-in provider in this state keeps its models:
+   * its first turn downloads it, as a status read never does.
+   */
+  pinnedDownloadPending?: boolean;
   authenticated: boolean;
   verified: boolean;
   /** Optional Cursor CLI diagnostic only — not used for Cursor SDK auth. */
@@ -1335,10 +1341,20 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       const tool = pinnedToolForProvider(cli);
       const presence = tool
         ? pinnedToolPresence(tool.tool, tool.label, pinned?.command ?? null)
-        : { installed: pinned !== null, path: pinned?.command ?? null, state: "ready" as const, blocker: null };
+        : { installed: pinned !== null, path: pinned?.command ?? null, state: "ready" as const, blocker: null, fetchAllowed: false };
       const installed = pinned !== null;
       const path = presence.path;
-      const base = { cli, installed, path, pinnedState: presence.state, pinnedBlocker: presence.blocker };
+      const pinnedDownloadPending = !installed && Boolean(tool) && (
+        presence.state === "downloading" || (presence.state === "missing" && presence.fetchAllowed)
+      );
+      const base = {
+        cli,
+        installed,
+        path,
+        pinnedState: presence.state,
+        pinnedBlocker: presence.blocker,
+        ...(pinnedDownloadPending ? { pinnedDownloadPending } : {}),
+      };
       // Disk-only sign-ins are read whether or not ADE's copy is here yet, so
       // a signed-in provider reads "downloading", not "not signed in". Copilot
       // chats run on ADE's runtime, so a sign-in counts with no CLI at all.
@@ -1356,6 +1372,13 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       if (!pinned && cli === "droid") {
         const seen = await droidCredentialSeen();
         return { ...base, authenticated: seen !== null, verified: seen === "key" };
+      }
+      // Claude and Codex before ADE's copy is here: their saved login on disk
+      // (never a probe, which would need the copy). Signed in, the provider
+      // keeps its models and its first turn downloads the copy.
+      if (!pinned && pinnedDownloadPending && (cli === "claude" || cli === "codex")) {
+        const { savedSignInPresent } = await import("./providerConnectionStatus");
+        return { ...base, authenticated: await savedSignInPresent(cli), verified: false };
       }
       // Every other probe runs ADE's copy, so it waits for that copy.
       if (!pinned) {
@@ -1414,7 +1437,9 @@ export async function detectAllAuth(
     skipAuthProbe: options?.skipCliAuthProbe,
   });
   for (const cli of cliStatuses) {
-    if (!cli.installed) continue;
+    // Not here yet but downloaded on first use: a signed-in provider still
+    // lists its models, so a chat can start and its turn fetches the copy.
+    if (!cli.installed && !(cli.pinnedDownloadPending && cli.authenticated)) continue;
     if (!cli.authenticated && cli.verified) continue;
     results.push({
       type: "cli-subscription",

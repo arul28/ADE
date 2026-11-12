@@ -52,6 +52,7 @@ import {
 import {
   capRemoteRuntimeErrorDetail,
   REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
+  REMOTE_TARGET_NOT_FOUND_MESSAGE,
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjectIcon, coerceProjects } from "./remoteBootstrap";
@@ -1479,7 +1480,8 @@ export class RemoteConnectionService {
     );
     const project = coerceConnectionProject(value);
     this.upsertProject(targetId, project);
-    return project;
+    // Said once, to the caller of this clone; the stored project list never keeps it.
+    return asRecord(value).githubSignInMissing === true ? { ...project, githubSignInMissing: true } : project;
   }
 
   async listMyGitHubRepos(
@@ -2045,7 +2047,7 @@ export class RemoteConnectionService {
     const target = this.registry.get(targetId);
     // Removed (or never saved here) while a view still held its id: the
     // caller's to fix, as `requireRemoteTarget` in runtimeBridge says.
-    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+    if (!target) throw new AdeExpectedError(REMOTE_TARGET_NOT_FOUND_MESSAGE, "user");
     return target;
   }
 
