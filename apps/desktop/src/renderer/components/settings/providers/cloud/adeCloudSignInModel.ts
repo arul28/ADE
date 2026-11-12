@@ -20,7 +20,9 @@ import {
   cloudSignInKeyFor,
 } from "../../../../../shared/cloudSignIns";
 import type { AiSettingsStatus } from "../../../../../shared/types";
+import { cloudChoiceKey } from "../../../../../shared/providerLoginsCloudSetting";
 import {
+  accountIdentityOf,
   isClaudePassKey,
   type ProviderLoginApplied,
   type ProviderLoginProvider,
@@ -358,8 +360,21 @@ function keepWhole(name: string): string {
   return name.replace(/-/g, "\u2011");
 }
 
-function originLine(signIn: ProviderLoginSignIn): string {
-  return `From ${signIn.origin.label}`;
+/**
+ * Which card a sign-in belongs to: its place and its account
+ * (`accountIdentityOf`), so one account copied from several computers is one
+ * card. A copy that names no account is a card of its own.
+ */
+export function signInCardBucket(signIn: Pick<ProviderLoginSignIn, "key" | "provider" | "slot" | "account">): string {
+  const identity = accountIdentityOf(signIn.provider, signIn.account);
+  return `${cloudChoiceKey(signIn.provider, signIn.slot)}\u0000${identity ?? `key:${signIn.key}`}`;
+}
+
+/** "From Mac Studio", or "From 3 computers" when the same account came from several (one card per account). */
+function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSignIn[]): string {
+  const bucket = signInCardBucket(signIn);
+  const copies = all.filter((other) => signInCardBucket(other) === bucket).length;
+  return copies > 1 ? `From ${copies} computers` : `From ${signIn.origin.label}`;
 }
 
 function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus | null): Omit<AdeCloudTile, "provider"> {
@@ -392,17 +407,17 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
   if (inUse) {
     const action = switchFor(only);
     if (applied?.state === "applied" && applied.key !== inUse.key && cloudName) {
-      return signedIn("T4", [{ text: `${originLine(inUse)} · On its way to ${cloudName}` }, ...repoLine], action);
+      return signedIn("T4", [{ text: `${originLine(inUse, signIns)} · On its way to ${cloudName}` }, ...repoLine], action);
     }
     const expiresAt = parseTime(inUse.expiresAt);
     const endsSoon = expiresAt != null
       && expiresAt - now <= ENDS_SOON_DAYS * DAY_MS
       && (inUse.class === "fixed" || applied?.renewalSafe === false);
     if (endsSoon) {
-      return signedIn("T12", [{ text: `${originLine(inUse)} · Ends on ${shortDate(expiresAt, now)}`, tone: "warn" }, ...repoLine], action);
+      return signedIn("T12", [{ text: `${originLine(inUse, signIns)} · Ends on ${shortDate(expiresAt, now)}`, tone: "warn" }, ...repoLine], action);
     }
     const email = inUse.account?.email?.trim() || inUse.account?.id?.trim() || null;
-    return signedIn("T3", [{ text: email ? `${email} · ${originLine(inUse)}` : originLine(inUse) }, ...repoLine], action);
+    return signedIn("T3", [{ text: email ? `${email} · ${originLine(inUse, signIns)}` : originLine(inUse, signIns) }, ...repoLine], action);
   }
   if (signIns.length > 0) return notSignedIn("T9", "Off for ADE Cloud", switchFor(only));
   if (provider === "antigravity" && input.keychainIsThisMac && row?.keychain?.canAllow) {

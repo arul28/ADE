@@ -1028,6 +1028,8 @@ final class AccountService: ObservableObject {
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
+      // The account's saved project list shows at once, before any read.
+      AccountProjectStore.shared.activate(userId: nextIdentity.userId)
       ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
       SessionReplay.syncIdentity()
       if phase != .signedIn {
@@ -1054,7 +1056,8 @@ final class AccountService: ObservableObject {
           await PushNotificationService.shared.resumeAccountRegistrationIfAuthorized()
           async let machines: Void = self.loadMachines()
           async let attention: Void = self.refreshAttentionSnapshot()
-          _ = await (machines, attention)
+          async let projects: Void = AccountProjectStore.shared.refresh()
+          _ = await (machines, attention, projects)
           await LiveActivityService.shared.handleAccountSignIn()
         }
       }
@@ -1099,6 +1102,8 @@ final class AccountService: ObservableObject {
     if previousOwnerId != nil { CrashReporting.setUser(accountId: nil) }
     machines = []
     machinesState = .idle
+    // An owner signing out takes the saved project list with them.
+    AccountProjectStore.shared.deactivate(deletingCacheOf: previousOwnerId)
     phase = .signedOut
     clearAttentionSnapshot()
     LiveActivityService.shared.prepareForAccountSignOut()

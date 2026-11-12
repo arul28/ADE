@@ -191,10 +191,13 @@ export function withMachineTimeout<T>(
   });
 }
 
-/** A call sent to another machine is timed out; the tab machine's own call is left as is. */
+/**
+ * A call sent to another machine is timed out; the tab machine's own call is
+ * left as is (it never had a timeout, and its pin is set like any other).
+ */
 export function onMachine<T>(
   promise: Promise<T>,
-  machine: { pin: OpenProjectBinding | null; machineName: string } | null | undefined,
+  machine: { pin: OpenProjectBinding | null; machineName: string; isActiveBinding: boolean } | null | undefined,
 ): Promise<T> {
-  return machine?.pin ? withMachineTimeout(promise, machine.machineName) : promise;
+  return machine?.pin && !machine.isActiveBinding ? withMachineTimeout(promise, machine.machineName) : promise;
 }

@@ -201,8 +201,12 @@ its Activity is still the user's own.
 
 Every refusal on this Worker is a user who cannot get their computer back onto
 their account, and by the time they ask for help the request is gone. Each
-refusal path emits exactly one structured line to `console.log` (Workers
-observability runs at `head_sampling_rate: 1`):
+refusal path emits exactly one structured line to `console.log`. Workers
+observability keeps 10% of requests (`head_sampling_rate: 0.1` since
+2026-11-12, for the Workers Logs bill), so the line alone is often gone. Each
+refusal is therefore also a Sentry warning (`<event>: <code>`, one issue per
+event and code, tagged `refusal.code` and `correlation_id`, with the prefixes
+below and no account id), within the Worker's Sentry budget (`admitEvent`):
 
 ```json
 {"event":"directory.register_refused","userId":"user_…","machineKeyPrefix":"abcdef12",
@@ -1036,6 +1040,108 @@ owner's grants to another machine of the same account.
   receiving computer's own account, with the rights its person chose.
 - When the owner starts a move, the owner's account email goes to the guest,
   so the guest's computer can share the new lane back.
+
+## Account projects
+
+The account keeps a list of its projects (`src/accountProjects`, tables in
+migration 0028, shapes in `src/accountProjects/contract.ts`). A project is a
+GitHub repository. A copy is one folder of that repository on one machine.
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `GET /account/projects?since=<cursor>` | phone, web, brain | Projects that changed after `since`. No `since`, or an old one, gives the whole list with `reset: true`. |
+| `POST /account/projects` | phone, web, brain | An explicit add. It returns the existing project when the account has it, and brings back a removed one. |
+| `POST /account/projects/:id/remove` | phone, web, brain | Removes the project. The row stays as a tombstone. The machines keep their folders. |
+| `PUT /account/projects/copies` | brain only | Replaces all copies of one machine in one request. A browser Origin is refused. |
+
+Every route takes the account token, and every statement names the caller's
+`user_id`. An id of another account answers 404, the same as an unknown id.
+
+Identity rules:
+
+- The key of a project is the host plus GitHub's numeric repository id.
+  The address (`repo:github.com/owner/name`) is an alias, and one project
+  has many aliases.
+- An add with only an address returns the project that has that address.
+- When an id arrives for an address-only row and another row has that id,
+  the two rows merge. The address-only row keeps its id with `merged_into`
+  set, and its aliases and copies move.
+- A fork has its own id, so it is its own project.
+- A removed project stays removed when a machine publishes it again. Only
+  an explicit add brings it back.
+- Each write plans against a snapshot and goes as one D1 batch. The batch
+  first checks that the account's counter has not moved since the snapshot.
+  A write that loses that check, or a race on a unique key, plans again
+  (up to eight tries, with a short random wait).
+- Copies are listed only for a machine that is still on the account.
+
+Limits per account: 500 live projects, 1,000 rows (the oldest tombstones go
+first, and a client with an older cursor then gets the whole list), 20
+aliases per project, 200 copies per machine, 2,000 copies in all, and 256 KB
+per request body. The list does not go in the push relay's account settings
+(5,000 keys).
+
+A machine does not ask on a timer. The heartbeat answer
+(`POST /account/machines/register`) carries `accountProjectsCursor`, and the
+machine reads the list only when that number changed. A machine publishes its
+copies only when they changed. Removing a machine, or replacing its key,
+deletes its copies (best effort; a failure goes to Sentry as
+`account_project.machine_copies_delete_failed`). A failed cursor read leaves
+the field out of the heartbeat answer and goes to Sentry as
+`account_project.heartbeat_cursor_failed`. A Clerk `user.deleted` deletes
+every row of the account.
+
+## GitHub App sign-in
+
+The account holds one ADE GitHub App sign-in (`src/githubApp`, tables in
+migration 0029, shapes in `src/githubApp/contract.ts`). This Worker keeps the
+refresh token sealed and renews the access token. Clients get the access
+token only. The refresh token and the client secret never leave the Worker.
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `POST /github/app/sign-in` | desktop, CLI, web, phone | Starts a web-flow sign-in (state + PKCE S256) and returns the GitHub authorize URL. 10 per account per 10 minutes. |
+| `GET /github/app/callback` | the browser, from GitHub | Spends the state (once, 10 minutes), exchanges the code, saves the grant. Desktop and CLI get a page; the phone gets `ade://github/connected?...`; the web gets its `returnTo`. |
+| `GET /github/app/sign-in/:id` | the client that started it | `pending`, `done`, `failed` or `expired`. Another account gets 404. |
+| `POST /github/app/token` | every signed-in client | The access token and `useForSec`. Renews it when due. 120 per account per hour. |
+| `GET /github/app/status` | every signed-in client | Connected or not, the state, and the GitHub login. No token. |
+| `DELETE /github/app/grant` | every signed-in client | Deletes the token at GitHub and the grant. |
+| `POST /github/app/adopt` | machines only | Moves a machine's device-flow token to the account when the account has none. |
+| `POST /github/app/retire` | machines only | Deletes a machine's old token at GitHub. Refuses the account's live token. |
+| `GET /github/app/installed` | the browser | The App's Setup URL page. Ignores `installation_id`. |
+
+Renewal with one writer:
+
+- A served token carries `useForSec`, counted to 20 minutes before GitHub's
+  expiry. A client stops 30 s before that and asks again, so all clients
+  share one stop time.
+- The Worker refreshes 15 s after that stop time. A request in those 45 s
+  waits on the Worker for at most 15 s, then renews.
+- One request takes the lease (one conditional D1 update, 45 s). The others
+  read the row for up to 3 s, then answer 503 `renewing` with `retry-after`.
+- `bad_refresh_token` ends the grant (409 `needs_reauth`). 429, 5xx, a
+  network failure and a 200 with no token back off 1 minute, doubling to
+  1 hour. Meanwhile the old token is served for a short time while it is
+  safe, else 503 `github_unavailable`.
+- A lease left past its time means the holder died. If GitHub had taken
+  that refresh, the next one gets `bad_refresh_token` and the reason is
+  `unpersisted_refresh`.
+- A client that gets a 401 sends the token's SHA-256. The Worker asks GitHub
+  about it at most once a minute per account and renews at once when GitHub
+  no longer knows it.
+
+The cron makes no query except at minute 17 of each hour (it deletes
+sign-ins and limit rows older than a day) and at 03:17 UTC (it renews up to
+50 grants whose refresh token ends within 30 days and whose access token no
+client can still use). A new sign-in deletes the previous token at GitHub
+(one token, never the whole authorization). A Clerk `user.deleted` deletes
+the token at GitHub where it can, then every row of the account.
+
+Secrets `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_TOKEN_KEY` (32 bytes,
+base64) turn the routes on. Without them every bearer route answers 503
+`github_app_not_configured` and nothing else changes. The vars
+`GITHUB_WEB_BASE_URL` and `GITHUB_API_BASE_URL` let a local run point at a
+fake GitHub.
 
 ## Sign-up analytics
 

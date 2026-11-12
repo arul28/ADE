@@ -91,6 +91,7 @@ import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLin
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
+import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
 import { originUrlForBinding } from "./laneMachines";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
@@ -648,6 +649,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const ids = new Set<string>();
     for (const lane of targets) {
       const target = resolveLaneTarget(lane.id);
+      // The tab's own copy counts too: it carries its pin, and its `machineId` is null.
       if (target.ok && cloud.isCloudLane(target.pin, target.laneId)) ids.add(lane.id);
     }
     return ids.size ? ids : null;
@@ -1372,6 +1374,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             askFirst: false,
             onDeleted: () => {
               if (entry.machineId) requestCrossMachineLanesForMachine(entry.machineId);
+              else void refreshLanes({ includeStatus: false });
             },
           });
         }
@@ -2169,10 +2172,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     />
   ) : null;
   // This project's ADE Cloud lanes whose computer was freed or removed: each says so and offers a new one.
+  // Then the lanes whose computer was deleted: one place, apart from the live lanes.
   const machineFilterToolbar = (
     <>
       {machineFilterChipsNode}
       <CloudLanesWithoutComputerList originUrl={originUrlForBinding(projectBinding)} />
+      <CloudLanesOnDeletedComputers />
     </>
   );
 

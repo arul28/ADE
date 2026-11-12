@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
 import type {
   AgentChatSessionSummary,
   SessionAttentionSource,
@@ -47,6 +48,11 @@ import { readObjectActionArg, requireNonEmptyString } from "./actionArgs";
    After it, the message is dispatched — and if the dispatch fails, the status
    write is reversed with it.
 
+   That pairing is for chats. A tracked agent CLI row has no chat: its message
+   is typed at its prompt (only when it can take a turn), and a typing that
+   cannot happen leaves the move standing. A plain shell gets no message at all.
+   Both keep the same staging and undo window.
+
    The bound on that, stated honestly: the staging map is in-process, and the
    drain is guaranteed on exactly TWO paths — a graceful shutdown, where the
    desktop host awaits `flushStagedBoardMoves` in its shutdown sequence, and a
@@ -80,6 +86,11 @@ export const BOARD_MOVE_DONE_TO_WORKING_TEXT =
   "You moved this chat from Done to Working. Continue the work, or ask me what you need if the next step is unclear.";
 export const BOARD_MOVE_TO_NEEDS_YOU_TEXT =
   "The user set this chat's status to Needs you. Ask them what they need before you continue.";
+/** The same two messages, typed into a tracked agent CLI session's prompt. */
+export const BOARD_MOVE_DONE_TO_WORKING_CLI_TEXT =
+  "You moved this session from Done to Working on the ADE board. Continue the work, or ask me what you need if the next step is unclear.";
+export const BOARD_MOVE_TO_NEEDS_YOU_CLI_TEXT =
+  "The user set this session's status to Needs you on the ADE board. Ask them what they need before you continue.";
 
 /**
  * The message a move sends, or null when it sends none.
@@ -94,9 +105,11 @@ export const BOARD_MOVE_TO_NEEDS_YOU_TEXT =
 export function boardMoveMessageText(
   from: WorkBoardColumn,
   to: WorkBoardMoveTarget,
+  reader: "chat" | "agent_cli" = "chat",
 ): string | null {
-  if (to === "needs_you") return BOARD_MOVE_TO_NEEDS_YOU_TEXT;
-  if (to === "working" && from === "done") return BOARD_MOVE_DONE_TO_WORKING_TEXT;
+  const cli = reader === "agent_cli";
+  if (to === "needs_you") return cli ? BOARD_MOVE_TO_NEEDS_YOU_CLI_TEXT : BOARD_MOVE_TO_NEEDS_YOU_TEXT;
+  if (to === "working" && from === "done") return cli ? BOARD_MOVE_DONE_TO_WORKING_CLI_TEXT : BOARD_MOVE_DONE_TO_WORKING_TEXT;
   return null;
 }
 
@@ -582,6 +595,15 @@ export type BoardMoveChatService = {
   getSessionSummary?(sessionId: string): Promise<BoardMoveChatSummary | null>;
   /** The lane's chats, to find this row's subagents and their wakes. */
   listSessions?(laneId?: string): Promise<BoardMoveChatLink[]>;
+  /**
+   * A tracked agent CLI row has no chat to message; its move's text is typed
+   * at its prompt instead, the way scheduled work reaches it. Asked at move
+   * time so the toast only promises a message the CLI can take: never typed
+   * into a turn that is still running.
+   */
+  agentCliCanTakeText?(sessionId: string): boolean;
+  /** Type the text at the CLI's prompt. "deferred": nothing was typed. */
+  typeIntoAgentCli?(args: { sessionId: string; text: string }): Promise<"delivered" | "deferred">;
 };
 
 /** What a move reads from a chat summary. A full summary carries `status`. */
@@ -820,7 +842,22 @@ export function createSessionBoardMoveActions(deps: {
       // move meant.
       const after = captureLifecycleIdentity(sessionService.get(sessionId));
 
-      const text = boardMoveMessageText(from, to);
+      // Who reads the message decides whether there is one. A chat takes it as
+      // a message. A tracked agent CLI takes it typed at its prompt, but only
+      // when it can take a turn now; otherwise the move goes through silently
+      // rather than promising a message nobody will send. A plain shell has no
+      // agent to tell. Without this a CLI or shell row reached `messageSession`,
+      // which refuses non-chat rows, and the card snapped back five seconds
+      // after the toast said it had moved.
+      const agentCli = Boolean(rawRow.tracked && isTrackedAgentCliToolType(rawRow.toolType));
+      const chatService = deps.agentChatService;
+      const canTellAgent = isChatToolType(rawRow.toolType)
+        || (
+          agentCli
+          && typeof chatService?.typeIntoAgentCli === "function"
+          && chatService.agentCliCanTakeText?.(sessionId) === true
+        );
+      const text = canTellAgent ? boardMoveMessageText(from, to, agentCli ? "agent_cli" : "chat") : null;
       const dispatch = async (): Promise<void> => {
         // Claim the entry first: an undo racing the timer must find it gone.
         if (stagedBoardMoves.get(moveId) !== staged) return;
@@ -828,6 +865,26 @@ export function createSessionBoardMoveActions(deps: {
         rememberDispatchedMoveId(moveId);
         if (!text) return;
         const chat = deps.agentChatService;
+        if (agentCli && typeof chat?.typeIntoAgentCli === "function") {
+          // The card stays where the user put it either way. The status is the
+          // user's own statement about the row, and the typed line is a
+          // courtesy to the CLI: a turn that started inside the undo window, or
+          // a CLI that cannot be reopened, is not a reason to undo the drag.
+          try {
+            const outcome = await chat.typeIntoAgentCli({ sessionId, text });
+            if (outcome === "deferred") {
+              deps.logger.warn("session.board_move_cli_message_skipped", { sessionId, moveId, reason: "cli_busy" });
+            }
+          } catch (error) {
+            deps.logger.warn("session.board_move_cli_message_skipped", {
+              sessionId,
+              moveId,
+              reason: "type_failed",
+              error: getErrorMessage(error),
+            });
+          }
+          return;
+        }
         if (typeof chat?.messageSession !== "function") {
           // No chat service means no message, so the move never completed.
           const restored = await restoreBoardMoveSnapshot(sessionService, sessionId, before, after);

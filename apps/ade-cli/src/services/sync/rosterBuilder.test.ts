@@ -154,7 +154,7 @@ const projectRegistry = {
   ],
 };
 
-const unbootedScopes: RosterScopeRegistry = { getIfBooted: () => null };
+const unbootedScopes: RosterScopeRegistry = { getIfBooted: () => null, isOpenBlocked: () => false };
 
 function bootedScopes(
   liveSessions: RosterLiveSession[],
@@ -167,7 +167,7 @@ function bootedScopes(
       ptyService: { hasLivePty: (sessionId) => livePtyIds.has(sessionId) },
     },
   };
-  return { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null) };
+  return { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null), isOpenBlocked: () => false };
 }
 
 beforeEach(() => {
@@ -376,7 +376,7 @@ describe("buildRosterSnapshot", () => {
     };
     const live = await buildRosterSnapshot({
       projectRegistry,
-      scopeRegistry: { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null) },
+      scopeRegistry: { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null), isOpenBlocked: () => false },
       hostProjectId: PROJECT_ID,
     });
     expect(live[0]!.chats.find((chat) => chat.id === "chat-run")).toMatchObject({ maxSequence: 57, historyGeneration: 3 });

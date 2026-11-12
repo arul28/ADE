@@ -5,6 +5,8 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { showToast } from "../app/toast/toastStore";
 import { nextFilesOpenNonce, requestFilesOpenInTools } from "../files/v2/filesOpenRequests";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { cacheScopeKey } from "../../lib/tabBindingKey";
 
 /**
  * Recognising the file paths an agent writes into chat, and turning them into
@@ -321,7 +323,7 @@ export type ChatWorkspacePathContextValue = {
 const BOUND_MACHINE_CACHE_KEY = "bound";
 
 function machineCacheKey(pin: OpenProjectBinding | null | undefined): string {
-  return pin?.key ?? BOUND_MACHINE_CACHE_KEY;
+  return cacheScopeKey(pin) ?? BOUND_MACHINE_CACHE_KEY;
 }
 
 const cachedFilesWorkspaces = new Map<string, FilesWorkspace[]>();
@@ -608,6 +610,7 @@ export function useWorkspacePathOpener(args: {
   // (a chat rendered under /prs, personal chats) the full Files tab is the only
   // destination that can actually show the file.
   const inWorkSurface = location.pathname.startsWith("/work");
+  const runsOnTab = usePinTargetsTab(runtimePin);
   const [workspaces, setWorkspaces] = React.useState<FilesWorkspace[]>(
     () => cachedFilesWorkspaces.get(machineCacheKey(runtimePin)) ?? [],
   );
@@ -717,11 +720,11 @@ export function useWorkspacePathOpener(args: {
     // another machine — needs the full Files tab, which owns the workspace
     // picker and the machine chrome the tools pane deliberately hides.
     const belongsToThisChatsLane = target.laneId != null && target.laneId === laneId;
-    if (!runtimePin && belongsToThisChatsLane && inWorkSurface) {
+    if (runsOnTab && belongsToThisChatsLane && inWorkSurface) {
       requestFilesOpenInTools({
         path: resolvedPath,
         laneId: target.laneId,
-        pin: null,
+        pin: runtimePin,
         pathType: probe.kind === "directory" ? "directory" : "file",
         line: openLine,
         column: openColumn,
@@ -742,7 +745,7 @@ export function useWorkspacePathOpener(args: {
       },
     });
     onOpened?.(resolvedPath, target.laneId);
-  }, [inWorkSurface, laneId, navigate, onOpened, runtimePin]);
+  }, [inWorkSurface, laneId, navigate, onOpened, runsOnTab, runtimePin]);
 
   const formatWorkspaceDisplayPath = React.useCallback((path: string): string => (
     resolveFilesNavigationTarget({ path, workspaces, fallbackLaneId: laneId })?.openFilePath ?? path

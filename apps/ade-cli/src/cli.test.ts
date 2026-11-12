@@ -2100,6 +2100,18 @@ describe("ADE CLI", () => {
         },
       ],
     });
+    // `ade projects retry` takes an id by flag or bare, or a path.
+    for (const [args, params] of [
+      [["--id", "project_abc"], { projectId: "project_abc" }],
+      [["--project-id", "project_abc"], { projectId: "project_abc" }],
+      [["project_abc"], { projectId: "project_abc" }],
+      [["--path", "/tmp/repo"], { rootPath: path.resolve("/tmp/repo") }],
+    ] as const) {
+      expect(buildCliPlan(["projects", "retry", ...args])).toMatchObject({
+        label: "projects retry",
+        steps: [{ key: "result", method: "projects.retryOpen", params }],
+      });
+    }
     expect(buildCliPlan(["projects", "inspect", "/tmp/worktree"])).toEqual({
       kind: "execute",
       label: "projects inspect",
@@ -7941,7 +7953,8 @@ describe("ADE CLI", () => {
           method: "account.call",
           params: {
             action: "startDeviceLogin",
-            args: { projectRoot: expect.any(String), ignoreEnvCredential: true },
+            // A headless sign-in keeps trying an account directory it can't reach yet (a fresh cloud computer).
+            args: { projectRoot: expect.any(String), ignoreEnvCredential: true, retryUnreachableForMs: 45_000 },
           },
         },
         {

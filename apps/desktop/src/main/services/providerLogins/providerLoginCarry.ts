@@ -66,7 +66,7 @@ export type CarryContext = {
   env: NodeJS.ProcessEnv;
   homeDir: string;
   platform: NodeJS.Platform;
-  /** True on an ADE Cloud computer (`isCloudMachine()`). */
+  /** True on an ADE Cloud computer (`isAdeCloudComputer()`). */
   cloudComputer: boolean;
 };
 

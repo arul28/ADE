@@ -395,18 +395,31 @@ Create or edit a GitHub App. Use the user-facing name `ADE`:
   `https://ade-github-webhook-relay.<your-subdomain>.workers.dev/github/webhook`
 - Webhook secret: the same `GITHUB_WEBHOOK_SECRET` stored in Cloudflare.
 - SSL verification: enabled.
-- Device flow: enabled.
+- Device flow: enabled. Older desktop versions sign in with it.
 - Expire user authorization tokens: enabled.
-- Request user authorization (OAuth) during installation: optional. ADE starts
-  device authorization itself, so this is not required for the hosted relay to
-  work; enabling it can reduce a later authorization step for some users.
-- Repository permissions:
-  - Metadata: read-only
-  - Pull requests: read-only
+- Callback URL: `https://ade-account-directory-production.arulsharma1028.workers.dev/github/app/callback`
+  (and the development Worker's `/github/app/callback`), with wildcard
+  matching off. The account directory's web-flow sign-in uses it
+  (`apps/account-directory`, "GitHub App sign-in").
+- Setup URL: `https://ade-account-directory-production.arulsharma1028.workers.dev/github/app/installed`,
+  with "Redirect on update" on.
+- Request user authorization (OAuth) during installation: off. A code that
+  GitHub sends with no ADE state cannot be tied to an ADE account.
+- A client secret, stored only as the account directory's Worker secret
+  `GITHUB_APP_CLIENT_SECRET`.
+- Repository permissions, as the live App had them on 2026-11-11 (public read
+  of `GET /apps/ade-for-github`):
+  - Contents: read and write
+  - Pull requests: read and write
+  - Issues: read and write
+  - Actions: read and write
+  - Workflows: read and write
   - Checks: read-only
   - Commit statuses: read-only
-  - Actions: read-only
-  - Issues: read-only, for PR issue comments and labels
+  - Metadata: read-only
+  - The App also asks for Actions variables, organization Actions
+    variables, organization secrets and organization self-hosted runners
+    (write). No ADE code uses them; removing them is recommended.
 - Subscribe to events:
   - Pull request
   - Pull request review

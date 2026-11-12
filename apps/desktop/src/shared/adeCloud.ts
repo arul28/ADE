@@ -548,24 +548,37 @@ export function cloudDiskFullMessage(
   catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
   exactReason?: string | null,
 ): string | null {
-  const head = "This computer's disk is full.";
+  const wayOut = cloudDiskGrowRefusedWayOut(reason, catalog, exactReason);
+  return wayOut ? `This computer's disk is full. ${wayOut}` : null;
+}
+
+/**
+ * Why a cloud computer's disk can't grow and the way out, without the "disk
+ * is full" head (the chat's refusal and the card each say that their own
+ * way), or null with no reason. The exact reason wins over the older one.
+ */
+export function cloudDiskGrowRefusedWayOut(
+  reason: string | null | undefined,
+  catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
+  exactReason?: string | null,
+): string | null {
   // A server before Pro keeps each free computer at its own few GB; a newer one shares the free disk.
   const freeRule = cloudCatalogHasPro(catalog)
-    ? `${head} Free computers share ${catalog.plans.free.diskGb} GB of disk at one time. A paid plan gives more.`
-    : `${head} Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`;
+    ? `Free computers share ${catalog.plans.free.diskGb} GB of disk at one time. A paid plan gives more.`
+    : `Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`;
   const known: Partial<Record<CloudDiskRefusalReason | CloudDiskFullReason, string>> = {
     plan_disk: freeRule,
-    needs_approval: `${head} Turn on extra disk in Settings to let it grow.`,
-    extra_off: `${head} Delete a computer you no longer use, or turn on extra disk in Settings.`,
-    monthly_limit: `${head} Extra disk reached the monthly limit you set. Raise it in Settings.`,
-    tier_limit: `${head} This size can't have a bigger disk. Move it to a bigger size.`,
-    unavailable: `${head} ADE Cloud can't grow it right now.`,
+    needs_approval: "Turn on extra disk in Settings to let it grow.",
+    extra_off: "Delete a computer you no longer use, or turn on extra disk in Settings.",
+    monthly_limit: "Extra disk reached the monthly limit you set. Raise it in Settings.",
+    tier_limit: "This size can't have a bigger disk. Move it to a bigger size.",
+    unavailable: "ADE Cloud can't grow it right now.",
     free_limit: freeRule,
-    account_limit: `${head} Your computers use all your plan's disk at one time.`,
+    account_limit: "Your computers use all your plan's disk at one time. Delete a computer you no longer use, turn on extra disk, or pick a bigger plan in Settings.",
   };
   for (const value of [exactReason, reason]) {
     if (!value) continue;
-    return known[value as keyof typeof known] ?? `${head} It can't grow right now.`;
+    return known[value as keyof typeof known] ?? "It can't grow right now.";
   }
   return null;
 }
@@ -1025,16 +1038,31 @@ export type CloudMachineActionResult = {
   diskRefusal?: { reason: string };
 };
 
-/** "Small · 2 CPU · 4 GB", with "Full computer" in front for a VM. */
-export function describeCloudMachineSize(machine: Pick<CloudMachine, "type" | "resources" | "shapeId">): string {
-  const shape = machine.shapeId ? cloudShapeById(machine.shapeId) : null;
-  const size = machine.resources
-    ? `${machine.resources.cpu} CPU · ${machine.resources.memoryGb} GB`
-    : null;
+/**
+ * "Full computer · Large · 4 CPU · 8 GB · 4 GB disk". A lane size's name is
+ * the catalog's for that kind and shape, the same name the size list and the
+ * pickers use (a full 4 CPU / 8 GB computer is Large, not Medium), never the
+ * bare shape's. A catalog size with no lane size has no name of its own (its
+ * label only repeats the CPU and memory), so the line names none. Pass the
+ * account's catalog (`cloudCatalogOf`); the fallback is for no account yet.
+ */
+export function describeCloudMachineSize(
+  machine: Pick<CloudMachine, "type" | "resources" | "shapeId">,
+  catalog: Pick<CloudCatalog, "sizes"> = CLOUD_CATALOG_FALLBACK,
+): string {
+  const kind = machine.type === "vm" ? "vm" : "default";
+  const resources = machine.resources;
+  const sized = resources
+    ? catalog.sizes.find((entry) => entry.type === kind && entry.cpu === resources.cpu && entry.memoryGb === resources.memoryGb)
+    : undefined;
+  const name = sized
+    ? (sized.tier ? sized.label : null)
+    : machine.shapeId ? cloudShapeById(machine.shapeId).label : null;
+  const size = resources ? `${resources.cpu} CPU · ${resources.memoryGb} GB` : null;
   // Only when the provider says it: a grown disk is the one size a resize can't undo.
-  const diskGb = machine.resources?.diskGb;
+  const diskGb = resources?.diskGb;
   const disk = typeof diskGb === "number" && Number.isFinite(diskGb) && diskGb > 0 ? `${diskGb} GB disk` : null;
-  return [machine.type === "vm" ? "Full computer" : null, shape?.label ?? null, size, disk].filter(Boolean).join(" · ");
+  return [machine.type === "vm" ? "Full computer" : null, name, size, disk].filter(Boolean).join(" · ");
 }
 
 /** The kind of machine this instance type is. */

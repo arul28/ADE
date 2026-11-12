@@ -293,6 +293,23 @@ describe("createAgentChatService", () => {
       expect(JSON.stringify(events)).not.toContain("whsec_kept_exactly");
     });
 
+    it("keeps a tracked CLI's consent card for the person: the user-only rule covers CLI cards", async () => {
+      const { service, sessionService } = createService();
+      // A Claude Code CLI running in a terminal asks for a secret from its shell.
+      sessionService.create({ sessionId: "cli-asking", laneId: "lane-1", ptyId: "pty-cli", toolType: "claude" });
+      const projectSecrets = { list: () => ({ secrets: [] }) as never, set: () => ({ name: "STRIPE_KEY" }) as never };
+      void requestProjectSecretFromUser(
+        { requestChatInput: service.requestChatInput, projectSecrets },
+        { chatSessionId: "cli-asking", name: "STRIPE_KEY", reason: "Verifies Stripe deliveries" },
+      ).catch(() => undefined);
+      await vi.waitFor(() => expect(service.listPendingInputs({ sessionId: "cli-asking" }).requests).toHaveLength(1));
+      const card = service.listPendingInputs({ sessionId: "cli-asking" }).requests[0]!;
+
+      // The RPC server refuses an agent's answer when this says true.
+      expect(service.isUserOnlyPendingInput({ sessionId: "cli-asking", itemId: card.itemId ?? card.requestId })).toBe(true);
+      expect(service.isUserOnlyPendingInput({ sessionId: "cli-asking", itemId: "not-a-card" })).toBe(false);
+    });
+
     it("replaces blank question text with the body rather than publishing an empty prompt", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

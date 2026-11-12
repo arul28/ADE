@@ -25,6 +25,9 @@ export const BRAIN_LOOP_WORKER_LATE_REPORT_MS = 500;
  */
 export const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = 5_000;
 
+/** How long a project open must have frozen the loop before the worker names it. */
+export const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = 5_000;
+
 export function evaluateBrainLoopWatchdog(args: {
   nowWallMs: number;
   nowMonotonicMs: number;
@@ -70,6 +73,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = ${BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS};
     const BRAIN_LOOP_WORKER_LATE_REPORT_MS = ${BRAIN_LOOP_WORKER_LATE_REPORT_MS};
     const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = ${BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS};
+    const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = ${BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
     const readSyncFsCall = ${readSyncFsCall.toString()};
     // What the main thread is inside, when the brain installed the tracker.
@@ -98,6 +102,16 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     let previousCheckMonotonicMs = monotonicMs();
     let lastCommand = "idle";
     let diagnostics = null;
+    // Project scopes opening right now: { projectId, phase, startedAtMs }.
+    let projectOpens = [];
+    const openingProjectsNow = () => projectOpens.map((open) => ({
+      projectId: open.projectId,
+      phase: open.phase,
+      elapsedMs: Math.max(0, Date.now() - open.startedAtMs),
+      phaseElapsedMs: Math.max(0, Date.now() - (open.phaseStartedAtMs || open.startedAtMs)),
+    }));
+    // One stalled-open line per stall: cleared when a heartbeat arrives again.
+    let projectOpenStallReported = false;
 
     let killStarted = false;
     const writeBreadcrumbAndKill = (blockedMs) => {
@@ -109,6 +123,9 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         diagnostics,
         diagnosticReportPath: workerData.reportEnabled ? workerData.reportPath : null,
       };
+      // The projects that were opening: the next brain counts the kill against them.
+      const openingProjects = openingProjectsNow();
+      if (openingProjects.length > 0) breadcrumb.openingProjects = openingProjects;
       // A synchronous file call the main thread is stuck in: the path and the
       // code that made it, which the native sample cannot name.
       const blockedFsCall = currentSyncFsCall();
@@ -214,9 +231,14 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         lastCommand = message.lastCommand || "idle";
         return;
       }
+      if (message && message.type === "projectOpens" && Array.isArray(message.opens)) {
+        projectOpens = message.opens.filter((open) => open && typeof open.projectId === "string");
+        return;
+      }
       if (!message || message.type !== "heartbeat") return;
       lastHeartbeatWallMs = Date.now();
       lastHeartbeatMonotonicMs = monotonicMs();
+      projectOpenStallReported = false;
       if (typeof message.lastCommand === "string" && message.lastCommand.length > 0) {
         lastCommand = message.lastCommand;
       }
@@ -289,6 +311,25 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
             }) + "\n");
           } catch {}
         }
+      }
+
+      // A project open that has frozen the loop this long is named now, from
+      // this thread, while the main thread cannot log anything: if the freeze
+      // ends in a kill, this line is what the log keeps of the open.
+      if (
+        evaluation.blockedMs >= BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS
+        && !projectOpenStallReported
+        && projectOpens.length > 0
+      ) {
+        projectOpenStallReported = true;
+        try {
+          fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.project_open_stalled " + JSON.stringify({
+            pid: process.pid,
+            blockedMs: evaluation.blockedMs,
+            thresholdMs: workerData.thresholdMs,
+            openingProjects: openingProjectsNow(),
+          }) + "\n");
+        } catch {}
       }
 
       if (evaluation.blocked) {

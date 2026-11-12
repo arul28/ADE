@@ -45,6 +45,7 @@ import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 import { showToast } from "../app/toast/toastStore";
 import { useAppStore } from "../../state/appStore";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 const PAGE_SIZE = 100;
 /** Search keeps reading older pages until it has this many matches… */
@@ -329,7 +330,8 @@ export function CommitHistoryView({
   // read is out, or failed). A lane on another machine (`pin`) comes from that
   // machine's own read, not from this store.
   const storeStatusStale = useAppStore((s) => s.laneStatusStale);
-  const statusStale = !pin && storeStatusStale;
+  const pinTargetsTab = usePinTargetsTab(pin);
+  const statusStale = pinTargetsTab && storeStatusStale;
   const liveLanes = useMemo(() => lanes.filter((lane) => !lane.archivedAt), [lanes]);
   const laneColor = useMemo(() => {
     const map = new Map<string, string>();
@@ -441,14 +443,14 @@ export function CommitHistoryView({
   const lanePrMap = useLanePrsByLaneId();
   const prsByLaneId = useMemo(() => {
     const map = new Map<string, PrSummary>();
-    if (pin) return map;
+    if (!pinTargetsTab) return map;
     for (const lane of liveLanes) {
       const prs = prsForLaneBranch(boundMachineLanePrs(lanePrMap, lane.id), lane);
       const live = prs.find((pr) => pr.state === "open" || pr.state === "draft") ?? prs[0];
       if (live) map.set(lane.id, live);
     }
     return map;
-  }, [lanePrMap, liveLanes, pin]);
+  }, [lanePrMap, liveLanes, pinTargetsTab]);
 
   const badgesBySha = useMemo(
     () => buildRefBadges({ branches, lanesByBranch, prsByLaneId, focusLaneId: laneId }),
@@ -719,8 +721,8 @@ export function CommitHistoryView({
     return map;
   }, [branchTip, headSha, laneId, liveLanes]);
   const laneHasOwnWorktree = useCallback(
-    (id: string) => !pin && Boolean(liveLanes.find((lane) => lane.id === id)?.worktreePath?.trim()),
-    [liveLanes, pin],
+    (id: string) => pinTargetsTab && Boolean(liveLanes.find((lane) => lane.id === id)?.worktreePath?.trim()),
+    [liveLanes, pinTargetsTab],
   );
 
   const worktreeMissing = error != null && /worktree is missing/i.test(error);

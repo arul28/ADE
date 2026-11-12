@@ -143,6 +143,10 @@ function machineEnv(paths) {
     ADE_DEV_BRAIN: "1",
     ADE_DEFAULT_ROLE: "cto",
     ADE_SYNC_HOST_LOCK_PATH: path.join(paths.home, "sync-host-lock.json"),
+    // A checkout's bundle copied outside apps/(ade-cli|desktop)/(src|dist)/
+    // would mark itself packaged (packagedRuntimeFlag.ts) and refuse the
+    // development Clerk settings. A test machine is never a packaged build.
+    ADE_RUNTIME_PACKAGED: "0",
   };
   // A test machine runs for as long as you use it; it never idles out.
   delete env.ADE_RUNTIME_IDLE_EXIT_MS;

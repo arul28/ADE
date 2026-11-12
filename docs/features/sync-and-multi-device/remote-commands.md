@@ -858,6 +858,37 @@ A handful have more logic:
   bracketed-paste submission after the TUI has had time to initialize.
   This replaces the older pattern of post-create `writeBySessionId`
   keystrokes.
+  The launch carries the same options as a desktop CLI launch: `instanceId`
+  (provider account), `presetId`, `credentialId`, `droidPermissionMode`,
+  `linearIssues` (each parsed with `parseLaneLinearIssueValue` and attached
+  to the session before the spawn through `ptyService.create`, so the CLI
+  inherits `ADE_LINEAR_*`), and the caller's `startupDelayMs` /
+  `initialInputDelayMs` (a provider launch that sets its own input delay
+  keeps it). The web client's `pty.create` maps a desktop
+  `runtimeCliLaunch` onto these fields. iOS starts a CLI on another
+  machine's checkout the same way it starts a chat there: the namespaced
+  lane id and the machine-marked project id route the command to that
+  machine, and the new terminal opens over that machine's link.
+  The iOS CLI start offers an **account** menu (the CLI provider's accounts
+  from `account.getMachineInventory` `providers[].accounts`, shown only when
+  there are two or more, only for the connected machine, and hidden while a
+  preset is picked) and a **Linear issue** picker (the Linear issue list in
+  pick mode); it sends `instanceId` and full `linearIssues` records. Stored
+  API keys have no listing that crosses the machine boundary, so the phone
+  reaches a key through a preset that names it.
+- `chat.typeIntoCli` (`{ sessionId, text, holdUntilFree? }` →
+  `{ ok, outcome }`) types a message into a running tracked agent CLI, only
+  at a free prompt (`agentChatService.typeIntoAgentCliWhenFree`, through the
+  same per-CLI flight as wakes, so it never lands mid-turn or shares a turn
+  with a wake). `outcome` is `delivered`, `deferred` (busy, nothing typed),
+  `held` (busy; the host types it when the prompt is free, in order, for up to
+  six hours; not durable across a brain restart) or `ended` (the process is
+  gone; nothing typed, nothing relaunched). The command defaults
+  `holdUntilFree` to true, because the phone keeps no queue of its own; the
+  desktop's runtime action (`chat.typeIntoCli`) and the web adapter send it
+  false and queue in the Work input box instead. Queueable: an offline phone's
+  send goes out on reconnect. Not offered to lane share guests. Optional in
+  the mobile contract (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`).
   The result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
   session: TerminalSessionSummary | null }`) — the controller can
   immediately render the session card and call `terminal_subscribe`

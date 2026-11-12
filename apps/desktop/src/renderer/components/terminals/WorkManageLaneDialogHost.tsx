@@ -24,6 +24,7 @@ import {
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 
 /**
@@ -52,10 +53,13 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const setDeleteProgressByLaneId = useAppStore((state) => state.setLaneDeleteProgressByLaneId);
   const [pinnedLanes, setPinnedLanes] = useState<LaneSummary[]>(() => pinnedLane ? [pinnedLane] : []);
   const [pinnedLanesLoaded, setPinnedLanesLoaded] = useState(false);
-  const allLanes = runtimePin ? pinnedLanes : lanes;
+  // The lane's own list is read only for another machine; the tab's copy uses the store.
+  const runsOnTab = usePinTargetsTab(runtimePin);
+  const foreignPin = runsOnTab ? undefined : runtimePin;
+  const allLanes = foreignPin ? pinnedLanes : lanes;
   const lane = allLanes.find((candidate) => candidate.id === laneId)
-    ?? (runtimePin && !pinnedLanesLoaded && pinnedLane?.id === laneId ? pinnedLane : null);
-  const chatSessionCount = !runtimePin && laneId
+    ?? (foreignPin && !pinnedLanesLoaded && pinnedLane?.id === laneId ? pinnedLane : null);
+  const chatSessionCount = !foreignPin && laneId
     ? laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.runtime.sessionCount
     : undefined;
 
@@ -67,20 +71,20 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
 
   const refreshManagedLanes = useCallback(async (options?: { includeStatus?: boolean }) => {
-    if (!runtimePin) {
+    if (!foreignPin) {
       await refreshLanes(options);
       return;
     }
     const next = await window.ade.lanes.list(
       { includeStatus: options?.includeStatus ?? true },
-      runtimePin,
+      foreignPin,
     );
     setPinnedLanes(next);
     setPinnedLanesLoaded(true);
-  }, [refreshLanes, runtimePin]);
+  }, [refreshLanes, foreignPin]);
 
   useEffect(() => {
-    if (!runtimePin) {
+    if (!foreignPin) {
       setPinnedLanes([]);
       setPinnedLanesLoaded(false);
       return;
@@ -90,11 +94,11 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     void refreshManagedLanes({ includeStatus: true }).catch((error) => {
       setLaneActionError({ message: extractError(error), kind: "failure" });
     });
-  }, [pinnedLane, refreshManagedLanes, runtimePin]);
+  }, [pinnedLane, refreshManagedLanes, foreignPin]);
 
   useEffect(() => {
-    if (laneId && !lane && (!runtimePin || pinnedLanesLoaded)) onClose();
-  }, [lane, laneId, onClose, pinnedLanesLoaded, runtimePin]);
+    if (laneId && !lane && (!foreignPin || pinnedLanesLoaded)) onClose();
+  }, [lane, laneId, onClose, pinnedLanesLoaded, foreignPin]);
 
   useEffect(() => {
     if (!laneId) {
@@ -150,7 +154,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       pin: runtimePin,
       laneId: lane.id,
       laneName: lane.name,
-      machineId: runtimePin ? machineIdForBinding(runtimePin) : null,
+      machineId: foreignPin ? machineIdForBinding(foreignPin) : null,
     })) {
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       onClose();
@@ -169,7 +173,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     };
     // A lane on another machine is keyed the way the Work sidebar names it, so its
     // card and open chat find the entry. A bare id would belong to this machine's lane.
-    const machineId = runtimePin ? machineIdForBinding(runtimePin) : null;
+    const machineId = foreignPin ? machineIdForBinding(foreignPin) : null;
     const progressKey = machineId ? foreignLaneKey(machineId, lane.id) : lane.id;
     const pending = createPendingLaneDeleteProgress(progressKey);
     setDeleteProgressByLaneId((current) => ({ ...current, [progressKey]: pending }));
@@ -216,7 +220,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         if (machineId) requestCrossMachineLanesForMachine(machineId);
       },
     );
-  }, [cloud, deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
+  }, [cloud, deleteForce, deleteSelection, foreignPin, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
 
   // A lane on its own ADE Cloud computer gets the cloud delete: nothing to pick, no Force gate.
   const cloudLaneIds = useMemo(

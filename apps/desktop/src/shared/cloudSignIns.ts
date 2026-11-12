@@ -439,6 +439,8 @@ export type CloudSignInStatus = {
     url: string | null;
     /** Claude Code is asking for the code shown in the browser. */
     awaitingCode: boolean;
+    /** A pasted code was sent and Claude Code has not answered yet ("Checking the code…"). */
+    checkingCode?: boolean;
     /** Why it failed, in one sentence. */
     message: string | null;
     /** The account the person pressed "Sign in" for, or null ("Another account"). */

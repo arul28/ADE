@@ -50,6 +50,7 @@ import {
   type CloudAccountState,
   type CloudAgentLimits,
   type CloudAgentMaker,
+  type CloudCatalog,
   type CloudLimitsPreset,
   describeCloudHoursUse,
   describeCloudMachineSize,
@@ -494,13 +495,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     return result;
   };
 
-  const summary = (box: CloudMachine) => ({
+  const summary = (box: CloudMachine, catalog: CloudCatalog) => ({
     instanceId: box.instanceId,
     name: box.name,
     machineKey: box.machineKey,
     state: box.state,
     type: box.type,
-    size: describeCloudMachineSize(box),
+    size: describeCloudMachineSize(box, catalog),
     shape: box.shapeId,
     hoursRate: box.hoursRate,
     sleep: box.sleep,
@@ -521,8 +522,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const all = await readMachines();
       // The web app's Settings › ADE Cloud reads the account's own list (no key in it), like this desktop's main.
       if (record(rawArgs).detail === "full") return all;
+      const catalog = cloudCatalogOf(all.account);
       return {
-        machines: all.machines.map(summary),
+        machines: all.machines.map((box) => summary(box, catalog)),
         runningCount: all.runningCount,
         account: all.account,
       };

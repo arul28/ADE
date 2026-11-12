@@ -3,6 +3,8 @@ import { stripElectronErrorWrapper } from "./codedError";
 import type { LaneStart } from "./laneStart";
 import type {
   ChatLaunchArgs,
+  ChatLaunchChatArgs,
+  ChatLaunchChatSettings,
   ChatLaunchCloudStageId,
   ChatLaunchKind,
   ChatLaunchLaneConfig,
@@ -161,6 +163,39 @@ function clipLaunchTitle(text: string, max: number): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
+const CHAT_LAUNCH_SETTING_KEYS = [
+  "reasoningEffort",
+  "fastMode",
+  "fastTier",
+  "interactionMode",
+  "permissionMode",
+  "claudePermissionMode",
+  "codexApprovalPolicy",
+  "codexSandbox",
+  "codexConfigSource",
+  "opencodePermissionMode",
+  "droidPermissionMode",
+  "copilotPermissionMode",
+  "musePermissionMode",
+  "cursorModeId",
+] as const satisfies ReadonlyArray<keyof ChatLaunchChatSettings>;
+
+/** The picked settings of a launch's chat, for display before the chat exists (only these keys, never routes or keys). */
+function chatLaunchChatSettings(create: ChatLaunchChatArgs["create"]): ChatLaunchChatSettings {
+  const out: ChatLaunchChatSettings = {};
+  for (const key of CHAT_LAUNCH_SETTING_KEYS) copyChatSetting(out, create, key);
+  return out;
+}
+
+function copyChatSetting<K extends keyof ChatLaunchChatSettings>(
+  out: ChatLaunchChatSettings,
+  create: ChatLaunchChatArgs["create"],
+  key: K,
+): void {
+  const value = create[key];
+  if (value !== undefined) out[key] = value;
+}
+
 /**
  * The one constructor for a launch's first snapshot. The host builds it in
  * `start`; a client builds the identical optimistic copy before the host
@@ -202,6 +237,7 @@ export function createChatLaunchSnapshot(args: {
       attachments: launch.attachments ?? chat?.message.attachments ?? [],
     },
     modelId: launch.modelId ?? chat?.create.modelId ?? null,
+    chatSettings: chat ? chatLaunchChatSettings(chat.create) : null,
     phase: "running",
     stages: [
       ...(args.priorStages ?? []).map((stage) => ({ ...stage })),
@@ -216,6 +252,7 @@ export function createChatLaunchSnapshot(args: {
     queuedMessages: [],
     originClientId: launch.originClientId ?? null,
     startedAt: args.nowIso,
+    setupStartedAt: optionalIso(launch.setupStartedAt),
     endedAt: null,
     updatedAt: args.nowIso,
     sequence: 0,
@@ -387,6 +424,38 @@ export function chatLaunchStageDurationMs(stage: Pick<ChatLaunchStage, "startedA
   return Math.max(0, end - start);
 }
 
+/**
+ * When the launch's current attempt really began. An ADE Cloud launch makes
+ * the computer, joins it and clones there before the computer's brain takes
+ * the launch over with a clock of its own, so the brain's `startedAt` alone
+ * would leave those steps out of the total. The launching app's own start
+ * (`setupStartedAt`) covers them, and a retry on either host resets its clock.
+ * From an older brain without that field, the handed-over cloud steps' own
+ * start stands in (a retry there still counts from the first attempt); the
+ * brain's own finished steps never count, since they keep their first
+ * attempt's times.
+ */
+export function chatLaunchStartedAt(snapshot: Pick<ChatLaunchSnapshot, "startedAt" | "setupStartedAt" | "stages">): string {
+  const startedMs = Date.parse(snapshot.startedAt);
+  if (snapshot.setupStartedAt !== undefined) {
+    const setupMs = snapshot.setupStartedAt ? Date.parse(snapshot.setupStartedAt) : Number.NaN;
+    return Number.isFinite(setupMs) && (!Number.isFinite(startedMs) || setupMs < startedMs)
+      ? snapshot.setupStartedAt!
+      : snapshot.startedAt;
+  }
+  let earliest = snapshot.startedAt;
+  let earliestMs = startedMs;
+  for (const stage of snapshot.stages) {
+    if (!stage.startedAt || !isChatLaunchCloudStageId(stage.id)) continue;
+    const ms = Date.parse(stage.startedAt);
+    if (Number.isFinite(ms) && (!Number.isFinite(earliestMs) || ms < earliestMs)) {
+      earliest = stage.startedAt;
+      earliestMs = ms;
+    }
+  }
+  return earliest;
+}
+
 export function formatChatLaunchDuration(ms: number | null): string {
   if (ms == null) return "";
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -449,8 +518,9 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
   const failed = snapshot.phase === "failed"
     || (snapshot.phase !== "completed" && snapshot.stages.some((stage) => stage.status === "failed"));
   const warned = !failed && chatLaunchHasWarnings(snapshot);
+  // The whole launch, from its first step to the agent's start.
   const durationMs = snapshot.endedAt
-    ? chatLaunchStageDurationMs({ startedAt: snapshot.startedAt, endedAt: snapshot.endedAt }, nowMs)
+    ? chatLaunchStageDurationMs({ startedAt: chatLaunchStartedAt(snapshot), endedAt: snapshot.endedAt }, nowMs)
     : null;
   const durationText = formatChatLaunchDuration(durationMs);
   const base = snapshot.baseRef ? ` from ${snapshot.baseRef}` : "";

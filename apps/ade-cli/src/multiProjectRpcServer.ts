@@ -58,6 +58,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readAccountProjectListForRpc } from "./services/projects/accountProjectSync";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { createProjectCopyRemoval } from "./services/projects/projectCopyRemoval";
@@ -98,6 +99,7 @@ import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createHeadlessAccountVaultBridge } from "./services/account/accountRuntimeLifecycle";
 import { getMachineAccountStores } from "./services/account/machineAccountStores";
+import { publicProjectRecord as publicProjectRecordFor } from "./services/projects/publicProjectRecord";
 import {
   isMachineAccountMethod,
   runMachineAccountAction,
@@ -122,6 +124,7 @@ import {
 } from "../../desktop/src/shared/types";
 import {
   callAccountAction,
+  getSignedInAccountAccessToken,
   type AccountAnalyticsIdentity,
   type AccountAuthService,
 } from "./services/account/accountAuthService";
@@ -391,6 +394,8 @@ export type MultiProjectRpcHandlerOptions = {
   pushCloudWork?: ((args: { check: boolean }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
+  /** `ade providers sign-in --remote` and its code and status companions (remoteProviderSignIn.ts). */
+  remoteProviderSignIn?: import("./services/account/remoteProviderSignIn").RemoteProviderSignIn | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
@@ -621,6 +626,9 @@ const RUNTIME_METHODS = new Set([
   "cloud.prepareStop",
   "cloud.pushWork",
   "cloud.workState",
+  "providers.remoteSignInStart",
+  "providers.remoteSignInStatus",
+  "providers.remoteSignInCode",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -639,6 +647,7 @@ const RUNTIME_METHODS = new Set([
   "machine.updateAndRestart",
   "machine.reportPowerTransition",
   "projects.list",
+  "projects.accountList",
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
@@ -646,6 +655,8 @@ const RUNTIME_METHODS = new Set([
   "projects.removeCopy",
   "projects.pruneMissing",
   "projects.touch",
+  "projects.retryOpen",
+  "projects.checkOpen",
   "projects.setIcon",
   "projects.removeIcon",
   "projects.browseDirectories",
@@ -736,10 +747,10 @@ function assertProjectFolderPresent(rootPath: string): void {
 }
 
 function requireRegisteredProjectForIcon(
-  projectRegistry: Pick<ProjectRegistry, "findByRootPath">,
+  projectRegistry: Pick<ProjectRegistry, "findByRootPath" | "list">,
   params: Record<string, unknown>,
   method: string,
-): { rootPath: string } {
+): { rootPath: string; projectId: string } {
   const rootPath = readOptionalString(params.rootPath);
   if (!rootPath) {
     throw new JsonRpcError(
@@ -747,7 +758,11 @@ function requireRegisteredProjectForIcon(
       `${method} requires rootPath.`,
     );
   }
-  const project = projectRegistry.findByRootPath(rootPath);
+  // The registered root as given first: normalizing reads the folder, which
+  // for a refused project is the drive that froze the brain.
+  const given = path.resolve(rootPath);
+  const project = projectRegistry.list().find((record) => record.rootPath === given)
+    ?? projectRegistry.findByRootPath(rootPath);
   if (!project) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -820,12 +835,8 @@ async function readCloneProjectInput(
       JsonRpcErrorCode.invalidParams,
       "projects.clone requires parentDir.",
     );
-  // A folder named from another computer (`--machine`) arrives as typed there:
-  // `~` means this computer's home, and a relative path would land wherever
-  // this brain happens to run, so it is refused.
-  const resolvedParentDir = /^~(?=$|[\\/])/.test(parentDir)
-    ? path.join(os.homedir(), parentDir.slice(1))
-    : parentDir;
+  // A relative path would land wherever this brain happens to run, so it is refused.
+  const resolvedParentDir = expandRemoteHome(parentDir);
   if (!path.isAbsolute(resolvedParentDir))
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -852,6 +863,19 @@ function readListMyReposInput(
  * never copied the account's GitHub token, so it is read from the account
  * vault here first; without it a private repository does not clone.
  */
+/**
+ * The account getters a machine-level GitHub service needs for the account's
+ * GitHub App sign-in, so a clone on a new cloud computer can use it.
+ */
+function machineAccountAppGithubOptions(accountUserId: () => string | null) {
+  return {
+    getAccountAccessToken: (options?: { forceRefresh?: boolean }) =>
+      getSignedInAccountAccessToken(getSharedAccountAuthService({ logger: machineProjectLogger }), options),
+    getAccountUserId: accountUserId,
+    getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl() || null,
+  };
+}
+
 async function createMachineProjectScaffoldService() {
   const account = getMachineAccountStores(machineProjectLogger);
   const githubService = createHeadlessGitHubService(
@@ -859,7 +883,7 @@ async function createMachineProjectScaffoldService() {
     machineProjectLogger,
     {
       getAccountVault: () => createHeadlessAccountVaultBridge(() => account.vault),
-      getAccountUserId: account.accountUserId,
+      ...machineAccountAppGithubOptions(account.accountUserId),
     },
   );
   const userId = account.accountUserId();
@@ -1201,13 +1225,14 @@ async function decorateProjectWithIcon<T extends { rootPath: string; gitOriginUr
 
 /** The worker mode for a project whose record did not settle its icon. */
 function projectIconRecordRequest(
-  project: { rootPath: string; gitOriginUrl?: string | null },
+  project: { rootPath: string; gitOriginUrl?: string | null; projectId?: string },
   decision: ProjectRecordIconDecision | null,
   projectRecords: MachineProjectRecords | null,
 ): ProjectIconRecordRequest | undefined {
   if (!decision || !projectRecords) return undefined;
   if (decision.use === "detected") return { mode: "detected" };
-  if (decision.use === "local" && decision.migrate) {
+  // A refused project's icon is not migrated: that reads its `.ade` folder here.
+  if (decision.use === "local" && decision.migrate && projectRecords.readsFolder(project)) {
     return { mode: "migrate", onRecordValue: (value) => projectRecords.completeMigration(project, value) };
   }
   return undefined;
@@ -1364,11 +1389,16 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
     ) {
       blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
     } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
-      const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
+      const githubService = createHeadlessGitHubService(
+        normalizedParent,
+        machineProjectLogger,
+        machineAccountAppGithubOptions(getMachineAccountStores(machineProjectLogger).accountUserId),
+      );
       let destinationToken = "";
-      if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
+      const destinationRepo = githubService.parseGitHubRepoFromRemoteUrl(originUrl);
+      if (destinationRepo && /^https:\/\//i.test(originUrl)) {
         try {
-          destinationToken = await githubService.getGitTransportTokenOrThrowAsync();
+          destinationToken = await githubService.getGitTransportTokenOrThrowAsync({ owner: destinationRepo.owner });
         } catch {
           // The destination may still have a system credential helper. Let
           // Git try it with terminal prompting disabled below.
@@ -1413,6 +1443,50 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
     blockingErrors,
     warnings,
   };
+}
+
+/**
+ * A folder named from another computer (`--machine`) arrives as typed there:
+ * a leading `~` means this computer's home. `~user` is left as typed.
+ */
+function expandRemoteHome(typed: string): string {
+  return /^~(?=$|[\\/])/.test(typed) ? path.join(os.homedir(), typed.slice(1)) : typed;
+}
+
+/**
+ * The registered project a `projectId` (or the id it moved to) or `rootPath`
+ * names, or null. `rootPath` matches the registered root before any `realpath`.
+ */
+function findRegisteredProjectRef(
+  projectRegistry: ProjectRegistry,
+  params: Record<string, unknown>,
+): ProjectRecord | null {
+  const projectId = readProjectId(params);
+  const typedRoot = readOptionalString(params.rootPath);
+  const rootPath = typedRoot ? expandRemoteHome(typedRoot) : typedRoot;
+  if (projectId) {
+    return projectRegistry.get(projectId) ?? projectRegistry.get(projectRegistry.resolveMovedProjectId(projectId) ?? "");
+  }
+  return rootPath ? projectRegistry.findAtRootPath(rootPath) : null;
+}
+
+/** {@link findRegisteredProjectRef}, or an invalid-params error when it names nothing registered. */
+function readRegisteredProjectRef(
+  projectRegistry: ProjectRegistry,
+  params: Record<string, unknown>,
+  method: string,
+): ProjectRecord {
+  if (!readProjectId(params) && !readOptionalString(params.rootPath)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${method} requires projectId or rootPath.`);
+  }
+  const record = findRegisteredProjectRef(projectRegistry, params);
+  if (!record) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `No project ${readProjectId(params) ?? readOptionalString(params.rootPath)} is registered on this machine.`,
+    );
+  }
+  return record;
 }
 
 function readProjectId(params: Record<string, unknown>): ProjectId | null {
@@ -1493,6 +1567,21 @@ function omitProjectId(
  * folder, the storage preflight, this machine's own Git credentials, and the
  * clone service's rollback on failure. An already registered checkout wins.
  */
+/**
+ * A registry record as an RPC answer (`services/projects/publicProjectRecord`).
+ * The signed-in account is read only for a linked record, unless the caller
+ * passes it (a list reads it once).
+ */
+function publicProjectRecord<T extends { accountProjectId?: string; accountProjectUserId?: string }>(
+  record: T,
+  accountUserId?: string | null,
+): Omit<T, "accountProjectId" | "accountProjectUserId"> & { accountProjectId?: string } {
+  return publicProjectRecordFor(
+    record,
+    accountUserId !== undefined ? accountUserId : () => getMachineAccountStores(machineProjectLogger).accountUserId(),
+  );
+}
+
 async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
@@ -1534,6 +1623,40 @@ async function cloneRepositoryForRemoteAgent(
   return projectRegistry.add(result.rootPath, asked);
 }
 
+type HoldCloudWork = <T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>;
+
+/**
+ * A clone into this machine's projects folder with no project open. A second
+ * request for the same folder joins the first (the scaffold service), and a
+ * folder that already holds this repository is the answer. Nothing on a cloud
+ * computer's busy list sees such a clone, so it is held while it runs; the
+ * hold wraps only a real clone.
+ */
+function machineCloneIntoFolder(holdCloudWork: HoldCloudWork | null) {
+  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
+    holdCloudWork ? holdCloudWork("first_clone", 30 * 60_000, run) : run();
+  return async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
+    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
+      reuseExistingCheckout: true,
+      beforeClone,
+      wrapClone: whileFirstCloneHeld,
+    });
+}
+
+/**
+ * `machines.cloneForAgent`'s work, for this machine's own brain: a new cloud
+ * computer of a server launch sets its lane's repository up at boot, with the
+ * same rules (GitHub only, its canonical URL, this machine's own Git
+ * sign-in, an existing checkout wins).
+ */
+export async function setUpRepositoryOnThisMachine(
+  projectRegistry: ProjectRegistry,
+  originUrl: string,
+  holdCloudWork: HoldCloudWork | null,
+): Promise<ProjectRecord> {
+  return await cloneRepositoryForRemoteAgent(projectRegistry, originUrl, machineCloneIntoFolder(holdCloudWork));
+}
+
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
   return isRemoteRuntimeEventCategory(value) ? value : null;
 }
@@ -1566,19 +1689,7 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
   registerAccountProjects();
-  // A clone another machine asked for runs with no project open, so nothing on
-  // a cloud computer's busy list sees it.
-  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
-    options.holdCloudWork ? options.holdCloudWork("first_clone", 30 * 60_000, run) : run();
-  // Another machine asked: a second request for the same folder joins the
-  // first (the scaffold service), and a folder that already holds this
-  // repository is the answer. The hold wraps only a real clone.
-  const cloneIntoFolder = async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
-    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
-      reuseExistingCheckout: true,
-      beforeClone,
-      wrapClone: whileFirstCloneHeld,
-    });
+  const cloneIntoFolder = machineCloneIntoFolder(options.holdCloudWork ?? null);
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
@@ -1949,6 +2060,8 @@ export function createMultiProjectRpcRequestHandler(
           }
           continue;
         }
+        // A refused project's database is not read here, on the brain's thread.
+        if (scopeRegistry.isOpenBlocked(record.projectId)) continue;
         if (isProjectBackedChatToolType(readSessionToolTypeFromDisk(record.rootPath, sessionId))) {
           return record.projectId;
         }
@@ -1983,6 +2096,13 @@ export function createMultiProjectRpcRequestHandler(
     record: ProjectRecordForSearch,
     query: { query: string; laneId: string | null },
   ): UnloadedProjectSearch => {
+    // A refused project's folder is not read here, on the brain's thread.
+    if (scopeRegistry.isOpenBlocked(record.projectId)) {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its folder is too slow for ADE to open; \`ade projects retry\` opens it again)`,
+      };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return { status: "unavailable", entry: record.displayName };
     }
@@ -2645,6 +2765,8 @@ export function createMultiProjectRpcRequestHandler(
             setIcon: true,
             // `projects.inspectRemoval` + `projects.removeCopy`.
             removeCopy: true,
+            // `projects.accountList`, and `accountProjectId` / `githubRepoId` on `projects.list` rows.
+            accountList: true,
           },
           ...sdkCapabilities(),
           account: true,
@@ -3147,6 +3269,21 @@ export function createMultiProjectRpcRequestHandler(
       return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
     }
 
+    // A provider sign-in a person finishes on another screen (`ade providers
+    // sign-in --remote`, which ADE's server runs over exec for the phone and
+    // the web). The person starts it; an agent never does.
+    if (method === "providers.remoteSignInStart" || method === "providers.remoteSignInStatus" || method === "providers.remoteSignInCode") {
+      if (callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Only the person starts a provider sign-in.");
+      }
+      const signIn = options.remoteProviderSignIn;
+      if (!signIn) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't run a provider sign-in for another screen.");
+      if (method === "providers.remoteSignInStart") return await signIn.start(readOptionalString(params.provider) ?? "");
+      const jobId = readOptionalString(params.jobId) ?? "";
+      if (method === "providers.remoteSignInStatus") return await signIn.status(jobId);
+      return await signIn.submitCode(jobId, typeof params.code === "string" ? params.code : "");
+    }
+
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.
     if (method === "cloud.pushWork") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
@@ -3485,10 +3622,10 @@ export function createMultiProjectRpcRequestHandler(
       if (!isAgentRemoteClientName(callerClientName()) || !options.peerDeviceId) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "machines.cloneForAgent is for another machine's agents.");
       }
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl), cloneIntoFolder),
         projectRecords,
-      );
+      ));
     }
 
     if (method === "machines.deliverWake") {
@@ -3662,6 +3799,8 @@ export function createMultiProjectRpcRequestHandler(
         // One project at a time, yielding between them, so a long registry never holds the brain's loop.
         await new Promise<void>((resolve) => setImmediate(resolve));
         const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+        // A refused project's database is not read here, on the brain's thread.
+        if (!running && scopeRegistry.isOpenBlocked(record.projectId)) continue;
         const deleted = running
           ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
           : readDeletedChatOnDisk(record.rootPath, sessionId, (error) => {
@@ -3704,12 +3843,26 @@ export function createMultiProjectRpcRequestHandler(
         decorateProjectListWithIcons(records, undefined, undefined, projectRecords),
         readProjectFolderPresence(records),
       ]);
-      // Additive: older callers ignore `exists`, and an unknown answer is left out.
+      // Read once for the whole list (`publicProjectRecord`).
+      const accountUserId = records.some((record) => record.accountProjectId)
+        ? getMachineAccountStores(machineProjectLogger).accountUserId()
+        : null;
+      // Additive: older callers ignore `exists`, `accountProjectId` and
+      // `githubRepoId`, and an unknown answer is left out.
       return decorated.map((record, index) => {
+        const linked = publicProjectRecord(record, accountUserId);
         const sharedName = projectRecords?.name(record) ?? null;
-        const named = sharedName ? { ...record, displayName: sharedName } : record;
+        const named = sharedName ? { ...linked, displayName: sharedName } : linked;
         return presence[index] === undefined ? named : { ...named, exists: presence[index] };
       });
+    }
+
+    if (method === "projects.accountList") {
+      // The account's projects as this machine last read them (after a
+      // heartbeat that saw a change). Only the signed-in account's list; an
+      // account switch answers `not_loaded` until the new list is read.
+      const accountUserId = getMachineAccountStores(machineProjectLogger).accountUserId();
+      return readAccountProjectListForRpc(path.dirname(projectRegistry.path), accountUserId);
     }
 
     if (method === "projects.add") {
@@ -3726,8 +3879,8 @@ export function createMultiProjectRpcRequestHandler(
       // asks for no icon: resolving one starts a worker process, and a cold one
       // held every project open for up to its 750 ms budget. Every other
       // caller, and every older client, still gets the icon.
-      if (params.withoutIcon === true) return { ...added, icon: EMPTY_PROJECT_ICON };
-      return await decorateProjectWithIcon(added, projectRecords);
+      if (params.withoutIcon === true) return publicProjectRecord({ ...added, icon: EMPTY_PROJECT_ICON });
+      return publicProjectRecord(await decorateProjectWithIcon(added, projectRecords));
     }
 
     if (method === "projects.setCatalogVisibility") {
@@ -3745,7 +3898,7 @@ export function createMultiProjectRpcRequestHandler(
         registration.catalogVisibility,
         registration.registrationSource,
       );
-      return project ? await decorateProjectWithIcon(project, projectRecords) : null;
+      return project ? publicProjectRecord(await decorateProjectWithIcon(project, projectRecords)) : null;
     }
 
     if (method === "projects.remove") {
@@ -3833,11 +3986,39 @@ export function createMultiProjectRpcRequestHandler(
           "projects.touch requires projectId.",
         );
       }
-      return projectRegistry.touch(projectId);
+      return publicProjectRecord(projectRegistry.touch(projectId));
+    }
+
+    if (method === "projects.checkOpen") {
+      // Whether a project may be opened, asked by a client before it reads
+      // the project's folder itself (the desktop opens the database in its own
+      // process too). Throws the `project_folder_too_slow` refusal; answers
+      // `{ ok: true }` otherwise, including for a folder not registered yet.
+      const record = findRegisteredProjectRef(projectRegistry, params);
+      const refusal = record ? scopeRegistry.openRefusal(record.projectId) : null;
+      if (refusal) throw refusal;
+      return { ok: true };
+    }
+
+    if (method === "projects.retryOpen") {
+      // A person asking to open a project again that was refused for freezing
+      // this machine's ADE while it opened (`project_folder_too_slow`). Only
+      // forgets the refusal; opening it is the caller's next call.
+      const record = readRegisteredProjectRef(projectRegistry, params, "projects.retryOpen");
+      const outcome = scopeRegistry.retryOpen(record.projectId);
+      return {
+        projectId: record.projectId,
+        displayName: record.displayName,
+        rootPath: record.rootPath,
+        ...outcome,
+      };
     }
 
     if (method === "projects.setIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       const upload = readProjectIconUpload(params);
       try {
@@ -3873,6 +4054,9 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       if (projectRecords?.isShared(project)) {
         // Every machine goes back to the icon it detects and drops its own
@@ -3951,25 +4135,27 @@ export function createMultiProjectRpcRequestHandler(
         await (await createMachineProjectScaffoldService()).createLocalProject(
           readCreateProjectInput(params),
         );
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
         projectRecords,
-      );
+      ));
     }
 
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
       const result = await cloneIntoFolder(input);
-      return await decorateProjectWithIcon(
+      const record = publicProjectRecord(await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
         projectRecords,
-      );
+      ));
+      // Cloned with the asking computer's one-shot header and no GitHub sign-in here: the asker tells the person.
+      return result.githubSignInMissing ? { ...record, githubSignInMissing: true } : record;
     }
 
     if (method === "projects.listMyGitHubRepos") {

@@ -209,7 +209,7 @@ export const ChatPrPane = React.memo(function ChatPrPane(props: ChatPrPaneProps)
 function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPaneProps & { box: CloudMachine }) {
   const pinMachine = useMachineEntryForBinding(runtimePin ?? null);
   const scope = useChatRuntimeScopeForPin(runtimePin ?? null, laneId);
-  const { pullRequests: github, readFailed, retry } = useWindowMachineGithubPrs(Boolean(runtimePin));
+  const { pullRequests: github, readFailed, retry } = useWindowMachineGithubPrs(!scope.isActiveBinding);
 
   const lane = useMemo(() => ({
     laneType: scope.lane?.laneType ?? "worktree",
@@ -252,6 +252,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // Also rendered from the Work view area, which has no chat scope above it,
   // so the scope is derived from the pin this pane is handed.
   const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
+  // The pin when it names another copy than the tab's own: UI that means "another machine" reads this.
+  const foreignPin = scope.isActiveBinding ? null : runtimePin;
   const projectRoot = scope.rootPath;
   // Keep the PR refresh callback keyed to the lane identity, not the lanes
   // collection. Lane status refreshes replace that array frequently, and
@@ -603,8 +605,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // tab. `openLanePr` sends a foreign PR to GitHub instead.
   const openInAde = useCallback(() => {
     if (!pr) return;
-    openLanePr(pr, { foreign: Boolean(runtimePin), navigate });
-  }, [pr, navigate, runtimePin]);
+    openLanePr(pr, { foreign: Boolean(foreignPin), navigate });
+  }, [pr, navigate, foreignPin]);
 
   const openInGitHub = useCallback(async () => {
     if (!pr) return;
@@ -653,9 +655,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // activity itself. Without the pin those reads went to this window's machine,
   // which has no row for another machine's PR, so the body stayed empty.
   const detailRuntime = useMemo<PrDetailRuntime | null>(() => {
-    if (!runtimePin) return null;
+    if (!foreignPin) return null;
     return {
-      pin: runtimePin,
+      pin: foreignPin,
       machineName: pinMachineName ?? "this lane's machine",
       onOpenLane: () => {
         if (pinMachineId) navigate(openLaneOnMachinePath(laneId, pinMachineId));
@@ -665,7 +667,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     };
     // Keyed on the stable pin key; see `runtimePinRef`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, navigate, pinMachineId, pinMachineName, runtimePinKey]);
+  }, [laneId, navigate, pinMachineId, pinMachineName, runtimePinKey, scope.isActiveBinding]);
 
   if (variant === "tools") {
     if (loading) {
@@ -700,7 +702,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     return (
       <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3.5">
         <p className="px-1 pb-3 text-[12px] font-medium text-fg/70">No pull request open</p>
-        {runtimePin ? (
+        {foreignPin ? (
           <p className="px-1 text-[12px] leading-relaxed text-fg/40">
             Switch to {pinMachineName ?? "this chat's machine"} to open one.
           </p>
@@ -788,11 +790,11 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
               />
             </div>
           ) : null}
-          {runtimePin ? null : (
+          {foreignPin ? null : (
             <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
           )}
           </>
-        ) : runtimePin ? (
+        ) : foreignPin ? (
           // Reading a foreign lane's PR is now routed to its machine; CREATING
           // one is not. The creator derives its branch, base and Linear link
           // from `state.lanes` — the bound machine's lanes, which do not contain

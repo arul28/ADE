@@ -11,6 +11,7 @@ import { showToast } from "../app/toast/toastStore";
 import type { LaneTabPrTag } from "./lanePageModel";
 import { requestLaneRebaseNeedsRescan, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { laneBranchLabel } from "./sidebar/laneSidebarModel";
+import { cacheScopeKey, cacheScopePin } from "../../lib/tabBindingKey";
 
 /**
  * The conflict check a catch-up waits for: `git merge-tree` against the base,
@@ -172,7 +173,7 @@ const listeners = new Set<() => void>();
 
 /** One key per lane per machine: lane ids are only unique on their machine. */
 export function laneCatchUpKey(laneId: string, pin: OpenProjectBinding | null): string {
-  return `${pin?.key ?? "tab"}::${laneId}`;
+  return `${cacheScopeKey(pin) ?? "tab"}::${laneId}`;
 }
 
 function emit(): void {
@@ -253,7 +254,7 @@ const mergeUnsupportedHosts = new Set<string>();
  * does not hide Merge in on another tab's own machine.
  */
 function catchUpHostKey(pin: OpenProjectBinding | null): string {
-  return pin?.key ?? `tab:${useAppStore.getState().projectBinding?.key ?? "local"}`;
+  return cacheScopePin(pin)?.key ?? `tab:${useAppStore.getState().projectBinding?.key ?? "local"}`;
 }
 
 /**
@@ -343,7 +344,9 @@ export async function runLaneCatchUpDirect(args: {
     return { ok: false, failure };
   } finally {
     try {
-      if (pin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(pin));
+      // A pin that names the tab's own copy refreshes the tab's lanes.
+      const foreignPin = cacheScopePin(pin);
+      if (foreignPin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(foreignPin));
       else {
         await args.refreshLanes();
         requestLaneRebaseNeedsRescan();

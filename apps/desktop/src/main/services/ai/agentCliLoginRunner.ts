@@ -269,7 +269,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     record.timers.clear();
     if (record.poll) clearInterval(record.poll);
     record.poll = null;
-    Object.assign(record.status, patch, { awaitingCode: false, downloading: null, endedAt: now().toISOString() });
+    Object.assign(record.status, patch, { awaitingCode: false, checkingCode: false, downloading: null, endedAt: now().toISOString() });
     stopPty(record, options);
     if (record.cleanup) clearTimeout(record.cleanup);
     record.cleanup = setTimeout(() => logins.delete(record.status.loginId), LOGIN_FINISHED_RETENTION_MS);
@@ -322,6 +322,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     record.poll = null;
     record.status.state = "verifying";
     record.status.awaitingCode = false;
+    record.status.checkingCode = false;
     const spec = SPECS[record.status.provider];
     const label = spec.label;
     try {
@@ -360,12 +361,17 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
 
   function onData(record: LoginRecord, spec: ProviderLoginSpec, data: string): void {
     if (!isLive(record)) return;
-    const text = readLoginOutput(record, data, {
+    const { text, rejection } = readLoginOutput(record, data, {
       hosts: spec.hosts,
       deviceCode: spec.deviceCode,
       pasteCode: spec.pasteCode ? "while-waiting" : false,
       promptTailLines: PROMPT_TAIL_LINES,
     });
+    // A CLI that refuses the code ends now, in its words.
+    if (rejection) {
+      finish(record, { state: "failed", message: rejection });
+      return;
+    }
     const tail = lastTextLines(text, PROMPT_TAIL_LINES);
     if (spec.keypress && !record.keypressSent && spec.keypress.when.test(tail)) {
       record.keypressSent = true;

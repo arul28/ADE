@@ -106,7 +106,7 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     worktreesDir,
     secretsDir,
     dbPath: path.join(adeDir, "ade.db"),
-    socketPath: resolveAdeRuntimeIpcPath(projectRoot),
+    socketPath: "",
     apiKeysPath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyApiKeysPath: path.join(secretsDir, "api-keys.json"),
     logsDir,
@@ -122,6 +122,15 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     workerPromptsDir: path.join(orchestratorCacheDir, "worker-prompts"),
     githubSecretsDir: path.join(secretsDir, "github"),
   };
+  // Resolved on first read: on Windows it `realpath`s the project folder,
+  // which only the callers that need the socket should pay. A caller after
+  // the database or the cache folder of a project whose drive stopped
+  // answering must not wait on that drive.
+  let socketPath: string | null = null;
+  Object.defineProperty(result, "socketPath", {
+    enumerable: true,
+    get: () => (socketPath ??= resolveAdeRuntimeIpcPath(projectRoot)),
+  });
   _layoutCache.set(projectRoot, result);
   return result;
 }

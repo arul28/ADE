@@ -15,14 +15,14 @@ private let machineFleetLog = Logger(subsystem: "com.ade.ios", category: "fleet"
 /// Policy (the desktop machine model):
 /// - The user chooses which machines are connected (Settings > Machines). Only
 ///   those get a roster connection; the rest stay listed as available.
-/// - At most 4 machines live at once, the focused ("primary") one included.
+/// - At most 8 machines live at once, the focused ("primary") one included.
 /// - All roster connections close when the app goes to the background, and
 ///   open again on foreground.
 /// - A roster connection never runs to the focused machine (the host keeps one
 ///   socket per phone per machine).
 @MainActor
 final class MachineFleet: ObservableObject {
-  nonisolated static let liveMachineLimit = 4
+  nonisolated static let liveMachineLimit = 8
   private static let pinnedKeysDefaultsKey = "ade.fleet.pinnedMachineKeys.v1"
   /// Set once the pins became the user's connected set. Before, every paired
   /// machine was live up to the limit; the first reconcile after the change
@@ -42,6 +42,18 @@ final class MachineFleet: ObservableObject {
     case needsUpdate
     case needsAttention(message: String)
   }
+
+  /// A connect past the limit dropped the least recently chosen computer.
+  struct MachineAutoDisconnectNotice: Equatable {
+    let id = UUID()
+    let names: [String]
+
+    var message: String {
+      "Disconnected \(names.joined(separator: ", ")) to stay at \(MachineFleet.liveMachineLimit) live computers."
+    }
+  }
+
+  @Published var autoDisconnectNotice: MachineAutoDisconnectNotice?
 
   struct Machine: Identifiable, Equatable {
     let machineKey: String
@@ -278,10 +290,18 @@ final class MachineFleet: ObservableObject {
     // machine becomes primary); it never counts toward the limit.
     let focused = syncService?.focusedMachineKey
     var others = 0
+    let before = pinnedKeys
     pinnedKeys = pinnedKeys.filter { key in
       guard key != focused else { return true }
       others += 1
       return others <= liveOtherMachineLimit
+    }
+    let dropped = before.filter { !pinnedKeys.contains($0) }
+    if !dropped.isEmpty {
+      // The swap happens without a question; the Hub says which one went.
+      autoDisconnectNotice = MachineAutoDisconnectNotice(
+        names: dropped.map { machine(for: $0)?.name ?? "a computer" }
+      )
     }
     persistPins()
     if let connection = connections[machineKey] {

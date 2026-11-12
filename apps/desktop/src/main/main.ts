@@ -95,6 +95,9 @@ import { registerDatabaseCopiesIpc } from "./services/startupRecovery/registerDa
 import type { StartupRecovery } from "./services/startupRecovery/startupRecovery";
 import { isStartupRecoveryWindow } from "./services/startupRecovery/startupRecoveryWindow";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
+import { registerGithubAccountAppIpc } from "./services/github/registerGithubAccountAppIpc";
+import { registerGithubDirectIpc } from "./services/github/githubDirectIpc";
+import { configureGithubShellShim } from "./services/github/githubShellShim";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
@@ -219,7 +222,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError } from "../shared/codedError";
+import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../shared/codedError";
 import { markExpected } from "../shared/expectedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -419,7 +422,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
-import { initApiKeyStore } from "./services/ai/apiKeyStore";
+import { initApiKeyStore, saveOfferedApiKey } from "./services/ai/apiKeyStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
@@ -4123,7 +4126,9 @@ app.whenReady().then(async () => {
       logger,
       analytics: productAnalyticsService,
     });
-    const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
+    const getAccountAccessToken = (
+      options?: Parameters<typeof getSignedInAccountAccessToken>[1],
+    ) => getSignedInAccountAccessToken(accountAuthService, options);
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
       logger,
@@ -4449,6 +4454,8 @@ app.whenReady().then(async () => {
       projectId,
       db,
       logger,
+      // A key a config write offers goes to the key store, never the file.
+      storeOfferedApiKey: saveOfferedApiKey,
     });
     const projectSecretService = createProjectSecretService(projectRoot, {
       getAccountVault: () => accountVaultBridge,
@@ -4633,6 +4640,8 @@ app.whenReady().then(async () => {
       // A pasted token follows the owner's ADE account to their other machines.
       getAccountVault: () => accountVaultBridge,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      // The account's GitHub App sign-in (`account_app`), served by the account directory.
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
       // A repaired or removed App credential ends the relay's auth-pending
       // cooldown at once. Wired here rather than inside either service: the
       // ingress loop must stay free of GitHub internals, and only this owner
@@ -4939,6 +4948,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       getLaneRuntimeEnv,
       getSessionLinearEnv,
+      getSessionGithubEnv: (env) => githubService.sessionGithubEnv(env),
       getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
@@ -5216,6 +5226,7 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
+      getSessionGithubEnv: (env) => githubService.peekSessionGithubEnv(env),
       getLocalGitHubToken: () => githubService.getGitTransportTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
@@ -5344,6 +5355,8 @@ app.whenReady().then(async () => {
     // A new CLI session that names no account starts where a new chat would.
     ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
       agentChatService.pickNewCliSessionAccount(provider, modelId));
+    // A CLI that moved to another machine is not started here again.
+    ptyService.setMovedAwayCliLock((sessionId) => agentChatService.getCliMoveLock(sessionId));
     const prShellLinkWatcher = createPrShellLinkWatcher({
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),
@@ -6265,6 +6278,8 @@ app.whenReady().then(async () => {
             scopeRegistry: {
               getIfBooted: (id) =>
                 id === projectId ? Promise.resolve({ runtime: { agentChatService, ptyService } }) : null,
+              // This in-process host serves its one open project; refusals live in the brain.
+              isOpenBlocked: () => false,
             },
             hostProjectId: projectId,
             logger,
@@ -7025,11 +7040,19 @@ app.whenReady().then(async () => {
     projectRoot,
     baseRef,
     userSelectedProject,
+    refusalChecked = false,
   }: {
     projectRoot: string;
     baseRef: string;
     userSelectedProject: boolean;
+    /** The caller just asked the brain about this root and it may open. */
+    refusalChecked?: boolean;
   }): Promise<AppContext> => {
+    // A project the brain refuses as too slow to open is refused here too,
+    // before this process stats the folder or opens its database itself: the
+    // person gets the brain's message and Try again instead of a window that
+    // freezes on the same drive.
+    if (!refusalChecked) await localRuntimePool.assertProjectOpenable(projectRoot);
     assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
@@ -7119,11 +7142,18 @@ app.whenReady().then(async () => {
     // github services even before a project is opened. Build minimal versions
     // here that share the user-data token store. detectRepo / publishCurrent
     // require an active project and will throw clearly when called dormant.
+    // The account's GitHub App sign-in, so a welcome-screen clone works on a
+    // machine with no GitHub sign-in of its own.
+    const dormantAccountAuthService = getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir, logger });
     const dormantGithubService = createGithubService({
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      getAccountAccessToken: (options?: Parameters<typeof getSignedInAccountAccessToken>[1]) =>
+        getSignedInAccountAccessToken(dormantAccountAuthService, options),
+      getAccountUserId: () => dormantAccountAuthService.getStatus().userId,
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
     });
     const dormantProjectScaffoldService = createProjectScaffoldService({
       logger,
@@ -8433,9 +8463,27 @@ app.whenReady().then(async () => {
       // resolved when it opened. Asking git again (and detecting its base ref,
       // which only a new context uses) is work every tab switch threw away.
       const openRoot = normalizeProjectRoot(selectedPath);
-      const reusesOpenRoot = options.trustGitOwnership !== true
-        && projectContexts.has(openRoot)
-        && isLikelyRepoRoot(openRoot);
+      const knownOpenRoot = options.trustGitOwnership !== true && projectContexts.has(openRoot);
+      // A project the brain refused after this window opened it: asked before
+      // anything below reads its folder (on a drive that may not answer). The
+      // refusal shows the banner and Try again; any other failure of the check
+      // lets the switch go ahead.
+      // A cold open asks too, before git resolves the folder: a refused
+      // project's root is the one a recent or a tab names.
+      // Without a live connection nothing is dialed here; a cold open's own
+      // check dials once, in `initRuntimeBackedProjectContext`.
+      let refusalCheckedRoot: string | null = null;
+      if (!shouldUseInProcessProjectRuntime()) {
+        try {
+          if (await localRuntimePool.assertProjectOpenableIfConnected(openRoot)) refusalCheckedRoot = openRoot;
+        } catch (error) {
+          // The brain registered this folder, so it is a project root: Try
+          // again may name it even though this desktop never opened it.
+          if (isCodedError(error, PROJECT_FOLDER_TOO_SLOW_CODE)) attemptedProjectRoots.record(openRoot);
+          throw error;
+        }
+      }
+      const reusesOpenRoot = knownOpenRoot && isLikelyRepoRoot(openRoot);
       repoRoot = reusesOpenRoot ? openRoot : normalizeProjectRoot(
         await resolveRepoRootForUserOpen(
           selectedPath,
@@ -8495,6 +8543,10 @@ app.whenReady().then(async () => {
       });
       const existing = projectContexts.get(repoRoot);
       if (existing) {
+        // Asked here when the check above did not cover this root.
+        if (refusalCheckedRoot !== repoRoot && !shouldUseInProcessProjectRuntime()) {
+          await localRuntimePool.assertProjectOpenableIfConnected(repoRoot);
+        }
         existing.hasUserSelectedProject = true;
         // `bindWindowToProject` writes a listed project's recent entry in
         // place; only a project missing from the list still needs this write.
@@ -8538,6 +8590,7 @@ app.whenReady().then(async () => {
               projectRoot: repoRoot!,
               baseRef,
               userSelectedProject: true,
+              refusalChecked: refusalCheckedRoot === repoRoot,
             });
           projectOpenLogger.info("project.open.context_initialized", {
             selectedPath,
@@ -10559,6 +10612,28 @@ app.whenReady().then(async () => {
       const found = builtInBrowserService.locateWebContents(wc);
       return found?.collection === "personal" ? found.tabId : null;
     },
+  });
+
+  // Settings' controls for the ADE account's GitHub App sign-in. Account-scoped:
+  // no machine pin (see registerGithubAccountAppIpc).
+  const accountGithubAppClient = registerGithubAccountAppIpc({
+    credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
+    getAccountAccessToken: (options) => getSignedInAccountAccessToken(getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    }), options),
+    getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    analytics: productAnalyticsService,
+    logger: getMachineMainLogger(),
+  });
+  // `gh` and `git` in this window's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  configureGithubShellShim({ env: process.env, logger: getMachineMainLogger() });
+  // Direct GitHub reads with that sign-in (no machine). Account-scoped: no pin.
+  registerGithubDirectIpc({
+    tokenClient: accountGithubAppClient,
+    getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    logger: getMachineMainLogger(),
   });
 
   // The Music tab: Apple Music through an on-demand player host, or Spotify as

@@ -27,6 +27,7 @@ import type {
   LaneSetupScriptConfig,
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { AccountSettingNotices } from "./AccountSettingNotices";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -224,6 +225,9 @@ const GROUP = "New lanes";
 const TITLE = "Template";
 const DESCRIPTION = "Set up new lanes the same way: copy files in, install packages, run a script.";
 
+/** The repository recipes that follow the account (`projectConfigAccountKeys.ts`). */
+const RECIPE_ACCOUNT_KEYS = ["lanes.envInit", "tests.suite."] as const;
+
 export function LaneTemplatesSection() {
   // A project's templates follow the account (per repository); they are read
   // and written through the machine the Settings page shows, which also adds
@@ -344,6 +348,9 @@ export function LaneTemplatesSection() {
       hint={DESCRIPTION}
       actions={templates.length > 0 ? <>{agentSetupButton}{newTemplateButton}</> : undefined}
     >
+      {/* The project's lane setup and test suites follow the account too;
+          one that stays on this computer says why here. */}
+      <AccountSettingNotices pin={pin} keys={RECIPE_ACCOUNT_KEYS} />
       {templates.length === 0 ? (
         <div className="ade-lt-empty">
           <Stack size={22} weight="light" />

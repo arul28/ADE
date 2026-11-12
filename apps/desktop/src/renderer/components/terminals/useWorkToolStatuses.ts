@@ -581,9 +581,10 @@ export function useWorkToolStatuses(args: {
   const runtimePinKey = runtimePin?.key ?? null;
   // Scopes the cached PR list when there is no pin (the tab's own machine).
   const prListProjectRoot = useActiveProjectRoot();
-  const prListBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
+  // The tab's copy: it scopes the PR list cache, and a pin with this key is the tab's own.
+  const tabBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   // The store's status is this tab's machine's; a pinned lane carries its own.
-  const laneStatusStale = useAppStore((s) => s.laneStatusStale) && runtimePin == null;
+  const laneStatusStale = useAppStore((s) => s.laneStatusStale && (runtimePinKey == null || runtimePinKey === tabBindingKey));
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
@@ -684,7 +685,7 @@ export function useWorkToolStatuses(args: {
         return;
       }
       const read = typeof prs.listAll === "function"
-        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey }).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
+        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey }).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
         : prs.getForLane(laneId, runtimePinRef.current).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
       void read.then((count) => {
         if (!cancelled) setPrCount(count);
@@ -696,26 +697,47 @@ export function useWorkToolStatuses(args: {
     // An issue webhook says nothing about this lane's pull requests.
     const dispose = window.ade?.prs?.onEvent?.((event) => {
       if (event?.type === "github-issue-changed") return;
-      invalidatePrListCache({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
+      invalidatePrListCache({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey });
       load();
     });
     return () => {
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, lane, laneId, prListBindingKey, prListProjectRoot, prSessionId, runtimePinKey]);
+  }, [enabled, lane, laneId, tabBindingKey, prListProjectRoot, prSessionId, runtimePinKey]);
 
   const issueTabsProjectRoot = useActiveProjectRoot();
   const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool, context.hostPlatform ?? null);
+  // One read, but each card says its own product's name: while the host's
+  // platform is unknown (an asleep or unreachable cloud computer) both desktop
+  // cards show, and the Windows card must never read "Mac Desktop is off".
+  // A Linux host's Mac Desktop card is its Linux lane screen (`workTools.ts`).
+  const hostPlatform = context.hostPlatform ?? null;
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(
+    desktopTool === "mac-desktop" ? macDesktop : null,
+    "mac-desktop",
+    hostPlatform,
+  );
+  const { line: windowsDesktopLine, live: windowsDesktopLive } = macDesktopStatusLineText(
+    desktopTool === "windows-desktop" ? macDesktop : null,
+    "windows-desktop",
+    hostPlatform,
+  );
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],
   );
+  const windowsDesktopStatus = useMemo(
+    () => statusLine(windowsDesktopLine, windowsDesktopLive),
+    [windowsDesktopLine, windowsDesktopLive],
+  );
 
   // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
-  const remoteChatMachineName = runtimePin?.kind === "remote" ? machineNameForBinding(runtimePin) : null;
+  // The tab's own copy is not a "remote chat", even when the tab is bound to a remote machine.
+  const remoteChatMachineName = runtimePin?.kind === "remote" && runtimePinKey !== tabBindingKey
+    ? machineNameForBinding(runtimePin)
+    : null;
   const statuses = useMemo<WorkToolStatusMap>(() => {
     const browserLine = offline
       ? IDLE
@@ -739,13 +761,14 @@ export function useWorkToolStatuses(args: {
       // answer standing rather than claiming the lane has no screen, and the
       // hook already stops reading.
       "mac-desktop": macDesktopStatus,
-      "windows-desktop": macDesktopStatus,
+      "windows-desktop": windowsDesktopStatus,
       pr: prToolStatusLine(prCount),
       issues: issuesToolStatusLine(openIssueTabCount),
     };
   }, [
     appControlSession,
     macDesktopStatus,
+    windowsDesktopStatus,
     appleDevice,
     androidDevice,
     browserErrors,

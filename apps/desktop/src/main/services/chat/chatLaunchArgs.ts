@@ -289,6 +289,7 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
   // An ADE Cloud launch's desktop stages, for any kind. A `cloud` target is
   // the desktop's to act on, so a brain never parses one.
   const priorStages = normalizeChatLaunchPriorStages(record.priorStages);
+  const setupStartedAt = asTrimmedString(record.setupStartedAt);
   return {
     kind,
     mode: record.mode === "background" ? "background" : "foreground",
@@ -305,6 +306,7 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     ...(asTrimmedString(record.originClientId) ? { originClientId: asTrimmedString(record.originClientId) } : {}),
     ...(chat ? { chat } : {}),
     ...(priorStages.length ? { priorStages } : {}),
+    ...(setupStartedAt && Number.isFinite(Date.parse(setupStartedAt)) ? { setupStartedAt } : {}),
   };
 }
 

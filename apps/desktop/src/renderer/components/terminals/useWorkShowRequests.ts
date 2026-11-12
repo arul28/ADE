@@ -24,6 +24,7 @@ import { useMacDesktopSupport } from "./useMacDesktopSupport";
 import { hostDesktopTool, type DesktopWorkTool } from "./workTools";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { floatAndroidMiniPlayerForChat } from "../android/androidMiniPlayerStore";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "apple",
@@ -406,9 +407,11 @@ export function useWorkShowRequests({
     WORK_PAGE_SHOW_SURFACES,
     showWorkSurface,
   );
-  // The window's own runtime is heard app-wide; a chat on another machine is
-  // heard on its own pin.
-  useWorkToolShowRequestListener(Boolean(active && runtimePin), runtimePin);
+  // The window's own runtime is heard app-wide (App.tsx); a chat on another
+  // machine is heard on its own pin. A pin that names the tab's own copy is the
+  // app-wide listener's: a second one would answer each request twice.
+  const runsOnTab = usePinTargetsTab(runtimePin);
+  useWorkToolShowRequestListener(Boolean(active && runtimePin && !runsOnTab), runtimePin);
 
   /*
    * `ade apple launch --open-drawer` and an agent's inspect/select reveal. The

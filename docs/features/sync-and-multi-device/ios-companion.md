@@ -375,9 +375,12 @@ apps/ios/
 │   │   │                            # includes Add
 │   │   │                            # project when the runtime advertises
 │   │   │                            # projectActions
-│   │   ├── RemoteProjectAddSheet.swift # Open/create/clone project flow
-│   │   │                               # backed by runtime-scoped
-│   │   │                               # project action envelopes
+│   │   ├── RemoteProjectAddSheet.swift # Add project flow: computer,
+│   │   │                               # open/create/clone or From GitHub,
+│   │   │                               # then "Put a copy" on more computers
+│   │   ├── RemoteProjectAddSteps.swift # The flow's step views (GitHub
+│   │   │                               # repo picker, folder browser,
+│   │   │                               # create/clone forms, success card)
 │   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
 │   │   │                            # handler. Compact PR links flip tabs via
 │   │   │                            # .adeDeepLinkRequested. A device sign-in
@@ -628,6 +631,14 @@ apps/ios/
 │   │   │                            #   VoiceOver label; it remains hidden when
 │   │   │                            #   the host does not advertise personal
 │   │   │                            #   chats.
+│   │   │                            # Account projects (see "Account
+│   │   │                            #   projects on the phone"):
+│   │   │                            #   HubAccountProjects (join, resolver,
+│   │   │                            #   status line, project home),
+│   │   │                            #   HubAccountCards (card pass, chips,
+│   │   │                            #   saved order, account sheets),
+│   │   │                            #   ProjectLocationScreen,
+│   │   │                            #   DeleteProjectSheet, HubPhoneLayout.
 │   │   │                            # Also ProjectHostRecoveryScreen (the
 │   │   │                            #   Swift mirror of
 │   │   │                            #   shared/syncHostRecoveryUi.ts:
@@ -1589,6 +1600,34 @@ compact "Syncing" / "Connecting" / "Offline" suffix: "Syncing" comes from the
 Files domain phase (`.hydrating` / `.syncingInitialData`), "Connecting" from
 `connectionState == .connecting`, and everything else falls through to
 "Offline". Hydration progress is read from the domain, not the transport.
+
+## Account projects on the phone
+
+Signed in, the account's project list decides which projects the Hub shows.
+A project is one GitHub repository. Each computer can hold copies of it.
+
+- `AccountProjectStore` (`Services/AccountProjects.swift`) reads
+  `GET /account/projects?since=<cursor>`. It reads at most once in 60 s, and
+  once in 10 s when the app comes to the foreground. Failures back off. It
+  keeps one cache file for each account, so the Hub shows the list offline.
+- `add` and `remove` show the answer at once. A read that started before the
+  change and ends after it keeps the changed row, and one more read follows.
+- The Hub joins each machine card to its account project in this order: the
+  id the brain sent, the account's copy table, then the GitHub `owner/name`.
+  A card of a removed project is hidden. A project that no reachable machine
+  shows gets its own card.
+- The saved Hub order uses account project ids, so it is the same on every
+  machine.
+- Start on lists the computers for a project: copies first, then computers
+  that can get a copy. A pick connects that computer (the focused one
+  reconnects). "Put a copy" clones the project from GitHub on that computer.
+- A link with `accountProjectId` opens the copy that the link names, then a
+  copy on the link's computer, then the first copy in the Start-on order. A
+  session link stays on the computer that holds its chat. A signed-out user
+  is asked to sign in first.
+- The brain sends `accountProjectId` only to its signed-in owner, and never
+  sends the account user id. The new fields are optional on both sides, so an
+  old phone and an old brain still work together.
 
 ## Architectural pattern
 
@@ -2746,6 +2785,19 @@ screen through the same `TerminalStreamTransport` contract as `SyncService`:
   error and Retry. It does not show a frozen terminal as live.
 - Resume (`work.resumeCliSession`) goes to the session's machine as a routed
   command with the same project scope.
+- The message bar's sends (`chat.typeIntoCli`) go to the session's machine
+  the same way, and are never queued for a machine that is not linked.
+
+**Message bar for an agent CLI.** A tracked agent CLI's terminal screen has a
+text-bubble button in its top bar that swaps the key bar for a message bar
+(one choice for every CLI, `@AppStorage("ade.work.cliMessageBar")`, off by
+default). A whole message, multi-line included, goes to the session's computer
+as `chat.typeIntoCli`, which types it at the CLI's prompt only when that prompt
+is free. The bar then says what happened: typed, queued until the CLI's turn
+ends (held on the host), queued until the phone reconnects (the offline queue
+replays it), or the CLI has ended (the text stays, Resume continues it). A
+screen whose focused connection now serves another computer refuses the send
+instead of typing into the wrong one.
 
 When the link is down, the host is older, or the project is not open there,
 the tap falls back to the earlier flow: it focuses that machine, opens the
@@ -2903,8 +2955,9 @@ The chat is created in place and does **not** auto-open — a "Created in
 drag-reorderable (persisted per machine, mobile-only, never touching desktop
 ordering). Attention bubbles are driven by the roster's `attentionCount`
 (awaiting-input + failed sessions), which — like the phone-side
-`RemoteRosterChat.needsAttention` mirror for the active project — counts only
-chat rows and shells attached to a chat: a standalone CLI session that exited
+`RemoteRosterChat.needsAttention` mirror for the active project — counts chat
+rows, shells attached to a chat, and running agent CLI sessions that wait on the
+person (`awaiting`, no exit code yet). A standalone CLI session that exited
 non-zero never contributes, because attention feeds the attention-first
 project sort and CLI rows have no mobile archive/clear affordance to make a
 stale failure go away. Roster `runningCount` (and the Hub overlay of it) counts

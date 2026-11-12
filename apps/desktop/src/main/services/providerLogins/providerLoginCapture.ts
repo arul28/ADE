@@ -361,6 +361,7 @@ export function createCapture(s: SyncShared) {
       const machine = deps.machine();
       const accountUserId = deps.accountUserId();
       if (vault && machine && accountUserId) {
+        // All off: an own computer's sync down leaves what it wrote as it is.
         if (deps.cloudComputer) {
           await jobs.runApply(vault, accountUserId, originId(machine.machineKey), machine.deviceId, providers, false);
           jobs.checkArmed();
@@ -375,8 +376,8 @@ export function createCapture(s: SyncShared) {
     const accountUserId = deps.accountUserId();
     if (!machine || !accountUserId) return;
     const origin12 = originId(machine.machineKey);
-    // On a cloud computer, what apply wrote here is known before capture looks.
-    if (deps.cloudComputer) await jobs.loadApplied(accountUserId);
+    // What apply wrote here (a cloud computer's apply, an own computer's sync down) is known before capture looks.
+    await jobs.loadApplied(accountUserId);
     const state = loadState(accountUserId);
     const before = JSON.stringify(state);
     let accountChanged = false;
@@ -411,10 +412,14 @@ export function createCapture(s: SyncShared) {
           setLocal(row.provider, bundle.id, "not_signed_in", null);
           continue;
         }
-        if (observation.kind === "settling" && deps.cloudComputer && jobs.isAppliedBundle(row.provider, bundle)) {
+        if (observation.kind === "settling" && jobs.isAppliedBundle(row.provider, bundle)) {
           // Apply wrote these files a moment ago and nobody changed them since.
           setLocal(row.provider, bundle.id, "from_account", null);
-          uncertain.add(row.provider);
+          // On a cloud computer they may have replaced a sign-in made there,
+          // which is not "signed out here". An own computer's sync down never
+          // writes over a local sign-in, so there this computer's own copy is
+          // gone and the absence rule runs (the sign-out stays out).
+          if (deps.cloudComputer) uncertain.add(row.provider);
           continue;
         }
         if (observation.kind === "settling" || observation.kind === "unreadable") {
@@ -436,11 +441,14 @@ export function createCapture(s: SyncShared) {
           }
         }
         for (const { memo: observed, full } of observation.logins) {
-          if (deps.cloudComputer && s.appliedLoginHashes.has(observed.contentHash)) {
-            // The account's sign-in that apply wrote here: never captured back, and
-            // the sign-in it replaced (made here) is not "signed out here".
-            setLocal(row.provider, `${bundle.id}:${observed.slot}`, "from_account", null);
-            uncertain.add(row.provider);
+          if (s.appliedLoginHashes.has(observed.contentHash)) {
+            // The account's sign-in that apply wrote here: never captured back. On
+            // a cloud computer the sign-in it replaced (made here) is not "signed
+            // out here". An own computer's sync down never replaces a local
+            // sign-in, so there its own copy is gone and the absence rule runs;
+            // the line names the copy it came down from ("In use here").
+            setLocal(row.provider, `${bundle.id}:${observed.slot}`, "from_account", deps.cloudComputer ? null : jobs.appliedSourceOf(observed.contentHash));
+            if (deps.cloudComputer) uncertain.add(row.provider);
             continue;
           }
           // A sign-in this cloud computer took the renewal over for, renewed here
@@ -533,10 +541,9 @@ export function createCapture(s: SyncShared) {
       }
     }
     if (accountChanged) notifyProviderLoginsChanged();
-    if (deps.cloudComputer) {
-      await jobs.runApply(vault, accountUserId, origin12, machine.deviceId, providers, true);
-      jobs.checkArmed();
-    }
+    // A cloud computer applies the account's picks; an own computer takes them down where it has no sign-in.
+    await jobs.runApply(vault, accountUserId, origin12, machine.deviceId, providers, true);
+    if (deps.cloudComputer) jobs.checkArmed();
     await jobs.planRenewals(vault, machine, origin12, state);
     notifyProviderLoginPass({
       accountUserId,

@@ -24,10 +24,10 @@ import {
   approveCloudMachineSignIn,
   cloudMinAdeVersion,
   readCloudBoxAuth,
-  startCloudBoxSignIn,
   waitForCloudAccountRow,
   waitForCloudBoxAuth,
 } from "./cloudMachineCreator";
+import { cloudSignInNotStartedMessage, startCloudBoxSignInWhenReady } from "./cloudBoxSignInStart";
 import type { CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
   CANT_MAKE_COMPUTER,
@@ -216,18 +216,31 @@ export function createCloudLaneComputerStages(
       const fresh = record.joinAttempts > 0;
       record.joinAttempts += 1;
       persist(record);
-      const started = await startCloudBoxSignIn(client, instanceId, "login", signal, { fresh });
+      // A computer that just came up (or woke into a fresh boot) can start its
+      // sign-in before its network is ready: started again for a minute then.
+      const started = await startCloudBoxSignInWhenReady(client, instanceId, "login", {
+        signal,
+        fresh,
+        sleep,
+        logger: { info: (event, meta) => logger.info(event, { launchId, ...meta }) },
+      });
       assertActive(record, signal);
       if (!started.userCode) {
-        logger.warn("cloud_lane_launch.sign_in_no_code", { launchId, instanceId, exitCode: started.exitCode });
-        throw new LaunchStepError("The new computer didn't start its sign-in.");
+        logger.warn("cloud_lane_launch.sign_in_no_code", { launchId, instanceId, exitCode: started.exitCode, reason: started.reason });
+        // The computer's own reason goes on the card and into Copy details.
+        throw new LaunchStepError(cloudSignInNotStartedMessage("The new computer", started));
       }
       await approveCloudMachineSignIn(deps.creator, {
         userCode: started.userCode,
         name,
         instanceId,
         requestId: launchId,
-        restartSignIn: async () => (await startCloudBoxSignIn(client, instanceId, "login", signal, { fresh: true })).userCode,
+        restartSignIn: async () => (await startCloudBoxSignInWhenReady(client, instanceId, "login", {
+          signal,
+          fresh: true,
+          sleep,
+          logger: { info: (event, meta) => logger.info(event, { launchId, ...meta }) },
+        })).userCode,
         directory,
         signal,
         readSignedIn: async () => (await readCloudBoxAuth(client, instanceId, signal))?.signedIn === true,

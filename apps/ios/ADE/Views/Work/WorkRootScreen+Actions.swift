@@ -928,6 +928,26 @@ extension WorkRootListScreen {
     return workRemoteTerminalContext(session: session, machineKey: machineKey, fleet: syncService.machineFleet)
   }
 
+  /// The light-link context of a CLI session this phone just started on
+  /// another machine. That machine's roster does not list the session yet, so
+  /// the project is the checkout the start was sent to: the one the session's
+  /// namespaced lane id names. Nil when that machine's link cannot stream
+  /// terminals; the caller then uses the focus-and-open fallback.
+  func startedRemoteTerminalContext(for session: TerminalSessionSummary) -> WorkRemoteTerminalContext? {
+    if let listed = remoteTerminalContext(for: session) { return listed }
+    guard let machineKey = workParseRemoteLaneId(session.laneId)?.machineKey,
+          let repo = syncService.remoteLaneRepo(machineKey: machineKey),
+          let connection = syncService.machineFleet?.connection(for: machineKey),
+          connection.canStreamTerminals
+    else { return nil }
+    return WorkRemoteTerminalContext(
+      machineKey: machineKey,
+      projectId: repo.projectId,
+      rootPath: repo.rootPath ?? "",
+      session: session
+    )
+  }
+
   /// The light-link context of another machine's CLI or shell row. When the
   /// link cannot stream it, this starts the focus-and-open fallback instead and
   /// returns nil, so the caller returns.

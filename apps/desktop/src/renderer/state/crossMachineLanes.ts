@@ -551,6 +551,16 @@ export function useForeignSessionLaneId(
 }
 
 /**
+ * Whether a call with this pin goes to the copy the tab is bound to: no pin, or
+ * a pin that names the tab's copy. UI branches that mean "the tab's machine"
+ * read this, never a null pin.
+ */
+export function usePinTargetsTab(pin: { key: string } | null | undefined): boolean {
+  const key = pin?.key ?? null;
+  return useAppStore((state) => key == null || key === state.projectBinding?.key);
+}
+
+/**
  * The ONLY lane list a pinned lane id may be resolved against: the pinned
  * machine's own, from the live union, the retained Work slices during a
  * same-repo refill, or its warm cache.
@@ -573,11 +583,14 @@ export function useLanesForPin(
   pin: OpenProjectBinding | null | undefined,
 ): LaneSummary[] | null {
   const entry = useMachineEntryForBinding(pin);
+  // A pin that names the tab's own copy reads the tab's live lane list.
+  const tabLanes = useAppStore((state) =>
+    (pin && pin.key === state.projectBinding?.key ? state.lanes : null));
   const cached = useAppStore((state) =>
     (pin ? state.laneCacheByProject[laneCacheKeyForPin(pin)] ?? null : null));
   return useMemo(
-    () => (!pin ? null : entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
-    [cached, entry, pin],
+    () => (!pin ? null : tabLanes ?? entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
+    [cached, entry, pin, tabLanes],
   );
 }
 
@@ -1112,6 +1125,12 @@ export type CrossMachineLaneScope = {
   repoDisplayName: string | null;
   /** Verified local origin URL; null means this repo has no usable origin. */
   repoOriginUrl: string | null;
+  /**
+   * The account project id of the tab's checkout, when its machine reports
+   * one. A machine joins when its project row has the same id OR the same
+   * origin. Null keeps the origin join alone.
+   */
+  repoAccountProjectId?: string | null;
   /** Target id the tab is bound to; null when the tab is on this computer. */
   boundTargetId: string | null;
   /** Project id on the bound machine, when the tab is bound to a remote one. */
@@ -1190,6 +1209,7 @@ const runtime: SyncRuntime = {
     scopeKey: null,
     repoDisplayName: null,
     repoOriginUrl: null,
+    repoAccountProjectId: null,
     boundTargetId: null,
     boundProjectId: null,
     thisMachineBinding: null,
@@ -1228,6 +1248,7 @@ function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean 
     a.scopeKey === b.scopeKey
     && a.repoDisplayName === b.repoDisplayName
     && a.repoOriginUrl === b.repoOriginUrl
+    && (a.repoAccountProjectId ?? null) === (b.repoAccountProjectId ?? null)
     && a.boundTargetId === b.boundTargetId
     && a.boundProjectId === b.boundProjectId
     && a.thisMachineBinding?.key === b.thisMachineBinding?.key
@@ -1890,6 +1911,7 @@ function resolveMachineOptions(): LaneMachineOption[] {
     connections: runtime.connections,
     boundTargetId: scope.boundTargetId,
     repoOriginUrl: scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope),
+    repoAccountProjectId: scope.repoAccountProjectId ?? null,
     repoDisplayName: scope.repoDisplayName,
   });
 }
@@ -2411,6 +2433,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
     scopeKey: null,
     repoDisplayName: null,
     repoOriginUrl: null,
+    repoAccountProjectId: null,
     boundTargetId: null,
     boundProjectId: null,
     thisMachineBinding: null,
@@ -2435,6 +2458,8 @@ export function useCrossMachineLaneSync(active = true): void {
   const [localRepoIdentity, setLocalRepoIdentity] = useState<{
     scopeKey: string | null;
     originUrl: string | null;
+    /** The bound remote checkout's account project id. Local recents do not carry one yet. */
+    accountProjectId?: string | null;
     thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
   } | null>(null);
 
@@ -2446,6 +2471,9 @@ export function useCrossMachineLaneSync(active = true): void {
     : undefined;
   const thisMachineBinding = localRepoIdentity?.scopeKey === scopeKey
     ? localRepoIdentity.thisMachineBinding
+    : null;
+  const repoAccountProjectId = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.accountProjectId ?? null
     : null;
 
   useEffect(() => {
@@ -2469,12 +2497,14 @@ export function useCrossMachineLaneSync(active = true): void {
     // write would tear down and restart the whole union on every connection tick.
     const commitIdentity = (identity: {
       originUrl: string | null;
+      accountProjectId?: string | null;
       thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
     }) => {
       setLocalRepoIdentity((current) =>
         current
         && current.scopeKey === scopeKey
         && current.originUrl === identity.originUrl
+        && (current.accountProjectId ?? null) === (identity.accountProjectId ?? null)
         && current.thisMachineBinding?.key === identity.thisMachineBinding?.key
           ? current
           : { scopeKey, ...identity });
@@ -2520,6 +2550,7 @@ export function useCrossMachineLaneSync(active = true): void {
       if (!boundProject && connection?.state !== "connected") return;
       commitIdentity({
         originUrl: boundProject?.gitOriginUrl ?? null,
+        accountProjectId: boundProject?.accountProjectId ?? null,
         thisMachineBinding: resolveThisMachineBindingForOrigin(
           projects,
           boundProject?.gitOriginUrl,
@@ -2583,12 +2614,13 @@ export function useCrossMachineLaneSync(active = true): void {
         scopeKey,
         repoDisplayName,
         repoOriginUrl,
+        repoAccountProjectId,
         boundTargetId,
         boundProjectId,
         thisMachineBinding,
       });
     },
-    [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
+    [active, boundProjectId, boundTargetId, repoAccountProjectId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
   );
 }
 

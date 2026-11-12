@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import { useRootAppStore } from "../../state/appStore";
 import {
   createLaneMachineRouter,
   machineBlockedReason,
@@ -39,6 +40,10 @@ const machineFilterByProject = new Map<string, string>();
 
 /** Where one row's lane lives: its real id on its machine, and the pin to use. */
 export type LaneTarget =
+  /**
+   * `pin` addresses the lane's copy, the tab's own included. `machineId` is
+   * null for the tab's own machine: only another machine's rows carry one.
+   */
   | { ok: true; laneId: string; pin: OpenProjectBinding | null; machineId: string | null; name: string }
   | { ok: false; reason: string };
 
@@ -82,6 +87,16 @@ export function useLanesPageMachines({
   const allMachineLanes = useAllMachineLanes(active);
   const allMachineLanesRef = useRef(allMachineLanes);
   allMachineLanesRef.current = allMachineLanes;
+  // ADE Cloud computers the account no longer has (`computerGone`, decided by
+  // the account's computer list): their lanes live only as saved chats, listed
+  // once in the "deleted computers" place (`CloudLanesOnDeletedComputers`),
+  // never among the live lanes or as a machine chip.
+  const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const goneMachineKey = useMemo(
+    () => Object.values(crossMachineEntries ?? {}).filter((entry) => entry.computerGone === true).map((entry) => entry.machineId).sort().join("\u0000"),
+    [crossMachineEntries],
+  );
+  const goneMachineIds = useMemo(() => new Set(goneMachineKey ? goneMachineKey.split("\u0000") : []), [goneMachineKey]);
 
   const foreignLanes = useMemo<ForeignLaneModel>(() => {
     const rowByKey = new Map<string, MachineLane>();
@@ -89,6 +104,7 @@ export function useLanesPageMachines({
     const realLanesByMachineId = new Map<string, LaneSummary[]>();
     for (const row of allMachineLanes.lanes) {
       if (row.isActiveBinding) continue;
+      if (goneMachineIds.has(row.machineId)) continue;
       rowByKey.set(row.key, row);
       const machineLanes = realLanesByMachineId.get(row.machineId);
       if (machineLanes) machineLanes.push(row.lane);
@@ -98,7 +114,7 @@ export function useLanesPageMachines({
       viewLanes.push({ ...row.lane, id: row.key });
     }
     return { rowByKey, viewLanes, realLanesByMachineId };
-  }, [allMachineLanes]);
+  }, [allMachineLanes, goneMachineIds]);
   const foreignRowByKey = foreignLanes.rowByKey;
   const foreignRowByKeyRef = useRef(foreignRowByKey);
   foreignRowByKeyRef.current = foreignRowByKey;
@@ -121,7 +137,7 @@ export function useLanesPageMachines({
     const foreignRow = foreignRowByKeyRef.current.get(key);
     if (foreignRow) {
       const route = router.route(foreignRow.lane.id, foreignRow.machineId);
-      if (route.kind !== "pinned" && route.kind !== "bound") {
+      if (route.kind !== "pinned") {
         return { ok: false, reason: `${foreignRow.machineName} is unavailable` };
       }
       const blocked = machineBlockedReason(route.machine);
@@ -130,12 +146,16 @@ export function useLanesPageMachines({
     }
     const local = allMachineLanesRef.current.lanesByKey.get(key) ?? null;
     const route = router.route(key, allMachineLanesRef.current.machines[0]?.machineId ?? null);
-    if (route.kind !== "bound" || !local?.isActiveBinding) {
+    if (route.kind !== "pinned" || !route.machine.isActiveBinding || !local?.isActiveBinding) {
       return { ok: false, reason: "That lane is no longer listed." };
     }
-    return { ok: true, laneId: key, pin: null, machineId: null, name: local.lane.name };
+    return { ok: true, laneId: key, pin: route.pin, machineId: null, name: local.lane.name };
   }, []);
-  const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
+  const liveMachines = useMemo(
+    () => (goneMachineIds.size ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)) : allMachineLanes.machines),
+    [allMachineLanes.machines, goneMachineIds],
+  );
+  const multiMachine = shouldShowMachineChips(liveMachines.length);
 
   /* ---- Selection ---- */
 
@@ -200,7 +220,7 @@ export function useLanesPageMachines({
   /** One filter chip per machine, with its lane count. */
   const machineFilterChips = useMemo(() => {
     const byMachineId = new Map<string, MachineChipModel & { laneCount: number }>();
-    for (const machine of allMachineLanes.machines) {
+    for (const machine of liveMachines) {
       byMachineId.set(machine.machineId, { ...machineChipFor(machine), laneCount: 0 });
     }
     for (const lane of allViewLanes) {
@@ -209,7 +229,7 @@ export function useLanesPageMachines({
       if (chip) chip.laneCount += 1;
     }
     return byMachineId;
-  }, [allMachineLanes.machines, allViewLanes, machineIdForKey]);
+  }, [liveMachines, allViewLanes, machineIdForKey]);
   // One machine, or the list filtered down to one: every row would carry the
   // same chip, so none do (the active filter chip already names the machine).
   const machineChipByLaneId = useMemo(() => {

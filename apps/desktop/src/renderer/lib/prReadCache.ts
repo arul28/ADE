@@ -1,4 +1,5 @@
 import type { GitHubPrSnapshot, OpenProjectBinding, PrListConditionalReply, PrSummary } from "../../shared/types";
+import { cacheScopePin } from "./tabBindingKey";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -24,10 +25,14 @@ export const LINKED_PR_LIVE_REFRESH_COOLDOWN_MS = 5_000;
  */
 function projectKey(
   projectRoot: string | null | undefined,
-  pin?: OpenProjectBinding | null,
+  rawPin?: OpenProjectBinding | null,
 ): string {
+  const pin = cacheScopePin(rawPin);
   if (pin?.key) return `pin:${pin.key}`;
-  return projectRoot?.trim() || "active";
+  // A pin that names the tab's copy still names its folder and its copy: the
+  // same folder on two machines is two databases.
+  const root = projectRoot?.trim() || rawPin?.rootPath?.trim() || "active";
+  return rawPin?.key ? `${root}::${rawPin.key}` : root;
 }
 
 /**
@@ -109,8 +114,13 @@ const prListGeneration = new Map<string, number>();
  * (the same root on two machines is two databases).
  */
 function prListKey(options?: PrListCacheOptions): string {
-  if (options?.pin?.key) return projectKey(null, options.pin);
-  return JSON.stringify([projectKey(options?.projectRoot), options?.bindingKey ?? null]);
+  if (cacheScopePin(options?.pin)) return projectKey(null, options?.pin);
+  // No pin, or a pin that names the tab's copy: keyed like the window's own
+  // read of that copy, so two projects never share an entry.
+  return JSON.stringify([
+    projectKey(options?.projectRoot, options?.pin),
+    options?.bindingKey ?? options?.pin?.key ?? null,
+  ]);
 }
 
 type PrListCacheOptions = {

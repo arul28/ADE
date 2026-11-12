@@ -73,7 +73,8 @@ import {
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
-import { expectedErrorKind } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { codedError, parseCodedErrorMessage, PROJECT_FOLDER_TOO_SLOW_CODE } from "../../../shared/codedError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -1246,11 +1247,20 @@ function serviceHealthState(
 
 const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a switch back to an already-open project waits for the brain's
+ * refusal check. A healthy brain answers in about a millisecond; a frozen one
+ * is not waited for.
+ */
+const OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS = 1_500;
+
 export class LocalRuntimeConnectionPool {
   private disposed = false;
   private stopping = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
+  /** Folders the brain answered `project_folder_too_slow` for (see `isKnownRefused`). */
+  private readonly refusedRoots = new Set<string>();
   private activeClient: RuntimeRpcClient | null = null;
   private activeRuntimePid: number | null = null;
   private activeRuntimeSyncPort: number | null = null;
@@ -2365,6 +2375,77 @@ export class LocalRuntimeConnectionPool {
       });
       return await call(fresh);
     }
+  }
+
+  /** The brain's id for a folder this pool registered, without asking the brain. */
+  private knownProjectRef(rootPath: string): { projectId: string } | { rootPath: string } {
+    const normalizedRoot = path.resolve(rootPath);
+    const projectId = this.projectsByRoot.get(normalizedRoot)?.projectId;
+    return projectId ? { projectId } : { rootPath: normalizedRoot };
+  }
+
+  /**
+   * Throws the brain's `project_folder_too_slow` refusal when it refuses this
+   * folder, before this process reads the folder itself (a cold open).
+   *
+   * Sent by path only: a brain from before the method answers a path-only
+   * call at once ("requires projectId") instead of opening the project to
+   * route it. A failed connection propagates, as the registration that
+   * follows would fail the same way, so the brain is dialed once; any other
+   * failure of the call is left to the open that follows.
+   */
+  async assertProjectOpenable(rootPath: string): Promise<void> {
+    const entry = await this.connect();
+    await this.throwOpenRefusal(entry, rootPath, LOCAL_RUNTIME_PROJECT_TIMEOUT_MS);
+  }
+
+  /**
+   * The same check, asking only a brain this pool is already connected to,
+   * briefly, and failing for nothing but the refusal: for a switch, which a
+   * brain frozen on some other folder must not hold up, and before a cold
+   * open reads the folder. True when the brain answered that it may open, so
+   * the open need not ask again.
+   */
+  async assertProjectOpenableIfConnected(rootPath: string): Promise<boolean> {
+    const entry = this.activeConnection;
+    if (!entry) return false;
+    return await this.throwOpenRefusal(entry, rootPath, OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS);
+  }
+
+  /**
+   * Ask `projects.checkOpen`; rethrow only its `project_folder_too_slow`
+   * refusal. True when the brain answered that the folder may open.
+   */
+  private async throwOpenRefusal(entry: LocalRuntimeConnection, rootPath: string, timeoutMs: number): Promise<boolean> {
+    const root = path.resolve(rootPath);
+    try {
+      await entry.client.call("projects.checkOpen", { rootPath: root }, { timeoutMs });
+      this.refusedRoots.delete(root);
+      return true;
+    } catch (error) {
+      const parsed = parseCodedErrorMessage(error);
+      if (parsed.code !== PROJECT_FOLDER_TOO_SLOW_CODE) return false;
+      this.refusedRoots.add(root);
+      throw markExpected(codedError(parsed.message, PROJECT_FOLDER_TOO_SLOW_CODE), "environment");
+    }
+  }
+
+  /**
+   * Whether the brain refused this folder the last time this process asked
+   * (cleared by an answer that it may open, or a retry). This process's own
+   * readers of a project folder (the recent-projects list) skip it.
+   */
+  isKnownRefused(rootPath: string): boolean {
+    return this.refusedRoots.has(path.resolve(rootPath));
+  }
+
+  /** Forget the brain's refusal of this folder (`projects.retryOpen`), so the next open tries. */
+  async retryProjectOpen(rootPath: string): Promise<void> {
+    const entry = await this.connect();
+    await entry.client.call("projects.retryOpen", this.knownProjectRef(rootPath), {
+      timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+    });
+    this.refusedRoots.delete(path.resolve(rootPath));
   }
 
   async setProjectCatalogVisibility(

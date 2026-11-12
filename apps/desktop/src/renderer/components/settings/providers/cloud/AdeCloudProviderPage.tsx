@@ -62,7 +62,7 @@ export function AdeCloudProviderPage({
   busy: ReadonlySet<string>;
   runWrite: RunWrite;
   /** The view's switch write (it asks first for Copilot). */
-  setSwitch: (key: string, on: boolean, confirmOn: boolean) => Promise<void>;
+  setSwitch: (key: string, on: boolean, confirmOn: boolean) => Promise<boolean>;
   heldWrites: HeldWrites;
   /** The tile's own action (Sign in here, Allow, Re-check), for a page with no card. */
   tileAction: ProviderTileAction | null;
@@ -90,7 +90,11 @@ export function AdeCloudProviderPage({
   const switchCard = useCallback(async (card: SignInCardModel, next: boolean) => {
     setSwitching((current) => new Map(current).set(card.key, next));
     try {
-      await setSwitch(card.key, next, provider === "copilot");
+      // Every copy of the account (one per computer) switches with it. Copilot asks once,
+      // and a "no" leaves every copy as it was. A copy that fails says so and the rest go on.
+      for (const [index, key] of card.keys.entries()) {
+        if (!await setSwitch(key, next, provider === "copilot" && index === 0)) break;
+      }
     } finally {
       setSwitching((current) => {
         const rest = new Map(current);
@@ -116,7 +120,8 @@ export function AdeCloudProviderPage({
   // ── Remove: confirm, hide, toast with Undo, the write when the toast ends ──
   const removeCard = useCallback((card: SignInCardModel) => {
     void confirmRemoveSignIn({
-      key: card.key,
+      keys: card.keys,
+      name: card.name,
       providerLabel: descriptor.label,
       origin: card.origin,
       originIsThisComputer: card.originIsThisComputer,

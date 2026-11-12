@@ -3,6 +3,7 @@ import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { fileIdentity } from "../projects/fileIdentity";
+import { publicAccountProjectFields } from "../projects/publicProjectRecord";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
@@ -59,6 +60,10 @@ export type RosterProjectRecord = {
   gitOriginUrl?: string | null;
   lastOpenedAt: number;
   catalogVisibility: "recent" | "system";
+  /** The account project link (`publicProjectRecord` decides who sees it). */
+  accountProjectId?: string;
+  accountProjectUserId?: string;
+  githubRepoId?: number;
 };
 
 export type RosterProjectRegistry = {
@@ -109,6 +114,12 @@ export type RosterAgentChatService = {
 
 export type RosterPtyService = {
   hasLivePty(sessionId: string): boolean;
+  /**
+   * The live turn of a tracked agent CLI. With an exact source (the CLI's own
+   * hooks or OSC reports) its phase is the row's status; a heuristic one is
+   * not trusted over "a live terminal is running".
+   */
+  getTrackedCliTurn?(sessionId: string): { phase: "working" | "idle" | "needs-input"; source: string } | null;
 };
 
 export type RosterBootedScope = {
@@ -121,6 +132,8 @@ export type RosterBootedScope = {
 export type RosterScopeRegistry = {
   /** Non-booting lookup; null when the project is not currently booted. */
   getIfBooted(projectId: string): Promise<RosterBootedScope> | null;
+  /** A project refused as too slow to open: its folder is not read here. */
+  isOpenBlocked(projectId: string): boolean;
 };
 
 export type BuildRosterSnapshotArgs = {
@@ -128,6 +141,12 @@ export type BuildRosterSnapshotArgs = {
   scopeRegistry: RosterScopeRegistry;
   /** The host's own project is always booted — included with live fidelity. */
   hostProjectId?: string | null;
+  /**
+   * The account signed in on this machine. A project's account project id
+   * goes on its roster row only for that account (`publicProjectRecord`).
+   * Absent: no row carries one.
+   */
+  accountUserId?: () => string | null;
   logger?: Pick<Logger, "warn"> | null;
 };
 
@@ -614,9 +633,18 @@ const unbootedProjectMemo = new Map<string, {
   project: SyncRosterProject;
 }>();
 
-function rosterRecordKey(record: RosterProjectRecord): string {
-  return JSON.stringify([record.rootPath, record.displayName, record.lastOpenedAt, rosterRepoOriginUrl(record)]);
+function rosterRecordKey(record: RosterProjectRecord, account: RosterAccountFields): string {
+  return JSON.stringify([
+    record.rootPath,
+    record.displayName,
+    record.lastOpenedAt,
+    rosterRepoOriginUrl(record),
+    account.accountProjectId ?? null,
+    account.githubRepoId ?? null,
+  ]);
 }
+
+type RosterAccountFields = { accountProjectId?: string; githubRepoId?: number };
 
 function memoValidUntilMs(disk: DiskProjectData, nowMs: number): number {
   let validUntilMs = nowMs + DISK_PROJECT_CACHE_MAX_AGE_MS;
@@ -737,11 +765,16 @@ async function buildRosterProject(
   record: RosterProjectRecord,
   scopeRegistry: RosterScopeRegistry,
   logger?: Pick<Logger, "warn"> | null,
+  account: RosterAccountFields = {},
 ): Promise<SyncRosterProject> {
-  const disk = readProjectFromDisk(record.rootPath, logger);
+  // A refused project is listed without rows: reading its database and chat
+  // folder here, on the brain's thread, is the freeze it was refused for.
+  const refused = scopeRegistry.isOpenBlocked(record.projectId);
+  const disk = refused ? emptyDiskProject() : readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
-  const recordKey = rosterRecordKey(record);
-  const sidecarFolderIdentity = fileIdentity(chatSessionsDir);
+  // The link is part of the key: a sign-out must drop it from a memoized row.
+  const recordKey = rosterRecordKey(record, account);
+  const sidecarFolderIdentity = refused ? null : fileIdentity(chatSessionsDir);
   const memo = unbootedProjectMemo.get(record.projectId);
   if (
     memo
@@ -838,10 +871,16 @@ async function buildRosterProject(
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
+    const cliTurn = !live && hasLivePty ? livePtyService?.getTrackedCliTurn?.(row.id) ?? null : null;
+    const exactCliPhase = cliTurn && cliTurn.source !== "heuristic" ? cliTurn.phase : null;
     const liveStatus = live
       ? liveChatStatus(live)
       : hasLivePty
-        ? "running" as const
+        ? exactCliPhase === "idle"
+          ? "idle" as const
+          : exactCliPhase === "needs-input"
+            ? "awaiting" as const
+            : "running" as const
         : null;
     /**
      * A live FOREGROUND turn, not merely a row that reports `running`.
@@ -852,7 +891,7 @@ async function buildRosterProject(
      */
     const liveTurnRunning = live
       ? live.status === "active" && live.awaitingInput !== true
-      : hasLivePty;
+      : hasLivePty && (exactCliPhase == null || exactCliPhase === "working");
     const status: SyncRosterChatStatus = row.attention_requested_at
       ? "awaiting"
       // Settled is checked against a RUNNING row first, exactly as before:
@@ -881,8 +920,11 @@ async function buildRosterProject(
     // chat rows (and their attached shells) count: a standalone CLI session
     // that exited non-zero months ago must not pin its project to the top
     // forever — mobile has no way to clear it (CLI rows can't be archived).
+    // A tracked agent CLI that is live and waiting on the person counts like a
+    // chat: that hand is current, unlike an old exit code.
     const countsTowardAttention = isRosterTopLevelToolType(row.tool_type)
-      || normalizedParentSessionId(row) != null;
+      || normalizedParentSessionId(row) != null
+      || (status === "awaiting" && hasLivePty && isTrackedAgentCliToolType(row.tool_type as TerminalToolType | null));
     if ((status === "awaiting" || status === "failed") && countsTowardAttention) attentionCount += 1;
     const activityStatus = normalizeSessionActivityReport(row.activity_status_json);
     const activityStatusChangedAt = row.activity_status_changed_at ?? activityStatus?.updatedAt ?? null;
@@ -970,6 +1012,7 @@ async function buildRosterProject(
     rootPath: record.rootPath,
     displayName: record.displayName,
     repoOriginUrl: rosterRepoOriginUrl(record),
+    ...account,
     lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
     booted,
     runningCount,
@@ -1011,6 +1054,8 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
  */
 export function createForeignChatTranscriptResolver(args: {
   projectRegistry: ForeignChatProjectRegistry;
+  /** A project refused as too slow to open: its transcripts are not stat'd here. */
+  isOpenBlocked?: (projectId: string) => boolean;
 }): SyncForeignChatTranscriptResolver {
   return {
     resolveTranscriptPath: ({ projectId, projectRootPath, sessionId }) => {
@@ -1033,7 +1078,7 @@ export function createForeignChatTranscriptResolver(args: {
       // transcripts.
       if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
       const record = byId ?? byRoot;
-      if (!record) return null;
+      if (!record || args.isOpenBlocked?.(record.projectId)) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
       const chatTranscriptsDir = path.resolve(layout.chatTranscriptsDir);
@@ -1072,9 +1117,16 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
     .slice()
     .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
 
+  // Read the signed-in account once, and only when a record is linked.
+  let accountUserId: string | null | undefined;
+  const readAccountUserId = (): string | null => {
+    if (accountUserId === undefined) accountUserId = args.accountUserId?.() ?? null;
+    return accountUserId;
+  };
   const projects = await Promise.all(
-    records.map((record) =>
-      buildRosterProject(record, args.scopeRegistry, args.logger).catch((error) => {
+    records.map((record) => {
+      const account = publicAccountProjectFields(record, readAccountUserId);
+      return buildRosterProject(record, args.scopeRegistry, args.logger, account).catch((error) => {
         args.logger?.warn?.("sync_host.roster_project_build_failed", {
           projectId: record.projectId,
           error: error instanceof Error ? error.message : String(error),
@@ -1084,6 +1136,7 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           rootPath: record.rootPath,
           displayName: record.displayName,
           repoOriginUrl: rosterRepoOriginUrl(record),
+          ...account,
           lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
           booted: false,
           runningCount: 0,
@@ -1092,8 +1145,17 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           chats: [],
         };
         return fallback;
-      }),
-    ),
+      });
+    }),
   );
+  // The account changed while the build ran: its links were made for the
+  // account read above, so none of them goes out.
+  if (accountUserId !== undefined && (args.accountUserId?.() ?? null) !== accountUserId) {
+    return projects.map((project) => {
+      const unlinked = { ...project };
+      delete unlinked.accountProjectId;
+      return unlinked;
+    });
+  }
   return projects;
 }

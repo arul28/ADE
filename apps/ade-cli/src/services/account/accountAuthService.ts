@@ -22,6 +22,7 @@ import {
 } from "../credentials/updateCredentialKey";
 import { runWithAbortSignal } from "../sync/abortSignal";
 import { createRotationJournal } from "./accountSessionRotationJournal";
+import { type DeviceLoginStartOptions, readDeviceStartRetryMs, requestDeviceCodeWithRetry } from "./deviceLoginStart";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
 export { ACCOUNT_SESSION_ROTATION_JOURNAL_KEY } from "./accountSessionRotationJournal";
@@ -277,7 +278,7 @@ class AccountTokenRequestError extends Error {
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
-  startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(options?: DeviceLoginStartOptions): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
   /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
@@ -325,7 +326,7 @@ export type AccountAccessTokenOptions = {
 export type AccountActionDomainService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(args: { sessionId?: string }): Promise<AccountLoginPollResult>;
-  startDeviceLogin(args?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
+  startDeviceLogin(args?: DeviceLoginStartOptions): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(args: { sessionId?: string }): Promise<AccountDeviceLoginPollResult>;
   status(): AccountAuthStatus;
   cancelLogin(args: { sessionId?: string }): void;
@@ -877,6 +878,7 @@ export function createAccountActionDomainService(
     },
     startDeviceLogin: (args) => service.startDeviceLogin({
       ignoreEnvCredential: args?.ignoreEnvCredential === true,
+      retryUnreachableForMs: readDeviceStartRetryMs(args?.retryUnreachableForMs),
     }),
     pollDeviceLogin: async (args) => {
       const result = await service.pollDeviceLogin(readNonEmptyString(args?.sessionId) ?? "");
@@ -922,6 +924,7 @@ export async function callAccountAction(args: {
   } else if (action === "startDeviceLogin") {
     result = await domain.startDeviceLogin({
       ignoreEnvCredential: actionArgs.ignoreEnvCredential === true,
+      retryUnreachableForMs: readDeviceStartRetryMs(actionArgs.retryUnreachableForMs),
     });
   } else if (action === "status") {
     result = domain.status();
@@ -2050,17 +2053,8 @@ export function createAccountAuthService(args: {
     signal: AbortSignal.timeout(deviceBridgeRequestTimeoutMs),
   });
 
-  const deviceBridgeStartError = (error: unknown): Error => {
-    const errorName = error instanceof Error ? error.name : "";
-    return new Error(
-      errorName === "TimeoutError" || errorName === "AbortError"
-        ? "ADE account device service timed out. Check the account directory connection and retry."
-        : "ADE account device service could not be reached. Check the account directory connection and retry.",
-    );
-  };
-
   const startDeviceLogin = async (
-    options: { ignoreEnvCredential?: boolean } = {},
+    options: DeviceLoginStartOptions = {},
   ): Promise<AccountDeviceLoginStartResult> => {
     if (readAcceptedEnvCredential() && !options.ignoreEnvCredential) {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
@@ -2098,26 +2092,18 @@ export function createAccountAuthService(args: {
         machineName = null;
       }
     }
-    let response: Response;
-    try {
-      response = await requestDeviceBridge(`${bridgeUrl}/device/code`, {
-        method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json" },
-        body: JSON.stringify({
-          device_secret: deviceSecret,
-          ...(machineKey ? { machine_key: machineKey } : {}),
-          ...(machineName ? { machine_name: machineName } : {}),
-        }),
-      });
-    } catch (error) {
-      throw deviceBridgeStartError(error);
-    }
-    let payload: Record<string, unknown>;
-    try {
-      payload = asRecord(await response.json());
-    } catch (error) {
-      throw deviceBridgeStartError(error);
-    }
+    const requestBody = JSON.stringify({
+      device_secret: deviceSecret,
+      ...(machineKey ? { machine_key: machineKey } : {}),
+      ...(machineName ? { machine_name: machineName } : {}),
+    });
+    const { response, payload } = await requestDeviceCodeWithRetry({
+      request: requestDeviceBridge,
+      url: `${bridgeUrl}/device/code`,
+      body: requestBody,
+      retryUnreachableForMs: options.retryUnreachableForMs,
+      logger,
+    });
     if (!response.ok) {
       throw new Error(
         readNonEmptyString(payload.error_description)

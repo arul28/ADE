@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
-import type { CloudMachine, CloudMachineState } from "../../shared/adeCloud";
-import type { CloudLaneMachine, CloudMachineLaneFacts } from "../../shared/cloudLaneLaunch";
+import type { CloudMachine } from "../../shared/adeCloud";
+import type { CloudLaneMachine } from "../../shared/cloudLaneLaunch";
+import { laneComputersOf, parseSavedLaneComputers, savedLaneComputerRows, type LaneComputer } from "../../shared/laneComputer";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
 
@@ -19,11 +20,8 @@ import { chatLaunchStore } from "./chatLaunchStore";
  * network or sets a timer.
  */
 
-export type AdeCloudLaneComputer = CloudMachineLaneFacts & {
-  instanceId: string;
-  machineKey: string | null;
-  state: CloudMachineState;
-};
+/** A lane and the computer it is on now (contract C3's `LaneComputer`). */
+export type AdeCloudLaneComputer = LaneComputer;
 
 const STORAGE_KEY = "ade.cloudLaneComputers.v1";
 
@@ -31,7 +29,12 @@ type IndexState = {
   computers: readonly AdeCloudLaneComputer[];
   /** True once a read (or the saved copy) filled it. */
   known: boolean;
+  /** When a read in this window last filled it (the saved copy doesn't count), or null. */
+  readAtMs: number | null;
 };
+
+/** How long a read of the account's computers is fresh enough to call a computer missing from it deleted. */
+const FRESH_LANE_INDEX_MS = 10 * 60_000;
 
 let state: IndexState = readSaved();
 const listeners = new Set<() => void>();
@@ -39,26 +42,10 @@ const listeners = new Set<() => void>();
 function readSaved(): IndexState {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (!raw) return { computers: [], known: false };
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return { computers: [], known: false };
-    const computers = parsed.flatMap((row): AdeCloudLaneComputer[] => {
-      if (!row || typeof row !== "object") return [];
-      const value = row as Record<string, unknown>;
-      if (typeof value.instanceId !== "string" || typeof value.laneId !== "string" || typeof value.laneName !== "string") return [];
-      return [{
-        instanceId: value.instanceId,
-        laneId: value.laneId,
-        laneName: value.laneName,
-        projectOrigin: typeof value.projectOrigin === "string" ? value.projectOrigin : null,
-        machineKey: typeof value.machineKey === "string" ? value.machineKey : null,
-        // A saved copy is old: never show a computer as awake from it.
-        state: "asleep",
-      }];
-    });
-    return { computers, known: true };
+    if (!raw) return { computers: [], known: false, readAtMs: null };
+    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), known: true, readAtMs: null };
   } catch {
-    return { computers: [], known: false };
+    return { computers: [], known: false, readAtMs: null };
   }
 }
 
@@ -70,18 +57,23 @@ function signature(computers: readonly AdeCloudLaneComputer[]): string {
 
 /** Records the lane computers of a good read of the account's computers. */
 export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
-  const computers = (machines as readonly CloudLaneMachine[]).flatMap((machine): AdeCloudLaneComputer[] => {
-    if (!machine.lane || machine.state === "deleting") return [];
-    return [{ ...machine.lane, instanceId: machine.instanceId, machineKey: machine.machineKey, state: machine.state }];
-  }).sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
+  // One computer per lane, the same rule as the main process's follower: while
+  // a move runs, the lane stays on the old computer.
+  const computers = laneComputersOf(machines as readonly CloudLaneMachine[])
+    .sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
   noteCloudLaneComputers(computers);
 }
 
 function noteCloudLaneComputers(computers: readonly AdeCloudLaneComputer[]): void {
-  if (state.known && signature(computers) === signature(state.computers)) return;
-  state = { computers, known: true };
+  const readAtMs = Date.now();
+  if (state.known && signature(computers) === signature(state.computers)) {
+    // Same list: fresher, but nothing for a listener to redraw.
+    state = { ...state, readAtMs };
+    return;
+  }
+  state = { computers, known: true, readAtMs };
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(computers.map(({ state: _state, ...rest }) => rest)));
+    window.localStorage.setItem(STORAGE_KEY, savedLaneComputerRows(computers));
   } catch {
     // This computer's copy is a convenience; the next read fills it again.
   }
@@ -104,6 +96,20 @@ function subscribe(listener: () => void): () => void {
 }
 
 const readState = () => state;
+
+/** The lane computers as last read, for code outside React. */
+export function adeCloudLaneComputersNow(): readonly AdeCloudLaneComputer[] {
+  return state.computers;
+}
+
+/**
+ * Whether this window read the account's computers in the last few minutes:
+ * only then may a computer missing from the index be called deleted. The saved
+ * copy from an earlier run, or an old read, can miss a computer made since.
+ */
+export function cloudLaneIndexFresh(nowMs: number = Date.now()): boolean {
+  return state.readAtMs != null && nowMs - state.readAtMs < FRESH_LANE_INDEX_MS;
+}
 
 /** The lane computers as last read, and whether any read filled the list yet. */
 export function useAdeCloudLaneComputers(): IndexState {

@@ -141,7 +141,7 @@ describe("ToastViewport", () => {
     act(() => {
       showToast({ id: "x", title: "Store toast", durationMs: 0 });
     });
-    rerender(<ToastViewport slot={<div data-testid="slot">Launches</div>} />);
+    rerender(<ToastViewport slots={[{ key: "slot", node: <div data-testid="slot">Launches</div> }]} />);
     const viewport = screen.getByTestId("toast-viewport");
     const text = viewport.textContent ?? "";
     expect(text.indexOf("Store toast")).toBeLessThan(text.indexOf("Launches"));

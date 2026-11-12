@@ -780,8 +780,11 @@ Work chats
                                                     row stops saying "Needs you" about a question nobody is on.
     $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
     $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
-    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
-                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    A deleted CLI session (AGENT "claude CLI") relaunches in its lane,
+                                                    resuming its own conversation when ADE knows it, else fresh
+    $ ade chat inbox --text                         Every chat and CLI session in the project that waits on you, each
+                                                    with its question or approval inline and the exact command that
+                                                    answers it
                                                     (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
@@ -876,10 +879,18 @@ Work chats
                                                     A person's batch needs no approval. Chats that already
                                                     continue on another machine are skipped (named: refused).
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
+                                                    A CLI session (Claude Code, Codex, …) moves as a CLI: it stops
+                                                    here and resumes its own conversation there (Claude Code,
+                                                    Codex), else starts fresh there with a brief (other agents, or
+                                                    --brief). --all includes CLIs.
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
+                                                    own conversation file; without --model it keeps the CLI's model.
+                                                    handoff <cli-session> sends a brief instead (its terminal output when
+                                                    ADE can't read the conversation).
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
     $ ade chat side <session> "Why did we pick Redis?"
@@ -919,7 +930,10 @@ Work chats
     $ ade chat restart [<session>] [--stop | --after-turn]
                                                     Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
                                                     With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
+    $ ade chat update <session> --pin | --unpin      Pin or unpin a chat or CLI session in the Work list
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
+                                                    Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
+                                                    ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
@@ -1202,9 +1216,11 @@ Automations
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
