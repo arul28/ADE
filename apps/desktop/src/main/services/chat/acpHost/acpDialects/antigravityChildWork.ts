@@ -129,6 +129,8 @@ export function createAntigravityBackgroundWork(args: {
   const parentFile = antigravityConversationFile(args.sessionId, args.cliDir);
   // History before this runtime opened is not news.
   let cursor = parentFile ? antigravityLastStepIndex(parentFile) ?? -1 : -1;
+  /** The last step a turn streamed when its end-of-turn read failed (see `readParent`); null otherwise. */
+  let streamedThrough: number | null = null;
   let parentSignature = logSignature(parentFile);
   const launches = new Map<string, Launch>();
   const children = new Map<string, Child>();
@@ -209,6 +211,9 @@ export function createAntigravityBackgroundWork(args: {
   const readParent = (outsideTurn: boolean, events: AcpBackgroundEvent[]): boolean => {
     if (!parentFile) return true;
     let ok = true;
+    // Steps a turn already streamed over ACP, when its own end-of-turn read
+    // failed: a retry reports their launches and results, never their text again.
+    const streamed = streamedThrough;
     // Every unread step, a batch at a time: a long turn can add more than
     // one batch, and a launch past the first must not be missed.
     const steps: AntigravityStep[] = [];
@@ -224,17 +229,18 @@ export function createAntigravityBackgroundWork(args: {
     const items: AcpBackgroundItem[] = [];
     for (const step of steps) {
       cursor = Math.max(cursor, step.idx);
+      const outside = outsideTurn && !(streamed !== null && step.idx <= streamed);
       if (step.kind === "reply") {
         for (const call of step.toolCalls) {
           if (call.name === "invoke_subagent" && call.id) launches.set(call.id, parseLaunch(call.args));
         }
-        if (outsideTurn && step.thinking.trim()) items.push({ kind: "thinking", text: step.thinking });
-        if (outsideTurn && step.text.trim()) items.push({ kind: "text", text: step.text });
+        if (outside && step.thinking.trim()) items.push({ kind: "thinking", text: step.thinking });
+        if (outside && step.text.trim()) items.push({ kind: "text", text: step.text });
         continue;
       }
       if (step.kind === "tool") {
         if (step.toolCall.name === "invoke_subagent") launch(step, events);
-        else if (outsideTurn) toolOutcome(step, items);
+        else if (outside) toolOutcome(step, items);
         continue;
       }
       if (step.kind === "message" && step.senderId && children.has(step.senderId)) {
@@ -242,6 +248,7 @@ export function createAntigravityBackgroundWork(args: {
       }
     }
     if (items.length) events.push({ kind: "agent_activity", items });
+    if (ok) streamedThrough = null;
     return ok;
   };
 
@@ -325,8 +332,10 @@ export function createAntigravityBackgroundWork(args: {
       const settledBefore = lastSettledAt;
       const signature = logSignature(parentFile);
       const read = readParent(false, events);
-      // A failed read leaves the signature stale, so the timer's tick reads again.
+      // A failed read leaves the signature stale, so the timer's tick reads
+      // again; what the turn streamed so far is marked so it is not repeated.
       if (read) parentSignature = signature;
+      else streamedThrough = (parentFile ? antigravityLastStepIndex(parentFile) : undefined) ?? Number.POSITIVE_INFINITY;
       if (events.length) args.emit(events);
       // A child that already reported still gets agy's reply to it, which can
       // come after the turn.
