@@ -661,7 +661,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -29341,10 +29341,20 @@ async function runServe(
     accountStore: () => (syncEnabled ? machineAccountStoresForRecords().settings : null),
     isSignedIn: () => machineAccountStoresForRecords().accountUserId() !== null,
     logger: headlessProjectLogger,
+    folderRefused: (project) => Boolean(project.projectId && projectOpenStrikes.blocked(project.projectId)),
   });
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
+  projectRegistry.setFolderReadSkip((projectId) => projectOpenStrikes.blocked(projectId) !== null);
+  // A refused project's folder is not read for account settings, nor counted
+  // for this cloud computer's disk report.
+  const refusedRoot = (rootPath: string): boolean => {
+    const resolved = path.resolve(rootPath);
+    const record = projectRegistry.list().find((entry) => entry.rootPath === resolved);
+    return Boolean(record && projectOpenStrikes.blocked(record.projectId));
+  };
+  setAccountConfigRootSkip(refusedRoot, layout.secretsDir);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
@@ -29407,10 +29417,10 @@ async function runServe(
   }
   // The phone's icon follows the shared record like the desktop's tab does.
   const mobileProjectIconDataUrl = (record: ProjectRecord): string | null => {
+    // For a refused project the records answer from the account only
+    // (`folderRefused` above), and detecting an icon in its folder is skipped.
     const decision = projectRecords.iconDecision(record);
     if (decision.use === "record") return decision.icon.dataUrl;
-    // Detecting the icon reads the folder (and its `.ade/local.yaml`) here, on
-    // the brain's thread; a refused project's folder is not read.
     if (scopeRegistry.isOpenBlocked(record.projectId)) return null;
     if (decision.use === "detected") {
       const detected = resolveProjectIconPath(record.rootPath, { iconPathOverride: undefined });
@@ -29502,7 +29512,7 @@ async function runServe(
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
-        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
@@ -29754,6 +29764,11 @@ async function runServe(
         rootPath: requestedRootPath || null,
       };
     }
+    // A refused project's folder is not touched to set its icon.
+    const refusal = scopeRegistry.openRefusal(record.projectId);
+    if (refusal) {
+      return { ok: false, message: refusal.message, projectId: record.projectId, rootPath: record.rootPath };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return {
         ok: false,
@@ -29797,7 +29812,9 @@ async function runServe(
           : null,
       )
         .map((record) => {
-          const isAvailable = fs.existsSync(record.rootPath);
+          // A refused project is there (it froze while opening): not stat'd again.
+          const refused = scopeRegistry.isOpenBlocked(record.projectId);
+          const isAvailable = refused || fs.existsSync(record.rootPath);
           return toMobileProjectSummary(record, {
             isAvailable,
             // Registry rows carry no lane data; read the count off disk so the
@@ -29806,7 +29823,7 @@ async function runServe(
             // work and leave the summary's default count.
             // Nor for a project refused for being too slow to open: the count
             // opens its database, on the drive that froze the brain.
-            ...(isAvailable && !scopeRegistry.isOpenBlocked(record.projectId)
+            ...(isAvailable && !refused
               ? { laneCount: headlessProjectLaneCount(record.rootPath) }
               : {}),
           });
@@ -30226,7 +30243,10 @@ async function runServe(
       rosterProvider: {
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
       // Terminals of open projects only: a terminal never boots a project.
       terminalProjects: async ({ projectId, projectRootPath }) => {
@@ -30340,7 +30360,10 @@ async function runServe(
       // project's chat transcript read-only without a project switch. Reads
       // straight off that project's `.ade` transcripts dir (registry-validated,
       // no runtime boot) — the counterpart to the roster feed above.
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       personalChatScope,
       // A save from the web or the phone is work, and keeps a cloud machine awake.
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
@@ -30582,6 +30605,7 @@ async function runServe(
       scopeRegistry: {
         get: (projectId) => scopeRegistry.get(projectId),
         getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
       },
       personalChatScope,
       deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),

@@ -41,7 +41,7 @@ import {
 
 type RecordLogger = { warn(event: string, data?: Record<string, unknown>): void };
 
-export type ProjectRecordTarget = { rootPath: string; gitOriginUrl?: string | null };
+export type ProjectRecordTarget = { rootPath: string; gitOriginUrl?: string | null; projectId?: string };
 
 /** The account settings store, with the listing a snapshot needs. */
 export type ProjectRecordAccountStore = ProjectRecordStore & {
@@ -61,6 +61,12 @@ export function createMachineProjectRecords(args: {
   /** Whether an ADE account is signed in (a refused write while signed out stays pending). */
   isSignedIn: () => boolean;
   logger: RecordLogger;
+  /**
+   * A project whose folder must not be read here (refused as too slow to
+   * open): its reads answer from the account store only, skipping the
+   * stand-in and pending files in its `.ade` folder.
+   */
+  folderRefused?: (project: ProjectRecordTarget) => boolean;
   now?: () => number;
 }) {
   const now = args.now ?? Date.now;
@@ -149,8 +155,9 @@ export function createMachineProjectRecords(args: {
   const read = (project: ProjectRecordTarget, scope: string, key: string): unknown => {
     try {
       const account = args.accountStore();
-      if (!account) return createProjectRecordStandInStore(project.rootPath).get(scope, key);
-      const pending = readPending(project, scope, key);
+      const folderReadable = args.folderRefused?.(project) !== true;
+      if (!account) return folderReadable ? createProjectRecordStandInStore(project.rootPath).get(scope, key) : undefined;
+      const pending = folderReadable ? readPending(project, scope, key) : undefined;
       if (pending === undefined) return accountValue(account, scope, key);
       // This machine's latest choice goes first; while it cannot go, it is what
       // this machine shows. Signed out, the store would only drop it again.
@@ -219,9 +226,16 @@ export function createMachineProjectRecords(args: {
      * tries a repository at most once in ten minutes. `undefined` means this
      * machine has no custom icon; `null` means it has one that does not fit.
      */
+    /** False for a project whose folder must not be read (see `folderRefused`): no icon migration from it. */
+    readsFolder(project: ProjectRecordTarget): boolean {
+      return args.folderRefused?.(project) !== true;
+    },
+
     completeMigration(project: ProjectRecordTarget, value: ProjectRecordIconValue | null | undefined): void {
       const scope = scopeOf(project);
       if (!scope || value === undefined) return;
+      // Migrating reads and writes the pending file in the project's `.ade`.
+      if (args.folderRefused?.(project)) return;
       const last = migrationAttempts.get(scope);
       if (last !== undefined && now() - last < MIGRATION_RETRY_MS) return;
       if (migrationAttempts.size >= MIGRATION_MEMO_MAX) migrationAttempts.clear();

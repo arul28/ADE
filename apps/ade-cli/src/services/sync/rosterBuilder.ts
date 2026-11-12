@@ -1016,6 +1016,8 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
  */
 export function createForeignChatTranscriptResolver(args: {
   projectRegistry: ForeignChatProjectRegistry;
+  /** A project refused as too slow to open: its transcripts are not stat'd here. */
+  isOpenBlocked?: (projectId: string) => boolean;
 }): SyncForeignChatTranscriptResolver {
   return {
     resolveTranscriptPath: ({ projectId, projectRootPath, sessionId }) => {
@@ -1038,7 +1040,7 @@ export function createForeignChatTranscriptResolver(args: {
       // transcripts.
       if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
       const record = byId ?? byRoot;
-      if (!record) return null;
+      if (!record || args.isOpenBlocked?.(record.projectId)) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
       const chatTranscriptsDir = path.resolve(layout.chatTranscriptsDir);

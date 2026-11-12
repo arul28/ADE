@@ -1259,6 +1259,8 @@ export class LocalRuntimeConnectionPool {
   private stopping = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
+  /** Folders the brain answered `project_folder_too_slow` for (see `isKnownRefused`). */
+  private readonly refusedRoots = new Set<string>();
   private activeClient: RuntimeRpcClient | null = null;
   private activeRuntimePid: number | null = null;
   private activeRuntimeSyncPort: number | null = null;
@@ -2398,26 +2400,43 @@ export class LocalRuntimeConnectionPool {
   }
 
   /**
-   * The same check for a project already open in this window, on a switch
-   * back to it: only a brain this pool is connected to is asked, briefly, and
-   * nothing but the refusal stops the switch. A brain frozen on some other
-   * folder must not hold up a switch to a healthy project.
+   * The same check, asking only a brain this pool is already connected to,
+   * briefly, and failing for nothing but the refusal: for a switch, which a
+   * brain frozen on some other folder must not hold up, and before a cold
+   * open reads the folder. True when the brain answered that it may open, so
+   * the open need not ask again.
    */
-  async assertProjectOpenableIfConnected(rootPath: string): Promise<void> {
+  async assertProjectOpenableIfConnected(rootPath: string): Promise<boolean> {
     const entry = this.activeConnection;
-    if (!entry) return;
-    await this.throwOpenRefusal(entry, rootPath, OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS);
+    if (!entry) return false;
+    return await this.throwOpenRefusal(entry, rootPath, OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS);
   }
 
-  /** Ask `projects.checkOpen`; rethrow only its `project_folder_too_slow` refusal. */
-  private async throwOpenRefusal(entry: LocalRuntimeConnection, rootPath: string, timeoutMs: number): Promise<void> {
+  /**
+   * Ask `projects.checkOpen`; rethrow only its `project_folder_too_slow`
+   * refusal. True when the brain answered that the folder may open.
+   */
+  private async throwOpenRefusal(entry: LocalRuntimeConnection, rootPath: string, timeoutMs: number): Promise<boolean> {
+    const root = path.resolve(rootPath);
     try {
-      await entry.client.call("projects.checkOpen", { rootPath: path.resolve(rootPath) }, { timeoutMs });
+      await entry.client.call("projects.checkOpen", { rootPath: root }, { timeoutMs });
+      this.refusedRoots.delete(root);
+      return true;
     } catch (error) {
       const parsed = parseCodedErrorMessage(error);
-      if (parsed.code !== PROJECT_FOLDER_TOO_SLOW_CODE) return;
+      if (parsed.code !== PROJECT_FOLDER_TOO_SLOW_CODE) return false;
+      this.refusedRoots.add(root);
       throw markExpected(codedError(parsed.message, PROJECT_FOLDER_TOO_SLOW_CODE), "environment");
     }
+  }
+
+  /**
+   * Whether the brain refused this folder the last time this process asked
+   * (cleared by an answer that it may open, or a retry). This process's own
+   * readers of a project folder (the recent-projects list) skip it.
+   */
+  isKnownRefused(rootPath: string): boolean {
+    return this.refusedRoots.has(path.resolve(rootPath));
   }
 
   /** Forget the brain's refusal of this folder (`projects.retryOpen`), so the next open tries. */
@@ -2426,6 +2445,7 @@ export class LocalRuntimeConnectionPool {
     await entry.client.call("projects.retryOpen", this.knownProjectRef(rootPath), {
       timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
     });
+    this.refusedRoots.delete(path.resolve(rootPath));
   }
 
   async setProjectCatalogVisibility(

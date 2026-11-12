@@ -738,10 +738,10 @@ function assertProjectFolderPresent(rootPath: string): void {
 }
 
 function requireRegisteredProjectForIcon(
-  projectRegistry: Pick<ProjectRegistry, "findByRootPath">,
+  projectRegistry: Pick<ProjectRegistry, "findByRootPath" | "list">,
   params: Record<string, unknown>,
   method: string,
-): { rootPath: string } {
+): { rootPath: string; projectId: string } {
   const rootPath = readOptionalString(params.rootPath);
   if (!rootPath) {
     throw new JsonRpcError(
@@ -749,7 +749,11 @@ function requireRegisteredProjectForIcon(
       `${method} requires rootPath.`,
     );
   }
-  const project = projectRegistry.findByRootPath(rootPath);
+  // The registered root as given first: normalizing reads the folder, which
+  // for a refused project is the drive that froze the brain.
+  const given = path.resolve(rootPath);
+  const project = projectRegistry.list().find((record) => record.rootPath === given)
+    ?? projectRegistry.findByRootPath(rootPath);
   if (!project) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -1199,13 +1203,14 @@ async function decorateProjectWithIcon<T extends { rootPath: string; gitOriginUr
 
 /** The worker mode for a project whose record did not settle its icon. */
 function projectIconRecordRequest(
-  project: { rootPath: string; gitOriginUrl?: string | null },
+  project: { rootPath: string; gitOriginUrl?: string | null; projectId?: string },
   decision: ProjectRecordIconDecision | null,
   projectRecords: MachineProjectRecords | null,
 ): ProjectIconRecordRequest | undefined {
   if (!decision || !projectRecords) return undefined;
   if (decision.use === "detected") return { mode: "detected" };
-  if (decision.use === "local" && decision.migrate) {
+  // A refused project's icon is not migrated: that reads its `.ade` folder here.
+  if (decision.use === "local" && decision.migrate && projectRecords.readsFolder(project)) {
     return { mode: "migrate", onRecordValue: (value) => projectRecords.completeMigration(project, value) };
   }
   return undefined;
@@ -3713,6 +3718,8 @@ export function createMultiProjectRpcRequestHandler(
         // One project at a time, yielding between them, so a long registry never holds the brain's loop.
         await new Promise<void>((resolve) => setImmediate(resolve));
         const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+        // A refused project's database is not read here, on the brain's thread.
+        if (!running && scopeRegistry.isOpenBlocked(record.projectId)) continue;
         const deleted = running
           ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
           : readDeletedChatOnDisk(record.rootPath, sessionId, (error) => {
@@ -3914,6 +3921,9 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.setIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       const upload = readProjectIconUpload(params);
       try {
@@ -3949,6 +3959,9 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       if (projectRecords?.isShared(project)) {
         // Every machine goes back to the icon it detects and drops its own

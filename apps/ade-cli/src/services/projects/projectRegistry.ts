@@ -222,6 +222,8 @@ export class ProjectRegistry {
   private readonly legacyRecentProjectRoots: Set<string>;
   /** `raw` is the file's text, normalized again without another read while `identity` holds. */
   private readCache: { identity: string; at: number; raw: string | null; file: ProjectRegistryFile } | null = null;
+  /** Projects whose folder `list()` must not read (refused as too slow to open). */
+  private folderReadSkip: (projectId: ProjectId) => boolean = () => false;
 
   constructor(
     layout: MachineAdeLayout = resolveMachineAdeLayout(),
@@ -246,7 +248,19 @@ export class ProjectRegistry {
   }
 
   list(): ProjectRecord[] {
-    return this.read().projects.map(withCanonicalOrigin);
+    // A record saved without an origin reads it from the project's git config
+    // on every call; a refused project's folder is not read for it. A saved
+    // origin is still canonicalized (string work only).
+    return this.read().projects.map((record) =>
+      (!record.gitOriginUrl && this.folderReadSkip(record.projectId) ? record : withCanonicalOrigin(record)));
+  }
+
+  /**
+   * Name the projects whose folder `list()` must not read: the brain's open
+   * refusals (`projectOpenStrikes.ts`), since `list()` runs on its thread.
+   */
+  setFolderReadSkip(skip: (projectId: ProjectId) => boolean): void {
+    this.folderReadSkip = skip;
   }
 
   listRecent(): ProjectRecord[] {

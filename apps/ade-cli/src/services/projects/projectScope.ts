@@ -543,6 +543,13 @@ export class ProjectScopeRegistry {
       this.projectRegistry.assertProjectDataAvailable(record);
     } catch (error) {
       openTracker.done();
+      // A check that was itself slow (a drive that barely answers) is a slow open too.
+      logSlowProjectOpen({
+        logger: this.options.logger,
+        clock: openClock,
+        projectRoot: record.rootPath,
+        fields: { projectId, outcome: "failed" },
+      });
       throw error;
     }
     // A project with strikes opens alone: other cold opens wait for it, and it

@@ -4210,7 +4210,16 @@ export function registerIpc({
   handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
     let projectMonitor: DiskPressureMonitor | null = null;
     try {
-      projectMonitor = getCtx().diskPressureMonitor ?? null;
+      const ctx = getCtx();
+      // A project the brain refused as too slow to open is not `statfs`'d on
+      // this thread: its drive may not answer. This computer's monitor answers.
+      // The project open in this window may have been refused since it
+      // opened, so ask (a live connection only, 1.5 s at most, no file reads).
+      const refusalPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+      const root = ctx.project?.rootPath ?? "";
+      if (root && refusalPool) await refusalPool.assertProjectOpenableIfConnected(root).catch(() => false);
+      const refused = Boolean(root && refusalPool?.isKnownRefused(root));
+      projectMonitor = refused ? null : ctx.diskPressureMonitor ?? null;
     } catch {
       // No project context yet: this computer's monitor below answers.
     }
@@ -4629,7 +4638,20 @@ export function registerIpc({
     ) {
       return recentProjectSummaryCache.rows;
     }
-    const rows = entries.map(toShallowRecentProjectSummary);
+    // A project the brain refused as too slow to open is listed without
+    // reading its folder here, on this process's main thread: it is there (it
+    // froze while opening), and its origin and worktree parent wait for it to open.
+    const refusalPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+    const rows = entries.map((entry) => (!entry.remote && refusalPool?.isKnownRefused(entry.rootPath)
+      ? {
+        rootPath: entry.rootPath,
+        displayName: entry.displayName,
+        lastOpenedAt: entry.lastOpenedAt,
+        exists: true,
+        kind: "local" as const,
+        ...(entry.pinned ? { pinned: true } : {}),
+      }
+      : toShallowRecentProjectSummary(entry)));
     recentProjectSummaryCache = {
       signature,
       rows,
@@ -4992,8 +5014,12 @@ export function registerIpc({
   // again here and is retried on that machine (`ade projects retry --machine`).
   handle(IPC.projectRetryOpen, async (_event, arg: { rootPath?: string }): Promise<boolean> => {
     const requested = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
-    const rootPath = requested ? resolveRequestedProjectRoot(requested) : null;
     const pool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+    // A root the brain just refused is known without reading anything; any
+    // other must be a project main knows (`resolveRequestedProjectRoot`).
+    const rootPath = !requested
+      ? null
+      : pool?.isKnownRefused(requested) ? path.resolve(requested) : resolveRequestedProjectRoot(requested);
     if (!rootPath || !pool) return false;
     try {
       await pool.retryProjectOpen(rootPath);

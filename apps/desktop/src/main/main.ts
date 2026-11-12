@@ -219,7 +219,7 @@ import {
   runGit,
   trustGitSafeDirectory,
 } from "./services/git/git";
-import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError } from "../shared/codedError";
+import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../shared/codedError";
 import { markExpected } from "../shared/expectedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -7027,16 +7027,19 @@ app.whenReady().then(async () => {
     projectRoot,
     baseRef,
     userSelectedProject,
+    refusalChecked = false,
   }: {
     projectRoot: string;
     baseRef: string;
     userSelectedProject: boolean;
+    /** The caller just asked the brain about this root and it may open. */
+    refusalChecked?: boolean;
   }): Promise<AppContext> => {
     // A project the brain refuses as too slow to open is refused here too,
     // before this process stats the folder or opens its database itself: the
     // person gets the brain's message and Try again instead of a window that
     // freezes on the same drive.
-    await localRuntimePool.assertProjectOpenable(projectRoot);
+    if (!refusalChecked) await localRuntimePool.assertProjectOpenable(projectRoot);
     assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
@@ -8440,9 +8443,27 @@ app.whenReady().then(async () => {
       // resolved when it opened. Asking git again (and detecting its base ref,
       // which only a new context uses) is work every tab switch threw away.
       const openRoot = normalizeProjectRoot(selectedPath);
-      const reusesOpenRoot = options.trustGitOwnership !== true
-        && projectContexts.has(openRoot)
-        && isLikelyRepoRoot(openRoot);
+      const knownOpenRoot = options.trustGitOwnership !== true && projectContexts.has(openRoot);
+      // A project the brain refused after this window opened it: asked before
+      // anything below reads its folder (on a drive that may not answer). The
+      // refusal shows the banner and Try again; any other failure of the check
+      // lets the switch go ahead.
+      // A cold open asks too, before git resolves the folder: a refused
+      // project's root is the one a recent or a tab names.
+      // Without a live connection nothing is dialed here; a cold open's own
+      // check dials once, in `initRuntimeBackedProjectContext`.
+      let refusalCheckedRoot: string | null = null;
+      if (!shouldUseInProcessProjectRuntime()) {
+        try {
+          if (await localRuntimePool.assertProjectOpenableIfConnected(openRoot)) refusalCheckedRoot = openRoot;
+        } catch (error) {
+          // The brain registered this folder, so it is a project root: Try
+          // again may name it even though this desktop never opened it.
+          if (isCodedError(error, PROJECT_FOLDER_TOO_SLOW_CODE)) attemptedProjectRoots.record(openRoot);
+          throw error;
+        }
+      }
+      const reusesOpenRoot = knownOpenRoot && isLikelyRepoRoot(openRoot);
       repoRoot = reusesOpenRoot ? openRoot : normalizeProjectRoot(
         await resolveRepoRootForUserOpen(
           selectedPath,
@@ -8502,10 +8523,8 @@ app.whenReady().then(async () => {
       });
       const existing = projectContexts.get(repoRoot);
       if (existing) {
-        // A project the brain refused after this window opened it: its panes
-        // would fail one by one. The refusal shows the banner and Try again
-        // instead; any other failure of the check lets the switch go ahead.
-        if (!shouldUseInProcessProjectRuntime()) {
+        // Asked here when the check above did not cover this root.
+        if (refusalCheckedRoot !== repoRoot && !shouldUseInProcessProjectRuntime()) {
           await localRuntimePool.assertProjectOpenableIfConnected(repoRoot);
         }
         existing.hasUserSelectedProject = true;
@@ -8551,6 +8570,7 @@ app.whenReady().then(async () => {
               projectRoot: repoRoot!,
               baseRef,
               userSelectedProject: true,
+              refusalChecked: refusalCheckedRoot === repoRoot,
             });
           projectOpenLogger.info("project.open.context_initialized", {
             selectedPath,
