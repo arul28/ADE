@@ -244,6 +244,7 @@ export function parseRegistration(body: Record<string, unknown>): CloudAutomatio
       lane: { from },
       limits: { maxRunsPerHour: perHour, keepComputer: limits?.keepComputer === true },
       ...(typeof spec.timezone === "string" ? { timezone: spec.timezone } : {}),
+      ...(spec.channel === "beta" ? { channel: "beta" as const } : {}),
     },
   };
 }
@@ -743,7 +744,8 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
       prompt: runPrompt(spec, trigger, now),
     },
     madeBy: { kind: "automation", ruleId: rule.rule_id },
-    channel: "stable",
+    // The registering ADE's track: a Beta ADE's rule runs on the Beta image, which knows the join.
+    channel: spec.channel === "beta" ? "beta" : "stable",
   };
   // The lane id first: a start the Worker loses is tried again with the same lane.
   await env.DB.prepare("update cloud_automation_runs set lane_id = ?, updated_at = ? where run_id = ?").bind(laneId, now, run.run_id).run();

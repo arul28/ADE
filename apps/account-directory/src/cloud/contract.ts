@@ -965,6 +965,8 @@ export type CloudAutomationTrigger =
  * the trigger is added below it.
  */
 export type CloudAutomationSpec = {
+  /** The update track of the ADE that registered it: each run's computer is made on that track's image. Left out is `stable`. */
+  channel?: CloudUpdateChannel;
   name: string;
   project: { origin: string };
   triggers: CloudAutomationTrigger[];
