@@ -274,7 +274,8 @@ struct WorkRootSyncInputs: Equatable {
       remoteMachineRepos = workRemoteMachineRepos(
         machines: connected,
         identity: identity,
-        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
+        accountCopies: sync.accountCopiesOfActiveProject()
       )
       // The Work list shows every chat of this repository on the other
       // machines, and its search and filters cover them all: a paged roster

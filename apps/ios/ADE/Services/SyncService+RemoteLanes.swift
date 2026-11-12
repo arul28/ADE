@@ -95,20 +95,27 @@ extension SyncService {
     guard let fleet = machineFleet, !fleet.machines.isEmpty, let activeProject else { return [] }
     let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
       ?? workRepoIdentity(originUrl: rosterProject(for: activeProject)?.repoOriginUrl)
-    // The account's copies of this project count too: after a GitHub rename
-    // one computer can still name the old address.
-    let copies = accountProjectForActiveProject()?.copies ?? []
-    let account = AccountService.shared
     return workRemoteMachineRepos(
       machines: fleet.machines,
       identity: identity,
       folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
-      accountCopies: copies.isEmpty ? nil : { fleetKey in
-        guard let accountKey = account.machine(forFleetKey: fleetKey)?.machineKey else { return (ids: [], main: nil) }
-        let onMachine = copies.filter { $0.machineKey == accountKey }
-        return (ids: Set(onMachine.map(\.checkoutId)), main: onMachine.first(where: \.isMain)?.checkoutId)
-      }
+      accountCopies: accountCopiesOfActiveProject()
     )
+  }
+
+  /// The account's copies of the focused project on one computer (fleet key),
+  /// for `workRemoteMachineRepos`: they match after a GitHub rename, and the
+  /// main copy wins. Every caller passes it, so the Work list, lane links and
+  /// new lanes use the same folder. Nil when the account names no copy.
+  func accountCopiesOfActiveProject() -> ((String) -> (ids: Set<String>, main: String?))? {
+    let copies = accountProjectForActiveProject()?.copies ?? []
+    guard !copies.isEmpty else { return nil }
+    let account = AccountService.shared
+    return { fleetKey in
+      guard let accountKey = account.machine(forFleetKey: fleetKey)?.machineKey else { return (ids: [], main: nil) }
+      let onMachine = copies.filter { $0.machineKey == accountKey }
+      return (ids: Set(onMachine.map(\.checkoutId)), main: onMachine.first(where: \.isMain)?.checkoutId)
+    }
   }
 
   /// The primary (focused) machine's name for machine lists and chips: the
