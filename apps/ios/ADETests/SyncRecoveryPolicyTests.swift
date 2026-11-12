@@ -394,6 +394,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
 
   func testApplicationCloseCodeTableKeepsPrimaryCopyRouteNeutral() {
     let interrupted = "Can’t reach this computer right now. Reconnecting now."
+    let hostDidNotAnswer = "This computer is online, but ADE on it didn’t answer. It usually repairs itself in a few seconds; if it doesn’t, open ADE on that computer to see why."
     let cases: [(code: Int, reason: String, expected: String)] = [
       (4000, "partner closed", interrupted),
       (4001, "heartbeat timed out", interrupted),
@@ -401,12 +402,12 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       (4003, "ADE Relay account proof expired", "This saved connection needs attention. Open Settings and reconnect."),
       (4004, "pairing cooldown", "Connection attempts are paused briefly. Try again shortly."),
       (4008, "inbound connection stale", interrupted),
-      (4501, "host offline", interrupted),
+      (4501, "host offline", hostDidNotAnswer),
       (4502, "relay idle", interrupted),
       (4503, "relay capacity", "This computer is handling too many connections. Try again shortly."),
       (4505, "replaced by newer host", interrupted),
       (4506, "pre-pipe buffer overflow", interrupted),
-      (4507, "bridge rejected", interrupted),
+      (4507, "bridge rejected", hostDidNotAnswer),
       (4999, "unknown relay pipe failure", interrupted),
     ]
     let forbiddenPrimaryTerms = ["offline", "pipe", "bridge", "relay"]

@@ -326,6 +326,35 @@ func syncSocketCompletionAction(
     : .failHandshake
 }
 
+/// Relay close codes that mean the phone got through to the computer's relay
+/// connection, but ADE on that computer did not answer: its sync listener is
+/// down (4501), its bridge refused the tunnel (4507), or forwarding to it
+/// failed (4509). Copy only: these codes recover exactly like every other
+/// close.
+let syncRelayHostDidNotAnswerCloseCodes: Set<Int> = [4501, 4507, 4509]
+
+/// What the phone says when the relay reached the computer but ADE on it did
+/// not answer. With a machine name it names the route; without one (the
+/// primary banner) it stays route-neutral.
+func syncRelayHostDidNotAnswerMessage(machineName: String? = nil) -> String {
+  let fix = "It usually repairs itself in a few seconds; if it doesn’t, open ADE on that computer to see why."
+  guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !machineName.isEmpty else {
+    return "This computer is online, but ADE on it didn’t answer. \(fix)"
+  }
+  return "ADE relay reached \(machineName), but ADE on it didn’t answer. \(fix)"
+}
+
+/// Whether `error` ended with one of `syncRelayHostDidNotAnswerCloseCodes`.
+func syncErrorIsRelayHostDidNotAnswer(_ error: Error?) -> Bool {
+  guard let error else { return false }
+  if let mailboxError = error as? SyncConnectionRaceMailboxError {
+    return mailboxError.closeCode.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
+  }
+  let code = (error as NSError).userInfo["ADESocketCloseCode"] as? Int
+  return code.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
+}
+
 func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
   let message: String
   switch closeCodeRawValue {
@@ -335,7 +364,9 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
     message = "Connection attempts are paused briefly. Try again shortly."
   case 4503:
     message = "This computer is handling too many connections. Try again shortly."
-  case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506, 4507:
+  case _ where syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue):
+    message = syncRelayHostDidNotAnswerMessage()
+  case 4000, 4001, 4002, 4008, 4502, 4505, 4506:
     message = "Can’t reach this computer right now. Reconnecting now."
   default:
     message = "Can’t reach this computer right now. Reconnecting now."

@@ -336,14 +336,17 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
     };
   }
   if (!health.loopbackAdeValidated) {
+    // Wi-Fi and the relay do not go through this computer's loopback address,
+    // and ADE moves off a taken port by itself; only Tailscale waits.
+    const who = health.shadowedBy ? `Another program (${health.shadowedBy})` : "Another program";
     return {
       id: "listener",
       label: "ADE",
-      state: "failed",
+      state: "warning",
       detail: health.port != null
-        ? `Something other than ADE answered on port ${health.port}.`
-        : "ADE could not confirm its own connection port.",
-      fix: "Quit the program using that port, or restart ADE so it picks another.",
+        ? `${who} is using port ${health.port} on this computer. ADE is moving to a free port; Wi-Fi and relay connections keep working.`
+        : "ADE could not confirm its own connection port. It keeps checking and repairs this by itself.",
+      fix: "Nothing to do unless this stays. If it does, quit the program using that port or restart ADE.",
     };
   }
   return {

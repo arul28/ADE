@@ -229,6 +229,20 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     return base.isEmpty ? installLabel : "\(base) · \(installLabel)"
   }
 
+  /// The computer half of `rowLabel` ("MacBook Pro"), for rows that show the
+  /// install on its own line so several installs on one computer stay apart.
+  /// Same suffix rule as `rowLabel`; falls back to `displayName`.
+  var rowComputerName: String {
+    guard installLabel != nil else { return displayName }
+    if let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty { return custom }
+    let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let suffix = channel?.nameSuffix ?? ""
+    let base = !suffix.isEmpty && reported.hasSuffix(suffix)
+      ? String(reported.dropLast(suffix.count))
+      : reported
+    return base.isEmpty ? displayName : base
+  }
+
   /// The endpoint we'd prefer to connect through: a direct LAN route first, then
   /// Tailscale, then the cloud relay — matching the connection-runtime ranking.
   var preferredEndpoint: AccountMachineEndpoint? {

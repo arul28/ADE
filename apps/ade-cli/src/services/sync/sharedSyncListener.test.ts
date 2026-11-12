@@ -148,13 +148,18 @@ describe("shared sync listener upgrade policy", () => {
     }
   });
 
-  it("migrates onto a free port and closes the previous bind", async () => {
+  it("migrates onto a free port, closes the previous bind, and keeps connected sockets", async () => {
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",
       logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
     });
+    listener.setConnectionHandler(({ ws }) => {
+      ws.on("message", (raw) => ws.send(`echo:${raw.toString()}`));
+    });
     try {
       const originalPort = await listener.ensureListening([0]);
+      // A phone already connected must not be dropped by a port move.
+      const connectedBefore = await connect(originalPort, "/");
       const probePorts = [8994, 8993, 8992, 8991].filter((port) => port !== originalPort);
       let target: http.Server | null = null;
       let targetPort: number | null = null;
@@ -193,6 +198,105 @@ describe("shared sync listener upgrade policy", () => {
       const stale = new WebSocket(`ws://127.0.0.1:${originalPort}/`);
       stale.on("error", () => {});
       await once(stale, "error");
+      expect(connectedBefore.readyState).toBe(WebSocket.OPEN);
+      connectedBefore.send("still-here");
+      const [echo] = await once(connectedBefore, "message");
+      expect(String(echo)).toBe("echo:still-here");
+      connectedBefore.close();
+    } finally {
+      await listener.close();
+    }
+  });
+
+  // Another program can take 127.0.0.1:<port> after ADE bound the wildcard
+  // (macOS and Windows allow the more specific bind). The listener must notice
+  // and move by itself, keep every connected socket, and say where it went.
+  it("moves off a port whose loopback another program took, keeping connected sockets", async () => {
+    const shadowedPorts = new Set<number>();
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({
+        port,
+        holders: [{ pid: 999_997, command: "/opt/homebrew/bin/workerd serve --socket-addr=entry=127.0.0.1:8787", startTime: null }],
+      }),
+      loopbackProbe: async (port, expectedNonce) => {
+        const shadowed = shadowedPorts.has(port);
+        return {
+          ok: !shadowed,
+          port,
+          statusCode: shadowed ? 404 : 426,
+          statusMessage: shadowed ? "Not Found" : "Upgrade Required",
+          markerValue: shadowed ? null : expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: shadowed ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.` : null,
+        };
+      },
+    });
+    listener.setConnectionHandler(({ ws }) => {
+      ws.on("message", (raw) => ws.send(`echo:${raw.toString()}`));
+    });
+    const moves: Array<{ from: number; to: number; reason: string }> = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const originalPort = await listener.ensureListening([0]);
+      const connectedBefore = await connect(originalPort, "/");
+      shadowedPorts.add(originalPort);
+
+      await listener.healNow();
+
+      const newPort = listener.getPort();
+      expect(newPort).not.toBeNull();
+      expect(newPort).not.toBe(originalPort);
+      expect(moves).toEqual([{ from: originalPort, to: newPort, reason: "loopback-shadowed" }]);
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port: newPort,
+        loopbackAdeValidated: true,
+      });
+      const connectedAfter = await connect(newPort!, "/");
+      connectedAfter.close();
+      connectedBefore.send("still-here");
+      const [echo] = await once(connectedBefore, "message");
+      expect(String(echo)).toBe("echo:still-here");
+      connectedBefore.close();
+    } finally {
+      await listener.close();
+    }
+  });
+
+  it("names the program holding a shadowed port while it cannot move", async () => {
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({
+        port,
+        holders: [
+          { pid: process.pid, command: process.execPath, startTime: null },
+          { pid: 999_997, command: "/opt/homebrew/bin/workerd serve", startTime: null },
+        ],
+      }),
+      // Every port is shadowed, so the move finds nowhere to go.
+      loopbackProbe: async (port) => ({
+        ok: false,
+        port,
+        statusCode: 404,
+        statusMessage: "Not Found",
+        markerValue: null,
+        checkedAt: new Date().toISOString(),
+        reason: `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.`,
+      }),
+    });
+    try {
+      // Every candidate is shadowed: it still serves (degraded) rather than not at all.
+      const port = await listener.ensureListening([0]);
+      await listener.healNow();
+      expect(listener.getPort()).toBe(port);
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port,
+        loopbackAdeValidated: false,
+        shadowedBy: "workerd",
+      });
+      expect(listener.canAcceptRelayPipes()).toBe(true);
     } finally {
       await listener.close();
     }

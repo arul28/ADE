@@ -105,7 +105,23 @@ export type SyncLoopbackValidationStatus = {
   lastFailureAt: string | null;
   reason: string | null;
   lastSuccessAt: string | null;
+  /**
+   * Program name (never a path or arguments) of the other process found
+   * holding 127.0.0.1:<port> when the last check failed, e.g. "workerd".
+   * Null when the check passed or no holder could be named.
+   */
+  shadowedBy?: string | null;
 };
+
+/** The program name of a command line: its first token's basename, nothing else. */
+export function programNameFromCommandLine(command: string | null | undefined): string | null {
+  const trimmed = command?.trim();
+  if (!trimmed) return null;
+  const quoted = /^"([^"]+)"/.exec(trimmed);
+  const first = quoted ? quoted[1]! : trimmed.split(/\s+/)[0]!;
+  const base = first.split(/[\\/]/).pop()?.replace(/\.exe$/i, "") ?? "";
+  return base.length > 0 && base.length <= 64 ? base : null;
+}
 
 export class LoopbackShadowedError extends Error {
   readonly code = "ELOOPBACKSHADOWED";

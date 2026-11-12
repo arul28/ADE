@@ -30194,6 +30194,16 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // A brain hosting phone sync with no project scope follows the shared
+  // listener's port moves itself (a scope's sync service does this when one
+  // hosts): the lease records the port and the account directory re-publishes.
+  sharedSyncListener?.onPortChanged((change) => {
+    brainSyncHostLease?.updatePort(change.to);
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
+  sharedSyncListener?.onLoopbackStatusChanged(() => {
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
   /** Set below; a project scope took sync hosting over from the projectless brain. */
   let releaseProjectlessHostLease: () => void = () => {};
   /** Set below; starts hosting the newest project, with no repair override. */

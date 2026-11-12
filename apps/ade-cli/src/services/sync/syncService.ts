@@ -1235,6 +1235,37 @@ export function createSyncService(args: SyncServiceArgs) {
     }
   };
 
+  // The shared listener moves off a port another program took (and back to
+  // 8787 when it frees). While this scope hosts, everything that advertises
+  // the port follows it: the sync lease, this device's row, Bonjour and
+  // Tailscale Serve, and the account directory.
+  const detachListenerPortChanged = args.sharedSyncListener?.onPortChanged((change) => {
+    if (disposed || !hostService) return;
+    hostSingletonLease?.updatePort(change.to);
+    deviceRegistryService.touchLocalDevice({
+      lastSeenAt: nowIso(),
+      lastPort: change.to,
+    });
+    args.logger.warn("sync_listener.port_drifted", {
+      from: change.from,
+      to: change.to,
+      reason: change.reason,
+    });
+    hostService.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
+    void args.requestAccountMachinePublish?.();
+    scheduleStatusEmit();
+    if (change.to !== DEFAULT_SYNC_HOST_PORT) {
+      scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
+    }
+  }) ?? null;
+  // A loopback verdict change moves the Tailscale route (and the listener line
+  // in Settings); re-emit status and re-publish so neither waits for a poll.
+  const detachListenerStatusChanged = args.sharedSyncListener?.onLoopbackStatusChanged(() => {
+    if (disposed || !hostService) return;
+    scheduleStatusEmit();
+    void args.requestAccountMachinePublish?.();
+  }) ?? null;
+
   const startHostIfNeeded = async (): Promise<void> => {
     if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
@@ -2471,6 +2502,8 @@ export function createSyncService(args: SyncServiceArgs) {
 
     async dispose(): Promise<void> {
       disposed = true;
+      detachListenerPortChanged?.();
+      detachListenerStatusChanged?.();
       syncPeerService.disconnect();
       clearInterval(localLanePresenceHeartbeatTimer);
       stopCanonicalPortMigrateTimer();

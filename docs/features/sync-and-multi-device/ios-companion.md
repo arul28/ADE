@@ -2833,7 +2833,15 @@ keeps the previous primary connected (`switchFocusKeepingPrevious`), and a
 project the machine refuses to open (for example one set to follow another
 machine) shows its reason as a Hub toast. Settings rows report the route each
 machine's link actually took, and each row tracks its own action, so one
-machine connecting never locks the others.
+machine connecting never locks the others. A row titles the computer and puts
+the install on its own line ("ADE Beta", or the home path for a dev install),
+so several installs on one Mac read apart. After a failed connect the row's
+status line turns into a one-line "Couldn't connect" and its button into Retry;
+the full explanation lives on the machine's page, which shows one status and
+one primary action. When the relay closes with 4501, 4507 or 4509, the phone
+reached the computer's relay connection but ADE on it did not answer, and the
+copy says exactly that (`syncRelayHostDidNotAnswerMessage`); the close code is
+carried on the connect error for that purpose and recovery is unchanged.
 
 A CLI or shell session on another live machine opens on the phone at once,
 over that machine's roster connection. The focused machine and the active

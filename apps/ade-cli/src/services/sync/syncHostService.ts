@@ -4276,7 +4276,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   let detachSharedListener: (() => void) | null = null;
+  let detachSharedListenerStatus: (() => void) | null = null;
   if (sharedListener) {
+    // The listener re-checks loopback on its own (and moves off a shadowed
+    // port). Mirror its verdict so route health and Tailscale publication
+    // follow it instead of the last check this host happened to run.
+    detachSharedListenerStatus = sharedListener.onLoopbackStatusChanged(() => {
+      if (disposed) return;
+      loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      const port = sharedListener.getPort();
+      if (port == null) return;
+      void publishValidatedDiscovery(port).catch((error) => {
+        args.logger.warn("sync_host.discovery_refresh_failed", {
+          port,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
     detachSharedListener = sharedListener.setConnectionHandler((connection) => {
       const peer = registerPeer(
         connection.ws,
@@ -4881,8 +4897,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (lanPortChanged) unpublishLanDiscovery();
     if (tailnetPortChanged) await unpublishTailnetDiscovery();
     if (disposed) return;
+    // LAN peers reach the wildcard bind, not loopback, so a program holding
+    // 127.0.0.1:<port> does not stop LAN. Tailscale Serve forwards to
+    // 127.0.0.1:<port>, so only that route waits for loopback to answer as
+    // this listener (the shared listener moves off a shadowed port by itself).
     publishLanDiscovery(port, { force: options?.forceLan });
-    publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    if (loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated) {
+      publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    } else if (tailnetServePort != null) {
+      await unpublishTailnetDiscovery();
+    }
   };
 
   function peerForSocket(ws: WebSocket): PeerState | null {
@@ -9334,16 +9358,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           // A project-host handoff may happen long after the listener's bind
           // probe. Force a fresh identity check before this host republishes
-          // LAN/Tailscale discovery for the shared port.
+          // discovery for the shared port.
           await sharedListener!.revalidateLoopback();
+        } catch (error) {
+          // A shadowed loopback is a degraded route, not a failed host: relay
+          // pipes arrive in process and LAN on the wildcard bind. Refusing to
+          // host here is what used to take every route down at once. The
+          // listener's self-heal moves off the port; Tailscale waits for it.
+          if (!isLoopbackShadowedError(error)) throw error;
+          args.logger.warn("sync_host.loopback_shadowed_hosting_degraded", {
+            port,
+            error: error.message,
+          });
+          void sharedListener!.healNow();
         } finally {
           loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
         }
-        if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
-          throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
-        }
-        await publishValidatedDiscovery(port);
-        return port;
+        await publishValidatedDiscovery(sharedListener!.getPort() ?? port);
+        return sharedListener!.getPort() ?? port;
       }
       if (startupError) {
         throw startupError;
@@ -9427,11 +9459,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const port = getListeningPort();
       if (port != null) {
         // Re-validate the loopback listener before republishing so a post-startup
-        // shadow cannot re-advertise a stale port. On failure validateListeningPort
-        // marks the route unvalidated and throws, so we skip the publish.
+        // shadow cannot re-advertise Tailscale onto another program. A shadow
+        // only withholds Tailscale (see publishValidatedDiscovery); any other
+        // failure skips the publish.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          await publishValidatedDiscovery(port, options);
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, options);
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9650,6 +9688,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // was disabled), the listener closes them after a grace period.
         detachSharedListener?.();
         detachSharedListener = null;
+        detachSharedListenerStatus?.();
+        detachSharedListenerStatus = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
           abortPeerOperations(peer, "Sync host changed.");

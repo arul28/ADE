@@ -827,6 +827,11 @@ export type SyncRouteHealth = {
     lastFailureAt: string | null;
     reason: string | null;
     lastSuccessAt: string | null;
+    /**
+     * Program name of another process holding 127.0.0.1:<port> when the last
+     * loopback check failed (e.g. "workerd"); never a path or arguments.
+     */
+    shadowedBy?: string | null;
   };
   tailscale: {
     enabled: boolean;

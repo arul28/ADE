@@ -793,11 +793,23 @@ private struct AccountAdoptionRoutesExhaustedError: LocalizedError {
     default:
       routeSummary = "\(routeLabels.dropLast().joined(separator: ", ")), and \(routeLabels.last ?? "")"
     }
+    // The relay got through and only ADE on the computer stayed silent: the
+    // routes worked, so the message says what did not.
+    if syncErrorIsRelayHostDidNotAnswer(finalFailure) {
+      return syncRelayHostDidNotAnswerMessage(machineName: machineName)
+    }
     let failure = finalFailure.map { SyncUserFacingError.message(for: $0) }?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let suffix = failure.flatMap { $0.isEmpty ? nil : $0 }.map { " \($0)" } ?? ""
     return "Couldn't connect to \(machineName) after trying \(routeSummary).\(suffix)"
   }
+}
+
+/// The close code a WebSocket's far end sent, or nil when it sent none (the
+/// task reports `.invalid`, 0, until a close frame arrives).
+func syncWebSocketCloseCode(_ task: URLSessionWebSocketTask) -> Int? {
+  let code = Int(task.closeCode.rawValue)
+  return code == 0 ? nil : code
 }
 
 private func adeIsValidJSONFragment(_ object: Any) -> Bool {
@@ -3076,6 +3088,13 @@ enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     if let relayRequirement = error as? SyncRelayAuthorizationRequirement {
       return relayRequirement.localizedDescription
+    }
+    if let exhausted = error as? AccountAdoptionRoutesExhaustedError,
+       syncErrorIsRelayHostDidNotAnswer(exhausted.finalFailure) {
+      return exhausted.localizedDescription
+    }
+    if syncErrorIsRelayHostDidNotAnswer(error) {
+      return syncRelayHostDidNotAnswerMessage()
     }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
@@ -8428,7 +8447,11 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription, underlying: error)
+            await mailbox.finish(
+              message: error.localizedDescription,
+              underlying: error,
+              closeCode: syncWebSocketCloseCode(candidateTask)
+            )
           }
         }
         defer { reader.cancel() }
@@ -19953,7 +19976,11 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription, underlying: error)
+            await mailbox.finish(
+              message: error.localizedDescription,
+              underlying: error,
+              closeCode: syncWebSocketCloseCode(candidateTask)
+            )
           }
         }
         defer { reader.cancel() }
@@ -22361,6 +22388,14 @@ final class SyncService: ObservableObject {
                 domain: "ADE",
                 code: 24,
                 userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
+              )
+            } else if syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue) {
+              // The receive error ("Socket is not connected") hides why the
+              // relay closed; say what the close code means. Copy only: the
+              // close code still drives recovery below.
+              failure = syncSocketCloseError(
+                closeCodeRawValue: closeCodeRawValue,
+                reason: task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
               )
             } else {
               failure = error

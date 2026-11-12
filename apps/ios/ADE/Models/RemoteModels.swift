@@ -577,23 +577,12 @@ extension SyncDomainStatus {
   }
 }
 
-extension ADEInstructionErrorCard {
-  /// The in-tab hydration-failure shape: every root screen renders the same
-  /// card from a `SyncDomainFailureNotice`, so the unpacking lives next to the
-  /// notice rather than in the shared design system.
-  init(
-    notice: SyncDomainFailureNotice,
-    retryTitle: String? = "Retry",
-    retry: (() -> Void)?
-  ) {
-    self.init(
-      title: notice.title,
-      message: notice.message,
-      nextAction: notice.nextAction,
-      technicalDetail: notice.technicalDetail,
-      retryTitle: retryTitle,
-      retry: retry
-    )
+extension ADEFlatInlineNotice {
+  /// The in-tab hydration-failure shape: one slim row above the cached rows
+  /// with Retry, and the raw host text folded behind a toggle. The unpacking
+  /// lives next to the notice rather than in the shared design system.
+  init(notice: SyncDomainFailureNotice, retry: (() -> Void)?) {
+    self.init(message: notice.title, technicalDetail: notice.technicalDetail, retry: retry)
   }
 }
 
