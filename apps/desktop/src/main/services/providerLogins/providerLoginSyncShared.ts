@@ -329,7 +329,7 @@ export const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
   other_owner_newer: "Another computer renews this sign-in, so your account keeps that computer's copy.",
   written_back: "A cloud computer renewed this sign-in while this computer was off. ADE wrote the newer copy into the login file here.",
   from_saved_key: "This file came from a saved ADE Cloud key. It stays a key.",
-  from_account: "This is the account's sign-in. ADE wrote it on this cloud computer.",
+  from_account: "This is the account's sign-in. ADE wrote it on this computer.",
   account_refused: "Your account service doesn't take sign-ins yet. ADE keeps this one on this computer and tries again every hour.",
   not_checked: "Not checked on this computer.",
 };
@@ -410,7 +410,7 @@ export type SyncJobs = {
   // status and the person's writes (providerLoginStatus.ts, providerLoginWrites.ts)
   status(provider?: ProviderLoginProvider | null): Promise<ProviderLoginStatus>;
   saveSetting(next: CloudSetting, dropKey?: string | null, claude?: Record<string, unknown> | null): Promise<ProviderLoginStatus>;
-  // apply on a cloud computer (providerLoginApplyPass.ts)
+  // apply on a cloud computer, the sync down on an own computer (providerLoginApplyPass.ts)
   runApply(
     vault: ProviderLoginVault,
     accountUserId: string,
@@ -423,6 +423,8 @@ export type SyncJobs = {
   isAppliedBundle(provider: ProviderLoginProvider, bundle: CarryBundle): boolean;
   ownedPlaceFor(provider: ProviderLoginProvider, login: LoginMemo): { place: string; source: string } | null;
   noteOwnedCopy(place: string, memo: LoginMemo, expiresAt: number | null): void;
+  /** The account sign-in apply wrote here that capture reads back as `contentHash`, or null. */
+  appliedSourceOf(contentHash: string): string | null;
   // takeover, write-back and renewal (providerLoginTakeover.ts)
   checkArmed(): void;
   writeBack(

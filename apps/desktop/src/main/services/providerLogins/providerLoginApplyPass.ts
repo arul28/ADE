@@ -1,10 +1,19 @@
 /**
- * Apply on a cloud computer (P5): bring the files and env keys here
- * in line with what the account picked for ADE Cloud. Never on any other
- * computer. The capture pass runs first in the same pass, so the local
- * states say whether a file here is safe to replace. A renewing copy is
- * access-only; the full copy goes only to a computer that took the renewal
- * over.
+ * Apply (P5): bring the files and env keys here in line with what the
+ * account picked for ADE Cloud. The capture pass runs first in the same
+ * pass, so the local states say whether a file here is safe to replace. A
+ * renewing copy is access-only; the full copy goes only to a computer that
+ * took the renewal over.
+ *
+ * On a cloud computer it is the whole job. On a person's own computer it is
+ * the sync down (B14-9): a sign-in made on ADE Cloud, or on another of their
+ * computers, reaches this one, a computer added later included, and only
+ * where this computer has no sign-in of its own for that provider. It never
+ * replaces a local sign-in (a collision is logged once), never writes a
+ * saved ADE Cloud key or an env variable, and never takes this computer's
+ * own copy back. Claude never comes down (Claude's normal sign-in stays on
+ * each computer; ADE Cloud uses a Claude pass), and neither does any GitHub
+ * credential (Copilot's GitHub CLI login).
  */
 
 import fs from "node:fs";
@@ -28,7 +37,7 @@ import {
   type AppliedStateFile,
 } from "./providerLoginApply";
 import { takeCloudSignInEnv } from "./providerLoginBoot";
-import type { CarryBundle, ParsedLogin } from "./providerLoginCarry";
+import { carryRow, type CarryBundle, type ParsedLogin } from "./providerLoginCarry";
 import { copilotCarriedHash, setCopilotCarriedToken } from "./providerLoginCopilotEnv";
 import { notifyProviderLoginsChanged, restartProviderRuntimesWhenIdle, type ProviderLoginRestartOptions } from "./providerLoginHooks";
 import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey, readProviderLoginPayload, shortHash } from "./providerLoginPayload";
@@ -45,9 +54,41 @@ import {
   type SyncShared,
 } from "./providerLoginSyncShared";
 
+/** Providers whose sign-in never comes down to a person's own computer. */
+const NEVER_DOWN: ReadonlySet<ProviderLoginProvider> = new Set(["claude", "copilot"]);
+
 export function createApplyPass(s: SyncShared) {
   const { deps, now, env, ctx, localStates, applyStates, ownerOff } = s;
   const { cloudSetting, setLocal, metaFor } = s;
+  /** The sync down on an own computer; the full apply on a cloud computer. */
+  const down = !deps.cloudComputer;
+  /** `<place> <key>` pairs whose collision with a local sign-in was logged, so each is logged once. */
+  const keptLocalLogged = new Set<string>();
+
+  /**
+   * The sync down stays off a place this computer signed out of: the person
+   * removed what the sync down wrote (`declined`), or signed out of this
+   * computer's own sign-in there (capture's `signedOut` mark). A sign-in
+   * made here again lifts both.
+   */
+  function downDeclined(state: AppliedStateFile, accountUserId: string, origin12: string, place: string): boolean {
+    if (state.declined?.[place] != null) return true;
+    for (const key of Object.keys(s.loadState(accountUserId).signedOut ?? {})) {
+      const parsedKey = parseProviderLoginKey(key);
+      if (parsedKey && parsedKey.origin12 === origin12 && cloudChoiceKey(parsedKey.provider, parsedKey.slot) === place) return true;
+    }
+    return false;
+  }
+
+  /** This computer has its own sign-in at the place now (captured, or kept here): the person signed in here. */
+  function signedInHere(provider: ProviderLoginProvider, place: string): boolean {
+    const slot = provider === "pi" ? place.slice("pi:".length) : null;
+    for (const [slotId, local] of localStates.get(provider) ?? []) {
+      if (slot && slotId.includes(":") && !slotId.endsWith(`:${slot}`)) continue;
+      if (local.state === "captured" || local.state === "account_refused" || local.state === "removed_from_account") return true;
+    }
+    return false;
+  }
 
   type Want =
     | {
@@ -159,7 +200,11 @@ export function createApplyPass(s: SyncShared) {
     return savedKeyTokenOf(vault.get(ACCOUNT_SCOPE_ALL, "integration", savedKeyVaultKey(id)));
   }
 
-  /** What ADE Cloud uses for each place now (P5 §4.2), from the vault and the setting. */
+  /**
+   * What ADE Cloud uses for each place now (P5 §4.2), from the vault and the
+   * setting. Coming down to an own computer: only another computer's
+   * sign-in, of a provider that comes down; never a saved key.
+   */
   function desiredPlaces(vault: ProviderLoginVault, setting: CloudSetting, origin12: string, deviceId: string): Map<string, Want> {
     const picks = cloudPlacePicks(vault.list(ACCOUNT_SCOPE_ALL), setting, {
       usable: (row) => row.readable,
@@ -170,12 +215,15 @@ export function createApplyPass(s: SyncShared) {
     const keyWant = (place: string, provider: ProviderLoginProvider, id: string, token: string): Want =>
       ({ kind: "key", place, provider, id, token, contentHash: shortHash(token) });
     for (const [place, picked] of picks) {
+      if (down && ("savedKey" in picked || NEVER_DOWN.has(picked.provider))) continue;
       if ("savedKey" in picked) {
         wants.set(place, keyWant(place, picked.provider, picked.savedKey.id, picked.savedKey.token));
         continue;
       }
       const pick = picked.signIn;
       const parsedKey = parseProviderLoginKey(pick.row.key)!;
+      // This computer's own copy is its own sign-in, or one the person signed out of here: never written back down.
+      if (down && parsedKey.origin12 === origin12) continue;
       wants.set(place, {
         kind: "signin",
         place,
@@ -185,9 +233,11 @@ export function createApplyPass(s: SyncShared) {
         contentHash: pick.meta.contentHash,
         class: pick.meta.class,
         own: parsedKey.origin12 === origin12,
-        owned: pick.meta.class === "renewing" && parsedKey.origin12 !== origin12 && pick.row.refreshOwner === deviceId,
+        // Only a cloud computer takes a renewal over; an own computer gets the access-only copy.
+        owned: !down && pick.meta.class === "renewing" && parsedKey.origin12 !== origin12 && pick.row.refreshOwner === deviceId,
       });
     }
+    if (down) return wants;
     // A carried provider with no sign-in in use falls back to its saved key; a key-only provider always uses it.
     for (const spec of SAVED_KEYS) {
       if (!spec.provider) continue;
@@ -284,6 +334,34 @@ export function createApplyPass(s: SyncShared) {
   }
 
   /**
+   * The sync down's rule on an own computer: replace only a file ADE wrote
+   * and nobody changed, or write where this computer has no sign-in for the
+   * provider (capture read it as signed out, and the file reads back empty).
+   * A sign-in the person made here, in the account or not, always stays.
+   */
+  function mayWriteDown(provider: ProviderLoginProvider, place: string, have: AppliedEntry | null): boolean {
+    return have ? appliedFilesUnchanged(have) : noLoginHere(provider, place);
+  }
+
+  /**
+   * No sign-in at the place here: capture read every slot as signed out (not
+   * settling, not unreadable), and the files read back empty.
+   */
+  function noLoginHere(provider: ProviderLoginProvider, place: string): boolean {
+    const slot = provider === "pi" ? place.slice("pi:".length) : null;
+    // A provider capture did not look at here (Antigravity in a Mac's Keychain), or one
+    // whose login may sit in the OS keychain or keyring, is never "signed out".
+    if (carryRow(provider).osStore?.(ctx)) return false;
+    let looked = false;
+    for (const [slotId, local] of localStates.get(provider) ?? []) {
+      if (slot && slotId.includes(":") && !slotId.endsWith(`:${slot}`)) continue;
+      if (local.state !== "not_signed_in") return false;
+      looked = true;
+    }
+    return looked && readBackLoginHashes(provider, slot, ctx).length === 0;
+  }
+
+  /**
    * Without a capture pass just before (the off switch for all), the local
    * states are old: replace only a file ADE wrote and nobody changed, or write
    * where no sign-in is.
@@ -341,7 +419,10 @@ export function createApplyPass(s: SyncShared) {
     return typeof token === "string" && token ? token : null;
   }
 
-  /** Bring the files and env keys here in line with what the account picked. Cloud computers only. */
+  /**
+   * Bring the files and env keys here in line with what the account picked.
+   * On an own computer, only the sync down's sign-ins (see the top).
+   */
   async function runApply(
     vault: ProviderLoginVault,
     accountUserId: string,
@@ -361,12 +442,13 @@ export function createApplyPass(s: SyncShared) {
     // can give it back. A process that started earlier keeps its env until the
     // idle restart that the changed providers get below.
     const envBefore = new Map(SAVED_KEYS.map((spec) => [spec.env, env[spec.env]]));
-    const takeover = !envTaken;
+    // The boot's env and the old Codex key file are a cloud computer's only.
+    const takeover = !down && !envTaken;
     if (takeover) {
       envTaken = takeCloudSignInEnv(env);
       deps.logger.info("provider_login.env_taken", { names: Object.keys(envTaken) });
     }
-    if (!state.applied.codex && !state.env.OPENAI_API_KEY) {
+    if (!down && !state.applied.codex && !state.env.OPENAI_API_KEY) {
       // The Codex file the old cloud boot wrote from the computer's instance env: managed from now on.
       const bootKey = envTaken?.OPENAI_API_KEY;
       const adopted = bootKey ? adoptOldCodexKeyFile(bootKey, ctx, now()) : null;
@@ -390,11 +472,22 @@ export function createApplyPass(s: SyncShared) {
       if (signedOutSince()) return;
       const provider = (place.startsWith("pi:") ? "pi" : place) as ProviderLoginProvider;
       if (providers && !providers.has(provider)) continue;
-      const want = wants.get(place) ?? null;
+      let want = wants.get(place) ?? null;
       const have = state.applied[place] ?? null;
+      if (down && captureRan) {
+        // A sign-in made here lifts a sign-out the sync down kept to.
+        if (state.declined?.[place] != null && signedInHere(provider, place)) delete state.declined[place];
+        // What the sync down wrote is gone, and nobody wrote another: the person signed out here. It stays signed out.
+        if (have && have.loginHashes.length && noLoginHere(provider, place)) {
+          state.declined = { ...(state.declined ?? {}), [place]: now() };
+          deps.logger.info("provider_login.down_declined", { provider, place, reason: "signed_out_here" });
+        }
+        if (want && downDeclined(state, accountUserId, origin12, place)) want = null;
+      }
       const pickedBefore = applyStates.get(place)?.key ?? (have ? (have.source.startsWith("key:") ? "key" : have.source) : null);
       if (provider === "copilot") {
-        if (applyCopilot(vault, state, place, want, have, pickedBefore, noteSwitch)) changed.add(provider);
+        // A GitHub credential never comes down to an own computer.
+        if (!down && applyCopilot(vault, state, place, want, have, pickedBefore, noteSwitch)) changed.add(provider);
         continue;
       }
       const fileLess = want?.kind === "key" && want.provider !== "codex";
@@ -428,8 +521,17 @@ export function createApplyPass(s: SyncShared) {
         applyStates.set(place, { state: "own", key: want.key });
         continue;
       }
-      if (captureRan ? !mayOverwrite(provider, place, have) : !mayOverwriteUnobserved(provider, place, have)) {
+      const mayWrite = down
+        ? captureRan && mayWriteDown(provider, place, have)
+        : captureRan ? mayOverwrite(provider, place, have) : mayOverwriteUnobserved(provider, place, have);
+      if (!mayWrite) {
         applyStates.set(place, { state: "kept_local", key: want.kind === "key" ? "key" : want.key });
+        // The person's own sign-in here wins over the account's copy; said once per copy, like the PAT's collision.
+        const logKey = `${place} ${source}`;
+        if (down && captureRan && !keptLocalLogged.has(logKey)) {
+          keptLocalLogged.add(logKey);
+          deps.logger.info("provider_login.down_kept_local", { provider, place, reason: have ? "changed_here" : "signed_in_here" });
+        }
         continue;
       }
       let result: Awaited<ReturnType<typeof applySignIn>>;
@@ -484,9 +586,10 @@ export function createApplyPass(s: SyncShared) {
 
     // Env keys: a saved key is in its variable only while it is in use, so it never outranks a carried sign-in.
     // The pass that took the boot variables puts back every one the account still has, whatever `providers` says.
+    // Never on an own computer: the sync down writes sign-ins only.
     if (signedOutSince()) return;
     const envProviders = takeover ? null : providers;
-    if (!envProviders || SAVED_KEYS.some((spec) => spec.provider && envProviders.has(spec.provider))) {
+    if (!down && (!envProviders || SAVED_KEYS.some((spec) => spec.provider && envProviders.has(spec.provider)))) {
       for (const spec of SAVED_KEYS) {
         if (envProviders && (!spec.provider || !envProviders.has(spec.provider))) continue;
         const want = spec.provider ? wants.get(spec.provider) : null;
@@ -526,12 +629,13 @@ export function createApplyPass(s: SyncShared) {
   }
 
   /**
-   * On ADE sign-out: an apply in flight stops before its next write, and on a
-   * cloud computer the account's sign-ins leave with the account.
+   * On ADE sign-out: an apply in flight stops before its next write, and the
+   * account's sign-ins apply wrote here leave with the account (on an own
+   * computer, only the ones the sync down wrote and nobody changed since).
    */
   function forgetApplied(): void {
     accountGeneration += 1;
-    if (!deps.cloudComputer) return;
+    keptLocalLogged.clear();
     const onDisk = s.appliedCache ?? readAppliedState(deps.adeDir);
     s.appliedCache = null;
     applyStates.clear();
@@ -555,5 +659,13 @@ export function createApplyPass(s: SyncShared) {
     }
   }
 
-  return { runApply, loadApplied, isAppliedBundle, ownedPlaceFor, noteOwnedCopy, forgetApplied };
+  /** The account sign-in apply wrote here that capture reads back as `contentHash`, or null. */
+  function appliedSourceOf(contentHash: string): string | null {
+    for (const entry of Object.values(s.appliedCache?.applied ?? {})) {
+      if (!entry.source.startsWith("key:") && entry.loginHashes.includes(contentHash)) return entry.source;
+    }
+    return null;
+  }
+
+  return { runApply, loadApplied, isAppliedBundle, ownedPlaceFor, noteOwnedCopy, forgetApplied, appliedSourceOf };
 }

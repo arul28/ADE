@@ -3,8 +3,8 @@
  * Copilot, Kimi, Devin, Qwen, Antigravity, OpenCode, Pi): the provider's
  * sign-ins in the ADE account, as cards, and which one this computer uses.
  *
- * - On an own computer, "In use here" is the sign-in this computer has. Own
- *   computers can't take a sign-in from the account yet, so the other cards
+ * - On an own computer, "In use here" is the sign-in this computer has: its
+ *   own, or the account's that came down where it had none. The other cards
  *   say how to use them there, with no button that would fail.
  * - On a cloud computer, "In use here" is the one it applied, and the others
  *   offer "Use on ADE Cloud" (the choice is account-wide).

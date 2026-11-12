@@ -90,6 +90,12 @@ export type AppliedStateFile = {
   env: Record<string, string>;
   /** When a chat on this cloud computer showed the first cloud chat line (step 3d); one time per account. */
   firstChatAt?: string;
+  /**
+   * An own computer's places the person signed out of after the sync down
+   * wrote them (epoch ms): never written down again, until this computer
+   * signs in there on its own (B14-9). Absent on a cloud computer.
+   */
+  declined?: Record<string, number>;
 };
 
 export function emptyAppliedState(accountUserId: string | null): AppliedStateFile {
@@ -115,6 +121,7 @@ export function readAppliedState(adeDir: string): AppliedStateFile | null {
     applied: isRecord(parsed.applied) ? parsed.applied as Record<string, AppliedEntry> : {},
     env: isRecord(parsed.env) ? parsed.env as Record<string, string> : {},
     ...(typeof parsed.firstChatAt === "string" ? { firstChatAt: parsed.firstChatAt } : {}),
+    ...(isRecord(parsed.declined) ? { declined: parsed.declined as Record<string, number> } : {}),
   };
 }
 
