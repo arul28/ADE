@@ -48,12 +48,23 @@
  * 9. The prompt result carries `usage`; `inputTokens` leaves out the cached
  *    tokens (`antigravityUsage`). No `usage_update`.
  * 10. `plan` does not edit; `default` asks before an edit and a command.
+ * 11. A quota or Google API error ends the turn as `end_turn` with the error
+ *     as text; the session log's last step is the error
+ *     (`antigravityTurnOutcome.ts`). An exhausted quota is `refusal`.
+ * 12. Tool calls: the permission options are only `allow` (allow_once) and
+ *     `deny` (reject_once). Edit and command quirks are corrected in
+ *     `antigravitySessionUpdates.ts`. `ask_question` ends the turn with the
+ *     question and its options as text; the next message is the answer.
+ *     `invoke_subagent` returns at once and the subagent runs on in the
+ *     background; its result reaches the agent, not ACP, so the agent's
+ *     reply waits for the next prompt.
  */
 
 import {
   capability,
   capabilityAbsent,
   defineAcpDialect,
+  type AcpAccountReader,
   type AcpSpawnContext,
   type AcpUsageBehavior,
   type AcpSpawnPlan,
@@ -70,8 +81,9 @@ import {
   transportGatedMcpInjection,
 } from "./shared";
 import { allocateAcpScratchDir } from "../acpScratchDirs";
+import { watchAntigravityTurnOutcome } from "./antigravityTurnOutcome";
+import { normalizeAntigravitySessionUpdate } from "./antigravitySessionUpdates";
 import { antigravityCredentialEnv, readAntigravitySettings } from "../../../ai/antigravityAuth";
-import type { AgentChatUsageAccount } from "../../../../../shared/types";
 import type { AntigravityAuthMethod } from "../../../../../shared/types/config";
 
 /** Config option ids the agent implements (`set_config_option`). */
@@ -154,12 +166,29 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
 }
 
 /** Who pays, from the recorded method only (no token read, no network). */
-function readAntigravityAccount({ env }: { env: NodeJS.ProcessEnv }): AgentChatUsageAccount {
-  const method = readAntigravitySettings(env).method;
-  if (method === "gemini-api-key" || method === "agent-platform") return { provider: "antigravity", kind: "api_key" };
-  if (method === "oauth-personal" || method === "oauth-business") return { provider: "antigravity", kind: "subscription" };
-  return { provider: "antigravity", kind: "unknown" };
+/**
+ * The account tier `session/new` names in `_meta.antigravity.tier`
+ * (`{ name, id, upgradeUri }`, e.g. "Antigravity Starter Quota" on a Google
+ * account, verified 1.5.6). Only the display name is kept.
+ */
+function antigravityTierName(sessionMeta: Readonly<Record<string, unknown>> | null | undefined): string | null {
+  const antigravity = sessionMeta?.antigravity;
+  if (!antigravity || typeof antigravity !== "object") return null;
+  const tier = (antigravity as Record<string, unknown>).tier;
+  if (!tier || typeof tier !== "object") return null;
+  const name = (tier as Record<string, unknown>).name;
+  return typeof name === "string" && name.trim() ? name.trim().slice(0, 80) : null;
 }
+
+const readAntigravityAccount: AcpAccountReader = ({ env, sessionMeta }) => {
+  const method = readAntigravitySettings(env).method;
+  const plan = antigravityTierName(sessionMeta);
+  if (method === "gemini-api-key" || method === "agent-platform") return { provider: "antigravity", kind: "api_key" };
+  if (method === "oauth-personal" || method === "oauth-business" || plan) {
+    return { provider: "antigravity", kind: "subscription", ...(plan ? { plan } : {}) };
+  }
+  return { provider: "antigravity", kind: "unknown" };
+};
 
 export const antigravityDialect = defineAcpDialect({
   providerId: "antigravity",
@@ -188,6 +217,13 @@ export const antigravityDialect = defineAcpDialect({
   hostAnswersFullAccess: true,
   // `_meta.antigravity.systemPrompt.append` (advertised in `initialize`).
   systemPromptMeta: (append) => ({ antigravity: { systemPrompt: { append } } }),
+  // A quota or API error arrives as `end_turn`; the session log says it failed.
+  turnOutcome: watchAntigravityTurnOutcome,
+  // Edit paths, a new file's text and command output (antigravitySessionUpdates.ts).
+  normalizeSessionUpdate: normalizeAntigravitySessionUpdate,
+  // A PDF sent as a resource (link or blob) never reaches the model; its
+  // `read_file` reads one from a path (verified with a PDF, 1.5.6).
+  readsBinaryAttachments: true,
 
   cancelStyle: "notification",
   // The recorded method is read at spawn, so two chats share a process only

@@ -29,6 +29,7 @@ import type {
   AcpPromptUsage,
   AcpSessionConfigOption,
   AcpSessionId,
+  AcpSessionUpdate,
   AcpUsageUpdate,
 } from "./acpProtocolTypes";
 import type { AcpProviderId } from "../../../../shared/acpProviderMetadata";
@@ -361,7 +362,29 @@ export type AcpLocalUsageBehavior = (args: {
  * Read who pays for this provider's turns from local, non-secret config. Never
  * a network call and never a token value; unknown fields stay out.
  */
-export type AcpAccountReader = (args: { env: NodeJS.ProcessEnv }) => AgentChatUsageAccount;
+export type AcpAccountReader = (args: {
+  env: NodeJS.ProcessEnv;
+  /** The `_meta` of the agent's `session/new` (or resume/load) answer, when it sent one. */
+  sessionMeta?: Readonly<Record<string, unknown>> | null;
+}) => AgentChatUsageAccount;
+
+/**
+ * A turn the agent answered as finished that actually failed upstream.
+ * `usage_limit` is a quota or rate limit (`resetAt` when the agent named
+ * one); `provider_error` is any other API error. `message` is the agent's own
+ * words for an API error, never a token or a prompt.
+ */
+export type AcpTurnFailure = {
+  kind: "usage_limit" | "provider_error";
+  message: string;
+  code: string | null;
+  retryable: boolean;
+  /** ISO instant the limit lifts, when the agent said. */
+  resetAt: string | null;
+};
+
+/** Reads one turn's real outcome after `session/prompt` answers. Never throws. */
+export type AcpTurnOutcomeCheck = (response: AcpPromptResponse | null) => Promise<AcpTurnFailure | null>;
 
 /**
  * Read one usage payload. The host calls it with a `usage_update` as each one
@@ -508,6 +531,23 @@ export type AcpDialectBase = {
    * does not keep it) instead of the first user turn.
    */
   readonly systemPromptMeta?: (append: string) => Record<string, unknown>;
+
+  /**
+   * For an agent that reports an upstream failure (a quota, an API error) as
+   * a normal `end_turn`: taken before each prompt, it returns the check that
+   * reads the turn's real outcome once the prompt answers. `null` when the
+   * agent's evidence cannot be read; the turn is then judged as usual.
+   */
+  readonly turnOutcome?: (args: { sessionId: string }) => Promise<AcpTurnOutcomeCheck | null>;
+
+  /**
+   * Correct an agent's known protocol quirks in one `session/update` before
+   * ADE reads it. Pure, and returns the update unchanged when nothing applies.
+   */
+  readonly normalizeSessionUpdate?: (update: AcpSessionUpdate) => AcpSessionUpdate;
+
+  /** The agent's read tool opens binary files (PDF, video) from a path. */
+  readonly readsBinaryAttachments?: boolean;
 
   readonly cancelStyle: AcpCancelStyle;
 

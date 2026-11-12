@@ -63,6 +63,7 @@ import {
   type AcpDialect,
   type AcpLocalUsageReader,
   type AcpSlashCommand,
+  type AcpTurnFailure,
   type AcpUsageSample,
 } from "./acpHostTypes";
 import { createAcpEventTranslator, usageSampleToEvents, type AcpEventTranslator } from "./acpEventTranslator";
@@ -168,6 +169,11 @@ export type AcpTurnOutcome = {
    */
   interrupted: boolean;
   usage: AcpUsageSample | null;
+  /**
+   * Set when the agent answered the turn as finished but it failed upstream
+   * (`dialect.turnOutcome`). Never set on an interrupted turn.
+   */
+  failure?: AcpTurnFailure | null;
   /** Events derived from the prompt result. Publish them after the stream. */
   events: AgentChatEvent[];
   /**
@@ -355,6 +361,8 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     if (events.length) callbacks.onEvents(events);
   };
 
+  /** What the agent said about the session when it opened it (an account tier). */
+  let entryResponseMeta: Readonly<Record<string, unknown>> | null = null;
   const requestedModelToken = args.requestedModelId?.trim() || null;
   const plainModelId = (raw: string): string => dialect.modelIdFromAgent ? dialect.modelIdFromAgent(raw) : raw;
   const telemetry = createAcpTurnTelemetry({
@@ -365,7 +373,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     providerLabel: dialect.displayName,
     ...(dialect.servedModelMismatchNote ? { servedModelMismatchNote: dialect.servedModelMismatchNote } : {}),
     hasLocalUsage: dialect.localUsage.declared,
-    readAccount: () => dialect.readAccount({ env: args.spawnPlan.env }),
+    readAccount: () => dialect.readAccount({ env: args.spawnPlan.env, sessionMeta: entryResponseMeta }),
     ...(args.logger ? { logger: args.logger } : {}),
   });
 
@@ -437,7 +445,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     connection.onSessionUpdate((notification) => {
       if (suppressUpdates) return;
       if (sessionId && notification.sessionId && notification.sessionId !== sessionId) return;
-      const update = notification.update;
+      const update = dialect.normalizeSessionUpdate
+        ? dialect.normalizeSessionUpdate(notification.update)
+        : notification.update;
       if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
         supervision.noteToolCall(update.kind);
       }
@@ -503,6 +513,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       mcpServers: effectiveMcpServers,
     }));
     sessionId = response.sessionId;
+    entryResponseMeta = metaRecord(response._meta);
     initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
     initialModeId = response.modes?.currentModeId ?? null;
     for (const notification of dialect.postSessionNewNotifications({ sessionId })) {
@@ -526,6 +537,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       try {
         const response = await connection.request<AcpNewSessionResponse>(call.method, withEntryMeta(call.params));
         sessionId = response.sessionId ?? storedId;
+        entryResponseMeta = metaRecord(response._meta);
         initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
         initialModeId = response.modes?.currentModeId ?? null;
       } catch (error) {
@@ -622,6 +634,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         publishSupervision(supervision.drainQueued(turnId));
         let response: AcpPromptResponse | null = null;
         let interrupted = false;
+        const outcomeCheck = dialect.turnOutcome
+          ? await dialect.turnOutcome({ sessionId }).catch(() => null)
+          : null;
         turnPhase = "prompting";
         try {
           response = await connection.request<AcpPromptResponse>(
@@ -645,6 +660,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
           publishSupervision(supervision.endTurn(turnId));
         }
 
+        const failure = outcomeCheck && !interrupted
+          ? await outcomeCheck(response).catch(() => null)
+          : null;
         await waitForSettledUsage();
         const usage = readPromptUsage(dialect, response);
         const local = localUsage
@@ -667,6 +685,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
           stopReason: response?.stopReason ?? null,
           interrupted,
           usage,
+          failure,
           events,
           done: turnTelemetry.done,
         };
@@ -761,6 +780,10 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
   };
 
   return session;
+}
+
+function metaRecord(meta: unknown): Readonly<Record<string, unknown>> | null {
+  return meta && typeof meta === "object" && !Array.isArray(meta) ? (meta as Record<string, unknown>) : null;
 }
 
 function filterMcpServers(

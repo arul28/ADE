@@ -64,6 +64,8 @@ export type AcpRuntimeState<TSteer = unknown> = {
   currentModeId: string | null;
   /** Permission request ids ADE raised as cards for the running turn. */
   openPermissionIds: Set<string>;
+  /** The reset the agent named for the usage limit that failed its last turn. */
+  usageLimitResetAt?: string | null;
 };
 
 export type AcpRuntimeOwner = {

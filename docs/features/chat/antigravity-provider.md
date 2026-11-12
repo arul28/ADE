@@ -10,7 +10,9 @@ into the CLI at 1.5.0, so ADE pins the CLI.
 
 | Piece | File |
 |---|---|
-| Dialect (spawn plan, capabilities, mode mapping, system prompt) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravity.ts` |
+| Dialect (spawn plan, capabilities, mode mapping, system prompt, account tier) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravity.ts` |
+| A turn's real outcome (quota and API errors from the session log) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravityTurnOutcome.ts` |
+| Tool-call fixes (edit paths and hunks, new-file text, command output) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravitySessionUpdates.ts` |
 | Captured `initialize` (1.5.6) | `apps/desktop/src/main/services/chat/acpHost/fixtures/antigravity.initialize.json` |
 | Per-launch temp directories | `apps/desktop/src/main/services/chat/acpHost/acpScratchDirs.ts` |
 | Signed-in check, credential environment, ADE's own settings | `apps/desktop/src/main/services/ai/antigravityAuth.ts` |
@@ -75,10 +77,45 @@ bytes are the ones that run.
   Gemini, Claude and GPT-OSS models); `thought_level` (low, medium, high)
   carries reasoning effort. From 1.5.1 every model on the account is offered
   to every ACP client.
+- `session/new` names the account tier in `_meta.antigravity.tier`
+  (`{ name, id, upgradeUri }`; "Antigravity Starter Quota" on a Google
+  account). Its name is the turn account's plan.
 - Usage comes on the prompt result. agy's `inputTokens` leaves out the cached
   tokens (`totalTokens` = input + cachedRead + output), so the dialect adds
   them back before ADE's reader splits them off (`antigravityUsage`). There is
   no `usage_update`.
+
+### Failed turns
+
+agy reports a quota, a rate limit or a Google API error as a chat message and
+`end_turn`. Its session log says otherwise: every session is a SQLite file,
+`~/.gemini/antigravity-cli/conversations/<sessionId>.db`, and a failed turn
+ends with an error step (`step_type` 17) whose text is the API error
+(`Error 429, Message: …, Status: RESOURCE_EXHAUSTED`, plus `quotaResetDelay`,
+`quotaResetTimeStamp` or `retryDelay`). An exhausted quota can also come back
+as `stopReason: "refusal"`. Before each prompt ADE notes the log's last step;
+after it, it reads only the newest new step, read-only, and a bounded prefix of
+its text (`dialect.turnOutcome`). A quota or a 429 fails the turn with a
+usage-limit card, and the reset time it names arms auto-resume; any other API
+error fails the turn with the agent's message. A log that is missing,
+unreadable or not a plain file leaves the turn as the agent answered it.
+
+### Tool calls (verified 1.5.6, Windows)
+
+- Permission requests offer only `allow` (`allow_once`) and `deny`
+  (`reject_once`).
+- An edit's finished update names its file `/C:/Users/…`; ADE drops the
+  slash before a drive letter. A finished snippet edit is placed on its real
+  lines when the new snippet occurs once in the file (512 KB or less).
+- `write_file`'s finished diff has one newline more than the file; the new
+  file's text comes from its `Content` argument.
+- `run_command` output loses agy's "Created At / Completed At / Command
+  exited" header, and the exit code (`rawOutput.exit_code`) goes on the row.
+- A PDF sent as a resource (link or blob) never reaches the model, but agy's
+  `read_file` reads one from a path, so binary attachments are handed over by
+  path (`readsBinaryAttachments`).
+- `ask_question` ends the turn and shows the question and its options as
+  text; the next message is the answer.
 
 ### Modes
 
@@ -97,7 +134,9 @@ request and recording it in the transcript.
 
 - **No rewind or edit of earlier turns.** Continue with a follow-up or start a
   new chat.
-- **Subagents** show as tool activity (no subagent capability row).
+- **Subagents run in the background.** `invoke_subagent` returns at once and
+  the turn ends; the subagent writes its own session log, and its result
+  reaches agy, not ACP. agy's reply to it waits for the next message.
 - **No usage limits.** Google's quota API needs the account's OAuth token,
   which ADE does not read in the background.
 
@@ -107,8 +146,13 @@ The `antigravity` terminal profile runs the TUI from the same pin. ADE's
 permission maps to `--mode plan`, `--mode accept-edits`, `--mode auto` or
 `--dangerously-skip-permissions` (Full access); the model and effort go in
 `--model` and `--effort`; a prompt goes in `-i`. Resume is `--conversation
-<id>` when ADE knows the id, else `--continue`. The TUI does not accept
-`--disable-telemetry` (only `agy acp` does). In a plain shell only `agy` is
+<id>` when ADE knows the id, else `--continue`. The TUI prints
+`agy --conversation=<id>` when it exits, and ADE reads the id from the
+terminal's output (`terminalSessionSignals.ts`), so a closed Antigravity
+terminal resumes its own conversation on every OS. ADE has no default resume
+line for it: `agy -c` is the latest conversation on the machine, which can be
+a chat's. The TUI has no telemetry flag (it exits on `--disable-telemetry`;
+only `agy acp` takes one). In a plain shell only `agy` is
 swapped for the pinned binary; `antigravity` is left alone because it is also
 the Antigravity editor's launcher.
 

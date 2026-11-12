@@ -1455,6 +1455,7 @@ import {
   type AcpSessionConfigOption,
   type AcpSlashCommand,
   type AcpRuntimeState,
+  type AcpTurnFailure,
 } from "./acpHost";
 import {
   codexConfigHome,
@@ -23540,6 +23541,10 @@ export function createAgentChatService(args: {
       const parsed = typeof resetAt === "string" ? Date.parse(resetAt) : Number.NaN;
       if (Number.isFinite(parsed)) return parsed;
     }
+    if (runtime?.kind === "acp" && runtime.usageLimitResetAt) {
+      const parsed = Date.parse(runtime.usageLimitResetAt);
+      if (Number.isFinite(parsed)) return parsed;
+    }
     // Last resort: the reset instant recorded with the live limit. Claude's
     // quota snapshot is in-memory only, so after a restart — or on the Turn on
     // re-arm, which has no fresh provider frame behind it — this is the only
@@ -37349,6 +37354,39 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * The card for a turn the agent called finished that failed upstream. A
+   * usage limit records its reset on the runtime first, so the auto-resume
+   * the error arms finds it (`usageLimitResetAtMs`).
+   */
+  const emitAcpUpstreamFailure = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    turnId: string,
+    failure: AcpTurnFailure,
+  ): void => {
+    const providerLabel = providerDisplayLabel(managed.session.provider, String(managed.session.provider));
+    const usageLimit = failure.kind === "usage_limit";
+    runtime.usageLimitResetAt = usageLimit ? failure.resetAt : null;
+    const presented = presentChatFailure({
+      kind: usageLimit ? "rate_limit" : "unknown",
+      message: failure.message,
+      errorCode: failure.code,
+      provider: providerLabel,
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message: presented.body,
+      ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
+      turnId,
+      errorInfo: {
+        category: usageLimit ? "rate_limit" : "unknown",
+        provider: providerLabel,
+        presentation: presented,
+      },
+    });
+  };
+
   /** ACP runtimes whose agent has sent at least one command list. */
   const acpCommandsAdvertised = new WeakSet<AcpRuntime>();
   const acpCommandWaiters = new WeakMap<AcpRuntime, Array<() => void>>();
@@ -37586,6 +37624,7 @@ export function createAgentChatService(args: {
         agentSupportsImages: runtime.session.connection.initializeResult?.agentCapabilities?.promptCapabilities?.image === true,
         imagePrompt,
         readAttachmentBytes: readResolvedAttachmentBytes,
+        agentReadsBinaryFiles: runtime.dialect.readsBinaryAttachments === true,
       });
       const outcome = await runtime.session.prompt({
         turnId,
@@ -37609,7 +37648,11 @@ export function createAgentChatService(args: {
       // reports a stopped turn as `end_turn`, so the agent's stopReason is
       // never the deciding word, and a Stop after the answer is not either.
       const interrupted = outcome.interrupted;
+      // The agent answered the turn as finished, but it failed upstream (a
+      // quota, an API error the agent only wrote as text).
+      const upstreamFailure = interrupted ? null : outcome.failure ?? null;
       if (!interrupted) reportProviderRuntimeReady(provider);
+      if (upstreamFailure) emitAcpUpstreamFailure(managed, runtime, turnId, upstreamFailure);
       if (devinCloudTurn) {
         if (devinCloudFirstTurn && !interrupted && managed.session.devinCloud) {
           managed.session.devinCloud = { ...managed.session.devinCloud, pinned: true };
@@ -37624,15 +37667,16 @@ export function createAgentChatService(args: {
       } else {
         void emitTurnDiffSummaryIfChanged(managed, turnId);
       }
+      const settledStatus = interrupted ? "interrupted" : upstreamFailure ? "failed" : "completed";
       emitChatEvent(managed, {
         type: "status",
-        turnStatus: interrupted ? "interrupted" : "completed",
+        turnStatus: settledStatus,
         turnId,
       });
       emitChatEvent(managed, {
         type: "done",
         turnId,
-        status: interrupted ? "interrupted" : "completed",
+        status: settledStatus,
         ...doneModel,
         // Turn totals, context, cost, served model, account, plan usage.
         ...outcome.done,

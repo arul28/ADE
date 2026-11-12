@@ -256,8 +256,8 @@ function readRawInputString(rawInput: unknown, keys: readonly string[]): string 
  */
 export function buildUnifiedDiff(path: string, oldText: string, newText: string): string {
   if (oldText === newText) return "";
-  const oldLines = oldText.length ? oldText.split("\n") : [];
-  const newLines = newText.length ? newText.split("\n") : [];
+  const oldLines = diffLines(oldText);
+  const newLines = diffLines(newText);
 
   let prefix = 0;
   while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
@@ -274,6 +274,8 @@ export function buildUnifiedDiff(path: string, oldText: string, newText: string)
 
   const removed = oldLines.slice(prefix, oldLines.length - suffix);
   const added = newLines.slice(prefix, newLines.length - suffix);
+  // Only a final newline changed: no line did.
+  if (!removed.length && !added.length) return "";
   const header = [`--- a/${path}`, `+++ b/${path}`];
   const hunk = `@@ -${prefix + 1},${removed.length} +${prefix + 1},${added.length} @@`;
   const body = [
@@ -281,6 +283,25 @@ export function buildUnifiedDiff(path: string, oldText: string, newText: string)
     ...added.map((line) => `+${line}`),
   ];
   return [...header, hunk, ...body].join("\n");
+}
+
+/** The exit code an execute tool's structured result names, if it names one. */
+function commandExitCode(rawOutput: unknown): number | null {
+  if (!rawOutput || typeof rawOutput !== "object" || Array.isArray(rawOutput)) return null;
+  const record = rawOutput as Record<string, unknown>;
+  for (const key of ["exitCode", "exit_code"]) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isInteger(value)) return value;
+  }
+  return null;
+}
+
+/** A file's lines. A final newline ends the last line; it is not one more, empty line. */
+function diffLines(text: string): string[] {
+  if (!text.length) return [];
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
 }
 
 function diffKind(oldText: string | null | undefined, newText: string): "create" | "modify" | "delete" {
@@ -381,14 +402,18 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
     return events;
   };
 
-  const commandRow = (tracked: TrackedToolCall, toolCallId: string): AgentChatEvent => withTurn({
-    type: "command" as const,
-    command: tracked.command ?? tracked.title,
-    cwd: tracked.cwd,
-    output: tracked.lastOutput,
-    itemId: toolCallId,
-    status: toolStatusToAde(tracked.status),
-  });
+  const commandRow = (tracked: TrackedToolCall, toolCallId: string): AgentChatEvent => {
+    const exitCode = commandExitCode(tracked.rawOutput);
+    return withTurn({
+      type: "command" as const,
+      command: tracked.command ?? tracked.title,
+      cwd: tracked.cwd,
+      output: tracked.lastOutput,
+      itemId: toolCallId,
+      status: toolStatusToAde(tracked.status),
+      ...(exitCode !== null ? { exitCode } : {}),
+    });
+  };
 
   const openRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent[] => {
     switch (tracked.rowKind) {
