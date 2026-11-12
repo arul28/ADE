@@ -56,6 +56,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Metric | Before #1560 | Baseline | Ceiling |
 |---|---|---|---|
 | Static tabs (Lanes, CTO, History, Settings, Automations, Chats): main-thread work | 3–18 ms/s | 3–26 ms/s | 30 ms/s |
+| CTO, Automations, History and the command palette after every call names its machine (account repository tabs): idle main-thread work, freeze on opening, palette search | — | idle CTO 0.3–0.7 ms/s, Automations 0.6–3.1 ms/s (one sample 9.2), History 0.4–3.3 ms/s; base in the same session 0.3–0.6, 0.6–0.8 and 0.4–0.7 ms/s; no long task on opening any of the three; History 1.8k elements; palette open plus a "PONG" search (5.5 s) 228–307 ms main-thread work with one 82–114 ms long task, median 86 ms (base 260–291 ms, 82–90 ms) (`route-sweep.mjs`, `render-count.mjs`, Mac Studio M4 Max dev build, 2026-11-12, branch `ade/account-desktop-b3-cto` at `cd39d5d3f` against base `ffcee3670`, load average ~10 from other agents, not the baseline machine) | 30 ms/s; 100 ms |
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
 | Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
@@ -67,7 +68,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |
 | Chat list cards: re-renders | ~15/s | 0 | 0 |
-| Top bar: re-renders | 28 per 15 s | 1–4 per 15 s | 5 per 15 s |
+| Top bar: re-renders | 28 per 15 s | 1–4 per 15 s (1 per 15 s on `ade/account-desktop-b3-cto`, 2026-11-12, same as its base) | 5 per 15 s |
 | Work area: re-renders | 30 per 12 s | 2 per 12 s | 5 per 12 s |
 | React commits on Work while a chat streams | — | 5.3/s | 10/s |
 
