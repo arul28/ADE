@@ -69,7 +69,11 @@ function PersonRow({
   onSelect: () => void;
 }) {
   const state = revokePending ? { label: "Removed here", tone: "warn" as const } : laneShareStateLabel(entry);
-  const access = presetValue === "custom" ? laneSharePresetText(entry.preset) : LANE_SHARE_PRESET_LABELS[presetValue];
+  // Rights known here name the level the picker shows (Custom included); the
+  // directory's label is the fallback for a share with no rights on this computer.
+  const access = presetValue !== "custom"
+    ? LANE_SHARE_PRESET_LABELS[presetValue]
+    : entry.rights ? "Custom" : laneSharePresetText(entry.preset);
   return (
     <div
       role="option"

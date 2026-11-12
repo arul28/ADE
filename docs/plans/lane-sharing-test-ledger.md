@@ -165,7 +165,11 @@ web guest (production web) as `+adetest`.
 | History rule on a new share | The guest's own earlier chat showed "No messages yet." under the new grant. |
 | Suggest | Comment and "Send as draft to the owner", no Send; the comment shows; the draft lands in the owner's drafts unsent. |
 
-New findings (to fix):
+New findings, fixed on this branch (D15: the turn is recorded before the send
+runs, since a send answers when its turn ends; D16: every first holder of a
+share list reads it again; D17: a counted guest message sends the owner a
+`lane_share_changed`; D18: a row with rights here names Custom like the
+picker):
 
 | ID | Severity | What |
 |----|----------|------|

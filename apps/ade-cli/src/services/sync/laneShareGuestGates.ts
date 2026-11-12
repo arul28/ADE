@@ -10,6 +10,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { LaneShareMessageClaim, LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
+import type { LaneShareEvent } from "../../../../desktop/src/shared/types/laneShare";
 import {
   laneShareCliTypingFor,
   laneShareRightsEnded,
@@ -64,6 +65,8 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     projectId?: string | null;
     agentChatService?: ReturnType<typeof createAgentChatService>;
     laneShareMoves?: LaneShareMoveService | null;
+    /** The owner's share events (a counted guest message moves the usage). */
+    onLaneShareEvent?: (event: LaneShareEvent) => void;
     /** This machine's `process.platform` (the default): a Windows host takes no guest CLI typing. */
     platform?: NodeJS.Platform;
   };
@@ -312,6 +315,10 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       status: "accepted",
       message: `Executing ${action}.`,
     } satisfies SyncCommandAckPayload, requestId, { action });
+    // A send can answer only when its turn ends: the turn is recorded first,
+    // so a revoke during it finds it and tells the owner it keeps running.
+    const turnSessionId = (action === "chat.send" || action === "chat.steer") ? toOptionalString(prepared.args.sessionId) : null;
+    if (turnSessionId) laneShareRights?.addItem(role.grantId, "turn", turnSessionId, turnSessionId);
     try {
       const created = await run(action, prepared.args);
       if (prepared.hold) {
@@ -319,6 +326,8 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
         laneShareRights?.settleItem(role.grantId, prepared.hold.kind, prepared.hold.holdId, id ?? null);
       }
       recordLaneShareGuestResult(action, prepared.args, role, created);
+      // A counted message moved the usage the owner's share window shows.
+      if (prepared.claim) args.onLaneShareEvent?.({ type: "lane_share_changed", grantId: role.grantId, laneId: role.grants[0]?.laneId ?? null });
       const cutoff = laneShareHistoryCutoffFor(role);
       sendRequired(peer, "command_result", {
         commandId,
