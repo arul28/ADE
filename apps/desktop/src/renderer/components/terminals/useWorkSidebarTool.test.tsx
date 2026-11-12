@@ -41,6 +41,9 @@ function setProject(rootPath: string | null): void {
   } as never);
 }
 
+/** The lane's machine: its devices and displays are read and stopped there. */
+const LANE_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 describe("useWorkSidebarTool", () => {
   beforeEach(() => {
     setProject(PROJECT_ROOT);
@@ -239,7 +242,7 @@ describe("useWorkSidebarTool", () => {
     });
 
     async function openIosTab() {
-      const view = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+      const view = renderHook(() => useWorkSidebarTool("lane-1", LANE_PIN, "chat-1"));
       await act(async () => { view.result.current.setTool("ios"); });
       view.rerender();
       expect(view.result.current.openTools).toEqual(["ios"]);
@@ -277,7 +280,7 @@ describe("useWorkSidebarTool", () => {
       await vi.waitFor(() => expect(stopStream).toHaveBeenCalled());
       await vi.waitFor(() => expect(deviceStop).toHaveBeenCalledWith(
         { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true },
-        undefined,
+        LANE_PIN,
       ));
     });
 
@@ -293,7 +296,7 @@ describe("useWorkSidebarTool", () => {
 
     it("never asks for any other tool", async () => {
       installSimulator(BOOTED);
-      const view = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+      const view = renderHook(() => useWorkSidebarTool("lane-1", LANE_PIN, "chat-1"));
       await act(async () => { view.result.current.setTool("browser"); });
       view.rerender();
       act(() => { view.result.current.closeTool("browser"); });
@@ -337,7 +340,7 @@ describe("useWorkSidebarTool", () => {
     });
 
     async function openMacDesktopTab() {
-      const view = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+      const view = renderHook(() => useWorkSidebarTool("lane-1", LANE_PIN, "chat-1"));
       await act(async () => { view.result.current.setTool("mac-desktop"); });
       view.rerender();
       expect(view.result.current.openTools).toEqual(["mac-desktop"]);
@@ -369,7 +372,7 @@ describe("useWorkSidebarTool", () => {
       expect(view.result.current.openTools).toEqual([]);
       await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(
         { laneId: "lane-1", chatSessionId: "chat-1" },
-        undefined,
+        LANE_PIN,
       ));
     });
 
