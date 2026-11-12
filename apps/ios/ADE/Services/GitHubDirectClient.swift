@@ -327,6 +327,9 @@ final class GitHubDirectClient {
   private var pages: [String: CachedPage] = [:]
   private var pageOrder: [String] = []
   private var inFlight: [String: Task<Result<Page, GitHubDirectError>, Never>] = [:]
+  /// Bumps on `clear()`: a read started under the sign-in that ended neither
+  /// joins a new read nor fills the cache.
+  private var signInEpoch = 0
   private var diagnoses: [String: (at: Date, error: GitHubDirectError?)] = [:]
   private var rateLimit: (limit: Int, remaining: Int, resetAt: Date?)?
   private var blockedUntil: Date?
@@ -344,6 +347,9 @@ final class GitHubDirectClient {
 
   /// Drops every stored page and diagnosis (sign-out, account switch, a new sign-in).
   func clear() {
+    signInEpoch &+= 1
+    for task in inFlight.values { task.cancel() }
+    inFlight = [:]
     pages = [:]
     pageOrder = []
     diagnoses = [:]
@@ -559,6 +565,7 @@ final class GitHubDirectClient {
   /// 401 and a `GitHubDirectError` on any other failure.
   private func fetch(_ url: URL, token: String, scope: String, repo: GitHubDirectRepoRef?) async throws -> Page {
     let key = "\(scope)\n\(url.absoluteString)"
+    let epoch = signInEpoch
     let task: Task<Result<Page, GitHubDirectError>, Never>
     if let joined = inFlight[key] {
       task = joined
@@ -590,6 +597,8 @@ final class GitHubDirectClient {
     }
     let result = await task.value
     if inFlight[key] == task { inFlight[key] = nil }
+    // The sign-in ended while the read ran: its page belongs to another grant.
+    guard epoch == signInEpoch else { throw CancellationError() }
     let page: Page
     switch result {
     case .failure(let error): throw error

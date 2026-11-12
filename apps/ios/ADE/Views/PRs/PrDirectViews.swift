@@ -483,8 +483,17 @@ struct PrDirectDetailScreen: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
         header
-        if let error, let copy = githubDirectStateCopy(error, owner: repo.owner, name: repo.name, githubLogin: connection.state.login) {
-          GitHubStateCard(copy: copy)
+        if let error {
+          if let copy = githubDirectStateCopy(error, owner: repo.owner, name: repo.name, githubLogin: connection.state.login) {
+            GitHubStateCard(copy: copy)
+          } else {
+            Text(detail == nil
+              ? "GitHub did not return this PR. Pull down to try again."
+              : "GitHub did not return the latest of this PR, so this may be out of date. Pull down to try again.")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.warning)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
         if let body = detail?.body.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
           section("Description") {

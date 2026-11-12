@@ -553,6 +553,11 @@ struct PRsTabView: View, Equatable {
       Section {
         Button {
           Task {
+            // With the computer offline the list comes from GitHub.
+            if let directRepo {
+              await directPrs.load(directRepo, background: false)
+              return
+            }
             async let remote: Void = refreshRemotePrs()
             await reload(refreshRemote: true)
             await remote
@@ -560,7 +565,7 @@ struct PRsTabView: View, Equatable {
         } label: {
           Label("Refresh", systemImage: "arrow.clockwise")
         }
-        .disabled(prsStatus.phase == .hydrating)
+        .disabled(directRepo == nil && prsStatus.phase == .hydrating)
       }
     } label: {
       PrListTitleLabel(title: "PRs")

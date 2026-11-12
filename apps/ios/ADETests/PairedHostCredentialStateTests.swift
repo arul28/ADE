@@ -130,6 +130,9 @@ final class PairedHostCredentialStateTests: XCTestCase {
     // secret still answer, and neither is used or copied over it.
     backend.refusedAccounts = ["connection-token:machine:abc"]
     XCTAssertEqual(pairingRead(), .failed(errSecInteractionNotAllowed), "an older or another computer's secret is never used")
+    // A slot that is not there, with its older name unreadable, is not "no secret".
+    backend.refusedAccounts = ["connection-token.machine:new"]
+    XCTAssertEqual(keychain.readToken(hostKey: "machine:new"), .failed(errSecInteractionNotAllowed))
     backend.refusedAccounts = []
     backend.refuseReads = true
     XCTAssertEqual(pairingRead(), .failed(errSecInteractionNotAllowed))

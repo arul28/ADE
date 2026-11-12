@@ -4191,6 +4191,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
+      if connectionState == .connected { helloSentWithProvisionalDeviceId = deviceIdIsProvisional }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
       // state — is what stops a stale attempt name from outliving the attempt.
@@ -4912,6 +4913,11 @@ final class SyncService: ObservableObject {
   /// A pairing secret read failed (not "not there"): the computer stays
   /// paired, and the phone connects again once the keychain answers.
   private var pairingSecretReadFailed = false
+  /// A hello went out with a provisional device id since the last attached
+  /// connection. Until a hello succeeds, no pairing rejection forgets a
+  /// pairing: the rejection may answer that hello even after the stored id
+  /// came back while the failed attempt was still being handled.
+  private var helloSentWithProvisionalDeviceId = false
   private var keychainRecheckObservers: [NSObjectProtocol] = []
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// The last hello_ok carried a non-empty project catalog, so the post-hello
@@ -20343,7 +20349,7 @@ final class SyncService: ObservableObject {
     // A provisional device id is not the id the computer paired with, so its
     // "unknown device" answer says nothing about the pairing. Read the id
     // again for the next attempt, and keep the pairing.
-    if deviceIdIsProvisional {
+    if deviceIdIsProvisional || helloSentWithProvisionalDeviceId {
       recheckProvisionalDeviceId()
       return false
     }
@@ -20707,6 +20713,7 @@ final class SyncService: ObservableObject {
     connectionAttempt: SyncConnectionAttemptMetadata? = nil
   ) -> [String: Any] {
     let info = Bundle.main.infoDictionary ?? [:]
+    if deviceIdIsProvisional { helloSentWithProvisionalDeviceId = true }
     var metadata: [String: Any] = [
       "deviceId": deviceId,
       "deviceName": UIDevice.current.name,

@@ -353,14 +353,17 @@ final class GitHubAccountConnection: ObservableObject {
 
   private func performStatusRead() async {
     lastStatusAt = Date()
+    // A disconnect or a new sign-in while the read runs makes its answer old.
+    let generation = grantGeneration
     let answer: GitHubAccountClient.Answer
     switch await call("GET", path: "github/app/status") {
     case .failure(let failure):
-      if failure != .accountChanged { applyStatusFailure(failure) }
+      if failure != .accountChanged, grantGeneration == generation { applyStatusFailure(failure) }
       return
     case .success(let value):
       answer = value
     }
+    guard grantGeneration == generation else { return }
     guard answer.status == 200,
           let status = try? JSONDecoder().decode(GitHubAppStatusAnswer.self, from: answer.data) else {
       applyStatusFailure(githubAccountTokenFailure(

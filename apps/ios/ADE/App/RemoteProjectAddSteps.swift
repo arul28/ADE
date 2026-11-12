@@ -210,7 +210,11 @@ struct ProjectAccountGitHubRepoPicker: View {
       error = nil
       pickedId = nil
     }
-    switch await GitHubDirectClient.shared.listRepositories() {
+    let revision = connection.installationsRevision
+    let answer = await GitHubDirectClient.shared.listRepositories()
+    // A newer sign-in or App install started its own read: this one is old.
+    guard !Task.isCancelled, connection.state.login == login, connection.installationsRevision == revision else { return }
+    switch answer {
     case .success(let next):
       repos = next
       error = nil

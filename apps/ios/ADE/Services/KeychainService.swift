@@ -197,13 +197,13 @@ final class KeychainService {
     let newAccount = tokenAccount(for: hostKey)
     let current = readString(account: newAccount)
     guard case .absent = current else { return current }
-    if let legacyAccount = legacyTokenAccount(for: hostKey),
-       case .value(let migrated) = readString(account: legacyAccount) {
+    guard let legacyAccount = legacyTokenAccount(for: hostKey) else { return .absent }
+    let legacy = readString(account: legacyAccount)
+    if case .value(let migrated) = legacy {
       saveString(migrated, account: newAccount)
       clearString(account: legacyAccount)
-      return .value(migrated)
     }
-    return .absent
+    return legacy
   }
 
   /// One computer's pairing secret: its own slot (`key`), then its older

@@ -107,12 +107,15 @@ struct ProjectLocationScreen: View {
     .task { await account.loadMachines() }
     // A choice the list now shows is the list's again: a later change from
     // another device must win over it.
-    .onChange(of: project) { _, next in
-      guard let next, !chosenMain.isEmpty else { return }
-      for computer in projectLocationComputers(next, machines: account.machines)
-      where computer.folders.first(where: \.isMain)?.checkoutId == chosenMain[computer.accountMachineKey] {
-        chosenMain[computer.accountMachineKey] = nil
-      }
+    .onChange(of: project) { _, next in reconcileChosenMain(next) }
+  }
+
+  /// Drops each choice the list already shows as the main folder.
+  private func reconcileChosenMain(_ project: AccountProject?) {
+    guard let project, !chosenMain.isEmpty else { return }
+    for computer in projectLocationComputers(project, machines: account.machines)
+    where computer.folders.first(where: \.isMain)?.checkoutId == chosenMain[computer.accountMachineKey] {
+      chosenMain[computer.accountMachineKey] = nil
     }
   }
 
@@ -276,7 +279,11 @@ struct ProjectLocationScreen: View {
       case .success:
         mainJobs[folder.checkoutId] = nil
         chosenMain[computer.accountMachineKey] = folder.checkoutId
+        // The list may already show it (no change follows), or show it only
+        // after the read.
+        reconcileChosenMain(project)
         await store.refresh()
+        reconcileChosenMain(project)
       }
     }
   }
