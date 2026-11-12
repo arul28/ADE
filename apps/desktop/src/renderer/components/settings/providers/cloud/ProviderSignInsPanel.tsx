@@ -143,7 +143,7 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
                 busy: busy.has(`remove:${unreadableKey}`),
                 onClick: () => {
                   void confirmRemoveSignIn({
-                    key: unreadableKey,
+                    keys: [unreadableKey],
                     providerLabel,
                     origin: "this computer",
                     originIsThisComputer: true,
@@ -176,7 +176,6 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
                     onUse={cloudComputer ? () => pickOnCloud(card) : undefined}
                     onRemove={() => {
                       void confirmRemoveSignIn({
-                        key: card.key,
                         keys: card.keys,
                         name: card.name,
                         providerLabel,

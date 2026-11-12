@@ -5,19 +5,17 @@
  *
  * A new cloud computer has no GitHub sign-in of its own: its brain clones
  * with what follows the ADE account. That is read here from the account
- * vault, data-driven (`ACCOUNT_GIT_CREDENTIAL_ITEMS`):
+ * vault, data-driven (`ACCOUNT_GIT_CREDENTIAL_ITEMS`, keys and value format
+ * in `github/accountGithubTokenItem.ts`):
  *
  * - `integration/github`: a pasted token (PAT), `githubPatAccountSync.ts`.
- * - `integration/github-cli`: a `gh` CLI login copied to the account, written
- *   by the project lifecycle lane (PR #2186, `githubGhAccountSync.ts`). Its
- *   value is `{ v: 1, token }`, or `{ v: 1, removed: true }` after "Remove
- *   from my account". Until that lands the item never exists, and the check
- *   passes unchanged once it does.
+ * - `integration/github-cli`: a `gh` CLI login copied to the account, which
+ *   PR #2186 writes. Nothing writes it yet, so today only a PAT answers; the
+ *   check reads the item already, so it passes unchanged once #2186 lands.
  *
- * Both values are `{ v: 1, token }`. A tombstone, a missing item and a
- * `removed` value are "none". The ADE GitHub App sign-in is not git-capable
- * and stays on its machine, so it is never an answer (source "app" is kept
- * in the type for when it is).
+ * A tombstone, a missing item and a `removed` value are "none". The ADE
+ * GitHub App sign-in is not git-capable and stays on its machine, so it is
+ * never an answer.
  *
  * The check does not ask GitHub whether the token still works: a revoked
  * token passes here and the clone says so.
@@ -25,8 +23,8 @@
  * A public repository needs no credential. With none in the account, ADE
  * asks GitHub's API about the repository once, without a token: public goes
  * on, not visible (private, or gone) is refused with the way out, and no
- * answer (offline, rate limited) goes on with a warning. No token from this
- * computer goes with the question.
+ * answer (offline, rate limited) goes on with a warning the launch shows. No
+ * token from this computer goes with the question.
  */
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import {
@@ -35,12 +33,13 @@ import {
   type AccountGitCredentialSource,
   type CloudGitPreflight,
 } from "../../../shared/cloudGitCredential";
+import { GITHUB_CLI_VAULT_KEY, GITHUB_PAT_VAULT_KEY, decodeAccountGithubToken } from "../github/accountGithubTokenItem";
 import type { CloudVault } from "./cloudAccess";
 
 /** The account vault items a cloud computer's git can use, in the order they are tried. Kind `integration`, scope `all`. */
-export const ACCOUNT_GIT_CREDENTIAL_ITEMS: ReadonlyArray<{ key: string; source: AccountGitCredentialSource }> = [
-  { key: "github", source: "pat" },
-  { key: "github-cli", source: "gh" },
+const ACCOUNT_GIT_CREDENTIAL_ITEMS: ReadonlyArray<{ key: string; source: AccountGitCredentialSource }> = [
+  { key: GITHUB_PAT_VAULT_KEY, source: "pat" },
+  { key: GITHUB_CLI_VAULT_KEY, source: "gh" },
 ];
 
 export type AccountGitCredentialDeps = {
@@ -55,21 +54,8 @@ export type AccountGitCredentialDeps = {
 const UNREADABLE_MESSAGE = `ADE couldn't read your account's GitHub sign-in on this computer. ${CONNECT_GITHUB_HINT}`;
 const NONE_MESSAGE = `Your ADE account has no GitHub sign-in a cloud computer can clone with. ${CONNECT_GITHUB_HINT}`;
 
-/** A token in a `{ v: 1, token }` value; null for anything else (`removed`, another format). */
-function tokenOf(raw: string | null): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    const record = parsed as Record<string, unknown>;
-    return record.v === 1 && typeof record.token === "string" && record.token.trim() ? record.token : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Whether the account has a credential git can use on a new cloud computer. Never throws. */
-export async function accountGitCredential(deps: AccountGitCredentialDeps): Promise<AccountGitCredential> {
+async function accountGitCredential(deps: AccountGitCredentialDeps): Promise<AccountGitCredential> {
   let unreadable = false;
   for (const item of ACCOUNT_GIT_CREDENTIAL_ITEMS) {
     let vault: CloudVault | null;
@@ -84,14 +70,14 @@ export async function accountGitCredential(deps: AccountGitCredentialDeps): Prom
       unreadable = true;
       continue;
     }
-    if (tokenOf(read.value)) return { ok: true, source: item.source };
+    if (decodeAccountGithubToken(read.value)) return { ok: true, source: item.source };
   }
   return unreadable
     ? { ok: false, reason: "unreadable", message: UNREADABLE_MESSAGE }
     : { ok: false, reason: "none", message: NONE_MESSAGE };
 }
 
-export type RepoVisibility = "public" | "not_visible" | "unknown";
+type RepoVisibility = "public" | "not_visible" | "unknown";
 
 /** The most one visibility question may take. */
 const VISIBILITY_TIMEOUT_MS = 8_000;
@@ -101,7 +87,7 @@ const VISIBILITY_TIMEOUT_MS = 8_000;
  * `GET /repos/{owner}/{repo}`). `not_visible`: private, or gone; either way
  * a computer with no credential can't clone it. `unknown`: no answer.
  */
-export async function githubRepoVisibility(
+async function githubRepoVisibility(
   repo: { owner: string; repo: string },
   deps: { fetch?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<RepoVisibility> {

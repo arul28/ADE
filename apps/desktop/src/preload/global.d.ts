@@ -4836,9 +4836,10 @@ declare global {
         machineAction?: (args: CloudMachineActionArgs) => Promise<CloudMachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
         /**
-         * C4, before Send: can a new cloud computer clone this repository?
-         * The account's GitHub sign-in, else the repository is public.
-         * Account-level, so no pin. Null from an untrusted sender.
+         * C4: can a new cloud computer clone this repository? The account's
+         * GitHub sign-in, else the repository is public. Account-level, so
+         * no pin. Null from an untrusted sender. The lane launch runs the
+         * same check at its start; no renderer surface calls this yet.
          */
         gitPreflight?: (args: { originUrl: string }) => Promise<CloudGitPreflight | null>;
         /**

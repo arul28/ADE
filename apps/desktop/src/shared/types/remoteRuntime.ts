@@ -113,6 +113,12 @@ export type RemoteRuntimeProjectRecord = {
    * icon (older host, no icon file, or an oversized icon dropped from the wire).
    */
   icon?: ProjectIcon | null;
+  /**
+   * Only on the answer of a clone (`projects.clone`): the machine cloned with
+   * this computer's one-shot GitHub header and has no GitHub sign-in of its
+   * own, so its fetch and push won't sign in until GitHub is connected there.
+   */
+  githubSignInMissing?: boolean;
 };
 
 export type RemoteRuntimeUpdateInstallMode = "in_place" | "manual_download" | "runtime_only";

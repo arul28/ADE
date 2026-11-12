@@ -508,6 +508,10 @@ export function LaneSetupCard({
     if (latest && launchPastCancel(latest)) showToast({ title: NOTHING_TO_CANCEL_NOTICE, tone: "info" });
   }, []);
 
+  // The start's GitHub check couldn't tell whether the repository clones (C4): said until the clone is done.
+  const gitWarning = snapshot.cloud?.warning && !snapshot.stages.some((stage) => stage.id === "clone" && stage.status === "done")
+    ? snapshot.cloud.warning
+    : null;
   const textSize = compact ? "text-[11.5px]" : "text-[length:calc(var(--chat-font-size)*12/14)]";
   const metaSize = compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]";
   const showActions = hasDetails || (envStage?.steps?.length ?? 0) > 0 || Boolean(onOpen)
@@ -553,6 +557,14 @@ export function LaneSetupCard({
           ))}
         </ul>
       )}
+
+      {gitWarning ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{ id: "lane-setup-git-warning", tone: "warning", title: gitWarning }}
+        />
+      ) : null}
 
       <AnimatePresence initial={false}>
         {detailsOpen ? (

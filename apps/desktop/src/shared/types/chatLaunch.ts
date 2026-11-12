@@ -154,6 +154,13 @@ export type ChatLaunchCloudState = {
    * snapshot is that brain's, and the launch goes on with this app closed.
    */
   handedOff: boolean;
+  /**
+   * What the start's GitHub check (contract C4) could not settle, in plain
+   * words: GitHub didn't answer whether the repository is public, and the
+   * account has no GitHub sign-in, so a private one won't clone. The card
+   * shows it until the clone is done. Absent when the check settled it.
+   */
+  warning?: string;
 };
 
 export type ChatLaunchSnapshot = {

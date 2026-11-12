@@ -20,7 +20,9 @@ import {
   cloudSignInKeyFor,
 } from "../../../../../shared/cloudSignIns";
 import type { AiSettingsStatus } from "../../../../../shared/types";
+import { cloudChoiceKey } from "../../../../../shared/providerLoginsCloudSetting";
 import {
+  accountIdentityOf,
   isClaudePassKey,
   type ProviderLoginApplied,
   type ProviderLoginProvider,
@@ -359,21 +361,19 @@ function keepWhole(name: string): string {
 }
 
 /**
- * The account a sign-in is for, as one card's identity: the email (any
- * case), else the provider's account id. Null when the login names neither:
- * such a copy keeps a card of its own, since ADE can't tell whose it is.
+ * Which card a sign-in belongs to: its place and its account
+ * (`accountIdentityOf`), so one account copied from several computers is one
+ * card. A copy that names no account is a card of its own.
  */
-export function signInAccountIdentity(signIn: Pick<ProviderLoginSignIn, "account">): string | null {
-  const email = signIn.account?.email?.trim().toLowerCase();
-  if (email) return `email:${email}`;
-  const id = signIn.account?.id?.trim();
-  return id ? `id:${id}` : null;
+export function signInCardBucket(signIn: Pick<ProviderLoginSignIn, "key" | "provider" | "slot" | "account">): string {
+  const identity = accountIdentityOf(signIn.provider, signIn.account);
+  return `${cloudChoiceKey(signIn.provider, signIn.slot)}\u0000${identity ?? `key:${signIn.key}`}`;
 }
 
 /** "From Mac Studio", or "From 3 computers" when the same account came from several (one card per account). */
-function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSignIn[] = []): string {
-  const identity = signInAccountIdentity(signIn);
-  const copies = identity ? all.filter((other) => other.slot === signIn.slot && signInAccountIdentity(other) === identity).length : 1;
+function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSignIn[]): string {
+  const bucket = signInCardBucket(signIn);
+  const copies = all.filter((other) => signInCardBucket(other) === bucket).length;
   return copies > 1 ? `From ${copies} computers` : `From ${signIn.origin.label}`;
 }
 

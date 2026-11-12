@@ -209,8 +209,6 @@ type LoginRecord = {
   submittedCodes: string[];
   /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
   rawSinceSubmit: string | null;
-  /** The CLI's reason for refusing the pasted code, once it printed one. */
-  codeRejection?: string | null;
   keypressSent: boolean;
   polling: boolean;
   /** A failed read of the saved login was reported once; the polls after it stay quiet. */
@@ -363,15 +361,15 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
 
   function onData(record: LoginRecord, spec: ProviderLoginSpec, data: string): void {
     if (!isLive(record)) return;
-    const text = readLoginOutput(record, data, {
+    const { text, rejection } = readLoginOutput(record, data, {
       hosts: spec.hosts,
       deviceCode: spec.deviceCode,
       pasteCode: spec.pasteCode ? "while-waiting" : false,
       promptTailLines: PROMPT_TAIL_LINES,
     });
-    // A CLI that refuses the code and keeps running ends now, in its words.
-    if (record.codeRejection) {
-      finish(record, { state: "failed", message: record.codeRejection });
+    // A CLI that refuses the code ends now, in its words.
+    if (rejection) {
+      finish(record, { state: "failed", message: rejection });
       return;
     }
     const tail = lastTextLines(text, PROMPT_TAIL_LINES);

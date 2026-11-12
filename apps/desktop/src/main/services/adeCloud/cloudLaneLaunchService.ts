@@ -695,13 +695,18 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!project || !cloud) throw new Error("ADE Cloud can't start this launch.");
     // C4: a private repository needs a GitHub sign-in that follows the
     // account, checked before any computer is made (and hours spent).
+    // No answer from GitHub goes on, and the card says what may happen.
+    let gitWarning: string | null = null;
     if (deps.gitPreflight && input.originUrl) {
       const git = await deps.gitPreflight(input.originUrl);
       if (!git.ok) {
         logger.info("cloud_lane_launch.git_refused", { launchId, reason: git.reason });
         throw new AdeExpectedError(git.message, "user");
       }
-      if (git.via === "unknown") logger.warn("cloud_lane_launch.git_check_unknown", { launchId });
+      if (git.via === "unknown") {
+        logger.warn("cloud_lane_launch.git_check_unknown", { launchId });
+        gitWarning = git.warning;
+      }
       // A second start of the same launch while GitHub answered: the first one owns it.
       const raced = records.get(launchId);
       if (raced) return served(raced);
@@ -729,7 +734,15 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       v: 1,
       snapshot: {
         ...snapshot,
-        cloud: { sizeId: cloud.sizeId, projectOrigin: project.identity, instanceId: null, machineKey: null, binding: null, handedOff: false },
+        cloud: {
+          sizeId: cloud.sizeId,
+          projectOrigin: project.identity,
+          instanceId: null,
+          machineKey: null,
+          binding: null,
+          handedOff: false,
+          ...(gitWarning ? { warning: gitWarning } : {}),
+        },
       },
       launch: { ...launch, launchId, kind, laneId, laneName },
       project,

@@ -124,9 +124,8 @@ export async function confirmUseOnCloud(args: {
  * An account copied from several computers goes whole: every copy in `keys`.
  */
 export async function confirmRemoveSignIn(args: {
-  key: string;
-  /** Every copy of the account the card stands for; just `key` when left out. */
-  keys?: readonly string[];
+  /** Every copy of the account the card stands for, the card's own key first (the hold and busy id). */
+  keys: readonly string[];
   /** The account's name on the card (its email), for a card of several copies. */
   name?: string;
   providerLabel: string;
@@ -137,8 +136,9 @@ export async function confirmRemoveSignIn(args: {
   hold: HeldWrites["hold"];
   runWrite: RunWrite;
 }): Promise<void> {
-  const { key, providerLabel, pin, runWrite } = args;
-  const keys = args.keys && args.keys.length > 0 ? [...args.keys] : [key];
+  const { keys, providerLabel, pin, runWrite } = args;
+  const key = keys[0];
+  if (!key) return;
   const several = keys.length > 1;
   const from = several
     ? `${keys.length} computers`
@@ -164,8 +164,28 @@ export async function confirmRemoveSignIn(args: {
         `remove:${key}`,
         async () => {
           // One at a time: each write saves the account setting, and the last answer is the page's.
+          // A copy that fails doesn't stop the others; the ones left are said.
           let status: ProviderLoginStatus | undefined;
-          for (const each of keys) status = await window.ade?.providerLogins?.remove?.({ key: each }, pin);
+          let lastError: unknown = null;
+          let left = 0;
+          for (const each of keys) {
+            try {
+              status = await window.ade?.providerLogins?.remove?.({ key: each }, pin);
+            } catch (error) {
+              lastError = error;
+              left += 1;
+            }
+          }
+          // None went: the page's own failure toast says it is back.
+          if (left === keys.length) throw lastError;
+          if (left > 0) {
+            console.warn("[providers] removing a sign-in's copies failed for some", lastError);
+            showToast({
+              tone: "warning",
+              title: `ADE removed ${keys.length - left} of ${keys.length} copies of the ${what}.`,
+              message: `${left === 1 ? "One copy is" : `${left} copies are`} still in your ADE account and back on the page. Remove it again to take ${left === 1 ? "it" : "them"} out.`,
+            });
+          }
           return status;
         },
         `ADE couldn't remove the ${providerLabel} sign-in. It is back on the page.`,

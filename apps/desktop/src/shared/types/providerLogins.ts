@@ -160,6 +160,26 @@ export type ProviderLoginSignIn = {
   inUseOnCloud: boolean;
 };
 
+/**
+ * The account a sign-in copy is for, the one rule for "same account": the
+ * apply's pick of the freshest copy (main) and one card per account (the
+ * page) both read it. The email (any case), else the provider's account id.
+ * Codex is the exception: its id is the ChatGPT workspace, and one email can
+ * have several (personal, Team) with different plans, so a Codex copy is
+ * email and id together when it names both. Null when the login names
+ * neither: such a copy is only itself.
+ */
+export function accountIdentityOf(
+  provider: ProviderLoginProvider,
+  account: { email: string | null; id: string | null } | null | undefined,
+): string | null {
+  const email = account?.email?.trim().toLowerCase() || null;
+  const id = account?.id?.trim() || null;
+  if (provider === "codex" && email && id) return `email:${email}\u0000id:${id}`;
+  if (email) return `email:${email}`;
+  return id ? `id:${id}` : null;
+}
+
 export type ProviderLoginProviderStatus = {
   provider: ProviderLoginProvider;
   carry: ProviderLoginCarry;

@@ -14,7 +14,7 @@ import {
 import {
   adeCloudPageLine,
   ADE_CLOUD_REACH_LINE,
-  signInAccountIdentity,
+  signInCardBucket,
   type AdeCloudAccountPart,
   type AdeCloudCloudPart,
   type AdeCloudTile,
@@ -31,10 +31,8 @@ export type SignInCardModel = {
    * freshest usable copy of the same account (`cloudPlacePicks`).
    */
   key: string;
-  /** Every copy of this account in the account, one per computer, freshest first. The switch and Remove act on all. */
+  /** Every copy of this account in the account, one per computer: `key` first, then freshest first. The switch and Remove act on all. */
   keys: string[];
-  /** How many computers it came from (one per copy). */
-  computers: number;
   provider: ProviderLoginProvider;
   slot: string;
   place: string;
@@ -89,7 +87,6 @@ function signInCard(signIn: ProviderLoginSignIn, now: number): SignInCardModel {
   return {
     key: signIn.key,
     keys: [signIn.key],
-    computers: 1,
     provider: signIn.provider,
     slot: signIn.slot,
     place: cloudChoiceKey(signIn.provider, signIn.slot),
@@ -117,14 +114,13 @@ function accountCard(copies: ProviderLoginSignIn[], now: number): SignInCardMode
   const card = signInCard(lead, now);
   if (ordered.length === 1) return card;
   const names = ordered.map((signIn) => `${signIn.origin.label}${signIn.origin.thisComputer ? " (this computer)" : ""}`);
-  const newest = parseTime(ordered[0]!.renewedAt) ?? parseTime(ordered[0]!.capturedAt);
+  const newest = freshness(ordered[0]!);
   const source = `From ${ordered.length} computers: ${names.join(", ")}`;
   return {
     ...card,
-    keys: ordered.map((signIn) => signIn.key),
-    computers: ordered.length,
+    keys: [lead.key, ...ordered.filter((signIn) => signIn !== lead).map((signIn) => signIn.key)],
     originIsThisComputer: ordered.some((signIn) => signIn.origin.thisComputer),
-    sourceLine: newest != null ? `${source} · ${dayText(newest, now)}` : source,
+    sourceLine: newest > 0 ? `${source} · ${dayText(newest, now)}` : source,
     on: ordered.some((signIn) => signIn.onForCloud),
     inUse: ordered.some((signIn) => signIn.inUseOnCloud),
     capturedMs: Math.max(...ordered.map((signIn) => parseTime(signIn.capturedAt) ?? 0)),
@@ -153,9 +149,7 @@ export function signInCardGroups(
   // Copies of one account in one place, in the order they first appear.
   const copies = new Map<string, ProviderLoginSignIn[]>();
   for (const signIn of signIns) {
-    const place = cloudChoiceKey(signIn.provider, signIn.slot);
-    const identity = signInAccountIdentity(signIn);
-    const bucket = `${place}\u0000${identity ?? `key:${signIn.key}`}`;
+    const bucket = signInCardBucket(signIn);
     copies.set(bucket, [...(copies.get(bucket) ?? []), signIn]);
   }
   const groups = new Map<string, SignInCardGroup>();

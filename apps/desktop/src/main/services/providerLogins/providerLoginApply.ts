@@ -198,11 +198,33 @@ function removeIfOurs(file: AppliedFile): "removed" | "changed" | "gone" {
 }
 
 /** Every file of an applied entry is still the one ADE wrote, or gone. */
-export function appliedFilesUnchanged(entry: AppliedEntry): boolean {
+function appliedFilesUnchanged(entry: AppliedEntry): boolean {
   return entry.files.every((file) => {
     const current = readBytes(file.abs);
     return !current || shortHash(current) === file.hash;
   });
+}
+
+/**
+ * Every part of an applied entry is still what ADE wrote, or gone: its files,
+ * and the parts kept outside them, Pi's entry in its shared auth file and
+ * Qwen's auth fields in its settings (an entry for them has no files). A
+ * changed part is someone's own sign-in now. Antigravity's fields are left
+ * out: Antigravity rewrites them itself.
+ */
+export function appliedEntryUnchanged(entry: AppliedEntry): boolean {
+  if (!appliedFilesUnchanged(entry)) return false;
+  if (entry.pi) {
+    const current = readJsonObject(entry.pi.authPath);
+    if (current === "unreadable") return false;
+    if (current !== "missing" && entry.pi.slot in current && shortHash(JSON.stringify(current[entry.pi.slot])) !== entry.pi.entryHash) return false;
+  }
+  if (entry.qwen) {
+    const current = readJsonObject(entry.qwen.path);
+    if (current === "unreadable") return false;
+    if (current !== "missing" && qwenPartHash(qwenPartOf(current, entry.qwen.envKeys)) !== entry.qwen.partHash) return false;
+  }
+  return true;
 }
 
 // ── Pi's lock (proper-lockfile 4.1.2, as Pi takes it) ─────────────────
@@ -653,6 +675,8 @@ export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number
   for (const file of entry.files) {
     if (removeIfOurs(file) === "changed") kept += 1;
   }
+  /** A login file someone changed since apply wrote it stays, and so does what goes with it. */
+  const filesKept = kept > 0;
   if (entry.pi) {
     const { authPath, slot, entryHash } = entry.pi;
     await withPiAuthLock(authPath, () => {
@@ -666,7 +690,9 @@ export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number
       writePrivateFileAtomic(authPath, encodeJson(rest));
     });
   }
-  if (entry.kimiConfig) {
+  // Kimi's provider section points at its credential files: it leaves only with them, so a
+  // sign-in the person made over ADE's files keeps working.
+  if (entry.kimiConfig && !filesKept) {
     const text = readBytes(entry.kimiConfig.path)?.toString("utf8");
     if (text != null && KIMI_SECTION_PATTERN.test(text)) writePrivateFileAtomic(entry.kimiConfig.path, Buffer.from(withoutKimiSection(text), "utf8"));
   }

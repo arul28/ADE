@@ -209,6 +209,11 @@ export function checkRemoteAdeCommand(
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
     return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
   }
+  // Git's credential helper prints this computer's GitHub token; it is for
+  // git on this computer only, never a connected app.
+  if (command === "git" && words[0] === "credential") {
+    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this computer and is not available remotely." };
+  }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }

@@ -404,15 +404,39 @@ logged once), never writes a saved key or an env variable, and stays off a place
 the person signed out of there (`declined` in `applied.json`, or capture's
 `signedOut` mark) until they sign in there again. Claude never comes down
 (Claude's normal sign-in stays on each computer; ADE Cloud uses a pass), nor
-does Copilot's GitHub CLI login. The account's cards show one card per account
-(email) for copies from several computers ("From 3 computers"), and the pick of
-one copy uses the freshest usable copy of the same account (`cloudPlacePicks`).
-Before a lane's computer is made, `cloudGitCredential.ts` (`accountGitCredential`,
-`cloudGitPreflight`) checks the account for a GitHub sign-in git can use
-(`integration/github`, a pasted token; `integration/github-cli`, a `gh` login
-copied to the account); a private repository with none is refused with the way
-out, a public one goes on. The clone passes its auth header through Git's config
-environment, so no token is left in the clone's `.git/config`.
+does Copilot's GitHub CLI login. What the sync down wrote is replaced only
+while every part of it (files, Pi's entry, Qwen's fields) is as ADE wrote it and
+no sign-in made here sits there; when the account stops using it (switched off
+for ADE Cloud, removed, another pick) it stays, as with the off switch for all,
+and leaves on ADE sign-out. A sign-out here keeps the sync down off that
+place from the first pass that sees it (capture's `absentSince`), so this
+computer's own copy still leaves the account. The account's cards show one card
+per account for copies from several computers ("From 3 computers"), and the
+pick of one copy uses the freshest usable copy of the same account
+(`cloudPlacePicks`). The account is the email (`accountIdentityOf`), except
+Codex: email and workspace id together, since one email can have several
+ChatGPT workspaces.
+Before a lane's computer is made, the launch's start runs `cloudGitPreflight`
+(`cloudGitCredential.ts`, keys in `github/accountGithubTokenItem.ts`): it checks
+the account for a GitHub sign-in git can use (`integration/github`, a pasted
+token; `integration/github-cli`, a `gh` login copied to the account, which only
+PR #2186 writes, so today only a pasted token answers). A private repository
+with none is refused with the way out, a public one goes on, and no answer from
+GitHub goes on with a warning on the launch card (`cloud.warning` on the
+snapshot). `window.ade.cloud.gitPreflight` answers the same check; no renderer
+surface calls it yet.
+The clone passes its auth header through Git's config environment, so no token
+is left in the clone's `.git/config`. On an ADE Cloud computer only, the clone's
+local config also gets an empty `credential.https://github.com.helper` and then
+`!'/usr/local/bin/ade' git credential` (the image's launcher, else the ADE
+home's `bin/ade`; none is recorded when neither exists), so a plain `git push`
+in a terminal there signs in with ADE's token while no other helper runs or
+stores it. A person's own computer records no helper: ADE's own fetch and push
+pass the token per command, and the person's git setup works as in any
+repository. A clone sent to another computer with this computer's one-shot
+header stores nothing there; when that computer has no GitHub sign-in of its
+own, the clone's answer says so (`githubSignInMissing`) and the window warns
+that fetch and push there won't sign in until GitHub is connected on it.
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
 `ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`; a copy drops the old ready-machine keys `ade_ready*`,
 and the lane keys `ade_lane_id`, `ade_lane_name`, `ade_project_origin` in

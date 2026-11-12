@@ -3963,13 +3963,15 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
       const result = await cloneIntoFolder(input);
-      return await decorateProjectWithIcon(
+      const record = await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
         projectRecords,
       );
+      // Cloned with the asking computer's one-shot header and no GitHub sign-in here: the asker tells the person.
+      return result.githubSignInMissing ? { ...record, githubSignInMissing: true } : record;
     }
 
     if (method === "projects.listMyGitHubRepos") {

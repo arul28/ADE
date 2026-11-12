@@ -28,6 +28,7 @@ import {
   SHORT_WAIT_RENEWING_MS,
   TAKEOVER_HOW,
   delay,
+  isSavedKeySource,
   type SyncShared,
 } from "./providerLoginSyncShared";
 
@@ -105,7 +106,7 @@ export function createGate(s: SyncShared) {
     const state = s.appliedCache;
     const vault = deps.vault();
     if (!deps.cloudComputer || !state || state.firstChatAt || !vault) return null;
-    const fromAccount = Object.values(state.applied).filter((entry) => !entry.source.startsWith("key:") && (entry.files.length || entry.pi || entry.qwen));
+    const fromAccount = Object.values(state.applied).filter((entry) => !isSavedKeySource(entry.source) && (entry.files.length || entry.pi || entry.qwen));
     if (!fromAccount.some((entry) => entry.provider === provider)) return null;
     const origins = [...new Set(fromAccount.map((entry) => {
       const row = vault.list(ACCOUNT_SCOPE_ALL).find((candidate) => candidate.kind === PROVIDER_LOGIN_VAULT_KIND && candidate.key === entry.source);

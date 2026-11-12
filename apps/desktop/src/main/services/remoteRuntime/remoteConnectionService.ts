@@ -1480,7 +1480,8 @@ export class RemoteConnectionService {
     );
     const project = coerceConnectionProject(value);
     this.upsertProject(targetId, project);
-    return project;
+    // Said once, to the caller of this clone; the stored project list never keeps it.
+    return asRecord(value).githubSignInMissing === true ? { ...project, githubSignInMissing: true } : project;
   }
 
   async listMyGitHubRepos(

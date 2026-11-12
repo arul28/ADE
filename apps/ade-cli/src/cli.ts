@@ -41304,15 +41304,16 @@ async function main(): Promise<void> {
       await runCursorHookScript(process.argv[3]);
       return;
     }
-    // Git's credential helper for clones ADE made with its GitHub token
+    // Git's credential helper for clones made on an ADE Cloud computer
     // (services/github/gitCredentialHelper.ts): answered here, with no brain
-    // and no argument parsing, because git calls it on every push.
+    // and no argument parsing, because git calls it on every push. A missing
+    // or unreadable sign-in is one line on stderr, which git shows.
     if (process.argv[2] === "git" && process.argv[3] === "credential") {
       const { runGitCredentialHelper } = await import("./services/github/gitCredentialHelper");
       process.exitCode = await runGitCredentialHelper(process.argv[4], {
         readToken: async () => {
-          const quiet = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Parameters<typeof createHeadlessGitHubService>[1];
-          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync().catch(() => null);
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync();
         },
       });
       return;

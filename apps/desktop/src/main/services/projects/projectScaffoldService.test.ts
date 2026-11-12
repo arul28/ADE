@@ -413,9 +413,11 @@ describe("cloneRepository", () => {
     // never as `clone -c`, which would save the token in the new .git/config.
     expect(args).toEqual(["clone", "--", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
     expect(cloneCall?.[1]?.env).toMatchObject({
-      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${expectedBasic}`,
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${expectedBasic}`,
     });
   });
 
@@ -440,9 +442,11 @@ describe("cloneRepository", () => {
     const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
     expect(cloneCall?.[0]).toEqual(["clone", "--", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
     expect(cloneCall?.[1]?.env).toMatchObject({
-      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-      GIT_CONFIG_VALUE_0: "AUTHORIZATION: basic one-shot",
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: "AUTHORIZATION: basic one-shot",
     });
   });
 

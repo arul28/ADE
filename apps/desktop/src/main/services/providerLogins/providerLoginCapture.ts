@@ -415,7 +415,11 @@ export function createCapture(s: SyncShared) {
         if (observation.kind === "settling" && jobs.isAppliedBundle(row.provider, bundle)) {
           // Apply wrote these files a moment ago and nobody changed them since.
           setLocal(row.provider, bundle.id, "from_account", null);
-          uncertain.add(row.provider);
+          // On a cloud computer they may have replaced a sign-in made there,
+          // which is not "signed out here". An own computer's sync down never
+          // writes over a local sign-in, so there this computer's own copy is
+          // gone and the absence rule runs (the sign-out stays out).
+          if (deps.cloudComputer) uncertain.add(row.provider);
           continue;
         }
         if (observation.kind === "settling" || observation.kind === "unreadable") {
@@ -438,11 +442,13 @@ export function createCapture(s: SyncShared) {
         }
         for (const { memo: observed, full } of observation.logins) {
           if (s.appliedLoginHashes.has(observed.contentHash)) {
-            // The account's sign-in that apply wrote here: never captured back, and
-            // the sign-in it replaced (made here) is not "signed out here". On an
-            // own computer it names the copy it came down from ("In use here").
+            // The account's sign-in that apply wrote here: never captured back. On
+            // a cloud computer the sign-in it replaced (made here) is not "signed
+            // out here". An own computer's sync down never replaces a local
+            // sign-in, so there its own copy is gone and the absence rule runs;
+            // the line names the copy it came down from ("In use here").
             setLocal(row.provider, `${bundle.id}:${observed.slot}`, "from_account", deps.cloudComputer ? null : jobs.appliedSourceOf(observed.contentHash));
-            uncertain.add(row.provider);
+            if (deps.cloudComputer) uncertain.add(row.provider);
             continue;
           }
           // A sign-in this cloud computer took the renewal over for, renewed here

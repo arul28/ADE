@@ -123,6 +123,12 @@ export function registerCloudIpc(args: {
   client: () => Promise<CloudProvider>;
   /** Contract C2's wake before a pairing (`machines/machineConnector.ts`). */
   wakeForPair: (machineKey: string) => Promise<MachineWakeResult>;
+  /**
+   * Contract C4 (`cloudGitPreflight`): the account's GitHub sign-in, read
+   * only while ADE is signed in, else one unauthenticated visibility read.
+   * The lane launch checks it before a computer is made.
+   */
+  gitPreflight: (originUrl: string | null) => Promise<CloudGitPreflight>;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -205,11 +211,15 @@ export function registerCloudIpc(args: {
     [IPC.cloudSignInSaveKey, "cloud_sign_in_save_key", (arg) => ({ id: arg?.id, key: arg?.key })],
     [IPC.cloudSignInRemove, "cloud_sign_in_remove", (arg) => ({ id: arg?.id })],
   ];
-  // C4 before Send: the account's GitHub sign-in (no pin), else one unauthenticated visibility read.
+  // C4: the account's GitHub sign-in (no pin), else one unauthenticated visibility read.
+  const gitPreflight = (originUrl: string | null): Promise<CloudGitPreflight> =>
+    cloudGitPreflight({ vault: (key) => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, key) : null) }, originUrl);
+  // The same check as a published call (`window.ade.cloud.gitPreflight`). The
+  // launch runs it itself; no renderer surface calls it yet.
   ipcMain.handle(IPC.cloudGitPreflight, async (event, arg?: { originUrl?: unknown }): Promise<CloudGitPreflight | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGitPreflight)) return null;
     const originUrl = typeof arg?.originUrl === "string" && arg.originUrl.length <= 2_048 ? arg.originUrl : null;
-    return await cloudGitPreflight({ vault: (key) => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, key) : null) }, originUrl);
+    return await gitPreflight(originUrl);
   });
   for (const [channel, action, toArgs] of cloudSignInHandlers) {
     ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<CloudSignInStatus | null> => {
@@ -650,7 +660,7 @@ export function registerCloudIpc(args: {
     if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
     return result.state === "refused" ? { state: "refused", message: result.message } : { state: result.state };
   };
-  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair };
+  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair, gitPreflight };
 }
 
 /** This app's ADE release, or null for a development build (whose version may not be published). */

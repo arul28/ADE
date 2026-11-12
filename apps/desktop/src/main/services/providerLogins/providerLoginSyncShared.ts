@@ -12,15 +12,16 @@
 import os from "node:os";
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import type {
-  ProviderLoginApplyState,
-  ProviderLoginCaptureOffReason,
-  ProviderLoginGhCliStatus,
-  ProviderLoginLocalState,
-  ProviderLoginProvider,
-  ProviderLoginProviderStatus,
-  ProviderLoginSignIn,
-  ProviderLoginStatus,
+import {
+  accountIdentityOf,
+  type ProviderLoginApplyState,
+  type ProviderLoginCaptureOffReason,
+  type ProviderLoginGhCliStatus,
+  type ProviderLoginLocalState,
+  type ProviderLoginProvider,
+  type ProviderLoginProviderStatus,
+  type ProviderLoginSignIn,
+  type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
 import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import {
@@ -126,12 +127,33 @@ export function savedKeyVaultKey(id: string): string {
   return `cloud-key-${id}`;
 }
 
-/** The account a copy is for: its email (any case), else the provider's id; null when the login names neither. */
-export function accountIdentityOf(account: { email: string | null; id: string | null } | null | undefined): string | null {
-  const email = account?.email?.trim().toLowerCase();
-  if (email) return `email:${email}`;
-  const id = account?.id?.trim();
-  return id ? `id:${id}` : null;
+/** The source an applied entry records for a saved ADE Cloud key: `key:<id>`. */
+export function savedKeySource(id: string): string {
+  return `key:${id}`;
+}
+
+/** Whether an applied source is a saved ADE Cloud key (`savedKeySource`), not a sign-in's vault key. */
+export function isSavedKeySource(source: string | null | undefined): boolean {
+  return typeof source === "string" && source.startsWith("key:");
+}
+
+/**
+ * A place's pick among its copies: the freshest copy of the picked account
+ * (a pick names one copy, and the same account copied from another computer
+ * is the same choice, one card per account, B14-5), else the picked copy
+ * itself (it names no account), else the newest copy. `newestFirst` is
+ * already sorted; each caller reads keys, accounts and times its own way.
+ */
+export function pickFreshestOfAccount<T>(
+  newestFirst: readonly T[],
+  chosenKey: string | undefined,
+  read: { key(entry: T): string; identity(entry: T): string | null },
+): T | undefined {
+  const picked = newestFirst.find((entry) => read.key(entry) === chosenKey);
+  const pickedAccount = picked ? read.identity(picked) : null;
+  return (pickedAccount ? newestFirst.find((entry) => read.identity(entry) === pickedAccount) : undefined)
+    ?? picked
+    ?? newestFirst[0];
 }
 
 /** One carried sign-in that is on for ADE Cloud, as the pick rule sees it. */
@@ -182,15 +204,10 @@ export function cloudPlacePicks<R extends { kind: string; key: string; deleted?:
       continue;
     }
     const newestFirst = [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt));
-    const picked = list.find((entry) => entry.row.key === chosen) ?? null;
-    // A pick names one copy of an account; the same account copied from
-    // another computer is the same choice (one card per account, B14-5), so
-    // the freshest usable copy of it wins. A copy that names no account is
-    // only itself.
-    const pickedAccount = picked ? accountIdentityOf(picked.meta.account) : null;
-    const signIn = (pickedAccount ? newestFirst.find((entry) => accountIdentityOf(entry.meta.account) === pickedAccount) : null)
-      ?? picked
-      ?? newestFirst[0]!;
+    const signIn = pickFreshestOfAccount(newestFirst, chosen, {
+      key: (entry) => entry.row.key,
+      identity: (entry) => accountIdentityOf(entry.provider, entry.meta.account),
+    })!;
     picks.set(place, { provider, signIn });
   }
   return picks;
@@ -615,12 +632,11 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
       if (place === "copilot" && chosen === undefined && savedCopilotKey) continue;
       const on = list.filter((signIn) => signIn.onForCloud);
       const newestFirst = [...on].sort((left, right) => (right.renewedAt ?? right.capturedAt ?? "").localeCompare(left.renewedAt ?? left.capturedAt ?? ""));
-      const picked = on.find((signIn) => signIn.key === chosen) ?? null;
       // The same rule as `cloudPlacePicks`: the picked account's freshest copy.
-      const pickedAccount = picked ? accountIdentityOf(picked.account) : null;
-      const pick = (pickedAccount ? newestFirst.find((signIn) => accountIdentityOf(signIn.account) === pickedAccount) : null)
-        ?? picked
-        ?? newestFirst[0];
+      const pick = pickFreshestOfAccount(newestFirst, chosen, {
+        key: (signIn) => signIn.key,
+        identity: (signIn) => accountIdentityOf(signIn.provider, signIn.account),
+      });
       if (pick && setting.enabled) pick.inUseOnCloud = true;
     }
     return signIns.sort((left, right) => left.key.localeCompare(right.key));

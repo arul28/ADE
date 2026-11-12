@@ -2,18 +2,12 @@
  * "Is this provider signed in on ADE Cloud for this account?", for a caller
  * outside Settings (the pre-send sign-in card of a cloud chat, B14-15): the
  * same answer the ADE Cloud tiles give (`adeCloudTile`), from the account's
- * sign-ins, its saved ADE Cloud keys and its Claude passes.
- *
- * Account-level: the reads take no pin. The account's sign-ins, keys and
- * passes are the same from every computer of the account, so the answer
- * does not depend on which machine the tab is bound to. Two reads per call,
- * on demand; no timer and no poll.
- *
- *   const answer = await readAdeCloudProviderSignIn("codex");
- *   if (answer.state === "not_signed_in") showSignInCard(answer.line, answer.action);
+ * sign-ins, its saved ADE Cloud keys and its Claude passes, which the caller
+ * reads (account-level, no pin: they are the same from every computer of the
+ * account). Pure: no reads, no timer.
  */
 import type { CloudSignInStatus } from "../../../../../shared/cloudSignIns";
-import { isProviderLoginProvider, type ProviderLoginProvider, type ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
+import { isProviderLoginProvider, type ProviderLoginProvider } from "../../../../../shared/types/providerLogins";
 import {
   adeCloudTile,
   type AdeCloudAccountPart,
@@ -65,20 +59,4 @@ export function adeCloudProviderSignIn(
   }
   if (tile.state === "sign-in") return { state: "not_signed_in", provider, line, action: tile.action };
   return { state: "unknown", provider, line };
-}
-
-/** Reads the account's sign-ins and saved keys (account-level, no pin) and answers for one provider. */
-export async function readAdeCloudProviderSignIn(
-  provider: string,
-  options: { cloud?: AdeCloudCloudPart } = {},
-): Promise<AdeCloudProviderSignIn> {
-  const bridge = typeof window === "undefined" ? undefined : window.ade;
-  if (!isProviderLoginProvider(provider)) return adeCloudProviderSignIn(provider, { account: { state: "failed" }, saved: null });
-  const [status, signIns] = await Promise.all([
-    bridge?.providerLogins?.status?.({ provider }, null).catch(() => null) ?? Promise.resolve(null),
-    bridge?.cloud?.cloudSignInStatus?.().catch(() => null) ?? Promise.resolve(null),
-  ]) as [ProviderLoginStatus | null, CloudSignInStatus | null];
-  const account: AdeCloudAccountPart = status ? { state: "ok", status } : { state: "failed" };
-  const saved = signIns && !signIns.unknown ? signIns.saved : null;
-  return adeCloudProviderSignIn(provider, { account, saved, ...(options.cloud ? { cloud: options.cloud } : {}) });
 }

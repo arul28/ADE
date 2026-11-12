@@ -52,8 +52,6 @@ type LoginRecord = {
   submittedCodes: string[];
   /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
   rawSinceSubmit: string | null;
-  /** The CLI's reason for refusing the pasted code, once it printed one. */
-  codeRejection?: string | null;
   timeout: ReturnType<typeof setTimeout> | null;
   cleanup: ReturnType<typeof setTimeout> | null;
 };
@@ -165,14 +163,14 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
       // A device code is the last thing Codex prints before it waits. Claude's
       // printed link always ends in a code to paste, so its box stays up
       // while it waits; Codex asks only when it prints a prompt.
-      readLoginOutput(record, data, {
+      const { rejection } = readLoginOutput(record, data, {
         hosts: AUTH_HOSTS,
         deviceCode: deviceAuth,
         pasteCode: instance.provider === "claude" ? "while-waiting" : "prompt",
         promptTailLines: 4,
       });
-      // A CLI that refuses the code and keeps running ends now, in its words.
-      if (record.codeRejection) finish(record, { state: "failed", awaitingCode: false, message: record.codeRejection });
+      // A CLI that refuses the code ends now, in its words.
+      if (rejection) finish(record, { state: "failed", awaitingCode: false, message: rejection });
     });
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);
