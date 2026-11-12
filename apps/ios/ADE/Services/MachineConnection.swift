@@ -99,6 +99,8 @@ final class MachineConnection {
   /// to this machine (the Apple device video) resolves against it, never
   /// against the focused machine's address.
   private(set) var liveAddress: String?
+  /// When the current link went live, for the drop report's age.
+  private var liveSinceUptime: TimeInterval?
   private var relayReauthorizationTask: Task<Void, Never>?
   /// Sleeping out a backoff delay between failed dials.
   private var waitingToRetry = false
@@ -160,6 +162,13 @@ final class MachineConnection {
   var isRunning: Bool { runTask != nil }
 
   func updateProfile(_ profile: HostConnectionProfile) {
+    if self.profile.port != profile.port {
+      // Kept for a later drop report: what changed just before it.
+      CrashReporting.breadcrumb("sync.route", message: "saved port changed", data: [
+        "connection": "fleet",
+        "live": isLive ? "yes" : "no",
+      ])
+    }
     self.profile = profile
   }
 
@@ -341,6 +350,7 @@ final class MachineConnection {
     socket = result.task
     liveRouteKind = syncConnectionRouteKind(result.address)
     liveAddress = result.address
+    liveSinceUptime = ProcessInfo.processInfo.systemUptime
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
     lastUpdateAt = Date()
     setPhase(.live)
@@ -426,6 +436,12 @@ final class MachineConnection {
           let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
           machineConnectionLog.notice(
             "fleet socket closed machine=\(self.machineKey, privacy: .public) code=\(task.closeCode.rawValue) reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+          )
+          SyncLiveDropReport.report(
+            connection: "fleet",
+            routeKind: liveRouteKind,
+            closeCode: syncWebSocketCloseCode(task),
+            connectionAgeSeconds: liveSinceUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
           )
         }
         return

@@ -560,3 +560,56 @@ func syncRunRelayReauthorizationLoop<Attempt>(
     }
   }
 }
+
+
+/// Reports a live connection to a machine that dropped without either side
+/// closing it (no close frame: 1006, or none at all). Such a drop was seen only
+/// on a real iPhone (a Wi-Fi socket dropped 110 ms after the computer's sync
+/// port moved) and never in the simulator, so the phone says what it saw. The
+/// Sentry event carries the breadcrumbs left just before it (saved port
+/// changes, network path changes). Names and counts only: no address, machine
+/// name or content. At most one report per kind per ten minutes.
+@MainActor
+enum SyncLiveDropReport {
+  private static var lastReportedAt: [String: Date] = [:]
+  static let minimumInterval: TimeInterval = 600
+
+  /// Close codes that mean nobody closed the connection on purpose.
+  static func isUnexplainedDrop(closeCode: Int?) -> Bool {
+    guard let closeCode else { return true }
+    return closeCode == 0 || closeCode == 1006
+  }
+
+  static func report(
+    connection: String,
+    routeKind: SyncConnectionRouteKind?,
+    closeCode: Int?,
+    connectionAgeSeconds: TimeInterval?,
+    now: Date = Date()
+  ) {
+    guard isUnexplainedDrop(closeCode: closeCode) else { return }
+    let kind = "\(connection):\(routeKind.map { String(describing: $0) } ?? "unknown")"
+    if let last = lastReportedAt[kind], now.timeIntervalSince(last) < minimumInterval { return }
+    lastReportedAt[kind] = now
+    let ageBucket: String
+    switch connectionAgeSeconds ?? -1 {
+    case ..<0: ageBucket = "unknown"
+    case ..<10: ageBucket = "under_10s"
+    case ..<60: ageBucket = "under_1m"
+    case ..<600: ageBucket = "under_10m"
+    default: ageBucket = "over_10m"
+    }
+    CrashReporting.capture(
+      NSError(domain: "ADESyncLiveDrop", code: closeCode ?? 0, userInfo: [
+        NSLocalizedDescriptionKey: "A live machine connection dropped without a close frame.",
+      ]),
+      context: [
+        "area": "sync_live_drop",
+        "connection": connection,
+        "route": routeKind.map { String(describing: $0) } ?? "unknown",
+        "close_code": String(closeCode ?? 0),
+        "age": ageBucket,
+      ]
+    )
+  }
+}

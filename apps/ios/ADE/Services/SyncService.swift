@@ -18200,6 +18200,13 @@ final class SyncService: ObservableObject {
     let previous = profile
     transform(&profile)
     guard !syncProfilesEquivalentIgnoringUpdatedAt(previous, profile) else { return }
+    if previous.port != profile.port {
+      // Kept for a later drop report: what changed just before it.
+      CrashReporting.breadcrumb("sync.route", message: "saved port changed", data: [
+        "connection": "focused",
+        "live": canSendLiveRequests() ? "yes" : "no",
+      ])
+    }
     profile.updatedAt = syncDateFormatter.string(from: Date())
     saveProfile(profile)
   }
@@ -23572,6 +23579,13 @@ final class SyncService: ObservableObject {
     case .ignore, .failOpening:
       return
     case .recoverTransport(let closeCodeRawValue):
+      // Before teardown, which clears the connection's age.
+      SyncLiveDropReport.report(
+        connection: "focused",
+        routeKind: currentAddress.map(syncConnectionRouteKind),
+        closeCode: closeCodeRawValue.map { $0 == 0 ? nil : $0 } ?? syncWebSocketCloseCode(task),
+        connectionAgeSeconds: connectionEstablishedUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+      )
       let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
       let flapBackoff = noteLiveConnectionClosed(
         closeCodeRawValue: closeCodeRawValue ?? task.closeCode.rawValue,

@@ -2853,6 +2853,15 @@ install. Address and name decide only when a side has no device id. A PIN
 pairing to a computer advertising its live port does not sweep ADE's default
 ports, and ranks routes only by history from that same machine.
 
+A live connection (focused or fleet) that drops without a close frame (1006,
+or no code) sends one Sentry report (`SyncLiveDropReport`, area
+`sync_live_drop`): connection kind, route kind, close code and an age bucket,
+at most once per kind per ten minutes. A saved port change leaves a
+`sync.route` breadcrumb, so the report shows whether the port moved just
+before. Such a drop was seen on a real iPhone right after the computer's sync
+port moved and never reproduced in the simulator (focused or fleet, signed in
+or not).
+
 A CLI or shell session on another live machine opens on the phone at once,
 over that machine's roster connection. The focused machine and the active
 project do not change. The row must come from a project that the machine's
