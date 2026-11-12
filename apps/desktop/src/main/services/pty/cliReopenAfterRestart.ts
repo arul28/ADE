@@ -25,9 +25,11 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
  *     signal (Claude Code hooks, Codex OSC), kept current by the live runtime.
  *     It says which reopened CLIs are told to continue. A runtime that stops on
  *     purpose deletes its own.
- *   - `<session>.<owner>.claim`: one reopen per session per dead owner. It is
- *     created exclusively, so two runtimes, or a planned list and the derived
- *     list, never reopen one session twice.
+ *   - `<session>.<owner>.claim`: one reopen per session per dead owner, for
+ *     both sources. It is created exclusively right before that session's
+ *     reopen, so two runtimes, or a planned list and the derived list, never
+ *     reopen one session twice, and a stop during the reopens leaves the rest
+ *     for the next start.
  *   - `<session>.json`: how many unclean stops in a row reopened the session.
  *     It is written before the reopen starts, so a reopen that itself stops
  *     the runtime counts too; past the cap the session stays closed.
@@ -190,8 +192,8 @@ function safeName(sessionId: string): string {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function ownerKey(ownerPid: number, ownerStartedAt: string | null | undefined): string {
-  return createHash("sha256").update(`${ownerPid}\0${ownerStartedAt ?? ""}`).digest("hex").slice(0, 16);
+function ownerKey(ownerPid: number | null, ownerStartedAt: string | null | undefined): string {
+  return createHash("sha256").update(`${ownerPid ?? ""}\0${ownerStartedAt ?? ""}`).digest("hex").slice(0, 16);
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
@@ -316,7 +318,7 @@ export function createCliTurnRecorder(
  * empty set. The file must belong to the same process (pid and start time),
  * so a reused pid never makes an idle CLI continue.
  */
-function readCliTurnsRunning(
+export function readCliTurnsRunning(
   projectRoot: string,
   ownerPid: number,
   ownerStartedAt: string | null | undefined,
@@ -337,12 +339,14 @@ function readCliTurnsRunning(
 }
 
 /**
- * Claim the reopen of a session that a dead owner left. True for exactly one
+ * Claim the reopen of a session that a dead owner left, from either source.
+ * The owner is the one the session row names when the reopen starts: two
+ * runtimes that read the same row claim the same file. True for exactly one
  * caller per session and owner, on this computer: the claim file is created
  * exclusively (`wx`), which is atomic on every platform; false when it exists.
  * Any other error throws, and the caller then does not reopen.
  */
-function claimCliCrashReopen(projectRoot: string, entry: CliCutOffByCrash): boolean {
+export function claimCliReopen(projectRoot: string, entry: CliSessionOwner): boolean {
   const dir = crashStateDir(projectRoot);
   fs.mkdirSync(dir, { recursive: true });
   try {
@@ -364,7 +368,7 @@ function claimCliCrashReopen(projectRoot: string, entry: CliCutOffByCrash): bool
  * without a crash. Written before the reopen starts. Throws when it cannot be
  * written; the caller then does not reopen.
  */
-function countCliCrashReopen(
+export function countCliCrashReopen(
   projectRoot: string,
   sessionId: string,
   maxAgeMs: number,
@@ -438,11 +442,14 @@ export function pruneCliCrashReopenState(
   return failed;
 }
 
-export type CliCutOffByCrash = {
+/** A session and the runtime process its row names as owner. */
+export type CliSessionOwner = {
   sessionId: string;
-  ownerPid: number;
+  ownerPid: number | null;
   ownerStartedAt: string | null;
 };
+
+export type CliCutOffByCrash = CliSessionOwner & { ownerPid: number };
 
 /** The fields of a tracked agent CLI row that say whether a crash cut it off. */
 export type CliCrashCandidateRow = {
@@ -510,64 +517,4 @@ export function findCliSessionsCutOffByCrash(args: {
     cutOff.push({ sessionId: row.id, ownerPid, ownerStartedAt });
   }
   return { cutOff, stale };
-}
-
-/**
- * Claim each cut-off session for this start and say which ones reopen, and
- * whether each is told to continue (its turn was running by its own exact
- * signal). A session another caller claimed, or one past `maxInARow` unclean
- * stops in a row, does not reopen. With `hold`, every one is claimed and none
- * reopens: the setting is off, or the runtime is in a restart loop, and a later
- * start must not reopen what this one held back. Never throws. A claim or count
- * that fails means that session does not reopen (`failed`); a turn file that
- * cannot be read means it reopens at its prompt, the safe side. The first
- * error of either kind comes back for the log.
- */
-export function claimCliSessionsCutOffByCrash(
-  projectRoot: string,
-  cutOff: readonly CliCutOffByCrash[],
-  options: { maxAgeMs: number; maxInARow: number; hold?: boolean; now?: () => Date },
-): {
-  reopen: CliReopenEntry[];
-  claimedElsewhere: number;
-  capped: number;
-  failed: number;
-  firstError: string | null;
-} {
-  const result = { reopen: [] as CliReopenEntry[], claimedElsewhere: 0, capped: 0, failed: 0, firstError: null as string | null };
-  const noteError = (error: unknown) => {
-    result.firstError ??= error instanceof Error ? error.message : String(error);
-  };
-  const turnsByOwner = new Map<string, Set<string>>();
-  for (const entry of cutOff) {
-    try {
-      if (!claimCliCrashReopen(projectRoot, entry)) {
-        result.claimedElsewhere += 1;
-        continue;
-      }
-      if (options.hold) continue;
-      // Counted before the reopen starts: a reopen that stops the runtime counts too.
-      if (countCliCrashReopen(projectRoot, entry.sessionId, options.maxAgeMs, options.now) > options.maxInARow) {
-        result.capped += 1;
-        continue;
-      }
-    } catch (error) {
-      result.failed += 1;
-      noteError(error);
-      continue;
-    }
-    const key = ownerKey(entry.ownerPid, entry.ownerStartedAt);
-    let turns = turnsByOwner.get(key);
-    if (!turns) {
-      try {
-        turns = readCliTurnsRunning(projectRoot, entry.ownerPid, entry.ownerStartedAt);
-      } catch (error) {
-        noteError(error);
-        turns = new Set();
-      }
-      turnsByOwner.set(key, turns);
-    }
-    result.reopen.push({ sessionId: entry.sessionId, midTurn: turns.has(entry.sessionId) });
-  }
-  return result;
 }

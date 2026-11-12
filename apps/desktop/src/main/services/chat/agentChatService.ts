@@ -438,12 +438,14 @@ import {
 import type { createFileService } from "../files/fileService";
 import type { createPtyService } from "../pty/ptyService";
 import {
-  claimCliSessionsCutOffByCrash,
+  claimCliReopen,
+  countCliCrashReopen,
   findCliSessionsCutOffByCrash,
   pruneCliCrashReopenState,
+  readCliTurnsRunning,
   resetCliCrashReopenCount,
   takeCliSessionsToReopen,
-  type CliReopenEntry,
+  type CliSessionOwner,
 } from "../pty/cliReopenAfterRestart";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import {
@@ -71237,8 +71239,8 @@ export function createAgentChatService(args: {
    * Two sources: the list a runtime that stopped on purpose (an update, a
    * reboot) wrote, and, after a crash, force quit, kill or power loss, the
    * session rows its dead owner left (`findCliSessionsCutOffByCrash`). The planned
-   * list wins, and a claim per session and dead owner keeps a session from
-   * reopening twice. The same rules as chats: only with Continue chats after
+   * list wins, and a claim per session and dead owner, taken right before each
+   * reopen for both sources, keeps a session from reopening twice. The same rules as chats: only with Continue chats after
    * restarts on, never an archived one, and only for a stop in the last few
    * hours. After unclean stops a session reopens at most
    * `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row, and a brain in a restart
@@ -71287,21 +71289,43 @@ export function createAgentChatService(args: {
     const hold = !continueAfterRestartEnabled()
       ? "disabled"
       : args.isRuntimeInRestartLoop?.() === true ? "restart_loop" : null;
-    const claimed = claimCliSessionsCutOffByCrash(projectRoot, crash.cutOff, {
-      maxAgeMs: RESTART_RESUME_MAX_AGE_MS,
-      maxInARow: MAX_CONSECUTIVE_RESTART_RESUMES,
-      // Claimed all the same: a later start must not reopen what this one held back.
-      hold: hold != null,
-    });
-    if (claimed.firstError) {
-      logger.warn("agent_chat.cli_reopen_claim_failed", { failed: claimed.failed, error: claimed.firstError });
-    }
+    /**
+     * The claim for a planned entry: the owner its row names now, so a runtime
+     * that derives the same row after a crash claims the same file. A row with
+     * no owner is never derived, and needs no claim.
+     */
+    const plannedClaim = (sessionId: string, row = sessionService.get(sessionId)): CliSessionOwner | null =>
+      row?.ownerPid != null
+        ? { sessionId, ownerPid: row.ownerPid, ownerStartedAt: row.ownerProcessStartedAt?.trim() || null }
+        : null;
+    const tally = {
+      claimedElsewhere: 0,
+      capped: 0,
+      reopened: 0,
+      continued: 0,
+      continueHeld: 0,
+      alreadyOpen: 0,
+      notReopenable: 0,
+      failed: 0,
+    };
     if (hold) {
+      // Claimed all the same: a later start must not reopen what this one held back.
+      for (const owner of [...planned.map((entry) => plannedClaim(entry.sessionId)), ...crash.cutOff]) {
+        if (!owner) continue;
+        try {
+          if (!claimCliReopen(projectRoot, owner)) tally.claimedElsewhere += 1;
+        } catch (error) {
+          tally.failed += 1;
+          logger.warn("agent_chat.cli_reopen_claim_failed", { sessionId: owner.sessionId, error: errorText(error) });
+        }
+      }
       logger.info("agent_chat.cli_reopen_skipped", {
         reason: hold,
         planned: planned.length,
         crash: crash.cutOff.length,
         stale: crash.stale,
+        claimedElsewhere: tally.claimedElsewhere,
+        failed: tally.failed,
       });
       pruneCrashState();
       return;
@@ -71312,20 +71336,26 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_count_reset_failed", { error: errorText(error) });
     }
-    const entries: Array<CliReopenEntry & { unexpected: boolean }> = [
-      ...planned.map((entry) => ({ ...entry, unexpected: false })),
-      ...claimed.reopen.map((entry) => ({ ...entry, unexpected: true })),
-    ];
-    const tally = {
-      claimedElsewhere: claimed.claimedElsewhere,
-      capped: claimed.capped,
-      reopened: 0,
-      continued: 0,
-      continueHeld: 0,
-      alreadyOpen: 0,
-      notReopenable: 0,
-      failed: claimed.failed,
+    const turnsByOwner = new Map<string, Set<string>>();
+    /** Its turn was running when its owner stopped, by its own exact signal; unreadable: no (the safe side). */
+    const crashMidTurn = (owner: CliSessionOwner & { ownerPid: number }): boolean => {
+      const key = `${owner.ownerPid}\0${owner.ownerStartedAt ?? ""}`;
+      let turns = turnsByOwner.get(key);
+      if (!turns) {
+        try {
+          turns = readCliTurnsRunning(projectRoot, owner.ownerPid, owner.ownerStartedAt);
+        } catch (error) {
+          logger.warn("agent_chat.cli_reopen_turns_read_failed", { error: errorText(error) });
+          turns = new Set();
+        }
+        turnsByOwner.set(key, turns);
+      }
+      return turns.has(owner.sessionId);
     };
+    const entries: Array<{ owner?: CliSessionOwner & { ownerPid: number }; sessionId: string; midTurn: boolean }> = [
+      ...planned,
+      ...crash.cutOff.map((owner) => ({ owner, sessionId: owner.sessionId, midTurn: false })),
+    ];
     // One at a time: each reopen starts a CLI process.
     for (const entry of entries) {
       if (serviceDisposed) break;
@@ -71338,9 +71368,33 @@ export function createAgentChatService(args: {
         tally.alreadyOpen += 1;
         continue;
       }
+      const unexpected = entry.owner != null;
+      let midTurn = entry.midTurn;
+      try {
+        // Claimed right before its own reopen, so a stop during the reopens
+        // leaves the rest to the next start.
+        const claim = entry.owner ?? plannedClaim(row.id, row);
+        if (claim && !claimCliReopen(projectRoot, claim)) {
+          tally.claimedElsewhere += 1;
+          continue;
+        }
+        if (entry.owner) {
+          // Counted before the reopen starts: a reopen that stops this runtime counts too.
+          if (countCliCrashReopen(projectRoot, row.id, RESTART_RESUME_MAX_AGE_MS) > MAX_CONSECUTIVE_RESTART_RESUMES) {
+            tally.capped += 1;
+            continue;
+          }
+          midTurn = crashMidTurn(entry.owner);
+        }
+      } catch (error) {
+        // A claim or count that cannot be written: it does not reopen.
+        tally.failed += 1;
+        logger.warn("agent_chat.cli_reopen_claim_failed", { sessionId: row.id, error: errorText(error) });
+        continue;
+      }
       try {
         // A CLI that waits on the user's answer reopens, but is not told to go on.
-        const wantsContinue = entry.midTurn && !row.attentionRequestedAt;
+        const wantsContinue = midTurn && !row.attentionRequestedAt;
         const streak = wantsContinue && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
         const continues = wantsContinue && scheduledWorkScheduler != null && streak <= MAX_CONSECUTIVE_RESTART_RESUMES;
         if (wantsContinue && !continues) tally.continueHeld += 1;
@@ -71367,22 +71421,16 @@ export function createAgentChatService(args: {
           }).then(() => {
             continued = true;
           }, (error: unknown) => {
-            logger.warn("agent_chat.cli_reopen_continue_failed", {
-              sessionId: row.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            logger.warn("agent_chat.cli_reopen_continue_failed", { sessionId: row.id, error: errorText(error) });
           });
         }
-        ptyService.showSessionNotice?.(row.id, cliReopenedNotice({ unexpected: entry.unexpected, continued }));
+        ptyService.showSessionNotice?.(row.id, cliReopenedNotice({ unexpected, continued }));
         tally.reopened += 1;
         if (continued) tally.continued += 1;
       } catch (error) {
         // No resume target, a deleted lane, moved to another machine: it stays ended, as before.
         tally.failed += 1;
-        logger.warn("agent_chat.cli_reopen_failed", {
-          sessionId: row.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logger.warn("agent_chat.cli_reopen_failed", { sessionId: row.id, error: errorText(error) });
       }
     }
     logger.info("agent_chat.cli_reopened_after_restart", {

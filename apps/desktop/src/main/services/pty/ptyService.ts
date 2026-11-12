@@ -5666,6 +5666,9 @@ export function createPtyService({
     if (exact && !wasExact) {
       logger.info("pty.cli_turn_exact_source", { sessionId: entry.sessionId, source: turn.source });
     }
+    // Before the transition check: the first exact signal can confirm a turn
+    // the output already marked as working, with no phase change.
+    recordCliTurnRunning(entry);
     if (!transition) return;
     if (exact) {
       const runtimeState = exactCliRuntimeState(entry, turn);
@@ -5692,7 +5695,6 @@ export function createPtyService({
       emitRuntimeSignalThrottled(entry, runtimeState);
       try { sessionService.notifyChanged(entry.sessionId); } catch { /* best effort */ }
     }
-    recordCliTurnRunning(entry);
     announceCliTurnTransition(entry, transition, now);
   };
 
