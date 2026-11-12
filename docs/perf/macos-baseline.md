@@ -2925,3 +2925,28 @@ move from Work to Lanes, from a perf run, 3 runs. The chat row is
 B2 adds an optional `pin` to each member. A call with no pin takes the same
 route as before, so the counts do not move. The total time of the Lanes calls
 follows the GitHub PR calls, which vary from run to run.
+
+### Repository tabs (S4, 2026-11-12)
+
+Dev app on `ade/account-desktop-b4-repository-tabs` against the B2 head
+`73d327cf4`, checked out over the same tree. Same Mac (Mac Studio M4 Max),
+same steps for both: `--first-run --keep`, the account brain on its own
+socket, two local project tabs (a clone of ADE and a small repo with no
+origin), the test machine stopped, nothing streaming. Load average 15–80 for
+both runs. A first pair that ran at load 390 is not used.
+
+| Row | Before (B2) | After (S4) | Ceiling |
+| --- | --- | --- | --- |
+| Project tab switch, warm (`interaction.mjs projects 4`): first frame median / settled median / worst long frame | 36 / 145 ms / 0 ms | 34 / 82 ms / 0 ms | 60 ms first frame |
+| Project tab switch, press to content (`press-to-paint.mjs projects 4`): median / settled median | 35 / 133 ms | 35 / 111 ms | — |
+| Process start to first window, warm (`desktop-main-start.mjs --mode warm --runs 7`), median | 586 ms (sd 11) | 582 ms (sd 21) | not set |
+| Window reload to both project tabs painted (scratch probe, 3 runs), median | 407 ms | 425 ms | — |
+| Home: "+" to the first Projects row (scratch probe, 8 runs), median | 34 ms, no long task | 36 ms (second batch; first batch 46 ms right after a reload), long tasks 0–58 ms in 2 of 16 runs | — |
+| Renderer JS heap after GC, two tabs idle | 221 MB | 215–222 MB | — |
+
+S4 adds no timer and no poll. The account project list is one read at start
+and on window focus (at most one in 15 s); it reads a file in the brain and
+makes no server call. Home reads this computer's machine key once per app
+session, and only when the account's list is loaded. A repository with copies
+on two machines now keeps one open copy instead of two tabs, so a window with
+such a repository mounts one project surface less.
