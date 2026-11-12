@@ -109,6 +109,8 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
     case "account_gh":
       // Short enough for the hero's "Reads with" cell.
       return "GitHub CLI from account";
+    case "account_app":
+      return "ADE for GitHub, from your ADE account";
     case "environment":
       return "Environment token";
     default:
@@ -120,6 +122,7 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
 function credentialSourceDetail(
   source: GitHubCredentialState["source"],
   account: GitHubStatus["accountCredentials"] | undefined,
+  accountApp?: GitHubStatus["accountApp"],
 ): string {
   switch (source) {
     case "app":
@@ -130,6 +133,15 @@ function credentialSourceDetail(
       return account?.patFromAccount ? "From your ADE account" : "Saved in ADE on this machine";
     case "account_gh":
       return "Signed in with gh on another computer";
+    case "account_app": {
+      const login = accountApp?.githubLogin ? ` as @${accountApp.githubLogin}` : "";
+      const grant = accountApp?.repoGrant ?? null;
+      // Writes go through it only where the installation on the owner accepted them.
+      if (grant && grant.installed && !grant.canWrite) {
+        return `Connected to your ADE account${login}. Reads only on ${grant.owner} until an owner approves the new permissions`;
+      }
+      return `Connected to your ADE account${login}`;
+    }
     case "environment":
       return "GITHUB_TOKEN or GH_TOKEN variable";
     default:
@@ -191,6 +203,7 @@ function accountLine(
 function credentialSourceIcon(source: GitHubStatus["authSource"] | undefined) {
   switch (source) {
     case "app":
+    case "account_app":
       return <WebhooksLogo size={15} weight="duotone" />;
     case "gh":
     case "account_gh":
@@ -421,7 +434,7 @@ export function GitHubSection() {
   const credentialFallback = githubStatus?.credentialFallback ?? null;
   // The account's gh copy is a row only while this computer keeps one.
   const credentialStates = (githubStatus?.credentialStates ?? [])
-    .filter((credential) => credential.source !== "account_gh" || credential.available);
+    .filter((credential) => (credential.source !== "account_gh" && credential.source !== "account_app") || credential.available);
   const accountCredentials = githubStatus?.accountCredentials ?? null;
   // An older remote runtime reports no credential chain. The token row still
   // has to be there, since it is where a token is added, replaced or removed.
@@ -868,7 +881,7 @@ export function GitHubSection() {
                   <span className="ade-ig-method-name">
                     <b>{credentialSourceLabel(credential.source)}</b>
                     <small>
-                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source, accountCredentials)}
+                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source, accountCredentials, githubStatus?.accountApp)}
                     </small>
                   </span>
                   <span className="ade-ig-method-side">
@@ -915,7 +928,7 @@ export function GitHubSection() {
           </div>
         </IntegrationCard>
 
-        <GitHubAppInstallPanel pin={pin} />
+        <GitHubAppInstallPanel pin={pin} accountApp={githubStatus?.accountApp ?? null} onAccountAppChanged={handleRefreshStatus} />
       </IntegrationColumns>
     </IntegrationPage>
   );

@@ -673,6 +673,10 @@ import type {
   GitHubIssueCreateResult,
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
+  GitHubAccountAppAccountStatus,
+  GitHubAccountAppSignInReadResult,
+  GitHubAccountAppSignInStartResult,
+  GitHubAccountAppSignOutResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -4669,6 +4673,15 @@ declare global {
           sessionId: string;
         }, pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthPollResult>;
         clearAppUserAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
+        /**
+         * The ADE account's GitHub App sign-in. Account-scoped (no pin): it
+         * lives in the account directory, not on a machine. Optional: an older
+         * ADE, and the web client before it has them, do not.
+         */
+        getAccountAppStatus?: () => Promise<GitHubAccountAppAccountStatus>;
+        startAccountAppSignIn?: () => Promise<GitHubAccountAppSignInStartResult>;
+        readAccountAppSignIn?: (args: { signInId: string }) => Promise<GitHubAccountAppSignInReadResult>;
+        signOutAccountApp?: () => Promise<GitHubAccountAppSignOutResult>;
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: () => Promise<GitHubRequestBudget>;

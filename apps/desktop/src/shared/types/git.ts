@@ -478,9 +478,12 @@ export type GitHubRepoStarState = "starred" | "not_starred" | "unknown";
 /**
  * Where a GitHub credential comes from. `account_gh` is the account's copy of a
  * `gh` CLI login made on another machine (see `githubGhAccountSync.ts`); a
- * pasted token, own or adopted from the account, is `pat`.
+ * pasted token, own or adopted from the account, is `pat`. `app` is this
+ * machine's own ADE GitHub App sign-in (the older device-code flow);
+ * `account_app` is the ADE account's GitHub App sign-in, renewed by the
+ * account directory and shared by every machine of the account.
  */
-export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat" | "account_gh";
+export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat" | "account_app" | "account_gh";
 
 export type GitHubCredentialCapability = "read" | "write";
 
@@ -520,6 +523,91 @@ export type GitHubAccountCredentialState = {
   /** The person took the `gh` login off the account; machines share none until asked. */
   ghRemovedFromAccount: boolean;
 };
+
+/**
+ * The ADE account's GitHub App sign-in as this machine sees it. No token.
+ *
+ * - `connected`: the account has a sign-in and this machine holds its current
+ *   token.
+ * - `not_connected`: the account has no GitHub App sign-in.
+ * - `needs_reauth`: the account's sign-in ended; a person must connect again.
+ * - `unavailable`: the account directory or GitHub did not answer; ADE asks
+ *   again later.
+ * - `unsupported`: the account directory has no GitHub App sign-in yet.
+ * - `signed_out`: this machine has no ADE account.
+ * - `unknown`: not asked yet.
+ */
+export type GitHubAccountAppState =
+  | "connected"
+  | "not_connected"
+  | "needs_reauth"
+  | "unavailable"
+  | "unsupported"
+  | "signed_out"
+  | "unknown";
+
+export type GitHubAccountAppStatus = {
+  connected: boolean;
+  state: GitHubAccountAppState;
+  /** Why the sign-in ended, or why ADE could not ask; a short code, never a message from GitHub. */
+  stateReason: string | null;
+  githubLogin: string | null;
+  /** The login of this machine's own (older) GitHub App sign-in, while it has one. */
+  localLogin: string | null;
+  /**
+   * This machine's own sign-in is a different GitHub user than the account's.
+   * ADE keeps using this machine's sign-in and Settings asks which to keep.
+   */
+  loginMismatch: boolean;
+  /**
+   * What the App installation on this project's repository owner allows the
+   * account's sign-in to do. Null with no GitHub repository, no token, or
+   * when the installations could not be read.
+   */
+  repoGrant: {
+    owner: string;
+    installed: boolean;
+    accountType: "User" | "Organization" | null;
+    /** The rights ADE asks for that an owner has not accepted yet, by GitHub's names. */
+    missingPermissions: string[];
+    manageUrl: string | null;
+    /** Pull requests, comments and other API writes. */
+    canWrite: boolean;
+    canEditIssues: boolean;
+    /** git push and fetch over https. */
+    canPush: boolean;
+  } | null;
+};
+
+/**
+ * The ADE account's GitHub App sign-in as the account directory reports it
+ * (account-scoped IPC; no machine, no token).
+ * `available: false`: the account directory has no GitHub App sign-in yet
+ * (an older server or no secrets), or this window has no ADE account.
+ */
+export type GitHubAccountAppAccountStatus = {
+  available: boolean;
+  /** Why the sign-in cannot be read: `signed_out`, `unsupported` or `unavailable`. */
+  error: "signed_out" | "unsupported" | "unavailable" | null;
+  connected: boolean;
+  state: "active" | "needs_reauth" | null;
+  stateReason: string | null;
+  githubLogin: string | null;
+  connectedAt: number | null;
+  origin: "web_flow" | "adopted_device_flow" | null;
+};
+
+export type GitHubAccountAppSignInStartResult =
+  | { ok: true; signInId: string; expiresAt: number }
+  | { ok: false; error: string; message: string | null };
+
+export type GitHubAccountAppSignInReadResult =
+  | { ok: true; status: "pending" | "done" | "failed" | "expired"; resultCode: "ok" | "denied" | "error" | null; githubLogin: string | null }
+  | { ok: false; error: string };
+
+export type GitHubAccountAppSignOutResult =
+  | { ok: true; deletedAtGitHub: boolean; revokeAtGitHubUrl: string }
+  | { ok: false; error: string };
 
 export type GitHubTokenType = "classic" | "fine-grained" | "oauth" | "unknown";
 
@@ -579,6 +667,11 @@ export type GitHubStatus = {
    * runtimes, and null when ADE could not say.
    */
   accountCredentials?: GitHubAccountCredentialState | null;
+  /**
+   * The ADE account's GitHub App sign-in. Absent from older runtimes, and null
+   * when this machine has no account directory to ask.
+   */
+  accountApp?: GitHubAccountAppStatus | null;
   // Single source of truth for "GitHub reads are usable here". Write surfaces
   // additionally require writeAuthSource !== "none".
   connected: boolean;

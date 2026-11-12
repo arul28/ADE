@@ -105,7 +105,7 @@ export function githubCredentialPresentation(
       repoAccessLabel: githubRepoAccessLabel(status.repoAccessOk),
     };
   }
-  if (status?.authSource === "app") {
+  if (status?.authSource === "app" || status?.authSource === "account_app") {
     return {
       tokenTypeLabel: "GitHub App user token",
       permissionMode: "app",

@@ -2778,6 +2778,7 @@ export async function createAdeRuntime(args: {
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
       getDeviceId: readSyncDeviceId,
       onPrHotRefreshChanged: () => prPollingServiceForHotRefresh?.poke(),
       refreshDefaultBranchAfterMerge: embeddedRuntime

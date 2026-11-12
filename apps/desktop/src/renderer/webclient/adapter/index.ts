@@ -34,6 +34,7 @@ import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import { createWebCloudNamespace } from "./cloud";
 import { createWebProviderLoginsNamespace } from "./providerLogins";
+import { createGithubAccountAppWebMethods } from "./githubStub";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
@@ -170,7 +171,12 @@ export function createAdeWebAdapter(
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,
-    github: misc.github,
+    // The account's GitHub App sign-in asks the account directory with this
+    // browser's own account session; no machine and no GitHub token.
+    github: {
+      ...misc.github,
+      ...createGithubAccountAppWebMethods((request) => accountClient.githubAppRequest(request)),
+    } as typeof misc.github,
     jira: createJiraNamespace(infra),
     rebase: misc.rebase,
     history: misc.history,

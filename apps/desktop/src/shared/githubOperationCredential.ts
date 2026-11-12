@@ -39,9 +39,10 @@ export type GithubOperationCredentialSource = GitHubCredentialSource;
 /**
  * `issue-write` is a write the ADE GitHub App may also serve: changing an
  * issue's state, labels, assignees, milestone, title or body, and commenting.
- * The App holds no other write permission, so every other write skips it. The
- * App is still only used for an issue write when its installation grants
- * `Issues: write` (see `githubIssueWriteAccess.ts`).
+ * This machine's own App sign-in (`app`) serves no other write, so every other
+ * write skips it. Either App credential is only used for a write when the
+ * installation on the repository owner grants the right (see
+ * `githubAppGrant.ts`).
  */
 export type GithubOperationCredentialCapability = GitHubCredentialCapability | "issue-write";
 
@@ -57,19 +58,24 @@ export type GithubOperationCredentialCapability = GitHubCredentialCapability | "
  *    machine or the account's pasted token; a token pasted here is never
  *    replaced by the account's, so "own pasted" always wins over "account
  *    pasted".
- * 5. `account_gh`: the account's copy of a `gh` login made on another machine.
+ * 5. `account_app`: the ADE account's GitHub App sign-in, renewed by the
+ *    account directory. Reads; writes, issue edits and git only where the App
+ *    installation on the repository owner accepted the right.
+ * 6. `account_gh`: the account's copy of a `gh` login made on another machine.
  *
  * A machine's own credentials come first because they are the ones its owner
- * set up there. A pasted token comes before the account's `gh` copy because
- * pasting a token is a deliberate choice, while the `gh` copy travels with no
- * question. The account's `gh` copy is last: it exists so a machine with no
- * GitHub access of its own (an ADE Cloud computer) can still work.
+ * set up there. A pasted token comes before the account's credentials because
+ * pasting a token is a deliberate choice. The account's App sign-in comes
+ * before its `gh` copy because it is the sign-in ADE asks for, with rights an
+ * owner reviewed. The account's credentials exist so a machine with no GitHub
+ * access of its own (an ADE Cloud computer) can still work.
  */
 export const GITHUB_OPERATION_CREDENTIALS = [
   { source: "environment", capabilities: ["read", "write", "issue-write"] },
   { source: "app", capabilities: ["read", "issue-write"] },
   { source: "gh", capabilities: ["read", "write", "issue-write"] },
   { source: "pat", capabilities: ["read", "write", "issue-write"] },
+  { source: "account_app", capabilities: ["read", "write", "issue-write"] },
   { source: "account_gh", capabilities: ["read", "write", "issue-write"] },
 ] as const satisfies readonly {
   source: GithubOperationCredentialSource;
@@ -147,6 +153,12 @@ export function evaluateGithubCredentialCapabilities(args: {
   userLogin: string | null;
   repositoryPresent: boolean;
   repositoryReadValidated: boolean | null;
+  /**
+   * `account_app` only: the App installation on the repository owner grants
+   * `contents: write` and `pull_requests: write`. Null or absent is unknown,
+   * which counts as no.
+   */
+  appWriteAllowed?: boolean | null;
 }): Readonly<{ read: boolean; write: boolean }> {
   if (!args.userLogin) return { read: false, write: false };
 
@@ -154,6 +166,12 @@ export function evaluateGithubCredentialCapabilities(args: {
     || args.repositoryReadValidated === true;
   if (args.source === "app") {
     return { read: repositoryReadAvailable, write: false };
+  }
+  if (args.source === "account_app") {
+    return {
+      read: repositoryReadAvailable,
+      write: args.repositoryPresent && repositoryReadAvailable && args.appWriteAllowed === true,
+    };
   }
   if (args.tokenType === "fine-grained") {
     // GitHub does not expose fine-grained token permissions during validation.
@@ -473,6 +491,7 @@ export function issueWriteSourceLabel(source: GithubOperationCredentialSource | 
     case "app": return "ADE's GitHub App";
     case "gh": return "your GitHub CLI login";
     case "account_gh": return "your GitHub CLI login from your ADE account";
+    case "account_app": return "the GitHub sign-in of your ADE account";
     case "pat":
     case "environment": return "your token";
     default: return null;
