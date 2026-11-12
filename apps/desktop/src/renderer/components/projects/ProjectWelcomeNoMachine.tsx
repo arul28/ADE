@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Desktop, FolderSimple, WifiSlash } from "@phosphor-icons/react";
 import {
   repositoryTabFromAccountProject,
@@ -14,6 +14,7 @@ import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
 import { requestRemoveProject } from "./removeProjectRequest";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
+import { captureError } from "../../../shared/sentry/capture";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
 function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
@@ -58,13 +59,21 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
   const tried = useRef(new Set<string>());
+  const [openFailure, setOpenFailure] = useState<string | null>(null);
+  const openCopyAndReport = useCallback((copy: RepositoryCopy) => {
+    setOpenFailure(null);
+    void openCopy(copy).catch((error: unknown) => {
+      captureError(error, { fingerprint: ["repository-tabs", "no-machine-open-copy"], level: "warning", handled: true });
+      setOpenFailure(`The copy on ${copy.machineName} did not open. Try again.`);
+    });
+  }, []);
   const defaultAddress = resolveDefaultCopy({ copies });
   useEffect(() => {
     if (!defaultAddress || tried.current.has(defaultAddress.key)) return;
     tried.current.add(defaultAddress.key);
     const copy = copies.find((entry) => entry.address?.key === defaultAddress.key);
-    if (copy) void openCopy(copy).catch(() => undefined);
-  }, [copies, defaultAddress]);
+    if (copy) openCopyAndReport(copy);
+  }, [copies, defaultAddress, openCopyAndReport]);
 
   const addLocalCopy = () => {
     const local = copyMachines(null, { includeLocal: true })[0];
@@ -128,7 +137,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                     </span>
                   </span>
                   {copy.online && copy.address ? (
-                    <button type="button" className="kit-btn" data-size="sm" onClick={() => void openCopy(copy).catch(() => undefined)}>
+                    <button type="button" className="kit-btn" data-size="sm" onClick={() => openCopyAndReport(copy)}>
                       Open
                     </button>
                   ) : (
@@ -137,6 +146,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                 </div>
               ))}
             </div>
+          ) : null}
+          {openFailure ? (
+            <span className="text-[12px]" role="alert" style={{ color: "var(--kit-crit)" }}>{openFailure}</span>
           ) : null}
           {failed ? (
             <span className="text-[12px]" style={{ color: "var(--kit-crit)" }}>

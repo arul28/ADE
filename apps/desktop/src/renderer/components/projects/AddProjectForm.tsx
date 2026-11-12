@@ -12,6 +12,7 @@ import {
 import type { RecentProjectSummary } from "../../../shared/types";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { extractError } from "../../lib/format";
+import { captureError } from "../../../shared/sentry/capture";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
@@ -165,7 +166,9 @@ export function AddProjectForm({
       .then((rows) => {
         if (!cancelled) setRecents(rows);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        // No recents: the form still lists the machines, with no copy marked as there.
+        captureError(error, { fingerprint: ["add-project", "list-recent"], level: "warning", handled: true });
         if (!cancelled) setRecents([]);
       });
     return () => {
@@ -461,8 +464,9 @@ export function AddProjectForm({
         defaultPath: parentByMachine[machine.machineId] || undefined,
       });
       if (picked) setParentByMachine((current) => ({ ...current, [machine.machineId]: picked }));
-    } catch {
+    } catch (error) {
       // The picker closing with an error leaves the folder as it was.
+      captureError(error, { fingerprint: ["add-project", "choose-folder"], level: "warning", handled: true });
     }
   };
 

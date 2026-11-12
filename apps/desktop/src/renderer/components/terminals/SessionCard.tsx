@@ -682,10 +682,16 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // The Cursor sign-in of the machine the session runs on: the row's machine,
+  // else the tab's machine.
+  const statusPin = runtimePin ?? projectBinding;
+  const statusPinRef = React.useRef(statusPin);
+  statusPinRef.current = statusPin;
+  const statusPinKey = statusPin?.key ?? null;
   const hasCursorCloudAgent = Boolean(session.cursorCloudAgentId?.trim());
   const [cursorCloudConnected, setCursorCloudConnected] = React.useState(() => {
     if (!hasCursorCloudAgent) return false;
-    return peekAiStatusCached(activeProjectRoot, projectBinding)?.providerConnections?.cursor?.authAvailable === true;
+    return peekAiStatusCached(activeProjectRoot, statusPin)?.providerConnections?.cursor?.authAvailable === true;
   });
 
   React.useEffect(() => {
@@ -694,8 +700,9 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       return undefined;
     }
     let cancelled = false;
+    const pin = statusPinRef.current;
     const applyCached = () => {
-      const cached = peekAiStatusCached(activeProjectRoot, projectBinding);
+      const cached = peekAiStatusCached(activeProjectRoot, pin);
       if (!cancelled) {
         setCursorCloudConnected(cached?.providerConnections?.cursor?.authAvailable === true);
       }
@@ -706,7 +713,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     }
     void getAiStatusCached({
       projectRoot: activeProjectRoot,
-      pin: projectBinding,
+      pin,
     }).then((status) => {
       if (!cancelled) setCursorCloudConnected(status.providerConnections?.cursor?.authAvailable === true);
     }).catch(() => undefined);
@@ -725,7 +732,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onCacheChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onCacheChange);
     };
-  }, [activeProjectRoot, hasCursorCloudAgent, projectBinding]);
+  }, [activeProjectRoot, hasCursorCloudAgent, statusPinKey]);
   const delta = useSessionDelta(
     session.id,
     deltaEnabled && (!isRemoteProject || isSelected),
