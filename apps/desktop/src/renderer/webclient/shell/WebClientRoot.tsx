@@ -663,6 +663,8 @@ export function WebClientRoot({
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();
       if (!disposed) setPhase({ kind: "ready", AppRoot });
+      // The Sentry session starts with the workspace, not on the signed-out page.
+      if (!disposed) void import("../sentry").then((module) => module.startWebClientSentrySession()).catch(() => undefined);
       // Nothing to restore means the welcome surface is what the user sees, and
       // it has already painted from the persisted catalogs. Bringing the last
       // machine back is a background refresh, never a gate on first paint.
