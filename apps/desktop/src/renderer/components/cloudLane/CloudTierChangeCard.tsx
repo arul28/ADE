@@ -8,6 +8,7 @@ import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, changeCloudLaneTier, cloudLaneLifeAvailable } from "./cloudLaneActions";
+import { tierChangeAndroidNote, tierChangeDiskChoices, tierChangeDiskLine, type TierChangeComputer } from "./cloudTierChangeFacts";
 import "./cloudLane.css";
 
 /**
@@ -61,9 +62,12 @@ export function CloudTierChangeCard({
   onNotNow,
   className,
   headless = false,
+  computer = null,
 }: {
   facts: CloudTierChangeFacts;
   account: CloudAccountState | null;
+  /** The lane's computer's disk, for what the change does to it; null before the list is read. */
+  computer?: TierChangeComputer | null;
   /** A person's change: the four sizes show and the person picks one. */
   pickable: boolean;
   requestId?: string | null;
@@ -84,13 +88,25 @@ export function CloudTierChangeCard({
   const changed = to != null && to.id !== facts.fromSizeId;
   const available = cloudLaneLifeAvailable();
   const hours = hoursText(account, to);
+  const currentDiskGb = computer?.diskGb ?? null;
+  const diskLine = to && changed ? tierChangeDiskLine({ to, move, currentGb: currentDiskGb }) : null;
+  const diskGrow = useMemo(
+    () => (to && changed && !move ? tierChangeDiskChoices({ account, to, currentGb: currentDiskGb }) : { choices: [], why: null }),
+    [account, changed, currentDiskGb, move, to],
+  );
+  // The disk to grow to with the resize: none until the person picks one.
+  const [growTo, setGrowTo] = useState<number | null>(null);
+  const growDiskGb = growTo != null && diskGrow.choices.includes(growTo) ? growTo : null;
+  const android = to && changed && from?.type !== to.type
+    ? tierChangeAndroidNote({ account, to, computer: computer ?? { diskGb: null, usedGb: null } })
+    : null;
 
   const start = async (timing: CloudLaneTierTiming) => {
     if (!to || !changed) return;
     setBusy(timing);
     setError(null);
     try {
-      const job = await changeCloudLaneTier({ instanceId: facts.instanceId, sizeId: to.id, timing, requestId, requestedByChat });
+      const job = await changeCloudLaneTier({ instanceId: facts.instanceId, sizeId: to.id, timing, diskGb: growDiskGb, requestId, requestedByChat });
       onStarted?.(job);
     } catch (startError) {
       setError(ipcErrorMessage(startError) || "ADE couldn't change the size. Try again in a moment.");
@@ -155,7 +171,35 @@ export function CloudTierChangeCard({
         <dl className="adecl-tier-facts">
           {facts.reason ? (<><dt>Why</dt><dd>{facts.reason}</dd></>) : null}
           {hours ? (<><dt>Hours</dt><dd>{hours}</dd></>) : null}
-          <dt>Wait</dt><dd>{waitText(move)}</dd>
+          {diskLine || diskGrow.choices.length || diskGrow.why ? (
+            <>
+              <dt>Disk</dt>
+              <dd>
+                {diskLine}
+                {diskGrow.choices.length ? (
+                  <label className="adecl-tier-grow">
+                    <input
+                      type="checkbox"
+                      checked={growDiskGb != null}
+                      onChange={(event) => setGrowTo(event.target.checked ? diskGrow.choices[0]! : null)}
+                    />
+                    <span>Grow it now to</span>
+                    <select
+                      className="kit-input"
+                      data-size="sm"
+                      aria-label="New disk size"
+                      value={growDiskGb ?? diskGrow.choices[0]}
+                      onChange={(event) => setGrowTo(Number(event.target.value))}
+                    >
+                      {diskGrow.choices.map((gb) => <option key={gb} value={gb}>{gb} GB</option>)}
+                    </select>
+                  </label>
+                ) : diskGrow.why ? <span className="adecl-tier-sub">{diskGrow.why}</span> : null}
+              </dd>
+            </>
+          ) : null}
+          {android ? (<><dt>Android</dt><dd data-tone={android.fits ? undefined : "warn"}>{android.sentence}</dd></>) : null}
+          <dt>Wait</dt><dd>{waitText(move)}{growDiskGb ? " Growing the disk adds a few minutes." : ""}</dd>
         </dl>
       ) : null}
 
