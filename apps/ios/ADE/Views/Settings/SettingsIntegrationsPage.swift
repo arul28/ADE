@@ -13,6 +13,7 @@ private let settingsIntegrationsLog = Logger(subsystem: "com.ade.ios", category:
 struct SettingsIntegrationsPage: View {
   let syncService: SyncService
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var accountGitHub = GitHubAccountConnection.shared
 
   @State private var github: IntegrationSummary = .checking
   @State private var githubRepo: String?
@@ -43,6 +44,7 @@ struct SettingsIntegrationsPage: View {
     }
     // One read per card, side by side: a slow GitHub check never holds up Jira.
     .task(id: connected) { if connected { await loadGitHub() } }
+    .task { await accountGitHub.refreshStatus() }
     .task(id: connected) { if connected { await loadLinear() } }
     .task(id: connected) { if connected { await loadJira() } }
   }
@@ -62,7 +64,19 @@ struct SettingsIntegrationsPage: View {
         ADESettingsValueRow(title: "Repository", value: githubRepo, mono: true)
       }
       if hasProject, github == .notConnected {
-        ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › GitHub")
+        switch accountGitHub.state {
+        case .notConnected, .needsReauth:
+          // The account's GitHub sign-in serves every computer that has none.
+          ADESettingsRow(title: "Connect GitHub", hint: "Connect it to your ADE account. Every device and computer can use it.", symbol: "link", tint: .slate) {
+            Button(accountGitHub.connecting ? "Connecting…" : "Connect") {
+              Task { await accountGitHub.connect() }
+            }
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .disabled(accountGitHub.connecting)
+          }
+        default:
+          ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › GitHub")
+        }
       }
     }
   }

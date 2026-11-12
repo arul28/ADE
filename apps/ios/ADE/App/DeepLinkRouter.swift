@@ -166,6 +166,21 @@ final class DeepLinkRouter {
             isValidLinearIssueBranch(url: url)
       else { return }
       routeLinearIssue(identifier: identifier, url: url)
+    case "github":
+      // `ade://github/connected?signIn=…&status=…` ends the account's GitHub
+      // sign-in when the web session did not catch it (the browser opened the
+      // link instead); `ade://github/installed` comes back from the App's
+      // install page. Both only re-read state; neither carries a credential.
+      routedCount += 1
+      switch pathComponents.first?.lowercased() {
+      case "connected":
+        let callback = GitHubConnectCallback(url: url)
+        Task { await GitHubAccountConnection.shared.handleConnectedLink(signInId: callback?.signInId, status: callback?.status) }
+      case "installed":
+        Task { await GitHubAccountConnection.shared.handleInstalledLink() }
+      default:
+        break
+      }
     case "workspace", "linear-oauth":
       // `ade://workspace` is the widgets' "just open ADE" link, and the Linear
       // OAuth callback is captured by its own web session. Opening the app is
