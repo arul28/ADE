@@ -21,6 +21,8 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
+import { Banner } from "../ui/notice";
+import { noteAccountProjectChange } from "../../state/accountProjectListClient";
 import {
   COLORS,
   LABEL_STYLE,
@@ -129,6 +131,33 @@ function lastUsedMachineId(recents: readonly RecentProjectSummary[]): string | n
   return latest?.kind === "remote" && latest.remote ? latest.remote.targetId : null;
 }
 
+/**
+ * The machines in "Start on" order (decision 8): this computer, then the
+ * machines that already have a copy, then the machine last worked on, then
+ * the rest as saved. New work in the project starts on the first one with a
+ * copy, so the list reads top to bottom in that order.
+ *
+ * ADE Cloud as a place to add a project is the Cloud lane's (a cloud computer
+ * that clones with no computer of the person's). When `main` has it, it goes
+ * here as the last row, after the computers.
+ */
+function startOnOrder(
+  machines: readonly CopyMachine[],
+  hasCopy: (machineId: string) => boolean,
+  lastUsed: string | null,
+): CopyMachine[] {
+  const rank = (machine: CopyMachine): number => {
+    if (machine.isLocal) return 0;
+    if (hasCopy(machine.machineId)) return 1;
+    if (machine.machineId === lastUsed) return 2;
+    return 3;
+  };
+  return machines
+    .map((machine, index) => ({ machine, index }))
+    .sort((left, right) => rank(left.machine) - rank(right.machine) || left.index - right.index)
+    .map((entry) => entry.machine);
+}
+
 type RowState =
   | { kind: "job"; job: CopyJob }
   | { kind: "existing"; copy: ExistingCopy }
@@ -192,11 +221,21 @@ export function AddProjectForm({
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
   const jobs = useCopyJobs(repoKey);
 
-  const machines = useMemo(() => copyMachines(snapshot, { includeLocal: !webMode }), [snapshot, webMode]);
   const existing = useMemo(
     () => existingCopiesForRepo(repoKey, { recents: recents ?? [], snapshot }),
     [recents, repoKey, snapshot],
   );
+  const machines = useMemo(
+    () => startOnOrder(
+      copyMachines(snapshot, { includeLocal: !webMode }),
+      (machineId) => existing.has(machineId),
+      recents ? lastUsedMachineId(recents) : null,
+    ),
+    [existing, recents, snapshot, webMode],
+  );
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [addingToAccount, setAddingToAccount] = useState(false);
+  const canAddToAccount = !webMode && typeof window.ade?.project?.accountAdd === "function";
   const jobByMachine = useMemo(() => new Map(jobs.map((job) => [job.machine.machineId, job])), [jobs]);
 
   const rowState = useCallback(
@@ -224,11 +263,21 @@ export function AddProjectForm({
     [machines, rowState],
   );
 
+  // The machine new work starts on: the first, in "Start on" order, that has
+  // a copy or gets one now.
+  const startsHereId = machines.find((machine) => {
+    const state = rowState(machine);
+    if (state.kind === "existing") return true;
+    if (state.kind === "job") return state.job.status !== "failed";
+    return state.kind === "available" && ticked.has(machine.machineId);
+  })?.machineId ?? null;
+
   const renderMachineRow = (machine: CopyMachine, index: number) => (
     <MachineRow
       key={machine.machineId}
       machine={machine}
       first={index === 0}
+      startsHere={Boolean(repoKey) && machine.machineId === startsHereId}
       state={rowState(machine)}
       ticked={ticked.has(machine.machineId)}
       repoChosen={Boolean(repoKey)}
@@ -372,16 +421,63 @@ export function AddProjectForm({
     && cloneableTicked.length === 0
     && openOn != null
     && openableTarget(openOn, rowState(openOn)) != null;
+  // No computer picked and nothing to open: the add puts the project on the
+  // account only, with no copy anywhere.
+  const accountOnly =
+    Boolean(repoKey)
+    && canAddToAccount
+    && !submitted
+    && cloneableTicked.length === 0
+    && !openOnlyCopy
+    && !jobs.some((job) => job.status === "cloning");
+
+  /**
+   * Adds the repository to the account's project list. With no computer
+   * picked it is the whole add: the project is on the account with no copy,
+   * and opens as a tab that says no computer has it.
+   */
+  const addToAccount = async (options: { openTab: boolean }): Promise<boolean> => {
+    const accountAdd = window.ade?.project?.accountAdd;
+    if (typeof accountAdd !== "function") return false;
+    setAccountError(null);
+    setAddingToAccount(true);
+    const answer = await accountAdd(repoUrl).catch((error: unknown) => ({
+      ok: false as const,
+      code: "unavailable",
+      message: extractError(error),
+    }));
+    if (mountedRef.current) setAddingToAccount(false);
+    if (!answer.ok) {
+      // Signed out: the copies still clone, as they did before the account kept projects.
+      if (answer.code === "signed_out" && !options.openTab) return false;
+      if (mountedRef.current) setAccountError(answer.message);
+      else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
+      return false;
+    }
+    noteAccountProjectChange({ added: answer.project });
+    if (options.openTab) {
+      useAppStore.getState().showNoMachineTab({ id: answer.project.id, displayName: answer.project.name, iconDataUrl: null });
+      showToast({ tone: "success", title: `Added ${answer.project.name} to your account`, message: "No computer has a copy yet." });
+      onClose();
+    }
+    return true;
+  };
 
   const handleAdd = () => {
     if (!repoKey) return;
     setOpenError(null);
+    if (accountOnly) {
+      void addToAccount({ openTab: true });
+      return;
+    }
     if (openOnlyCopy && openOn) {
       const target = openableTarget(openOn, rowState(openOn));
       if (target) void openTarget(target);
       return;
     }
     if (!canAdd) return;
+    // The account lists the project too; a clone does not wait for it.
+    if (canAddToAccount) void addToAccount({ openTab: false });
     const opensOnId = openOn?.machineId ?? null;
     for (const machine of cloneableTicked) {
       startCopyJob({
@@ -501,7 +597,13 @@ export function AddProjectForm({
         </div>
         {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyCopy ? (
           <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-            Pick at least one machine.
+            {accountOnly
+              ? "No computer picked: ADE adds it to your account with no copy. Add a copy any time."
+              : "Pick at least one computer."}
+          </span>
+        ) : repoKey && !submitted && cloneableTicked.length > 1 ? (
+          <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            New work starts on the first computer in this list that has a copy.
           </span>
         ) : null}
       </div>
@@ -531,6 +633,20 @@ export function AddProjectForm({
         </label>
       ) : null}
 
+      {accountError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "add-project-account",
+            tone: "error",
+            title: `Couldn't add ${folderName || "the project"} to your account`,
+            detail: accountError,
+            report: { surface: "add-project", code: "account_add_failed", technicalDetail: accountError },
+            actions: accountOnly ? [{ label: "Try again", onClick: () => void addToAccount({ openTab: true }) }] : [],
+          }}
+        />
+      ) : null}
+
       {openError ? (
         <span role="alert" style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger }}>
           Couldn't open the project: {openError}
@@ -548,14 +664,14 @@ export function AddProjectForm({
         <button
           type="button"
           style={primaryButton({
-            opacity: canAdd || openOnlyCopy ? 1 : 0.55,
-            cursor: canAdd || openOnlyCopy ? "pointer" : "not-allowed",
+            opacity: (canAdd || openOnlyCopy || accountOnly) && !addingToAccount ? 1 : 0.55,
+            cursor: (canAdd || openOnlyCopy || accountOnly) && !addingToAccount ? "pointer" : "not-allowed",
             minWidth: 120,
           })}
-          disabled={!canAdd && !openOnlyCopy}
+          disabled={(!canAdd && !openOnlyCopy && !accountOnly) || addingToAccount}
           onClick={handleAdd}
         >
-          {openOnlyCopy ? "Open" : "Add project"}
+          {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : "Add to account") : "Add project"}
         </button>
       </div>
     </div>
@@ -565,6 +681,7 @@ export function AddProjectForm({
 function MachineRow({
   machine,
   first,
+  startsHere,
   state,
   ticked,
   repoChosen,
@@ -577,6 +694,8 @@ function MachineRow({
 }: {
   machine: CopyMachine;
   first: boolean;
+  /** New work in the project starts on this machine ("Start on" order). */
+  startsHere: boolean;
   state: RowState;
   ticked: boolean;
   repoChosen: boolean;
@@ -724,6 +843,11 @@ function MachineRow({
           <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{machine.name}</span>
         </span>
         {detail}
+        {startsHere ? (
+          <span className="kit-tag" data-tone="accent" title="New work in this project starts here" style={{ flexShrink: 0 }}>
+            Starts here
+          </span>
+        ) : null}
         {trailing}
       </div>
       {editing && (state.kind === "available" || (state.kind === "job" && state.job.status === "failed")) && !machine.isLocal ? (
