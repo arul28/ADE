@@ -24,6 +24,8 @@ import { createAccountNamespace } from "../adapter/account";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
 import {
+  accountProjectLinkStep,
+  isOwnedOrAccountLink,
   matchOwnedProject,
   navigateMountedApp,
   ownedLinkStageText,
@@ -31,6 +33,8 @@ import {
   resolveOwnedLink,
   type OwnedLinkResult,
 } from "./ownedLinkResolution";
+import { accountProjectIdOfTarget } from "../../../shared/deeplinks";
+import { useAppStore } from "../../state/appStore";
 import type { WebOwnedLinkState } from "../workspace/WebWorkspaceContext";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
@@ -325,10 +329,30 @@ export function WebClientRoot({
    * `onStage` reports each step; the result is the route or the failure.
    */
   const resolveOwnedTarget = useCallback(async (
-    target: DeeplinkTarget,
+    linkTarget: DeeplinkTarget,
     adapter: FederatedWebAdapter,
     onStage: (message: string) => void,
   ): Promise<OwnedLinkResult | null> => {
+    let target = linkTarget;
+    if (accountProjectIdOfTarget(target)) {
+      // The link names an account project (L33): the account list picks a
+      // copy on a computer that is online, follows a merge, or says the
+      // project is gone. With no copy online, the repository opens with no
+      // machine, as on the desktop.
+      const list = await accountClient.readAccountProjects().catch(() => ({ state: "not_loaded" as const, projects: [] as [] }));
+      const online = accountClient.getSnapshot().machines
+        .filter((machine) => machine.online)
+        .map((machine) => machine.machineKey);
+      const step = accountProjectLinkStep(target, list, online);
+      if (step.kind === "stop") {
+        if (step.noCopy) {
+          useAppStore.getState().showNoMachineTab({ id: step.noCopy.id, displayName: step.noCopy.name, iconDataUrl: null });
+          return { ok: false, failure: { ...step.failure, projectPath: WELCOME_PATH } };
+        }
+        return { ok: false, failure: step.failure };
+      }
+      target = step.target;
+    }
     const ownership = ownershipOfTarget(target);
     if (!ownership) return null;
     // The binding the link opened; the existence checks ask that machine.
@@ -575,7 +599,7 @@ export function WebClientRoot({
       }
 
       const linkTarget = pendingTargetRef.current ?? readPendingTarget();
-      const ownedLinkTarget = ownershipOfTarget(linkTarget) ? linkTarget : null;
+      const ownedLinkTarget = isOwnedOrAccountLink(linkTarget) ? linkTarget : null;
       const installed = await installFederatedAdapter(snapshot, { restore: !ownedLinkTarget });
       if (disposed) return;
       let restored = installed.restored;
@@ -683,7 +707,7 @@ export function WebClientRoot({
   const retryOwnedLink = useCallback(() => {
     const target = pendingTargetRef.current ?? readPendingTarget();
     const adapter = federatedAdapterRef.current;
-    if (!target || !adapter || !ownershipOfTarget(target)) {
+    if (!target || !adapter || !isOwnedOrAccountLink(target)) {
       setOwnedLink(null);
       return;
     }
@@ -729,7 +753,7 @@ export function WebClientRoot({
   useEffect(() => {
     openOwnedDeeplinkRef.current = async (url) => {
       const parsed = parseDeeplink(url);
-      if (!parsed.ok || !ownershipOfTarget(parsed.target)) return false;
+      if (!parsed.ok || !isOwnedOrAccountLink(parsed.target)) return false;
       pendingTargetRef.current = parsed.target;
       stashPendingTarget(parsed.target);
       retryOwnedLink();

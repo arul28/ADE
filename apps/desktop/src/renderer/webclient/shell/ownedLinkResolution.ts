@@ -13,7 +13,14 @@
 // Keep the three in step.
 // ---------------------------------------------------------------------------
 
-import type { DeeplinkOwnership, DeeplinkTarget } from "../../../shared/deeplinks";
+import {
+  accountProjectIdOfTarget,
+  deeplinkTargetTakesOwnership,
+  ownershipOfTarget,
+  type DeeplinkOwnership,
+  type DeeplinkTarget,
+} from "../../../shared/deeplinks";
+import { resolveAccountProjectLink, type AccountProjectListResult } from "../../../shared/accountProject";
 export { ownershipOfTarget } from "../../../shared/deeplinks";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
@@ -143,7 +150,13 @@ export type OwnedLinkFailureKind =
   | "project-missing"
   | "host-outdated"
   | "open-failed"
-  | "entity-missing";
+  | "entity-missing"
+  /** The link's account project was removed from the account. */
+  | "project-removed"
+  /** The account does not hold the link's account project. */
+  | "project-unknown"
+  /** No computer that is online has a copy; the repository opened with no machine. */
+  | "no-copy";
 
 export type OwnedLinkFailure = {
   kind: OwnedLinkFailureKind;
@@ -328,4 +341,74 @@ export async function resolveOwnedLink(
 export function navigateMountedApp(path: string): void {
   if (!path.startsWith("/")) return;
   window.location.hash = `#${path}`;
+}
+
+/**
+ * What a link's account project id (L33) means before the owner routing, in
+ * the phone's and the desktop's order (`resolveAccountProjectLink`):
+ *
+ * - `go`: route the link as `target` (its ownership may now name the copy
+ *   that the account list picked).
+ * - `stop`: the link ends here with `failure`; `noCopy` names the project to
+ *   open with no machine.
+ */
+export type AccountProjectLinkStep =
+  | { kind: "go"; target: DeeplinkTarget }
+  | { kind: "stop"; failure: OwnedLinkFailure; noCopy: { id: string; name: string } | null };
+
+export function accountProjectLinkStep(
+  target: DeeplinkTarget,
+  list: AccountProjectListResult,
+  onlineMachineKeys: readonly string[],
+): AccountProjectLinkStep {
+  const id = accountProjectIdOfTarget(target);
+  if (!id || list.state !== "ready" || !deeplinkTargetTakesOwnership(target)) return { kind: "go", target };
+  const owner = ownershipOfTarget(target);
+  const online = new Set(onlineMachineKeys);
+  const resolved = resolveAccountProjectLink(id, owner, list, onlineMachineKeys, (key) => online.has(key));
+  switch (resolved.kind) {
+    case "removed":
+      return {
+        kind: "stop",
+        noCopy: null,
+        failure: { kind: "project-removed", title: `${resolved.name} was removed from ADE.`, retryable: false, offerComputers: false },
+      };
+    case "unknown":
+      return owner
+        ? { kind: "go", target }
+        : {
+          kind: "stop",
+          noCopy: null,
+          failure: { kind: "project-unknown", title: "This project isn't in your ADE account.", retryable: false, offerComputers: false },
+        };
+    case "noCopy":
+      return {
+        kind: "stop",
+        noCopy: { id: resolved.project.id, name: resolved.project.name },
+        failure: {
+          kind: "no-copy",
+          title: `No computer that is online has a copy of ${resolved.project.name}.`,
+          detail: "It opened with no computer. Start ADE on a computer that has it, or add a copy.",
+          retryable: true,
+          offerComputers: true,
+        },
+      };
+    case "copy": {
+      const samePair = owner?.accountMachineKey === resolved.machineKey && owner.projectId === resolved.checkoutId;
+      // A lane or a chat lives in the folder its own pair names.
+      if (samePair || (owner && target.kind !== "pr")) return { kind: "go", target };
+      return {
+        kind: "go",
+        target: {
+          ...target,
+          ownership: { accountMachineKey: resolved.machineKey, projectId: resolved.checkoutId, accountProjectId: resolved.project.id },
+        } as DeeplinkTarget,
+      };
+    }
+  }
+}
+
+/** A link this resolver handles: one with an owner pair or an account project id. */
+export function isOwnedOrAccountLink(target: DeeplinkTarget | null | undefined): target is DeeplinkTarget {
+  return Boolean(target && (ownershipOfTarget(target) || accountProjectIdOfTarget(target)));
 }
