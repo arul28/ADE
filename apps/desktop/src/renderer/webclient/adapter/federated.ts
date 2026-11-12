@@ -672,12 +672,14 @@ export function createFederatedWebAdapter({
             // dialed in this tab) is connected first, then the call runs on
             // it. A subscription cannot wait, so it starts the connect and
             // stays off until the caller subscribes again.
+            // The pinned machine may not be the one on screen: connect it
+            // without making it the active machine.
             if (isSubscriptionMember(path)) {
-              void manager.connectEnvironment(pinned.targetId).catch(() => undefined);
+              void manager.connectEnvironment(pinned.targetId, { activate: false }).catch(() => undefined);
               console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
               return () => {};
             }
-            return manager.connectEnvironment(pinned.targetId).then((): unknown => (
+            return manager.connectEnvironment(pinned.targetId, { activate: false }).then((): unknown => (
               manager.getClient(pinned.targetId)
                 ? callDynamic(...args)
                 : Promise.reject(markExpected(new Error("The machine is not connected."), "network"))

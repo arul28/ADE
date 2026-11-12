@@ -352,10 +352,25 @@ export class WebMachineSessionManager {
     };
   }
 
-  async connectEnvironment(targetId: string): Promise<WebMachineSessionSnapshot> {
+  /**
+   * Connect a saved machine. By default it becomes the active machine (the
+   * one on screen). `activate: false` is for a call pinned to a machine that is
+   * not on screen: it connects without moving the active machine, so the
+   * project-host recovery stays on the machine the user sees.
+   */
+  async connectEnvironment(
+    targetId: string,
+    options: { activate?: boolean } = {},
+  ): Promise<WebMachineSessionSnapshot> {
+    const activate = options.activate !== false;
     const inFlight = this.environmentConnects.get(targetId);
-    if (inFlight) return await inFlight;
-    const connecting = this.connectEnvironmentInternal(targetId);
+    if (inFlight) {
+      const snapshot = await inFlight;
+      // The connect in flight may be a background one; this caller wants it on screen.
+      if (activate) this.activateSession(targetId);
+      return snapshot;
+    }
+    const connecting = this.connectEnvironmentInternal(targetId, activate);
     this.environmentConnects.set(targetId, connecting);
     try {
       return await connecting;
@@ -366,7 +381,15 @@ export class WebMachineSessionManager {
     }
   }
 
-  private async connectEnvironmentInternal(targetId: string): Promise<WebMachineSessionSnapshot> {
+  private activateSession(targetId: string): void {
+    if (this.activeTargetId === targetId || !this.sessions.get(targetId)?.client) return;
+    this.activeTargetId = targetId;
+    this.bindRecoveryToActiveSession();
+    this.markMachineActive(targetId);
+    this.emit();
+  }
+
+  private async connectEnvironmentInternal(targetId: string, activate: boolean): Promise<WebMachineSessionSnapshot> {
     const environment = this.environments.get(targetId);
     if (!environment) throw new Error("That machine is no longer saved in this browser.");
     const session = await this.withAdmission(async () => {
@@ -374,8 +397,10 @@ export class WebMachineSessionManager {
       if (existing && connectionState(existing) === "live") {
         existing.parked = false;
         this.touch(existing);
-        this.activeTargetId = targetId;
-        this.bindRecoveryToActiveSession();
+        if (activate) {
+          this.activeTargetId = targetId;
+          this.bindRecoveryToActiveSession();
+        }
         this.emit();
         return existing;
       }
@@ -384,8 +409,10 @@ export class WebMachineSessionManager {
       if (!admitted.client) this.attachClient(admitted, this.takeClient());
       admitted.parked = false;
       this.touch(admitted);
-      this.activeTargetId = targetId;
-      this.bindRecoveryToActiveSession();
+      if (activate) {
+        this.activeTargetId = targetId;
+        this.bindRecoveryToActiveSession();
+      }
       this.emit();
       return admitted;
     });
@@ -397,7 +424,7 @@ export class WebMachineSessionManager {
       session.projects = (await sessionClient.getProjectCatalog()).projects;
       session.lastStatus = sessionClient.getStatus();
       this.rememberCatalog(session);
-      this.markMachineActive(targetId);
+      if (activate) this.markMachineActive(targetId);
     } catch (error) {
       session.lastStatus = sessionClient.getStatus();
       this.releaseClient(session);
@@ -645,7 +672,7 @@ export class WebMachineSessionManager {
         && !this.environmentConnects.has(session.targetId)
       ))
       .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
-    if (!candidate) throw new Error("All four machine sessions are currently active.");
+    if (!candidate) throw new Error(`All ${WEB_MACHINE_SESSION_LIMIT} machine sessions are currently active.`);
     await this.park(candidate.targetId);
   }
 
