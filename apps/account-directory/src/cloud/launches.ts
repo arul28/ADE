@@ -556,9 +556,13 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
     // Only after the code was spent by this computer: it names the sign-in a person approves.
     if (row.join_used_at == null || !row.join_user_code) return fail("join_refused", JOIN_REFUSED, 403);
     if (row.state !== "joining" && row.state !== "needs_approval") return fail("launch_closed", "This launch is past its join.", 409);
+    // A sign-in the person didn't approve in its 10 minutes is replaced by a
+    // fresh one from the same computer; the person still approves it themselves.
+    const freshCode = typeof body.userCode === "string" ? normalizeUserCode(body.userCode) : null;
+    const userCode = freshCode ?? row.join_user_code;
     await env.DB.prepare(`
-      update cloud_launches set state = 'needs_approval', approval_url = ?, updated_at = ? where launch_id = ? and state in ('joining', 'needs_approval')
-    `).bind(approvalPageOf(env, request, row.join_user_code), now, launchId).run();
+      update cloud_launches set state = 'needs_approval', join_user_code = ?, approval_url = ?, updated_at = ? where launch_id = ? and state in ('joining', 'needs_approval')
+    `).bind(userCode, approvalPageOf(env, request, userCode), now, launchId).run();
     logCloud("cloud.launch_needs_approval", { launchId });
     return json({ ok: true, state: "needs_approval" });
   }

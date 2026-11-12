@@ -796,7 +796,8 @@ export type CloudLaunchRecord = {
  * The first call spends the code and answers the one-time sign-in link for
  * the launch's account. `needsApproval: true` (with the same code, after it
  * was spent, from the same computer, before it expires) moves the launch to
- * `needs_approval` when its headless browser stopped on a confirm page.
+ * `needs_approval` when its headless browser stopped on a confirm page; a
+ * `userCode` with it replaces a sign-in the person let expire.
  */
 export type CloudLaunchJoinRequest = { nonce: string; userCode?: string; needsApproval?: boolean };
 export type CloudLaunchJoinResult = { url: string } | { ok: true; state: CloudLaunchState };
