@@ -6,9 +6,14 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { captureError } from "../../../shared/sentry/capture";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { requirePin } from "../../state/repositoryScope";
+import { AccountSettingNotices } from "./AccountSettingNotices";
+
+/** The PR settings that follow the account (`projectConfigAccountLayer.ts`). */
+const PR_ACCOUNT_KEYS = ["prs.transcriptGists", "prs.pollIntervalSeconds", "prs.autoMapByBranch"] as const;
 
 export function PrChatTranscriptsSection() {
-  // A per-checkout switch in `.ade/local.yaml`, on the machine the page shows.
+  // Follows the ADE account for this repository; read and saved through the
+  // machine the page shows.
   const { pin } = useSettingsMachineScope();
   const [configBusy, setConfigBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -68,6 +73,7 @@ export function PrChatTranscriptsSection() {
       title="PR chat transcripts"
       hint="Link the ADE chat behind a pull request when you create or link it."
     >
+      <AccountSettingNotices pin={pin} keys={PR_ACCOUNT_KEYS} onResolved={() => setAttempt((value) => value + 1)} />
       <ModernRows>
         {loadFailed ? (
           <ModernRow

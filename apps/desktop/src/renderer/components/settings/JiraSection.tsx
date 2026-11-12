@@ -21,11 +21,14 @@ import {
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { Banner } from "../ui/notice";
+import { AccountSettingNotices } from "./AccountSettingNotices";
 import "./IntegrationsSettings.css";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { requirePin } from "../../state/repositoryScope";
 
 const JIRA_API_TOKENS_URL = "https://id.atlassian.com/manage-profile/security/api-tokens";
+
+const JIRA_ACCOUNT_KEYS = ["jira.projectKeys"] as const;
 
 export function JiraSection() {
   const { pin } = useSettingsMachineScope();
@@ -195,7 +198,7 @@ export function JiraSection() {
     <IntegrationCard
       anchor="jira-projects"
       icon={<Kanban size={16} weight="duotone" />}
-      title="Projects for this checkout"
+      title="Projects for this repository"
       hint="Pick the Jira projects you work in here. New issues default to them, and ADE recognizes their issue keys in chat."
       badge={connected && projectKeys.length ? <span className="kit-tag" data-tone="ok">{projectKeys.length} chosen</span> : null}
       actions={connected && projects.length > 8 ? (
@@ -231,9 +234,19 @@ export function JiraSection() {
       )}
       {connected ? (
         <p className="ade-ig-note ade-ig-foot">
-          {projectBusy ? <><CircleNotch size={12} className="animate-spin" /> Saving…</> : "Saved for this checkout, on this machine."}
+          {projectBusy
+            ? <><CircleNotch size={12} className="animate-spin" /> Saving…</>
+            : "Saved for this repository. Signed in to ADE, your other computers get it too."}
         </p>
       ) : null}
+      <AccountSettingNotices
+        pin={pin}
+        keys={JIRA_ACCOUNT_KEYS}
+        onResolved={() => {
+          // The applied value changes the bindings, as a save here does.
+          void loadProjectBinding().then(() => window.dispatchEvent(new Event(JIRA_PROJECT_BINDINGS_CHANGED_EVENT)));
+        }}
+      />
       {projectError ? <Banner layout="inline" model={{ id: "jira-project-binding-error", tone: "error", title: "Couldn't load or save the projects", detail: projectError, actions: [{ label: "Retry", onClick: () => { void loadProjectBinding(); if (connected) void loadProjects(); } }] }} /> : null}
     </IntegrationCard>
   );

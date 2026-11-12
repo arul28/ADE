@@ -34,6 +34,8 @@ import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
 import { ProjectCopyBlock } from "./ProjectCopyScope";
+import { AccountSettingNotices } from "./AccountSettingNotices";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { ContinueAfterRestartSection } from "./ContinueAfterRestartSection";
 import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
@@ -53,7 +55,19 @@ import "./ChatSection.css";
  * copied, so the two pages cannot drift on what "Comfortable" means. Every
  * anchor is unchanged, so deep links, ⌘K, and the manifest test keep landing.
  */
+/** Every AI preference row that follows the account (`projectConfigAccountKeys.ts`). */
+const AI_ACCOUNT_KEYS = ["ai."] as const;
+
+/** The account notices of the copy that `ProjectCopyBlock` picked. */
+function CopyAccountSettingNotices({ keys, onResolved }: { keys: readonly string[]; onResolved: () => void }) {
+  const { pin } = useSettingsMachineScope();
+  return <AccountSettingNotices pin={pin} keys={keys} onResolved={onResolved} />;
+}
+
 export function ChatSection() {
+  // Bumped when the person applies this computer's value from a notice, so
+  // the cards below read the config again.
+  const [accountAnswer, setAccountAnswer] = useState(0);
   // With no project open, the cards saved in a project have nothing to load.
   const noProject = isStandaloneSettings();
   const theme = useAppStore((s) => s.theme);
@@ -189,12 +203,21 @@ export function ChatSection() {
             ) : (
               // Saved in each copy of the project: the block reads the picked copy.
               <ProjectCopyBlock page="chat">
-                <PromptSuggestionsSection />
+                {/* The project's AI preferences follow the account; a
+                    different value the copy's computer had when they moved shows here. */}
+                <CopyAccountSettingNotices
+                  keys={AI_ACCOUNT_KEYS}
+                  onResolved={() => setAccountAnswer((value) => value + 1)}
+                />
 
-                {/* Jev's calls about chats, and its model hint in the composer. */}
-                <SmartDecisionsSection />
+                <React.Fragment key={accountAnswer}>
+                  <PromptSuggestionsSection />
 
-                <ClaudeModsSection />
+                  {/* Jev's calls about chats, and its model hint in the composer. */}
+                  <SmartDecisionsSection />
+
+                  <ClaudeModsSection />
+                </React.Fragment>
               </ProjectCopyBlock>
             )}
 

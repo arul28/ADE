@@ -61,6 +61,8 @@ struct HubInlineComposer: View {
   static let bottomPadding: CGFloat = 8
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  /// The account list: a project removed from ADE leaves the destination.
+  @ObservedObject private var accountProjects = AccountProjectStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
 
@@ -352,6 +354,7 @@ struct HubInlineComposer: View {
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
     .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
     .onChange(of: machineFleet.machines) { _, _ in reconcileDestination() }
+    .onChange(of: accountProjects.removedProjects.map(\.id)) { _, _ in reconcileDestination() }
     .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -386,7 +389,7 @@ struct HubInlineComposer: View {
         HubProjectIcon(iconDataUrl: pickedProject?.iconDataUrl, isActive: false, size: 18)
 
         Text(hubComposerDestinationTitle(
-          projectName: pickedProject?.displayName,
+          projectName: pickedAccountProject?.name ?? pickedProject?.displayName,
           machineName: pickedRemoteMachine?.name
         ))
           .font(.system(size: 13.5, weight: .semibold))
@@ -478,6 +481,15 @@ struct HubInlineComposer: View {
       sectionLabel("Project")
       ScrollView {
         LazyVStack(spacing: 2) {
+          if let entries = composerEntries {
+            // Signed in: each account project once, then its computers.
+            if entries.isEmpty {
+              emptyPickerRow("No projects on a connected computer")
+            }
+            ForEach(entries) { entry in
+              entryRow(entry)
+            }
+          } else {
           if !machineFleet.composerDestinationMachines.isEmpty {
             HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
           }
@@ -493,6 +505,7 @@ struct HubInlineComposer: View {
             ForEach(machine.projects, id: \.projectId) { project in
               projectRow(project.asRemoteMachineProjectSummary, machineKey: machine.machineKey)
             }
+          }
           }
         }
         .padding(4)
@@ -533,6 +546,109 @@ struct HubInlineComposer: View {
       .foregroundStyle(ADEColor.textMuted)
       .frame(maxWidth: .infinity)
       .padding(.vertical, 12)
+  }
+
+  /// The composer's projects when the account lists them: each account
+  /// project once with its live copies (the primary's and every live
+  /// computer's), then the folders that are not on the account. Nil when the
+  /// account does not decide the projects (signed out, an older server).
+  private var composerEntries: [HubComposerProjectEntry]? {
+    guard let resolver = syncService.accountProjectResolver() else { return nil }
+    let account = AccountService.shared
+    let liveById = Dictionary(
+      accountProjects.liveProjects.map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    var copies: [(copy: HubComposerCopy, accountProject: AccountProject?)] = []
+    func add(_ copy: HubComposerCopy) {
+      let id = syncService.accountProjectId(forCheckout: copy.project, onMachine: copy.machineKey, resolver: resolver)
+      // A folder of a project removed from ADE: the Hub hides its card, so
+      // the picker does not offer it either (`removedFromAccount`).
+      if let id, resolver.removedIds.contains(id) { return }
+      copies.append((copy, id.flatMap { liveById[$0] }))
+    }
+    let primaryName = syncService.focusedMachineDisplayName
+    let primaryAccountKey = account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey
+    for project in syncService.projects {
+      add(HubComposerCopy(machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey, project: project))
+    }
+    for machine in machineFleet.composerDestinationMachines {
+      let accountKey = account.machine(forFleetKey: machine.machineKey)?.machineKey
+      for rosterProject in machine.projects {
+        add(HubComposerCopy(
+          machineKey: machine.machineKey,
+          machineName: machine.name,
+          accountMachineKey: accountKey,
+          project: rosterProject.asRemoteMachineProjectSummary
+        ))
+      }
+    }
+    return hubComposerProjectEntries(copies)
+  }
+
+  private func isPicked(_ copy: HubComposerCopy) -> Bool {
+    copy.project.id == pickedProjectId && copy.machineKey == pickedMachineKey
+  }
+
+  /// The account project of the current pick (one lookup, not the list).
+  private var pickedAccountProject: AccountProject? {
+    pickedProject.flatMap { syncService.accountProject(forCheckout: $0, onMachine: pickedMachineKey) }
+  }
+
+  private func pick(_ copy: HubComposerCopy) {
+    guard !isPicked(copy) else { return }
+    pickedMachineKey = copy.machineKey
+    pickedProjectId = copy.project.id
+    // Switching projects resets only that project's lane selection.
+    selectedLaneId = defaultLaneId(forProjectId: copy.project.id)
+  }
+
+  /// One project, named by the account; when chosen and on more than one
+  /// computer, its computers follow as chips (project first, then Start on).
+  @ViewBuilder
+  private func entryRow(_ entry: HubComposerProjectEntry) -> some View {
+    let isSelected = entry.copies.contains(where: isPicked)
+    Button {
+      guard !isSelected else { return }
+      let last = entry.accountProjectId.flatMap { StartOnMemory.lastMachine(for: $0) }
+      let mains = entry.accountProjectId.flatMap { id in
+        accountProjects.liveProjects.first { $0.id == id }?.copies.filter(\.isMain)
+      } ?? []
+      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last, mainCopies: mains) { pick(copy) }
+    } label: {
+      HStack(spacing: 9) {
+        HubProjectIcon(iconDataUrl: entry.iconDataUrl, isActive: isSelected)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(entry.name)
+            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if entry.copies.count == 1, let only = entry.copies.first, only.machineKey != nil {
+            Text(only.machineName)
+              .font(.system(size: 11.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 6)
+      .background(
+        isSelected ? ADEKit.pressed : Color.clear,
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    if isSelected, entry.copies.count > 1 {
+      HubComposerStartOnChips(copies: entry.copies, isSelected: isPicked, onPick: pick)
+    }
   }
 
   /// `machineKey`: the project's machine when it is not the primary one.
@@ -799,6 +915,12 @@ struct HubInlineComposer: View {
       if !busy { holdsDestination = false }
       return
     }
+    // A folder of a project removed from ADE while the composer was open.
+    if let picked = pickedProject, removedFromAccount()(picked, pickedMachineKey) {
+      holdsDestination = false
+      reconcileDestination()
+      return
+    }
     // Another machine's project: make that machine primary first, before the
     // draft is cleared, then send as usual.
     if let key = pickedMachineKey, key != syncService.focusedMachineKey {
@@ -814,6 +936,12 @@ struct HubInlineComposer: View {
       }
       return
     }
+    // The computer this send starts on, saved as the project's next default
+    // only when the chat starts.
+    let remembered: (machine: String, project: String)? = pickedAccountProject.flatMap { project in
+      AccountService.shared.machine(forFleetKey: pickedMachineKey ?? syncService.focusedMachineKey)
+        .map { (machine: $0.machineKey, project: project.id) }
+    }
     let restoredDraft = draft
     let restoredAttachments = attachments
     collapse()
@@ -825,6 +953,7 @@ struct HubInlineComposer: View {
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
       holdsDestination = false
+      if started, let remembered { StartOnMemory.remember(remembered.machine, for: remembered.project) }
       if !started {
         draft = restoredDraft
         attachments = restoredAttachments
@@ -1242,8 +1371,23 @@ struct HubInlineComposer: View {
   /// Reconciles the (possibly persisted) destination against the live project +
   /// lane lists: keep a still-valid choice, else fall back to the active project
   /// (then first) and that project's primary/first lane.
+  /// A test for folders of projects removed from ADE, built once for a pass.
+  /// The picker hides them, so the composer neither keeps nor sends to one.
+  private func removedFromAccount() -> (MobileProjectSummary, String?) -> Bool {
+    guard let resolver = syncService.accountProjectResolver(), !resolver.removedIds.isEmpty else { return { _, _ in false } }
+    return { project, machineKey in
+      syncService.accountProjectId(forCheckout: project, onMachine: machineKey, resolver: resolver)
+        .map { resolver.removedIds.contains($0) } ?? false
+    }
+  }
+
   private func reconcileDestination() {
     guard !holdsDestination else { return }
+    let isRemoved = removedFromAccount()
+    if let picked = pickedProject, isRemoved(picked, pickedMachineKey) {
+      pickedMachineKey = nil
+      pickedProjectId = ""
+    }
     if let key = pickedMachineKey {
       if key == syncService.focusedMachineKey {
         // That machine became primary: the same project id names it there.
@@ -1259,14 +1403,15 @@ struct HubInlineComposer: View {
         pickedProjectId = ""
       }
     }
-    let projects = syncService.projects
+    let projects = syncService.projects.filter { !isRemoved($0, nil) }
     guard !projects.isEmpty else {
       pickedProjectId = ""
       selectedLaneId = ""
       return
     }
     if pickedProjectId.isEmpty || !projects.contains(where: { $0.id == pickedProjectId }) {
-      let resolvedProjectId = syncService.activeProject?.id ?? projects[0].id
+      let active = syncService.activeProject.flatMap { active in projects.first { $0.id == active.id } }
+      let resolvedProjectId = active?.id ?? projects[0].id
       pickedProjectId = resolvedProjectId
       selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
       return

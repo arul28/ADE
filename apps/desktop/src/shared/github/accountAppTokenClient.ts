@@ -331,9 +331,15 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
   ): Promise<AccountDirectoryAnswer | { error: "signed_out" | "no_directory" | "network" }> => {
     const baseUrl = options.getDirectoryBaseUrl();
     if (!baseUrl) return { error: "no_directory" };
+    // The ADE account this request is for. A switch while it runs must not
+    // send it (or its 401 retry) with another account's bearer: a Disconnect
+    // started under one account would end another's grant.
+    const startAccount = options.getAccountUserId()?.trim() || null;
+    const sameAccount = (): boolean => (options.getAccountUserId()?.trim() || null) === startAccount;
     const send = async (forceRefresh: boolean): Promise<Response | "signed_out"> => {
+      if (!sameAccount()) return "signed_out";
       const token = (await options.getAccountAccessToken(forceRefresh ? { forceRefresh: true } : undefined).catch(() => null))?.trim();
-      if (!token) return "signed_out";
+      if (!token || !sameAccount()) return "signed_out";
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       (timer as { unref?: () => void }).unref?.();
@@ -360,6 +366,10 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
         await response.body?.cancel().catch(() => undefined);
         response = await send(true);
       }
+      if (response !== "signed_out" && !sameAccount()) {
+        await response.body?.cancel().catch(() => undefined);
+        response = "signed_out";
+      }
     } catch {
       return { error: "network" };
     }
@@ -378,6 +388,8 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
         await response.body?.cancel().catch(() => undefined);
       }
     }
+    // The account can change while the body is read: that answer is not this account's.
+    if (!sameAccount()) return { error: "signed_out" };
     return { status: response.status, body: parsed, retryAfterSec };
   };
 

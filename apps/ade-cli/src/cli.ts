@@ -441,6 +441,7 @@ import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createAccountProjectSync, type AccountProjectSync } from "./services/projects/accountProjectSync";
 import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
+import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeaderCleanup";
 import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { isDevTestMachineHome, isDevTestMachineProcess } from "./services/sync/devTestMachine";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
@@ -481,6 +482,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
+import { publicAccountProjectFields } from "./services/projects/publicProjectRecord";
 import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
   isUnsupportedRecoveryActionError,
@@ -29519,6 +29521,10 @@ async function runServe(
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
     logger: headlessProjectLogger,
   });
+  // The account signed in on this machine, for the account project link the
+  // phone's catalog and roster carry (`publicProjectRecord`). The same reader
+  // as the RPC server's project list.
+  const brainAccountUserId = (): string | null => machineAccountStoresForRecords().accountUserId();
   syncAccountAnalyticsIdentity(
     brainAccountAuthService.getStatus(),
     brainProductAnalytics,
@@ -29595,7 +29601,8 @@ async function runServe(
     return headlessMobileProjectSummary(
       sharedName ? { ...record, displayName: sharedName } : record,
       mobileProjectIconDataUrl(record),
-      overrides,
+      // The phone joins the card to its account project by this id first.
+      { ...publicAccountProjectFields(record, brainAccountUserId), ...overrides },
     );
   };
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
@@ -30490,6 +30497,7 @@ async function runServe(
         projectRegistry,
         scopeRegistry,
         hostProjectId: preferredSyncProjectId,
+        accountUserId: brainAccountUserId,
         logger: headlessProjectLogger,
       }),
   };
@@ -30503,6 +30511,9 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    // Older clones saved the GitHub sign-in header in .git/config: take it out
+    // once per project, off the open path (one file read when there is none).
+    onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
     // A project removed during a repair's teardown: that teardown already
     // handed its emulators off, and nothing will re-adopt them.
     onUnregisterAfterHandOff: async (projectRoot) => {

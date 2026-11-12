@@ -1215,6 +1215,15 @@ export type SyncMobileProjectSummary = {
   isAvailable: boolean;
   isCached: boolean;
   isOpen: boolean;
+  /**
+   * The account project this folder is a copy of (`ap_` + 32 hex). Sent only
+   * when the link belongs to the account signed in on the host
+   * (`publicProjectRecord`). Additive: older hosts omit it and older phones
+   * ignore it.
+   */
+  accountProjectId?: string;
+  /** The GitHub repository id, when the host knows it. Additive. */
+  githubRepoId?: number;
 };
 
 export type SyncProjectCatalogPayload = {
@@ -1349,6 +1358,10 @@ export type SyncRosterProject = {
    * machines by it. Optional: older hosts omit it and older phones ignore it.
    */
   repoOriginUrl?: string | null;
+  /** As `SyncMobileProjectSummary.accountProjectId`. Additive. */
+  accountProjectId?: string;
+  /** As `SyncMobileProjectSummary.githubRepoId`. Additive. */
+  githubRepoId?: number;
   iconDataUrl?: string | null;
   lastOpenedAt?: string | null;
   /** true ⇒ live running/awaiting fidelity; false ⇒ disk-derived status only. */
@@ -3263,6 +3276,7 @@ export type SyncRemoteCommandAction =
   | "jira.createIssue"
   | "projectConfig.get"
   | "projectConfig.save"
+  | "projectConfig.resolveAccountSettingNotice"
   | "ai.getStatus"
   | "ai.jevDecide"
   | "ai.jevStatus"

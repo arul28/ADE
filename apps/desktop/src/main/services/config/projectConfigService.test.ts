@@ -1499,3 +1499,273 @@ describe("projectConfigService - reads", () => {
     expect(YAML.parse(fs.readFileSync(localPath, "utf8")).ui.linearBatchLaunchDefaultPrompt).toBe("first");
   });
 });
+
+describe("projectConfigService - settings that follow the account", () => {
+  /** The account settings store every computer syncs: rows per repository, plus deletes. */
+  function makeAccountStore() {
+    const rows = new Map<string, unknown>();
+    const deleted = new Set<string>();
+    const id = (scope: string, key: string) => `${scope}|${key}`;
+    const keysOf = (set: Iterable<string>, scope: string) =>
+      [...set].filter((entry) => entry.startsWith(`${scope}|`)).map((entry) => ({ key: entry.slice(scope.length + 1) }));
+    const store = {
+      rows,
+      /** The store could not save (its cache file failed): writes return false. A function refuses only the keys it names. */
+      refuse: false as boolean | ((key: string) => boolean),
+      refuses: (key: string) => (typeof store.refuse === "function" ? store.refuse(key) : store.refuse),
+      backend: {
+        get: (scope: string, key: string) => structuredClone(rows.get(id(scope, key))),
+        set: (scope: string, key: string, value: unknown) => {
+          if (store.refuses(key)) return false;
+          rows.set(id(scope, key), structuredClone(value));
+          deleted.delete(id(scope, key));
+          return true;
+        },
+        remove: (scope: string, key: string) => {
+          if (store.refuses(key)) return false;
+          rows.delete(id(scope, key));
+          deleted.add(id(scope, key));
+          return true;
+        },
+        list: (scope: string) => keysOf(rows.keys(), scope),
+        deletedKeys: (scope: string) => keysOf(deleted, scope),
+      },
+    };
+    return store;
+  }
+
+  const ORIGIN = "https://github.com/acme/widgets.git";
+  const SCOPE = "repo:github.com/acme/widgets";
+
+  function makeComputer(
+    name: string,
+    store: ReturnType<typeof makeAccountStore>,
+    local: Record<string, unknown> | ((root: string) => Record<string, unknown>),
+    logger = makeLogger(),
+  ) {
+    const { root, adeDir } = makeProjectFixture(`ade-account-settings-${name}-`);
+    const localPath = path.join(adeDir, "local.yaml");
+    fs.writeFileSync(localPath, YAML.stringify({ version: 1, ...(typeof local === "function" ? local(root) : local) }), "utf8");
+    const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: name, db: makeDb(), logger });
+    const origin = { url: ORIGIN };
+    const account: { id: string | null; store: ReturnType<typeof makeAccountStore> } = { id: "user_1", store };
+    service.setAccountSettingsStore({
+      backend: () => account.store.backend,
+      accountUserId: () => account.id,
+      readOriginUrl: () => origin.url,
+      statePath: path.join(adeDir, "account-settings-move.state.json"),
+    });
+    const file = () => YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
+    const edit = (change: (local: Record<string, any>) => void) => {
+      const snapshot = service.get();
+      const local = structuredClone(snapshot.local) as Record<string, any>;
+      change(local);
+      return service.save({ shared: snapshot.shared, local, baseLocalHash: snapshot.trust.localHash });
+    };
+    return { service, file, edit, logger, root, origin, account };
+  }
+
+  it("moves settings write-if-absent, joins set-like lists, and keeps a different value in a notice the person can apply", () => {
+    const store = makeAccountStore();
+    const a = makeComputer("a", store, { github: { prPollingIntervalSeconds: 30 }, issueTrackers: { jira: { projectKeys: ["WEB"] } } });
+    const b = makeComputer("b", store, { github: { prPollingIntervalSeconds: 90 }, issueTrackers: { jira: { projectKeys: ["API"] } } });
+
+    expect(a.service.moveSettingsToAccount().moved).toEqual(expect.arrayContaining(["prs.pollIntervalSeconds", "jira.projectKeys"]));
+    const movedB = b.service.moveSettingsToAccount();
+
+    // B's own value lost to the account's, but B is told and can apply it.
+    expect(movedB.conflicts).toContain("prs.pollIntervalSeconds");
+    expect(store.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["WEB", "API"]);
+    expect(b.service.get().effective.github?.prPollingIntervalSeconds).toBe(30);
+    expect(b.service.get().accountNotices).toEqual([
+      expect.objectContaining({ kind: "account_setting", key: "prs.pollIntervalSeconds" }),
+    ]);
+
+    // A notice belongs to its repository: after the origin changes, it is not shown or applied there.
+    b.origin.url = "https://github.com/acme/other.git";
+    expect(b.service.get().accountNotices ?? []).toEqual([]);
+    b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
+    expect(store.rows.get("repo:github.com/acme/other|prs.pollIntervalSeconds")).toBeUndefined();
+    b.origin.url = ORIGIN;
+
+    // A refused answer fails, and the notice stays for another try.
+    store.refuse = true;
+    expect(() => b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" })).toThrow();
+    expect(b.service.get().accountNotices).toEqual([expect.objectContaining({ key: "prs.pollIntervalSeconds" })]);
+    store.refuse = false;
+
+    const answered = b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
+    expect(answered.accountNotices ?? []).toEqual([]);
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(90);
+    // The other computer reads the applied value from the account.
+    expect(a.service.get().effective.github?.prPollingIntervalSeconds).toBe(90);
+
+    // Signed in as another account, the values the file got from the first
+    // account are not this computer's own: nothing is copied to the new one.
+    // A value edited while signed out is this computer's own again, and moves.
+    b.account.id = null;
+    b.edit((local) => { local.github.prPollingIntervalSeconds = 45; });
+    const other = makeAccountStore();
+    b.account.id = "user_2";
+    b.account.store = other;
+    b.service.moveSettingsToAccount();
+    expect([...other.rows.entries()]).toEqual([[`${SCOPE}|prs.pollIntervalSeconds`, 45]]);
+  });
+
+  it("never loses this computer's values: before the first move, to a stale mirror, or its own writable folders", () => {
+    // Before the first move, a save keeps this computer's value; the move then files the notice.
+    const early = makeAccountStore();
+    early.rows.set(`${SCOPE}|prs.pollIntervalSeconds`, 120);
+    const fresh = makeComputer("fresh", early, { github: { prPollingIntervalSeconds: 45 } });
+    expect(fresh.service.get().effective.github?.prPollingIntervalSeconds).toBe(45);
+    fresh.edit((local) => { local.github.autoMapByBranch = true; });
+    expect(fresh.file().github.prPollingIntervalSeconds).toBe(45);
+    expect(fresh.service.moveSettingsToAccount().conflicts).toContain("prs.pollIntervalSeconds");
+
+    // Two computers move at once: both find the rows missing, and the account
+    // keeps the last write. The first writer keeps its value in a notice when
+    // the other write reaches it; nothing is joined or written back for it.
+    const racing = makeAccountStore();
+    const x = makeComputer("race-x", racing, { github: { prPollingIntervalSeconds: 30 }, issueTrackers: { jira: { projectKeys: ["WEB"] } } });
+    const y = makeComputer("race-y", racing, { github: { prPollingIntervalSeconds: 90 }, issueTrackers: { jira: { projectKeys: ["API"] } } });
+    x.service.moveSettingsToAccount();
+    y.account.store = { ...racing, backend: { ...racing.backend, get: () => undefined, list: () => [] } };
+    y.service.moveSettingsToAccount();
+    y.account.store = racing;
+    expect(racing.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(90);
+    x.service.moveSettingsToAccount();
+    expect((x.service.get().accountNotices ?? []).map((notice) => notice.key).sort()).toEqual(["jira.projectKeys", "prs.pollIntervalSeconds"]);
+    expect(racing.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["API"]);
+    x.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
+    expect(racing.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(30);
+
+    // A list item removed on one computer does not come back from another's older copy.
+    const store = makeAccountStore();
+    const a = makeComputer("lists-a", store, { issueTrackers: { jira: { projectKeys: ["WEB", "API"] } } });
+    const b = makeComputer("lists-b", store, { issueTrackers: { jira: { projectKeys: ["WEB", "API"] } } });
+    a.service.moveSettingsToAccount();
+    b.service.moveSettingsToAccount();
+    a.edit((local) => { local.issueTrackers.jira.projectKeys = ["WEB"]; });
+    const again = b.service.moveSettingsToAccount();
+    expect(again.joined).toEqual([]);
+    expect(store.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["WEB"]);
+    expect(b.file().issueTrackers.jira.projectKeys).toEqual(["WEB"]);
+    // Within the hour after a first write, another computer's later removal
+    // is not undone when the first writer next reads the account.
+    const later = makeAccountStore();
+    const p = makeComputer("later-p", later, { issueTrackers: { jira: { projectKeys: ["WEB", "API"] } } });
+    const q = makeComputer("later-q", later, { issueTrackers: { jira: { projectKeys: ["WEB", "API"] } } });
+    p.service.moveSettingsToAccount();
+    q.service.moveSettingsToAccount();
+    q.edit((local) => { local.issueTrackers.jira.projectKeys = ["WEB"]; });
+    p.service.moveSettingsToAccount();
+    expect(later.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["WEB"]);
+    expect(p.file().issueTrackers.jira.projectKeys).toEqual(["WEB"]);
+
+    // Clearing the shared permissions elsewhere keeps this computer's writable folders.
+    const perms = makeAccountStore();
+    const c = makeComputer("perms-c", perms, { ai: { permissions: { cli: { mode: "edit", writablePaths: ["/Users/c/work"] } } } });
+    const d = makeComputer("perms-d", perms, { ai: { permissions: { cli: { mode: "edit" } } } });
+    c.service.moveSettingsToAccount();
+    d.service.moveSettingsToAccount();
+    c.service.moveSettingsToAccount();
+    expect(JSON.stringify(perms.rows.get(`${SCOPE}|ai.permissions`))).not.toContain("/Users/c/work");
+    d.edit((local) => { delete local.ai.permissions; });
+    // Read before C's next move: the delete applies on read, and C's own folders stay.
+    expect(c.service.get().effective.ai?.permissions?.cli?.writablePaths).toEqual(["/Users/c/work"]);
+    c.service.moveSettingsToAccount();
+    expect(c.file().ai.permissions).toEqual({ cli: { writablePaths: ["/Users/c/work"] } });
+  });
+
+  it("keeps a value with a credential or too much text in the file, with a notice and no value in the logs; a folder in the clone follows as a relative path", () => {
+    const store = makeAccountStore();
+    const logger = makeLogger();
+    const a = makeComputer("holds", store, (root) => {
+      fs.mkdirSync(path.join(root, "bench"));
+      return {
+      testSuites: [
+        { id: "unit", name: "Unit", command: ["npm", "test"], cwd: "." },
+        { id: "e2e", name: "E2E", command: ["npm", "run", "e2e"], cwd: ".", env: { API_TOKEN: "tok-not-a-real-value", DB_PASS: "pw-not-a-real-value" } },
+        // The full path inside this computer's clone: it must reach the account relative.
+        { id: "bench", name: "Bench", command: ["npm", "run", "bench"], cwd: path.join(root, "bench") },
+      ],
+      laneEnvInit: { setupScript: { commands: ["x".repeat(17_000)] } },
+      };
+    }, logger);
+
+    a.service.moveSettingsToAccount();
+
+    expect([...store.rows.keys()].sort()).toEqual([`${SCOPE}|tests.suite.bench`, `${SCOPE}|tests.suite.unit`]);
+    expect(store.rows.get(`${SCOPE}|tests.suite.bench`)).toEqual(expect.objectContaining({ cwd: "bench" }));
+    expect(a.service.get().accountNotices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "kept_here", key: "tests.suite.e2e", reason: "secret", names: ["API_TOKEN", "DB_PASS"] }),
+      expect.objectContaining({ kind: "kept_here", key: "lanes.envInit", reason: "too_large" }),
+    ]));
+    // This computer still runs its own suites.
+    expect(a.service.get().effective.testSuites.map((suite) => suite.id).sort()).toEqual(["bench", "e2e", "unit"]);
+    const logged = JSON.stringify([...logger.info.mock.calls, ...logger.warn.mock.calls]);
+    expect(logged).not.toContain("tok-not-a-real-value");
+    expect(logged).not.toContain("pw-not-a-real-value");
+    expect(logged).not.toContain(a.root);
+
+    // A setup script outside the clone exists only on this computer.
+    const scriptHere = path.join(os.tmpdir(), "ade-elsewhere", "setup.sh");
+    const b = makeComputer("holds-script", store, { laneEnvInit: { setupScript: { scriptPath: scriptHere } } });
+    b.service.moveSettingsToAccount();
+    expect(store.rows.has(`${SCOPE}|lanes.envInit`)).toBe(false);
+    expect(b.service.get().accountNotices).toEqual([
+      expect.objectContaining({ kind: "kept_here", key: "lanes.envInit", reason: "machine_path" }),
+    ]);
+    expect(b.file().laneEnvInit.setupScript.scriptPath).toBe(scriptHere);
+  });
+
+  it("refuses a save from a snapshot read before another computer changed an account setting", () => {
+    const store = makeAccountStore();
+    const a = makeComputer("race-a", store, { github: { prPollingIntervalSeconds: 30 } });
+    const b = makeComputer("race-b", store, { github: { prPollingIntervalSeconds: 30 } });
+    a.service.moveSettingsToAccount();
+    b.service.moveSettingsToAccount();
+
+    const stale = b.service.get();
+    a.edit((local) => { local.github.prPollingIntervalSeconds = 120; });
+
+    expect(() => b.service.save({
+      shared: stale.shared,
+      local: { ...stale.local, browser: { linkOpenMode: "external" } },
+      baseLocalHash: stale.trust.localHash,
+    })).toThrow(expect.objectContaining({ code: PROJECT_CONFIG_CHANGED_ON_DISK }));
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+
+    // Read again and re-applied, the save keeps the other computer's value.
+    b.edit((local) => { local.browser = { linkOpenMode: "external" }; });
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+    expect(b.file().github.prPollingIntervalSeconds).toBe(120);
+
+    // The account store refuses the write: the save fails instead of looking
+    // saved while the account's value hides the change on the next read.
+    store.refuse = true;
+    const before = b.file();
+    expect(() => b.edit((local) => { local.github.prPollingIntervalSeconds = 300; })).toThrow();
+    expect(b.file()).toEqual(before);
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+    // One refused row fails the whole save: a row it already wrote goes back.
+    store.refuse = (key) => key === "jira.projectKeys";
+    expect(() => b.edit((local) => {
+      local.github.prPollingIntervalSeconds = 300;
+      local.issueTrackers = { jira: { projectKeys: ["OPS"] } };
+    })).toThrow();
+    expect(b.file()).toEqual(before);
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+    store.refuse = false;
+
+    // A save the key check refuses (a new key in the file) changes nothing in the account either.
+    expect(() => b.edit((local) => {
+      local.github.prPollingIntervalSeconds = 300;
+      local.ai = { ...local.ai, apiKeys: { anthropic: "sk-not-a-real-key" } };
+    })).toThrow();
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+
+    b.edit((local) => { local.github.prPollingIntervalSeconds = 300; });
+    expect(a.service.get().effective.github?.prPollingIntervalSeconds).toBe(300);
+  });
+});

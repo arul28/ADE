@@ -1546,6 +1546,29 @@ like GitHub (scratch harness, not committed). Not the baseline machine.
 | App not installed on the owner, visible | 14 requests per hour (a retry every 5 minutes, diagnosis cached 5 minutes) | not set yet; needs approval |
 | Requests in flight | at most 6 (the desktop shares the main-process gate) | 6 |
 
+Account issue reads through the same store (`useAccountGithubIssues`,
+`useAccountGithubIssue`), 2026-11-12, measured the same way: the store on a
+virtual clock for one hour, with a fake client that answers `304` after the
+first read (scratch harness, not committed). No screen draws them yet.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| Issue list, unchanged, one page, two components on it | 61 requests per hour, 1 counts | not set yet; needs approval |
+| One issue open (the issue and its comments), unchanged | 122 requests per hour, 2 count | not set yet; needs approval |
+| Issue list, window hidden for 40 of the 60 minutes | 21 requests, 0 while hidden | 0 while hidden |
+| Issue list, App not installed on the owner | 13 requests per hour (a retry every 5 minutes) | not set yet; needs approval |
+
+Project config snapshot read (`projectConfigService.get()`) with the account
+settings layer on, 2026-11-12, Mac Studio with other agents running: a
+`local.yaml` with 6 test suites and the AI keys, an in-memory account store
+holding the same rows, 200 reads in one process (scratch harness, not
+committed). Coercion and validation answers are kept for 5 seconds.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| One snapshot read, no account layer (signed out, no remote) | 0.31 ms | not set yet; needs approval |
+| One snapshot read, account layer on | 0.64 ms (3.4 ms before the 5-second cache) | not set yet; needs approval |
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio

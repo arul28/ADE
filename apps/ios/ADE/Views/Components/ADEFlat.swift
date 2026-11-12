@@ -131,6 +131,8 @@ struct ADEToastMessage: Equatable, Identifiable {
 
 private struct ADEToastModifier: ViewModifier {
   @Binding var message: ADEToastMessage?
+  /// Extra space below the toast, for a screen with its own bar at the bottom.
+  var bottomInset: CGFloat = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   func body(content: Content) -> some View {
@@ -147,7 +149,7 @@ private struct ADEToastModifier: ViewModifier {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .glassEffect(in: Capsule(style: .continuous))
-        .padding(.bottom, 12)
+        .padding(.bottom, 12 + bottomInset)
         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         .id(message.id)
         .task(id: message.id) {
@@ -164,8 +166,9 @@ private struct ADEToastModifier: ViewModifier {
 }
 
 extension View {
-  /// Shows `message` as a glass toast for 3 s.
-  func adeToast(_ message: Binding<ADEToastMessage?>) -> some View {
-    modifier(ADEToastModifier(message: message))
+  /// Shows `message` as a glass toast for 3 s. `bottomInset` lifts it
+  /// above a bar the screen keeps at the bottom.
+  func adeToast(_ message: Binding<ADEToastMessage?>, bottomInset: CGFloat = 0) -> some View {
+    modifier(ADEToastModifier(message: message, bottomInset: bottomInset))
   }
 }

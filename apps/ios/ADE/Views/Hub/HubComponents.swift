@@ -489,6 +489,9 @@ struct HubProjectPresentation: Equatable, Identifiable {
   /// and those sum to the chat count, so "6 lanes · 7 chats" printed a total
   /// beside its own breakdown.
   let metaLine: String
+  /// The meta line is an account note ("Not on a computer yet"), so the card
+  /// has no agents to count and says nothing about them.
+  let metaLineIsNote: Bool
   /// "2 need you · 3 working", or nil when the project is quiet — the same
   /// tally the card header renders, written out.
   ///
@@ -535,7 +538,8 @@ struct HubProjectPresentation: Equatable, Identifiable {
     lanes: [HubLanePresentation],
     attentionCount: Int = 0,
     runningCount: Int = 0,
-    olderChatCount: Int = 0
+    olderChatCount: Int = 0,
+    note: String? = nil
   ) {
     self.project = project
     self.olderChatCount = olderChatCount
@@ -547,7 +551,10 @@ struct HubProjectPresentation: Equatable, Identifiable {
     self.lanes = lanes
     self.attentionCount = attentionCount
     self.runningCount = runningCount
-    self.metaLine = "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
+    // An account project no reachable machine shows says where it is
+    // instead of a lane count it cannot know.
+    self.metaLine = note ?? "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
+    self.metaLineIsNote = note != nil
     self.statusLine = hubProjectStatusLine(
       attentionCount: attentionCount,
       runningCount: runningCount
@@ -562,11 +569,34 @@ struct HubProjectPresentation: Equatable, Identifiable {
       lanes: lanes,
       attentionCount: attentionCount,
       runningCount: runningCount
-    ) &* 31 &+ olderChatCount
+    ) &* 31 &+ olderChatCount &+ (note?.hashValue ?? 0)
   }
 
   static func == (lhs: HubProjectPresentation, rhs: HubProjectPresentation) -> Bool {
     lhs.renderSignature == rhs.renderSignature
+  }
+
+  /// The same card under another name and icon: an account project's card
+  /// shows the account's name, not the folder name of the machine that
+  /// happened to come first.
+  func showing(name: String, iconDataUrl: String?) -> HubProjectPresentation {
+    guard name != project.displayName || iconDataUrl != project.iconDataUrl else { return self }
+    var renamed = project
+    renamed.displayName = name
+    renamed.iconDataUrl = iconDataUrl
+    return HubProjectPresentation(
+      project: renamed,
+      isActive: isActive,
+      isSwitching: isSwitching,
+      isLoading: isLoading,
+      laneCount: laneCount,
+      chatCount: chatCount,
+      lanes: lanes,
+      attentionCount: attentionCount,
+      runningCount: runningCount,
+      olderChatCount: olderChatCount,
+      note: metaLineIsNote ? metaLine : nil
+    )
   }
 }
 
@@ -1081,14 +1111,30 @@ struct HubProjectTile: View, Equatable {
   /// How many machines the project is on; the chip shows the count, which
   /// never truncates in a narrow tile. 0 hides it.
   var machineCount = 0
+  /// How many of those computers are connected now, for an account project
+  /// (the chip then reads "1/2"). Nil: the chip shows the count alone.
+  var machineLive: Int? = nil
   /// The project's machines can store a new icon (`projectIcon` feature).
   var canChangeIcon = false
   var canMoveToTop = true
+  /// "Remove from list" hides a machine's folder on this phone. An account
+  /// project is not hidden that way (removing it from the account is the
+  /// Delete flow), so its card has no such item.
+  var canForget = true
+  /// An account project: "Remove from ADE…" opens the Delete sheet.
+  var canRemoveFromADE = false
+  /// The card's account project. The menu actions name it, so a card whose
+  /// project changes (a merge) must redraw them.
+  var accountProjectId: String? = nil
   let onOpenProject: () -> Void
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
   let onForget: () -> Void
+  var onRemoveFromADE: () -> Void = {}
+  /// An account project (`canRemoveFromADE`): "Location" opens where its
+  /// folders are.
+  var onLocation: () -> Void = {}
 
   @State private var iconPickerShown = false
   @State private var pickedIcon: PhotosPickerItem?
@@ -1116,7 +1162,7 @@ struct HubProjectTile: View, Equatable {
               .lineLimit(1)
               .frame(maxWidth: .infinity, alignment: .leading)
             if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount)
+              HubProjectMachineChip(count: machineCount, live: machineLive)
             }
           }
         } else {
@@ -1124,7 +1170,7 @@ struct HubProjectTile: View, Equatable {
             HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
             Spacer(minLength: 4)
             if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount)
+              HubProjectMachineChip(count: machineCount, live: machineLive)
             }
           }
           // The name right under the icon and the counts pinned to the
@@ -1145,9 +1191,11 @@ struct HubProjectTile: View, Equatable {
         HStack(alignment: .lastTextBaseline, spacing: 6) {
           VStack(alignment: .leading, spacing: 3) {
             if stateCounts.isEmpty {
-              Text("No agents")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(ADEColor.textMuted)
+              if !presentation.metaLineIsNote {
+                Text("No agents")
+                  .font(.caption2.weight(.medium))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
             } else {
               HubStateSummary(counts: stateCounts, fitsWidth: true)
             }
@@ -1204,9 +1252,22 @@ struct HubProjectTile: View, Equatable {
           Label("Copy path", systemImage: "doc.on.doc")
         }
       }
-      Divider()
-      Button(role: .destructive, action: onForget) {
-        Label("Remove from list", systemImage: "trash")
+      if canRemoveFromADE {
+        Button(action: onLocation) {
+          Label("Location", systemImage: "folder")
+        }
+      }
+      if canForget {
+        Divider()
+        Button(role: .destructive, action: onForget) {
+          Label("Remove from list", systemImage: "trash")
+        }
+      }
+      if canRemoveFromADE {
+        Divider()
+        Button(role: .destructive, action: onRemoveFromADE) {
+          Label("Remove from ADE…", systemImage: "trash")
+        }
       }
     }
     .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
@@ -1224,6 +1285,7 @@ struct HubProjectTile: View, Equatable {
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
     if let machineLabel { parts.append("on \(machineLabel)") }
+    if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) connected") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)
     return parts.joined(separator: ", ")
@@ -1233,8 +1295,12 @@ struct HubProjectTile: View, Equatable {
     lhs.presentation == rhs.presentation
       && lhs.machineLabel == rhs.machineLabel
       && lhs.machineCount == rhs.machineCount
+      && lhs.machineLive == rhs.machineLive
       && lhs.canChangeIcon == rhs.canChangeIcon
       && lhs.canMoveToTop == rhs.canMoveToTop
+      && lhs.canForget == rhs.canForget
+      && lhs.canRemoveFromADE == rhs.canRemoveFromADE
+      && lhs.accountProjectId == rhs.accountProjectId
   }
 }
 
@@ -1242,14 +1308,29 @@ struct HubProjectTile: View, Equatable {
 /// the count. The names are in the long-press menu and the spoken label.
 struct HubProjectMachineChip: View {
   let count: Int
+  /// Connected computers, for an account project: "1/2" with the connected
+  /// count first; a green dot while at least one is connected.
+  var live: Int? = nil
 
   var body: some View {
     HStack(spacing: 3) {
+      if let live, live > 0 {
+        Circle()
+          .fill(ADEColor.success)
+          .frame(width: 5, height: 5)
+      }
       Image(systemName: count > 1 ? "macbook.and.iphone" : "desktopcomputer")
         .font(.system(size: 10, weight: .semibold))
-      Text("\(count)")
-        .font(.caption2.weight(.semibold))
-        .monospacedDigit()
+      if let live, count > 1 || live < count {
+        (Text("\(live)").foregroundStyle(live > 0 ? ADEColor.textPrimary : ADEColor.textSecondary)
+          + Text("/\(count)").foregroundStyle(ADEColor.textMuted))
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+      } else {
+        Text("\(count)")
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+      }
     }
     .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 7)

@@ -2,8 +2,9 @@ import ClerkKit
 import SwiftUI
 
 /// Native account flow matching `ADEDesignSystem`. Covers email one-time-code,
-/// Apple, Google, and GitHub. On success it presents the first-run
-/// "here are your machines" step so a fresh login lands directly on connect.
+/// Apple, Google, and GitHub. On success the launch gate's sheet closes onto
+/// the Hub (`finishesOnSignIn`); a sheet opened from Settings shows the
+/// "here are your machines" step instead.
 ///
 /// Structurally close to ClerkKit's `AuthView` (identifier-first, then a
 /// dedicated code step) but rendered entirely with ADE's kit primitives.
@@ -14,6 +15,10 @@ struct AccountSignInView: View {
   /// Called when an interactive sign-in is complete and the user chooses to
   /// enter the app without selecting a machine from this sheet.
   var onFinish: () -> Void = {}
+  /// The launch gate's sign-in: a completed sign-in goes straight to the Hub,
+  /// which lists the account's projects with or without a computer. The
+  /// machines step stays for a sheet opened to look at the computers.
+  var finishesOnSignIn = false
 
   @ObservedObject private var account = AccountService.shared
   @Environment(\.dismiss) private var dismiss
@@ -70,6 +75,12 @@ struct AccountSignInView: View {
       .onChange(of: account.phase) { _, newValue in
         // A completed authentication (from any provider) advances to the
         // machines step.
+        if newValue == .signedIn, finishesOnSignIn {
+          // The sign-in itself loads the machines and the project list.
+          onFinish()
+          dismiss()
+          return
+        }
         if newValue == .signedIn, step != .machines {
           step = .machines
           Task { await account.loadMachines() }
