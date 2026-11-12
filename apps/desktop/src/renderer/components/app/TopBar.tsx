@@ -1114,6 +1114,13 @@ export function TopBar({
     if (remoteBinding) {
       return;
     }
+    // A local binding for another folder means `project` is stale: the
+    // binding of a new local project can arrive before the project, and the
+    // old `project` may be a remote copy's folder. Adding it would make a
+    // local tab for a folder that exists only on the other machine.
+    if (projectBinding?.kind === "local" && projectBinding.rootPath !== rootPath) {
+      return;
+    }
     // Skip while a transition targeting a *different* root is in flight.
     // During switch/close, `project` briefly points at the OLD root before
     // the await resolves; re-adding it here would resurrect a tab the user
@@ -1124,7 +1131,7 @@ export function TopBar({
     setOpenProjectTabRoots((prev) =>
       prev.includes(rootPath) ? prev : [...prev, rootPath],
     );
-  }, [project?.rootPath, remoteBinding, projectTransition]);
+  }, [project?.rootPath, projectBinding, remoteBinding, projectTransition]);
 
   useEffect(() => {
     if (!remoteBinding) return;
@@ -2556,9 +2563,9 @@ export function TopBar({
                         if (!isProjectBusy) projectTabDrag.onTabPointerDown(event, remoteTabKey);
                       }}
                       onContextMenu={(event) => openTabMenu(event, group.id)}
-                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive ? "active" : undefined}
+                      data-state={isCurrentRemote && !machineRouteActive && !hubRouteActive && !isNewTabOpen ? "active" : undefined}
                       data-remote-state={remoteTabState}
-                      aria-current={isCurrentRemote ? "true" : undefined}
+                      aria-current={isCurrentRemote && !isNewTabOpen ? "true" : undefined}
                       // A project tab looks the same wherever its checkout
                       // lives. The machine is in the tooltip; only a connection
                       // problem, which stops the tab from loading, is marked.
@@ -2669,9 +2676,9 @@ export function TopBar({
                 let projectTabState: string | undefined;
                 if (isRelocating) projectTabState = "open";
                 else if (isMissing) projectTabState = "missing";
-                // While the Chats machine tab is the foreground surface, the
+                // While the Chats machine tab or a New Tab is in front, the
                 // bound project tab stays rendered but must not also read active.
-                else if (isCurrent && !machineRouteActive && !hubRouteActive) projectTabState = "active";
+                else if (isCurrent && !machineRouteActive && !hubRouteActive && !isNewTabOpen) projectTabState = "active";
                 const indicator = terminalAttention?.indicator;
                 const localTabPress = pressActivation(() => {
                   if (projectTabDrag.isDragClick()) return;
@@ -2688,7 +2695,7 @@ export function TopBar({
                         ? "project.activeTab"
                         : undefined
                     }
-                    aria-current={isCurrent ? "true" : undefined}
+                    aria-current={isCurrent && !isNewTabOpen ? "true" : undefined}
                     aria-disabled={
                       isRelocating || isProjectBusy ? true : undefined
                     }
@@ -2821,7 +2828,7 @@ export function TopBar({
                 );
               })}
               <NoMachineRepositoryTabs
-                activeSurfaceHidden={machineRouteActive || accountRouteActive || hubRouteActive}
+                activeSurfaceHidden={machineRouteActive || accountRouteActive || hubRouteActive || isNewTabOpen}
                 onSelect={leaveMachineRoute}
               />
               {personalChatsTabOpen ? (
