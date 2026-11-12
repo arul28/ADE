@@ -352,9 +352,11 @@ struct PRsTabView: View, Equatable {
     }
     // A computer came online (or the repository changed): the PR read from
     // GitHub gives way to the machine's list.
-    .onChange(of: directRepo?.fullName, initial: true) { _, repo in
-      // A hidden tab's inputs drop the repository; coming back is not a
-      // change of repository, so the open PR stays.
+    // A hidden tab's inputs drop the repository, so the check runs when the
+    // tab shows again: the same repository keeps the open PR, and a computer
+    // that came online meanwhile closes it.
+    .onChange(of: "\(isActive)|\(directRepo?.fullName ?? "")", initial: true) { _, _ in
+      let repo = directRepo?.fullName
       guard isActive, repo != lastActiveDirectRepo else { return }
       lastActiveDirectRepo = repo
       directOpened = nil
