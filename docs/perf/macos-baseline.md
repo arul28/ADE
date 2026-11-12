@@ -2925,3 +2925,44 @@ move from Work to Lanes, from a perf run, 3 runs. The chat row is
 B2 adds an optional `pin` to each member. A call with no pin takes the same
 route as before, so the counts do not move. The total time of the Lanes calls
 follows the GitHub PR calls, which vary from run to run.
+
+### Files and device tools name their copy (B3 files, 2026-11-12)
+
+Branch `ade/account-desktop-b3-files` at `52123c331` against the B2 head
+`ffcee3670` (checked out over the same tree, Vite HMR, page reloaded). Same
+Mac (Mac Studio M4 Max), load average 4–6 from other agents. No perf run.
+Each idle window is 20 s after a 6 s settle; main-thread work is
+`TaskDuration` from `Performance.getMetrics`. One warm-up, then 3 runs.
+
+Dev app: `--first-run --keep`, the account brain on its own socket, the dev
+test machine "tabs" connected, one local project tab with the same
+repository on both machines. The Files route is `route-sweep.mjs none
+/work,/files 8`. The tool rows open each tool card in the Tools pane of a
+local chat (no device running: the Android setup card, the Apple device
+list).
+
+| Row | Before (B2) | After (B3) | Ceiling |
+| --- | --- | --- | --- |
+| Files page idle: main-thread work / heap / elements | 0.8–4.1 ms/s / 122–126 MB / 1,101 | 0.9–1.9 ms/s / 117–125 MB / 1,101 | 30 ms/s, 220 MB, 3k |
+| Files page: long tasks on the move from Work | 0 ms | 0 ms | 100 ms |
+| Tools pane, Files tool: main-thread work / heap / elements | 1.2–1.4 ms/s / 129–137 MB / 1,237 | 1.1–1.5 ms/s / 126–133 MB / 1,237 | 30 ms/s, 220 MB, 3k |
+| Tools pane, Android tool (setup card) | 1.2–1.4 ms/s / 128–134 MB / 1,012 | 1.3–2.2 ms/s (median 1.3) / 124–129 MB / 1,012 | 30 ms/s, 220 MB, 3k |
+| Tools pane, Apple tool (no device) | 1.9–2.2 ms/s / 129–135 MB / 1,226 | 1.5–3.2 ms/s (median 2.1) / 126–132 MB / 1,226 | 30 ms/s, 220 MB, 3k |
+
+Browser mock (the setup of the 2026-11-03 tools pane section, Vite at the
+two commits, headless Chrome 155, 1600×1000). The calls are the same in
+count before and after; after, each one carries a pin.
+
+| Row | Before (B2) | After (B3) | Ceiling |
+| --- | --- | --- | --- |
+| Git tool idle: main-thread work / heap | 2.4–6.3 ms/s / 109 MB | 2.4–2.6 ms/s / 109 MB | 30 ms/s, 220 MB |
+| Files tool idle: main-thread work / heap / elements | 2.4–6.6 ms/s / 109 MB / 861 | 2.9–5.2 ms/s / 109 MB / 861 | 30 ms/s, 220 MB, 3k |
+| Android live (flat): main-thread work / heap / elements | 28.1–32.2 ms/s / 112–113 MB / 872 | 26.4–27.0 ms/s / 112–113 MB / 872 | none set for a live device |
+| Android tool open: device calls | `getStreamStatus` ×8, `onEvent` ×3, one each of `startStream`, `resolveStreamUrl`, `recordList`, `getStatus`, `getDeviceSettings` | the same | — |
+| Files tool open: file calls | one each of `listTree`, `refreshGitDecorations`, `listWorkspaces`, `onChange`, `watchChanges` | the same | — |
+
+`file-index.bench.mts` (no service change): build 111–140 ms, lookup
+0.9–6.6 ms (rows above: 500 ms and 50 ms ceilings).
+
+The change adds no call, effect or timer. A pin equal to the tab's binding
+takes the same route as no pin (B2), so the numbers stay inside the noise.
