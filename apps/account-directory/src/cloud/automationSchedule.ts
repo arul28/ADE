@@ -105,8 +105,10 @@ function offsetAt(format: Intl.DateTimeFormat, at: number): number {
  */
 function firstInstantOf(format: Intl.DateTimeFormat, wall: Wall): number | null {
   const naive = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute);
-  // The offsets on either side of the moment: two when a change falls near it.
-  const offsets = new Set([offsetAt(format, naive - 3 * 60 * MINUTE_MS), offsetAt(format, naive + 3 * 60 * MINUTE_MS)]);
+  // The zone's offsets half a day either side: two when a change falls near
+  // the moment. Half a day, not hours: the true instant is the wall time less
+  // an offset of up to 14 hours, and both sides of a change must be seen there.
+  const offsets = new Set([offsetAt(format, naive - 14 * 60 * MINUTE_MS), offsetAt(format, naive), offsetAt(format, naive + 14 * 60 * MINUTE_MS)]);
   let first: number | null = null;
   for (const offset of offsets) {
     const instant = naive - offset;

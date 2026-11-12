@@ -9,6 +9,7 @@ import { runPlanCleanups } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { runCloudMinuteCron } from "../src/cloud/cron";
+import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { applyCloudPlanChange, listComputers, type CloudEnv } from "../src/cloud/store";
@@ -1411,5 +1412,90 @@ describe("ADE Cloud server launcher", () => {
     const answered = await harness.send(OWNER, "GET", "/cloud/account", undefined, { origin: WEB });
     expect(answered.status).toBe(200);
     expect(answered.headers.get("access-control-allow-origin")).toBe(WEB);
+  });
+});
+
+/*
+ * Automations whose home is ADE Cloud (C9): the server starts each run, so
+ * its own rules are the whole guard against running a rule twice at once,
+ * running it without end, and taking a delivery nobody signed.
+ */
+describe("ADE Cloud automations", () => {
+  const VERSION = "2026-11-09T12:00:00.000Z";
+  const spec = (triggers: unknown[], limits: Record<string, unknown> = {}) => ({
+    name: "Nightly review",
+    project: { origin: "https://github.com/Acme/Widgets.git" },
+    triggers,
+    sizeId: "small",
+    chat: { provider: "codex", modelId: "gpt-5", permissions: "full-auto", prompt: "Review the latest changes." },
+    limits,
+  });
+  const register = (ruleId: string, body: Record<string, unknown>) =>
+    harness.send(OWNER, "PUT", `/cloud/automations/${ruleId}`, { ruleVersion: VERSION, enabled: true, ...body });
+  const runs = (ruleId: string) => harness.rows("select state, reason from cloud_automation_runs where rule_id = ? order by created_at, rowid", ruleId) as Array<{ state: string; reason: string | null }>;
+
+  beforeEach(() => {
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+  });
+
+  it("starts one run at a time with one waiting, and pauses a rule past its runs an hour", async () => {
+    expect((await register("nightly", { spec: spec([{ kind: "manual" }]) })).status).toBe(200);
+    const states = [];
+    for (let index = 0; index < 3; index += 1) {
+      states.push(((await (await harness.send(OWNER, "POST", "/cloud/automations/nightly/run")).json()) as { state: string }).state);
+    }
+    // One computer made: the second waits for the first, the third is recorded and dropped.
+    expect(states).toEqual(["running", "queued", "skipped"]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+
+    expect((await register("storm", { spec: spec([{ kind: "manual" }], { maxRunsPerHour: 1 }) })).status).toBe(200);
+    await harness.send(OWNER, "POST", "/cloud/automations/storm/run");
+    clock += 60_000;
+    const stopped = await (await harness.send(OWNER, "POST", "/cloud/automations/storm/run")).json() as { state: string; reason: string };
+    expect(stopped.state).toBe("skipped");
+    expect(harness.row("select enabled, paused_reason from cloud_automations where rule_id = 'storm'")).toEqual({ enabled: 0, paused_reason: "storm" });
+    expect(runs("storm").map((run) => run.state)).toEqual(["running", "skipped"]);
+  });
+
+  it("takes a webhook delivery only signed with the hook's own key, and one run per delivery", async () => {
+    const registered = await (await register("hooked", { spec: spec([{ kind: "webhook", hookId: "hook-abcdef12" }]) })).json() as { forward: { url: string; secret: string } };
+    const deliver = (body: string, options: { secret?: string; timestamp?: number; hookId?: string } = {}) => {
+      const timestamp = String(options.timestamp ?? clock);
+      const signature = createHmac("sha256", Buffer.from(options.secret ?? registered.forward.secret, "hex")).update(`${timestamp}.${body}`).digest("hex");
+      return handleCloudRequest(new Request(registered.forward.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-ade-hook-id": options.hookId ?? "hook-abcdef12", "x-ade-hook-timestamp": timestamp, "x-ade-hook-signature": signature },
+        body,
+      }), harness.env);
+    };
+    const delivery = JSON.stringify({ eventId: "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a11", method: "POST", body: "{\"ok\":true}", bodyEncoding: "utf8", receivedAt: new Date(clock).toISOString() });
+
+    expect((await deliver(delivery, { secret: "ab".repeat(32) })).status).toBe(401);
+    expect((await deliver(delivery, { timestamp: clock - 10 * 60_000 })).status).toBe(401);
+    expect((await deliver(delivery, { hookId: "hook-unknown1" })).status).toBe(410);
+    expect(runs("hooked")).toEqual([]);
+
+    const first = await deliver(delivery);
+    expect(first.status).toBe(202);
+    // The relay sends again until it hears 2xx: the same delivery is the same run.
+    const again = await deliver(delivery);
+    expect((await again.json() as { runId: string }).runId).toBe((await first.json() as { runId: string }).runId);
+    expect(runs("hooked")).toHaveLength(1);
+  });
+
+  it.each<[string, string, string, string, string | null]>([
+    ["9:00 the day the clocks go forward", "0 9 * * *", "America/New_York", "2026-03-07T15:00:00Z", "2026-03-08T13:00:00.000Z"],
+    ["3:30 the morning the clocks go forward", "30 3 * * *", "America/New_York", "2026-03-07T15:00:00Z", "2026-03-08T07:30:00.000Z"],
+    ["a time the clocks skip doesn't fire that day", "30 2 * * *", "America/New_York", "2026-03-07T08:00:00Z", "2026-03-09T06:30:00.000Z"],
+    ["a time the clocks pass twice fires at its first pass", "30 1 * * *", "America/New_York", "2026-11-01T04:00:00Z", "2026-11-01T05:30:00.000Z"],
+    ["...and not again at its second", "30 1 * * *", "America/New_York", "2026-11-01T05:30:00Z", "2026-11-02T06:30:00.000Z"],
+    ["Monday 9:00 in Berlin", "0 9 * * 1", "Europe/Berlin", "2026-11-11T12:00:00Z", "2026-11-16T08:00:00.000Z"],
+    ["every 15 minutes in UTC", "*/15 * * * *", "UTC", "2026-11-11T12:07:00Z", "2026-11-11T12:15:00.000Z"],
+    ["a zone ADE doesn't know", "0 9 * * *", "Mars/Olympus", "2026-11-11T12:00:00Z", null],
+  ])("a schedule's next fire: %s", (_label, cron, zone, after, expected) => {
+    const next = nextFireAt(cron, zone, Date.parse(after));
+    expect(next == null ? null : new Date(next).toISOString()).toBe(expected);
   });
 });
