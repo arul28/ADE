@@ -3103,3 +3103,40 @@ The renderer sends the tab strip only when its JSON changes. The Location
 copies read this computer's project list on mount, on window focus, and
 after a removal or a finished copy in the same window; no poll. The
 account add and remove are one server call each, on a press.
+
+### The tab has no machine: the joined desktop branch (join, 2026-11-12)
+
+Dev app on `ade/account-desktop-pages` at `7976f7002` (the eight desktop
+branches joined, `origin/main` merged once, the direct GitHub reader added)
+against the B2 head `237027ca8`, checked out over the same tree. Same Mac (Mac
+Studio M4 Max), `--first-run --keep`, the account brain on its own socket, the
+dev test machine "tabs" connected, nothing streaming, one reload before each
+idle window. The sweep fixes made after these numbers add no timer, poll or
+subscription (one more `useActiveStartOn` read on the Work draft, and one
+cross-machine re-read after a bulk settle).
+
+| Row | Before (B2) | After (join) | Ceiling |
+| --- | --- | --- | --- |
+| Process start to first window, warm, median | 593 ms | 557 ms | not set |
+| Lanes open: IPC calls in the first window (3 runs) | 44 / 39 / 39 | 41 / 35 / 35 | — |
+| PRs open: IPC calls in the first window (3 runs) | 27 / 24 / 22 | 30 / 25 / 24 | — |
+| Idle `pr.getGithubSnapshot` calls, Work / PRs open (60 s) | — | 0 / 0 | 0 |
+| Idle runtime events per minute, Work open | 91 | 104 | 150 (proposed) |
+| Idle runtime events per minute, Lanes open | 98 | 116 | 150 (proposed) |
+| Static tabs idle, renderer main thread | — | 0.8–5.6 ms/s | — |
+| Tab switch median, first changed frame / settled | 26 / 88 ms | 19.9 / 58 ms | — |
+| Work chat switch, warm, first changed frame / settled median | 37.9 / 147 ms | 32.7 / 144 ms | 60 ms first frame |
+| Home "+" to the add window painted, median | 34 ms | 39 ms | — |
+| Reload to the tab painted | 436 ms | 419 ms | — |
+
+No row is more than 25% worse or over a ceiling. The two event rows rise
+by 14% and 18%; both stay under 150. Automations reads 4.8–5.6 ms/s idle
+against 2.9 before. A 30 s CPU profile shows about 0.3 ms/s of JavaScript and
+1.2 ms/s of garbage collection, which is noise. Its extra renders come from
+`crossMachineLanesByMachineId`: `mergeCrossMachineLanes` stores a new
+`lastSyncedAtMs` about every 10 s per other machine, and the B2 head does the
+same. The PRs row of the tab switch has one 52 ms long frame with 1,959 nodes
+against 1,671 before; the ADE repository has more open pull requests now.
+AppShell renders about 9 times in 30 s idle against 0–2 before; the cause is
+not found, and it is not `useTabCopyPin` or `useActiveRepositoryReader`
+(replacing both did not change the count).
