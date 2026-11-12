@@ -140,8 +140,7 @@ import {
   selectCursorAgentTurnUsage,
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
-import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
-import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
+import { pinnedToolInstallGeneration, retryPinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   openCursorCloudCredentialStore,
@@ -1275,8 +1274,10 @@ export function createAiIntegrationService(args: {
       // The provider's own list (persisted from the last chat or probe) is the
       // picker; curated rows are only the fallback before one exists. Refresh
       // it in the background when it is missing or old, so this read never
-      // blocks on a subprocess.
-      warmAcpModelCatalog(provider, { logger });
+      // blocks on a subprocess. Only from a copy already here: a signed-in
+      // provider still waiting for its first-use download lists curated rows.
+      const onDisk = auth.some((entry) => entry.type === "cli-subscription" && entry.cli === provider && Boolean(entry.path));
+      if (onDisk || health?.state === "ready") warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -2342,14 +2343,11 @@ export function createAiIntegrationService(args: {
             force: options?.force,
             shallowCliAuth: true,
           }));
-          // A provider signed in since launch whose pinned tool was never
-          // downloaded starts downloading now, before the reads below, so its
-          // status reads "downloading"; the refresh after it lands sees the tool.
-          const startedToolFetches = startDemandedAgentToolFetches({
-            enabled: (provider) => !isProviderDisabled(projectConfigService.get().effective.ai, provider),
-            opencodeBacked: auth.some((entry) => entry.type === "api-key" || entry.type === "openrouter" || entry.type === "local"),
-          });
-          if (startedToolFetches.length) logger.info("ai.pinned_tool_fetch_started", { tools: startedToolFetches.join(",") });
+          // A status read never downloads an agent: a signed-in provider whose
+          // pinned tool is not here yet reads "downloads on first use" and
+          // still lists its models (`detectAllAuth`), and its first turn
+          // downloads it. Downloading here fetched every signed-in agent on a
+          // computer whose sign-ins were all copied over (ADE Cloud).
           // No live sign-in check here: Copilot's comes from its own config
           // file, and the SDK's answer only from the one-provider check
           // (`verifyProviderSignIn`), through runtime health.
@@ -2619,6 +2617,10 @@ export function createAiIntegrationService(args: {
     storeApiKey(provider: string, key: string): void {
       storeStoredApiKey(provider, key);
       if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
+      // A saved key's models run on OpenCode, and its model list needs
+      // OpenCode on this machine. Saving one is the person setting that up,
+      // so this (not a status read) is where OpenCode starts downloading.
+      else if (!isProviderDisabled(projectConfigService.get().effective.ai, "opencode")) void retryPinnedToolDownload("opencode");
       invalidateProviderReadinessCaches();
     },
     deleteApiKey(provider: string): void {

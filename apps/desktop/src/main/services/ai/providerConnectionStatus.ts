@@ -32,7 +32,7 @@ import {
 } from "../../../shared/acpProviderMetadata";
 import { claudeConfigHome, codexConfigHome, COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
-import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
+import { isLiveLockTimeout, pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 /**
@@ -49,14 +49,17 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
 
 /**
  * Whether ADE's copy of `provider` is on its way: downloading now, or
- * downloaded the first time this machine uses it. Either way nothing is wrong
- * yet. A failed or unavailable copy is not pending.
+ * downloaded the first time this machine uses it, or still being installed by
+ * another ADE on this machine. Either way nothing is wrong yet. A failed or
+ * unavailable copy is not pending.
  */
 function runtimeDownloadPending(provider: string): boolean {
   const tool = pinnedToolForProvider(provider);
   if (!tool) return false;
   const { status } = pinnedToolState(tool.tool, tool.label);
-  return status.state === "downloading" || (status.state === "missing" && status.fetchAllowed);
+  return status.state === "downloading"
+    || (status.state === "missing" && status.fetchAllowed)
+    || (status.state === "failed" && isLiveLockTimeout(status));
 }
 
 /** Providers whose current snapshot disagreement Sentry has already heard about. */
@@ -147,8 +150,8 @@ function copilotRuntimeMissingBlocker(cli: CliAuthStatus | null, authAvailable: 
   const state = cli?.pinnedState ?? pinnedToolState("copilot", "the Copilot runtime").state;
   if (state !== "missing") return runtimeMissingBlocker("copilot", cli);
   return authAvailable
-    ? "ADE has not downloaded the Copilot runtime on this machine yet. Refresh to download it."
-    : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login` and refresh, and ADE downloads it.";
+    ? "ADE has not downloaded the Copilot runtime on this machine yet. It downloads the first time this machine uses it."
+    : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login`; ADE downloads it the first time this machine uses it.";
 }
 
 function createUnavailableStatus(
