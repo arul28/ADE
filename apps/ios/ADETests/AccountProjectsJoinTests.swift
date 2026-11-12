@@ -51,6 +51,14 @@ final class AccountProjectsJoinTests: XCTestCase {
       project("f", name: "docs", removedAt: 1, mergedInto: projectId("z")),
     ]))
     XCTAssertEqual(state.mergedTargets, [projectId("a"): projectId("c"), projectId("b"): projectId("c")])
+    // A link follows the same chains: to the live project, to a removed one
+    // (the link says removed, not unknown), or to a row the phone lacks.
+    func link(_ seed: String) -> AccountProjectLinkTarget {
+      resolveAccountProjectLink(id: projectId(seed), owner: nil, machineHint: nil, state: state, startOnOrder: { _ in [] })
+    }
+    XCTAssertEqual(link("a"), .noCopy(projectName: "ade"))
+    XCTAssertEqual(link("d"), .removed)
+    XCTAssertEqual(link("f"), .unknown)
   }
 
   // MARK: - Join
