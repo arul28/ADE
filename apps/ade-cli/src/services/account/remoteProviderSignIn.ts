@@ -12,7 +12,7 @@
  */
 
 import {
-  CLOUD_REMOTE_SIGN_IN_ELSEWHERE,
+  cloudRemoteSignInRefusal,
   cloudRemoteSignInOf,
   type CloudRemoteSignInState,
   type CloudRemoteSignInStatus,
@@ -89,7 +89,7 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
     async start(provider: string): Promise<CloudRemoteSignInStatus> {
       const row = cloudRemoteSignInOf(provider);
       if (!row) throw new Error(`ADE doesn't know the provider "${provider}".`);
-      if (row.remoteSignIn === "none") throw new Error(`${row.reason ?? ""} ${CLOUD_REMOTE_SIGN_IN_ELSEWHERE}`.trim());
+      if (row.remoteSignIn === "none") throw new Error(cloudRemoteSignInRefusal(row));
       let jobId: string;
       let runner: Runner;
       let status: RunnerStatus;

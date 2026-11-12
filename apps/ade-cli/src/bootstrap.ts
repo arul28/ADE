@@ -1,4 +1,5 @@
 import "./lib/packagedRuntimeFlag";
+import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
@@ -3500,7 +3501,14 @@ export async function createAdeRuntime(args: {
         listCloudHomes: () => projectConfigService.cloudHomedAutomationRules(),
         compile: (ruleId) => {
           const origin = readOrigin();
-          return origin ? automationService.cloudHomeSpec(ruleId, origin) : { problem: "This project has no GitHub remote." };
+          if (!origin) return { problem: "This project has no GitHub remote." };
+          const compiled = automationService.cloudHomeSpec(ruleId, origin);
+          if (!("spec" in compiled)) return compiled;
+          // Runs are made on this ADE's update track (the machine's saved one, else this build's).
+          const version = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null;
+          // An Alpha build makes Beta computers, as every other cloud create does (`cloudAccess.updateChannel`).
+          const track = /-alpha\b/i.test(version ?? "") ? "beta" : resolveSelectedUpdateTrack(version);
+          return { spec: { ...compiled.spec, channel: track } };
         },
         api: () => {
           const baseUrl = getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] });
