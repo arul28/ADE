@@ -1529,7 +1529,7 @@ import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSd
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
-import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/usage";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import {
   acquirePiSdkConnection,
   isPiSdkPooledAlive,
@@ -46201,7 +46201,10 @@ export function createAgentChatService(args: {
    * Every chat that has been on a host, by its redaction: a shared host's
    * stderr tail holds lines from all of them, including chats that left.
    */
-  const codexRedactionsByHost = new WeakMap<CodexAppServerHost, Set<(text: string) => string>>();
+  // Per host, one redaction per distinct server config (identical configs share
+  // one), the newest few only: the tail is 4,000 chars, so only recent chats show in it.
+  const codexRedactionsByHost = new WeakMap<CodexAppServerHost, Map<string, (text: string) => string>>();
+  const CODEX_HOST_REDACTIONS_KEPT = 32;
   /**
    * What the app-server printed last, for the chat that will show it: redacted
    * with that chat's servers as they are now, and every chat's servers as they
@@ -46211,7 +46214,7 @@ export function createAgentChatService(args: {
     let text = host.stderrTail().trim();
     if (!text) return "";
     text = codexRedactionByClient.get(client)?.(text) ?? text;
-    for (const redact of codexRedactionsByHost.get(host) ?? []) text = redact(text);
+    for (const redact of codexRedactionsByHost.get(host)?.values() ?? []) text = redact(text);
     return redactSecrets(text);
   };
   /**
@@ -46699,8 +46702,11 @@ export function createAgentChatService(args: {
     codexRedactionByClient.set(hostClient, (text) => redactCallerMcpText(text, callerMcpServersForRedaction(managed)));
     // The servers as they are now, not the chat: a closed chat isn't kept alive by the host.
     const serversAtAttach = callerMcpServersForRedaction(managed);
-    const hostRedactions = codexRedactionsByHost.get(host) ?? new Set<(text: string) => string>();
-    hostRedactions.add((text) => redactCallerMcpText(text, serversAtAttach));
+    const hostRedactions = codexRedactionsByHost.get(host) ?? new Map<string, (text: string) => string>();
+    const configKey = JSON.stringify(serversAtAttach);
+    hostRedactions.delete(configKey);
+    hostRedactions.set(configKey, (text) => redactCallerMcpText(text, serversAtAttach));
+    while (hostRedactions.size > CODEX_HOST_REDACTIONS_KEPT) hostRedactions.delete(hostRedactions.keys().next().value!);
     codexRedactionsByHost.set(host, hostRedactions);
     host.attach(hostClient);
     if (host.clientCount() > 1) {

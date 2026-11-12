@@ -3,8 +3,8 @@ import { estimateInstalledToolBytes, type FreeSpaceReader } from "./diskSpace";
 import { ToolError } from "./errors";
 import { acquireToolLock, type ToolLockOptions } from "./lock";
 import type { ToolTargetPin, ToolsManifest } from "./manifest";
-import { type ToolsRootLayout, toolsLockRoot, toolUsageRoot } from "./paths";
-import { makeRoomInSystemCache } from "./systemCache";
+import { type ToolsRootLayout, toolsLockRoot, toolsStagingRoot, toolUsageRoot } from "./paths";
+import { directoryBytes, makeRoomInSystemCache } from "./systemCache";
 import { warnTools } from "./toolsLog";
 
 /**
@@ -39,10 +39,13 @@ async function reserveRoom(args: {
     const acquisition = await acquireToolLock({ ...args.lock, lockPath: budgetLockPath(args.layout.primary) });
     if (acquisition.kind !== "acquired") return false;
     try {
+      // An install still running already shows in the cache by what it has
+      // staged; only the rest of its reservation is counted on top.
+      const staged = reservedBytes > 0 ? await directoryBytes(toolsStagingRoot(args.layout.primary)) : 0;
       const fits = await makeRoomInSystemCache({
         root: args.budget.root,
         budgetBytes: args.budget.bytes,
-        needBytes: args.needBytes + reservedBytes,
+        needBytes: args.needBytes + Math.max(0, reservedBytes - staged),
         manifest: args.manifest,
         keepDir: args.keepDir,
         usageRoot: toolUsageRoot(args.layout),
@@ -104,14 +107,22 @@ export async function installIntoBestRoot(args: {
     await args.installAt(fallback);
     return;
   }
+  let reserved = Boolean(budget);
+  const release = () => {
+    if (!reserved) return;
+    reserved = false;
+    reservedBytes = Math.max(0, reservedBytes - needBytes);
+  };
   try {
     await args.installAt(layout.primary);
   } catch (error) {
     // The system layer's own disk filled up under its budget: the home disk still may not be.
     if (!(error instanceof ToolError && error.kind === "disk-space")) throw error;
     warnTools("tools.system_cache_disk_full", { tool: args.name, fallback: "home" });
+    // Nothing of this tool lands in the system cache now.
+    release();
     await args.installAt(fallback);
   } finally {
-    if (budget) reservedBytes = Math.max(0, reservedBytes - needBytes);
+    release();
   }
 }

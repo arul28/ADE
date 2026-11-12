@@ -34,7 +34,9 @@ export function withReportedClaudeVersion(binary: AiClaudeAvailability["binary"]
  * Whether a provider's models are offered: its runtime is ready, or it is
  * signed in with ADE's copy still to download (its first turn downloads it).
  * `runtimeAvailable` stays false in the second case, for health and banners.
- * Claude's row (below) follows the same rule.
+ * Claude's row (below) is stricter: a ready runtime also needs its binary.
+ * Kept here, beside that row, rather than in `providerConnectionStatus`,
+ * which status tests replace whole.
  */
 export function connectionListable(connection: AiProviderConnectionStatus | null | undefined): boolean {
   return Boolean(connection?.runtimeAvailable || (connection?.runtimeDownloadPending && connection.authAvailable));

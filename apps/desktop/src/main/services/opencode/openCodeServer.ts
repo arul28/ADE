@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
-import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/usage";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";

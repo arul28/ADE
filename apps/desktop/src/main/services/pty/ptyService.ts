@@ -195,7 +195,7 @@ import {
   type PinnedCliProvider,
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
-import { holdToolInstalls } from "../../../../../ade-cli/src/services/tools/usage";
+import { holdToolInstalls } from "../../../../../ade-cli/src/services/tools/inUse";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";

@@ -51,7 +51,7 @@ import type { AcpDialect, AcpSpawnPlan } from "./acpHostTypes";
 import { prepareAcpScratchDir, removeAcpScratchDir } from "./acpScratchDirs";
 import { redactProcessOutput } from "../../../utils/redaction";
 import { attachAgentStderrTail } from "../agentProcessStderr";
-import { holdToolInstallsWhileRunning } from "../../../../../../ade-cli/src/services/tools/usage";
+import { holdToolInstallsWhileRunning } from "../../../../../../ade-cli/src/services/tools/inUse";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;

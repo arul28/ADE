@@ -5,7 +5,7 @@ import { type ToolsContext, resolveContext, supersededVersionDirs } from "./inst
 import { readToolsLedger, RETIRED_PACKAGE_GRACE_MS, writeToolsLedger } from "./ledger";
 import { collectToolVersionOverrides } from "./overrides";
 import { isToolInstalled, toolPackageDir, toolsLockRoot, toolsStagingRoot, toolVersionDir, writableRoots } from "./paths";
-import { toolInstallInUse } from "./usage";
+import { toolInstallInUse } from "./inUse";
 
 export type GcToolsOptions = ToolsContext & {
   /** Keep the newest non-pinned version as a rollback target. Defaults to true. */

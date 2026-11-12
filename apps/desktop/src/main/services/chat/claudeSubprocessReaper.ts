@@ -11,7 +11,7 @@ import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/pro
 import { createPrivateKeyStreamFilter, scrubOutputTail } from "../../../shared/sentry/scrub";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
-import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/usage";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 
 /**
  * Every process's command line, for the MCP config sweep; null on Windows or

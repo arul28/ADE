@@ -88,9 +88,9 @@ function providerErrorDetail(body: unknown): string | null {
     .replace(/\bhttps?:\/\/\S+/gi, "")
     .replace(/\bBearer\s+\S+/gi, "")
     .replace(/[A-Za-z0-9_+/=-]{32,}/g, "…")
-    // IPv4 (with an optional port or prefix), then IPv6 (at least three groups, `::` forms included).
+    // IPv4 (with an optional port or prefix), then IPv6: at least three groups and a `::` or a 3-4 digit group, so a clock time (12:30:45) or `a:b:c` stays.
     .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+|\/\d+)?\b/g, "…")
-    .replace(/(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/gi, (match) => (/[0-9a-f]/i.test(match) ? "…" : match))
+    .replace(/(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/gi, (match) => (/::/.test(match) || /(?:^|:)[0-9a-f]{3,4}(?=:|$)/i.test(match) ? "…" : match))
     // Host and node names: dotted names (`node-3.internal`, `ip-10-0-0-1.ec2.internal`) and node-style ids.
     .replace(/\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.(?:internal|local|lan|cluster|svc|compute|ec2|corp|intra|net|io|com|cloud|app)\b(?::\d+)?/gi, "…")
     .replace(/\b(?:node|host|worker|ip)-[a-z0-9-]*\d[a-z0-9-]*\b/gi, "…")

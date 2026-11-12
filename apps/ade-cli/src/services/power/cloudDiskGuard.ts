@@ -30,17 +30,23 @@ export const CLOUD_DISK_GROW_STARTED_COOLDOWN_MS = 10 * 60_000;
  * computer. Gone once the disk has room again.
  */
 export type CloudDiskGrowState =
-  | { v: 1; state: "growing"; toGb: number; at: number }
-  | { v: 1; state: "refused"; reason: string; wayOut: string; at: number };
+  | { v: 1; state: "growing"; toGb: number; at: number; instanceId?: string }
+  | { v: 1; state: "refused"; reason: string; wayOut: string; at: number; instanceId?: string };
 
 export function cloudDiskGrowStatePath(adeHome: string): string {
   return path.join(adeHome, "cloud", "disk-grow.json");
 }
 
-export function readCloudDiskGrowState(file: string): CloudDiskGrowState | null {
+/**
+ * The state, or null. With `instanceId`, a state another computer wrote is
+ * null: the file is on the disk that `ade cloud copy` and `move` copy, so a
+ * copy would otherwise inherit its source's cooldown or refusal.
+ */
+export function readCloudDiskGrowState(file: string, instanceId?: string | null): CloudDiskGrowState | null {
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<CloudDiskGrowState> | null;
     if (value?.v !== 1 || typeof value.at !== "number") return null;
+    if (instanceId && value.instanceId !== instanceId) return null;
     if (value.state === "growing" && typeof value.toGb === "number") return value as CloudDiskGrowState;
     if (value.state === "refused" && typeof value.reason === "string" && typeof value.wayOut === "string") return value as CloudDiskGrowState;
     return null;
@@ -97,6 +103,6 @@ export function cloudDiskGuardOptions(adeHome: string): {
   return {
     thresholdsForSize: diskPressureThresholdsForSize,
     // Read only when the guard refuses, so the note is as fresh as the refusal.
-    refusalMessage: (kind, snapshot) => cloudDiskRefusalMessage(kind, snapshot, readCloudDiskGrowState(stateFile)),
+    refusalMessage: (kind, snapshot) => cloudDiskRefusalMessage(kind, snapshot, readCloudDiskGrowState(stateFile, process.env.ADE_CLOUD_INSTANCE_ID?.trim() || null)),
   };
 }

@@ -4,7 +4,8 @@ import path from "node:path";
 import { type FreeSpaceReader, readFreeBytes, TOOL_SPACE_HEADROOM_BYTES } from "./diskSpace";
 import type { ToolsManifest } from "./manifest";
 import { SYSTEM_CACHE_TOOLS_DIR, TOOL_INSTALL_SENTINEL } from "./paths";
-import { readToolUsage, toolInstallInUse } from "./usage";
+import { readToolUsage } from "./usage";
+import { toolInstallInUse } from "./inUse";
 
 /**
  * The budget of a cache folder that is not the person's disk
@@ -30,7 +31,7 @@ const PACKAGE_CACHE_SAMPLE = 64;
 type Candidate = { dir: string; bytes: number; lastUsedAt: number };
 
 /** Bytes under `dir`, files only, symlinks not followed. Unreadable entries count as zero. */
-async function directoryBytes(dir: string): Promise<number> {
+export async function directoryBytes(dir: string): Promise<number> {
   let total = 0;
   const pending = [dir];
   while (pending.length) {

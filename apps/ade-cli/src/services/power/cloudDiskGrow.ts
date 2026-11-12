@@ -84,7 +84,7 @@ export function createCloudDiskGrower(deps: {
   // A grow restarts the computer, so the last boot's grow or refusal is read
   // back from the state file it wrote: the cooldown and the refusal's wait
   // hold across that restart instead of growing again at the first check.
-  const previous = readCloudDiskGrowState(stateFile);
+  const previous = readCloudDiskGrowState(stateFile, deps.instanceId);
   let refusedAt: number | null = previous?.state === "refused" ? previous.at : null;
   let grewAt: number | null = previous?.state === "growing" ? previous.at : null;
   let failedAt: number | null = null;
@@ -178,7 +178,7 @@ export function createCloudDiskGrower(deps: {
     const { cpu, memory, disk: diskGb } = instance.resources;
     const toGb = diskGb + catalog.diskStepGb;
     try {
-      writeState({ v: 1, state: "growing", toGb, at: now() });
+      writeState({ v: 1, state: "growing", toGb, at: now(), instanceId: deps.instanceId });
       await client.resizeInstance(deps.instanceId, { cpu, memory, disk: toGb }, { computerIdle: true, origin: "auto" });
       grewAt = now();
       failedAt = null;
@@ -190,7 +190,7 @@ export function createCloudDiskGrower(deps: {
         refusedAt = now();
         // A server before plans sends no reason: its two codes map onto the nearest exact one.
         const reason = error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit");
-        writeState({ v: 1, state: "refused", reason, wayOut: cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.", at: now() });
+        writeState({ v: 1, state: "refused", reason, wayOut: cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.", at: now(), instanceId: deps.instanceId });
         // The card says "full" once the guard stops heavy work; the chat's refusal says it at once.
         if (isUrgentDiskPressure(disk.pressure)) await setNotice(client, reason);
         deps.logger?.info("cloud.disk_grow_refused", { code: error.code, reason });
