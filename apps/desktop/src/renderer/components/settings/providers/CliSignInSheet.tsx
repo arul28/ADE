@@ -16,7 +16,7 @@ import {
 } from "../../../../shared/types";
 import { providerActionMessage } from "./providerErrorMessage";
 import { linkHost, signInAccountMismatch, type SignInStage } from "./signInSheetParts";
-import { SignInSheetFrame, STATUS_POLL_MS, useSuccessHold, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
+import { isCheckingCode, SignInSheetFrame, STATUS_POLL_MS, useSuccessHold, verifyingHintFor, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import type { ProvidersViewContext } from "./types";
 
@@ -223,7 +223,7 @@ export function CliSignInSheet({ provider, providerLabel, pin, isThisMachine, ma
   }, [applyLogin, code]);
 
   // After a pasted code the CLI checks it.
-  const verifying = login?.state === "verifying" || (codeSent && login?.state === "running" && !login.awaitingCode);
+  const verifying = login?.state === "verifying" || isCheckingCode(login) || (codeSent && login?.state === "running" && !login.awaitingCode);
   const host = linkHost(login?.url ?? null);
   const signedInAs = login?.email?.trim() || null;
   const wrongAccount = phase === "success" && signInAccountMismatch(expectedAccount, signedInAs);
@@ -247,6 +247,7 @@ export function CliSignInSheet({ provider, providerLabel, pin, isThisMachine, ma
       : login.downloading
         ? login.downloading
         : `Waiting for ${providerLabel}'s sign-in link…`,
+    verifyingHint: verifyingHintFor(login),
     url: login?.url ?? null,
     deviceCode: login?.deviceCode ?? null,
     codeHint: login?.deviceCode

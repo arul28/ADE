@@ -1668,6 +1668,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE Cloud",
   },
   {
+    id: "ade-cloud.invite",
+    label: "Invite friends to ADE Cloud",
+    keywords: ["invite", "invite friends", "referral", "refer", "free hours", "invite code", "earn hours"],
+    tab: "ade-cloud",
+    anchor: "cloud-invite",
+    // The account's invite link and code box; the Work sidebar's invite pill lands here.
+    scope: "account",
+    web: "hidden",
+    group: "ADE Cloud",
+  },
+  {
     id: "ade-cloud.sizes",
     label: "ADE Cloud sizes",
     keywords: ["size", "sizes", "small", "medium", "large", "x-large", "cpu", "memory", "ram", "disk", "docker", "android", "default size", "tier"],

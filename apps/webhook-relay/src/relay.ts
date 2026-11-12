@@ -29,6 +29,7 @@ import { authenticateAccount, hasValidBearerAccountToken, readBearerToken } from
 import { handleLinearAgentRequest } from "./linearAgent";
 import {
   handleCustomHookDelivery,
+  handleCustomHookForward,
   handleCustomHookRegister,
   handleCustomHookSubscription,
   handleAckCustomHookEvents,
@@ -2115,6 +2116,7 @@ export async function handleRequest(request: Request, env: RelayEnv, ctx?: Execu
 
   if (url.pathname === "/account/integrations") return await handleAccountIntegrations(request, env);
   if (url.pathname === "/hooks/register") return await handleCustomHookRegister(request, env);
+  if (url.pathname === "/hooks/forward") return await handleCustomHookForward(request, env, ctx);
   if (url.pathname === "/hooks/events") return await handleListCustomHookEvents(request, env);
   if (url.pathname === "/hooks/ack") return await handleAckCustomHookEvents(request, env);
   if (url.pathname === "/hooks/subscribe") return await handleCustomHookSubscription(request, env);

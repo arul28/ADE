@@ -33,6 +33,7 @@ import {
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import type { CloudProvider, CloudInstance } from "./cloudProvider";
+import { cloudSignInNotStartedMessage, startCloudBoxSignInWhenReady } from "./cloudBoxSignInStart";
 import { recordCloudMachineKey } from "./cloudMachines";
 import { enableCloudSleep } from "./cloudSleep";
 import {
@@ -42,11 +43,12 @@ import {
   type CloudPendingCreateStore,
   type CloudReconcileResult,
 } from "./cloudPendingCreates";
+import type { HeadlessApprovalResult } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** `cancelled`: ADE closed the window itself because the box signed in another way. */
-export type CloudApprovalWindowResult = "signed_in" | "closed" | "timed_out" | "cancelled";
+/** `cancelled`: ADE closed the window itself because the box signed in another way. The same values as a brain's headless approval. */
+export type CloudApprovalWindowResult = HeadlessApprovalResult;
 
 /**
  * `ticket`: a one-time sign-in link from `/device/approve`; nothing to type,
@@ -83,7 +85,7 @@ export type CloudMachineCreatorDeps = {
   handOffApproval?: (args: { url: string; userCode: string; name: string }) => void;
   /**
    * A brain with no window: the one-time link opened in a headless Chromium
-   * on this machine (cloudHeadlessApproval.ts). Used only when the sign-in
+   * on this machine (ade-cli services/account/cloudHeadlessApproval.ts). Used only when the sign-in
    * passes `selfApproval`; anything short of signed in falls back to
    * `handOffApproval` with a fresh code.
    */
@@ -148,40 +150,6 @@ const RENAME_ATTEMPTS_AFTER_JOIN = 3;
 /** `ade auth status` on the box, as JSON: whether its brain answers and is signed in. */
 const AUTH_STATUS_COMMAND = "timeout 20 ade auth status --json 2>/dev/null";
 
-/**
- * Starts a device sign-in on the box in the background (it keeps polling for
- * the approval after exec returns) and prints the code it shows: `ade login
- * --headless` for a new machine, `ade machines reconnect` for one removed from
- * the account. Reuses a sign-in that is already running, so a retried exec
- * never makes a second code.
- */
-function startSignInCommand(kind: "login" | "reconnect", fresh = false): string {
-  const command = kind === "login" ? "ade login --headless --max-wait 900" : "ade machines reconnect";
-  const files = `$ADE_HOME/logs/cloud-${kind === "login" ? "sign-in" : "reconnect"}`;
-  return [
-    `log="${files}.log"; pidf="${files}.pid"`,
-    'mkdir -p "$ADE_HOME/logs"',
-    // A fresh code: the running sign-in's code was already used.
-    ...(fresh ? [`if [ -f "$pidf" ] && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; then kill "$(cat "$pidf")" 2>/dev/null; sleep 1; fi`] : []),
-    // A pid only counts while it is still that command: a copied disk (a fork)
-    // carries its source's pid file, and the number can belong to anything here.
-    `if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; }; then`,
-    '  : > "$log"',
-    `  nohup setsid ${command} > "$log" 2>&1 < /dev/null &`,
-    '  echo $! > "$pidf"',
-    "fi",
-    "i=0",
-    "while [ $i -lt 90 ]; do",
-    '  code=$(sed -n "s/.*enter code: *\\([A-Za-z0-9-]*\\).*/\\1/p" "$log" | head -n 1)',
-    '  if [ -n "$code" ]; then echo "ADE_USER_CODE=$code"; exit 0; fi',
-    '  if ! kill -0 "$(cat "$pidf")" 2>/dev/null; then break; fi',
-    "  sleep 1; i=$((i+1))",
-    "done",
-    'tail -n 5 "$log" >&2',
-    "exit 3",
-  ].join("\n");
-}
-
 /** The box's own machine key: the row it publishes to the account directory. */
 const MACHINE_KEY_COMMAND = [
   'node -e \'const fs=require("fs"),p=require("path");',
@@ -231,18 +199,6 @@ export async function waitForCloudBoxAuth(
     auth = await readCloudBoxAuth(client, instanceId, signal);
   }
   return auth;
-}
-
-/** Starts a device sign-in on the box (see `startSignInCommand`) and returns its code, or null when none showed. */
-export async function startCloudBoxSignIn(
-  client: CloudProvider,
-  instanceId: string,
-  kind: "login" | "reconnect",
-  signal?: AbortSignal,
-  options: { fresh?: boolean } = {},
-): Promise<{ userCode: string | null; exitCode: number }> {
-  const started = await client.exec(instanceId, startSignInCommand(kind, options.fresh === true), { timeoutMs: 120_000, signal });
-  return { userCode: /ADE_USER_CODE=([A-Za-z0-9-]+)/.exec(started.stdout)?.[1] ?? null, exitCode: started.exitCode };
 }
 
 /** `/device/approve`'s refusals, in words. */
@@ -698,12 +654,12 @@ export async function bringCloudBoxIntoAde(
 
     if (auth.signedIn !== true) {
       progress("signing_in", "Signing the new machine in to your account…", instance.id);
-      const started = await startCloudBoxSignIn(client, instance.id, "login", signal);
+      const started = await startCloudBoxSignInWhenReady(client, instance.id, "login", { signal, sleep, logger });
       checkCancelled();
       const userCode = started.userCode;
       if (!userCode) {
-        logger.warn?.("cloud.sign_in_no_code", { instanceId: instance.id, exitCode: started.exitCode });
-        throw new Error("The new machine didn't start its sign-in.");
+        logger.warn?.("cloud.sign_in_no_code", { instanceId: instance.id, exitCode: started.exitCode, reason: started.reason });
+        throw new Error(cloudSignInNotStartedMessage("The new machine", started));
       }
 
       await approveCloudMachineSignIn(deps, {
@@ -711,7 +667,7 @@ export async function bringCloudBoxIntoAde(
         name,
         instanceId: instance.id,
         requestId,
-        restartSignIn: async () => (await startCloudBoxSignIn(client, instance.id, "login", signal, { fresh: true })).userCode,
+        restartSignIn: async () => (await startCloudBoxSignInWhenReady(client, instance.id, "login", { signal, fresh: true, sleep, logger })).userCode,
         directory,
         signal,
         readSignedIn: async () => (await readAuth())?.signedIn === true,

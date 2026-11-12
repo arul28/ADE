@@ -5,6 +5,19 @@
 
 import type { CloudChatRow, CloudChatRowInput, CloudChatTranscriptPage } from "../../../account-directory/src/cloud/contract";
 
+/**
+ * The machine id (and pin target id) a window gives a saved chat's computer
+ * while it has no connection to it: the prefix, then the machine key. Main
+ * resolves a pin with such a target id by that key (`machines/goneTargets.ts`).
+ */
+export const SAVED_CHATS_MACHINE_PREFIX = "cloud-saved:";
+
+/** The machine key a saved-chat machine id names, or null. */
+export function savedChatsMachineKey(machineId: string | null | undefined): string | null {
+  if (!machineId?.startsWith(SAVED_CHATS_MACHINE_PREFIX)) return null;
+  return machineId.slice(SAVED_CHATS_MACHINE_PREFIX.length).trim() || null;
+}
+
 export type CloudSavedChatRowInput = CloudChatRowInput;
 export type CloudSavedChatRow = CloudChatRow;
 export type CloudSavedChatList = { chats: CloudSavedChatRow[]; nextCursor: string | null };

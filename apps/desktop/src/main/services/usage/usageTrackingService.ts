@@ -120,7 +120,7 @@ import {
 import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
-import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
+import { requireInstalledPinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { CODEX_APP_SERVER_STARTUP_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
@@ -631,7 +631,7 @@ function parseClaudeCliUsage(text: string): UsageWindow[] {
 async function captureClaudeCliUsage(logger: Logger, configHome?: string): Promise<string> {
   const module = await import("node-pty");
   const nodePty = ((module as unknown as { default?: typeof module }).default ?? module);
-  const resolved = await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
+  const resolved = requireInstalledPinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
   const env = {
     ...process.env,
     ...providerSelfUpdateEnv("claude"),
@@ -1719,8 +1719,8 @@ async function runCodexAppServerJsonRpc(args: {
 }): Promise<Map<number, Record<string, unknown>>> {
   const { logger, configHome, requests } = args;
   const timeoutMs = args.timeoutMs ?? CODEX_CLI_RPC_TIMEOUT_MS;
-  // ADE's pinned Codex, downloaded first if this machine never used it.
-  const codexPath = (await requirePinnedProviderExecutable("codex", () => resolveCodexExecutable())).path;
+  // ADE's pinned Codex when it is here. A usage read never downloads it.
+  const codexPath = requireInstalledPinnedProviderExecutable("codex", () => resolveCodexExecutable()).path;
   const lines = [
     JSON.stringify({
       jsonrpc: "2.0",

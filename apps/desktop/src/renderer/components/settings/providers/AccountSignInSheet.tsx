@@ -15,7 +15,7 @@ import { accountIdentityLine } from "./accounts/accountPresentation";
 import { pinnedProviderInstances } from "./accounts/useProviderInstances";
 import { providerActionMessage } from "./providerErrorMessage";
 import { linkHost, signInAccountMismatch, type SignInStage } from "./signInSheetParts";
-import { SignInSheetFrame, STATUS_POLL_MS, useSuccessHold, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
+import { isCheckingCode, SignInSheetFrame, STATUS_POLL_MS, useSuccessHold, verifyingHintFor, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 type AccountPhase = "form" | "signing" | "success" | "failed";
@@ -269,11 +269,12 @@ function AccountSignInSheet({
         ? "failed"
         : !login
           ? "starting"
-          : login.state === "verifying" ? "verifying" : "waiting";
+          : login.state === "verifying" || isCheckingCode(login) ? "verifying" : "waiting";
   useSuccessHold(stage, close);
 
   const view: SignInSheetView = {
     stage,
+    verifyingHint: verifyingHintFor(login),
     url: login?.url ?? null,
     deviceCode: login?.deviceCode ?? null,
     codeHint: login?.deviceCode

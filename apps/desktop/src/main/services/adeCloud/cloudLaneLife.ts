@@ -96,6 +96,9 @@ type JobRecord = {
   fromMachineKey?: string | null;
 };
 
+/** A finished job's card is closed: it leaves every view, and its record stays until it expires. */
+const isDismissed = (job: CloudLaneJobSnapshot) => typeof job.dismissedAt === "string" && job.dismissedAt.length > 0;
+
 function nowIsoFrom(now: () => number): string {
   return new Date(now()).toISOString();
 }
@@ -103,6 +106,23 @@ function nowIsoFrom(now: () => number): string {
 /** The lane size a computer runs at, or null at a size the lane sizes don't cover. */
 function tierOfInstance(instance: CloudInstance, tiers: readonly CloudTier[]): CloudTier | null {
   return cloudTierOfShape({ type: instance.type, cpu: instance.resources?.cpu, memoryGb: instance.resources?.memory }, tiers);
+}
+
+/**
+ * The disk a resize grows to, or null to keep it. Only a resize grows the disk
+ * (a move makes a new computer); never smaller than now, never past what the
+ * size lets the disk grow to. The server checks the plan's disk again.
+ */
+function diskGrowOf(raw: unknown, input: { kind: CloudLaneJobKind; currentGb: number | null; tier: CloudTier }): number | null {
+  if (raw == null) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) throw new Error("Pick a disk size in whole GB.");
+  if (input.kind !== "resize") throw new Error("A move makes a new computer. Grow its disk after the move.");
+  if (input.currentGb == null) throw new Error("ADE Cloud didn't say how big this computer's disk is, so ADE can't grow it.");
+  if (raw <= input.currentGb) return null;
+  if (input.tier.diskMaxGb != null && raw > input.tier.diskMaxGb) {
+    throw new Error(`${input.tier.label} lets the disk grow to ${input.tier.diskMaxGb} GB.`);
+  }
+  return raw;
 }
 
 function toWorkLanes(lanes: readonly CloudLaneWorkLane[] | null): CloudLaneWorkLane[] {
@@ -422,9 +442,15 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
 
   const runResize = async (record: JobRecord, signal: AbortSignal): Promise<void> => {
     if (finished(stageOf(record, "resize"))) return;
-    setStage(record, "resize", "running");
+    const diskGb = record.job.diskGb ?? null;
+    setStage(record, "resize", "running", { detail: diskGb ? `With a ${diskGb} GB disk` : null });
     assertActive(record, signal);
-    const result = await deps.machines.run({ action: "resize", instanceId: record.job.instanceId, shape: record.shape });
+    const result = await deps.machines.run({
+      action: "resize",
+      instanceId: record.job.instanceId,
+      shape: record.shape,
+      ...(diskGb ? { disk: diskGb } : {}),
+    });
     if (!result.ok) throw new Error(result.message);
     setStage(record, "resize", "done");
     deps.changed();
@@ -604,6 +630,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
     if (!shape) throw new Error("ADE can't make that size.");
     const kind: CloudLaneJobKind = (instance.type === "vm" ? "vm" : "default") === tier.type ? "resize" : "move";
+    const diskGb = diskGrowOf(raw.diskGb, { kind, currentGb: instance.resources?.disk ?? null, tier });
     const lane = cloudMachineLaneFactsOf(instance.metadata);
     const startedAt = nowIso();
     const job: CloudLaneJobSnapshot = {
@@ -622,11 +649,23 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       stages: cloudLaneJobStageIds(kind).map((id) => ({ id, status: "pending", detail: null, error: null, startedAt: null, endedAt: null })),
       error: null,
       requestedByChat: typeof raw.requestedByChat === "string" && raw.requestedByChat.trim() ? raw.requestedByChat.trim() : null,
+      diskGb,
       startedAt,
       updatedAt: startedAt,
       endedAt: null,
     };
     const record: JobRecord = { v: 1, job, shape: shape.id, targetType: tier.type, fromMachineKey: job.machineKey };
+    // A new change replaces what an older one of this lane left on screen (a
+    // failure, a finish): one job per lane in view, and an old failure never
+    // stands in front of the next change.
+    for (const older of jobs.values()) {
+      if (isLive(older.job) || isDismissed(older.job)) continue;
+      const sameLane = (job.laneId != null && older.job.laneId === job.laneId)
+        || older.job.instanceId === instanceId || older.job.fromInstanceId === instanceId;
+      if (!sameLane) continue;
+      older.job.dismissedAt = startedAt;
+      publish(older);
+    }
     jobs.set(job.jobId, record);
     publish(record);
     logger.info?.("cloud.lane_job_started", { jobId: job.jobId, kind, timing, toSizeId: tier.id });
@@ -654,6 +693,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     }
     record.job.phase = "running";
     record.job.endedAt = null;
+    record.job.dismissedAt = null;
     publish(record);
     void runJob(record);
     return structuredClone(record.job);
@@ -669,6 +709,22 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     record.job.endedAt = nowIso();
     running.get(record.job.jobId)?.abort();
     publish(record);
+    return structuredClone(record.job);
+  };
+
+  /**
+   * Closes a job's card everywhere: a failure the person read (the lane stays
+   * as the failed step left it, and the next change starts fresh), or a finish
+   * already seen. Refused while the job still runs: Cancel stops it.
+   */
+  const dismissJob = async (args: { jobId: string }): Promise<CloudLaneJobSnapshot | null> => {
+    const record = jobs.get(args?.jobId);
+    if (!record) return null;
+    if (isLive(record.job)) throw new Error("This change is still running. Cancel it, or wait for it to finish.");
+    if (!isDismissed(record.job)) {
+      record.job.dismissedAt = nowIso();
+      publish(record);
+    }
     return structuredClone(record.job);
   };
 
@@ -727,7 +783,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     running.clear();
   };
 
-  return { workState, deleteLane, freeLane, lanesWithoutComputer, forgetLaneWithoutComputer, changeTier, retryJob, cancelJob, listJobs, load, dispose };
+  return { workState, deleteLane, freeLane, lanesWithoutComputer, forgetLaneWithoutComputer, changeTier, retryJob, cancelJob, dismissJob, listJobs, load, dispose };
 }
 
 export type CloudLaneLife = ReturnType<typeof createCloudLaneLife>;

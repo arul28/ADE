@@ -6,6 +6,13 @@ import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { routeReferrals } from "./referrals";
+import { trustedHttpsOrigin } from "../trustedOrigin";
+import { handleLaunchJoin, isLaunchJoinRequest, routeLaunches } from "./launches";
+import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
+import { serverGitCheck } from "./accountVault";
+import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
+import { routeProjectComputersDelete } from "./projectComputers";
+import { routeSignIns } from "./signIns";
 import {
   endLaneStatement,
   laneFactsOf,
@@ -19,7 +26,7 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
-import { CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_LAUNCH_ENV, CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
@@ -114,7 +121,6 @@ const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_k
 const diskChanged = () => fail("disk_limit", "Your computers' disk changed while this ran. Try again.", 409);
 
 const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
-const createInProgress = () => fail("create_in_progress", "ADE Cloud is still making this computer. Try again in a moment.", 409);
 /** The owner's cost limit is reached: nothing new, no disk growth. Never names why. */
 const cantMakeComputer = () => fail("unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
 const cantGrowDisk = () => fail("disk_limit", "ADE Cloud can't grow this disk right now. Try again later.", 403, { reason: "unavailable" satisfies CloudDiskRefusalReason });
@@ -348,7 +354,7 @@ async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
  * A reservation still inside that time with no computer yet is a create in
  * flight: 409 `create_in_progress`, and the client asks again in a moment.
  */
-async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: string, requestId: string, now: number): Promise<Response | null> {
+async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: string, requestId: string, now: number): Promise<ReplayOutcome | null> {
   const row = await env.DB.prepare("select * from cloud_computers where user_id = ? and request_id = ? and deleted_at is null order by created_at desc limit 1")
     .bind(userId, requestId).first<ComputerRow>();
   if (!row) return null;
@@ -360,7 +366,7 @@ async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: str
       const statements = [...statusChangeStatements(env, row, instance.status, now, "seen"), ...(ended ? [ended] : [])];
       if (statements.length) await env.DB.batch(statements);
       logCloud("cloud.create_replayed", { userId, instanceId: row.instance_id });
-      return json(instance, 200);
+      return { kind: "replayed", instance };
     } catch (error) {
       if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
       await markGone(env, row, now);
@@ -374,14 +380,14 @@ async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: str
     const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId: row.instance_id, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_replayed" }));
     if (adopted?.meta.changes === 1) {
       logCloud("cloud.create_replayed", { userId, instanceId: instance.id, adopted: true });
-      return json(instance, 200);
+      return { kind: "replayed", instance };
     }
   }
   if (now - row.created_at > PENDING_TIMEOUT_MS) {
     await releasePending(env, row.instance_id);
     return null;
   }
-  return createInProgress();
+  return { kind: "in_progress" };
 }
 
 /** Only a provider's clear no means nothing was made. Timeouts and 5xx can leave a running computer, so its reservation stays for adoption. */
@@ -405,20 +411,35 @@ const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> |
   return out;
 };
 
-async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
+async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, ctx: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  return createAnswerOf(await createComputer(env, userId, provider, { body }, ctx));
+}
+
+/**
+ * The one way a computer is made (`POST /cloud/instances` and the server
+ * launcher): the same replay, limits, reservation, billing and metadata.
+ * `createAnswerOf` turns the outcome into the route's answer.
+ */
+export async function createComputer(env: CloudEnv, userId: string, provider: CloudProvider, extras: CreateComputerExtras, { now, waitUntil }: CloudRequestContext): Promise<CreateComputerOutcome> {
+  const refused = (response: Response): CreateComputerOutcome => ({ kind: "refused", response });
+  const { body } = extras;
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
-  if (!size) return badRequest("That size isn't one ADE Cloud offers.");
+  if (!size) return refused(badRequest("That size isn't one ADE Cloud offers."));
   const name = shortText(body.name, 60) ?? "ADE computer";
   const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
-  const clientEnv = stringMap(body.env, MAX_ENV_ENTRIES);
+  const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
-  if (!clientMetadata || !clientEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  if (!clientMetadata || !requestedEnv || !publicPorts) return refused(badRequest(UNREADABLE_REQUEST_MESSAGE));
+  // The server's own entries only: a client can't name a launch or its join code.
+  delete requestedEnv[CLOUD_LAUNCH_ENV.launchId];
+  delete requestedEnv[CLOUD_LAUNCH_ENV.join];
+  const clientEnv = { ...requestedEnv, ...extras.serverEnv };
   // The app's own update track: the computer starts from that channel's image and follows it.
   const channel = body.channel === undefined ? "stable" : readUpdateChannel(body.channel);
-  if (!channel) return badRequest("That update channel isn't one ADE knows.");
+  if (!channel) return refused(badRequest("That update channel isn't one ADE knows."));
 
   // A repeat of a request this account made gets that computer, before any
   // limit: it is not a new computer, so hours or the computer limit can't refuse it.
@@ -432,15 +453,15 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const templateVersion = channelTemplate(targets, channel);
   if (!templateVersion) {
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
-    return fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503);
+    return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
   const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(clientMetadata);
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: originOf(clientMetadata), key: requestId, refusedAction: action, now });
-  if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
-  if ((await ownerLimitState(env)).reached) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
+  if (empty) return refused(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
+  if ((await ownerLimitState(env)).reached) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
 
   // A move carries the old computer's disk; a plain create always starts at the smallest.
   let diskGb = DISK_ON_CREATE_GB;
@@ -448,26 +469,26 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   let lane = laneFactsOf(metadata);
   if (isMove) {
     const source = typeof body.moveFromInstanceId === "string" ? await ownedComputer(env, userId, body.moveFromInstanceId) : null;
-    if (!source) return notFound();
+    if (!source) return refused(notFound());
     // One move at a time per computer: a chain (A to B, then B to C) would leave both A and B out of the disk.
     if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
-      return fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409);
+      return refused(fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409));
     }
     diskGb = source.disk_gb;
     moveFromInstanceId = source.instance_id;
     // The lane moves with its computer, even when the client's metadata left it out.
     lane = mergeLaneFacts(lane, laneFactsOfRow(source));
     const tooBig = tierRefusal(size, diskGb, true);
-    if (tooBig) return refuse(tooBig);
+    if (tooBig) return refused(refuse(tooBig));
   }
   // The move's source is deleted at the end of the move, so its disk isn't counted twice while it runs.
   const room = await diskRoom(env, account, await accountDiskGb(env, userId, moveFromInstanceId ?? "") + diskGb, now);
-  if (!room.ok) return refuse(room);
+  if (!room.ok) return refused(refuse(room));
 
   const reservation = await reserveComputer(env, account, { size, diskGb, capGb: room.capGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
   if (!reservation.ok) {
-    if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? createInProgress();
-    return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
+    if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
+    return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
   }
 
   try {
@@ -485,14 +506,15 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
     await env.DB.batch([
       ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "create" }),
       diskDayStatement(env, account, now),
+      ...(extras.onMade?.(instance) ?? []),
     ]);
     track({ action, tier: tierOf(size) });
-    return json(withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets), 201);
+    return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     if (error instanceof CloudProviderError && (error.code === "not_found" || error.code === "invalid_request")) {
       reportCloudFailure("cloud.create_refused_template", { userId, templateVersion, code: error.code });
-      return fail("template_unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
+      return refused(fail("template_unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503));
     }
     throw error;
   }
@@ -508,7 +530,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   // limit, as a repeated create does.
   if (metadataIn.ade_request_id) {
     const replay = await replayRequest(env, provider, computer.user_id, metadataIn.ade_request_id, now);
-    if (replay) return replay;
+    if (replay) return createAnswerOf(replay);
   }
   const { track, refuse } = cloudActionTracker({
     env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: originOf(metadataIn), key: computer.instance_id, refusedAction: "copy", now,
@@ -546,7 +568,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     now,
   });
   if (!reservation.ok) {
-    if ("replay" in reservation) return await replayRequest(env, provider, computer.user_id, requestId, now) ?? createInProgress();
+    if ("replay" in reservation) return createAnswerOf(await replayRequest(env, provider, computer.user_id, requestId, now) ?? { kind: "in_progress" });
     return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
   }
   try {
@@ -564,6 +586,54 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     throw error;
+  }
+}
+
+/**
+ * A resize on an awake computer. The provider refuses a resize (like a
+ * restart or a restore) of a sleeping one with `invalid_request`, so a
+ * sleeping computer is woken first, under the same rules as any wake (the
+ * free plan's disk), and the wake is recorded so its time is metered. The row
+ * can be a minute behind the provider: a refusal on a computer the row calls
+ * awake reads the provider once, and wakes and asks again if it sleeps.
+ *
+ * Here and not on each client: every resize (a person's size change, `ade
+ * cloud resize`, the dashboard, a computer's own disk grow) comes through this
+ * route, and only the server knows the wake rules and the meter.
+ */
+async function resizeAwake(
+  env: CloudEnv,
+  computer: ComputerRow,
+  provider: CloudProvider,
+  resize: { cpu: number; memory: number; disk?: number },
+  now: number,
+): Promise<{ status: string } | { blocked: Refused }> {
+  const wake = async (): Promise<Refused | null> => {
+    const { blocked } = await wakeBlocker(env, computer.user_id, now);
+    if (blocked) return blocked;
+    const status = await provider.startInstance(computer.instance_id);
+    await recordStatus(env, computer, status, now, "resize");
+    return null;
+  };
+  let woken = false;
+  if (computer.status === "sleeping") {
+    const blocked = await wake();
+    if (blocked) return { blocked };
+    woken = true;
+  }
+  try {
+    return { status: await provider.resizeInstance(computer.instance_id, resize) };
+  } catch (error) {
+    if (woken || !(error instanceof CloudProviderError && error.code === "invalid_request")) throw error;
+    const live = await provider.getInstance(computer.instance_id).catch(() => null);
+    if (live?.status !== "sleeping") throw error;
+    // The row said awake; the provider says asleep. Take its word for the meter too.
+    // The provider gives no time it fell asleep, so the stretch up to now is
+    // metered: at most the row's lag (about a minute), accepted.
+    if (computer.status !== "sleeping") await recordStatus(env, computer, "sleeping", now, "resize");
+    const blocked = await wake();
+    if (blocked) return { blocked };
+    return { status: await provider.resizeInstance(computer.instance_id, resize) };
   }
 }
 
@@ -625,13 +695,22 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
 
   const resize: { cpu: number; memory: number; disk?: number } = { cpu: size.cpu, memory: size.memoryGb };
   if (nextDisk !== currentDisk) resize.disk = nextDisk;
+  /** Gives back the disk this resize reserved, unless something else has changed it since. */
+  const releaseDiskReservation = async (): Promise<void> => {
+    await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
+      .bind(currentDisk, computer.instance_id, nextDisk).run();
+  };
   let status: string;
   try {
-    status = await provider.resizeInstance(computer.instance_id, resize);
+    const awake = await resizeAwake(env, computer, provider, resize, now);
+    if ("blocked" in awake) {
+      if (nextDisk !== currentDisk) await releaseDiskReservation();
+      return refuse(awake.blocked);
+    }
+    status = awake.status;
   } catch (error) {
     if (nextDisk !== currentDisk && providerMadeNothing(error)) {
-      await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
-        .bind(currentDisk, computer.instance_id, nextDisk).run();
+      await releaseDiskReservation();
     }
     throw error;
   }
@@ -1046,9 +1125,66 @@ function instanceRouteOf(path: string): { instanceId: string; action: string | u
   return { instanceId, action, rest };
 }
 
+const CORS_METHODS = "GET, POST, PUT, DELETE";
+const CORS_HEADERS = new Set(["authorization", "content-type", "x-ade-correlation-id"]);
+
+function withCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  headers.set("vary", "Origin");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/**
+ * `/cloud/*` straight from a browser and a phone (C7). CORS is the
+ * directory's rule (`handleRequest`): only the hosted web client's exact
+ * origin, never `*`; a native caller sends no Origin and passes. Any other
+ * Origin is refused before the token, D1 or the provider is touched.
+ */
 export async function handleCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
+  const requestOrigin = request.headers.get("origin");
+  const allowedOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
+  const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin ? allowedOrigin : null;
+  if (request.method === "OPTIONS") {
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE Cloud.", 403);
+    const wanted = request.headers.get("access-control-request-method")?.toUpperCase() ?? "";
+    if (!CORS_METHODS.split(", ").includes(wanted)) return fail("bad_request", "That method isn't allowed here.", 405);
+    const requested = (request.headers.get("access-control-request-headers") ?? "")
+      .split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
+    if (requested.some((header) => !CORS_HEADERS.has(header))) return fail("origin_not_allowed", "Those headers aren't allowed.", 403);
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": corsOrigin,
+        "access-control-allow-headers": [...CORS_HEADERS].join(", "),
+        "access-control-allow-methods": `${CORS_METHODS}, OPTIONS`,
+        "access-control-max-age": "600",
+        vary: "Origin",
+      },
+    });
+  }
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE Cloud.", 403);
+  const response = await routeCloudRequest(request, env, waitUntil);
+  return corsOrigin ? withCors(response, corsOrigin) : response;
+}
+
+async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
+  // The new computer's join has no account token yet: its one-time code is the proof.
+  if (isLaunchJoinRequest(path, request.method)) {
+    return providerCall(() => handleLaunchJoin(request, env, path, { provider: providerFor(env), now: Date.now() }));
+  }
+  // The webhook relay's forward of a cloud automation's delivery: the hook's own signature is the proof.
+  if (isAutomationDeliveryRequest(path, request.method)) {
+    const now = Date.now();
+    const provider = providerFor(env);
+    return providerCall(() => handleAutomationDelivery(request, env, path, {
+      provider,
+      now,
+      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, { now, waitUntil }),
+    }));
+  }
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
@@ -1095,6 +1231,29 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
   if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
     return routeLanesWithoutComputer(request, path, env, caller.userId);
   }
+  // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
+  if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
+    const authorization = request.headers.get("authorization");
+    return providerCall(() => routeLaunches(request, path, env, caller.userId, {
+      provider,
+      now,
+      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
+      gitCheck: (origin) => serverGitCheck(env, authorization, origin),
+      onProgress: (record) => noteAutomationLaunchProgress(env, record, { now }),
+    }));
+  }
+  // Automations on ADE Cloud: rows only, except a run's start (Run now), which makes a computer.
+  if (path === CLOUD_PATHS.automations || path.startsWith(`${CLOUD_PATHS.automations}/`)) {
+    return providerCall(() => routeAutomations(request, url, path, env, caller.userId, {
+      provider,
+      now,
+      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
+    }));
+  }
+  // The job's rows only; the minute cron does the work.
+  if (path === CLOUD_PATHS.projectComputersDelete || path.startsWith(`${CLOUD_PATHS.projectComputersDelete}/`)) {
+    return routeProjectComputersDelete(request, path, env, caller.userId, now);
+  }
   if (!provider) {
     reportCloudFailure("cloud.no_provider_key");
     return noProviderKey();
@@ -1108,6 +1267,18 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
     if (path.startsWith(`${CLOUD_PATHS.templates}/`) && request.method === "GET") return handleTemplate(env, provider);
     const instanceRoute = instanceRouteOf(path);
     if (instanceRoute) {
+      if (instanceRoute.action === "sign-ins") {
+        if (!INSTANCE_ID.test(instanceRoute.instanceId)) return notFound();
+        const computer = await ownedComputer(env, caller.userId, instanceRoute.instanceId);
+        if (!computer) return notFound();
+        return routeSignIns(request, computer, instanceRoute.rest, {
+          provider,
+          isAwake: isMeteredStatus(computer.status),
+          isStopped: computer.status === "stopped",
+          startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
+          wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response ?? null,
+        });
+      }
       if (instanceRoute.rest.length) return notFound();
       return routeInstance(request, env, provider, caller.userId, instanceRoute.instanceId, instanceRoute.action, ctx);
     }

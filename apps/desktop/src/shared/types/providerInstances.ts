@@ -311,6 +311,8 @@ export type ProviderLoginStatus = {
   url: string | null;
   /** The CLI is asking for a code pasted from the browser. */
   awaitingCode: boolean;
+  /** A pasted code was sent and the CLI has not answered yet ("Checking the code…"). */
+  checkingCode?: boolean;
   /** A device sign-in's one-time code, typed into the sign-in page. */
   deviceCode?: string;
   /** The CLI's output so far, without terminal escapes; the last few KB. */
