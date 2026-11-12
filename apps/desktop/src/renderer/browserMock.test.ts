@@ -1,10 +1,6 @@
 // @vitest-environment jsdom
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { OpenProjectBinding } from "../shared/types";
-
-/** The browser mock has one machine, so any pin reaches it. */
-const TEST_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "Repo" };
 
 /** The machine every call names. The browser mock has one machine. */
 const TEST_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
