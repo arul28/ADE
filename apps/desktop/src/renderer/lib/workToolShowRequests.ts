@@ -182,15 +182,16 @@ export function useWorkToolShowHandler(
 }
 
 /**
- * Listen for show requests on one runtime and answer them there. The window's
- * own binding is `pin` null; a session on another machine passes its pin.
+ * Listen for show requests on one runtime and answer them there. The window
+ * passes its tab's copy; a session on another machine passes its pin.
  */
 export function useWorkToolShowRequestListener(
   enabled: boolean,
   pin: OpenProjectBinding | null = null,
 ): void {
   useEffect(() => {
-    if (!enabled) return undefined;
+    // The requests come from one machine's runtime; none known means none.
+    if (!enabled || !pin) return undefined;
     const api = window.ade.workTools;
     return api.onShowRequest((request) => {
       void answerWorkToolShowRequest(request).then((answer) => {

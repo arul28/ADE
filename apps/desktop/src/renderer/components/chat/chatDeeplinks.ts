@@ -3,6 +3,7 @@ import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { navigateToAppTarget, openAdeDeeplink } from "../../lib/openExternal";
 import { rootAppStoreApi } from "../../state/appStore";
 import { machineEntryForBinding } from "../../state/crossMachineLanes";
+import { isActiveBindingPin } from "../../lib/chatMachineRouting";
 import type { ChatRuntimeScope } from "./ChatRuntimeScope";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { resolveProjectGitHubIssueNumber } from "../issues/githubIssueStore";
@@ -93,13 +94,13 @@ export function openChatDeeplinkTarget(
     const projectRoot = state.projectBinding?.kind === "remote"
       ? state.projectBinding.rootPath ?? null
       : state.project?.rootPath ?? null;
-    if (scope.pin || !projectRoot) {
+    const chatPin = scope.pin;
+    if (!chatPin || !isActiveBindingPin(chatPin, state.projectBinding) || !projectRoot) {
       openPr();
       return;
     }
-    // The chat runs on the tab's machine here (it has no pin of its own), so
-    // that machine asks GitHub.
-    void resolveProjectGitHubIssueNumber(projectRoot, prNumber, state.projectBinding ?? null)
+    // The chat runs on the tab's copy here, so that machine asks GitHub.
+    void resolveProjectGitHubIssueNumber(projectRoot, prNumber, chatPin)
       .then((resolved) => {
         if (!resolved) {
           openPr();

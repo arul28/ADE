@@ -5263,18 +5263,15 @@ declare global {
           cb: (event: DevServerEvent) => void,
           pin: OpenProjectBinding,
         ) => () => void;
-        /**
-         * `ade ui show`: an agent asking this desktop to show a surface of its chat.
-         * The pin stays optional until the window listener in `App.tsx` names its copy.
-         */
+        /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
         onShowRequest: (
           cb: (request: WorkToolShowRequest) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
         /** Answer a show request on the runtime it came from. */
         acknowledgeShow: (
           ack: WorkToolShowAck,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: boolean }>;
       };
       tests: {
