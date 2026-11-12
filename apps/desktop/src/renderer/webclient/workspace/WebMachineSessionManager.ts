@@ -17,7 +17,12 @@ import {
   type WebRelayAccess,
 } from "../sync";
 
-export const WEB_MACHINE_SESSION_LIMIT = 4;
+/**
+ * Live machine connections one browser tab holds at once (decision 10 of the
+ * account-projects plan). A ninth machine parks the least recently used one.
+ * An idle relay connection costs nothing; an active one is cheap.
+ */
+export const WEB_MACHINE_SESSION_LIMIT = 8;
 
 /**
  * The slice of `WebClientEnvStore` this manager needs to keep recents paintable

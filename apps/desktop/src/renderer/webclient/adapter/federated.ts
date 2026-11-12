@@ -483,6 +483,11 @@ export function createFederatedWebAdapter({
 
   const projectOverrides = {
     listRecent,
+    // The account's projects come from the account directory (S14): the web
+    // has no brain of its own to read them from. Not tied to a machine.
+    async accountList() {
+      return await accountClient.readAccountProjects();
+    },
     async setRecentPinned() {
       return await listRecent();
     },
@@ -655,17 +660,33 @@ export function createFederatedWebAdapter({
     const isOverrideNamespace = path.length === 1 && OVERRIDES[String(path[0])] != null;
     const current = isOverrideNamespace ? {} : readPath(currentAdapter, path).value;
     if (typeof current === "function") {
-      const callDynamic = (...args: unknown[]) => {
+      const callDynamic = (...args: unknown[]): unknown => {
         const pinned = bindingFromArgs(args);
         let pinnedAdapter: AdeWebAdapter | null = null;
         if (pinned) {
+          if (!manager.getClient(pinned.targetId)) {
+            // A pin names the machine the call is for (S14): a machine that is
+            // saved but not connected (parked at the session limit, or never
+            // dialed in this tab) is connected first, then the call runs on
+            // it. A subscription cannot wait, so it starts the connect and
+            // stays off until the caller subscribes again.
+            if (isSubscriptionMember(path)) {
+              void manager.connectEnvironment(pinned.targetId).catch(() => undefined);
+              console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
+              return () => {};
+            }
+            return manager.connectEnvironment(pinned.targetId).then((): unknown => (
+              manager.getClient(pinned.targetId)
+                ? callDynamic(...args)
+                : Promise.reject(markExpected(new Error("The machine is not connected."), "network"))
+            ));
+          }
           try {
             pinnedAdapter = adapterForBinding(pinned);
           } catch (error) {
-            // The pinned machine is not connected (parked at the session
-            // limit, or its connect failed). Fail the way every other call
-            // does, so a caller's `.catch` sees it and an effect that
-            // subscribes does not throw into the error boundary.
+            // The machine went away between the check and the bind. Fail the
+            // way every other call does, so a caller's `.catch` sees it and an
+            // effect that subscribes does not throw into the error boundary.
             if (!isSubscriptionMember(path)) return Promise.reject(error);
             console.warn("[ade-web] subscription skipped: its machine is not connected", path.join("."));
             return () => {};

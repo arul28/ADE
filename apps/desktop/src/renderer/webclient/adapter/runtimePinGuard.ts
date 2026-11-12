@@ -17,8 +17,12 @@ import type { AdapterProjectState } from "./infra/projectState";
  * behind the Chats surface, which keeps the window's project binding while
  * showing a projectless page, so every pinned pty call it makes is pinned to
  * the machine already on the other end of the socket. Those proceed unpinned.
- * Genuinely foreign pins still fail loudly; a cross-machine web union must
- * extend the adapter before relying on one.
+ *
+ * The federated proxy (`federated.ts` `callDynamic`) routes every pinned call
+ * to the adapter of the pin's own machine and project, and connects that
+ * machine first when it is not connected (S14). So a foreign pin that reaches
+ * an adapter here means a call went around the proxy; it still fails loudly
+ * instead of being answered by the wrong machine.
  */
 
 /**
@@ -93,8 +97,8 @@ export function assertWebRuntimePinRoutable(
   // the fields directly rather than splitting the key, which would break on any
   // id containing a colon.
   throw new WebRuntimePinUnroutableError(
-    `ADE Web cannot route ${operation} to pinned runtime ${pin.key || "unknown binding"};`
-    + " cross-machine web routing is not implemented.",
+    `ADE Web sent ${operation} for ${pin.key || "an unknown binding"} to another machine's connection;`
+    + " it was not run.",
   );
 }
 

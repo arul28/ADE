@@ -92,11 +92,12 @@ const DEV_DIRECTORY_PROXY_TARGET =
   || "https://ade-account-directory-production.arulsharma1028.workers.dev";
 
 /**
- * The directory's account routes, and only those: `/account/callback` is the
+ * The directory's account routes (machines and the project list), and only
+ * those: `/account/callback` is the
  * OAuth landing route owned by the web client's own router, so proxying the
  * whole `/account` prefix would send sign-in returns to the Worker.
  */
-const DEV_DIRECTORY_PROXY_ROUTE = "^/account/machines(?:[/?]|$)";
+const DEV_DIRECTORY_PROXY_ROUTE = "^/account/(?:machines|projects)(?:[/?]|$)";
 
 /**
  * Same treatment for the push relay, which the Activity surface calls straight

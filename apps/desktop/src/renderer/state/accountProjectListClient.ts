@@ -5,8 +5,9 @@
  *
  * - The source is this computer's brain (`projects.accountList`), a read of a
  *   JSON file the brain keeps current from the account directory. It makes no
- *   server call. The hosted web client has no brain of its own and no reader
- *   yet: there the list stays `unknown` and the app keeps its recents.
+ *   server call. The hosted web client has no brain of its own: there
+ *   `project.accountList` reads the account directory (only the changes
+ *   after the first read), so its focus reads are spaced further apart.
  * - A copy in localStorage paints the first frame and covers a brain that is
  *   still starting or offline. A signed-out answer clears it.
  * - Reads: once at start and on window focus (at most one in 15 s), and when
@@ -23,6 +24,8 @@ import { publishAccountProjectList, type AccountProjectListState } from "./useRe
 
 export const ACCOUNT_PROJECT_LIST_CACHE_KEY = "ade.accountProjects.cache.v1";
 const FOCUS_READ_MIN_MS = 15_000;
+/** The web reads the account directory, a server call: at most once a minute on focus. */
+const WEB_FOCUS_READ_MIN_MS = 60_000;
 const MACHINE_NAMES_MIN_MS = 10 * 60_000;
 
 type CachedList = {
@@ -179,7 +182,8 @@ async function readList(): Promise<void> {
 /** Reads the list now, or joins the read in flight. */
 export function refreshAccountProjectList(options?: { force?: boolean }): Promise<void> {
   if (readInFlight) return readInFlight;
-  if (!options?.force && Date.now() - lastReadAt < FOCUS_READ_MIN_MS) return Promise.resolve();
+  const minGap = isWebClientMode() ? WEB_FOCUS_READ_MIN_MS : FOCUS_READ_MIN_MS;
+  if (!options?.force && Date.now() - lastReadAt < minGap) return Promise.resolve();
   readInFlight = readList().finally(() => {
     readInFlight = null;
   });
@@ -204,10 +208,7 @@ function start(): () => void {
   };
 }
 
-/** Keeps the account project list current while the caller is mounted (desktop only). */
+/** Keeps the account project list current while the caller is mounted (desktop and web). */
 export function useAccountProjectListClient(): void {
-  useEffect(() => {
-    if (isWebClientMode()) return undefined;
-    return start();
-  }, []);
+  useEffect(() => start(), []);
 }

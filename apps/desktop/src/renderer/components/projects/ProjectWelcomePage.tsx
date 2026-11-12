@@ -107,6 +107,8 @@ function recentKey(rp: RecentProjectSummary): string {
 // How long the "Removed — Undo" toast stays before the forget is committed.
 const FORGET_UNDO_WINDOW_MS = 5_000;
 const FORGET_TOAST_ID = "welcome-forget-recent";
+/** Where a web user with no computer gets ADE. */
+const ADE_DOWNLOAD_PAGE_URL = "https://ade-app.dev/";
 
 
 export function ProjectWelcomePage() {
@@ -286,6 +288,14 @@ export function ProjectWelcomePage() {
     () => new Map(webMachines.map((machine) => [machine.key, machine])),
     [webMachines],
   );
+  // The same machines by account machine key, the key the account's project
+  // list names a copy's computer by.
+  const webMachineByAccountKey = useMemo(
+    () => new Map(webMachines.flatMap((machine) => (
+      machine.accountMachine?.machineKey ? [[machine.accountMachine.machineKey, machine] as const] : []
+    ))),
+    [webMachines],
+  );
   const webRecents = useMemo(() => webRecentProjects(webMachines), [webMachines]);
   const activeWebMachine = useMemo(() => (
     webMachines.find((machine) => machine.status === "live")
@@ -320,12 +330,15 @@ export function ProjectWelcomePage() {
       recentProjects: kept,
       remoteSnapshot: webMode ? null : remoteSnapshot,
     });
-    const fromAccount = !webMode && accountProjects
+    // On the web too (S14): the account's projects come from the account
+    // directory there, so a project on a computer this browser never
+    // connected to, or on no computer, still has a row.
+    const fromAccount = accountProjects
       ? accountProjectGroups({
           projects: accountProjects,
           shownGroups: groups,
-          remoteSnapshot,
-          thisMachineKey,
+          remoteSnapshot: webMode ? null : remoteSnapshot,
+          thisMachineKey: webMode ? null : thisMachineKey,
           machineNames: accountList.machineNames,
         })
       : [];
@@ -352,7 +365,7 @@ export function ProjectWelcomePage() {
   // Selecting anything on the hosted client connects its machine first — a
   // machine the account can reach is never a dead end (bug-ledger C2d).
   const openWebProject = useCallback(
-    (machineKey: string, projectId: string, rowKey: string) => {
+    (machineKey: string, projectId: string, rowKey: string, onUnreachable?: () => boolean) => {
       if (!workspace) return;
       const machine = webMachineByKey.get(machineKey);
       if (!machine) return;
@@ -364,6 +377,8 @@ export function ProjectWelcomePage() {
           await workspace.adapter.openProject(targetId, projectId);
           navigate(workspace.consumePendingProjectPath() ?? "/work");
         } catch (error) {
+          // An account row whose computer did not answer opens with no machine.
+          if (onUnreachable?.()) return;
           setRowError(error instanceof Error ? error.message : String(error));
         } finally {
           setOpeningRowKey((current) => (current === rowKey ? null : current));
@@ -376,12 +391,17 @@ export function ProjectWelcomePage() {
   // Why the hosted client is showing no machines, in the account's own words.
   // Only computed when there is nothing to list — a populated list speaks for
   // itself even when the last directory read failed.
+  const accountProjectCount = accountProjects?.length ?? 0;
   const webZeroMachines = useMemo(() => (
     webMode && workspace && webMachines.length === 0
       ? webZeroMachinesNotice({
           account: workspace.account,
           directoryLoading: workspace.directoryLoading,
           retryError: directoryRetryError,
+          accountProjectCount,
+          onGetAde: () => {
+            void window.ade.app.openExternal(ADE_DOWNLOAD_PAGE_URL).catch(() => undefined);
+          },
           onRetry: () => {
             setDirectoryRetryError(null);
             void workspace.retryDirectory().catch((error) => {
@@ -396,7 +416,7 @@ export function ProjectWelcomePage() {
           },
         })
       : null
-  ), [directoryRetryError, webMachines.length, webMode, workspace]);
+  ), [accountProjectCount, directoryRetryError, webMachines.length, webMode, workspace]);
 
   const openWebChats = useCallback(() => {
     if (!workspace || !activeWebMachine) return;
@@ -418,7 +438,22 @@ export function ProjectWelcomePage() {
     (rp: RecentProjectSummary) => {
       setRowError(null);
       if (webMode && rp.kind === "remote" && rp.remote) {
-        openWebProject(rp.remote.targetId, rp.remote.projectId, recentKey(rp));
+        const targetId = rp.remote.targetId;
+        if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
+          // A row from the account list: its copy's computer by its account
+          // machine key, or no copy at all. A computer this browser can
+          // connect to opens the copy there; otherwise the repository opens
+          // with no machine, as on the desktop.
+          const machineKey = targetId.slice(ACCOUNT_MACHINE_TARGET_PREFIX.length);
+          const machine = machineKey ? webMachineByAccountKey.get(machineKey) ?? null : null;
+          if (machine) {
+            openWebProject(machine.key, rp.remote.projectId, recentKey(rp), () => openNoMachineTab(rp));
+            return;
+          }
+          if (!openNoMachineTab(rp)) setRowError("No computer with this project is online.");
+          return;
+        }
+        openWebProject(targetId, rp.remote.projectId, recentKey(rp));
         return;
       }
       if (rp.kind === "remote" && rp.remote) {
@@ -478,6 +513,7 @@ export function ProjectWelcomePage() {
       project?.rootPath,
       switchProjectToPath,
       switchRemoteProject,
+      webMachineByAccountKey,
       webMode,
     ],
   );

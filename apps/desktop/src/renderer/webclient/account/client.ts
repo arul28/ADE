@@ -1,5 +1,10 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import {
+  ACCOUNT_PROJECT_PATHS,
+  coerceAccountProjectListResult,
+  type AccountProjectListResult,
+} from "../../../shared/accountProject";
+import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
@@ -898,6 +903,93 @@ export class BrowserAccountClient {
       await response.body?.cancel().catch(() => undefined);
     }
     return { status: response.status, body };
+  }
+
+  /**
+   * The account's project list, read from the account directory (S14). The
+   * hosted client has no brain, so it reads the directory itself: the whole
+   * list once, then only the changes (`since` the last cursor), merged here.
+   * Removed and merged rows are kept as `retired`, so a link that names one
+   * is followed or told. One read per call; the caller decides when.
+   */
+  async readAccountProjects(): Promise<AccountProjectListResult> {
+    const config = this.config;
+    const userId = this.snapshot.userId;
+    if (!config || !userId || !browserAccountIsSignedIn(this.snapshot.state)) return { state: "signed_out", projects: [] };
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch {
+      return { state: "signed_out", projects: [] };
+    }
+    const cache = this.accountProjects?.userId === userId ? this.accountProjects : null;
+    const path = `${ACCOUNT_PROJECT_PATHS.root}${cache ? `?since=${cache.cursor}` : ""}`;
+    const send = async (accessToken: string): Promise<Response> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+      try {
+        return await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}${path}`, {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${accessToken}`,
+            "x-ade-correlation-id": createAccountDirectoryCorrelationId(),
+          },
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          cache: "no-store",
+          redirect: "error",
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let body: unknown;
+    try {
+      let response = await send(token);
+      if (response.status === 401) {
+        await response.body?.cancel().catch(() => undefined);
+        response = await send(await this.getAccessToken({ forceRefresh: true }));
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return response.status === 401 ? { state: "signed_out", projects: [] } : this.cachedAccountProjects(userId);
+      }
+      body = await readBoundedAccountDirectoryJson(response);
+    } catch {
+      return this.cachedAccountProjects(userId);
+    }
+    if (this.snapshot.userId !== userId) return { state: "not_loaded", projects: [] };
+    const answer = body && typeof body === "object" ? body as Record<string, unknown> : null;
+    if (!answer || typeof answer.cursor !== "number" || !Array.isArray(answer.projects)) return this.cachedAccountProjects(userId);
+    const rows = answer.reset === true || !cache ? new Map<string, Record<string, unknown>>() : new Map(cache.rows);
+    for (const row of answer.projects) {
+      if (row && typeof row === "object" && typeof (row as Record<string, unknown>).id === "string") {
+        rows.set((row as Record<string, unknown>).id as string, row as Record<string, unknown>);
+      }
+    }
+    this.accountProjects = { userId, cursor: answer.cursor, rows };
+    return this.cachedAccountProjects(userId);
+  }
+
+  private accountProjects: { userId: string; cursor: number; rows: Map<string, Record<string, unknown>> } | null = null;
+
+  /** The merged list as the last read left it; `not_loaded` before the first read. */
+  private cachedAccountProjects(userId: string): AccountProjectListResult {
+    const cache = this.accountProjects?.userId === userId ? this.accountProjects : null;
+    if (!cache) return { state: "not_loaded", projects: [] };
+    const all = [...cache.rows.values()];
+    const live = all.filter((row) => row.removedAt == null && row.mergedInto == null);
+    const retired = all
+      .filter((row) => row.removedAt != null || row.mergedInto != null)
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        mergedInto: typeof row.mergedInto === "string" ? row.mergedInto : null,
+        removedAt: typeof row.removedAt === "number" ? row.removedAt : null,
+      }));
+    return coerceAccountProjectListResult({ state: "ready", cursor: cache.cursor, projects: live, retired });
   }
 
   async removeMachine(machineKeyValue: string): Promise<AdeAccountMachineRemovalResult> {
