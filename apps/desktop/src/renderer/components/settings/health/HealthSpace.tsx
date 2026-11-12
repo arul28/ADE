@@ -62,12 +62,12 @@ type CleanupRequest = { title: string; intro: string; targets: StorageCleanupTar
 
 const EMPTY_TARGETS: StorageCleanupTarget[] = [];
 
-function getRunMaintenanceNow(): ((pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>) | undefined {
+function getRunMaintenanceNow(): ((pin: OpenProjectBinding) => Promise<MaintenanceRunReport>) | undefined {
   const fn = window.ade?.storage?.runMaintenanceNow;
   return isAdeAvailable(fn) ? fn : undefined;
 }
 
-function getCompressNow(): ((pin?: OpenProjectBinding | null) => Promise<{ filesCompressed: number; savedBytes: number }>) | undefined {
+function getCompressNow(): ((pin: OpenProjectBinding) => Promise<{ filesCompressed: number; savedBytes: number }>) | undefined {
   const fn = window.ade?.storage?.compressNow;
   return isAdeAvailable(fn) ? fn : undefined;
 }
@@ -97,7 +97,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
 
   const runMaintenanceBridge = React.useMemo(() => getRunMaintenanceNow(), []);
   const runMaintenanceNow = React.useMemo<(() => Promise<MaintenanceRunReport>) | undefined>(
-    () => (runMaintenanceBridge ? () => runMaintenanceBridge(pin) : undefined),
+    () => (runMaintenanceBridge && pin ? () => runMaintenanceBridge(pin) : undefined),
     [pin, runMaintenanceBridge],
   );
   const compressNow = React.useMemo(() => getCompressNow(), []);
@@ -138,7 +138,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
   const canCleanUp = Boolean(plan && (plan.fsTargets.length > 0 || runMaintenanceNow));
 
   const runCompress = React.useCallback(async () => {
-    if (!compressNow) return;
+    if (!compressNow || !pin) return;
     setCompressing(true);
     try {
       const result = await compressNow(pin);

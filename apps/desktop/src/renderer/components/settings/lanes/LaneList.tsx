@@ -122,7 +122,7 @@ export function LaneList({
       // The merged-PR exception reads the lane's git state, so read it again
       // now: a lane can have picked up commits since the list was drawn. When
       // the fresh read fails, no lane gets the exception.
-      const fresh = await window.ade.projectHealth.getReport({ forceRefresh: true }, pin)
+      const fresh = await (pin ? window.ade.projectHealth.getReport({ forceRefresh: true }, pin) : Promise.reject(new Error("no copy")))
         .then((report) => new Map((report.lanes ?? []).map((lane) => [lane.laneId, lane])))
         .catch(() => null);
       // One at a time, each checked again right before it goes: a lane may

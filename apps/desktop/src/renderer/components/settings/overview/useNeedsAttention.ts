@@ -27,6 +27,9 @@ import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { useCopyPick } from "../../../state/repositoryScope";
+import { settingsCopyScope, useThisComputerCopyPin } from "../ProjectCopyScope";
 
 /**
  * Settings → General's "Needs attention": every problem ADE can see, from
@@ -512,11 +515,12 @@ async function mcpItems(): Promise<AttentionItem[]> {
   return items;
 }
 
-async function integrationItems(hasProject: boolean, failed?: string[]): Promise<AttentionItem[]> {
-  if (!hasProject) return [];
+/** `pin`: the copy Settings › Integrations shows, so a row agrees with the page it opens. */
+async function integrationItems(pin: OpenProjectBinding | null, failed?: string[]): Promise<AttentionItem[]> {
+  if (!pin) return [];
   const [linear, jira] = await Promise.all([
-    quiet(window.ade.cto?.getLinearConnectionStatus ? () => window.ade.cto!.getLinearConnectionStatus() : null, failed, "Linear"),
-    quiet(() => window.ade.jira.getConnectionStatus(), failed, "Jira"),
+    quiet(window.ade.cto?.getLinearConnectionStatus ? () => window.ade.cto!.getLinearConnectionStatus(pin) : null, failed, "Linear"),
+    quiet(() => window.ade.jira.getConnectionStatus(pin), failed, "Jira"),
   ]);
   const items: AttentionItem[] = [];
   if (linear && linear.tokenStored && !linear.connected) {
@@ -582,7 +586,25 @@ export function attentionAgentPrompt(items: readonly AttentionItem[], projectRoo
   ].join("\n");
 }
 
+/**
+ * What Settings › General lists. Project rows read the copy each project page
+ * shows (Location for the checks and provider settings, Integrations for the
+ * connections), so a row and the page it opens agree. Provider rows read this
+ * computer's copy when it has one, the machine General is about.
+ */
 export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
+  const locationPin = useCopyPick(settingsCopyScope("location"), hasProject).pin;
+  const integrationsPin = useCopyPick(settingsCopyScope("integrations"), hasProject).pin;
+  const thisComputerPin = useThisComputerCopyPin(hasProject);
+  const projectPin = hasProject ? locationPin : null;
+  const connectionsPin = hasProject ? integrationsPin : null;
+  // Null (no copy here) keeps the machine-global route for this computer.
+  const providersPin = hasProject ? thisComputerPin : null;
+  const projectKey = projectPin?.key ?? null;
+  const connectionsKey = connectionsPin?.key ?? null;
+  const providersKey = providersPin?.key ?? null;
+  const pinsRef = React.useRef({ projectPin, connectionsPin, providersPin });
+  pinsRef.current = { projectPin, connectionsPin, providersPin };
   const [sources, setSources] = React.useState<OverviewSources>(EMPTY_SOURCES);
   const [items, setItems] = React.useState<AttentionItem[]>([]);
   const [lateItems, setLateItems] = React.useState<AttentionItem[]>([]);
@@ -595,14 +617,15 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     if (opts.force) setChecking(true);
     const ade = window.ade;
     const failed: string[] = [];
+    const { projectPin: reportPin, connectionsPin: githubPin, providersPin: aiPin } = pinsRef.current;
     const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig, providerAccounts] = await Promise.all([
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
       quiet(isAdeAvailable(ade.app?.getRuntimeHealth) ? () => ade.app.getRuntimeHealth() : null, failed, "ADE's service health"),
-      hasProject ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }) : null, failed, "this project") : Promise.resolve(null),
+      reportPin ? quiet(isAdeAvailable(ade.projectHealth?.getReport) ? () => ade.projectHealth.getReport({ forceRefresh: opts.force }, reportPin) : null, failed, "this project") : Promise.resolve(null),
       quiet(ade.usage?.getSnapshot ? () => ade.usage.getSnapshot() : null, failed, "usage"),
-      quiet(ade.ai?.getStatus ? () => ade.ai.getStatus() : null, failed, "providers"),
+      quiet(ade.ai?.getStatus ? () => ade.ai.getStatus(undefined, aiPin) : null, failed, "providers"),
       quiet(ade.adeCli?.getStatus ? () => ade.adeCli.getStatus() : null, failed, "the ade command"),
       quiet(ade.remoteRuntime?.getConnectionSnapshot ? () => ade.remoteRuntime.getConnectionSnapshot() : null, failed, "other machines"),
       quiet(ade.sync?.getStatus ? async () => {
@@ -611,11 +634,11 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
         if (isDegradedSyncSnapshot(snapshot)) throw new Error(snapshot.degradedReason);
         return snapshot;
       } : null, failed, "sync"),
-      hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),
+      githubPin ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}, githubPin) : null, failed, "GitHub") : Promise.resolve(null),
       // Only for the providers you switched off; without it they show, and the list says it couldn't check.
-      hasProject ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get() : null, failed, "provider settings") : Promise.resolve(null),
-      // Same machine as `ai.getStatus` (unpinned), so the two describe one provider set.
-      quiet(ade.providerInstances?.list ? () => ade.providerInstances.list() : null, failed, "provider accounts"),
+      reportPin ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get(reportPin) : null, failed, "provider settings") : Promise.resolve(null),
+      // Same machine as `ai.getStatus`, so the two describe one provider set.
+      quiet(ade.providerInstances?.list ? () => ade.providerInstances.list(undefined, aiPin) : null, failed, "provider accounts"),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
@@ -651,7 +674,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     });
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),
-      quiet(() => integrationItems(hasProject, failed), failed, "integrations"),
+      quiet(() => integrationItems(githubPin, failed), failed, "integrations"),
     ]);
     if (current !== request.current) return;
     setLateItems(late.flatMap((entry) => entry ?? []));
@@ -659,7 +682,9 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...currentItems.filter((item) => item.id !== "overview-read-failed"),
       ...readFailureItem(failed, () => load({ force: true })),
     ]);
-  }, [hasProject]);
+    // The pins are read from the ref; the keys restart the read when a copy changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasProject, projectKey, connectionsKey, providersKey]);
 
   React.useEffect(() => {
     void load();
@@ -671,5 +696,5 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
   }, []);
 
   const all = React.useMemo(() => sortAttention([...items, ...lateItems]), [items, lateItems]);
-  return { items: all, sources, loading, checking, reload: load, setReport };
+  return { items: all, sources, loading, checking, reload: load, setReport, projectPin };
 }

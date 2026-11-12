@@ -259,7 +259,7 @@ export function GitHubSection() {
     };
     window.addEventListener("focus", reload);
     document.addEventListener("visibilitychange", onVisibility);
-    const offStatus = window.ade.github.onStatusChanged?.(() => reload()) ?? (() => {});
+    const offStatus = window.ade.github.onStatusChanged?.(() => reload(), pinRef.current) ?? (() => {});
     return () => {
       window.removeEventListener("focus", reload);
       document.removeEventListener("visibilitychange", onVisibility);

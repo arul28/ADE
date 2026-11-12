@@ -1418,27 +1418,31 @@ declare global {
         /** This window's memory snapshot (`renderer/lib/rendererMemorySnapshot.ts`). */
         reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void;
       };
+      /**
+       * One copy's storage (Settings › Storage & cleanup): `pin` names the
+       * copy, and it is required. `getPressure` is this computer's disk.
+       */
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
-        getSnapshot: (args?: { forceRefresh?: boolean; measureLanes?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
-        compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
-        runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
+        getSnapshot: (args: { forceRefresh?: boolean; measureLanes?: boolean } | undefined, pin: OpenProjectBinding) => Promise<StorageSnapshot>;
+        compressNow: (pin: OpenProjectBinding) => Promise<StorageCompressionResult>;
+        runMaintenanceNow: (pin: OpenProjectBinding) => Promise<MaintenanceRunReport>;
         deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
         laneBuildOutputRemoved?: (
           laneId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<import("../shared/types/storage").StorageItem["buildOutputRemoved"] | null>;
-        cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
+        cleanupPreview: (targets: StorageCleanupTarget[], pin: OpenProjectBinding) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
           opts: { preview: StorageCleanupPreview },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<StorageCleanupResult>;
       };
-      /** Project health: issues with a fix each, from the machine that owns the project. */
+      /** Project health: issues with a fix each, from the copy `pin` names (required). */
       projectHealth: {
-        getReport: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<ProjectHealthReport>;
-        fix: (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null) => Promise<ProjectHealthFixResult>;
+        getReport: (args: { forceRefresh?: boolean } | undefined, pin: OpenProjectBinding) => Promise<ProjectHealthReport>;
+        fix: (args: ProjectHealthFixArgs, pin: OpenProjectBinding) => Promise<ProjectHealthFixResult>;
       };
       /**
        * One archive across lanes, chats, and shells. Every call takes an

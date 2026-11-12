@@ -70,8 +70,8 @@ function IssueCard({ issue }: { issue: AdeHealthIssue }) {
 }
 
 export function ProjectSection() {
-  // This machine's checkout of the repo, read on the machine the Settings page
-  // is showing. A null pin is the tab's binding.
+  // The copy of the repo the Settings page shows (Settings › Project always
+  // hands one).
   const { pin } = useSettingsMachineScope();
   const [snapshot, setSnapshot] = useState<AdeProjectSnapshot | null>(null);
   const [busy, setBusy] = useState<"repair" | "integrity" | null>(null);
@@ -91,14 +91,12 @@ export function ProjectSection() {
     void refresh().catch((err) => {
       setError(err instanceof Error ? err.message : String(err));
     });
-    // The change feed describes the tab's own project. Another machine has no
-    // feed here, so its card refreshes after each action instead.
-    if (pin) return undefined;
+    // The change feed of the copy this card shows, on its own machine.
     const unsubscribe = window.ade.project.onStateEvent((event) => {
       setSnapshot(event.snapshot);
       setNotice("Project config reloaded.");
       setError(null);
-    });
+    }, pin);
     return unsubscribe;
   }, [pin, refresh]);
 

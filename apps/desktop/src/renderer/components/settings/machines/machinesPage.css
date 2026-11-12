@@ -587,3 +587,22 @@ button.ade-mx-hero-chip {
   min-width: 0;
   overflow: hidden;
 }
+
+/* Settings › Project: the computer whose copy of the project the page reads.
+   A quiet line above the page; the picker when there is more than one copy. */
+.ade-copy-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-copy-scope-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+  font-weight: 600;
+}
