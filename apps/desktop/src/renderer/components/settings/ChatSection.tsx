@@ -33,6 +33,7 @@ import { FastModeSection } from "./FastModeSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
+import { ProjectCopyBlock } from "./ProjectCopyScope";
 import { ContinueAfterRestartSection } from "./ContinueAfterRestartSection";
 import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
@@ -186,14 +187,15 @@ export function ChatSection() {
                 detail="Next prompt suggestions, Smart decisions and Claude mods are saved in each project."
               />
             ) : (
-              <>
+              // Saved in each copy of the project: the block reads the picked copy.
+              <ProjectCopyBlock page="chat">
                 <PromptSuggestionsSection />
 
                 {/* Jev's calls about chats, and its model hint in the composer. */}
                 <SmartDecisionsSection />
 
                 <ClaudeModsSection />
-              </>
+              </ProjectCopyBlock>
             )}
 
             {/* One value per machine, not per project, so it shows with or without one open. */}

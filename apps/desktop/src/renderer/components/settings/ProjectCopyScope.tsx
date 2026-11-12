@@ -177,3 +177,19 @@ export function ProjectCopyScopeProvider({
     </SettingsMachineScopeProvider>
   );
 }
+
+/**
+ * A block of project settings on a page that is not a project page (App ›
+ * Chat): it names the copy it reads, offers the others, and hands its
+ * sections the copy's pin. With no copy online it says so.
+ */
+export function ProjectCopyBlock({ page, children }: { page: string; children: React.ReactNode }) {
+  const copy = useProjectCopyPage(settingsCopyScope(page));
+  if (!copy.page) return <NoProjectCopyNotice />;
+  return (
+    <ProjectCopyScopeProvider page={copy.page}>
+      <ProjectCopyBar copy={copy} />
+      {children}
+    </ProjectCopyScopeProvider>
+  );
+}
