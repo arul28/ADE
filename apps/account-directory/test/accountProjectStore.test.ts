@@ -20,8 +20,16 @@ import {
   type IdentityInput,
 } from "../src/accountProjects/store";
 
+/** The part of node:sqlite's `DatabaseSync` this test uses. The package's @types/node predates the module. */
+type SqliteEngine = {
+  exec(sql: string): void;
+  prepare(sql: string): { all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown };
+};
+
 // Loaded through require: this Vitest version does not resolve the `node:sqlite` import itself.
-const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: new (path: string) => SqliteEngine;
+};
 
 const USER = "user-a";
 const MIGRATION = fileURLToPath(new URL("../migrations/0028_account_projects.sql", import.meta.url));
@@ -30,7 +38,7 @@ class SqliteStatement {
   private params: unknown[] = [];
 
   constructor(
-    private readonly engine: DatabaseSync,
+    private readonly engine: SqliteEngine,
     private readonly sql: string,
   ) {}
 
