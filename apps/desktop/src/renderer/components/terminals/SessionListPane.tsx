@@ -135,7 +135,7 @@ import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
-import { groupByMachine } from "../../state/repositoryScope";
+import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1258,6 +1258,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Lanes from more than one computer are on screen: a lane header that is not
   // on this computer names its computer (see `LaneMachineMarker`).
   const listShowsSeveralComputers = foreignRows.length > 0;
+  // No copy of the repository online: the list reads nothing and says so.
+  const tabCopyPin = useTabCopyPin();
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
   // its own timer; this fallback timer prevents a foreign snooze from staying
@@ -4339,10 +4341,14 @@ export const SessionListPane = React.memo(function SessionListPane({
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
             <div className="text-[12px] font-medium text-fg/70">
-              {firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
+              {!tabCopyPin
+                ? "No computer connected"
+                : firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
             </div>
             <div className="mt-1 text-[11px] text-muted-fg/60">
-              {firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
+              {!tabCopyPin
+                ? "Connect a computer to see this project's chats"
+                : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
           </div>
         ) : isByTime ? (

@@ -8454,6 +8454,8 @@ export function AgentChatPane({
       : null;
     return {
       runtimePin,
+      // The composer's machine, also when it is the tab's: catalog reads name it.
+      catalogPin: composerPin ?? null,
       runtimeProjectRoot: composerPin?.rootPath ?? projectRoot,
       boundRuntimeKey: projectBinding?.key ?? null,
     };
@@ -8508,7 +8510,7 @@ export function AgentChatPane({
       setAvailableModelIds(keepEmptyArray);
       return [];
     }
-    const { runtimePin, runtimeProjectRoot, boundRuntimeKey } = scope;
+    const { runtimePin, catalogPin, runtimeProjectRoot, boundRuntimeKey } = scope;
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
@@ -8543,17 +8545,19 @@ export function AgentChatPane({
     }
 
     try {
+      // No machine for the composer: nothing to ask.
+      if (!catalogPin) return [];
       const [codexModels, claudeModels, cursorModels, droidModels, museModels, openCodeModels] = await Promise.all([
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "codex", pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "claude", pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "cursor", activateRuntime: true, pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "droid", pin: runtimePin }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "muse", pin: runtimePin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "codex", pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "claude", pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "cursor", activateRuntime: true, pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "droid", pin: catalogPin }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot: runtimeProjectRoot, provider: "muse", pin: catalogPin }).catch(() => []),
         getAgentChatModelsCached({
           projectRoot: runtimeProjectRoot,
           provider: "opencode",
           activateRuntime: shouldRefreshOpenCodeInventory,
-          pin: runtimePin,
+          pin: catalogPin,
         }).catch(() => []),
       ]);
       const available = new Set<string>();
