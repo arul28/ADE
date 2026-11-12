@@ -34,8 +34,11 @@ import type {
   RemoteRuntimeConnectionStatus,
   TerminalSessionSummary,
 } from "../../shared/types";
+import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
+import type { MachineAddress } from "../../shared/repositoryTab";
+import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 import {
   useAppStore,
   useRootAppStore,
@@ -68,6 +71,13 @@ export type LaneMachine = {
   binding: OpenProjectBinding | null;
   /** The pin to pass to preload calls: null for the active machine. */
   pin: OpenProjectBinding | null;
+  /**
+   * The address of this machine's copy of the repo, set for EVERY routable
+   * machine, the tab's own included (unlike `pin`). Null when nothing can be
+   * sent there. Nothing reads it yet: it is what `pin` becomes once callers
+   * stop treating null as "the tab's machine".
+   */
+  address: MachineAddress | null;
   /** False for another machine that has no binding: nothing can be sent there. */
   routable: boolean;
   /** Whether this machine holds a checkout of the active repo. */
@@ -116,6 +126,22 @@ export type AllMachineLanes = {
   prsByMachineId: ReadonlyMap<string, PrSummary[]>;
   /** Each other machine's session roster, keyed by machine id. */
   sessionsByMachineId: ReadonlyMap<string, TerminalSessionSummary[]>;
+  /** The ADE Cloud group, present only when the caller passes the `adeCloud` input. */
+  adeCloud?: AdeCloudLaneGroup;
+};
+
+/**
+ * The project's ADE Cloud lanes, as one group: the lanes on its lane
+ * computers (which the union already lists as machines) and the lanes kept
+ * without a computer. Each lane computer holds one lane.
+ */
+export type AdeCloudLaneGroup = {
+  /** Machines of the union that are a lane's own ADE Cloud computer. */
+  machineIds: string[];
+  /** Lanes on those machines, as the union lists them. */
+  lanes: MachineLane[];
+  /** This project's ADE Cloud lanes that have no computer now. */
+  withoutComputer: CloudLaneWithoutComputer[];
 };
 
 /**
@@ -248,6 +274,17 @@ export function buildAllMachineLanes(input: {
   machines: Readonly<Record<string, CrossMachineMachineLanes>>;
   connections?: readonly RemoteRuntimeConnectionStatus[];
   thisMachineDeviceId?: string | null;
+  /**
+   * The account's ADE Cloud lane computers (`useAdeCloudLaneComputers`) and
+   * lanes without a computer (`useCloudLanesWithoutComputer`), with the repo's
+   * normalized origin. When passed, the result carries `adeCloud`; nothing
+   * else changes.
+   */
+  adeCloud?: {
+    computers: readonly AdeCloudLaneComputer[];
+    withoutComputer: readonly CloudLaneWithoutComputer[];
+    repoOriginIdentity: string | null;
+  };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
   const active = activeMachineFor(activeBinding);
@@ -269,6 +306,7 @@ export function buildAllMachineLanes(input: {
     isActiveBinding: true,
     binding: activeBinding,
     pin: null,
+    address: activeBinding,
     routable: true,
     hasRepo: activeBinding != null,
     deviceId: activeBinding?.kind === "remote" ? connectionDeviceId(activeConnection) : thisDeviceId,
@@ -309,6 +347,7 @@ export function buildAllMachineLanes(input: {
       isActiveBinding: false,
       binding,
       pin,
+      address: binding,
       routable: binding != null,
       // The union only carries machines matched on the repo's origin.
       hasRepo: true,
@@ -338,6 +377,7 @@ export function buildAllMachineLanes(input: {
       isActiveBinding: false,
       binding: null,
       pin: null,
+      address: null,
       routable: false,
       hasRepo: false,
     });
@@ -378,6 +418,29 @@ export function buildAllMachineLanes(input: {
     lanesByMachineId,
     prsByMachineId,
     sessionsByMachineId,
+    ...(input.adeCloud ? { adeCloud: buildAdeCloudLaneGroup(machines, lanes, input.adeCloud) } : {}),
+  };
+}
+
+function buildAdeCloudLaneGroup(
+  machines: readonly LaneMachine[],
+  lanes: readonly MachineLane[],
+  input: NonNullable<Parameters<typeof buildAllMachineLanes>[0]["adeCloud"]>,
+): AdeCloudLaneGroup {
+  const origin = input.repoOriginIdentity?.trim().toLowerCase() || null;
+  // A computer with no recorded origin is kept: the union only lists machines
+  // matched on this repo, so a lane computer it carries is this project's.
+  const computers = input.computers.filter((computer) => !origin || !computer.projectOrigin || computer.projectOrigin === origin);
+  const machineIds = machines
+    .filter((machine) => adeCloudLaneComputerForMachine({ hostname: machine.hostname }, computers) != null)
+    .map((machine) => machine.machineId);
+  const cloudIds = new Set(machineIds);
+  return {
+    machineIds,
+    lanes: lanes.filter((row) => cloudIds.has(row.machineId)),
+    // A lane kept without a computer is matched on its origin only; with no
+    // origin to match, none is this project's.
+    withoutComputer: origin ? input.withoutComputer.filter((lane) => lane.projectOrigin === origin) : [],
   };
 }
 

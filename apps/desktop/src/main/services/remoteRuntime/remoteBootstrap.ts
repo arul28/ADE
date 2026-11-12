@@ -1984,6 +1984,14 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
           ? record.registrationSource
           : undefined,
       ...(typeof record.exists === "boolean" ? { exists: record.exists } : {}),
+      // The account project this folder is a copy of, and its GitHub id: the
+      // repository's identity across machines when the host knows them.
+      ...(typeof record.accountProjectId === "string" && record.accountProjectId
+        ? { accountProjectId: record.accountProjectId }
+        : {}),
+      ...(typeof record.githubRepoId === "number" && Number.isSafeInteger(record.githubRepoId)
+        ? { githubRepoId: record.githubRepoId }
+        : {}),
       icon: coerceProjectIcon(record.icon),
     }];
   });
