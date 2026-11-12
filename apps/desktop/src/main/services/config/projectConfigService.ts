@@ -3563,14 +3563,8 @@ export function createProjectConfigService({
     if (!validation.ok) {
       throw invalidConfigError(validation);
     }
-    // Account rules never land in the file; a new one is filed in the account.
-    const diverted = options.divert === false || !automationRuleSync
-      ? candidateLocal
-      : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
-    const local = withoutNewPlaintextKeys(diverted);
-
-    const localYaml = toCanonicalYaml(local);
-
+    // Before anything is written anywhere (the key store, the account's
+    // rules): a save refused here must change nothing.
     // Read the file itself, not the cached parse: the cache is keyed on stat
     // identity, which a same-size edit inside the clock's resolution keeps.
     const baseLocalHash = typeof candidate.baseLocalHash === "string" ? candidate.baseLocalHash : null;
@@ -3579,6 +3573,14 @@ export function createProjectConfigService({
       logger.info("projectConfig.save.changedOnDisk", { localPath });
       throw changedOnDiskError();
     }
+
+    // Account rules never land in the file; a new one is filed in the account.
+    const diverted = options.divert === false || !automationRuleSync
+      ? candidateLocal
+      : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
+    const local = withoutNewPlaintextKeys(diverted);
+
+    const localYaml = toCanonicalYaml(local);
 
     initializeOrRepairAdeProject(projectRoot, { logger });
     fs.mkdirSync(path.dirname(localPath), { recursive: true });

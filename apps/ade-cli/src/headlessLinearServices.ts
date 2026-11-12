@@ -1923,6 +1923,7 @@ export function createHeadlessGitHubService(
   const readAppIssueGrant = issueOps.readAppIssueGrant;
   // --- account_app: `GH_TOKEN` for `gh` in shells and chats (githubSessionEnv.ts).
   const sessionGithubEnv = createGithubSessionEnv({
+    answersShells: accountApp.enabled,
     readAccountAppToken: () => accountApp.readToken(),
     peekAccountAppToken: () => accountApp.peekToken(),
     readGrant: readAppIssueGrant,

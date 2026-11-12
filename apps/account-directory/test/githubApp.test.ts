@@ -30,12 +30,14 @@ function sqliteD1() {
     db.exec(readFileSync(resolve(MIGRATIONS, file), "utf8"));
   }
   // One-shot failures, as D1 gives them: "before" fails the statement,
-  // "after" commits it and then loses the answer.
-  const faults: Array<{ when: "before" | "after"; match: (sql: string) => boolean }> = [];
+  // "after" commits it and then loses the answer. With `act`, the entry runs
+  // another writer's change at that moment instead of failing.
+  const faults: Array<{ when: "before" | "after"; match: (sql: string) => boolean; act?: () => void }> = [];
   const fault = (sql: string, when: "before" | "after") => {
     const index = faults.findIndex((entry) => entry.when === when && entry.match(sql));
     if (index < 0) return;
-    faults.splice(index, 1);
+    const [entry] = faults.splice(index, 1);
+    if (entry.act) return entry.act();
     throw new Error("D1_ERROR: Network connection lost.");
   };
   const statement = (sql: string, values: unknown[]) => ({
@@ -299,7 +301,10 @@ describe("GitHub App sign-in", () => {
     expect(await read.json()).toMatchObject({ status: "done", resultCode: "ok" });
   });
 
-  it("a renewal whose grant was disconnected meanwhile deletes its new token and serves nothing", async () => {
+  it.each([
+    ["the renewal is saved", 0],
+    ["every save attempt fails", 8],
+  ])("a renewal whose grant was disconnected meanwhile deletes its new token and serves nothing (%s)", async (_label, failedSaves) => {
     const page = await toConfirmPage();
     await confirmForm({ signIn: page.signInId, confirm: page.confirm, choice: "connect" });
     expect(grantLogin(), "connected").toBe("octo");
@@ -309,12 +314,39 @@ describe("GitHub App sign-in", () => {
     github.onNextRefresh(() => {
       db.raw.prepare("delete from github_app_grants where user_id = ?").run(userId);
     });
+    for (let index = 0; index < failedSaves; index += 1) {
+      db.faults.push({ when: "before", match: (sql) => sql.includes("update github_app_grants set") && sql.includes("access_token_sealed = ?") });
+    }
 
     const answer = await call("POST", "/github/app/token", {});
     const renewedToken = github.lastAccess();
     expect(renewedToken).not.toBe(page.heldToken);
     expect(answer.status).toBe(404);
     expect(JSON.stringify(await answer.json())).not.toContain(renewedToken);
+    expect(github.deleted).toContain(renewedToken);
+  });
+
+  it("a disconnect while a renewal changes the row deletes the renewed token at GitHub", async () => {
+    const page = await toConfirmPage();
+    await confirmForm({ signIn: page.signInId, confirm: page.confirm, choice: "connect" });
+    const before = db.raw.prepare("select * from github_app_grants where user_id = ?").get(userId) as Record<string, unknown>;
+    db.raw.prepare("update github_app_grants set access_expires_at = ? where user_id = ?").run(Date.now() - 60_000, userId);
+    expect((await call("POST", "/github/app/token", {})).status, "renewed").toBe(200);
+    const renewedToken = github.lastAccess();
+    const renewed = db.raw.prepare("select * from github_app_grants where user_id = ?").get(userId) as Record<string, unknown>;
+    const put = (row: Record<string, unknown>) => {
+      const columns = Object.keys(row);
+      db.raw.prepare("delete from github_app_grants where user_id = ?").run(userId);
+      db.raw.prepare(`insert into github_app_grants (${columns.join(", ")}) values (${columns.map(() => "?").join(", ")})`).run(...columns.map((name) => row[name] as never));
+    };
+    // The disconnect reads the older row; the renewal saves the newer one just
+    // before the disconnect's delete runs.
+    put(before);
+    db.faults.push({ when: "before", match: (sql) => sql.startsWith("delete from github_app_grants"), act: () => put(renewed) });
+
+    const answer = await call("DELETE", "/github/app/grant");
+    expect(answer.status).toBe(200);
+    expect(grantLogin()).toBeNull();
     expect(github.deleted).toContain(renewedToken);
   });
 });

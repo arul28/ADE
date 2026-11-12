@@ -288,9 +288,19 @@ export async function renew(rt: GithubAppRuntime, row: GrantRow, now: number, op
       if (current.state === "needs_reauth") return { kind: "needs_reauth", reason: current.state_reason ?? "bad_refresh_token" };
       return { kind: "token", token: await serveRow(rt, current, after), reason: "current" };
     }
-    // GitHub took the refresh but D1 did not save it. The caller still gets
-    // a working token; the next refresh finds the stored refresh token spent
-    // and the grant goes to needs_reauth with `unpersisted_refresh`.
+    // GitHub took the refresh but D1 did not save it. The caller gets the
+    // working token only while the account still holds this chain: after a
+    // disconnect or a new sign-in (or when D1 cannot even say) the new token
+    // is deleted at GitHub, because no row is left to revoke it later. The
+    // next refresh finds the stored refresh token spent and the grant goes to
+    // needs_reauth with `unpersisted_refresh`.
+    const owner = await loadGrant(rt.db, row.user_id).catch(() => undefined);
+    if (!owner || owner.access_token_sha256 !== row.access_token_sha256) {
+      await deleteToken(rt.config, result.tokens.accessToken);
+      logGithubApp({ event: "github_app.refresh_unpersisted_dropped", userId: row.user_id, generation: row.generation + 1, ownerKnown: owner !== undefined });
+      if (owner === null) return { kind: "not_connected" };
+      return { kind: "unavailable", retryAfterSec: Math.ceil(BACKOFF_MIN_MS / 1000) };
+    }
     logGithubApp({ event: "github_app.refresh_unpersisted", userId: row.user_id, generation: row.generation + 1 });
     return {
       kind: "token",
@@ -455,12 +465,25 @@ export async function deletePreviousToken(rt: GithubAppRuntime, previous: GrantR
 
 /** `DELETE /github/app/grant`: delete the token at GitHub, then the row. */
 export async function removeGrant(rt: GithubAppRuntime, userId: string): Promise<{ existed: boolean; deletedAtGitHub: boolean }> {
-  const row = await loadGrant(rt.db, userId);
-  if (!row) return { existed: false, deletedAtGitHub: true };
-  await rt.db.prepare("delete from github_app_grants where user_id = ?").bind(userId).run();
-  const deletedAtGitHub = await deletePreviousToken(rt, row, null);
-  return { existed: true, deletedAtGitHub };
+  // Delete exactly the row that was read, so the token deleted at GitHub is
+  // that row's. A renewal or a new sign-in between the read and the delete
+  // changes the row; read it again and delete that one.
+  for (let attempt = 0; attempt < REMOVE_ATTEMPTS; attempt += 1) {
+    const row = await loadGrant(rt.db, userId);
+    if (!row) return { existed: false, deletedAtGitHub: true };
+    const result = await rt.db
+      .prepare("delete from github_app_grants where user_id = ? and access_token_sha256 = ? and generation = ?")
+      .bind(userId, row.access_token_sha256, row.generation)
+      .run();
+    if ((result.meta?.changes ?? 0) === 1) return { existed: true, deletedAtGitHub: await deletePreviousToken(rt, row, null) };
+  }
+  // Still changing after every attempt: fail (the route answers 5xx) rather
+  // than leave a token the caller believes is gone.
+  throw new Error("github_app_grant_kept_changing");
 }
+
+/** How many times a disconnect reads and deletes the row while renewals change it. */
+const REMOVE_ATTEMPTS = 3;
 
 /**
  * Clerk `user.deleted`: delete the token at GitHub where the secrets allow
