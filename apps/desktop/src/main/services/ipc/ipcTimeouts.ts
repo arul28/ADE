@@ -148,6 +148,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
 /** What a runtime action through a gone connection adds to its own budget: pairing again (a woken computer, up to 2 min) and connecting. */
 const GONE_PIN_PAIRING_BUDGET_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
+/** A cloud lane's work check: waking its computer, then the check itself (3 minutes at most). */
+const CLOUD_LANE_WORK_CHECK_IPC_TIMEOUT_MS = 6 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
@@ -236,6 +238,12 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer reported a timeout while the update was still going.
     case IPC.remoteRuntimeUpdateAndRestart:
       return REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS;
+    // A lane's delete or free first checks its work on the computer: a wake
+    // (a sleeping one takes a minute or two), then the check, which may run 3 minutes.
+    case IPC.cloudLaneLifeCall:
+      return isRecord(args[0]) && (args[0].method === "workState" || args[0].method === "deleteLane" || args[0].method === "freeLane")
+        ? CLOUD_LANE_WORK_CHECK_IPC_TIMEOUT_MS
+        : 30_000;
     // Pairs through the account (25 s) when needed, then connects, which can wake a cloud computer.
     case IPC.machinesConnect:
     case IPC.cloudFollowLane:

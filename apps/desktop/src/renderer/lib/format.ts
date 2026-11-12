@@ -211,8 +211,13 @@ export function extractError(err: unknown): string {
  * fallback.
  */
 export function ipcErrorMessage(err: unknown): string {
-  return err instanceof Error ? stripElectronErrorWrapper(err.message) : "";
+  const text = err instanceof Error ? stripElectronErrorWrapper(err.message) : "";
+  // The bridge's own timeout ("IPC handler for '…' timed out after 30000ms (callId=…)")
+  // is for logs; a person reads what it means.
+  return IPC_TIMEOUT_TEXT.test(text) ? "ADE didn't hear back in time. Try again in a moment." : text;
 }
+
+const IPC_TIMEOUT_TEXT = /^IPC handler for '[^']+' timed out after \d+ms/;
 
 /** Shorten a SHA-like hash to the first 8 characters. */
 export function shortSha(value: string | null | undefined): string {
