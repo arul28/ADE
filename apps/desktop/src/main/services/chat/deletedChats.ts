@@ -11,6 +11,7 @@ import type {
   DeletedChatReopenResult,
 } from "../../../shared/types/deletedChats";
 import type { AgentChatImportExternalSessionArgs, AgentChatImportExternalSessionResult } from "../../../shared/types/chat";
+import type { TerminalResumeMetadata } from "../../../shared/types/sessions";
 import type { ExternalSessionDetail } from "../../../shared/types/externalSessionDetail";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import {
@@ -62,6 +63,23 @@ type DeletedChatRow = {
   lastActiveAt: string | null;
   deletedAt: string;
   origin: DeletedChatOrigin;
+  /** 'cli' for a deleted agent CLI terminal; null for a chat. */
+  kind: string | null;
+  cliJson: string | null;
+};
+
+/**
+ * What a deleted agent CLI terminal reopens as: its terminal row, minus the
+ * process. Kept as JSON in `deleted_chats.cli_json`.
+ */
+export type DeletedCliSnapshot = {
+  toolType: string;
+  title: string | null;
+  goal: string | null;
+  resumeCommand: string | null;
+  resumeMetadata: TerminalResumeMetadata | null;
+  /** ADE's own recording of the terminal, which the delete leaves on disk. */
+  transcriptPath: string | null;
 };
 
 const ROW_COLUMNS = `
@@ -80,7 +98,9 @@ const ROW_COLUMNS = `
   created_at as createdAt,
   last_active_at as lastActiveAt,
   deleted_at as deletedAt,
-  origin
+  origin,
+  kind,
+  cli_json as cliJson
 `;
 
 /** Newest first; enough for any real history without an unbounded read. */
@@ -121,7 +141,7 @@ export function readPersistedChatRecord(filePath: string): Record<string, unknow
   }
 }
 
-export type RecordDeletedChatInput = Omit<DeletedChatRow, "deletedAt" | "origin" | "externalProvider" | "externalId"> & {
+export type RecordDeletedChatInput = Omit<DeletedChatRow, "deletedAt" | "origin" | "externalProvider" | "externalId" | "kind" | "cliJson"> & {
   origin: DeletedChatOrigin;
   /** The persisted chat record, for the conversation pointer and account. */
   record: Record<string, unknown> | null;
@@ -183,6 +203,112 @@ function recordDeletedChat(db: DeletedChatsDb, input: RecordDeletedChatInput): b
     ],
   );
   return true;
+}
+
+export type RecordDeletedCliInput = {
+  id: string;
+  laneId: string | null;
+  laneName: string | null;
+  title: string | null;
+  /** The CLI's agent (`claude`, `codex`, `cursor`, …), the resume provider. */
+  provider: ExternalSessionProvider;
+  /** The agent's own conversation id, when ADE learned it; null starts fresh on reopen. */
+  externalId: string | null;
+  modelId: string | null;
+  instanceId: string | null;
+  cwd: string | null;
+  createdAt: string | null;
+  lastActiveAt: string | null;
+  snapshot: DeletedCliSnapshot;
+  hidden?: boolean;
+  deletedAt?: string;
+};
+
+/**
+ * Saves one deleted agent CLI terminal. Unlike a chat it is kept even without
+ * a conversation id: reopening it still brings the CLI back in its lane, fresh.
+ */
+function recordDeletedCli(db: DeletedChatsDb, input: RecordDeletedCliInput): boolean {
+  const deletedAt = input.deletedAt ?? new Date().toISOString();
+  const externalId = input.externalId && isWellFormedExternalSessionId(input.provider, input.externalId)
+    ? input.externalId
+    : "";
+  db.run(
+    `insert into deleted_chats(
+       id, lane_id, lane_name, title, provider, external_provider, external_id,
+       model_id, reasoning_effort, instance_id, config_home, cwd,
+       created_at, last_active_at, deleted_at, origin, hidden_at, hidden_reason, reopened_chat_id,
+       kind, cli_json
+     ) values (?, ?, ?, ?, ?, ?, ?, ?, null, ?, null, ?, ?, ?, ?, 'delete', ?, ?, null, 'cli', ?)
+     on conflict(id) do update set
+       lane_id = excluded.lane_id,
+       lane_name = excluded.lane_name,
+       title = excluded.title,
+       provider = excluded.provider,
+       external_provider = excluded.external_provider,
+       external_id = excluded.external_id,
+       model_id = excluded.model_id,
+       reasoning_effort = null,
+       instance_id = excluded.instance_id,
+       config_home = null,
+       cwd = excluded.cwd,
+       created_at = excluded.created_at,
+       last_active_at = excluded.last_active_at,
+       deleted_at = excluded.deleted_at,
+       origin = excluded.origin,
+       hidden_at = excluded.hidden_at,
+       hidden_reason = excluded.hidden_reason,
+       reopened_chat_id = null,
+       kind = 'cli',
+       cli_json = excluded.cli_json`,
+    [
+      input.id,
+      input.laneId,
+      input.laneName,
+      input.title,
+      input.provider,
+      input.provider,
+      externalId,
+      input.modelId,
+      input.instanceId,
+      input.cwd,
+      input.createdAt,
+      input.lastActiveAt,
+      deletedAt,
+      input.hidden ? deletedAt : null,
+      input.hidden ? "internal" : null,
+      JSON.stringify(input.snapshot),
+    ],
+  );
+  return true;
+}
+
+function isCliRow(row: Pick<DeletedChatRow, "kind">): boolean {
+  return row.kind === "cli";
+}
+
+function parseCliSnapshot(row: DeletedChatRow): DeletedCliSnapshot | null {
+  if (!isCliRow(row) || !row.cliJson) return null;
+  try {
+    const parsed = JSON.parse(row.cliJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const toolType = asText(record.toolType);
+    if (!toolType) return null;
+    const metadata = record.resumeMetadata;
+    return {
+      toolType,
+      title: asText(record.title),
+      goal: asText(record.goal),
+      resumeCommand: asText(record.resumeCommand),
+      resumeMetadata: metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? metadata as TerminalResumeMetadata
+        : null,
+      transcriptPath: asText(record.transcriptPath),
+    };
+  } catch {
+    return null;
+  }
 }
 
 const CHAT_TOOL_TYPE_SQL = "(s.tool_type = 'cursor' or s.tool_type like '%-chat')";
@@ -463,6 +589,7 @@ async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item:
 function toDeletedChat(
   row: DeletedChatRow,
   lane: { name: string | null; color: string | null; live: boolean } | null,
+  cliResumable?: boolean,
 ): DeletedChat {
   return {
     id: row.id,
@@ -477,6 +604,9 @@ function toDeletedChat(
     createdAt: row.createdAt,
     lastActiveAt: row.lastActiveAt,
     deletedAt: row.deletedAt,
+    ...(isCliRow(row)
+      ? { kind: "cli" as const, toolType: parseCliSnapshot(row)?.toolType ?? row.provider, resumable: cliResumable === true }
+      : {}),
   };
 }
 
@@ -505,6 +635,21 @@ export type DeletedChatsServiceDeps = {
     args: { provider: ExternalSessionProvider; sessionId: string; before?: string },
     options: { includeAdeOwned: true; env?: NodeJS.ProcessEnv },
   ) => Promise<ExternalSessionDetail>;
+  /**
+   * Relaunches a deleted agent CLI in `laneId`, resuming its own conversation
+   * when `resumeTargetId` is set. Absent in a runtime without terminals.
+   */
+  reopenCli?: (args: {
+    id: string;
+    laneId: string;
+    sameLane: boolean;
+    provider: ExternalSessionProvider;
+    resumeTargetId: string | null;
+    title: string | null;
+    snapshot: DeletedCliSnapshot;
+  }) => Promise<{ sessionId: string; mode: "continue" | "fresh"; notice: string | null }>;
+  /** The last of a deleted CLI's own terminal recording, for the preview when the agent's copy is unknown. */
+  readCliTerminalTail?: (transcriptPath: string) => Promise<string | null>;
 };
 
 const LOCATE_CONCURRENCY = 6;
@@ -562,14 +707,35 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     }
   };
 
+  /** Saves one deleted agent CLI; true when Recently deleted now holds it. Never throws. */
+  const rememberCli = (input: RecordDeletedCliInput): boolean => {
+    const db = deps.db();
+    if (!db) return false;
+    try {
+      return recordDeletedCli(db, input) && !input.hidden;
+    } catch (error) {
+      deps.logger.warn("deleted_chats.record_cli_failed", {
+        sessionId: input.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
   const list = async (args: DeletedChatListArgs = {}): Promise<DeletedChatListResult> => {
     const db = requireDb();
     const live = await liveRefKeys();
     const rows = listDeletedChatRows(db)
       // Opened again some other way (an import, another reopen): already a live chat.
-      .filter((row) => !live.has(`${row.externalProvider}:${row.externalId}`));
-    const present = await mapWithLimit(rows, LOCATE_CONCURRENCY, async (row) => (await locator.locate(row)) != null);
-    const kept = rows.filter((_, index) => present[index]);
+      .filter((row) => !row.externalId || !live.has(`${row.externalProvider}:${row.externalId}`));
+    const present = await mapWithLimit(
+      rows,
+      LOCATE_CONCURRENCY,
+      async (row) => (row.externalId ? (await locator.locate(row)) != null : false),
+    );
+    // A CLI stays listed without its agent's copy: Reopen starts it fresh in its lane.
+    const kept = rows.filter((row, index) => present[index] || isCliRow(row));
+    const resumable = new Map(rows.map((row, index) => [row.id, present[index] === true]));
     const laneIds = [...new Set(kept.map((row) => row.laneId).filter((laneId): laneId is string => Boolean(laneId)))];
     const lanes = new Map<string, { name: string | null; color: string | null; live: boolean }>();
     if (laneIds.length) {
@@ -581,15 +747,113 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     }
     const query = typeof args?.query === "string" ? args.query.trim().toLowerCase() : "";
     const chats = kept
-      .map((row) => toDeletedChat(row, row.laneId ? lanes.get(row.laneId) ?? null : null))
+      .map((row) => toDeletedChat(row, row.laneId ? lanes.get(row.laneId) ?? null : null, resumable.get(row.id)))
       .filter((chat) => !query
         || (chat.title ?? "").toLowerCase().includes(query)
         || (chat.laneName ?? "").toLowerCase().includes(query));
     return { chats };
   };
 
+  /**
+   * A deleted agent CLI and where its agent keeps the conversation (null when
+   * ADE never learned the id or the agent cleared it). Null when `rawId` is a chat.
+   */
+  const requireCliRow = async (rawId: unknown): Promise<{ row: DeletedChatRow; source: DeletedChatSource | null } | null> => {
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    if (!id) throw new Error("Deleted chat id is required.");
+    const row = getDeletedChatRow(requireDb(), id);
+    if (!row) throw new Error("That chat isn't in Recently deleted anymore.");
+    if (!isCliRow(row)) return null;
+    return { row, source: row.externalId ? await locator.locate(row) : null };
+  };
+
+  /** The preview of a CLI whose agent's copy ADE cannot read: the tail of ADE's own terminal recording. */
+  const cliTerminalDetail = async (row: DeletedChatRow): Promise<ExternalSessionDetail> => {
+    const snapshot = parseCliSnapshot(row);
+    const tail = snapshot?.transcriptPath && deps.readCliTerminalTail
+      ? await deps.readCliTerminalTail(snapshot.transcriptPath).catch(() => null)
+      : null;
+    const at = Date.parse(row.lastActiveAt ?? row.deletedAt);
+    return {
+      provider: row.externalProvider,
+      id: row.externalId || row.id,
+      cwd: row.cwd,
+      title: row.title,
+      model: row.modelId,
+      createdAt: Number.isFinite(Date.parse(row.createdAt ?? "")) ? Date.parse(row.createdAt!) : null,
+      updatedAt: Number.isFinite(at) ? at : null,
+      messageCount: tail ? 1 : 0,
+      messages: tail
+        ? [{ role: "assistant", text: `Terminal (last lines):\n${tail}`, at: Number.isFinite(at) ? at : null }]
+        : [],
+      sourcePath: null,
+      watchable: false,
+    };
+  };
+
+  const reopenCli = async (
+    row: DeletedChatRow,
+    source: DeletedChatSource | null,
+    args: DeletedChatReopenArgs,
+  ): Promise<DeletedChatReopenResult> => {
+    if (!deps.reopenCli) throw new Error("CLI sessions can't be reopened on this machine.");
+    const snapshot = parseCliSnapshot(row);
+    if (!snapshot) throw new Error("ADE no longer knows how this CLI was launched, so it can't be reopened.");
+    if (reopening.has(row.id)) throw new Error("This CLI session is already being reopened.");
+    reopening.add(row.id);
+    try {
+      const requestedLaneId = typeof args?.laneId === "string" ? args.laneId.trim() : "";
+      const targetLaneId = requestedLaneId || row.laneId || "";
+      const lane = targetLaneId ? await deps.getLane(targetLaneId).catch(() => null) : null;
+      if (!lane || lane.archivedAt) {
+        throw new Error(requestedLaneId
+          ? "That lane isn't available. Pick another lane to reopen this CLI in."
+          : "This CLI's lane was deleted. Pick a lane to reopen it in.");
+      }
+      // Its own conversation only resumes in the folder it ran in, and only
+      // while no live chat holds it (two would run it twice).
+      const sameLane = lane.id === row.laneId;
+      const liveElsewhere = row.externalId
+        ? (await liveRefKeys()).has(`${row.externalProvider}:${row.externalId}`)
+        : false;
+      const resumeTargetId = sameLane && source && !liveElsewhere ? row.externalId : null;
+      const result = await deps.reopenCli({
+        id: row.id,
+        laneId: lane.id,
+        sameLane,
+        provider: row.externalProvider,
+        resumeTargetId,
+        title: row.title,
+        snapshot,
+      });
+      hideDeletedChats(requireDb(), [row.id], "reopened", result.sessionId);
+      locator.invalidate();
+      const label = importProviderLabel(row.externalProvider);
+      const notice = result.notice ?? (result.mode === "fresh"
+        ? !sameLane
+          ? `Started a new ${label} CLI in this lane: its conversation is tied to the folder it ran in.`
+          : liveElsewhere
+            ? `Started a new ${label} CLI: its conversation is already open in a chat.`
+            : row.externalId
+              ? `Started a new ${label} CLI: ${label} no longer has its conversation.`
+              : `Started a new ${label} CLI: ADE never learned its conversation id, so it couldn't resume.`
+        : null);
+      return {
+        chatSessionId: result.sessionId,
+        laneId: lane.id,
+        mode: result.mode,
+        kind: "cli",
+        notice,
+      };
+    } finally {
+      reopening.delete(row.id);
+    }
+  };
+
   const detail = async (args: DeletedChatDetailArgs): Promise<ExternalSessionDetail> => {
-    const { row, source } = await requireRow(args?.id);
+    const cli = await requireCliRow(args?.id);
+    if (cli && !cli.source) return cliTerminalDetail(cli.row);
+    const { row, source } = cli ? { row: cli.row, source: cli.source! } : await requireRow(args?.id);
     const before = typeof args?.before === "string" && args.before.trim() ? args.before.trim() : null;
     return deps.loadDetail(
       { provider: row.externalProvider, sessionId: row.externalId, ...(before ? { before } : {}) },
@@ -598,6 +862,8 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
   };
 
   const reopen = async (args: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> => {
+    const cli = await requireCliRow(args?.id);
+    if (cli) return reopenCli(cli.row, cli.source, args);
     const { row, source } = await requireRow(args?.id);
     if (reopening.has(row.id)) throw new Error("This chat is already being reopened.");
     reopening.add(row.id);
@@ -657,6 +923,8 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     try {
       const row = getDeletedChatRow(db, rawId.trim());
       if (!row) return null;
+      // A CLI can always come back: fresh in its lane when its conversation is gone.
+      if (isCliRow(row)) return { deletedAt: row.deletedAt, title: row.title, reopenable: true };
       return { deletedAt: row.deletedAt, title: row.title, reopenable: (await locator.locate(row)) != null };
     } catch (error) {
       deps.logger.warn("deleted_chats.find_failed", { sessionId: rawId, error: error instanceof Error ? error.message : String(error) });
@@ -664,7 +932,7 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     }
   };
 
-  return { remember, list, detail, reopen, remove, find };
+  return { remember, rememberCli, list, detail, reopen, remove, find };
 }
 
 export type DeletedChatsService = ReturnType<typeof createDeletedChatsService>;

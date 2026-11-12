@@ -69,6 +69,8 @@ export type CrossMachineBatchChat = {
   title: string | null;
   crossMachineOrigin?: AgentChatCrossMachineHandoffOrigin | null;
   crossMachineArrival?: AgentChatCrossMachineArrival | null;
+  /** Set for a tracked agent CLI session (its tool type): it moves as a CLI, not a chat. */
+  cliToolType?: string | null;
 };
 
 export type CrossMachineBatchLane = {
@@ -507,6 +509,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         batchLaneImportId: laneImportId(chat.laneId),
         ...(origin ? { returnToLaneId: origin.laneId } : {}),
         ...(hasBundle ? { hasGitBundle: true } : {}),
+        ...(chat.cliToolType ? { cliToolType: chat.cliToolType } : {}),
       });
       let preflight = await moves.callPreflight(transport, {
         machine: machine.machineKey,
@@ -518,6 +521,9 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       }
       if (hasBundle && preflight.gitBundleSupport !== true) {
         throw new Error(`${machine.name} needs an ADE update to take uncommitted changes. Update it, or move without them.`);
+      }
+      if (chat.cliToolType && preflight.cliMoveSupport !== 1) {
+        throw new Error(`${machine.name} needs an ADE update to take a CLI session ('${chat.title ?? chat.sessionId}'). Update ADE there, then move it again.`);
       }
       if (mode === "fork" && preflight.forkHandoffSupport?.supported === false) {
         fallbackReason = preflight.forkHandoffSupport.reason ?? "This provider cannot move its full history between machines.";

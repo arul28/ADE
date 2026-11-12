@@ -1,4 +1,5 @@
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "./sessionService";
 
@@ -70,4 +71,28 @@ export function deleteTerminalSessionWithRuntimeCleanup({
   }
 
   return sessionService.deleteSession(trimmedSessionId);
+}
+
+/**
+ * Every "delete this terminal row" entry point (`sessions.delete`, the phone's
+ * `work.deleteSession`, Settings › Archive). A tracked agent CLI (Claude Code,
+ * Codex, …) deletes like a chat when the chat service is here: stopped and
+ * kept in Recently deleted, so it can be reopened. Anything else is removed
+ * outright, as before.
+ */
+export function deleteSessionRowWithRuntimeCleanup(args: {
+  sessionId: string;
+  sessionService: ReturnType<typeof createSessionService>;
+  ptyService: ReturnType<typeof createPtyService>;
+  agentChatService?: { deleteSession: (args: { sessionId: string }) => Promise<unknown> } | null;
+}): boolean | Promise<boolean> {
+  const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+  if (args.agentChatService && sessionId) {
+    const row = args.sessionService.get(sessionId);
+    if (row?.tracked && isTrackedAgentCliToolType(row.toolType ?? null)) {
+      return args.agentChatService.deleteSession({ sessionId }).then(() => true);
+    }
+  }
+  // A shell keeps the synchronous delete (and its synchronous refusals).
+  return deleteTerminalSessionWithRuntimeCleanup(args);
 }
