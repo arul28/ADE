@@ -451,7 +451,9 @@ function AccountRow({
     line = { text: `Still on your account. ${step.message}`, tone: "danger" };
   }
   const extra = step.kind === "idle" && offlineCount > 0
-    ? `${plural(offlineCount, "computer is", "computers are")} offline and keep their folders.`
+    ? offlineCount === 1
+      ? "1 computer is offline and keeps its folder."
+      : `${offlineCount} computers are offline and keep their folders.`
     : step.kind === "idle" && noComputers
       ? "No folder changes on any computer."
       : null;
