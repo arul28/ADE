@@ -364,25 +364,28 @@ export function createProjectScaffoldService({
       }
     }
 
-    // `git clone -c …` on purpose: the clone's own `-c` is persisted in the
-    // new repository's .git/config, and ADE's normal fetch/push has no other
-    // auth injection, so later Git work relies on that header. Callers that
-    // add their own header (cross-machine handoff) reset the inherited list
-    // first, so GitHub never sees two.
-    const cloneArgs: string[] = ["clone"];
-    if (authHeader) {
-      cloneArgs.push(
-        "-c",
-        `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
-      );
-    }
+    // The header goes to this one command through Git's config environment
+    // (`GIT_CONFIG_COUNT`/`KEY`/`VALUE`, Git 2.31+, the same on every
+    // platform), never as `git clone -c …`: that form saves it in the new
+    // repository's .git/config, where any process, agent or copy of the
+    // folder can read the token. It also stays out of the command line that
+    // process listings show. Later fetches and pushes sign in on their own
+    // (`runGitWithGithubAuthFallback` passes ADE's token the same way).
+    const cloneEnv: NodeJS.ProcessEnv = authHeader
+      ? {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: ${authHeader}`,
+      }
+      : {};
     // `--` so a URL that starts with "-" cannot be read as a git option.
-    cloneArgs.push("--", url, rootPath);
+    const cloneArgs: string[] = ["clone", "--", url, rootPath];
 
     try {
       const cloneRes = await runGit(cloneArgs, {
         cwd: parentDir,
         timeoutMs: 5 * 60_000,
+        env: cloneEnv,
       });
       if (cloneRes.exitCode !== 0) {
         // Git repeats the clone URL, query and all, so a token in it would reach the banner.
