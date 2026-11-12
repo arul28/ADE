@@ -2,6 +2,7 @@ import React from "react";
 import type { LaneSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { COLORS, SANS_FONT } from "./laneDesignTokens";
 import {
@@ -92,6 +93,7 @@ function LaneMenuEntryView({
         <OpenInSubmenu
           rootPath={entry.rootPath}
           remote={entry.remote}
+          pin={entry.pin ?? null}
           onClose={onClose}
           style={submenuTriggerStyle}
           hoverBackground={COLORS.hoverBg}
@@ -193,7 +195,8 @@ export function LaneContextMenu({
   workPinnedLaneIds?: string[];
 }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const projectBinding = useAppStore((s) => s.projectBinding);
+  // This menu lists the lanes of the tab's copy, so their machine is that copy.
+  const lanePin = useTabCopyPin();
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
 
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(
@@ -216,9 +219,9 @@ export function LaneContextMenu({
     menuRef.current?.focus();
   }, []);
 
-  const openIn = resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: projectBinding });
-  // This menu acts on the tab's own machine (no pin), as its other writes do.
-  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: null });
+  const openInTarget = lanePin ? resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: lanePin }) : null;
+  const openIn = openInTarget ? { ...openInTarget, pin: lanePin } : null;
+  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: lanePin });
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,

@@ -60,7 +60,7 @@ export function projectMenuSections(
     ? resolveOpenInTarget({ worktreePath: project.rootPath, binding: project.binding })
     : null;
   const open: ContextMenuEntry[] = openIn
-    ? [{ kind: "open-in", key: "open-in", rootPath: openIn.rootPath, remote: openIn.remote ?? null }]
+    ? [{ kind: "open-in", key: "open-in", rootPath: openIn.rootPath, remote: openIn.remote ?? null, pin: project.binding ?? null }]
     : [];
 
   const projectRows: ContextMenuEntry[] = [];

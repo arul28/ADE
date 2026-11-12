@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useAppStore } from "../../state/appStore";
 import { RecordingsWarningCard } from "./deviceSettingsCards";
 import { readAppleRecordingsTotalBytes } from "./appleRecordingsFootprint";
+import { useThisComputerCopyPin } from "./ProjectCopyScope";
 
 /**
  * Read-only Diagnostics row. Shows only when Apple recordings on disk exceed
@@ -11,6 +12,11 @@ import { readAppleRecordingsTotalBytes } from "./appleRecordingsFootprint";
 export function AppleRecordingsWarning({ projectRoot }: { projectRoot: string | null }) {
   const warnBytes = useAppStore((s) => s.appleDevice.recordingsWarnBytes);
   const [totalBytes, setTotalBytes] = useState(0);
+  // Shown on a page about this computer: its copy holds the recordings.
+  const pin = useThisComputerCopyPin();
+  const pinRef = React.useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -18,13 +24,13 @@ export function AppleRecordingsWarning({ projectRoot }: { projectRoot: string | 
       setTotalBytes(0);
       return;
     }
-    void readAppleRecordingsTotalBytes(projectRoot).then((bytes) => {
+    void readAppleRecordingsTotalBytes(projectRoot, pinRef.current).then((bytes) => {
       if (!cancelled) setTotalBytes(bytes);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectRoot]);
+  }, [projectRoot, pinKey]);
 
   return (
     <RecordingsWarningCard

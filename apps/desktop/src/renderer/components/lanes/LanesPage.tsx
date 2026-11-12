@@ -400,7 +400,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [laneGithubPrTags, setLaneGithubPrTags] = useState<GitHubPrListItem[]>([]);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
   const laneListFreshnessKey = useMemo(() => ({ lanes, laneSnapshots }), [lanes, laneSnapshots]);
-  useLaneListInvalidation({ active: active && Boolean(activeProjectRoot), refreshLanes, freshnessKey: laneListFreshnessKey });
+  useLaneListInvalidation({ active: active && Boolean(activeProjectRoot), pin: tabLanePin, refreshLanes, freshnessKey: laneListFreshnessKey });
   const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
   const consumedCommitDeepLinkSignatureRef = useRef<string | null>(null);
 

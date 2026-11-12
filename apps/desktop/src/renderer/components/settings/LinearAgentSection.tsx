@@ -16,6 +16,7 @@ import { relativeTimeCompact } from "../../lib/format";
 import { buildLinearAgentRuleDraft } from "../automations/templates/templateData";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
+import { useThisComputerCopyPin } from "./ProjectCopyScope";
 
 const INSTALL_POLL_MS = 1_500;
 
@@ -53,6 +54,10 @@ function Field({ label, children, wide = false }: { label: string; children: Rea
  */
 export function LinearAgentSection({ connected, pin = null }: { connected: boolean; pin?: OpenProjectBinding | null }) {
   const navigate = useNavigate();
+  // The rules live in a copy of the project: the page machine's copy, or this
+  // computer's copy when the page is about this computer.
+  const thisComputerCopyPin = useThisComputerCopyPin();
+  const rulePin = pin ?? thisComputerCopyPin;
   const [overview, setOverview] = useState<LinearAgentOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,25 +156,26 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
   const handleTurnOn = useCallback(() => run("rule", async () => {
     const automations = window.ade?.automations;
     if (!isAdeAvailable(automations?.saveDraft)) throw new Error("Automations are not available in this ADE.");
+    if (!rulePin) throw new Error("No computer with this project is online.");
     const modelConfig: ModelConfig = {
       modelId: effectiveModelId,
       ...(hasReasoning && effort ? { thinkingLevel: effort as ModelConfig["thinkingLevel"] } : {}),
     };
     await automations.saveDraft({
       draft: buildLinearAgentRuleDraft({ name: "Linear agent — delegations", trigger: "linear.agent_delegated", laneMode: "create", modelConfig, permissionConfig }),
-    }, pin);
+    }, rulePin);
     if (answerMentions) {
       try {
         await automations.saveDraft({
           draft: buildLinearAgentRuleDraft({ name: "Linear agent — mentions", trigger: "linear.agent_mentioned", laneMode: "reuse", modelConfig, permissionConfig }),
-        }, pin);
+        }, rulePin);
       } catch (err) {
         // Show the saved delegations rule, so a retry does not add it twice.
         await load();
         throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${err instanceof Error ? err.message : String(err)}. Add it in Automations.`);
       }
     }
-  }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, pin, run]);
+  }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, rulePin, run]);
 
   const handleRemove = useCallback(async () => {
     const orgName = overview?.status?.orgName ?? "this workspace";

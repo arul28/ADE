@@ -140,8 +140,9 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
 }
 
 /**
- * The open project's pages. They always act on the machine that owns the
- * project (the tab's binding), never on a picked machine.
+ * The open project's pages. Each reads one copy of the project, picked on the
+ * page (the tab's copy by default), and names the computer it is on. They
+ * never follow the Settings machine picker.
  */
 export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "integrations"];
 

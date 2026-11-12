@@ -54,7 +54,8 @@ export function useOnboardingChatImport({
     if (!enabled || !projectRoot || !isLocal || !primaryLaneId) return;
     const binding = bindingRef.current;
     // Mid-switch, the binding can still be the last tab's: wait for this project's.
-    if (binding && !arePathsEqual(binding.rootPath, projectRoot)) return;
+    // No local copy: nothing to import into, so wait for one.
+    if (binding?.kind !== "local" || !arePathsEqual(binding.rootPath, projectRoot)) return;
     const running = runningRef.current;
     if (running.has(projectRoot)) return;
     const pending = pendingChatImportFor(projectRoot);
@@ -62,9 +63,8 @@ export function useOnboardingChatImport({
     running.add(projectRoot);
     // This project's own binding (a local one, read in the same render as
     // `projectRoot`), so each call reaches this project whatever tab is in
-    // front by the time it is sent. A tab without a binding keeps the
-    // unpinned route.
-    const pin = binding?.kind === "local" ? binding : null;
+    // front by the time it is sent.
+    const pin = binding;
     void importRecentChats({
       projectRoot,
       pin,
@@ -88,7 +88,7 @@ async function importRecentChats({
   excludedKeys,
 }: {
   projectRoot: string;
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   primaryLaneId: string;
   sinceMs: number;
   /** Chats the user left out in setup's picker (`chatImportKey`). */

@@ -556,13 +556,13 @@ const OPERATION_LIMIT = 200;
 export function useLaneOperations(
   laneId: string | null,
   refreshKey: string,
-  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
-  pin: OpenProjectBinding | null = null,
+  /** The lane's machine. Null: the lane has no machine online, so nothing is read. */
+  pin: OpenProjectBinding | null,
 ): OperationRecord[] {
   const [operations, setOperations] = useState<OperationRecord[]>([]);
   const pinKey = pin?.key ?? null;
   useEffect(() => {
-    if (!laneId || !window.ade?.history?.listOperations) {
+    if (!laneId || !pin || !window.ade?.history?.listOperations) {
       setOperations([]);
       return;
     }

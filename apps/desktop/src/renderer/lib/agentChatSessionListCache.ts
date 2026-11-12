@@ -1,6 +1,7 @@
 import type {
   AgentChatListArgs,
   AgentChatSessionSummary,
+  OpenProjectBinding,
 } from "../../shared/types";
 import {
   selectActiveProjectRoot,
@@ -26,12 +27,14 @@ function normalizeArgs(args?: AgentChatListArgs): AgentChatListArgs {
   return normalized;
 }
 
-function cacheKey(args?: AgentChatListArgs): string {
+function cacheKey(args: AgentChatListArgs | undefined, pin: OpenProjectBinding | null): string {
   const normalized = normalizeArgs(args);
   const state = useAppStore.getState();
   return JSON.stringify({
     projectRoot: selectActiveProjectRoot(state),
     projectKey: selectActiveProjectStateKey(state),
+    // Each machine's chats are a list of their own.
+    machine: pin?.key ?? null,
     laneId: normalized.laneId ?? null,
     includeAutomation: normalized.includeAutomation ?? null,
     includeArchived: normalized.includeArchived ?? null,
@@ -39,11 +42,13 @@ function cacheKey(args?: AgentChatListArgs): string {
   });
 }
 
+/** `pin`: the machine whose chats to list. Left out, the call takes the old route. */
 export async function listAgentChatSessionsCached(
   args?: AgentChatListArgs,
   options?: { force?: boolean; ttlMs?: number },
+  pin?: OpenProjectBinding | null,
 ): Promise<AgentChatSessionSummary[]> {
-  const key = cacheKey(args);
+  const key = cacheKey(args, pin ?? null);
   const now = Date.now();
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const cached = chatSessionListCache.get(key);
@@ -54,7 +59,7 @@ export async function listAgentChatSessionsCached(
   if (!options?.force && cached?.promise) return cached.promise;
 
   const normalized = normalizeArgs(args);
-  const promise = window.ade.agentChat.list(normalized).then((value) => {
+  const promise = (pin ? window.ade.agentChat.list(normalized, pin) : window.ade.agentChat.list(normalized)).then((value) => {
     const current = chatSessionListCache.get(key);
     if (current?.promise === promise) {
       chatSessionListCache.set(key, {

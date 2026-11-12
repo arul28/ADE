@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   APPLE_RECORDINGS_WARN_GIB_MAX,
   APPLE_RECORDINGS_WARN_GIB_MIN,
@@ -9,6 +9,8 @@ import {
 } from "../../../shared/appleDeviceSettings";
 import { useAppStore } from "../../state/appStore";
 import { readAppleRecordingsTotalBytes } from "./appleRecordingsFootprint";
+import { useThisComputerCopyPin } from "./ProjectCopyScope";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import {
   BitrateControl,
   FeatureCard,
@@ -137,6 +139,13 @@ export function AppleDevicesSection() {
 function AppleStorageControl({ warnBytes, onChangeGib }: { warnBytes: number; onChangeGib: (gib: number) => void }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const [usedBytes, setUsedBytes] = useState<number | null>(null);
+  // The page machine's copy, else this computer's copy.
+  const machinePin = useSettingsMachineScope().pin;
+  const thisComputerCopyPin = useThisComputerCopyPin();
+  const pin = machinePin ?? thisComputerCopyPin;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -144,13 +153,13 @@ function AppleStorageControl({ warnBytes, onChangeGib }: { warnBytes: number; on
       setUsedBytes(null);
       return;
     }
-    void readAppleRecordingsTotalBytes(projectRoot).then((bytes) => {
+    void readAppleRecordingsTotalBytes(projectRoot, pinRef.current).then((bytes) => {
       if (!cancelled) setUsedBytes(bytes);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectRoot]);
+  }, [projectRoot, pinKey]);
 
   return (
     <StorageMeter

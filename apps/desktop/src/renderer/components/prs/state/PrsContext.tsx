@@ -545,6 +545,7 @@ export function PrsProvider({
   }, [refreshCore]);
   useDebouncedLaneLifecycleRefresh({
     active,
+    pin,
     debounceMs: PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS,
     onRefresh: refreshForLaneLifecycle,
   });
