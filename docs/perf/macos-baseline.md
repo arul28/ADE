@@ -2906,3 +2906,22 @@ showed no remote `streamEvents` call from +15 s to +120 s. After a manual
 Disconnect, it showed none for 38 s. After Connect, the parked pumps polled
 again within 0.3 s and caught up on a reply that the test machine made while
 it was disconnected.
+
+### Pins on every preload member (B2, 2026-11-12)
+
+Dev app on `ade/account-desktop-b2-preload-pass` against the B1 head
+`ad5d1ffa4` (the old preload, checked out over the same tree). Same Mac
+(Mac Studio M4 Max), same steps for both: `--first-run --keep`, the account
+brain on its own socket, the dev test machine "tabs" connected, one local
+project tab, nothing streaming. The Lanes row is the IPC in the 4 s after a
+move from Work to Lanes, from a perf run, 3 runs. The chat row is
+`interaction.mjs chats 4` on the same tab.
+
+| Row | Before (B1) | After (B2) | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 2 machines connected | 41, 44, 44 calls; 0.8–1.8 s total | 40, 39, 44 calls; 0.8–0.9 s total | 70 calls (Lanes row) |
+| Work chat switch, warm, 2 machines: first changed frame median / settled median / worst long frame | 34 / 143 ms / 0 ms | 32 / 144 ms / 0 ms | 60 ms first frame |
+
+B2 adds an optional `pin` to each member. A call with no pin takes the same
+route as before, so the counts do not move. The total time of the Lanes calls
+follows the GitHub PR calls, which vary from run to run.
