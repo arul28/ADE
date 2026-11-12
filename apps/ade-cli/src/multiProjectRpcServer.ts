@@ -59,6 +59,7 @@ import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { readAccountProjectListForRpc } from "./services/projects/accountProjectSync";
+import { setAccountProjectMainCheckout } from "./services/projects/accountProjectMain";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { createProjectCopyRemoval } from "./services/projects/projectCopyRemoval";
@@ -653,6 +654,7 @@ const RUNTIME_METHODS = new Set([
   "projects.remove",
   "projects.inspectRemoval",
   "projects.removeCopy",
+  "projects.setMainCheckout",
   "projects.pruneMissing",
   "projects.touch",
   "projects.retryOpen",
@@ -2767,6 +2769,8 @@ export function createMultiProjectRpcRequestHandler(
             removeCopy: true,
             // `projects.accountList`, and `accountProjectId` / `githubRepoId` on `projects.list` rows.
             accountList: true,
+            // `projects.setMainCheckout` ("Use for new lanes").
+            setMainCheckout: true,
           },
           ...sdkCapabilities(),
           account: true,
@@ -3949,6 +3953,24 @@ export function createMultiProjectRpcRequestHandler(
         { deleteFolder, stateToken, acceptWork: params.acceptWork === true },
         params.folderMode === "caller" ? "caller" : "delete",
       );
+    }
+
+    // "Use for new lanes": which folder of a project new lanes on this
+    // computer use. A person's choice, like Remove project: no agent, nothing
+    // below the cto role. Another computer reaches it over the runtime
+    // channel (same account, host rights), the phone as a sync command.
+    if (method === "projects.setMainCheckout") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Choosing the folder for new lanes is up to the person: use Location in ADE.",
+        );
+      }
+      const checkoutId = readProjectId(params) ?? readOptionalString(params.checkoutId);
+      if (!checkoutId) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.setMainCheckout requires checkoutId.");
+      }
+      return await setAccountProjectMainCheckout(checkoutId);
     }
 
     if (method === "projects.pruneMissing") {

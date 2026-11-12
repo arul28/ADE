@@ -778,6 +778,21 @@ describe("createSyncRemoteCommandService", () => {
     expect(consumeResetCredit).toHaveBeenCalledWith({ accountId: "codex:work" });
   });
 
+  it("lets a paired phone set the folder for new lanes, answered by the publishing brain only", async () => {
+    const { service } = createService();
+
+    // The phone shows "Use for new lanes" only when this descriptor allows a
+    // controller, and sends it to the computer that holds the folder.
+    expect(service.getDescriptor("projects.setMainCheckout")).toEqual({
+      action: "projects.setMainCheckout",
+      scope: "runtime",
+      policy: { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    });
+    // A brain that does not publish this computer's projects says so.
+    await expect(service.execute(makePayload("projects.setMainCheckout", { checkoutId: "project-1" })))
+      .resolves.toMatchObject({ ok: false, code: "not_publishing" });
+  });
+
   it("registers CTO-gated Linear credential commands and refreshes status after each mutation", async () => {
     let token: string | null = null;
     let authMode: "manual" | "oauth" | null = null;

@@ -18,6 +18,12 @@ struct SettingsAccountPage: View {
   let integrationsPage: () -> AnyView
   @ObservedObject private var account = AccountService.shared
   @ObservedObject private var hidden = HiddenMachineStore.shared
+  @ObservedObject private var github = GitHubAccountConnection.shared
+  @Environment(\.openURL) private var openURL
+  @State private var confirmGitHubDisconnect = false
+  @State private var githubDisconnecting = false
+  /// After a disconnect: where the person can also revoke the App on GitHub.
+  @State private var githubRevokeURL: URL?
   @EnvironmentObject private var fleet: MachineFleet
   /// The desktop's "hide this suggestion" for the GitHub row, by the same key.
   @AppStorage("ade.account.repoBridgeDismissed.v1") private var repoBridgeDismissed = false
@@ -54,6 +60,7 @@ struct SettingsAccountPage: View {
         }
       } else if let identity = account.identity, account.phase == .signedIn {
         heroSection(identity)
+        githubAccountSection
         computersSection
         detailsSection(identity)
         inviteSection
@@ -63,6 +70,21 @@ struct SettingsAccountPage: View {
     }
     .navigationDestination(isPresented: $showIntegrations) { integrationsPage() }
     .task(id: githubCheckKey) { await loadGitHub() }
+    .task(id: account.phase == .signedIn) {
+      if account.phase == .signedIn { await github.refreshStatus() }
+    }
+    .confirmationDialog("Disconnect GitHub from ADE?", isPresented: $confirmGitHubDisconnect, titleVisibility: .visible) {
+      Button("Disconnect", role: .destructive) {
+        Task {
+          githubDisconnecting = true
+          githubRevokeURL = await github.disconnect()
+          githubDisconnecting = false
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Your devices and computers stop using this GitHub sign-in. Computers with their own GitHub CLI sign-in or token keep using it.")
+    }
     // The invite box is part of ADE Cloud: no read, and no box, without access.
     .task(id: syncService.cloudAvailable && syncService.cloudSupported) {
       referral = await syncService.readCloudReferral()
@@ -191,7 +213,7 @@ struct SettingsAccountPage: View {
             }
           }
         }
-        if githubNotConnected && !repoBridgeDismissed {
+        if githubNotConnected && !repoBridgeDismissed && github.state == .unsupported {
           // The phone cannot connect GitHub; Integrations says where to.
           ADESettingsNotice(
             message: "GitHub is not connected on \(syncService.machineDisplayName). Lanes, pull requests and checks need it.",
@@ -221,7 +243,99 @@ struct SettingsAccountPage: View {
     }
   }
 
-  // MARK: GitHub
+  // MARK: GitHub (the account's sign-in)
+
+  /// The account's GitHub sign-in (spec 3.9). Hidden with an account
+  /// directory that has no GitHub App routes: then the machine notice below
+  /// says where to connect, as before.
+  @ViewBuilder
+  private var githubAccountSection: some View {
+    switch github.state {
+    case .signedOut, .unsupported:
+      EmptyView()
+    default:
+      ADESettingsSection(
+        "GitHub",
+        hint: "Pull requests and repositories on every device, with no computer on. ADE renews the sign-in for you.",
+        symbol: "arrow.triangle.pull",
+        tint: .slate
+      ) {
+        ADESettingsRows {
+          githubAccountRow
+          if let githubRevokeURL, github.state == .notConnected {
+            ADESettingsNotice(
+              message: "GitHub is disconnected from ADE. To also remove ADE's access on GitHub, revoke it there.",
+              tone: .neutral,
+              actionTitle: "Revoke on GitHub",
+              action: { openURL(githubRevokeURL) },
+              dismiss: { self.githubRevokeURL = nil }
+            )
+            .padding(ADEKit.inset)
+          }
+          if let problem = github.problem {
+            ADESettingsNotice(message: problem, tone: .crit)
+              .padding(ADEKit.inset)
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var githubAccountRow: some View {
+    switch github.state {
+    case .unknown:
+      ADESettingsLoadingRow(title: "Checking GitHub…")
+    case .connected(let login):
+      ADESettingsRow(title: "Connected as @\(login)", symbol: "checkmark.seal", tint: .green) {
+        Button(githubDisconnecting ? "Disconnecting…" : "Disconnect") { confirmGitHubDisconnect = true }
+          .buttonStyle(ADEKitButtonStyle())
+          .disabled(githubDisconnecting)
+      }
+    case .needsReauth:
+      ADESettingsRow(
+        title: "GitHub connection ended",
+        hint: "Your GitHub connection ended. Connect GitHub again to keep working with pull requests.",
+        symbol: "exclamationmark.triangle",
+        tint: .amber
+      ) {
+        githubConnectButton
+      }
+    case .unavailable(let retryAt):
+      ADESettingsRow(
+        "GitHub isn't answering",
+        hint: retryAt.map { "GitHub isn't answering right now. ADE tries again at \($0.formatted(date: .omitted, time: .shortened))." }
+          ?? "GitHub isn't answering right now. ADE tries again soon.",
+        symbol: "clock",
+        tint: .slate
+      )
+    default:
+      ADESettingsRow(
+        title: "Not connected",
+        hint: "Connect GitHub to see pull requests from this phone.",
+        symbol: "link",
+        tint: .slate
+      ) {
+        githubConnectButton
+      }
+    }
+  }
+
+  private var githubConnectButton: some View {
+    Button {
+      githubRevokeURL = nil
+      Task { await github.connect() }
+    } label: {
+      HStack(spacing: 6) {
+        if github.connecting { ProgressView().controlSize(.mini).tint(.white) }
+        Text(github.connecting ? "Connecting…" : "Connect GitHub")
+      }
+    }
+    .buttonStyle(ADEKitButtonStyle(prominent: true))
+    .disabled(github.connecting)
+  }
+
+  // MARK: GitHub (the machine)
 
   /// GitHub status is read from the primary machine's open project.
   private var githubCheckKey: String {
