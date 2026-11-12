@@ -2,20 +2,63 @@ import Foundation
 import os
 import Security
 
+/// The Security framework calls `KeychainService` makes: the process boundary
+/// to securityd. The app uses `SecurityKeychainBackend`.
+protocol KeychainBackend: AnyObject, Sendable {
+  func copyMatching(_ query: [String: Any]) -> (status: OSStatus, item: CFTypeRef?)
+  func add(_ attributes: [String: Any]) -> OSStatus
+  func update(_ query: [String: Any], fields: [String: Any]) -> OSStatus
+  func delete(_ query: [String: Any]) -> OSStatus
+}
+
+final class SecurityKeychainBackend: KeychainBackend {
+  static let shared = SecurityKeychainBackend()
+
+  func copyMatching(_ query: [String: Any]) -> (status: OSStatus, item: CFTypeRef?) {
+    var item: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    return (status, item)
+  }
+
+  func add(_ attributes: [String: Any]) -> OSStatus {
+    SecItemAdd(attributes as CFDictionary, nil)
+  }
+
+  func update(_ query: [String: Any], fields: [String: Any]) -> OSStatus {
+    SecItemUpdate(query as CFDictionary, fields as CFDictionary)
+  }
+
+  func delete(_ query: [String: Any]) -> OSStatus {
+    SecItemDelete(query as CFDictionary)
+  }
+}
+
 final class KeychainService {
   /// Read-through cache of item values (nil = known absent), shared by every
-  /// instance in the process and dropped on any write. Each keychain read is a
-  /// round trip to securityd; the machine fleet reads every paired machine's
-  /// token on the main thread, and those waits got the app watchdog-killed.
-  /// Failed reads (a locked keychain before first unlock) are never cached,
-  /// and a read stores its value only if no write landed while it ran.
+  /// instance on the same backend and dropped on any write. Each keychain read
+  /// is a round trip to securityd; the machine fleet reads every paired
+  /// machine's token on the main thread, and those waits got the app
+  /// watchdog-killed. Failed reads (a locked keychain before first unlock) are
+  /// never cached, and a read stores its value only if no write landed while
+  /// it ran.
   private struct Cache {
     var values: [String: String?] = [:]
     var generation = 0
   }
-  private static let cache = OSAllocatedUnfairLock(initialState: Cache())
+  private static let systemCache = OSAllocatedUnfairLock(initialState: Cache())
 
-  private static func invalidate(_ cacheKey: String?) {
+  private let backend: KeychainBackend
+  private let cache: OSAllocatedUnfairLock<Cache>
+
+  /// The app's keychain. Another backend gets a cache of its own.
+  init(backend: KeychainBackend = SecurityKeychainBackend.shared) {
+    self.backend = backend
+    self.cache = backend === SecurityKeychainBackend.shared
+      ? Self.systemCache
+      : OSAllocatedUnfairLock(initialState: Cache())
+  }
+
+  private func invalidate(_ cacheKey: String?) {
     cache.withLock { state in
       state.generation &+= 1
       // Forget the key (unknown), unlike `.some(nil)`, which means "known absent".
@@ -53,7 +96,7 @@ final class KeychainService {
   ) -> Bool {
     let cacheKey = self.cacheKey(account)
     // After the write, so a read racing it cannot cache the old value.
-    defer { Self.invalidate(cacheKey) }
+    defer { invalidate(cacheKey) }
     let data = Data(value.utf8)
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -61,12 +104,12 @@ final class KeychainService {
       kSecAttrAccount as String: account,
     ]
     let updateFields: [String: Any] = [kSecValueData as String: data]
-    let updateStatus = SecItemUpdate(query as CFDictionary, updateFields as CFDictionary)
+    let updateStatus = backend.update(query, fields: updateFields)
     if updateStatus == errSecItemNotFound {
       var addQuery = query
       addQuery[kSecAttrAccessible as String] = accessible
       addQuery[kSecValueData as String] = data
-      return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+      return backend.add(addQuery) == errSecSuccess
     }
     return updateStatus == errSecSuccess
   }
@@ -87,7 +130,7 @@ final class KeychainService {
 
   private func readString(account: String) -> StoredRead {
     let cacheKey = self.cacheKey(account)
-    let (cached, generation) = Self.cache.withLock { ($0.values[cacheKey], $0.generation) }
+    let (cached, generation) = cache.withLock { ($0.values[cacheKey], $0.generation) }
     if let cached {
       return cached.map(StoredRead.value) ?? .absent
     }
@@ -98,8 +141,7 @@ final class KeychainService {
       kSecMatchLimit as String: kSecMatchLimitOne,
       kSecReturnData as String: true,
     ]
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    let (status, item) = backend.copyMatching(query)
     let value: String?
     if status == errSecSuccess, let data = item as? Data {
       value = String(data: data, encoding: .utf8)
@@ -108,7 +150,7 @@ final class KeychainService {
     } else {
       return .failed(status)
     }
-    Self.cache.withLock { state in
+    cache.withLock { state in
       if state.generation == generation { state.values[cacheKey] = .some(value) }
     }
     return value.map(StoredRead.value) ?? .absent
@@ -123,13 +165,13 @@ final class KeychainService {
 
   private func clearString(account: String) {
     let cacheKey = self.cacheKey(account)
-    defer { Self.invalidate(cacheKey) }
+    defer { invalidate(cacheKey) }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
-    SecItemDelete(query as CFDictionary)
+    _ = backend.delete(query)
   }
 
   func saveToken(_ token: String) {
@@ -164,6 +206,38 @@ final class KeychainService {
     return .absent
   }
 
+  /// One computer's pairing secret: its own slot (`key`), then its older
+  /// names, then (when asked) the last paired secret. A failed read stops the
+  /// search: an older name may hold a stale secret, a computer refuses a stale
+  /// one as an unknown device, and the phone would then drop the pairing.
+  /// `migrate` moves a secret found under an older name into the slot.
+  func readPairedSecret(
+    key: String?,
+    legacyKeys: [String],
+    migrate: Bool,
+    fallbackToLastPaired: Bool
+  ) -> StoredRead {
+    if let key {
+      let current = readToken(hostKey: key)
+      guard case .absent = current else { return current }
+    }
+    for legacyKey in legacyKeys {
+      switch readToken(hostKey: legacyKey) {
+      case .value(let token):
+        if migrate, let key {
+          saveToken(token, hostKey: key)
+          clearToken(hostKey: legacyKey)
+        }
+        return .value(token)
+      case .failed(let status):
+        return .failed(status)
+      case .absent:
+        continue
+      }
+    }
+    return fallbackToLastPaired ? readString(account: tokenAccount) : .absent
+  }
+
   func clearToken() {
     clearString(account: tokenAccount)
   }
@@ -189,8 +263,8 @@ final class KeychainService {
     saveString(json, account: githubAccountTokenAccount, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
   }
 
-  func loadGitHubAccountToken() -> String? {
-    loadString(account: githubAccountTokenAccount)
+  func readGitHubAccountToken() -> StoredRead {
+    readString(account: githubAccountTokenAccount)
   }
 
   func clearGitHubAccountToken() {
@@ -218,11 +292,13 @@ final class KeychainService {
   }
 
   func loadAccountDeviceOwnershipEpoch(deviceId: String) -> Int? {
-    guard let account = accountDeviceOwnershipEpochAccount(deviceId: deviceId),
-          let raw = loadString(account: account) else {
-      return nil
-    }
+    guard case .value(let raw) = readAccountDeviceOwnershipEpoch(deviceId: deviceId) else { return nil }
     return Int(raw)
+  }
+
+  func readAccountDeviceOwnershipEpoch(deviceId: String) -> StoredRead {
+    guard let account = accountDeviceOwnershipEpochAccount(deviceId: deviceId) else { return .absent }
+    return readString(account: account)
   }
 
   private func accountDeviceOwnershipEpochAccount(deviceId: String) -> String? {
@@ -243,9 +319,11 @@ final class KeychainService {
     return saveString(key, account: account)
   }
 
-  func loadAccountDeviceKey(deviceId: String) -> String? {
-    guard let account = accountDeviceKeyAccount(deviceId: deviceId) else { return nil }
-    return loadString(account: account)
+  /// A failed read is not "no key": registering without the key would make
+  /// Relay issue a new one over it.
+  func readAccountDeviceKey(deviceId: String) -> StoredRead {
+    guard let account = accountDeviceKeyAccount(deviceId: deviceId) else { return .absent }
+    return readString(account: account)
   }
 
   private func accountDeviceKeyAccount(deviceId: String) -> String? {
@@ -260,15 +338,14 @@ final class KeychainService {
   /// a keyed or legacy token alias.
   @discardableResult
   func clearAllConnectionTokens() -> Bool {
-    defer { Self.invalidate(nil) }
+    defer { invalidate(nil) }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecMatchLimit as String: kSecMatchLimitAll,
       kSecReturnAttributes as String: true,
     ]
-    var result: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    let (status, result) = backend.copyMatching(query)
     if status == errSecItemNotFound { return true }
     guard status == errSecSuccess else { return false }
     let items: [[String: Any]]
@@ -289,7 +366,7 @@ final class KeychainService {
         kSecAttrService as String: service,
         kSecAttrAccount as String: account,
       ]
-      let deleteStatus = SecItemDelete(deleteQuery as CFDictionary)
+      let deleteStatus = backend.delete(deleteQuery)
       guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
         return false
       }

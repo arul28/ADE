@@ -229,7 +229,26 @@ final class GitHubAccountConnection: ObservableObject {
   private var webSession: ASWebAuthenticationSession?
   private let anchor = GitHubWebAuthAnchor()
   private let client = GitHubAccountClient()
-  private let keychain = KeychainService()
+  private let keychain: KeychainService
+  /// The stored token could not be read (before the first unlock). A new
+  /// token stays in memory only, so nothing is written over the stored one;
+  /// the phone reads it again when protected data becomes available.
+  private var storedTokenUnreadable = false
+  private var keychainObserver: NSObjectProtocol?
+
+  init(keychain: KeychainService = KeychainService()) {
+    self.keychain = keychain
+    keychainObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self, self.storedTokenUnreadable else { return }
+        self.loadStoredToken()
+      }
+    }
+  }
 
   var accountUserId: String? { userId }
 
@@ -241,15 +260,46 @@ final class GitHubAccountConnection: ObservableObject {
     guard self.userId != userId else { return }
     resetMemory()
     self.userId = userId
-    if let stored = keychain.loadGitHubAccountToken(),
-       let decoded = try? JSONDecoder().decode(GitHubAccountTokenRecord.self, from: Data(stored.utf8)) {
-      if decoded.accountUserId == userId {
-        record = decoded
-        state = .connected(login: decoded.githubLogin)
-      } else {
-        keychain.clearGitHubAccountToken()
-      }
+    loadStoredToken()
+  }
+
+  /// Reads the stored token for the signed-in account. A token fetched while
+  /// the keychain could not be read is newer: it replaces the stored one.
+  private func loadStoredToken() {
+    guard let userId else { return }
+    let stored: String
+    switch keychain.readGitHubAccountToken() {
+    case .failed(let status):
+      storedTokenUnreadable = true
+      githubAccountLog.notice("github_account.token_unreadable status=\(status, privacy: .public)")
+      return
+    case .absent:
+      storedTokenUnreadable = false
+      if let record { saveToKeychain(record) }
+      return
+    case .value(let value):
+      storedTokenUnreadable = false
+      stored = value
     }
+    guard let decoded = try? JSONDecoder().decode(GitHubAccountTokenRecord.self, from: Data(stored.utf8)) else { return }
+    guard decoded.accountUserId == userId else {
+      keychain.clearGitHubAccountToken()
+      if let record { saveToKeychain(record) }
+      return
+    }
+    if let record {
+      saveToKeychain(record)
+    } else {
+      record = decoded
+      state = .connected(login: decoded.githubLogin)
+    }
+  }
+
+  private func saveToKeychain(_ record: GitHubAccountTokenRecord) {
+    guard !storedTokenUnreadable,
+          let data = try? JSONEncoder().encode(record),
+          let text = String(data: data, encoding: .utf8) else { return }
+    keychain.saveGitHubAccountToken(text)
   }
 
   /// The account signed out (or the app left the account). The token goes
@@ -396,9 +446,7 @@ final class GitHubAccountConnection: ObservableObject {
       )
       record = next
       negative = nil
-      if let data = try? JSONEncoder().encode(next), let text = String(data: data, encoding: .utf8) {
-        keychain.saveGitHubAccountToken(text)
-      }
+      saveToKeychain(next)
       if state.login != token.githubLogin { state = .connected(login: token.githubLogin) }
       githubAccountLog.info("github_account.token_served generation=\(token.generation, privacy: .public) rejected=\(rejected != nil, privacy: .public)")
       return .success(token.accessToken)

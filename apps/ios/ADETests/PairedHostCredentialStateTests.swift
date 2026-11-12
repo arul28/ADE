@@ -1,4 +1,6 @@
+import Combine
 import Security
+import UIKit
 import XCTest
 @testable import ADE
 
@@ -95,5 +97,108 @@ final class PairedHostCredentialStateTests: XCTestCase {
       XCTAssertEqual(result.writeSaved, item.writeSaved, "case \(index)")
       XCTAssertEqual(result.provisional, item.provisional, "case \(index)")
     }
+  }
+
+  /// Each secret the phone keeps, behind a keychain that refuses reads (a
+  /// launch before the first unlock): nothing is created or written over it,
+  /// and once the keychain answers the phone uses the stored secrets again.
+  @MainActor
+  func testAFailedKeychainReadWritesNothingAndAGoodReadRestores() async throws {
+    let backend = RefusingKeychainBackend()
+    let keychain = KeychainService(backend: backend)
+    let record = GitHubAccountTokenRecord(
+      accountUserId: "user-1", accessToken: "gh-token", useUntil: Date().timeIntervalSince1970 + 3_600,
+      generation: 4, githubLogin: "octo"
+    )
+    backend.items = [
+      "device-id": "device-1",
+      "connection-token:machine:abc": "secret-abc",
+      "connection-token.machine:abc": "older-name-secret",
+      "connection-token:route:10.0.0.2:8787": "stale-route-secret",
+      "connection-token": "other-computer-secret",
+      "attention-ownership-epoch:device-1": "7",
+      "attention-device-key:device-1": "device-key",
+      "github-account-app.v1": String(decoding: try JSONEncoder().encode(record), as: UTF8.self),
+    ]
+    let pairingRead = {
+      keychain.readPairedSecret(
+        key: "machine:abc", legacyKeys: ["route:10.0.0.2:8787"], migrate: true, fallbackToLastPaired: true
+      )
+    }
+
+    // Only the computer's own slot fails: an older name and the last paired
+    // secret still answer, and neither is used or copied over it.
+    backend.refusedAccounts = ["connection-token:machine:abc"]
+    XCTAssertEqual(pairingRead(), .failed(errSecInteractionNotAllowed), "an older or another computer's secret is never used")
+    backend.refusedAccounts = []
+    backend.refuseReads = true
+    XCTAssertEqual(pairingRead(), .failed(errSecInteractionNotAllowed))
+    XCTAssertEqual(keychain.readToken(hostKey: "machine:abc"), .failed(errSecInteractionNotAllowed))
+    keychain.saveAccountDeviceOwnershipEpoch(3, deviceId: "device-1")
+    XCTAssertEqual(keychain.readAccountDeviceKey(deviceId: "device-1"), .failed(errSecInteractionNotAllowed))
+    XCTAssertTrue(syncResolveDeviceId(keychain: keychain.readDeviceId(), saved: nil, makeFresh: { "fresh" }).provisional)
+    let github = GitHubAccountConnection(keychain: keychain)
+    github.activate(userId: "user-1")
+    XCTAssertNil(github.state.login)
+    XCTAssertEqual(backend.writes, [], "a failed read creates and overwrites nothing")
+
+    backend.refuseReads = false
+    let restored = expectation(description: "the stored GitHub token is used again")
+    let watch = github.$state.sink { if $0.login == "octo" { restored.fulfill() } }
+    NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+    await fulfillment(of: [restored], timeout: 5)
+    watch.cancel()
+    XCTAssertEqual(pairingRead(), .value("secret-abc"))
+    XCTAssertEqual(keychain.readDeviceId(), .value("device-1"))
+    XCTAssertEqual(keychain.readAccountDeviceKey(deviceId: "device-1"), .value("device-key"))
+    keychain.saveAccountDeviceOwnershipEpoch(3, deviceId: "device-1")
+    XCTAssertEqual(keychain.loadAccountDeviceOwnershipEpoch(deviceId: "device-1"), 7, "the epoch never goes down")
+    XCTAssertEqual(backend.writes, [])
+    XCTAssertEqual(backend.items["connection-token:machine:abc"], "secret-abc")
+  }
+}
+
+/// The keychain at the securityd boundary. With `refuseReads` every read
+/// answers `errSecInteractionNotAllowed`, as before the first unlock, and a
+/// write is recorded and refused; `refusedAccounts` refuses some reads only.
+private final class RefusingKeychainBackend: KeychainBackend, @unchecked Sendable {
+  var items: [String: String] = [:]
+  var refuseReads = false
+  var refusedAccounts: Set<String> = []
+  private(set) var writes: [String] = []
+
+  func copyMatching(_ query: [String: Any]) -> (status: OSStatus, item: CFTypeRef?) {
+    let account = query[kSecAttrAccount as String] as? String
+    if refuseReads || account.map(refusedAccounts.contains) == true { return (errSecInteractionNotAllowed, nil) }
+    if query[kSecMatchLimit as String] as? String == kSecMatchLimitAll as String {
+      let all = items.keys.map { [kSecAttrAccount as String: $0] as [String: Any] }
+      return all.isEmpty ? (errSecItemNotFound, nil) : (errSecSuccess, all as CFArray)
+    }
+    guard let account, let value = items[account] else {
+      return (errSecItemNotFound, nil)
+    }
+    return (errSecSuccess, Data(value.utf8) as CFData)
+  }
+
+  func add(_ attributes: [String: Any]) -> OSStatus {
+    write("add", attributes, value: attributes[kSecValueData as String] as? Data)
+  }
+
+  func update(_ query: [String: Any], fields: [String: Any]) -> OSStatus {
+    guard let account = query[kSecAttrAccount as String] as? String else { return errSecParam }
+    if !refuseReads, items[account] == nil { return errSecItemNotFound }
+    return write("update", query, value: fields[kSecValueData as String] as? Data)
+  }
+
+  func delete(_ query: [String: Any]) -> OSStatus {
+    write("delete", query, value: nil)
+  }
+
+  private func write(_ kind: String, _ query: [String: Any], value: Data?) -> OSStatus {
+    let account = query[kSecAttrAccount as String] as? String ?? "?"
+    writes.append("\(kind) \(account)")
+    if refuseReads { return errSecInteractionNotAllowed }
+    if let value { items[account] = String(decoding: value, as: UTF8.self) } else { items.removeValue(forKey: account) }
+    return errSecSuccess
   }
 }

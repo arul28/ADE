@@ -4703,7 +4703,7 @@ final class SyncService: ObservableObject {
   private let defaultOutboundChangesetRowLimit = 64
   private let defaultOutboundChangesetByteLimit = 64 * 1_024
   private let minimumOutboundChangesetByteLimit = 4 * 1_024
-  private let keychain = KeychainService()
+  private let keychain: KeychainService
   private let database: DatabaseService
   private let socketSessionDelegate: SyncSocketSessionDelegate
   private let socketSession: URLSession
@@ -4909,7 +4909,10 @@ final class SyncService: ObservableObject {
   /// launch and there was no saved copy. The phone neither pairs nor drops a
   /// pairing with it (`syncResolveDeviceId`).
   private var deviceIdIsProvisional = false
-  private var deviceIdRecheckObservers: [NSObjectProtocol] = []
+  /// A pairing secret read failed (not "not there"): the computer stays
+  /// paired, and the phone connects again once the keychain answers.
+  private var pairingSecretReadFailed = false
+  private var keychainRecheckObservers: [NSObjectProtocol] = []
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// The last hello_ok carried a non-empty project catalog, so the post-hello
   /// catalog request would only repeat it.
@@ -6832,7 +6835,8 @@ final class SyncService: ObservableObject {
     let fallbackToActiveProjectScope: Bool?
   }
 
-  init(database: DatabaseService = DatabaseService()) {
+  init(database: DatabaseService = DatabaseService(), keychain: KeychainService = KeychainService()) {
+    self.keychain = keychain
     let socketSessionDelegate = SyncSocketSessionDelegate()
     let socketSessionConfiguration = URLSessionConfiguration.default
     socketSessionConfiguration.waitsForConnectivity = false
@@ -7024,17 +7028,26 @@ final class SyncService: ObservableObject {
       self?.chatLaunchRevision &+= 1
     }
 
-    if deviceIdIsProvisional {
-      // No timer: the keychain answers once the phone is unlocked, and the
-      // app becoming active covers a read that failed for another reason.
-      for name in [UIApplication.protectedDataDidBecomeAvailableNotification, UIApplication.didBecomeActiveNotification] {
-        deviceIdRecheckObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-          MainActor.assumeIsolated { _ = self?.recheckProvisionalDeviceId() }
-        })
-      }
+    // No timer: the keychain answers once the phone is unlocked, and the app
+    // becoming active covers a read that failed for another reason.
+    for name in [UIApplication.protectedDataDidBecomeAvailableNotification, UIApplication.didBecomeActiveNotification] {
+      keychainRecheckObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated { self?.recheckKeychainAfterFailedRead() }
+      })
     }
 
     refreshActiveSessionsAndSnapshot()
+  }
+
+  /// After a keychain read failed: take the stored device id, and connect
+  /// again with the pairing secret that could not be read.
+  private func recheckKeychainAfterFailedRead() {
+    recheckProvisionalDeviceId()
+    guard pairingSecretReadFailed, !deviceIdIsProvisional else { return }
+    pairingSecretReadFailed = false
+    guard connectionState != .connected, tokenForProfile(loadProfile()) != nil else { return }
+    syncConnectLog.notice("pairing_secret.readable_again")
+    Task { await reconnectIfPossible() }
   }
 
   /// Reads the device id again after a launch that could not read it, and
@@ -7054,13 +7067,12 @@ final class SyncService: ObservableObject {
     deviceIdIsProvisional = false
     if choice.writeSaved { UserDefaults.standard.set(choice.id, forKey: legacyDeviceIdKey) }
     if choice.writeKeychain { keychain.saveDeviceId(choice.id) }
-    for observer in deviceIdRecheckObservers { NotificationCenter.default.removeObserver(observer) }
-    deviceIdRecheckObservers = []
     syncServiceDeviceIdLog.notice("device_id.recovered kept_provisional=\(choice.id == provisionalId, privacy: .public)")
     return true
   }
 
   deinit {
+    for observer in keychainRecheckObservers { NotificationCenter.default.removeObserver(observer) }
     databaseRevisionDebounceTask?.cancel()
     relayTask?.cancel()
     clientHeartbeatTask?.cancel()
@@ -7530,18 +7542,16 @@ final class SyncService: ObservableObject {
     // hide this computer's own secret: copying another one over it would
     // make the computer refuse the phone.
     guard let key = profileStorageKey(profile),
-          case .absent = keychain.readToken(hostKey: key) else {
+          case .absent = keychain.readPairedSecret(
+            key: key,
+            legacyKeys: legacyProfileStorageKeys(profile),
+            migrate: true,
+            fallbackToLastPaired: false
+          ) else {
       return
     }
-    for legacyKey in legacyProfileStorageKeys(profile) {
-      if let legacyToken = keychain.loadToken(hostKey: legacyKey) {
-        keychain.saveToken(legacyToken, hostKey: key)
-        keychain.clearToken(hostKey: legacyKey)
-        return
-      }
-    }
-    if let legacyToken = keychain.loadToken() {
-      keychain.saveToken(legacyToken, hostKey: key)
+    if case .value(let lastPaired) = keychain.readToken(hostKey: nil) {
+      keychain.saveToken(lastPaired, hostKey: key)
     }
   }
 
@@ -7557,15 +7567,33 @@ final class SyncService: ObservableObject {
   }
 
   private func storedTokenForSavedProfile(_ profile: HostConnectionProfile) -> String? {
-    if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
-      return token
+    pairedSecret(of: pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false))
+  }
+
+  /// One saved computer's pairing secret (`KeychainService.readPairedSecret`).
+  private func pairedSecretRead(
+    _ profile: HostConnectionProfile,
+    migrate: Bool,
+    fallbackToLastPaired: Bool
+  ) -> KeychainService.StoredRead {
+    keychain.readPairedSecret(
+      key: profileStorageKey(profile),
+      legacyKeys: legacyProfileStorageKeys(profile),
+      migrate: migrate,
+      fallbackToLastPaired: fallbackToLastPaired
+    )
+  }
+
+  /// The secret, or nil. A failed read keeps the pairing and connects again
+  /// when the keychain answers (`recheckKeychainAfterFailedRead`).
+  private func pairedSecret(of read: KeychainService.StoredRead) -> String? {
+    switch read {
+    case .value(let token): return token
+    case .absent: return nil
+    case .failed:
+      pairingSecretReadFailed = true
+      return nil
     }
-    for legacyKey in legacyProfileStorageKeys(profile) {
-      if let token = keychain.loadToken(hostKey: legacyKey) {
-        return token
-      }
-    }
-    return nil
   }
 
   private func mostRecentSavedProfileWithCredentials() -> HostConnectionProfile? {
@@ -7594,22 +7622,7 @@ final class SyncService: ObservableObject {
 
   private func tokenForProfile(_ profile: HostConnectionProfile?) -> String? {
     guard let profile else { return nil }
-    if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
-      return token
-    }
-    for legacyKey in legacyProfileStorageKeys(profile) {
-      if let token = keychain.loadToken(hostKey: legacyKey) {
-        if let key = profileStorageKey(profile) {
-          keychain.saveToken(token, hostKey: key)
-          keychain.clearToken(hostKey: legacyKey)
-        }
-        return token
-      }
-    }
-    if activeHostProfile == profile {
-      return keychain.loadToken()
-    }
-    return nil
+    return pairedSecret(of: pairedSecretRead(profile, migrate: true, fallbackToLastPaired: activeHostProfile == profile))
   }
 
   private func publishMergedDiscoveredHosts() {
@@ -20641,7 +20654,15 @@ final class SyncService: ObservableObject {
       guard !matching.isEmpty else { continue }
       let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
       guard updated != profile else { continue }
-      let token = storedTokenForSavedProfile(profile)
+      let token: String?
+      switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
+      case .value(let stored): token = stored
+      case .absent: token = nil
+      case .failed:
+        // Moving the profile without its secret would lose the secret.
+        pairingSecretReadFailed = true
+        continue
+      }
       profiles.removeValue(forKey: key)
       let updatedKey = profileStorageKey(updated) ?? key
       profiles[updatedKey] = updated

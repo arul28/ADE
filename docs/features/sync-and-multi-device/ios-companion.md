@@ -2357,9 +2357,21 @@ yet arrived in the catchup batch.
   / `SecItemUpdate` / `SecItemDelete`).
 - Reads tell "not there" (`errSecItemNotFound`) from "could not read" (any
   other error, such as a launch before the first unlock), and a failed read
-  never writes: a legacy token moves only when the new slot is absent, the
-  ownership epoch is never written lower or after a failed read, and the
-  DPoP key is created only when none exists.
+  never creates, writes over, or forgets anything:
+  - A pairing secret (`readPairedSecret`): a failed read of the computer's
+    own slot stops the search, so an older name or the last paired secret
+    is never used or copied over it, and a saved computer whose secret could
+    not be read is not re-keyed. The pairing stays; the phone connects again
+    when protected data becomes available.
+  - The Relay device key and ownership epoch: registration and revocation
+    wait (the revocation marker stays) and run again when protected data
+    becomes available. The epoch is never written lower.
+  - The DPoP key is created only when none exists.
+  - The GitHub token: a token fetched meanwhile stays in memory only, and
+    the stored one is read again when protected data becomes available.
+- `KeychainService` makes its Security calls through a `KeychainBackend`
+  (`SecurityKeychainBackend` in the app), the boundary the read-failure test
+  fakes.
 - The device id (`syncResolveDeviceId`): the keychain copy wins and is
   mirrored to `ade.sync.deviceId`. After a failed read the phone uses the
   saved copy and writes nothing. With no saved copy either, the id is
