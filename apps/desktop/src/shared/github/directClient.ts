@@ -8,6 +8,7 @@ import type {
   GithubDirectError,
   GithubDirectErrorKind,
   GithubDirectIssue,
+  GithubDirectIssueDetail,
   GithubDirectListState,
   GithubDirectMeta,
   GithubDirectOp,
@@ -157,6 +158,17 @@ export function buildGithubDirectRequest(request: unknown): GithubDirectBuiltReq
           maxPages,
         }],
       };
+    }
+    case "getIssue":
+    case "listIssueComments": {
+      const repo = checkRepo(params);
+      if (typeof repo === "string") return invalid(repo);
+      const number = checkNumber((params as Record<string, unknown>).number);
+      if (number == null) return invalid("number is a positive whole number");
+      const base = `${repoPath(repo)}/issues/${number}`;
+      return request.op === "getIssue"
+        ? { ok: true, op: "getIssue", repo, steps: [{ path: base, query: {}, maxPages: 1 }] }
+        : { ok: true, op: "listIssueComments", repo, steps: [{ path: `${base}/comments`, query: { per_page: "100" }, maxPages: SUBLIST_MAX_PAGES }] };
     }
     case "getPull":
     case "listReviews":
@@ -493,6 +505,19 @@ function mapIssue(value: unknown): GithubDirectIssue | null {
   };
 }
 
+function mapIssueDetail(value: unknown): GithubDirectIssueDetail | null {
+  const issue = mapIssue(value);
+  if (!issue || !isRecord(value)) return null;
+  const assignees = Array.isArray(value.assignees) ? value.assignees : [];
+  return {
+    ...issue,
+    body: str(value.body) ?? "",
+    assignees: assignees.map((assignee) => user(assignee)?.login ?? null).filter((login): login is string => Boolean(login)),
+    milestone: isRecord(value.milestone) ? str(value.milestone.title) : null,
+    closedAt: str(value.closed_at),
+  };
+}
+
 const listOf = <T>(map: (value: unknown) => T | null) => (body: unknown): T[] =>
   (Array.isArray(body) ? body : []).map(map).filter((item): item is T => item !== null);
 
@@ -780,6 +805,10 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
         return listOf(mapPull)(first!.items);
       case "listIssues":
         return listOf(mapIssue)(first!.items);
+      case "getIssue":
+        return mapIssueDetail(first!.single);
+      case "listIssueComments":
+        return listOf(mapComment("issue"))(first!.items);
       case "getPull":
         return mapPullDetail(first!.single);
       case "listReviews":

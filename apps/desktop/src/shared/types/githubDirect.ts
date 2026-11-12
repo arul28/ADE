@@ -171,6 +171,14 @@ export type GithubDirectIssue = {
   htmlUrl: string | null;
 };
 
+/** One issue with its text, as the issue pane shows it. */
+export type GithubDirectIssueDetail = GithubDirectIssue & {
+  body: string;
+  assignees: string[];
+  milestone: string | null;
+  closedAt: string | null;
+};
+
 /** What `diagnoseRepository` found, in the spec's detection order. */
 export type GithubDirectRepositoryDiagnosis = {
   /**
@@ -196,6 +204,8 @@ export type GithubDirectRequest =
   | { op: "listReviews"; params: GithubDirectRepoRef & { number: number } }
   | { op: "listComments"; params: GithubDirectRepoRef & { number: number } }
   | { op: "listIssues"; params: GithubDirectRepoRef & { state?: GithubDirectListState; maxPages?: number } }
+  | { op: "getIssue"; params: GithubDirectRepoRef & { number: number } }
+  | { op: "listIssueComments"; params: GithubDirectRepoRef & { number: number } }
   | { op: "diagnoseRepository"; params: GithubDirectRepoRef };
 
 export type GithubDirectOp = GithubDirectRequest["op"];
@@ -209,6 +219,8 @@ export type GithubDirectData = {
   listReviews: GithubDirectReview[];
   listComments: GithubDirectComment[];
   listIssues: GithubDirectIssue[];
+  getIssue: GithubDirectIssueDetail;
+  listIssueComments: GithubDirectComment[];
   diagnoseRepository: GithubDirectRepositoryDiagnosis;
 };
 

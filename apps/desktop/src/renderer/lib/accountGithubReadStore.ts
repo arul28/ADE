@@ -1,24 +1,25 @@
 import type {
+  GithubDirectData,
   GithubDirectError,
-  GithubDirectListState,
-  GithubDirectPull,
-  GithubDirectRepoRef,
+  GithubDirectOp,
+  GithubDirectRequest,
   GithubDirectRequestOptions,
   GithubDirectResult,
 } from "../../shared/types";
 import { isGithubDirectUserState } from "../../shared/github/directClient";
 
 /**
- * Open pull requests of one repository, read straight from GitHub with the
- * ADE account's sign-in (`window.ade.githubDirect`), with no machine.
+ * Reads of one repository's pull requests and issues, straight from GitHub
+ * with the ADE account's sign-in (`window.ade.githubDirect`), with no machine.
+ * One store for every direct read (a list, one issue, its comments).
  *
  * Request budget (ade-perf-prs: skip ticks while hidden, reuse reads):
- * - One read per repository at a time; every component that shows the same
- *   repository shares it.
- * - A refresh every 60 s, only while at least one component shows the list
- *   and the window is visible. Hidden: no timer at all. Visible again after
- *   60 s or more: one read at once.
- * - Every read is ETag'd by the client: an unchanged list is a `304`, which
+ * - One read per request at a time; every component that shows the same
+ *   request shares it.
+ * - A refresh every 60 s, only while at least one component shows it and the
+ *   window is visible. Hidden: no timer at all. Visible again after 60 s or
+ *   more: one read at once.
+ * - Every read is ETag'd by the client: an unchanged answer is a `304`, which
  *   GitHub does not count against the rate limit.
  * - A timed refresh is a background read: the client skips it while the rate
  *   limit is below 10 %.
@@ -27,29 +28,29 @@ import { isGithubDirectUserState } from "../../shared/github/directClient";
  *   time GitHub gives, at least 60 s.
  */
 
-export const ACCOUNT_GITHUB_PULLS_REFRESH_MS = 60_000;
+export const ACCOUNT_GITHUB_READ_REFRESH_MS = 60_000;
 const USER_STATE_RETRY_MS = 5 * 60_000;
 
-export type AccountGithubPullsSnapshot = {
-  pulls: GithubDirectPull[];
+export type AccountGithubReadSnapshot<T> = {
+  data: T | null;
   error: GithubDirectError | null;
   /** No answer yet. */
   loading: boolean;
   /** A read is running (first or later). */
   refreshing: boolean;
   fetchedAt: number | null;
-  /** More open PRs exist than the five pages read. */
+  /** More items exist than the pages read. */
   truncated: boolean;
 };
 
-type ListRequest = (
-  request: { op: "listPulls"; params: GithubDirectRepoRef & { state?: GithubDirectListState } },
+type DirectRequest = <O extends GithubDirectOp>(
+  request: Extract<GithubDirectRequest, { op: O }>,
   options?: GithubDirectRequestOptions,
-) => Promise<GithubDirectResult<GithubDirectPull[]>>;
+) => Promise<GithubDirectResult<GithubDirectData[O]>>;
 
-export type AccountGithubPullsStoreDeps = {
+export type AccountGithubReadStoreDeps = {
   /** Null when this window has no direct GitHub reads (an older ADE). */
-  request: () => ListRequest | null;
+  request: () => DirectRequest | null;
   isVisible: () => boolean;
   onVisibilityChange: (listener: () => void) => () => void;
   now?: () => number;
@@ -59,30 +60,34 @@ export type AccountGithubPullsStoreDeps = {
 };
 
 type Entry = {
-  repo: GithubDirectRepoRef;
-  state: GithubDirectListState;
-  snapshot: AccountGithubPullsSnapshot;
+  request: GithubDirectRequest;
+  snapshot: AccountGithubReadSnapshot<unknown>;
   listeners: Set<() => void>;
   inFlight: Promise<void> | null;
   timer: unknown;
   nextAt: number;
 };
 
-const EMPTY: AccountGithubPullsSnapshot = { pulls: [], error: null, loading: true, refreshing: false, fetchedAt: null, truncated: false };
+const EMPTY: AccountGithubReadSnapshot<never> = { data: null, error: null, loading: true, refreshing: false, fetchedAt: null, truncated: false };
 
-export function accountGithubPullsKey(repo: GithubDirectRepoRef, state: GithubDirectListState = "open"): string {
-  return `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}#${state}`;
+/** One key per request: owner and name in any case are the same repository. */
+export function accountGithubReadKey(request: GithubDirectRequest): string {
+  const params = { ...((request as { params?: Record<string, unknown> }).params ?? {}) };
+  if (typeof params.owner === "string") params.owner = params.owner.toLowerCase();
+  if (typeof params.name === "string") params.name = params.name.toLowerCase();
+  if ((request.op === "listPulls" || request.op === "listIssues") && params.state === undefined) params.state = "open";
+  return `${request.op}:${JSON.stringify(Object.keys(params).sort().map((key) => [key, params[key]]))}`;
 }
 
-export function createAccountGithubPullsStore(deps: AccountGithubPullsStoreDeps) {
+export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
   const now = deps.now ?? (() => Date.now());
   const setTimer = deps.setTimer ?? ((callback: () => void, ms: number) => setTimeout(callback, ms));
   const clearTimer = deps.clearTimer ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>));
-  const refreshMs = deps.refreshMs ?? ACCOUNT_GITHUB_PULLS_REFRESH_MS;
+  const refreshMs = deps.refreshMs ?? ACCOUNT_GITHUB_READ_REFRESH_MS;
   const entries = new Map<string, Entry>();
   let stopVisibility: (() => void) | null = null;
 
-  const emit = (entry: Entry, patch: Partial<AccountGithubPullsSnapshot>): void => {
+  const emit = (entry: Entry, patch: Partial<AccountGithubReadSnapshot<unknown>>): void => {
     entry.snapshot = { ...entry.snapshot, ...patch };
     for (const listener of entry.listeners) listener();
   };
@@ -111,13 +116,11 @@ export function createAccountGithubPullsStore(deps: AccountGithubPullsStoreDeps)
     }
     emit(entry, { refreshing: true });
     const work = (async () => {
-      const result = await request(
-        { op: "listPulls", params: { owner: entry.repo.owner, name: entry.repo.name, state: entry.state } },
-        { background },
-      ).catch((): GithubDirectResult<GithubDirectPull[]> => ({ ok: false, error: { kind: "github_unavailable", message: "the read failed" } }));
+      const result = await request(entry.request as Extract<GithubDirectRequest, { op: GithubDirectOp }>, { background })
+        .catch((): GithubDirectResult<unknown> => ({ ok: false, error: { kind: "github_unavailable", message: "the read failed" } }));
       if (result.ok) {
         entry.nextAt = now() + refreshMs;
-        emit(entry, { pulls: result.data, error: null, loading: false, refreshing: false, fetchedAt: result.meta.fetchedAt, truncated: result.meta.truncated });
+        emit(entry, { data: result.data, error: null, loading: false, refreshing: false, fetchedAt: result.meta.fetchedAt, truncated: result.meta.truncated });
         return;
       }
       const error = result.error;
@@ -125,7 +128,7 @@ export function createAccountGithubPullsStore(deps: AccountGithubPullsStoreDeps)
       entry.nextAt = isGithubDirectUserState(error.kind)
         ? now() + USER_STATE_RETRY_MS
         : Math.max(now() + refreshMs, retryAt ?? 0);
-      // A background read the client skipped (rate limit low) keeps the list.
+      // A background read the client skipped (rate limit low) keeps the data.
       emit(entry, { error, loading: false, refreshing: false });
     })();
     entry.inFlight = work;
@@ -158,11 +161,11 @@ export function createAccountGithubPullsStore(deps: AccountGithubPullsStoreDeps)
     }
   };
 
-  const entryFor = (repo: GithubDirectRepoRef, state: GithubDirectListState): Entry => {
-    const key = accountGithubPullsKey(repo, state);
+  const entryFor = (request: GithubDirectRequest): Entry => {
+    const key = accountGithubReadKey(request);
     let entry = entries.get(key);
     if (!entry) {
-      entry = { repo, state, snapshot: EMPTY, listeners: new Set(), inFlight: null, timer: null, nextAt: 0 };
+      entry = { request, snapshot: EMPTY, listeners: new Set(), inFlight: null, timer: null, nextAt: 0 };
       entries.set(key, entry);
     }
     return entry;
@@ -170,8 +173,8 @@ export function createAccountGithubPullsStore(deps: AccountGithubPullsStoreDeps)
 
   return {
     /** Starts reading when the first listener comes; stops every timer when the last one goes. */
-    subscribe(repo: GithubDirectRepoRef, state: GithubDirectListState, listener: () => void): () => void {
-      const entry = entryFor(repo, state);
+    subscribe(request: GithubDirectRequest, listener: () => void): () => void {
+      const entry = entryFor(request);
       entry.listeners.add(listener);
       ensureVisibilityListener();
       if (entry.listeners.size === 1) {
@@ -184,14 +187,14 @@ export function createAccountGithubPullsStore(deps: AccountGithubPullsStoreDeps)
         ensureVisibilityListener();
       };
     },
-    snapshot(repo: GithubDirectRepoRef, state: GithubDirectListState): AccountGithubPullsSnapshot {
-      return entries.get(accountGithubPullsKey(repo, state))?.snapshot ?? EMPTY;
+    snapshot<O extends GithubDirectOp>(request: Extract<GithubDirectRequest, { op: O }>): AccountGithubReadSnapshot<GithubDirectData[O]> {
+      return (entries.get(accountGithubReadKey(request))?.snapshot ?? EMPTY) as AccountGithubReadSnapshot<GithubDirectData[O]>;
     },
     /** A person asked: read now (not a background read). */
-    refresh(repo: GithubDirectRepoRef, state: GithubDirectListState): Promise<void> {
-      return read(entryFor(repo, state), false);
+    refresh(request: GithubDirectRequest): Promise<void> {
+      return read(entryFor(request), false);
     },
   };
 }
 
-export type AccountGithubPullsStore = ReturnType<typeof createAccountGithubPullsStore>;
+export type AccountGithubReadStore = ReturnType<typeof createAccountGithubReadStore>;
