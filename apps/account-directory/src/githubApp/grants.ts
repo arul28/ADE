@@ -547,43 +547,60 @@ export async function runGithubAppCron(env: GithubAppEnv, tickTime: number = Dat
 async function dropAbandonedConfirms(env: GithubAppEnv, now: number): Promise<void> {
   const rt = await githubAppRuntime(env);
   if (!rt) return;
+  // `expired` with tokens still held: an earlier sweep claimed the row but
+  // could not finish (a failed read, GitHub not answering). The tokens stay
+  // sealed on the row until the token is dealt with, so a later sweep retries.
   const due = await rt.db.prepare(`
     select id, user_id, status, tokens_sealed from github_app_sign_ins
     where tokens_sealed is not null
-      and ((status = 'confirming' and expires_at <= ?) or (status = 'exchanging' and expires_at <= ?))
+      and ((status = 'confirming' and expires_at <= ?) or (status = 'exchanging' and expires_at <= ?) or status = 'expired')
     limit ?
   `).bind(now, now - STUCK_CONFIRM_MARGIN_MS, ABANDONED_CONFIRM_BATCH)
     .all<{ id: string; user_id: string; status: string; tokens_sealed: string | null }>();
   const rows = due.results ?? [];
-  let deletedAtGitHub = 0;
-  let unreadable = 0;
-  let kept = 0;
+  const counts = { deletedAtGitHub: 0, unreadable: 0, kept: 0, retryLater: 0 };
   for (const row of rows) {
-    const claim = await rt.db.prepare(
-      "update github_app_sign_ins set status = 'expired', tokens_sealed = null, confirm_hash = null where id = ? and status = ?",
-    ).bind(row.id, row.status).run();
-    if ((claim.meta?.changes ?? 0) !== 1 || !row.tokens_sealed) continue;
-    let tokens: GithubTokens;
     try {
-      tokens = JSON.parse(await unseal(rt.key, row.tokens_sealed, signInTokensAad(row.id, row.user_id))) as GithubTokens;
+      const outcome = await dropAbandonedConfirm(rt, row);
+      if (outcome) counts[outcome] += 1;
     } catch {
-      unreadable += 1;
-      continue;
+      counts.retryLater += 1;
     }
-    // A confirm whose grant was saved but whose last write (marking it done)
-    // failed: the account uses this token, so it is not deleted.
-    const grant = await loadGrant(rt.db, row.user_id);
-    if (grant && grant.access_token_sha256 === await sha256Hex(tokens.accessToken)) {
-      await rt.db.prepare("update github_app_sign_ins set status = 'done', result_code = 'ok' where id = ? and status = 'expired'")
-        .bind(row.id).run();
-      kept += 1;
-      continue;
-    }
-    if (await deleteToken(rt.config, tokens.accessToken)) deletedAtGitHub += 1;
   }
-  if (rows.length) {
-    logGithubApp({ event: "github_app.abandoned_confirms_dropped", userId: "cron", due: rows.length, deletedAtGitHub, unreadable, kept });
+  if (rows.length) logGithubApp({ event: "github_app.abandoned_confirms_dropped", userId: "cron", due: rows.length, ...counts });
+}
+
+/** Ends one abandoned confirm. Throws (tokens kept for the next sweep) when a read fails. */
+async function dropAbandonedConfirm(
+  rt: GithubAppRuntime,
+  row: { id: string; user_id: string; status: string; tokens_sealed: string | null },
+): Promise<"deletedAtGitHub" | "unreadable" | "kept" | "retryLater" | null> {
+  // The claim ends the confirm (a late Connect now fails) but keeps the tokens.
+  const claim = await rt.db.prepare(
+    "update github_app_sign_ins set status = 'expired', confirm_hash = null where id = ? and status = ? and tokens_sealed is not null",
+  ).bind(row.id, row.status).run();
+  if ((claim.meta?.changes ?? 0) !== 1 || !row.tokens_sealed) return null;
+  const clearTokens = (status: "expired" | "done") => rt.db.prepare(
+    `update github_app_sign_ins set status = ?, ${status === "done" ? "result_code = 'ok', " : ""}tokens_sealed = null where id = ? and status = 'expired'`,
+  ).bind(status, row.id).run();
+  let tokens: GithubTokens;
+  try {
+    tokens = JSON.parse(await unseal(rt.key, row.tokens_sealed, signInTokensAad(row.id, row.user_id))) as GithubTokens;
+  } catch {
+    // Sealed under a key this Worker no longer has: no later sweep can read it either.
+    await clearTokens("expired");
+    return "unreadable";
   }
+  // A confirm whose grant was saved but whose last write (marking it done)
+  // failed: the account uses this token, so it is not deleted.
+  const grant = await loadGrant(rt.db, row.user_id);
+  if (grant && grant.access_token_sha256 === await sha256Hex(tokens.accessToken)) {
+    await clearTokens("done");
+    return "kept";
+  }
+  if (!(await deleteToken(rt.config, tokens.accessToken))) return "retryLater";
+  await clearTokens("expired");
+  return "deletedAtGitHub";
 }
 
 async function runGithubAppKeepalive(env: GithubAppEnv, now: number = Date.now()): Promise<{ due: number; refreshed: number }> {

@@ -222,11 +222,19 @@ describe("GitHub App sign-in", () => {
     expect((await read.json() as { status: string }).status).toBe(readStatus);
   });
 
-  it("the hourly cron ends an unanswered confirm and deletes its token at GitHub", async () => {
+  it("the hourly cron ends an unanswered confirm and deletes its token at GitHub, retrying a sweep that failed", async () => {
     const page = await toConfirmPage();
     db.raw.prepare("update github_app_sign_ins set expires_at = ? where id = ?").run(Date.now() - 1000, page.signInId);
     const tick = new Date();
     tick.setUTCHours(tick.getUTCHours() === 3 ? 4 : tick.getUTCHours(), 17, 0, 0);
+    // The first sweep claims the confirm, then its grant read fails.
+    db.faults.push({ when: "before", match: (sql) => sql.includes("from github_app_grants") });
+    await runGithubAppCron(env, tick.getTime());
+    expect(github.deleted).not.toContain(page.heldToken);
+    const claimed = db.raw.prepare("select status, tokens_sealed from github_app_sign_ins where id = ?").get(page.signInId) as { status: string; tokens_sealed: string | null };
+    expect(claimed.status).toBe("expired");
+    expect(claimed.tokens_sealed, "kept for the next sweep").not.toBeNull();
+
     await runGithubAppCron(env, tick.getTime());
 
     expect(github.deleted).toContain(page.heldToken);
