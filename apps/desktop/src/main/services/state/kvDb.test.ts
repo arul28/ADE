@@ -16,6 +16,7 @@ import {
 import { isCrsqliteAvailable } from "./crsqliteExtension";
 import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
 import { EVENT_LOG_RETENTION_DAYS } from "./dbMaintenanceApi";
+import { StorageNotAnsweringError } from "./unansweringRoots";
 
 const testRequire = createRequire(import.meta.url);
 const { DatabaseSync } = testRequire("node:sqlite") as {
@@ -280,6 +281,37 @@ describe("openKvDb SQL binding", () => {
     expect(db.getJson("relocation:probe")).toBe("original");
     db.setJson("relocation:probe", "resumed");
     expect(db.getJson("relocation:probe")).toBe("resumed");
+  });
+
+  // The brain's uncaught handler lets only this class pass. A timer that reads
+  // the database has no catch, so a wrapped error made the brain exit.
+  it("keeps the class of a drive that is not answering on reads and writes", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-not-answering-"));
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    const realStatSync = fs.statSync;
+    const statSync = vi.spyOn(fs, "statSync");
+    activeDisposers.push(async () => {
+      statSync.mockRestore();
+      db.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    });
+    db.setJson("probe", "before");
+    statSync.mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      if (String(target) === dbPath) throw new StorageNotAnsweringError(dbPath, projectRoot);
+      return (realStatSync as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.statSync);
+
+    for (const operation of [
+      () => db.get("select value from kv where key = ?", ["probe"]),
+      () => db.all("select key from kv"),
+      () => db.run("delete from kv"),
+    ]) {
+      expect(operation).toThrowError(StorageNotAnsweringError);
+    }
+
+    statSync.mockRestore();
+    expect(db.getJson("probe")).toBe("before");
   });
 
   // Exercise a native storage boundary that checkpoints on close, even on
