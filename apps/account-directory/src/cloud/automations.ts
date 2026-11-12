@@ -612,10 +612,12 @@ async function failRun(
   runId: string,
   reason: string,
   now: number,
-  options: { email?: boolean; states?: string } = {},
+  options: { email?: boolean; states?: string; unclaimDay?: boolean } = {},
 ): Promise<void> {
   const { user_id: userId, rule_id: ruleId } = "rule" in owner ? owner.rule : owner.run;
-  await env.DB.prepare(`update cloud_automation_runs set state = 'failed', reason = ?, ended_at = ?, updated_at = ? where run_id = ? and state in ${options.states ?? OPEN_STATES}`)
+  // `unclaimDay`: no computer was made, so the run gives back the day's computer it claimed.
+  const startedAt = options.unclaimDay ? "case when instance_id is null then null else started_at end" : "started_at";
+  await env.DB.prepare(`update cloud_automation_runs set state = 'failed', reason = ?, started_at = ${startedAt}, ended_at = ?, updated_at = ? where run_id = ? and state in ${options.states ?? OPEN_STATES}`)
     .bind(reason, now, now, runId).run();
   logCloud("cloud.automation_run_failed", { userId, ruleId, runId });
   if ("rule" in owner) await tell(env, owner.rule, `"${owner.rule.name}" didn't run on ADE Cloud`, reason, now, options.email === true);
@@ -686,13 +688,22 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
   if (!withinShape(spec.sizeId, limits.maxShape)) {
     return failRun(env, { rule }, run.run_id, `This rule's computer is bigger than your agent limits allow (${limits.maxShape.replace("x", " CPU, ")} GB). Pick a smaller size or raise the limit in Settings › ADE Cloud.`, now, { email: true });
   }
-  const made = await env.DB.prepare("select count(*) as count from cloud_automation_runs where user_id = ? and started_at >= ? and run_id <> ?")
-    .bind(rule.user_id, dayStart(now), run.run_id).first<{ count: number }>();
-  if ((made?.count ?? 0) >= limits.machinesPerDay) {
-    return failRun(env, { rule }, run.run_id, `Your agent limits allow ${limits.machinesPerDay} new computer${limits.machinesPerDay === 1 ? "" : "s"} a day for unattended agents, and today's are used. Raise the limit in Settings › ADE Cloud.`, now, { email: true });
-  }
   if (rule.git_ok === 0 && rule.repo_visibility === "private") {
     return failRun(env, { rule }, run.run_id, connectGitHubSentence(spec.project.origin), now, { email: true });
+  }
+  // The day's computers, claimed in one conditional write (`started_at` is the claim): two runs of
+  // the account at once can't both take the last one. A start tried again keeps the claim it made.
+  if (run.started_at == null) {
+    const claimed = await env.DB.prepare(`
+      update cloud_automation_runs set started_at = ?, updated_at = ? where run_id = ? and state = 'starting' and started_at is null
+        and (select count(*) from cloud_automation_runs where user_id = ? and started_at >= ? and run_id <> ?) < ?
+    `).bind(now, now, run.run_id, rule.user_id, dayStart(now), run.run_id, limits.machinesPerDay).run();
+    if ((claimed.meta?.changes ?? 0) !== 1) {
+      const latest = await readRun(env, run.run_id);
+      // Another tick claimed it (or the run moved on): that one goes on with it.
+      if (!latest || latest.state !== "starting" || latest.started_at != null) return;
+      return failRun(env, { rule }, run.run_id, `Your agent limits allow ${limits.machinesPerDay} new computer${limits.machinesPerDay === 1 ? "" : "s"} a day for unattended agents, and today's are used. Raise the limit in Settings › ADE Cloud.`, now, { email: true });
+    }
   }
   const waitOrGiveUp = async (why: string): Promise<void> => {
     // A queued run's clock starts when it left the queue (`not_before`).
@@ -701,7 +712,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
       logCloud("cloud.automation_run_start_waiting", { runId: run.run_id, why });
       return;
     }
-    await failRun(env, { rule }, run.run_id, "ADE Cloud couldn't make this run's computer for an hour, so it gave up on this run.", now);
+    await failRun(env, { rule }, run.run_id, "ADE Cloud couldn't make this run's computer for an hour, so it gave up on this run.", now, { unclaimDay: true });
   };
   if (!deps.provider) return waitOrGiveUp("no_provider");
   let trigger: TriggerFacts = { kind: run.trigger_kind, summary: run.trigger_summary, firedAt: run.created_at };
@@ -751,7 +762,8 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
   }
   const refusal = await response.json().catch(() => null) as { error?: { message?: unknown } } | null;
   const message = typeof refusal?.error?.message === "string" ? refusal.error.message : "ADE Cloud couldn't make this run's computer.";
-  await failRun(env, { rule }, run.run_id, message, now, { email: true });
+  // Refused before anything was made: the day's computer it claimed is free again.
+  await failRun(env, { rule }, run.run_id, message, now, { email: true, unclaimDay: true });
 }
 
 /**
@@ -908,23 +920,30 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow, no
 type CronRow = { what: "fire" | "run"; user_id: string; rule_id: string; run_id: string | null; state: string | null; at: number | null };
 
 /**
- * One indexed statement a minute: rules whose schedule is due, and runs that
- * need the server (one waiting, a start that never finished, a run gone
- * quiet, a computer to free). Nothing at all is read beyond it when it
- * answers no rows.
+ * Two indexed reads a minute: runs that need the server (one
+ * waiting, a start that never finished, a run gone quiet, a computer to free),
+ * and rules whose schedule is due. Each read has its own page, and the runs go
+ * first, so a backlog of due schedules (after an outage) can't hold back the
+ * runs whose computers are waiting to be freed. Nothing at all is read beyond
+ * it when both answer no rows.
  */
 export async function runCloudAutomations(env: RelayEnv, deps: Omit<AutomationDeps, "now"> & { now?: number }): Promise<void> {
   const now = deps.now ?? Date.now();
-  const rows = (await env.DB.prepare(`
-    select 'fire' as what, user_id, rule_id, null as run_id, null as state, next_fire_at as at
-      from cloud_automations where enabled = 1 and next_fire_at is not null and next_fire_at <= ?
-    union all
-    select 'run' as what, user_id, rule_id, run_id, state, updated_at as at
-      from cloud_automation_runs where state in ${OPEN_STATES}
-        and ((state = 'queued' and (not_before is null or not_before <= ?)) or (state = 'starting' and updated_at < ?) or (state = 'running' and updated_at < ?)
-          or (state = 'finishing' and (claimed_at is null or claimed_at < ?)))
-    limit ?
-  `).bind(now, now, now - START_STALE_MS, now - RUN_MAX_MS, now - FINISH_CLAIM_MS, CRON_ROWS).all<CronRow>()).results ?? [];
+  const [runRows, fireRows] = await Promise.all([
+    env.DB.prepare(`
+      select 'run' as what, user_id, rule_id, run_id, state, updated_at as at
+        from cloud_automation_runs where state in ${OPEN_STATES}
+          and ((state = 'queued' and (not_before is null or not_before <= ?)) or (state = 'starting' and updated_at < ?) or (state = 'running' and updated_at < ?)
+            or (state = 'finishing' and (claimed_at is null or claimed_at < ?)))
+      limit ?
+    `).bind(now, now - START_STALE_MS, now - RUN_MAX_MS, now - FINISH_CLAIM_MS, CRON_ROWS).all<CronRow>(),
+    env.DB.prepare(`
+      select 'fire' as what, user_id, rule_id, null as run_id, null as state, next_fire_at as at
+        from cloud_automations where enabled = 1 and next_fire_at is not null and next_fire_at <= ?
+      limit ?
+    `).bind(now, CRON_ROWS).all<CronRow>(),
+  ]);
+  const rows = [...(runRows.results ?? []), ...(fireRows.results ?? [])];
   if (rows.length === 0) return;
   const runDeps: AutomationDeps = { ...deps, now };
   let finishes = 0;
@@ -974,6 +993,15 @@ async function moveRunOn(env: RelayEnv, row: CronRow, deps: AutomationDeps): Pro
   if (run.state === "queued") {
     if (!rule) {
       await env.DB.prepare("delete from cloud_automation_runs where run_id = ? and state = 'queued'").bind(run.run_id).run();
+      return;
+    }
+    // A rule turned off (or storm-paused) since this run queued: it never starts. A Run now
+    // asked for while the rule is off still runs, unless a storm paused the rule.
+    if (rule.enabled !== 1 && (run.trigger_kind !== "manual" || rule.paused_reason)) {
+      await env.DB.prepare(`
+        update cloud_automation_runs set state = 'skipped', reason = ?, trigger_json = null, not_before = null, ended_at = ?, updated_at = ? where run_id = ? and state = 'queued'
+      `).bind(rule.paused_reason === "storm" ? "The rule is paused." : "The rule is off.", now, now, run.run_id).run();
+      logCloud("cloud.automation_queued_run_dropped", { userId: run.user_id, ruleId: run.rule_id, runId: run.run_id });
       return;
     }
     // The waiting run starts once nothing of its rule is starting or running.

@@ -55,6 +55,8 @@ type CloudHomeRule = {
   triggers?: ReadonlyArray<AutomationTrigger> | null;
   trigger?: AutomationTrigger | null;
   execution?: AutomationExecution | null;
+  oneShot?: boolean | null;
+  maxRuns?: number | null;
 };
 
 /**
@@ -77,6 +79,10 @@ export function automationCloudHomeProblem(rule: CloudHomeRule): string | null {
   if (execution.laneMode !== "create") {
     return "On ADE Cloud each run gets a new lane on its own computer. Pick \"A new lane each run\".";
   }
+  // ADE Cloud's server doesn't count a rule's runs, so a rule that retires after some would keep running there.
+  if (rule.oneShot || (typeof rule.maxRuns === "number" && rule.maxRuns > 0)) {
+    return "A rule that stops after a number of runs runs on one of your computers for now: ADE Cloud doesn't count its runs. Remove the run limit to run it on ADE Cloud.";
+  }
   const triggers = rule.triggers?.length ? rule.triggers : rule.trigger ? [rule.trigger] : [];
   if (triggers.filter((trigger) => trigger.type === "schedule").length > 1) return "ADE Cloud takes one schedule per rule.";
   if (triggers.filter((trigger) => trigger.type === "webhook").length > 1) return "ADE Cloud takes one webhook per rule.";
@@ -84,6 +90,8 @@ export function automationCloudHomeProblem(rule: CloudHomeRule): string | null {
     if (trigger.secretRef?.trim() || trigger.webhook?.signature) {
       return "This rule checks a signing secret, which stays on the computer that has it. Remove the signature check to run it on ADE Cloud.";
     }
+    // The server doesn't read a trigger's active hours: it would run outside them.
+    if (trigger.activeHours) return "Active hours run on one of your computers for now. Remove them to run this rule on ADE Cloud.";
     if (trigger.type === "schedule" || trigger.type === "manual") continue;
     if (trigger.type === "webhook") {
       if (!trigger.webhook?.hookId) return "This webhook has no ADE webhook URL yet. Make one, then pick ADE Cloud.";

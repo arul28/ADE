@@ -358,11 +358,13 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
     return now - lastSign > NO_CHECK_IN_MS;
   });
   if (unseen.length === 0) return;
+  // Unread, any computer that never checked in may be a launch's still joining: those wait for a tick that reads.
   const joining = await computersJoiningLaunches(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.launch_joining_read_failed", { message: error instanceof Error ? error.message : "unknown" });
-    return new Set<string>();
+    return null;
   });
-  await Promise.all(unseen.filter((computer) => !joining.has(computer.instance_id)).map(async (computer) => {
+  const sleeps = (computer: TickComputer) => (joining ? !joining.has(computer.instance_id) : computer.last_seen_at != null);
+  await Promise.all(unseen.filter(sleeps).map(async (computer) => {
     try {
       const status = await provider.sleepInstance(computer.instance_id);
       const statements = statusChangeStatements(env, computer, status, now, "no_check_in");

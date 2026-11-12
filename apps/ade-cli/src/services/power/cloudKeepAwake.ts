@@ -343,8 +343,13 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     }
   };
 
-  /** Three minutes with no work: a grow if the disk is near full, else ask the server to sleep the machine. */
-  const sleepIfIdleLongEnough = async (at: number): Promise<void> => {
+  /**
+   * Three minutes with no work: an update or a grow if one is due, else ask
+   * the server to sleep the machine. Both restart the machine, so neither
+   * starts while a chat waits on the person (a restart would lose their
+   * approval card or question); the sleep still goes ahead.
+   */
+  const sleepIfIdleLongEnough = async (at: number, waitingOnPerson: boolean): Promise<void> => {
     // Checks land a few milliseconds around each minute; that shouldn't cost a whole extra minute.
     if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
     askedToSleep = true;
@@ -352,7 +357,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       // An image behind its channel's goes first: the update restarts the
       // machine, and the new brain sleeps it once it is idle again. A failed
       // check (an older server) never stands in the way of the sleep.
-      const updating = await options.updateIfBehind?.(() => !usedSinceTick).catch((error: unknown) => {
+      const updating = waitingOnPerson ? false : await options.updateIfBehind?.(() => !usedSinceTick).catch((error: unknown) => {
         options.logger?.warn("cloud.idle_update_check_failed", { error: error instanceof Error ? error.message : String(error) });
         return false;
       });
@@ -360,7 +365,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         options.logger?.info("cloud.idle_update_started", { idleMs: at - lastBusyAt });
         return;
       }
-      if (await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
+      if (!waitingOnPerson && await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
       await options.reportUse?.(lastWorkAt, () => !usedSinceTick).catch((error: unknown) => {
         options.logger?.warn("cloud.idle_use_report_failed", { error: error instanceof Error ? error.message : String(error) });
       });
@@ -460,7 +465,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (await growDiskEarlyIfDue(state)) {
         lastBusyAt = now();
       } else if (!state.busy) {
-        await sleepIfIdleLongEnough(at);
+        await sleepIfIdleLongEnough(at, state.waitingOnPerson === true);
       }
       if (!url && state.busy && !warnedNoUrl) {
         warnedNoUrl = true;

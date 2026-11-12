@@ -1495,6 +1495,20 @@ describe("ADE Cloud automations", () => {
     expect(runs("storm").map((run) => run.state)).toEqual(["running", "skipped"]);
   });
 
+  it("two rules started at once can't both take the day's last computer", async () => {
+    for (const ruleId of ["first", "second"]) expect((await register(ruleId, { spec: spec([{ kind: "manual" }]) })).status).toBe(200);
+    harness.exec("update cloud_automations set limits_json = ?", JSON.stringify({ unattendedSpend: true, machinesPerDay: 1, maxShape: "4x16" }));
+    // The second rule's run starts while the first one's computer is being made.
+    let second: { state: string; reason: string | null } | null = null;
+    harness.net.after.push({ match: /POST .*\/instances$/, run: async () => {
+      second = await (await harness.send(OWNER, "POST", "/cloud/automations/second/run")).json() as { state: string; reason: string | null };
+    } });
+    const first = await (await harness.send(OWNER, "POST", "/cloud/automations/first/run")).json() as { state: string };
+    expect(first.state).toBe("running");
+    expect(second).toMatchObject({ state: "failed", reason: expect.stringContaining("1 new computer a day") });
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+  });
+
   it("takes a webhook delivery only signed with the hook's own key, and one run per delivery", async () => {
     const registered = await (await register("hooked", { spec: spec([{ kind: "webhook", hookId: "hook-abcdef12" }]) })).json() as { forward: { url: string; secret: string } };
     const deliver = (body: string, options: { secret?: string; timestamp?: number; hookId?: string } = {}) => {

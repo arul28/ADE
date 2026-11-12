@@ -28,7 +28,8 @@ const RECENT_USE_PROTECT_MS = 24 * 60 * 60_000;
 /** How many entries per level, two levels deep, date a package cache. */
 const PACKAGE_CACHE_SAMPLE = 64;
 
-type Candidate = { dir: string; bytes: number; lastUsedAt: number };
+/** `tool`: a tool's version folder, which a chat that started since it was listed may now hold. */
+type Candidate = { dir: string; bytes: number; lastUsedAt: number; tool?: true };
 
 /** Bytes under `dir`, files only, symlinks not followed. Unreadable entries count as zero. */
 export async function directoryBytes(dir: string): Promise<number> {
@@ -194,7 +195,7 @@ export async function makeRoomInSystemCache(args: {
       const current = pinned && Object.values(pinned.targets).some((target) => target && path.basename(dir) === target.version);
       if (current) continue;
     }
-    toolVersions.push({ dir, bytes: await directoryBytes(dir), lastUsedAt });
+    toolVersions.push({ dir, bytes: await directoryBytes(dir), lastUsedAt, tool: true });
   }
   // Other rebuildable caches the image put here (npm, pip, ...), whole, only after every tool version.
   let others: fs.Dirent[] = [];
@@ -213,6 +214,11 @@ export async function makeRoomInSystemCache(args: {
   const byAge = (left: Candidate, right: Candidate) => left.lastUsedAt - right.lastUsedAt;
   for (const candidate of [...toolVersions.sort(byAge), ...packageCaches.sort(byAge)]) {
     if (fits()) break;
+    // Asked again right before the removal: the disk reads above take time, and a chat may have started the tool meanwhile.
+    if (candidate.tool && toolInstallInUse(candidate.dir)) {
+      args.log?.("tools.system_cache_evict_skipped_in_use", { dir: candidate.dir });
+      continue;
+    }
     try {
       await fsp.rm(candidate.dir, { recursive: true, force: true });
       used -= candidate.bytes;

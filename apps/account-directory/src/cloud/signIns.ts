@@ -62,15 +62,23 @@ export type SignInDeps = {
   /** Why the account's computers may not wake now (0 hours, the free plan's disk), or null. */
   wakeBlocked: () => Promise<Response | null>;
   isAwake: boolean;
+  /**
+   * Starts a stopped computer and records the wake. The provider's exec wakes
+   * a sleeping computer by itself, but not a stopped one.
+   */
+  startStopped: () => Promise<void>;
+  /** The computer is stopped (not asleep): exec alone wouldn't reach it. */
+  isStopped: boolean;
 };
 
 /** `/cloud/instances/:id/sign-ins[/:job[/code]]`. */
 export async function routeSignIns(request: Request, computer: ComputerRow, rest: string[], deps: SignInDeps): Promise<Response> {
   const exec = async (command: string): Promise<{ exitCode: number; stdout: string; stderr: string } | Response> => {
-    // A command wakes a sleeping computer, under the same rules as any wake.
+    // A command wakes a sleeping computer, under the same rules as any wake. A stopped one is started first.
     if (!deps.isAwake) {
       const blocked = await deps.wakeBlocked();
       if (blocked) return blocked;
+      if (deps.isStopped) await deps.startStopped();
     }
     return await deps.provider.exec(computer.instance_id, commandWith(command), SIGN_IN_EXEC_TIMEOUT_MS);
   };

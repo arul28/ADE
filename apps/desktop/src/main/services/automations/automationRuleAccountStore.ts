@@ -69,6 +69,23 @@ export function automationRuleAccountId(ruleId: string): string {
   return keySuffix(ruleId);
 }
 
+/**
+ * A rule's id on ADE Cloud's server. The server keeps one row per account and
+ * id, while the account files rules per repository, so two repositories'
+ * `nightly` rules would share a row: the repository goes in the id. It reads
+ * the repository the way the account scope does, so every checkout of it
+ * (an SSH alias, an HTTPS remote) names the same row. Null when the project
+ * has no repository the account can name.
+ */
+export function automationRuleCloudId(accountId: string, origin: string | null | undefined): string | null {
+  const scope = accountRepoScopeKey(origin);
+  if (!scope) return null;
+  const repo = createHash("sha256").update(scope).digest("hex").slice(0, 12);
+  const id = `${accountId}.r${repo}`;
+  if (SAFE_ID.test(id)) return id;
+  return `h.${createHash("sha256").update(`${scope}\n${accountId}`).digest("hex").slice(0, 32)}.r${repo}`;
+}
+
 /** The account key a rule is stored under. Ids the relay cannot carry are hashed. */
 export function automationRuleAccountKey(ruleId: string): string {
   return `${AUTOMATION_RULE_KEY_PREFIX}${keySuffix(ruleId)}`;

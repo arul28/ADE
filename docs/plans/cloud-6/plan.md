@@ -33,6 +33,7 @@ and `0030_cloud_automations`, after lane L's `0028_account_projects`.
 - **C10.** `POST /cloud/projects/computers/delete` needs the preview's `instanceIds` and answers
   `{ jobId, accepted, skipped, truncated }`.
 - **C9.** The relay forwards to `POST /cloud/automations/:ruleId/deliveries/:userId`, HMAC-signed.
+  `:ruleId` is the rule's account id plus `.r<hash of the repository>` (`automationRuleCloudId`).
 - **Machine pickers.** `routableMachines` leaves out saved-chat stand-ins.
 
 ## C2 — connect to any machine of the account by machine key

@@ -1136,7 +1136,7 @@ export function AutomationsWorkspace({
                     cloudHome={selectedRule && !followsAccount(selectedRule) ? null : {
                       available: adeCloudEnabled,
                       chosen: draftCloudChosen || (!draftRehomeChosen && isAdeCloudHome(selectedRule?.home)),
-                      problem: automationCloudHomeProblem({ scope: draft.scope, triggers: draft.triggers, execution: draft.execution, prompt: draft.prompt }),
+                      problem: automationCloudHomeProblem({ scope: draft.scope, triggers: draft.triggers, execution: draft.execution, prompt: draft.prompt, oneShot: draft.oneShot, maxRuns: draft.maxRuns }),
                       state: draftCloudChosen ? null : selectedRule?.cloud ?? null,
                       onChoose: () => {
                         setDraftCloudChosen(!isAdeCloudHome(selectedRule?.home) || draftRehomeChosen);

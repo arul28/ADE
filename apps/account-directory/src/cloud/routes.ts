@@ -1274,6 +1274,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
         return routeSignIns(request, computer, instanceRoute.rest, {
           provider,
           isAwake: isMeteredStatus(computer.status),
+          isStopped: computer.status === "stopped",
+          startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
           wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response ?? null,
         });
       }

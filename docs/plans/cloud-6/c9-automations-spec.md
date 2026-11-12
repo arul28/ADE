@@ -14,7 +14,8 @@ each run through the C6 server launcher.
   the kind treats it as another computer's home (it already does for unknown device ids): verify.
 - **Registration.** The brain that saves a cloud home (the editor's **Runs on: ADE Cloud**, or
   `ade automations run-on <id> --cloud`) registers the rule with the server:
-  `PUT /cloud/automations/:ruleId` with a compiled run spec (repository origin, trigger, the C6
+  `PUT /cloud/automations/:ruleId` (the rule's account id plus a hash of its repository, so two
+  repositories' rules of one id are two rows) with a compiled run spec (repository origin, trigger, the C6
   launch template: kind, size, prompt, model, effort, permissions, lane mode and name, and the
   rule's limits). Any brain that syncs and sees a cloud home whose server copy is older than the
   rule re-registers it (one write per rule change, never a poll). Leaving the cloud home, disabling
@@ -22,7 +23,8 @@ each run through the C6 server launcher.
 - **What can't run on the server** (a plain reason under **Runs on**, the same shape as
   `localReason`/`homeGaps`): a bound chat, a step that works in a lane on one computer, a secret
   that lives on one computer (secrets never move), file-change triggers, a CLI-session run until the
-  CLI-sessions lane's start step exists.
+  CLI-sessions lane's start step exists, a run limit (`oneShot`, `maxRuns`: the server doesn't count
+  runs), and a trigger's active hours.
 
 ## Triggers the server watches
 

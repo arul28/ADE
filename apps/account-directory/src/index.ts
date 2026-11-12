@@ -1,9 +1,9 @@
 import { runCloudWakes } from "./cloudWake";
 import { createComputer, handleCloudRequest, isCloudRequest } from "./cloud/routes";
-import { runCloudAutomations } from "./cloud/automations";
+import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
-import { expireCloudLaunches } from "./cloud/launches";
+import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
 import { createCloudProvider } from "./cloud/provider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
@@ -192,6 +192,15 @@ export default Sentry.withSentry(sentryOptions, {
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),
+        // Launches whose computer never signed in: the computer deleted, the
+        // launch failed (an automation's run follows). One indexed read when none.
+        settle("cloud_launches_unjoined", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          await failUnjoinedLaunches(env, {
+            provider: key ? createCloudProvider(key) : null,
+            onProgress: (record) => noteAutomationLaunchProgress(env, record, { now: Date.now() }),
+          });
+        }),
         // Automations whose home is ADE Cloud: due schedules and runs that need
         // the server, in one indexed read; nothing more when none is due.
         settle("cloud_automations", async () => {

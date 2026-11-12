@@ -4,7 +4,7 @@ import { CloudApiError } from "../../../shared/cloudApiClient";
 import { ADE_CLOUD_HOME_DEVICE_ID, AUTOMATION_HOME_HANDOVER_MS, isAdeCloudHome } from "../../../shared/automationHome";
 import type { AutomationCloudHomeState, AutomationRule, AutomationRun, AutomationRunStatus, ConfigAutomationRule } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
-import { automationRuleAccountId } from "./automationRuleAccountStore";
+import { automationRuleAccountId, automationRuleCloudId } from "./automationRuleAccountStore";
 import { webhookIdOf, type CloudHomesView } from "./automationRuleAccountSync";
 
 /**
@@ -16,7 +16,8 @@ import { webhookIdOf, type CloudHomesView } from "./automationRuleAccountSync";
  * what it last sent and:
  *
  * - registers a cloud-homed rule whose version it hasn't sent
- *   (`PUT /cloud/automations/:ruleId`; the server writes nothing when it
+ *   (`PUT /cloud/automations/:ruleId`, an id that carries the repository,
+ *   so two repositories' rules of one id are two rows; the server writes nothing when it
  *   already has that version, so a rule change is one write however many
  *   brains see it), and points the rule's webhook at the server;
  * - takes a rule off the server only on positive evidence from the account:
@@ -110,7 +111,7 @@ function automationRunOf(rule: Pick<AutomationRule, "id" | "execution">, run: Cl
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDeps) {
-  /** What this process last sent the server for each rule: `<version>|<on or off>`. */
+  /** What this process last sent the server for each rule (by server id): `<version>|<on or off>`. */
   const sent = new Map<string, { key: string; hookId: string | null }>();
   /** Rules this process already took off the server, by `<id>|<version>`. */
   const released = new Set<string>();
@@ -123,12 +124,15 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
   /** The pass running now, for `dispose` to wait on. */
   let current: Promise<void> | null = null;
   const now = deps.now ?? Date.now;
-  /** The server's rules of this project, by account id, from the last read. */
+  /** The server's rules of this project, by server id, from the last read. */
   let states: Map<string, AutomationCloudHomeState> | null = null;
   /** The rule ids the server listed for this project at the last read, or null before one answered. */
   let serverIds: Set<string> | null = null;
   let serverReadAt = 0;
   let reading: Promise<void> | null = null;
+
+  /** A rule's id on the server, which carries this repository (`automationRuleCloudId`); null without a remote. */
+  const serverIdOf = (accountId: string): string | null => automationRuleCloudId(accountId, deps.origin());
 
   const readServer = (): Promise<void> => {
     if (reading) return reading;
@@ -143,8 +147,8 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
         const byId = new Map(summaries.map((summary) => [summary.ruleId, summary]));
         const next = new Map<string, AutomationCloudHomeState>();
         for (const entry of deps.listCloudHomes()?.onCloud ?? []) {
-          const accountId = automationRuleAccountId(entry.rule.id);
-          next.set(accountId, stateOf(byId.get(accountId)));
+          const serverId = serverIdOf(automationRuleAccountId(entry.rule.id));
+          if (serverId) next.set(serverId, stateOf(byId.get(serverId)));
         }
         const changed = JSON.stringify([...next]) !== JSON.stringify([...(states ?? new Map())]);
         states = next;
@@ -176,7 +180,9 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
     if (!view) return;
     if (now() - serverReadAt >= SERVER_READ_EVERY_MS) await readServer();
     for (const entry of view.onCloud) {
-      const accountId = automationRuleAccountId(entry.rule.id);
+      const accountId = serverIdOf(automationRuleAccountId(entry.rule.id));
+      // No repository to name it by: `compile` refuses it too.
+      if (!accountId) continue;
       const hookId = webhookIdOf(entry.rule);
       const enabled = entry.rule.enabled !== false;
       const key = `${entry.version}|${enabled ? "on" : "off"}`;
@@ -222,7 +228,9 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
       }
     }
     // Homed on a computer now, or deleted: the server copy goes, once per version seen.
-    for (const [accountId, release] of view.released) {
+    for (const [ruleAccountId, release] of view.released) {
+      const accountId = serverIdOf(ruleAccountId);
+      if (!accountId) continue;
       const record = sent.get(accountId);
       if (!record && !release.leftCloud && !serverIds?.has(accountId)) continue;
       const releaseKey = `${accountId}|${release.version}`;
@@ -288,14 +296,17 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
      */
     stateFor(ruleId: string): AutomationCloudHomeState | null {
       if (now() - serverReadAt >= SERVER_READ_EVERY_MS) void readServer();
-      return states?.get(automationRuleAccountId(ruleId)) ?? null;
+      const serverId = serverIdOf(automationRuleAccountId(ruleId));
+      return serverId ? states?.get(serverId) ?? null : null;
     },
 
     /** Run now for a cloud-homed rule: ADE's server starts it on its own cloud computer. */
     async runNow(rule: Pick<AutomationRule, "id" | "execution">): Promise<AutomationRun> {
       const api = deps.api();
       if (!api) throw new Error("Sign in to your ADE account to run this on ADE Cloud.");
-      const run = await api.runAutomation(automationRuleAccountId(rule.id));
+      const serverId = serverIdOf(automationRuleAccountId(rule.id));
+      if (!serverId) throw new Error("This project has no GitHub remote, so it can't run on ADE Cloud.");
+      const run = await api.runAutomation(serverId);
       serverReadAt = 0;
       deps.onStateChanged();
       return automationRunOf(rule, run);
@@ -306,7 +317,8 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
       if (!isAdeCloudHome(rule.home)) return;
       const api = deps.api();
       if (!api) return;
-      const accountId = automationRuleAccountId(rule.id);
+      const accountId = serverIdOf(automationRuleAccountId(rule.id));
+      if (!accountId) return;
       try {
         await unregister(api, accountId, webhookIdOf(rule));
         sent.delete(accountId);

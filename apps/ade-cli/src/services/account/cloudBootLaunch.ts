@@ -96,7 +96,13 @@ export type CloudBootLaunchDeps = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-type BootState = { launchId: string; phase: "joining" | "handed_off" | "ended"; projectId?: string | null };
+type BootState = {
+  launchId: string;
+  phase: "joining" | "handed_off" | "ended";
+  projectId?: string | null;
+  /** A setup failure's last report that never landed: a later boot sends it before anything else. */
+  unsent?: CloudLaunchStagesUpdate | null;
+};
 
 /** A just-booted computer's device sign-in is tried this many times (each one retries the network itself). */
 const JOIN_ATTEMPTS = 3;
@@ -233,6 +239,17 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const state = readState(deps.stateFile, logger);
   const known = state?.launchId === launchId ? state : null;
   if (known?.phase === "ended") {
+    // A setup failure whose report never landed: the caller (and an automation's run) still waits for it.
+    if (known.unsent) {
+      const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      if (await reportFinal(stageReporter(deps), known.unsent, sleep)) {
+        writeState(deps.stateFile, { launchId, phase: "ended", projectId: known.projectId ?? null });
+        logger.info("cloud_boot_launch.final_report_resent", { launchId });
+      } else {
+        logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "resend" });
+      }
+      return;
+    }
     // A restart after the hand-off: an automation's run may still owe its end.
     if (known.projectId) await reportAutomationRunEnd(deps, known.projectId);
     return;
@@ -282,10 +299,10 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
         ? "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then start again."
         : "ADE couldn't clone the repository on the new computer.";
       logger.warn("cloud_boot_launch.clone_failed", { launchId, error: raw });
-      if (!await reportFinal(report, { state: "failed", stages: [computerStage, joinStage, { id: "clone", status: "failed", error: sentence }], error: sentence }, sleep)) {
-        logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "clone_failed" });
-      }
-      writeState(deps.stateFile, { launchId, phase: "ended" });
+      const update: CloudLaunchStagesUpdate = { state: "failed", stages: [computerStage, joinStage, { id: "clone", status: "failed", error: sentence }], error: sentence };
+      const landed = await reportFinal(report, update, sleep);
+      if (!landed) logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "clone_failed" });
+      writeState(deps.stateFile, { launchId, phase: "ended", ...(landed ? {} : { unsent: update }) });
       return;
     }
     const cloneStage = doneStage("clone", repository);
@@ -309,10 +326,10 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       logger.warn("cloud_boot_launch.start_failed", { launchId, error: raw });
       // No `agent` row: nothing of the agent ran, so a cancel still deletes the computer.
       const sentence = `ADE couldn't start the lane on the new computer: ${raw}`.slice(0, 400);
-      if (!await reportFinal(report, { state: "failed", stages: [computerStage, joinStage, cloneStage], error: sentence }, sleep)) {
-        logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "start_failed" });
-      }
-      writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId });
+      const update: CloudLaunchStagesUpdate = { state: "failed", stages: [computerStage, joinStage, cloneStage], error: sentence };
+      const landed = await reportFinal(report, update, sleep);
+      if (!landed) logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "start_failed" });
+      writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId, ...(landed ? {} : { unsent: update }) });
       return;
     }
     writeState(deps.stateFile, { launchId, phase: "handed_off", projectId: project.projectId });

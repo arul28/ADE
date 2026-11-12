@@ -546,11 +546,17 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
 
 /* ---- Cancel ---- */
 
-async function deleteLaunchComputer(env: CloudEnv, provider: CloudProvider, row: LaunchRow, now: number): Promise<void> {
+async function deleteLaunchComputer(
+  env: CloudEnv,
+  provider: CloudProvider,
+  row: LaunchRow,
+  now: number,
+  why: { who: string; reason: string } = { who: "launch_cancel", reason: "launch_cancelled" },
+): Promise<void> {
   if (!row.instance_id) return;
   const computer = await ownedComputer(env, row.user_id, row.instance_id);
   if (!computer) return;
-  await deleteComputer(env, provider, computer, { who: "launch_cancel", reason: "launch_cancelled" }, now);
+  await deleteComputer(env, provider, computer, why, now);
 }
 
 async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps): Promise<Response> {
@@ -571,11 +577,16 @@ async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps
   // Closed first, so the computer's next write is refused and a create in
   // flight deletes what it made. The computer to delete is the one the row
   // holds after this write: a create that adopted one since the read above is
-  // deleted here, never left behind.
+  // deleted here, never left behind. The agent's stage is checked again in the
+  // same write: a report that it started, landing since the read, wins.
   const closed = await env.DB.prepare(`
     update cloud_launches set state = 'cancelled', approval_url = null, updated_at = ? where launch_id = ? and state not in ('done', 'cancelled')
+      and not exists (
+        select 1 from json_each(case when json_valid(stages_json) then stages_json else '[]' end)
+        where json_extract(value, '$.id') = ? and coalesce(json_extract(value, '$.status'), 'pending') <> 'pending'
+      )
     returning instance_id
-  `).bind(deps.now, row.launch_id).first<{ instance_id: string | null }>();
+  `).bind(deps.now, row.launch_id, AGENT_STAGE).first<{ instance_id: string | null }>();
   const latest = (await readLaunch(env, row.launch_id))!;
   if (!closed) {
     // Another cancel won (its delete is retried like any), or the launch finished meanwhile.
@@ -780,6 +791,53 @@ export async function computersJoiningLaunches(env: CloudEnv, now: number): Prom
   return new Set(rows.map((row) => row.instance_id));
 }
 
+
+/**
+ * How long past its join window a launch whose computer never signed in is
+ * left alone: a join claimed in the window's last minute can still have its
+ * sign-in approved (10 minutes) and report `joined`.
+ */
+const JOIN_GIVE_UP_GRACE_MS = 15 * 60_000;
+/** Most never-joined launches one tick ends; the rest wait for the next. */
+const UNJOINED_PER_TICK = 20;
+
+/**
+ * Launches whose computer never signed in, past the join window and a grace:
+ * reads already showed them failed, and now the computer is deleted and the
+ * row says failed, so it stops counting against the account's computers and
+ * disk. The computer goes first: a delete that fails leaves the launch for the
+ * next tick. `onProgress` follows each (an automation's run ends with it). One
+ * indexed read when there are none.
+ */
+export async function failUnjoinedLaunches(
+  env: CloudEnv,
+  deps: { provider: CloudProvider | null; now?: number; onProgress?: (record: CloudLaunchRecord) => Promise<void> },
+): Promise<number> {
+  const now = deps.now ?? Date.now();
+  const rows = (await env.DB.prepare(`
+    select * from cloud_launches where state in ('joining', 'needs_approval') and join_expires_at <= ? limit ?
+  `).bind(now - JOIN_GIVE_UP_GRACE_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+  const provider = deps.provider;
+  if (rows.length === 0 || !provider) return 0;
+  let ended = 0;
+  for (const row of rows) {
+    try {
+      await deleteLaunchComputer(env, provider, row, now, { who: "launch_join", reason: "launch_never_joined" });
+      const failed = await env.DB.prepare(`
+        update cloud_launches set state = 'failed', error = ?, approval_url = null, updated_at = ?
+        where launch_id = ? and state in ('joining', 'needs_approval') and join_expires_at <= ?
+      `).bind(JOIN_NEVER_FINISHED, now, row.launch_id, now - JOIN_GIVE_UP_GRACE_MS).run();
+      if ((failed.meta?.changes ?? 0) !== 1) continue;
+      ended += 1;
+      logCloud("cloud.launch_never_joined", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id });
+      const latest = await readLaunch(env, row.launch_id);
+      if (latest && deps.onProgress) await deps.onProgress(recordOf(latest, now));
+    } catch (error) {
+      reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    }
+  }
+  return ended;
+}
 
 /** Most launch records one tick deletes; the rest wait for the next. */
 const EXPIRE_PER_TICK = 50;
