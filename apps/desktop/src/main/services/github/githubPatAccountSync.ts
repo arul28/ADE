@@ -139,7 +139,8 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     isFromAccount(): boolean {
       try {
         return Boolean(readLocal()) && localIsFromAccount();
-      } catch {
+      } catch (error) {
+        args.logger?.warn?.("github.pat_account_read_failed", { error: (error as NodeJS.ErrnoException | null)?.code ?? "unknown" });
         return false;
       }
     },
