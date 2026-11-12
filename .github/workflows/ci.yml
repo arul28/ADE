@@ -1033,7 +1033,15 @@ jobs:
           fi
           echo "Simulator: $dest_name ($dest_id)"
           echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
-          xcrun simctl boot "$dest_id" || true
+          # Only a device this job boots is shut down at the end. A device
+          # someone else is already using is left exactly as it was found.
+          state=$(printf '%s' "$json" | jq -r --arg id "$dest_id" \
+            '[.devices | to_entries[] | .value[] | select(.udid == $id)][0].state // empty')
+          echo "Simulator state on arrival: ${state:-unknown}"
+          if [[ "$state" == "Shutdown" ]]; then
+            echo "IOS_SIM_BOOTED_BY_CI=1" >> "$GITHUB_ENV"
+            xcrun simctl boot "$dest_id" || true
+          fi
 
       - name: Choose the compilation cache location
         if: needs.ios-gate.outputs.run == 'true'
@@ -1121,9 +1129,11 @@ jobs:
           retention-days: 7
 
       # A hosted runner is discarded with the job; a self-hosted one keeps the
-      # simulator it booted, and its memory, until something shuts it down.
+      # simulator it booted, and its memory, until something shuts it down. Only
+      # a device this job booted is shut down — one an ADE lane was already
+      # using is left alone.
       - name: Shut down the simulator
-        if: always() && needs.ios-gate.outputs.run == 'true' && env.IOS_SIM_ID != ''
+        if: always() && needs.ios-gate.outputs.run == 'true' && env.IOS_SIM_BOOTED_BY_CI == '1'
         run: xcrun simctl shutdown "$IOS_SIM_ID" 2>/dev/null || true
 
   # Pure source and workflow parsing with node: built-ins only, so it needs
