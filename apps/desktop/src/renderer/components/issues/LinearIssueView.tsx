@@ -13,7 +13,7 @@ import { issueProjectLabel, issueUpdatedLabel } from "../lanes/linearIssueDispla
 import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { LinearIssuePropertyBar } from "../app/LinearIssuePropertyPickers";
 import { isNormalizedIssue, type BrowserIssue, type LinearIssueEdit } from "../app/linearIssueBrowserModel";
-import { loadLinearIssueComments } from "./linearIssueStore";
+import { loadLinearIssueComments, useLinearIssuePin } from "./linearIssueStore";
 import { IssueMarkdown } from "./issueMarkdown";
 import { EditableIssueBody, EditableIssueTitle, IssueCommentComposer } from "./issueEditing";
 import "./issueViewer.css";
@@ -167,6 +167,11 @@ function ActivitySection({
   const [comments, setComments] = useState<CtoLinearIssueComment[] | null>(null);
   const [commentError, setCommentError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // The machine whose Linear connection serves this project.
+  const pin = useLinearIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const prevIssueIdRef = useRef(issueId);
 
   if (prevIssueIdRef.current !== issueId) {
@@ -177,15 +182,15 @@ function ActivitySection({
   }
 
   useEffect(() => {
-    if (!expanded || comments || commentError) return;
+    if (!expanded || comments || commentError || !pinRef.current) return;
     let cancelled = false;
     setLoading(true);
-    void loadLinearIssueComments(issueId)
+    void loadLinearIssueComments(issueId, pinRef.current)
       .then((result) => { if (!cancelled) setComments(result); })
       .catch(() => { if (!cancelled) setCommentError("Couldn't load comments."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [expanded, issueId, comments, commentError]);
+  }, [expanded, issueId, comments, commentError, pinKey]);
 
   return (
     <section className="ade-issue-section">

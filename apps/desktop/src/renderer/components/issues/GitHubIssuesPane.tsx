@@ -10,12 +10,14 @@ import { Banner } from "../ui/notice";
 const IssueViewer = React.lazy(() => import("./IssueViewer").then((module) => ({ default: module.IssueViewer })));
 import {
   useGitHubIssueList,
+  useGitHubIssuePin,
   type GitHubIssueDetail,
   type GitHubIssueStateFilter,
   type GitHubRepo,
 } from "./githubIssueStore";
 import { buildGitHubLaunchIssue } from "../../lib/linearBatchLaunch";
 import { useIssueLaunchSelection } from "./useIssueLaunchSelection";
+import { IssueNoMachineNotice } from "./issueViewerParts";
 
 /**
  * The GitHub Issues pane body: the project's issues on the left, the issue
@@ -88,6 +90,8 @@ export function GitHubIssuesPane({
   const [selected, setSelected] = useState<number | null>(null);
   const list = useGitHubIssueList(repo, state);
   const { refresh } = list;
+  // No machine online: the list is not read, and the pane says why.
+  const noMachine = useGitHubIssuePin() == null;
 
   useEffect(() => {
     if (refreshKey > 0) refresh();
@@ -171,7 +175,9 @@ export function GitHubIssuesPane({
           </div>
         </div>
         <div className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", launchSelectedCount > 0 && "pb-12")} role="list" aria-label="Issues">
-          {list.status === "error" && list.issues.length === 0 ? (
+          {noMachine && list.issues.length === 0 ? (
+            <IssueNoMachineNotice url={`https://github.com/${repo.owner}/${repo.name}/issues`} openLabel="Open on GitHub" />
+          ) : list.status === "error" && list.issues.length === 0 ? (
             <div className="p-2">
               <Banner
                 layout="inline"

@@ -12,6 +12,7 @@ import { cn } from "../ui/cn";
 import { JiraIssuesPane } from "./JiraIssuesPane";
 import { useIssueTopBarPreferences } from "./issueTopBarPreferences";
 import { useJiraConnectionStatus } from "./jiraIssueStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 
 const JIRA_PANE_BRAND: IssuePaneBrand = {
   surface: JIRA_BRAND.surface,
@@ -33,7 +34,9 @@ export function JiraIssuesButton({
   onMenuActivate?: () => void;
 }) {
   const preferences = useIssueTopBarPreferences();
-  const { status, loading, refresh } = useJiraConnectionStatus(preferences.jira);
+  // The machine whose Jira connection serves this project; null when no machine is online.
+  const pin = useActiveRepositoryReader();
+  const { status, loading, refresh } = useJiraConnectionStatus(preferences.jira, pin);
   const [open, setOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -110,7 +113,7 @@ export function JiraIssuesButton({
           newTitle="New Jira issue"
           onClose={() => setOpen(false)}
         >
-          <JiraIssuesPane siteUrl={status.siteUrl} refreshKey={refreshKey} />
+          <JiraIssuesPane siteUrl={status.siteUrl} refreshKey={refreshKey} pin={pin} />
         </LinearPaneModal>
       ) : null}
     </>

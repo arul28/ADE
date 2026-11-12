@@ -17,6 +17,7 @@ import { Banner } from "../ui/notice";
 import {
   copyIssueText,
   IssueActionDock,
+  IssueNoMachineNotice,
   IssueStaleBanner,
   IssueViewerFrame,
   IssueViewerHeader,
@@ -43,14 +44,14 @@ export function LinearIssueViewer({
 
   const handleEdit = useCallback((edit: Parameters<typeof editLinearIssue>[2]) => {
     if (!issue || !catalog) return;
-    void editLinearIssue(entry.projectRoot, issue, edit, catalog).catch((error: unknown) => {
+    void editLinearIssue(entry.projectRoot, issue, edit, catalog, entry.pin).catch((error: unknown) => {
       showToast({
         tone: "error",
         title: `Couldn't update ${issue.identifier}`,
         message: error instanceof Error ? error.message : "Linear rejected the change.",
       });
     });
-  }, [catalog, entry.projectRoot, issue]);
+  }, [catalog, entry.pin, entry.projectRoot, issue]);
 
   const canComment = typeof window !== "undefined" && typeof window.ade?.cto?.createLinearIssueComment === "function";
 
@@ -95,7 +96,9 @@ export function LinearIssueViewer({
   );
 
   let body: React.ReactNode;
-  if (!issue) {
+  if (!issue && !entry.pin) {
+    body = <IssueNoMachineNotice url={url} openLabel="Open in Linear" onLeave={onClose} />;
+  } else if (!issue) {
     body = (
       <IssueLoadState
         status={entry.status}
@@ -120,10 +123,11 @@ export function LinearIssueViewer({
           branchName={resolveLinearIssueBranchName(issue)}
           activityDefaultOpen
           sideExtra={<LinkedInAde issue={issue} />}
-          onSaveTitle={catalog ? (title) => editLinearIssue(entry.projectRoot, issue, { title }, catalog) : undefined}
-          onSaveDescription={catalog ? (description) => editLinearIssue(entry.projectRoot, issue, { description }, catalog) : undefined}
-          onComment={canComment ? async (body) => {
-            await window.ade.cto?.createLinearIssueComment({ issueId: issue.id, body });
+          onSaveTitle={catalog ? (title) => editLinearIssue(entry.projectRoot, issue, { title }, catalog, entry.pin) : undefined}
+          onSaveDescription={catalog ? (description) => editLinearIssue(entry.projectRoot, issue, { description }, catalog, entry.pin) : undefined}
+          onComment={canComment && entry.pin ? async (body) => {
+            if (!entry.pin) throw new Error("No computer that has this project is online.");
+            await window.ade.cto?.createLinearIssueComment({ issueId: issue.id, body }, entry.pin);
           } : undefined}
         />
       </>
