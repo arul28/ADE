@@ -67,6 +67,11 @@ import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurfa
 import { AppearanceRoot } from "./AppearanceRoot";
 import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
+import {
+  originUrlForBinding,
+  projectOriginMemoryVersion,
+  subscribeProjectOriginMemory,
+} from "../lanes/laneMachines";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -328,23 +333,21 @@ const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
 
+/**
+ * The binding of a project folder on this computer. `ProjectInfo` has no git
+ * origin, so the binding takes the one the recents remember for the folder.
+ * Without it, a local GitHub repository reads as "this computer only" and its
+ * copies on other computers do not show.
+ */
 function localProjectBindingForProject(project: ProjectInfo): OpenProjectBinding {
-  return {
+  const binding: OpenProjectBinding = {
     kind: "local",
     key: `local:${project.rootPath}`,
     rootPath: project.rootPath,
     displayName: project.displayName,
   };
-}
-
-function bindingForProject(
-  project: ProjectInfo,
-  activeProjectBinding: OpenProjectBinding | null,
-): OpenProjectBinding {
-  if (activeProjectBinding?.rootPath === project.rootPath) {
-    return activeProjectBinding;
-  }
-  return localProjectBindingForProject(project);
+  const gitOriginUrl = originUrlForBinding(binding);
+  return gitOriginUrl ? { ...binding, gitOriginUrl } : binding;
 }
 
 function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
@@ -877,9 +880,35 @@ function ProjectTabHost() {
   // project welcome page. Old links and restored tabs still arrive here.
   const isLegacyHubRoute = location.pathname === "/hub";
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
-  const activeBinding = !showWelcome && activeProject?.rootPath
-    ? bindingForProject(activeProject, activeProjectBinding)
-    : null;
+  // The origin memory fills from the recents after a tab opens, so a local
+  // binding is built again when it changes (same key, origin added).
+  const originMemoryVersion = React.useSyncExternalStore(
+    subscribeProjectOriginMemory,
+    projectOriginMemoryVersion,
+    projectOriginMemoryVersion,
+  );
+  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
+  // Same fields, same object: a new binding object for a project that did not
+  // change re-renders everything in it that reads the binding.
+  const stableLocalBinding = React.useCallback((project: ProjectInfo): OpenProjectBinding => {
+    const built = localProjectBindingForProject(project);
+    const known = localBindingsRef.current.get(built.key);
+    const binding = known && shallow(known, built) ? known : built;
+    localBindingsRef.current.set(binding.key, binding);
+    return binding;
+  }, []);
+  const activeBinding = React.useMemo(
+    () => {
+      if (showWelcome || !activeProject?.rootPath) return null;
+      if (activeProjectBinding?.kind === "remote" && activeProjectBinding.rootPath === activeProject.rootPath) {
+        return activeProjectBinding;
+      }
+      return stableLocalBinding(activeProject);
+    },
+    // originMemoryVersion: the memory changed, so read the origin again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeProject, activeProjectBinding, originMemoryVersion, showWelcome, stableLocalBinding],
+  );
   const activeSurfaceKey = activeBinding?.key ?? null;
   const previousActiveSurfaceKeyRef = React.useRef<string | null>(null);
   const pendingNavigationRef = React.useRef<{ surfaceKey: string; route: string } | null>(null);
@@ -963,7 +992,6 @@ function ProjectTabHost() {
     setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
   }, [activeSurfaceKey, location]);
 
-  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
     const entries: ProjectSurfaceEntry[] = [];
     const activeRemoteRoot =
@@ -978,13 +1006,7 @@ function ProjectTabHost() {
         activeProject?.rootPath === root && !activeRemoteRoot ? activeProject : null
       );
       if (!project) continue;
-      // Same fields, same object: this list is rebuilt on every project
-      // switch, and a new binding object for a project that did not change
-      // re-rendered everything in it that reads the binding.
-      const built = localProjectBindingForProject(project);
-      const known = localBindingsRef.current.get(built.key);
-      const binding = known && shallow(known, built) ? known : built;
-      localBindingsRef.current.set(binding.key, binding);
+      const binding = stableLocalBinding(project);
       entries.push({ surfaceKey: binding.key, project, binding });
     }
     for (const binding of openRemoteProjectTabs) {
@@ -1006,13 +1028,17 @@ function ProjectTabHost() {
       });
     }
     return entries;
+    // originMemoryVersion: the memory changed, so build the local bindings again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeBinding,
     activeProject,
     activeProjectBinding,
     openProjectTabRoots,
     openRemoteProjectTabs,
+    originMemoryVersion,
     projectInfoByRoot,
+    stableLocalBinding,
   ]);
 
   React.useEffect(() => {

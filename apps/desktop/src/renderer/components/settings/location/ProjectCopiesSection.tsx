@@ -2,10 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { CheckCircle, CircleNotch, Desktop, Plus, XCircle } from "@phosphor-icons/react";
 import { THIS_MACHINE_ID } from "../../../../shared/machineIdentity";
 import type { RepositoryCopy } from "../../../../shared/repositoryTab";
-import { repositoryTabForBinding, useActiveRepositoryTab } from "../../../state/repositoryScope";
-import { useAccountProjectList, useRepositoryCopies, useStartOn } from "../../../state/useRepositoryCopies";
+import { useActiveRepositoryTab } from "../../../state/repositoryScope";
+import { useRepositoryCopies, useStartOn } from "../../../state/useRepositoryCopies";
 import { useAppStore } from "../../../state/appStore";
-import { originUrlForBinding } from "../../lanes/laneMachines";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { ModernRow, ModernRows, ModernSection } from "../primitives";
 import { repoKeyForOriginIdentity } from "../../projects/projectCopies";
@@ -51,19 +50,8 @@ export function ProjectCopiesSection() {
 
 function ProjectCopiesList() {
   const webMode = isWebClientMode();
-  const scopeTab = useActiveRepositoryTab();
+  const tab = useActiveRepositoryTab();
   const binding = useAppStore((state) => state.projectBinding);
-  const list = useAccountProjectList();
-  // A local project's binding is built before the recents tell its origin, so
-  // the scope tab can say "this computer only" for a GitHub repository. The
-  // origin the recents remember puts the tab back on its repository.
-  const rememberedOrigin = scopeTab?.kind === "this_computer_only" && binding?.kind === "local" && !binding.gitOriginUrl
-    ? originUrlForBinding(binding)
-    : null;
-  const tab = useMemo(
-    () => (rememberedOrigin && binding ? repositoryTabForBinding({ ...binding, gitOriginUrl: rememberedOrigin }, list) : scopeTab),
-    [binding, list, rememberedOrigin, scopeTab],
-  );
   const copies = useRepositoryCopies(tab);
   const { choices } = useStartOn(tab);
   const repoKey = tab?.kind === "account" ? repoKeyForOriginIdentity(tab.repoKeys[0]?.slice("repo:".length) ?? null) : null;

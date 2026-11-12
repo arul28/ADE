@@ -114,7 +114,7 @@ function useThisComputer(active: boolean): ThisComputer | null {
       if (typeof listRecent !== "function") return;
       void listRecent().then(
         (rows) => {
-          // A local tab's binding has no origin; the tab finds it here.
+          // A local tab binding takes its git origin from this memory.
           rememberProjectOriginSummaries(rows, { replace: true });
           if (!cancelled) setLocalProjects(rows);
         },
