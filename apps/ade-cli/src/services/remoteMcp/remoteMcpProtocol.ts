@@ -280,7 +280,9 @@ export function createRemoteMcpProtocol(deps: {
   // ── MCP ───────────────────────────────────────────────────────────────────
 
   // The default rule is stated once, in the instructions.
-  const PROJECT_INPUT = { type: "string", description: "Project id, name, path or GitHub owner/name." };
+  // An account id (`ap_…`) is an id and `owner/name` is a name: the old text
+  // covers both, and every tool repeats it (remoteMcpContextBudget.json).
+  const PROJECT_INPUT = { type: "string", description: "Project id, name or path." };
 
   const toolDefinition = (scope: RemoteMcpScope) => ({
     name: TOOL_NAME,
