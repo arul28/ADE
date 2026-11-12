@@ -910,22 +910,21 @@ jobs:
           fi
 
 
-      # Where `test-ios` runs. The default is GitHub's hosted `xcode-27` image
-      # (same Xcode major as this Mac); a Mac Studio can take the job when it
-      # advertises spare capacity.
+      # Where `test-ios` runs. The rule lives in scripts/ci/ios-runner.mjs so it
+      # can be tested; this step only supplies the inputs.
       #
-      # The readiness agent (scripts/ci/mac-studio-readiness.mjs) stamps the
-      # Unix time it last proved the machine had free disk, free memory and
-      # idle cores into the `MAC_STUDIO_READY` repository variable, and stops
-      # stamping when it does not. Only a stamp younger than fifteen minutes is
-      # trusted, so a Mac that went to sleep, lost its runner or filled its
-      # disk ages out on its own and the suite falls back to the hosted runner.
-      # An unset variable — the state until someone sets one up — always takes
-      # that fallback.
+      # The default is GitHub's hosted `xcode-27` image (same Xcode major as
+      # this Mac); a Mac Studio can take the job when it advertises spare
+      # capacity. The readiness agent (scripts/ci/mac-studio-readiness.mjs)
+      # stamps the Unix time it last proved the machine had free disk, free
+      # memory and idle cores into `MAC_STUDIO_READY`, and stops stamping when
+      # it does not. Only a stamp younger than fifteen minutes is trusted, so a
+      # Mac that went to sleep, lost its runner or filled its disk ages out on
+      # its own. An unset variable always takes that fallback.
       #
       # Fork PRs never route here: a self-hosted runner executes the workflow of
       # the commit it checks out, so a fork branch could run arbitrary code on
-      # the machine. Only pushes and PRs whose head is this repository qualify.
+      # the machine.
       - name: Pick a runner
         id: pick
         env:
@@ -934,41 +933,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          emit() { printf 'runner=%s\n' "$1" >> "$GITHUB_OUTPUT"; }
-
-          # The gate already decided there is nothing to build. Keep the cheap
-          # Ubuntu runner so the skip still reports success where ci-pass looks.
-          if [[ "$RUN_IOS" != "true" ]]; then
-            emit '"ubuntu-latest"'
-            exit 0
-          fi
-
-          trusted=false
-          # Push and a human pressing "Run workflow" both require write access;
-          # a fork PR does not, so it is never trusted here.
-          if [[ "$EVENT" == "push" || "$EVENT" == "workflow_dispatch" ]]; then
-            trusted=true
-          elif [[ "$EVENT" == "pull_request" && -n "${HEAD_REPO:-}" && "$HEAD_REPO" == "$BASE_REPO" ]]; then
-            trusted=true
-          fi
-
-          fresh=false
-          age=0
-          ready=${READY_AT:-0}
-          if [[ "$ready" =~ ^[0-9]+$ ]] && (( ready > 0 )); then
-            age=$(( $(date +%s) - ready ))
-            if (( age >= 0 && age <= 900 )); then fresh=true; fi
-          fi
-
-          if [[ "$trusted" == "true" && "$fresh" == "true" ]]; then
-            echo "Mac Studio has been ready for ${age}s of the last 900s; running the iOS suite there."
-            emit '["self-hosted","mac-studio","ios"]'
-          else
-            echo "Using the hosted macOS runner (trusted=$trusted, ready=$fresh)."
-            emit '"xcode-27"'
-          fi
+        run: node scripts/ci/ios-runner.mjs
 
   test-ios:
     needs: ios-gate
@@ -1102,12 +1067,13 @@ jobs:
             build-for-testing
 
       # The cache only grows: each build adds what changed. Past 6 GB, start it
-      # again rather than fill the repository's cache space. 6 GB, not 2.5 GB,
-      # because `SWIFT_ENABLE_COMPILE_CACHE` is what makes Swift compilations
-      # cacheable at all — without it the store held only the C/Objective-C
-      # half and a warm build still recompiled every Swift file (measured:
-      # SwiftCompile stayed at ~420 CPU-seconds with a 2 GB store restored;
-      # with the flag on and the store populated it fell to 8.5).
+      # again rather than fill the disk or the repository's cache space (which
+      # of the two depends on where the store lives). 6 GB, not 2.5 GB, because
+      # `SWIFT_ENABLE_COMPILE_CACHE` is what makes Swift compilations cacheable
+      # at all — without it the store held only the C/Objective-C half and a
+      # warm build still recompiled every Swift file (measured: SwiftCompile
+      # stayed at ~420 CPU-seconds with a 2 GB store restored; with the flag on
+      # and the store populated it fell to 8.5).
       - name: Cap the compilation cache
         if: needs.ios-gate.outputs.run == 'true'
         run: |

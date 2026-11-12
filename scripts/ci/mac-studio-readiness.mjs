@@ -125,6 +125,25 @@ function registeredRepoUrl(runnerDir) {
 }
 
 /**
+ * Canonical repository URL: no trailing slash, no `.git` suffix, lower-case.
+ * Compared rather than the raw string so a runner configured with either form
+ * reads as the same repository instead of silently never being ready.
+ */
+function normalizeRepoUrl(url) {
+  return url.trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+}
+
+/** Escape a value for XML text so a path with `&` cannot produce a broken plist. */
+function xmlEscape(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+/**
  * True when a listener process runs out of exactly this runner directory.
  *
  * `-f` matches the command line, so the pattern is written `Runner[.]Listener`
@@ -154,10 +173,10 @@ function assess(options) {
   const expectedUrl = `https://github.com/${options.repo}`;
 
   const blockers = [];
-  if (repoUrl !== expectedUrl) {
-    blockers.push(repoUrl === null
-      ? `no runner registered at ${options.runnerDir}`
-      : `runner at ${options.runnerDir} belongs to ${repoUrl}, not ${expectedUrl}`);
+  if (repoUrl === null) {
+    blockers.push(`no runner registered at ${options.runnerDir}`);
+  } else if (normalizeRepoUrl(repoUrl) !== normalizeRepoUrl(expectedUrl)) {
+    blockers.push(`runner at ${options.runnerDir} belongs to ${repoUrl}, not ${expectedUrl}`);
   } else if (!listenerRunning(options.runnerDir)) {
     blockers.push("runner listener not running");
   }
@@ -248,16 +267,16 @@ function install(options) {
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${nodePath}</string>
-    <string>${installed}</string>
+    <string>${xmlEscape(nodePath)}</string>
+    <string>${xmlEscape(installed)}</string>
     <string>--once</string>
-    <string>--repo</string><string>${options.repo}</string>
-    <string>--runner-dir</string><string>${options.runnerDir}</string>
+    <string>--repo</string><string>${xmlEscape(options.repo)}</string>
+    <string>--runner-dir</string><string>${xmlEscape(options.runnerDir)}</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>${os.homedir()}/Library/Logs/ade-mac-studio-readiness.log</string>
-  <key>StandardErrorPath</key><string>${os.homedir()}/Library/Logs/ade-mac-studio-readiness.log</string>
+  <key>StandardOutPath</key><string>${xmlEscape(path.join(os.homedir(), "Library", "Logs", "ade-mac-studio-readiness.log"))}</string>
+  <key>StandardErrorPath</key><string>${xmlEscape(path.join(os.homedir(), "Library", "Logs", "ade-mac-studio-readiness.log"))}</string>
 </dict>
 </plist>
 `;
