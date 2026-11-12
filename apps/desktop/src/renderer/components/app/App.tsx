@@ -486,7 +486,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   // `ade ui show` for this project's runtime. Answered here, whatever tab is
   // showing, so the agent hears "held" instead of "no desktop" while the user
   // is somewhere else; the pane showing the chat takes it when it mounts.
-  useWorkToolShowRequestListener(Boolean(active && projectRoot));
+  // `ade ui show` requests come from the tab's copy, and the answer goes back there.
+  const showRequestPin = useTabCopyPin();
+  useWorkToolShowRequestListener(Boolean(active && projectRoot && showRequestPin), showRequestPin);
 
   // The account's Fast-mode permission, once per window and again whenever the
   // window regains focus (another machine may have turned it on or off). The
