@@ -134,8 +134,8 @@ export type LaneMachineDerivationInput = {
   repoOriginUrl?: string | null;
   /**
    * The account project (`ap_…`) of the repo, when the tab's machine reports
-   * one. A machine whose project row carries an account project id is joined
-   * on the id; a row with no id is joined on the origin, as before.
+   * one. A machine joins when its project row has the same id OR the same
+   * origin; the id never removes an origin join.
    */
   repoAccountProjectId?: string | null;
   /** Repo folder name — the fallback identity when no origin URL is known. */
@@ -274,11 +274,11 @@ function resolveProjectMatch(
   repoDisplayName: string | null,
   repoAccountProjectId: string | null = null,
 ): LaneMachineProjectRef | null {
-  // The account project id is the repository's identity when both sides have
-  // one: a row with the same id is this repo even when its origin text differs
-  // (a rename or transfer seen on one machine only), and a row with another id
-  // is a different repo even when the origin text matches.
-  let projects = allProjects;
+  // Two checkouts are one repository when their account project ids are equal
+  // OR their origins are equal. The id adds a join (a rename or transfer seen on
+  // one machine only); it never removes the origin join, so machines signed in
+  // to different accounts still join on the origin, as before.
+  const projects = allProjects;
   if (repoAccountProjectId) {
     const byAccount = pickLiveCheckout(allProjects.filter((project) => project.accountProjectId === repoAccountProjectId));
     if (byAccount) {
@@ -289,7 +289,6 @@ function resolveProjectMatch(
         matchedBy: "origin",
       };
     }
-    projects = allProjects.filter((project) => !project.accountProjectId);
   }
   if (repoIdentity) {
     // Same rule as `--machine` calls from the CLI: the live checkout, not the

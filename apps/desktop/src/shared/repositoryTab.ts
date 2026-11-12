@@ -221,16 +221,17 @@ function lastOpenedMs(value: string | number | null | undefined): number | null 
 }
 
 /**
- * Whether a folder's registry row belongs to the tab. The account project id
- * decides when both sides have one; otherwise the origin decides, as the tab
- * bar and the union do today. A this-computer-only tab matches only its folder.
+ * Whether a folder's registry row belongs to the tab: the same account project
+ * id, OR the same origin (today's rule for the tab bar and the union). The id
+ * adds a join; it never removes the origin join. A this-computer-only tab
+ * matches only its folder (handled by the caller).
  */
 function rowBelongsToTab(
   tab: RepositoryTab,
   row: { accountProjectId?: string | null; gitOriginUrl?: string | null; rootPath: string },
 ): boolean {
   if (tab.kind === "this_computer_only") return false;
-  if (row.accountProjectId) return row.accountProjectId === tab.id;
+  if (row.accountProjectId && row.accountProjectId === tab.id) return true;
   const key = accountRepoScopeKey(row.gitOriginUrl ?? null);
   return key != null && tab.repoKeys.includes(key);
 }

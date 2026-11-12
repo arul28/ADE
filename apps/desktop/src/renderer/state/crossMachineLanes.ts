@@ -1114,8 +1114,8 @@ export type CrossMachineLaneScope = {
   repoOriginUrl: string | null;
   /**
    * The account project id of the tab's checkout, when its machine reports
-   * one. Machines are joined on it when their project row has one too, else on
-   * the origin. Null keeps the origin join.
+   * one. A machine joins when its project row has the same id OR the same
+   * origin. Null keeps the origin join alone.
    */
   repoAccountProjectId?: string | null;
   /** Target id the tab is bound to; null when the tab is on this computer. */

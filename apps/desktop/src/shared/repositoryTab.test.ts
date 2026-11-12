@@ -134,16 +134,18 @@ describe("resolveDefaultCopy", () => {
     expect(resolveDefaultCopy(subject, { copies, explicitPickKey: keys.pick, currentKey: keys.current })?.key ?? null).toBe(expectedKey);
   });
 
-  it("joins on the account project id when both sides have one, and on the origin otherwise", () => {
+  it("joins on an equal account project id OR an equal origin", () => {
     const copies = buildRepositoryCopies(tab, inputsFor({
       web: true,
       connections: [machine("m1", [
         row("p_renamed", "/srv/renamed", { gitOriginUrl: "git@github.com:acme/old-name.git", accountProjectId: AP }),
-        row("p_other", "/srv/fork", { accountProjectId: "ap_00000000000000000000000000000002" }),
+        row("p_other_account", "/srv/other-account", { accountProjectId: "ap_00000000000000000000000000000002" }),
         row("p_plain", "/srv/app"),
+        row("p_unrelated", "/srv/unrelated", { gitOriginUrl: "git@github.com:acme/unrelated.git", accountProjectId: "ap_00000000000000000000000000000003" }),
       ])],
     }));
-    expect(copies.map((copy) => copy.address?.key).sort()).toEqual(["remote:m1:p_plain", "remote:m1:p_renamed"]);
+    // Renamed: joins by id. Other account, same origin: joins by origin. Unrelated: neither.
+    expect(copies.map((copy) => copy.address?.key).sort()).toEqual(["remote:m1:p_other_account", "remote:m1:p_plain", "remote:m1:p_renamed"]);
   });
 });
 
