@@ -6,8 +6,8 @@
  * This asks the account instead: the sign-ins the account carries to ADE
  * Cloud (`providerLogins.status`, its `cloud` picks) and the Claude passes,
  * plus the saved ADE Cloud keys (`cloud.cloudSignInStatus`). The words come
- * from the same tile model Settings › Providers › ADE Cloud draws, so the
- * card and that page never disagree.
+ * from `adeCloudProviderSignIn`, the same answer Settings › Providers › ADE
+ * Cloud draws, so the card and that page never disagree.
  *
  * Only a definite "not signed in" holds Send. While the reads are out, when
  * one fails, or for a provider that signs in on the cloud computer itself
@@ -27,7 +27,7 @@ import {
   type ProviderLoginProvider,
   type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
-import { adeCloudTile } from "../settings/providers/cloud/adeCloudSignInModel";
+import { adeCloudProviderSignIn } from "../settings/providers/cloud/adeCloudProviderSignIn";
 
 export type AdeCloudSignInNeed = {
   provider: ProviderLoginProvider;
@@ -116,23 +116,22 @@ export function useAdeCloudSignInNeed({
     const account = state.account
       ? { state: "ok" as const, status: state.account }
       : state.accountFailed ? { state: "failed" as const } : { state: "loading" as const };
-    const tile = adeCloudTile({
-      provider,
+    // Sign-ins switched off for ADE Cloud: the person signs in on each cloud
+    // computer, a choice and not a missing sign-in.
+    if (account.state === "ok" && !account.status.cloud.enabled) return null;
+    const answer = adeCloudProviderSignIn(provider, {
       account,
-      // No computer to ask yet: Send makes a new one, which starts with the
-      // account's sign-ins.
-      cloud: { state: "unknown" },
       saved: state.saved,
-      keychainIsThisMac: false,
-      now: Date.now(),
+      // No computer to ask yet: Send makes a new one, which starts with the
+      // account's sign-ins. "Unknown" keeps a provider that signs in on the
+      // cloud computer itself from reading as not signed in.
+      cloud: { state: "unknown" },
     });
-    // T1: the person turned sign-ins off for ADE Cloud and signs in on each
-    // cloud computer; that is a choice, not a missing sign-in.
-    if (tile.state !== "sign-in" || tile.row === "T1") return null;
+    if (answer.state !== "not_signed_in") return null;
     return {
       provider,
       kind: provider === "claude" ? "claude-pass" : "sign-in",
-      key: `ade-cloud:${provider}:${tile.row}`,
+      key: `ade-cloud:${provider}:${answer.line}`,
     };
   }, [active, provider, state]);
 
