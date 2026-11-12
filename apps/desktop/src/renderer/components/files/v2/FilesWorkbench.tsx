@@ -3,7 +3,7 @@ import { Banner } from "../../ui/notice";
 import { ArrowSquareOut, Copy, File as FileIcon, FilePlus, FolderPlus, Path, PencilSimple, TextT, Trash } from "@phosphor-icons/react";
 import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../shared/types";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
-import { useAppStore, useRootAppStore } from "../../../state/appStore";
+import { localProjectBindingForRoot, useAppStore, useRootAppStore } from "../../../state/appStore";
 import type { CrossMachineLaneMarker } from "../../../state/crossMachineLanes";
 import { INERT_ATTR } from "../../shared/inertAttr";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
@@ -162,21 +162,7 @@ function pathIsAtOrUnder(path: string, target: string): boolean {
   return path === target || path.startsWith(`${target}/`) || path.startsWith(`${target}\\`);
 }
 
-/**
- * Files workbench: the VS Code-like shell for the main Files route and the
- * embedded Work sidebar. Reuses the proven IPC + FilesExplorer + Monaco model
- * registry, the streaming/decoration backend, and the editor-groups store.
- */
-export function FilesWorkbench({
-  preferredLaneId,
-  embedded,
-  active = true,
-  externalOpenPath,
-  externalOpenNonce,
-  externalOpenLine,
-  navigationOpenRequest,
-  pin: seedPin = null,
-}: {
+type FilesWorkbenchProps = {
   preferredLaneId?: string | null;
   embedded?: boolean;
   active?: boolean;
@@ -190,10 +176,62 @@ export function FilesWorkbench({
    * requests still repin; this only supplies the starting machine.
    */
   pin?: OpenProjectBinding | null;
-}) {
+};
+
+/**
+ * Files workbench: the VS Code-like shell for the main Files route and the
+ * embedded Work sidebar. Reuses the proven IPC + FilesExplorer + Monaco model
+ * registry, the streaming/decoration backend, and the editor-groups store.
+ *
+ * Every file call names a copy. The base copy is the tab's own; a host pin
+ * (the Work tools pane) stands in when the tab has none. With no copy at all
+ * (no computer online for this project) the workbench shows its empty state
+ * and makes no call.
+ */
+export function FilesWorkbench(props: FilesWorkbenchProps) {
   const project = useAppStore((s) => s.project);
-  const boundProjectRootPath = project?.rootPath ?? "";
-  const boundProjectBinding = useAppStore((s) => s.projectBinding);
+  const tabCopyPin = useAppStore((s) => s.projectBinding);
+  const baseCopy = tabCopyPin ?? props.pin ?? null;
+  if (!baseCopy) return <FilesNoComputerState />;
+  return (
+    <FilesWorkbenchOnCopy
+      {...props}
+      baseCopy={baseCopy}
+      baseRootPath={tabCopyPin ? project?.rootPath || baseCopy.rootPath : baseCopy.rootPath}
+    />
+  );
+}
+
+/** Zero machines: no copy of this project is on a computer that is online. */
+function FilesNoComputerState() {
+  return (
+    <div
+      data-testid="files-no-computer"
+      className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm"
+      style={{ color: COLORS.textMuted, background: "color-mix(in srgb, var(--color-card) 76%, var(--color-accent) 18%)" }}
+    >
+      <span style={{ color: COLORS.textSecondary }}>No computer with this project is online.</span>
+      <span className="text-xs">Open ADE on a computer that has it to see its files.</span>
+    </div>
+  );
+}
+
+function FilesWorkbenchOnCopy({
+  preferredLaneId,
+  embedded,
+  active = true,
+  externalOpenPath,
+  externalOpenNonce,
+  externalOpenLine,
+  navigationOpenRequest,
+  pin: seedPin = null,
+  baseCopy: boundProjectBinding,
+  baseRootPath: boundProjectRootPath,
+}: FilesWorkbenchProps & {
+  /** The copy Files reads when no other machine is picked: the tab's copy, else the host pin. */
+  baseCopy: OpenProjectBinding;
+  baseRootPath: string;
+}) {
   /**
    * The machine this workbench is currently reading from, when that is NOT the
    * machine the project tab is bound to. Set by a navigation request that came
@@ -208,7 +246,7 @@ export function FilesWorkbench({
    */
   // A pin that names the tab's own copy is not "another machine": the state
   // below stays null for it, and every call still names the tab's copy.
-  const boundBindingKey = boundProjectBinding?.key ?? null;
+  const boundBindingKey = boundProjectBinding.key;
   const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(
     () => otherCopyPin(seedPin, boundBindingKey),
   );
@@ -249,6 +287,13 @@ export function FilesWorkbench({
   const rootPath = workspace?.rootPath ?? projectRootPath;
   // The web client has no Finder/Explorer of its own to reveal a path in.
   const canRevealInFinder = !isWebClientMode() && workspace != null && (workspace.kind === "external" || !isRemoteProject);
+  // Reveal runs on this computer. A folder opened from this computer's Finder
+  // is a local path; every other workspace is on the copy Files reads, so a
+  // remote copy gets the clear refusal and never a local path of the same name.
+  const revealPin = useMemo<OpenProjectBinding>(
+    () => (workspace?.kind === "external" ? localProjectBindingForRoot(workspace.rootPath, workspace.name) : projectBinding),
+    [projectBinding, workspace?.kind, workspace?.name, workspace?.rootPath],
+  );
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = useAppStore((s) => s.theme);
   const sessionKey = filesProjectSessionKey(projectRootPath);
@@ -439,9 +484,10 @@ export function FilesWorkbench({
         rootPath: wsRoot,
         laneId: tab.laneId,
         canRevealInFinder: !isWebClientMode() && ws != null && (ws.kind === "external" || !isRemoteProject),
+        pathPin: ws?.kind === "external" ? localProjectBindingForRoot(ws.rootPath, ws.name) : projectBinding,
       };
     },
-    [isRemoteProject, projectRootPath, workspaces],
+    [isRemoteProject, projectBinding, projectRootPath, workspaces],
   );
 
   const migratedSessionsRef = useRef<string | null>(null);
@@ -1553,11 +1599,11 @@ export function FilesWorkbench({
       type: "item",
       label: revealLabel,
       icon: <ArrowSquareOut size={14} />,
-      onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}),
+      onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }, revealPin).catch(() => {}),
       disabled: !canRevealInFinder,
     });
     return items;
-  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder]);
+  }, [treeMenu, openFile, deletePath, rootPath, canRevealInFinder, revealPin]);
 
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
@@ -1721,7 +1767,7 @@ export function FilesWorkbench({
           ) : (
             <FilesSearchPanel
               workspaceId={workspaceId}
-              pin={machinePin}
+              pin={projectBinding}
               query={searchQuery}
               onQueryChange={setSearchQuery}
               onOpen={(path, line) => void openFile(path, { preview: false, line })}
@@ -1954,7 +2000,7 @@ export function FilesWorkbench({
           workspaceId={workspaceId}
           /* Searching a pinned machine's workspace has to run on that machine —
              otherwise the overlay searches this computer and reports nothing. */
-          pin={machinePin}
+          pin={projectBinding}
           query={searchQuery}
           onQueryChange={setSearchQuery}
           onOpen={(path, line) => void openFile(path, { preview: false, line })}

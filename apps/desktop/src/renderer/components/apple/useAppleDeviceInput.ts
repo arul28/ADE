@@ -64,7 +64,7 @@ export type UseAppleDeviceInputArgs = {
   chatSessionId: string | null;
   /** False drops every event: not live, watching someone else, inspect on. */
   enabled: boolean;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   onError?: (error: unknown) => void;
 };
 

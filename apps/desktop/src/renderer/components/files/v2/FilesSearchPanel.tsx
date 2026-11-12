@@ -115,11 +115,10 @@ function groupMatches(matches: FilesSearchTextMatch[]): FileMatchGroup[] {
 export type FilesSearchPanelProps = {
   workspaceId: string;
   /**
-   * Machine that owns this workspace. Forwarded verbatim as the `pin` argument
-   * on every window.ade.files.* call. Undefined/null = the machine this project
-   * tab is bound to (today's behavior).
+   * The copy that owns this workspace, the tab's own copy included. Forwarded
+   * verbatim as the `pin` argument on every window.ade.files.* call.
    */
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   query: string;
   onQueryChange: (next: string) => void;
   /** Open a result. `line` is 1-based when the hit came from file contents. */
@@ -165,7 +164,7 @@ export function FilesSearchPanel({
   // from re-firing when the caller hands us a new-but-equivalent binding.
   const pinRef = useRef(pin);
   pinRef.current = pin;
-  const pinKey = pin ? `${pin.kind}:${pin.key}` : "";
+  const pinKey = `${pin.kind}:${pin.key}`;
 
   // Identity of the answer we want on screen. Results carrying a different key
   // are stale, which is also how "still searching" is derived.

@@ -333,7 +333,7 @@ function ImageCanvas({
 
 /** Image viewer with fit/zoom/pan and trackpad pinch (ctrl+wheel) + drag-pan. */
 export function ImageViewer(props: ViewerProps) {
-  const { files, workspaceId, rootPath, content, tab } = props;
+  const { files, workspaceId, rootPath, pathPin, content, tab } = props;
   const extension = extensionOf(tab.path);
   const isSvg = extension === "svg";
   const isConverted = CONVERTED_IMAGE_EXTS.has(extension);
@@ -451,6 +451,7 @@ export function ImageViewer(props: ViewerProps) {
     return (
       <DocumentSurface
         rootPath={rootPath}
+        pathPin={pathPin}
         relativePath={tab.path}
         title={`${tab.title} can't be previewed`}
         mimeType={mimeType}

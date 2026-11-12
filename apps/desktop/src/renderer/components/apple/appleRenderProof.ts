@@ -61,7 +61,7 @@ export async function renderAppleDeviceToProof({
   chatSessionId: string | null;
   deviceName: string | null;
   duoCapable: boolean;
-  runtimePinRef: { current: OpenProjectBinding | null };
+  runtimePinRef: { current: OpenProjectBinding };
 }): Promise<AppleRenderFiled> {
   if (!rendererRef.current) throw new Error("The 3D view is still loading.");
   const options = {
@@ -121,7 +121,7 @@ export async function completeAppleRenderRequest({
   onLostAnswer,
 }: {
   requestId: string;
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   render: () => Promise<AppleRenderFiled>;
   onLostAnswer?: (cause: unknown) => void;
 }): Promise<void> {

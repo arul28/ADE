@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { AndroidLaneDeviceStatus, AndroidSdkStatus } from "../../../shared/types/androidEmulator";
 import type { NoticeAction } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog/confirm";
@@ -16,12 +17,15 @@ import {
   type AndroidPaneState,
 } from "./androidDeviceState";
 
+/** The emulator's machine: its pin, and its name when it is not this one. */
+type AndroidPaneMachine = { remote: boolean; name: string | null; pin: OpenProjectBinding };
+
 /**
  * Opens an emulator's log. The log is a file on the emulator's machine: on
  * another machine it cannot be opened from here, so its path goes to the
  * clipboard instead.
  */
-function openAndroidLog(path: string, machine: { remote: boolean; name: string | null }, onError: (error: AndroidErrorDescription) => void): void {
+function openAndroidLog(path: string, machine: AndroidPaneMachine, onError: (error: AndroidErrorDescription) => void): void {
   if (machine.remote) {
     void window.ade?.app?.writeClipboardText?.(path);
     showToast({
@@ -32,7 +36,7 @@ function openAndroidLog(path: string, machine: { remote: boolean; name: string |
     });
     return;
   }
-  void window.ade?.app?.openPath?.(path).catch((caught: unknown) => onError(describeAndroidError(caught)));
+  void window.ade?.app?.openPath?.(path, machine.pin).catch((caught: unknown) => onError(describeAndroidError(caught)));
 }
 
 /**
@@ -90,7 +94,7 @@ export function AndroidPaneStrip({
   /** The pane may offer "Choose another device". */
   canChoose: boolean;
   /** The emulator's machine: another machine's log path is copied, not opened. */
-  machine: { remote: boolean; name: string | null };
+  machine: AndroidPaneMachine;
   /** adb refused the failed start after ADE had restarted the adb server: a new restart does not help. */
   adbRestartedAlready: boolean;
   onDismissError: () => void;

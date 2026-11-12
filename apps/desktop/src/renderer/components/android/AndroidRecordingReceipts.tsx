@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useTicker } from "../../lib/ticker";
 import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
 import { revealProofArtifactRow } from "../shared/recordingFormat";
@@ -32,11 +33,12 @@ export function AndroidRecordingPill({ recording }: { recording: AndroidRecordin
  */
 export function AndroidRecordingSavedReceipt({
   recording,
-  remoteMachine,
+  pin,
   onError,
 }: {
   recording: AndroidRecordingState;
-  remoteMachine: boolean;
+  /** The emulator's machine. A file on another computer is not opened from here. */
+  pin: OpenProjectBinding;
   onError: (cause: unknown) => void;
 }) {
   const [dismissedId, setDismissedId] = useState<string | null>(null);
@@ -47,8 +49,8 @@ export function AndroidRecordingSavedReceipt({
     const artifactId = saved.proofArtifactIds[0] ?? null;
     if (artifactId && revealProofArtifactRow(artifactId)) return;
     // No proof row in this window: the file itself, when it is on this computer.
-    if (!remoteMachine) void window.ade.app.openPath(saved.path).catch(onError);
-  }, [onError, remoteMachine, saved]);
+    if (pin.kind !== "remote") void window.ade.app.openPath(saved.path, pin).catch(onError);
+  }, [onError, pin, saved]);
   if (!saved || recording.active) return null;
   return (
     <RecordingSavedRow

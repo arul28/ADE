@@ -3,7 +3,6 @@ import type { AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared
 import { READABLE_TOAST_DURATION_MS, showToast, type ToastInput } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { navigateToAppTarget } from "../../lib/openExternal";
-import { useAppStore } from "../../state/appStore";
 import type { DeviceRenderer } from "../device/deviceRenderPass";
 import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled } from "./appleRenderProof";
 
@@ -14,7 +13,7 @@ import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderF
  */
 function renderFiledToast(
   filed: AppleRenderFiled,
-  { paneChatSessionId, laneId, local }: { paneChatSessionId: string | null; laneId: string | null; local: boolean },
+  { paneChatSessionId, laneId, pin }: { paneChatSessionId: string | null; laneId: string | null; pin: OpenProjectBinding },
 ): ToastInput {
   const count = `${filed.filed} item${filed.filed === 1 ? "" : "s"}`;
   const firstArtifact = filed.artifactIds[0] ?? null;
@@ -50,11 +49,12 @@ function renderFiledToast(
     });
   }
   // The files sit on the device's machine; Finder can only show them there.
+  const local = pin.kind !== "remote";
   if (local && firstFile) {
     actions.push({
       label: "Show in Finder",
       onClick: () => {
-        void window.ade.app.revealPath(firstFile).catch((error: unknown) => {
+        void window.ade.app.revealPath(firstFile, pin).catch((error: unknown) => {
           logRendererDebugEvent("apple.render_reveal_failed", { error: error instanceof Error ? error.message : String(error) });
         });
       },
@@ -95,7 +95,7 @@ export function useAppleRenderRequests({
   sessionId: string | null;
   deviceName: string | null;
   duoCapable: boolean;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   /** `pin?.key`: the render subscription follows the target machine, not the pin object. */
   pinKey: string | null;
   effectiveMode: "3d" | "flat";
@@ -145,10 +145,8 @@ export function useAppleRenderRequests({
         duoCapable,
         runtimePinRef,
       });
-      // The files are on this computer when the pane's pin (else the tab) is local.
-      const binding = runtimePinRef.current ?? useAppStore.getState().projectBinding;
-      const local = binding?.kind !== "remote";
-      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, laneId, local }));
+      // The files are on this computer when the device's machine is.
+      showToast(renderFiledToast(filed, { paneChatSessionId: sessionId, laneId, pin: runtimePinRef.current }));
       setRenderOpen(false);
       return filed;
     } catch (cause) {
