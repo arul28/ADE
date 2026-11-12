@@ -2154,7 +2154,7 @@ export function TopBar({
       }
       const freshRecents = await listRecentProjectsCached({ force: true }).catch(() => null);
       if (freshRecents) setRecentProjects(freshRecents);
-      const clearRecord = result.scope === "all"
+      const clearRecord = result.scope !== "this"
         && recordScope !== null
         && repoKey !== null
         && freshRecents !== null
