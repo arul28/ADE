@@ -164,6 +164,11 @@ reply, but none of that comes over ACP. ADE reads it from the logs instead
 A step's status is in the `steps.status` column: 3 done, 6 cancelled, 7 failed
 or denied, 9 waiting for approval, anything else running.
 
+Cost (measured on Windows against real agy logs, 1.5.6): an idle tick is two
+`stat` calls (about 25 µs); a tick after a change, and the read at each turn's
+end, open the SQLite log and read the new steps (1–3 ms, mostly the open;
+each payload is capped at 256 KB).
+
 A chat started without a model (from the CLI, say) takes agy's current model
 from `session/new`'s config options, so the composer shows the real model.
 
@@ -253,7 +258,11 @@ user `antigravity`: the Keychain on macOS, the generic credential
 Where no keyring works, a slow one times out, or the CLI runs in a container or
 WSL, it uses the file `~/.gemini/antigravity-cli/antigravity-oauth-token`
 instead (verified on Linux 1.5.6). ADE Cloud computers are containers, so a
-login there is that file.
+login there is that file. Verified 2026-11-12 on a real ADE Cloud computer
+(Debian 12 container): the pinned 1.5.6 refused `session/new` signed out, and
+with the carried login (the Windows keyring item, written as that file) it
+opened a session in 1.9 s and finished a turn in 3.3 s. agy rewrites the file
+as it refreshes the access token.
 
 Users of the old standalone server sign in again: its
 `~/.gemini/antigravity-acp/` login is neither read nor migrated.

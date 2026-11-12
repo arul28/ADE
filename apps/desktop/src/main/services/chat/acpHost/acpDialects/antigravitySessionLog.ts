@@ -161,6 +161,8 @@ function toolCall(bytes: Uint8Array | undefined): AntigravityToolCall | null {
   return { id: text(bytes, 1), name, args: text(bytes, 3) };
 }
 
+/** A message from another conversation: a subagent's result, or a subagent's first step. */
+const STEP_TYPE_MESSAGE = 101;
 const RESULT_HEADER = /^Created At: [^\n]*\nCompleted At: [^\n]*\n/;
 
 function stepTime(payload: Uint8Array): number | null {
@@ -185,7 +187,7 @@ export function parseAntigravityStep(
     return { kind: "reply", idx, text: text(reply, 1), thinking: text(reply, 3), toolCalls, atMs: stepTime(payload) };
   }
   if (type === 17) return { kind: "error", idx, text: decoder.decode(payload).slice(0, 4_000) };
-  if (type === 101) {
+  if (type === STEP_TYPE_MESSAGE) {
     const message = sub(payload, 114);
     if (!message) return { kind: "other", idx, type };
     const senderId = text(message, 4, 3) || null;
@@ -346,7 +348,7 @@ function keyedText(bytes: Uint8Array, key: string, depth: number): string | null
 export function readAntigravityConversationMeta(file: string): AntigravityConversationMeta | undefined {
   return withLog(file, (db) => {
     const first = db.prepare("SELECT step_type AS type FROM steps ORDER BY idx LIMIT 1").get<{ type?: unknown }>();
-    const isSubagent = first?.type === 101;
+    const isSubagent = first?.type === STEP_TYPE_MESSAGE;
     if (!hasTable(db, "trajectory_metadata_blob")) {
       return { workspace: null, createdAtMs: null, systemPrompt: null, isSubagent };
     }
