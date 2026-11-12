@@ -106,9 +106,13 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           <div className="flex items-start gap-2">
             <WifiSlash size={16} aria-hidden className="mt-0.5 shrink-0" style={{ color: "var(--kit-text-3)" }} />
             <div className="flex min-w-0 flex-col gap-0.5">
-              <strong className="text-[13px] font-semibold">No computer with this project is online</strong>
+              <strong className="text-[13px] font-semibold">
+                {copies.length > 0 ? "No computer with this project is online" : "No computer has a copy yet"}
+              </strong>
               <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-                The project opens here as soon as one is.
+                {copies.length > 0
+                  ? "The project opens here as soon as one is."
+                  : "Add a copy on a computer to work on it."}
               </span>
             </div>
           </div>

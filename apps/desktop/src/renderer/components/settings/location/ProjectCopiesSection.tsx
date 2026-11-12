@@ -1,14 +1,16 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle, CircleNotch, Desktop, Plus, XCircle } from "@phosphor-icons/react";
 import { THIS_MACHINE_ID } from "../../../../shared/machineIdentity";
 import type { RepositoryCopy } from "../../../../shared/repositoryTab";
-import { useActiveRepositoryCopies, useActiveRepositoryTab, useActiveStartOn } from "../../../state/repositoryScope";
+import { repositoryTabForBinding, useActiveRepositoryTab } from "../../../state/repositoryScope";
+import { useAccountProjectList, useRepositoryCopies, useStartOn } from "../../../state/useRepositoryCopies";
 import { useAppStore } from "../../../state/appStore";
+import { originUrlForBinding } from "../../lanes/laneMachines";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { ModernRow, ModernRows, ModernSection } from "../primitives";
 import { repoKeyForOriginIdentity } from "../../projects/projectCopies";
-import { retryCopyJob, startCopyJob, useCopyJobs, watchCopyJobs, type CopyJob } from "../../projects/projectCopyJobs";
-import { requestRemoveProject } from "../../projects/removeProjectRequest";
+import { retryCopyJob, startCopyJob, subscribeCopyJobReady, useCopyJobs, watchCopyJobs, type CopyJob } from "../../projects/projectCopyJobs";
+import { PROJECT_COPIES_CHANGED_EVENT, requestRemoveProject } from "../../projects/removeProjectRequest";
 
 /** The binding key the tab bar gives a copy: a local folder by its path, a remote copy by its binding key. */
 function tabBindingKey(copy: RepositoryCopy): string | null {
@@ -31,11 +33,39 @@ function CopyStateDot({ online }: { online: boolean }) {
  * its row says its folder stays.
  */
 export function ProjectCopiesSection() {
+  // This computer's project list is read on mount and on window focus. A
+  // removal or a finished copy in this window changes it with no focus, so
+  // the list mounts again and reads it.
+  const [generation, setGeneration] = useState(0);
+  useEffect(() => {
+    const bump = () => setGeneration((value) => value + 1);
+    window.addEventListener(PROJECT_COPIES_CHANGED_EVENT, bump);
+    const stopJobs = subscribeCopyJobReady(bump);
+    return () => {
+      window.removeEventListener(PROJECT_COPIES_CHANGED_EVENT, bump);
+      stopJobs();
+    };
+  }, []);
+  return <ProjectCopiesList key={generation} />;
+}
+
+function ProjectCopiesList() {
   const webMode = isWebClientMode();
-  const tab = useActiveRepositoryTab();
-  const copies = useActiveRepositoryCopies();
-  const { choices } = useActiveStartOn();
+  const scopeTab = useActiveRepositoryTab();
   const binding = useAppStore((state) => state.projectBinding);
+  const list = useAccountProjectList();
+  // A local project's binding is built before the recents tell its origin, so
+  // the scope tab can say "this computer only" for a GitHub repository. The
+  // origin the recents remember puts the tab back on its repository.
+  const rememberedOrigin = scopeTab?.kind === "this_computer_only" && binding?.kind === "local" && !binding.gitOriginUrl
+    ? originUrlForBinding(binding)
+    : null;
+  const tab = useMemo(
+    () => (rememberedOrigin && binding ? repositoryTabForBinding({ ...binding, gitOriginUrl: rememberedOrigin }, list) : scopeTab),
+    [binding, list, rememberedOrigin, scopeTab],
+  );
+  const copies = useRepositoryCopies(tab);
+  const { choices } = useStartOn(tab);
   const repoKey = tab?.kind === "account" ? repoKeyForOriginIdentity(tab.repoKeys[0]?.slice("repo:".length) ?? null) : null;
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
   const jobs = useCopyJobs(repoKey);
@@ -95,7 +125,9 @@ export function ProjectCopiesSection() {
               title={(
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {copy.isThisMachine ? `${copy.machineName} (this computer)` : copy.machineName}
+                    {copy.isThisMachine && !/^this computer$/i.test(copy.machineName.trim())
+                      ? `${copy.machineName} (this computer)`
+                      : copy.machineName}
                   </span>
                   {copy.isMain ? <span className="kit-tag" data-tone="accent">Main</span> : null}
                   {key && key === inUseKey ? <span className="kit-tag">Open here</span> : null}
@@ -111,7 +143,22 @@ export function ProjectCopiesSection() {
                 <button
                   type="button"
                   className="ade-modern-btn"
-                  onClick={() => requestRemoveProject({ kind: "copy", bindingKey: key })}
+                  onClick={() => requestRemoveProject({
+                    kind: "copy",
+                    bindingKey: key,
+                    copy: {
+                      machine: {
+                        machineId: copy.machineId,
+                        name: copy.machineName,
+                        targetId: copy.isThisMachine ? null : copy.machineId,
+                        isLocal: copy.isThisMachine,
+                        online: copy.online,
+                      },
+                      rootPath: copy.rootPath,
+                      bindingKey: key,
+                      projectId: copy.isThisMachine ? null : copy.checkoutId,
+                    },
+                  })}
                 >
                   Remove…
                 </button>

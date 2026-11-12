@@ -197,8 +197,12 @@ export function RemoveProjectDialog({
   const confirmLabel = (() => {
     if (deleting.length > 0) return `Remove and delete ${plural(deleting.length, "folder", "folders")}`;
     if (scope === "account") return "Remove from my account";
-    if (scope === "this" || actionable.length <= 1) return `Remove from ${actionable[0]?.machine.name ?? current?.machine.name ?? "this computer"}`;
-    return `Remove from ${plural(actionable.length, "computer", "computers")}`;
+    if (scope === "this" || actionable.length <= 1) {
+      const machine = actionable[0]?.machine ?? current?.machine ?? null;
+      return `Remove from ${!machine || machine.isLocal ? "this computer" : machine.name}`;
+    }
+    const machines = new Set(actionable.map((copy) => copy.machine.machineId)).size;
+    return `Remove from ${plural(machines, "computer", "computers")}`;
   })();
 
   // Runs once, from the confirm button; a plain function reads this render's choices.
@@ -449,7 +453,7 @@ function AccountRow({
   const extra = step.kind === "idle" && offlineCount > 0
     ? `${plural(offlineCount, "computer is", "computers are")} offline and keep their folders.`
     : step.kind === "idle" && noComputers
-      ? "No computer is online, so no folder changes."
+      ? "No folder changes on any computer."
       : null;
   return (
     <div style={rowStyle(first, false)} aria-live={step.kind === "idle" ? undefined : "polite"}>

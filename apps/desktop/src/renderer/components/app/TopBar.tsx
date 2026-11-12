@@ -37,7 +37,7 @@ import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
 import { ProjectCopiesMenu } from "../projects/ProjectCopiesMenu";
 import { RemoveProjectDialog, type RemoveProjectResult } from "../projects/RemoveProjectDialog";
-import { REQUEST_REMOVE_PROJECT_EVENT, type RemoveProjectRequest } from "../projects/removeProjectRequest";
+import { REQUEST_REMOVE_PROJECT_EVENT, notifyProjectCopiesChanged, type RemoveProjectRequest } from "../projects/removeProjectRequest";
 import { repoCopyMayRemain } from "../projects/projectCopies";
 import { subscribeCopyJobReady } from "../projects/projectCopyJobs";
 import { useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
@@ -1204,6 +1204,8 @@ export function TopBar({
   }, [openRemoteProjectTabs, remoteSnapshot]);
 
   const activeTabBindingKey = remoteBinding?.key ?? project?.rootPath ?? null;
+  const activeTabBindingKeyRef = useRef(activeTabBindingKey);
+  activeTabBindingKeyRef.current = activeTabBindingKey;
   const knownRemoteProjectTabs = useMemo<RemoteOpenProjectBinding[]>(() => {
     const byKey = new Map<string, RemoteOpenProjectBinding>();
     const add = (binding: RemoteOpenProjectBinding) => {
@@ -2121,8 +2123,12 @@ export function TopBar({
         return;
       }
       const group = tabGroupsRef.current.find((entry) =>
-        entry.machines.some((machine) => machine.bindingKey === request.bindingKey));
-      if (group) openRemoveDialog(group.id, { currentBindingKey: request.bindingKey });
+        entry.machines.some((machine) => machine.bindingKey === request.bindingKey))
+        // A folder no tab lists: the group of the project in front, with that folder added.
+        ?? (request.copy && activeTabBindingKeyRef.current
+          ? tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === activeTabBindingKeyRef.current))
+          : undefined);
+      if (group) openRemoveDialog(group.id, { currentBindingKey: request.bindingKey, extraCopy: request.copy });
     };
     window.addEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
     return () => window.removeEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
@@ -2154,6 +2160,7 @@ export function TopBar({
       }
       const freshRecents = await listRecentProjectsCached({ force: true }).catch(() => null);
       if (freshRecents) setRecentProjects(freshRecents);
+      notifyProjectCopiesChanged();
       const clearRecord = result.scope !== "this"
         && recordScope !== null
         && repoKey !== null

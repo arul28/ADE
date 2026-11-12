@@ -174,7 +174,7 @@ export function useProjectCopiesMenu(args: {
    * Opens the remove dialog of one tab. `currentBindingKey` names the copy
    * "From this computer" acts on (the Location page's row); else the copy in use.
    */
-  const openRemoveDialog = useCallback((groupId: string, options?: { currentBindingKey?: string }) => {
+  const openRemoveDialog = useCallback((groupId: string, options?: { currentBindingKey?: string; extraCopy?: RemovalCopy }) => {
     const model = copiesModelFor(groupId);
     if (!model) return;
     const toCopy = (row: CopiesMenuRow): RemovalCopy | null => {
@@ -188,8 +188,11 @@ export function useProjectCopiesMenu(args: {
       };
     };
     const copies = model.rows.map(toCopy).filter((copy): copy is RemovalCopy => copy !== null);
+    const extra = options?.extraCopy;
+    if (extra && !copies.some((copy) => copy.bindingKey === extra.bindingKey)) copies.push(extra);
     const inUseKey = options?.currentBindingKey ?? model.rows.find((row) => row.inUse)?.copy?.bindingKey ?? null;
-    const current = copies.find((copy) => copy.bindingKey === inUseKey) ?? copies[0];
+    const current = inUseKey ? copies.find((copy) => copy.bindingKey === inUseKey) : copies[0];
+    // A named copy the model does not know is never swapped for another one.
     if (!current) return;
     setRemoveTarget({
       groupId,
