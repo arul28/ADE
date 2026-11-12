@@ -751,16 +751,26 @@ extension RemoteRosterChat {
       || raw == "chat"
   }
 
-  /// Whether this row should drive an attention bubble on the hub. Only chat
-  /// rows (and shells attached to a chat) count — attention feeds the hub's
+  /// Agent CLI tool types (desktop `isTrackedAgentCliToolType`).
+  private static let agentCliToolTypes: Set<String> = [
+    "claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse", "qwen", "kimi",
+    "grok", "copilot", "devin", "claude-orchestrated", "codex-orchestrated", "opencode-orchestrated",
+  ]
+
+  /// Whether this row should drive an attention bubble on the hub. Chat rows
+  /// (and shells attached to a chat) count — attention feeds the hub's
   /// attention-first project sort, and a standalone CLI session that exited
   /// non-zero long ago must not pin its project to the top forever (CLI rows
-  /// have no mobile archive/clear affordance). Mirrors the host rosterBuilder.
+  /// have no mobile archive/clear affordance). A running agent CLI that waits
+  /// on the person (no exit code yet) counts like a chat: that hand is current.
+  /// Mirrors the host rosterBuilder.
   var needsAttention: Bool {
     guard awaitingInput == true || status == .awaiting || status == .failed else { return false }
     if isChatTool { return true }
     let parentId = chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return !parentId.isEmpty && parentId != id
+    if !parentId.isEmpty && parentId != id { return true }
+    let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return status == .awaiting && exitCode == nil && Self.agentCliToolTypes.contains(raw)
   }
 
   var isRunning: Bool {

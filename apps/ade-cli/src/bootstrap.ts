@@ -350,6 +350,7 @@ import {
 import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { MCP_SECRET_VAULT_KIND } from "../../desktop/src/shared/mcpRegistry";
+import { setTrackedCliRegistrySecretReader } from "../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import { createMcpRegistryAuthTokenResolver } from "../../desktop/src/main/services/mcp/mcpRegistryService";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
@@ -1624,6 +1625,11 @@ export async function createAdeRuntime(args: {
       accountSettingsStore,
       accountVaultStore,
     } = accountRuntimeLifecycle;
+    // The registry's secret values for the tracked agent CLIs this brain
+    // starts (`trackedCliUserMcp.ts`): one account vault per brain process.
+    if (accountVaultStore) {
+      setTrackedCliRegistrySecretReader((vaultKey) => accountVaultStore.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null);
+    }
     const keepAwakeService = resolvedArgs.keepAwakeService ?? null;
     initApiKeyStore(projectRoot, {
       credentialStore: new EncryptedFileCredentialStore(),
@@ -1970,6 +1976,7 @@ export async function createAdeRuntime(args: {
           laneId: signal.laneId,
           sessionId: signal.sessionId,
           runtimeState: signal.runtimeState,
+          ...(signal.exactTurnState ? { exactTurnState: true } : {}),
         });
       },
       onSessionAttentionRequested: (request) => runtimeForCtoActions
@@ -3265,6 +3272,8 @@ export async function createAdeRuntime(args: {
     if (chatServiceForCliAccounts) {
       ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
         chatServiceForCliAccounts.pickNewCliSessionAccount(provider, modelId));
+      // A CLI that moved to another machine is not started here again.
+      ptyService.setMovedAwayCliLock((sessionId) => chatServiceForCliAccounts.getCliMoveLock(sessionId));
     }
     applyFastModePolicyRef = () => agentChatService?.applyFastModePolicy();
     teardown.push(() => agentChatService?.forceDisposeAll?.());

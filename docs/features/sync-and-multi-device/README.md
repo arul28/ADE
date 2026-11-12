@@ -2271,9 +2271,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   status is overlaid only for scopes already booted on the runtime; a booted
   scope also overlays **PTY liveness** for CLI rows (they never appear in
   `agentChatService`, so `ptyService.hasLivePty` is what flips them to
-  `running`). `attentionCount` (which drives hub badges and attention-first
-  project sorting) counts only chat rows and shells attached to a chat — a
-  standalone CLI session that exited non-zero must not pin its project to
+  `running`). A CLI that reports its own turn (Claude hooks, Codex OSC 7501;
+  `ptyService.getTrackedCliTurn`) reads `idle` between turns and `awaiting`
+  while it waits on the person, instead of `running` for as long as the
+  terminal lives. `attentionCount` (which drives hub badges and
+  attention-first project sorting) counts chat rows, shells attached to a
+  chat, and live agent CLI sessions that wait on the person. A standalone CLI
+  session that exited non-zero never counts: it must not pin its project to
   the top forever, since mobile has no way to clear it. `runningCount` counts
   chats whose status is `running` and that are **not snoozed**; a snoozed
   running chat is idle on Activity, so including it would disagree with the

@@ -259,6 +259,9 @@ const PR_FIELDS = [
 const CHAT_FIELDS = [
   "sessionId", "laneId", "title", "provider", "model", "status", "currentTurnStartedAt",
   "lastActivityAt", "archivedAt", "orchestrationParentSessionId", "lastOutputPreview",
+  // A tracked CLI session in the list: `kind: "cli"`, its process exit code and
+  // parent. Without them a CLI row reads as a chat that never has events.
+  "kind", "exitCode", "parentSessionId",
 ] as const;
 const CHAT_WAIT_SUMMARY_FIELDS = [...CHAT_FIELDS, "awaitingInput", "pendingInputItemId"] as const;
 /** What a proof review tells a remote model; the local paths stay on the computer. */

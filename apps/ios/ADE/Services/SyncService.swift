@@ -14158,6 +14158,9 @@ final class SyncService: ObservableObject {
     reasoningEffort: String? = nil,
     fastMode: Bool? = nil,
     presetId: String? = nil,
+    instanceId: String? = nil,
+    credentialId: String? = nil,
+    linearIssues: [NormalizedLinearIssue] = [],
     cols: Int? = nil,
     rows: Int? = nil,
     targetProjectId: String? = nil,
@@ -14168,6 +14171,23 @@ final class SyncService: ObservableObject {
       "laneId": laneId,
       "provider": provider,
     ]
+    // The account and the stored key resolve on the machine that owns the
+    // lane; only their ids cross.
+    if let instanceId, !instanceId.isEmpty {
+      args["instanceId"] = instanceId
+    }
+    if let credentialId, !credentialId.isEmpty {
+      args["credentialId"] = credentialId
+    }
+    // Full issue records: the host attaches them before the CLI spawns, so it
+    // starts with ADE_LINEAR_* set.
+    if !linearIssues.isEmpty {
+      let encoder = JSONEncoder()
+      args["linearIssues"] = linearIssues.compactMap { issue -> Any? in
+        guard let data = try? encoder.encode(LinearIssueAttachPayload(issue: issue)) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+      }
+    }
     if let permissionMode, !permissionMode.isEmpty {
       args["permissionMode"] = permissionMode
     }
@@ -14239,6 +14259,27 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Whether this host can type a message into a running agent CLI
+  /// (`chat.typeIntoCli`). Queueable, so it stays true while offline.
+  var supportsCliTyping: Bool {
+    canInvokeRemoteAction("chat.typeIntoCli")
+  }
+
+  /// A message for a running agent CLI. The host types it only at a free
+  /// prompt: a busy CLI keeps it there until its turn ends (`held`). Offline,
+  /// the command is queued here and goes out when the machine reconnects.
+  func typeIntoCli(sessionId: String, text: String) async throws -> WorkCliTypeOutcome {
+    try requireInvokableRemoteAction("chat.typeIntoCli")
+    let scope = chatCommandScope(for: sessionId)
+    let response = try await sendCommand(
+      action: "chat.typeIntoCli",
+      args: ["sessionId": sessionId, "text": text, "holdUntilFree": true],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return try workCliTypeOutcome(from: response)
+  }
+
   /// Whether this host advertises `work.deleteSession` — the delete path for a
   /// CLI or shell row, which chats never used (`chat.delete` owns those). The
   /// command is queueable, so this stays true while offline and the delete is
@@ -14248,9 +14289,10 @@ final class SyncService: ObservableObject {
   }
 
   /// Delete a non-chat session. The host handler is
-  /// `deleteTerminalSessionWithRuntimeCleanup`, so this ALREADY stops a live
+  /// `deleteSessionRowWithRuntimeCleanup`, so this ALREADY stops a live
   /// runtime before deleting — "Stop & delete" and "Delete session" are the same
-  /// command with different labels, not two code paths.
+  /// command with different labels, not two code paths. An agent CLI (Claude
+  /// Code, Codex, …) goes to the host's Recently deleted, like a chat.
   ///
   /// Advertise-checked rather than fired hopefully: an older host would answer
   /// with an opaque method-not-found, and a delete that silently does nothing is

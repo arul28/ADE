@@ -1,5 +1,6 @@
 import type {
   AgentChatAcceptCrossMachineHandoffResult,
+  AgentChatCrossMachineCliArrival,
   AgentChatCrossMachineContinuation,
   AgentChatCrossMachineDestinationPreflightArgs,
   AgentChatCrossMachineDestinationPreflightResult,
@@ -400,6 +401,7 @@ export function decodeCrossMachineDestinationPreflightResult(
     // Absent on older destinations; only an explicit true means support.
     ...(record.gitBundleSupport === true ? { gitBundleSupport: true } : {}),
     ...(record.batchMoveSupport === 1 ? { batchMoveSupport: 1 } : {}),
+    ...(record.cliMoveSupport === 1 ? { cliMoveSupport: 1 } : {}),
   };
 }
 
@@ -438,6 +440,18 @@ export function decodeAcceptCrossMachineHandoffResult(
     ...(Array.isArray(record.scheduledWorkIds)
       ? { scheduledWorkIds: requireStringList(record.scheduledWorkIds, "Destination scheduled work ids") }
       : {}),
+    ...(record.cli != null ? { cli: decodeCrossMachineCliArrival(record.cli) } : {}),
+  };
+}
+
+function decodeCrossMachineCliArrival(value: unknown): AgentChatCrossMachineCliArrival {
+  const record = requireRecord(value, "Destination CLI arrival");
+  if (record.continuation !== "resume" && record.continuation !== "fresh") {
+    throw new Error("Destination CLI arrival must say whether it resumed or started fresh.");
+  }
+  return {
+    continuation: record.continuation,
+    notice: typeof record.notice === "string" && record.notice.trim() ? record.notice.slice(0, 1_000) : null,
   };
 }
 
@@ -525,6 +539,7 @@ export function decodeCrossMachineDestinationPreflightArgs(value: unknown): Agen
   const sourceProvider = typeof value.sourceProvider === "string" ? value.sourceProvider.trim() : "";
   const batchLaneImportId = optionalArgString(value.batchLaneImportId, "The destination preflight has an invalid batch lane import id.");
   const returnToLaneId = optionalArgString(value.returnToLaneId, "The destination preflight has an invalid return lane id.");
+  const cliToolType = optionalArgString(value.cliToolType, "The destination preflight has an invalid CLI tool type.");
   return {
     targetModelId: requireArgString(
       value.targetModelId,
@@ -538,5 +553,6 @@ export function decodeCrossMachineDestinationPreflightArgs(value: unknown): Agen
     ...(value.requireBatchMoveSupport === true ? { requireBatchMoveSupport: true } : {}),
     ...(batchLaneImportId ? { batchLaneImportId } : {}),
     ...(returnToLaneId ? { returnToLaneId } : {}),
+    ...(cliToolType ? { cliToolType } : {}),
   };
 }

@@ -120,7 +120,12 @@ for a reason:
    chat in `background` mode (nobody is watching for a handoff); an
    existing-chat target is checked for existence and non-archival, and a
    deleted chat **blocks** ("The chat this send was aimed at is gone. Pick
-   another target.") rather than throwing.
+   another target.") rather than throwing. A tracked agent CLI target (Claude
+   Code, Codex, ... in a terminal) has no chat: the text is typed at its prompt
+   once it can take a turn (an ended CLI is resumed first), and a mid-turn CLI
+   is a `retry`. A plain shell, images aimed at a CLI, or a CLI that cannot be
+   resumed **block** with the reason. Arming refuses a plain-shell target the
+   runtime knows about.
 
 A throw from the send itself is treated as a transport or session problem, not
 a decision: the row stays `scheduled` and the scheduler retries it. `skipped`

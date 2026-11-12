@@ -16,7 +16,7 @@ import type { JevService } from "../jev/jevService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
-import { writeCarriesTypedInput, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
+import { writeCarriesTypedInput, writeIsTerminalReport, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -26,7 +26,7 @@ import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
 } from "../../utils/codexComputerUse";
-import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
+import { resolveTrackedCliUserMcp, trackedCliTakesMcpServers } from "../mcp/trackedCliUserMcp";
 import { runGit } from "../git/git";
 import { signalProcessGroup } from "../shared/utils";
 import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
@@ -80,6 +80,9 @@ import type {
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
+  PtyRestartAgentCliArgs,
+  PtyRestartAgentCliResult,
+  AgentCliInterruptResult,
   PtySendToSessionArgs,
   PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
@@ -149,6 +152,7 @@ import {
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
   withClaudeSessionIdInCommandLine,
+  withClaudeSettingsInCommandLine,
   withCodexNoAltScreen,
   withPowerShellProviderCommand,
   withProviderCommandWord,
@@ -180,6 +184,29 @@ import {
   CLI_STATUS_QUESTIONS,
   cliStatusScreenTextFromOutputTail,
 } from "./cliStatusInspector";
+import {
+  buildClaudeTurnHookSettings,
+  claudeHookTurnSignal,
+  cliTurnHooksOverdue,
+  CLI_TURN_HOOK_SOCKET_ENV,
+  codexOscTurnSignal,
+  createCliTurnState,
+  CLI_TURN_HOOK_TOKEN_ENV,
+  isExactCliTurnSource,
+  mergeClaudeHookSettings,
+  noteCliTurnSubmit,
+  parseInlineClaudeSettings,
+  reduceCliTurn,
+  runtimeStateForCliTurnPhase,
+  withClaudeTurnHookArgs,
+  type CliTurnPhase,
+  type CliTurnSignal,
+  type CliTurnSource,
+  type CliTurnState,
+  type CliTurnTransition,
+  type TrackedCliTurnEndedEvent,
+  type TrackedCliTurnStartedEvent,
+} from "./cliTurnSignals";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
@@ -207,6 +234,7 @@ import {
   normalizeResumeCommand,
   parseTrackedCliLaunchConfig,
   parseTrackedCliResumeCommand,
+  agentCliStateFromChunk,
   providerFromTool,
   runtimeStateFromOsc133Chunk,
   sanitizeResumeTargetId,
@@ -541,6 +569,25 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Between OpenCode's two cancel presses: the first arms "esc again to interrupt". */
+const AGENT_CLI_REPEAT_CANCEL_KEY_DELAY_MS = 200;
+/** How long a CLI restart waits for the old process to exit before resuming. */
+const AGENT_CLI_RESTART_EXIT_WAIT_MS = 5_000;
+
+/** Resolves once `pid` is gone, or after `timeoutMs`. Signal 0 only tests the process, on every OS. */
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      // EPERM: it exists but belongs to someone else, so it is still running.
+      if ((error as NodeJS.ErrnoException)?.code !== "EPERM") return;
+    }
+    await delay(100);
+  }
+}
+
 function ptySendPreDeliveryError(
   message: string,
 ): Error & { code: typeof PTY_SEND_PRE_DELIVERY_ERROR_CODE } {
@@ -797,6 +844,22 @@ type PtyEntry = {
   initialInputCancel: (() => void) | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
+  /**
+   * The newest state the agent CLI reported through its OSC 7501 signal
+   * (`working`, `idle`, `done`), or null when it never reported one. Codex
+   * 0.167+ reports; older builds and most other CLIs do not.
+   */
+  agentCliState: string | null;
+  agentCliStateCarry: string;
+  /**
+   * The turn of a tracked agent CLI (working / idle / needs you), fed by the
+   * CLI's own signals when it has them (cliTurnSignals.ts). Null for shells.
+   */
+  cliTurn: CliTurnState | null;
+  /** The secret this launch's Claude hooks send back (`CLI_TURN_HOOK_TOKEN_ENV`); null without hooks. */
+  cliTurnHookToken: string | null;
+  /** After an Esc / Ctrl-C in a Claude turn: end it once the screen goes quiet. */
+  cliTurnInterruptTimer: ReturnType<typeof setTimeout> | null;
   /**
    * For a resume/reattach launch only: the terminal end state this launch took
    * over. If the new process dies immediately (a launch failure — a bad flag,
@@ -1875,6 +1938,56 @@ function withBundledClaudePlugin(
   };
 }
 
+/**
+ * Add ADE's turn hooks (cliTurnSignals.ts) to a tracked Claude launch, where
+ * the `claude` token lives — the same placement rule as the bundled plugin.
+ * Null when the launch cannot carry them: no `ade` to run, no runtime endpoint
+ * to report to, a Windows `.cmd` shim (exec-form hooks cannot start one), or a
+ * `--settings` file ADE does not rewrite. Such a launch keeps the screen
+ * heuristics.
+ */
+function withClaudeTurnHooks(
+  command: string | null,
+  args: string[],
+  startupCommand: string,
+  hook: { cliPath: string | null; socketPath: string | null; sessionId: string },
+): { args: string[]; startupCommand: string } | null {
+  const cliPath = hook.cliPath?.trim() ?? "";
+  if (!cliPath || !hook.socketPath?.trim() || !path.isAbsolute(cliPath)) return null;
+  if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(cliPath)) return null;
+  const settings = buildClaudeTurnHookSettings({ cliPath, sessionId: hook.sessionId });
+  const mergeInline = (existing: string | null): string | null => {
+    if (existing == null) return JSON.stringify(settings);
+    const parsed = parseInlineClaudeSettings(existing);
+    return parsed ? JSON.stringify(mergeClaudeHookSettings(parsed, settings)) : null;
+  };
+
+  let nextArgs = args;
+  let applied = false;
+  if (isClaudeBinaryCommand(command)) {
+    const rewritten = withClaudeTurnHookArgs(args, settings);
+    if (!rewritten) return null;
+    nextArgs = rewritten;
+    applied = true;
+  } else if (command?.trim()) {
+    const commandLineIndex = shellCommandLineArgIndex(args);
+    if (commandLineIndex >= 0) {
+      const line = args[commandLineIndex]!;
+      const rewritten = withClaudeSettingsInCommandLine(line, mergeInline);
+      if (rewritten !== line) {
+        nextArgs = args.slice();
+        nextArgs[commandLineIndex] = rewritten;
+        applied = true;
+      }
+    }
+  }
+  const nextStartup = startupCommand.trim()
+    ? withClaudeSettingsInCommandLine(startupCommand, mergeInline)
+    : startupCommand;
+  if (nextStartup !== startupCommand) applied = true;
+  return applied ? { args: nextArgs, startupCommand: nextStartup } : null;
+}
+
 function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
   return toolType === "codex-chat"
     || toolType === "claude-chat"
@@ -2664,6 +2777,8 @@ export function createPtyService({
     runtimeState: TerminalRuntimeState;
     lastOutputPreview: string | null;
     at: string;
+    /** The state comes from the CLI's own signals, not output timing. */
+    exactTurnState?: boolean;
   }) => void;
   onSessionAttentionRequested?: (args: { sessionId: string; message: string; source: "cli_prompt" }) => boolean;
   onSessionAttentionResolved?: (args: { laneId: string; sessionId: string }) => void;
@@ -2690,6 +2805,12 @@ export function createPtyService({
    * this service; until then a launch keeps the machine's own login.
    */
   let pickNewCliSessionAccount: ((provider: string, modelId: string | null) => string | null | undefined) | null = null;
+  /**
+   * Where a tracked CLI that moved to another machine now continues, or null.
+   * Set once the chat service (which owns moves) exists; a resume of a moved
+   * CLI is refused with it.
+   */
+  let movedAwayCliLock: ((sessionId: string) => { targetMachineName: string; targetSessionId: string } | null) | null = null;
   /**
    * A new CLI session that names no account starts on the one a new chat
    * would (smart balance, else the default), and its resume metadata records
@@ -2951,6 +3072,7 @@ export function createPtyService({
     if (runtimeStates.get(entry.sessionId)?.state !== "waiting-input") {
       setRuntimeState(entry.sessionId, "waiting-input");
       emitRuntimeSignalThrottled(entry, "waiting-input");
+      noteHeuristicCliRuntimeState(entry, "waiting-input");
     }
   }
 
@@ -3423,6 +3545,18 @@ export function createPtyService({
       if (!current) return;
       if (current.state !== "running") return;
       if (Date.now() - current.lastActivityAt < 12_000) return;
+      const turnEntry = Array.from(ptys.values()).find((entry) => entry.sessionId === sessionId && !entry.disposed) ?? null;
+      const exactTurn = turnEntry?.cliTurn && isExactCliTurnSource(turnEntry.cliTurn.source) ? turnEntry.cliTurn : null;
+      if (turnEntry && exactTurn) {
+        current.idleTimer = null;
+        // Codex reports every end, interrupts included; quiet proves nothing.
+        if (exactTurn.source !== "claude-hooks") return;
+        // Claude's spinner redraws while it works, so this long a silence is a
+        // turn that ended without a Stop (an interrupt, a queued line).
+        applyCliTurnSignal(turnEntry, { kind: "ended", reason: "quiet" }, "heuristic");
+        void inspectIdleTerminal(turnEntry).catch(() => {});
+        return;
+      }
       current.state = "idle";
       current.updatedAt = Date.now();
       current.runningSince = null;
@@ -3445,6 +3579,7 @@ export function createPtyService({
           // ignore callback failures
         }
       }
+      if (live) noteHeuristicCliRuntimeState(live, "idle");
       if (live) void inspectIdleTerminal(live).catch(() => {});
     }, 12_500);
   };
@@ -5070,6 +5205,10 @@ export function createPtyService({
     if (entry.agentShellCleanupCandidate) sessionService.agentShells.sweepQuietly();
     flushFinalTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
+    if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
+    entry.cliTurnInterruptTimer = null;
+    // A prompt the terminal showed is gone with it; an agent's own ask stays.
+    resolveCliTurnAttention(entry);
     clearIdleTimer(entry.sessionId);
     const finalRuntimeState = runtimeFromStatus(status);
     setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
@@ -5414,11 +5553,179 @@ export function createPtyService({
         sessionId: entry.sessionId,
         runtimeState,
         lastOutputPreview: preview,
-        at: new Date(now).toISOString()
+        at: new Date(now).toISOString(),
+        ...(entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? { exactTurnState: true } : {}),
       });
     } catch {
       // ignore callback failures
     }
+  };
+
+  // --- Tracked agent CLI turns (cliTurnSignals.ts) ---------------------------
+
+  const cliTurnStartedListeners = new Set<(event: TrackedCliTurnStartedEvent) => void>();
+  /** A stopped CLI's process id until it has exited, for `stopAndWaitForExit` retries. */
+  const pendingAgentCliExitPids = new Map<string, number>();
+  const cliTurnEndedListeners = new Set<(event: TrackedCliTurnEndedEvent) => void>();
+
+  const announceCliTurnTransition = (entry: PtyEntry, transition: CliTurnTransition, now: number): void => {
+    if (!transition.announce) return;
+    const at = new Date(now).toISOString();
+    if (transition.to === "working" && transition.from !== "working") {
+      const event: TrackedCliTurnStartedEvent = {
+        laneId: entry.laneId,
+        sessionId: entry.sessionId,
+        startedAt: transition.turnStartedAt != null ? new Date(transition.turnStartedAt).toISOString() : at,
+        source: transition.source,
+      };
+      for (const listener of cliTurnStartedListeners) {
+        try { listener(event); } catch { /* a listener's failure is its own */ }
+      }
+      return;
+    }
+    if (transition.to === transition.from || transition.to === "working") return;
+    const event: TrackedCliTurnEndedEvent = {
+      laneId: entry.laneId,
+      sessionId: entry.sessionId,
+      turnStartedAt: transition.turnStartedAt != null ? new Date(transition.turnStartedAt).toISOString() : null,
+      endedAt: at,
+      outcome: transition.to === "needs-input" ? "needs-input" : transition.endReason === "failure" ? "failed" : "done",
+      source: transition.source,
+    };
+    for (const listener of cliTurnEndedListeners) {
+      try { listener(event); } catch { /* a listener's failure is its own */ }
+    }
+  };
+
+  /** Raise the Work row's hand for what the CLI said it waits on; an agent's own ask is left alone. */
+  const raiseCliTurnAttention = (entry: PtyEntry, message: string): void => {
+    const session = sessionService.get(entry.sessionId);
+    if (!session || session.status !== "running") return;
+    if (session.attentionRequestedAt && session.attentionSource !== "cli_prompt") return;
+    if (session.attentionRequestedAt && session.attentionMessage === message) return;
+    const raised = onSessionAttentionRequested
+      ? onSessionAttentionRequested({ sessionId: entry.sessionId, message, source: "cli_prompt" })
+      : sessionService.requestAttention(entry.sessionId, message, "cli_prompt");
+    if (!raised) return;
+    entry.attentionRequested = true;
+    entry.cliPromptAttentionRaised = true;
+  };
+
+  const resolveCliTurnAttention = (entry: PtyEntry): void => {
+    if (!entry.cliPromptAttentionRaised) return;
+    entry.cliPromptAttentionRaised = false;
+    entry.attentionRequested = false;
+    if (sessionService.get(entry.sessionId)?.attentionSource === "cli_prompt") {
+      sessionService.clearAttentionRequest(entry.sessionId, "cli_prompt");
+    }
+    onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId: entry.sessionId });
+  };
+
+  /**
+   * The runtime state an exact-signal session shows. A raised hand the CLI did
+   * not report (an agent's own `ade chat ask`, a dialog the screen check found
+   * after a turn) keeps the row waiting after its turn, as for every CLI.
+   */
+  const exactCliRuntimeState = (entry: PtyEntry, turn: CliTurnState): TerminalRuntimeState => {
+    if (turn.phase !== "working" && entry.attentionRequested) return "waiting-input";
+    return runtimeStateForCliTurnPhase(turn.phase);
+  };
+
+  const applyCliTurnSignal = (entry: PtyEntry, signal: CliTurnSignal, origin: CliTurnSource): void => {
+    const turn = entry.cliTurn;
+    if (!turn || entry.disposed) return;
+    const wasExact = isExactCliTurnSource(turn.source);
+    const now = Date.now();
+    const transition = reduceCliTurn(turn, signal, origin, now);
+    const exact = isExactCliTurnSource(turn.source);
+    if (exact && !wasExact) {
+      logger.info("pty.cli_turn_exact_source", { sessionId: entry.sessionId, source: turn.source });
+    }
+    if (!transition) return;
+    if (exact) {
+      const runtimeState = exactCliRuntimeState(entry, turn);
+      // The state, not output, says the turn moved; touch nothing so the quiet
+      // fallback still measures from the last real output.
+      setRuntimeState(entry.sessionId, runtimeState, { touch: false });
+      if (transition.to === "working" && transition.from === "idle") anchorTurnStart(entry.sessionId);
+      if (transition.to === "working" && turn.source === "claude-hooks") scheduleIdleTransition(entry.sessionId);
+      else clearIdleTimer(entry.sessionId);
+      if (transition.to !== "working" && entry.cliTurnInterruptTimer) {
+        clearTimeout(entry.cliTurnInterruptTimer);
+        entry.cliTurnInterruptTimer = null;
+      }
+      if (transition.to === "needs-input") {
+        raiseCliTurnAttention(entry, turn.needsInputMessage ?? "Waiting for input in the terminal");
+      } else if (transition.from === "needs-input") {
+        resolveCliTurnAttention(entry);
+      }
+      // A turn that starts on its own (a queued line, an automation) un-settles
+      // the row as a submitted line does.
+      if (transition.to === "working" && transition.from === "idle" && transition.announce) {
+        clearTrackedCliTurnStartMarkers(entry.sessionId);
+      }
+      emitRuntimeSignalThrottled(entry, runtimeState);
+      try { sessionService.notifyChanged(entry.sessionId); } catch { /* best effort */ }
+    }
+    announceCliTurnTransition(entry, transition, now);
+  };
+
+  /** The heuristic runtime state moved: tell the tracker, which ignores it once the CLI reports. */
+  const noteHeuristicCliRuntimeState = (entry: PtyEntry, runtimeState: TerminalRuntimeState): void => {
+    const turn = entry.cliTurn;
+    if (!turn || isExactCliTurnSource(turn.source)) return;
+    if (runtimeState === "running") applyCliTurnSignal(entry, { kind: "working" }, "heuristic");
+    else if (runtimeState === "idle") applyCliTurnSignal(entry, { kind: "ended", reason: "quiet" }, "heuristic");
+    else if (runtimeState === "waiting-input") {
+      applyCliTurnSignal(entry, { kind: "needs-input", message: "Waiting for input in the terminal" }, "heuristic");
+    }
+  };
+
+  const CLI_TURN_INTERRUPT_QUIET_MS = 2_500;
+  const CLI_TURN_INTERRUPT_WATCH_MS = 10_000;
+
+  /**
+   * Claude has no hook for an interrupt: Esc or Ctrl-C stops the turn and it
+   * waits at its prompt without a Stop. Its spinner redraws while it works, so
+   * a short quiet after the key ends the turn.
+   */
+  const scheduleCliTurnInterruptCheck = (entry: PtyEntry): void => {
+    if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
+    const startedAt = Date.now();
+    const check = (): void => {
+      entry.cliTurnInterruptTimer = null;
+      const turn = entry.cliTurn;
+      if (entry.disposed || !turn || turn.phase === "idle") return;
+      const runtime = runtimeStates.get(entry.sessionId);
+      const quietMs = runtime ? Date.now() - runtime.lastActivityAt : CLI_TURN_INTERRUPT_QUIET_MS;
+      if (quietMs >= CLI_TURN_INTERRUPT_QUIET_MS) {
+        applyCliTurnSignal(entry, { kind: "ended", reason: "interrupted" }, "heuristic");
+        return;
+      }
+      if (Date.now() - startedAt >= CLI_TURN_INTERRUPT_WATCH_MS) return;
+      entry.cliTurnInterruptTimer = setTimeout(check, CLI_TURN_INTERRUPT_QUIET_MS - quietMs + 50);
+    };
+    entry.cliTurnInterruptTimer = setTimeout(check, CLI_TURN_INTERRUPT_QUIET_MS);
+  };
+
+  /** Input written to a tracked agent CLI, before it reaches the terminal. */
+  const noteCliTurnInput = (entry: PtyEntry, data: string | undefined, submitted: boolean): void => {
+    const turn = entry.cliTurn;
+    if (!turn) return;
+    const before: CliTurnPhase = turn.phase;
+    if (turn.source === "claude-hooks" && typeof data === "string" && data.length > 0) {
+      const interrupt = data === "\x1b" || data === "\x03";
+      // A key that picks in a Claude permission or question menu (Enter, a
+      // number or letter, Esc) answers it; moving the selection does not. The
+      // turn goes on until its Stop, or for Esc the interrupt check below.
+      if (before === "needs-input" && (submitted || interrupt || /^[0-9A-Za-z]$/.test(data))) {
+        applyCliTurnSignal(entry, { kind: "working" }, "claude-hooks");
+      }
+      if ((before === "working" || before === "needs-input") && interrupt) {
+        scheduleCliTurnInterruptCheck(entry);
+      }
+    }
+    if (submitted) noteCliTurnSubmit(turn, before);
   };
 
   const resyncLiveSessionRowIfNeeded = (entry: PtyEntry, ptyId: string): void => {
@@ -5686,6 +5993,11 @@ export function createPtyService({
     if (provider === "codex") {
       const codexText = codexReadyRegion(text);
       if (isCodexCliUpdateTranscript(codexText)) return false;
+      // Codex 0.167 draws its header and an empty `›` composer while it is
+      // still starting, with a bare `loading` line where the folder goes
+      // (older builds printed `model: loading`, handled below). Text sent then
+      // is lost when the real composer replaces it.
+      if (/^\s*loading\s*$/im.test(codexText)) return false;
       const hasPrompt = codexText.includes("›");
       const hasSessionMarker =
         /OpenAI Codex/i.test(codexText)
@@ -5879,7 +6191,13 @@ export function createPtyService({
     const readinessText = visibleText.trim().length > 0 ? visibleText : outputTail;
     const runtime = runtimeStates.get(sessionId);
     const quietForMs = runtime ? Date.now() - runtime.lastActivityAt : 0;
-    const markerVisible = providerReadyMarkerVisible(provider, readinessText);
+    // A CLI that reports its own state (OSC 7501) is ready only when it says
+    // so; the screen check still has to agree. One that never reported falls
+    // back to the screen alone.
+    const reportedBusy = entry.agentCliState != null
+      && entry.agentCliState !== "idle"
+      && entry.agentCliState !== "done";
+    const markerVisible = !reportedBusy && providerReadyMarkerVisible(provider, readinessText);
     return {
       markerVisible,
       readyNow: markerVisible && quietForMs >= AGENT_CLI_READY_QUIET_MS,
@@ -6003,7 +6321,7 @@ export function createPtyService({
   const assertAgentCliSessionAction = (
     sessionId: string,
     session: TerminalSessionSummary | null,
-    action: "continued" | "resumed",
+    action: "continued" | "resumed" | "interrupted" | "restarted" | "renamed",
   ): void => {
     if (session?.tracked === false) {
       throw ptySendPreDeliveryError(`Terminal session '${sessionId}' is not tracked and cannot be ${action}.`);
@@ -6018,6 +6336,15 @@ export function createPtyService({
     session: TerminalSessionSummary | null,
   ): Promise<{ session: TerminalSessionSummary; provider: TerminalResumeProvider }> => {
     if (!session) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' was not found.`);
+    // A CLI that moved to another machine continues there; starting it here
+    // too would run two copies of one conversation (cliCrossMachineMove.ts).
+    const movedTo = movedAwayCliLock?.(sessionId) ?? null;
+    if (movedTo) {
+      throw markExpected(ptySendPreDeliveryError(
+        `This CLI session continues on ${movedTo.targetMachineName} (session ${movedTo.targetSessionId}). `
+        + "Open it there, or choose Work here instead (Hand off › Another machine) to start it here again.",
+      ), "user");
+    }
 
     const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
     if (!provider) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
@@ -6181,7 +6508,7 @@ export function createPtyService({
     session: TerminalSessionSummary,
     provider: string,
   ): Promise<TrackedCliUserMcp | null> => {
-    if (provider !== "claude" && provider !== "codex") return null;
+    if (!trackedCliTakesMcpServers(provider)) return null;
     const metadata = session.resumeMetadata ?? null;
     return resolveTrackedCliUserMcp({
       provider,
@@ -6290,6 +6617,7 @@ export function createPtyService({
     session: TerminalSessionSummary,
     resumeLaunch: TrackedCliLaunchCommand,
     args: Pick<PtySendToSessionArgs, "cols" | "rows">,
+    promptAtLaunch = false,
   ): { flight: Promise<PtyCreateResult>; created: boolean } => {
     let flight = resumeRuntimeFlights.get(session.id);
     if (flight) return { flight, created: false };
@@ -6310,6 +6638,7 @@ export function createPtyService({
       ...(resumeLaunch.command ? { command: resumeLaunch.command } : {}),
       args: resumeLaunch.args,
       ...(resumeLaunch.env ? { env: resumeLaunch.env } : {}),
+      ...(promptAtLaunch ? { promptSubmittedAtLaunch: true } : {}),
       // `resumeLaunch.initialInput` is deliberately NOT forwarded. On a fresh
       // launch it means "deliver this after the TUI starts", and `create()`
       // does exactly that. On a resume it only records that the builder kept
@@ -6371,13 +6700,22 @@ export function createPtyService({
   };
 
   const markPtyUserInput = (entry: PtyEntry, data?: string): void => {
-    if (typeof data === "string" && isTurnSubmitWrite(data)) {
+    const submitted = typeof data === "string" && isTurnSubmitWrite(data);
+    if (submitted) {
       anchorTurnStart(entry.sessionId);
     }
     entry.lastUserInputAt = Date.now();
     entry.userInputGeneration += 1;
+    if (entry.cliTurn) noteCliTurnInput(entry, data, submitted);
     if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
-      clearTrackedCliTurnStartMarkers(entry.sessionId);
+      // A submitted line starts a turn, which is what un-settles a chat too.
+      // A keystroke alone (scrolling, a half-typed line) does not undo a
+      // settle, but it does answer a raised hand: CLI menus take one key.
+      if (submitted) {
+        clearTrackedCliTurnStartMarkers(entry.sessionId);
+      } else if (sessionService.get(entry.sessionId)?.attentionRequestedAt) {
+        sessionService.clearAttentionRequest(entry.sessionId);
+      }
       entry.attentionRequested = false;
       onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId: entry.sessionId });
       return;
@@ -6484,6 +6822,11 @@ export function createPtyService({
       pickNewCliSessionAccount = picker;
     },
 
+    /** See `movedAwayCliLock`. */
+    setMovedAwayCliLock(lock: ((sessionId: string) => { targetMachineName: string; targetSessionId: string } | null) | null): void {
+      movedAwayCliLock = lock;
+    },
+
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId } = args;
       const title = normalizePtySessionTitle(args.title);
@@ -6544,6 +6887,7 @@ export function createPtyService({
             ...(materializedRuntimeLaunch.initialInputDelayMs !== undefined
               ? { initialInputDelayMs: materializedRuntimeLaunch.initialInputDelayMs }
               : {}),
+            ...(materializedRuntimeLaunch.promptInArgs ? { promptSubmittedAtLaunch: true } : {}),
             env: {
               ...(args.env ?? {}),
               ...(materializedRuntimeLaunch.env ?? {}),
@@ -7045,6 +7389,28 @@ export function createPtyService({
       );
       directArgs = claudePluginLaunch.args;
       startupCommand = claudePluginLaunch.startupCommand;
+      // Claude says when its turn starts, ends and waits on the person through
+      // hooks that report to this runtime (cliTurnSignals.ts).
+      if (tracked && isClaudeTrackedCliToolType(toolTypeHint)) {
+        const hookSocketPath = runtimeSocketPath?.trim() || null;
+        const hookLaunch = withClaudeTurnHooks(directCommand, directArgs, startupCommand, {
+          cliPath: launchEnv.ADE_CLI_PATH?.trim() || null,
+          socketPath: hookSocketPath,
+          sessionId,
+        });
+        if (hookLaunch && hookSocketPath) {
+          directArgs = hookLaunch.args;
+          startupCommand = hookLaunch.startupCommand;
+          launchEnv[CLI_TURN_HOOK_SOCKET_ENV] = hookSocketPath;
+          launchEnv[CLI_TURN_HOOK_TOKEN_ENV] = randomUUID();
+        } else {
+          delete launchEnv[CLI_TURN_HOOK_SOCKET_ENV];
+          delete launchEnv[CLI_TURN_HOOK_TOKEN_ENV];
+        }
+      } else {
+        delete launchEnv[CLI_TURN_HOOK_SOCKET_ENV];
+        delete launchEnv[CLI_TURN_HOOK_TOKEN_ENV];
+      }
       // Stamp a per-launch ownership nonce Codex echoes into its rollout, so
       // thread capture never has to infer ownership from prompt text alone. An
       // explicitly configured override wins: the caller's identity choice is
@@ -7568,6 +7934,16 @@ export function createPtyService({
         initialInputCancel: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
+        agentCliState: null,
+        agentCliStateCarry: "",
+        cliTurn: tracked && isTrackedAgentCliToolType(toolTypeHint)
+          ? createCliTurnState(
+            launchEnv[CLI_TURN_HOOK_SOCKET_ENV] ? "claude-hooks" : "heuristic",
+            { promptSubmitted: effectiveArgs.promptSubmittedAtLaunch === true },
+          )
+          : null,
+        cliTurnInterruptTimer: null,
+        cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
         priorEndState,
         piSessionLease,
         openCodeLease,
@@ -7717,40 +8093,80 @@ export function createPtyService({
         void maybeUpgradePiSessionLease(entry);
         resyncLiveSessionRowIfNeeded(entry, ptyId);
         appendRecentOutput(entry, data);
+        // Cheap gate: a report, a carried half of one, or a chunk ending in what
+        // may be the start of one.
+        if (entry.agentCliStateCarry || data.includes("\x1b]7501;") || data.slice(-7).includes("\x1b")) {
+          const reported = agentCliStateFromChunk(entry.agentCliStateCarry, data);
+          entry.agentCliStateCarry = reported.carry;
+          if (reported.state) {
+            entry.agentCliState = reported.state;
+            if (entry.cliTurn && (entry.toolTypeHint === "codex" || entry.toolTypeHint === "codex-orchestrated")) {
+              // In order: one chunk can carry a whole turn.
+              for (const state of reported.states) {
+                const signal = codexOscTurnSignal(state);
+                if (signal) applyCliTurnSignal(entry, signal, "codex-osc");
+              }
+            }
+          }
+        }
         adoptCliRuntimeWindowTitle(entry, data);
         writeTranscript(entry, data);
         feedTerminalSnapshot(entry, data);
         updatePreviewThrottled(entry, data);
         enqueuePtyData(entry, { ptyId, sessionId, data });
 
+        // A CLI that reports its own turn (cliTurnSignals.ts) is working, idle
+        // or waiting because it said so; output only keeps the quiet clock.
+        if (entry.cliTurn && cliTurnHooksOverdue(entry.cliTurn, Date.now())) {
+          // Its hooks stopped arriving: guess again until one does.
+          entry.cliTurn.source = "heuristic";
+          entry.cliTurn.awaitingHookSince = null;
+          logger.warn("pty.cli_turn_hooks_overdue", { sessionId });
+        }
+        const exactTurn = entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? entry.cliTurn : null;
+        if (exactTurn) {
+          runtimeStateFromOsc133Chunk(data, "running", (marker) => {
+            if (marker === "A") entry.shellPromptVisible = true;
+            else if (marker === "B" || marker === "C") entry.shellPromptVisible = false;
+          });
+          const exactState = exactCliRuntimeState(entry, exactTurn);
+          setRuntimeState(sessionId, exactState);
+          if (exactTurn.phase === "working" && exactTurn.source === "claude-hooks") scheduleIdleTransition(sessionId);
+          else clearIdleTimer(sessionId);
+          emitRuntimeSignalThrottled(entry, exactState);
+        }
+
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
         // Only a `cli_prompt` hand this entry raised can be cleared by output,
         // so skip the session-row read for every other waiting state.
-        const attentionAtStart = prevState === "waiting-input" && entry.cliPromptAttentionRaised
+        const attentionAtStart = !exactTurn && prevState === "waiting-input" && entry.cliPromptAttentionRaised
           ? sessionService.get(sessionId)
           : null;
-        const markerState = runtimeStateFromOsc133Chunk(data, prevState, (marker) => {
-          if (marker === "A") entry.shellPromptVisible = true;
-          else if (marker === "B" || marker === "C") entry.shellPromptVisible = false;
-        });
-        const runtimeState = markerState === prevState
-          && (prevState === "idle" || attentionAtStart?.attentionSource === "cli_prompt")
-          && data.length > 0
-          ? "running"
-          : markerState;
-        if (runtimeState === "running" && attentionAtStart?.attentionSource === "cli_prompt") {
-          sessionService.clearAttentionRequest(sessionId, "cli_prompt");
-          entry.attentionRequested = false;
-          entry.cliPromptAttentionRaised = false;
-          onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId });
+        if (!exactTurn) {
+          const markerState = runtimeStateFromOsc133Chunk(data, prevState, (marker) => {
+            if (marker === "A") entry.shellPromptVisible = true;
+            else if (marker === "B" || marker === "C") entry.shellPromptVisible = false;
+          });
+          const runtimeState = markerState === prevState
+            && (prevState === "idle" || attentionAtStart?.attentionSource === "cli_prompt")
+            && data.length > 0
+            ? "running"
+            : markerState;
+          if (runtimeState === "running" && attentionAtStart?.attentionSource === "cli_prompt") {
+            sessionService.clearAttentionRequest(sessionId, "cli_prompt");
+            entry.attentionRequested = false;
+            entry.cliPromptAttentionRaised = false;
+            onSessionAttentionResolved?.({ laneId: entry.laneId, sessionId });
+          }
+          setRuntimeState(sessionId, runtimeState);
+          if (runtimeState === "running") {
+            scheduleIdleTransition(sessionId);
+          } else {
+            clearIdleTimer(sessionId);
+          }
+          emitRuntimeSignalThrottled(entry, runtimeState);
+          if (entry.cliTurn && runtimeState !== prevState) noteHeuristicCliRuntimeState(entry, runtimeState);
         }
-        setRuntimeState(sessionId, runtimeState);
-        if (runtimeState === "running") {
-          scheduleIdleTransition(sessionId);
-        } else {
-          clearIdleTimer(sessionId);
-        }
-        emitRuntimeSignalThrottled(entry, runtimeState);
 
         // Continuation-command scanning runs an ANSI strip + 2 regex passes over a
         // 12KB rolling buffer on every output chunk. Claude/codex print the
@@ -8006,13 +8422,18 @@ export function createPtyService({
                     ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
                     : AGENT_CLI_SUBMIT_DELAY_MS;
                 await delay(submitDelayMs);
+                if (entry.cliTurn) noteCliTurnSubmit(entry.cliTurn, entry.cliTurn.phase);
                 pty.write(AGENT_CLI_LINE_SUBMIT_KEY);
               }
             } else {
               pty.write(`\x1b[200~${normalizedInitialInput}\x1b[201~\r`);
             }
-            setRuntimeState(sessionId, "running");
-            scheduleIdleTransition(sessionId);
+            // A CLI that reports its own turn start says so; a guess would race it.
+            if (!entry.cliTurn || !isExactCliTurnSource(entry.cliTurn.source)) {
+              setRuntimeState(sessionId, "running");
+              scheduleIdleTransition(sessionId);
+              noteHeuristicCliRuntimeState(entry, "running");
+            }
           } catch (err) {
             logger.warn("pty.initial_input_failed", {
               ptyId,
@@ -8371,6 +8792,7 @@ export function createPtyService({
         resumableSession,
         resumeLaunch,
         args,
+        promptAtLaunch,
       );
       const created = await flight;
       // The message itself may be embedded in the provider's launch command,
@@ -8440,6 +8862,231 @@ export function createPtyService({
     },
 
     /**
+     * Stop a tracked agent CLI's running turn with the provider's own cancel
+     * key, leaving the process up (`ade chat interrupt` on a CLI session).
+     * Esc for most TUIs; OpenCode needs it twice (the first only arms "esc
+     * again to interrupt"); Cursor stops on Ctrl-C ("ctrl+c to stop"), where
+     * Esc only closes menus. Nothing is sent while the CLI sits at a free
+     * prompt: a stray Ctrl-C there can exit Cursor.
+     */
+    async interruptAgentCli(sessionId: string): Promise<AgentCliInterruptResult> {
+      const normalizedSessionId = sessionId.trim();
+      const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
+      assertAgentCliSessionAction(normalizedSessionId, session, "interrupted");
+      if (session && isOwnedByLivePeerRuntime(session)) {
+        throw new Error(`Terminal session '${normalizedSessionId}' runs under another live ADE runtime; stop it from there.`);
+      }
+      const live = liveEntryBySessionId(normalizedSessionId);
+      const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? live?.[1].toolTypeHint);
+      if (!live || !provider) return { live: Boolean(live), interrupted: false, key: null };
+      const [, entry] = live;
+      const busy = runtimeStates.get(normalizedSessionId)?.state !== "idle"
+        || !agentCliInputReadyNow(normalizedSessionId, provider);
+      if (!busy) return { live: true, interrupted: false, key: null };
+      const keys = provider === "cursor" ? ["\x03"] : provider === "opencode" ? ["\x1b", "\x1b"] : ["\x1b"];
+      for (const [index, key] of keys.entries()) {
+        if (index > 0) await delay(AGENT_CLI_REPEAT_CANCEL_KEY_DELAY_MS);
+        if (entry.disposed) break;
+        // The same note a person's Esc gets, so a CLI with no interrupt
+        // signal of its own (Claude) ends its turn after the short quiet.
+        noteCliTurnInput(entry, key, false);
+        entry.pty.write(key);
+      }
+      logger.info("pty.agent_cli_interrupted", { sessionId: normalizedSessionId, provider });
+      return { live: true, interrupted: true, key: provider === "cursor" ? "ctrl-c" : provider === "opencode" ? "esc esc" : "esc" };
+    },
+
+    /**
+     * Relaunch a tracked agent CLI in the same session row, resuming the
+     * provider's own conversation (`ade chat restart` / `update` /
+     * `switch-account` on a CLI). New launch settings and a new account are
+     * saved on the row first, so every later resume keeps them. Refused
+     * before anything is stopped when the CLI has nothing to resume, or when
+     * its resume command cannot carry a requested setting.
+     */
+    async restartAgentCli(
+      args: PtyRestartAgentCliArgs,
+      options: {
+        /**
+         * Runs once the old process has let go of its conversation and before
+         * the relaunch (an account switch copies the conversation here). When
+         * it throws, the CLI relaunches with its previous settings and the
+         * error is rethrown.
+         */
+        beforeResume?: () => Promise<void>;
+      } = {},
+    ): Promise<PtyRestartAgentCliResult> {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      const session = sessionService.get(sessionId);
+      assertAgentCliSessionAction(sessionId, session, "restarted");
+      if (session && isOwnedByLivePeerRuntime(session)) {
+        throw new Error(`Terminal session '${sessionId}' runs under another live ADE runtime; restart it from there.`);
+      }
+      if (session?.archivedAt) {
+        throw markExpected(new Error(`Terminal session '${sessionId}' is archived. Unarchive it before restarting it.`), "user");
+      }
+      const { session: resolved, provider } = await resolveEndedResumeSession(sessionId, session);
+      const overrides = resumeLaunchOverrides(args);
+      const instanceId = typeof args.instanceId === "string" ? args.instanceId.trim() : "";
+      const metadata = resolved.resumeMetadata ?? null;
+      // A setting the provider's resume command cannot carry would be dropped
+      // without a word; refuse it instead, naming the setting.
+      if (metadata) {
+        const baseline = buildTrackedCliResumeCommand(metadata);
+        const unsupported = (["model", "reasoningEffort", "permissionMode"] as const).filter((field) => {
+          const value = overrides[field];
+          if (value === undefined || value === metadata.launch?.[field]) return false;
+          return buildTrackedCliResumeCommand({ ...metadata, launch: { ...metadata.launch, [field]: value } }) === baseline;
+        });
+        if (unsupported.length) {
+          const names: Record<(typeof unsupported)[number], string> = {
+            model: "model",
+            reasoningEffort: "reasoning effort",
+            permissionMode: "permission mode",
+          };
+          throw markExpected(new Error(
+            `${resumeProviderDisplayName(provider)} CLI cannot change its ${unsupported.map((field) => names[field]).join(" or ")} when it resumes. Start a new session with the setting you want.`,
+          ), "user");
+        }
+      } else if (instanceId || Object.values(overrides).some((value) => value !== undefined)) {
+        throw markExpected(new Error(
+          `Terminal session '${sessionId}' predates ADE's saved launch settings, so they cannot be changed. Start a new session with the setting you want.`,
+        ), "user");
+      }
+      if (args.requireIdle && liveEntryBySessionId(sessionId) && service.canAcceptScheduledTurn(sessionId) !== true) {
+        throw markExpected(new Error(
+          `A turn is running in this CLI, and this change relaunches it. Wait for the turn to end, or stop it first with \`ade chat interrupt ${sessionId}\`.`,
+        ), "user");
+      }
+      if (metadata) {
+        const resetsCodexProfile = provider === "codex" && overrides.permissionMode !== undefined;
+        const launchPatch = {
+          ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+          ...(overrides.reasoningEffort !== undefined ? { reasoningEffort: overrides.reasoningEffort } : {}),
+          ...(overrides.fastMode !== undefined ? { fastMode: overrides.fastMode } : {}),
+          ...(overrides.permissionMode !== undefined ? { permissionMode: overrides.permissionMode } : {}),
+          ...(overrides.codexApprovalPolicy !== undefined
+            ? { codexApprovalPolicy: overrides.codexApprovalPolicy }
+            : resetsCodexProfile ? { codexApprovalPolicy: null } : {}),
+          ...(overrides.codexSandbox !== undefined
+            ? { codexSandbox: overrides.codexSandbox }
+            : resetsCodexProfile ? { codexSandbox: null } : {}),
+          ...(overrides.codexConfigSource !== undefined
+            ? { codexConfigSource: overrides.codexConfigSource }
+            : resetsCodexProfile ? { codexConfigSource: null } : {}),
+          ...(instanceId ? { instanceId } : {}),
+        };
+        if (Object.keys(launchPatch).length > 0) {
+          sessionService.updateMeta({
+            sessionId,
+            resumeMetadata: {
+              ...metadata,
+              ...(instanceId ? { instanceId } : {}),
+              launch: { ...metadata.launch, ...launchPatch },
+            },
+          });
+        }
+      }
+      const live = liveEntryBySessionId(sessionId);
+      if (live) {
+        const [ptyId, entry] = live;
+        const pid = entry.pty.pid ?? null;
+        service.dispose({ ptyId, sessionId });
+        // The old process must let go of the conversation before the resumed
+        // one opens it; two writers on one provider session corrupt it.
+        if (pid != null) await waitForProcessExit(pid, AGENT_CLI_RESTART_EXIT_WAIT_MS);
+      }
+      if (options.beforeResume) {
+        try {
+          await options.beforeResume();
+        } catch (error) {
+          // Back as it was: the saved settings and a CLI on them.
+          if (metadata) sessionService.updateMeta({ sessionId, resumeMetadata: metadata });
+          await service.resumeSession({
+            sessionId,
+            ...(args.cols != null ? { cols: args.cols } : {}),
+            ...(args.rows != null ? { rows: args.rows } : {}),
+          }).catch((resumeError: unknown) => {
+            logger.warn("pty.agent_cli_restart_rollback_failed", {
+              sessionId,
+              error: resumeError instanceof Error ? resumeError.message : String(resumeError),
+            });
+          });
+          throw error;
+        }
+      }
+      const resumed = await service.resumeSession({
+        sessionId,
+        ...(args.cols != null ? { cols: args.cols } : {}),
+        ...(args.rows != null ? { rows: args.rows } : {}),
+        ...overrides,
+      });
+      logger.info("pty.agent_cli_restarted", {
+        sessionId,
+        provider,
+        stoppedProcess: Boolean(live),
+        accountChanged: Boolean(instanceId),
+      });
+      return { ...resumed, stoppedProcess: Boolean(live) };
+    },
+
+    /**
+     * Name a tracked agent CLI from its first prompt and what it has done
+     * since (`ade chat generate-names` on a CLI). Asked for by name, so it
+     * replaces a user's rename and is kept as theirs, as for chats.
+     */
+    async regenerateAgentCliTitle(sessionId: string): Promise<{ title: string | null; modelId: string | null; error: string | null }> {
+      const normalizedSessionId = sessionId.trim();
+      const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
+      assertAgentCliSessionAction(normalizedSessionId, session, "renamed");
+      if (!session) return { title: null, modelId: null, error: "Session not found." };
+      if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") {
+        return { title: null, modelId: null, error: "AI naming is not available on this machine." };
+      }
+      const liveEntry = liveEntryBySessionId(normalizedSessionId)?.[1] ?? null;
+      const output = stripAnsi(
+        liveEntry
+          ? readRecentOutputTail(liveEntry)
+          : await sessionService.readTranscriptTail(session.transcriptPath, 16_000, { raw: true }).catch(() => ""),
+      ).replace(/\r/g, "\n").trim().slice(-4000);
+      const seed = session.goal?.trim() ?? "";
+      if (!seed && !output) return { title: null, modelId: null, error: "The session has no prompt or output to name it from yet." };
+      const titleModelIds = resolveCliTitleModelIds(session);
+      if (!titleModelIds.length) return { title: null, modelId: null, error: "No model is available to name this session." };
+      const prompt = [
+        "Write a concise title for this CLI coding session.",
+        "Return only plain text, max 80 characters, no punctuation at the end.",
+        "Base it on what the session is actually doing, not the literal opening words.",
+        "",
+        `Lane: ${session.laneName?.trim() || "Current lane"}`,
+        `Session type: ${session.toolType ?? "terminal"}`,
+        ...(seed ? ["Primary request (first submitted user input):", seed] : []),
+        ...(output ? ["", "Session output so far:", output] : []),
+      ].join("\n");
+      let lastError: string | null = null;
+      let usedModelId: string | null = null;
+      const capturedAi = aiIntegrationService;
+      const title = await tryCliAiModels(titleModelIds, async (modelId) => {
+        const result = await capturedAi.summarizeTerminal({
+          cwd: liveEntry?.boundCwd || liveEntry?.laneWorktreePath || resolveSessionRunCwd(session) || projectRoot,
+          prompt,
+          taskType: "session_title",
+          timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
+          model: modelId,
+        });
+        const sanitized = sanitizeGeneratedCliTitle(result.text);
+        if (sanitized) usedModelId = modelId;
+        return sanitized;
+      }, (_modelId, error) => {
+        lastError = error instanceof Error ? error.message : String(error);
+      });
+      if (!title) return { title: null, modelId: null, error: lastError ?? "No model produced a usable title." };
+      sessionService.updateMeta({ sessionId: normalizedSessionId, title, manuallyNamed: true });
+      return { title, modelId: usedModelId, error: null };
+    },
+
+    /**
      * Whether App Control may run its next launch in this ended shell. See
      * `agentShellCleanup.canRelaunchIn`; also false while a process still
      * holds the shell.
@@ -8475,6 +9122,12 @@ export function createPtyService({
       // (or that nobody can tell, when it came without a stamp).
       if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
       try {
+        // A terminal's own reply (a CLI's startup query, a focus change) is
+        // passed through but is not the user typing.
+        if (writeIsTerminalReport(data)) {
+          entry.pty.write(data);
+          return;
+        }
         markPtyUserInput(entry, data);
         claimAgentShellForUser(entry, data);
         entry.pty.write(data);
@@ -8835,6 +9488,10 @@ export function createPtyService({
         entry = live[1];
       }
       try {
+        if (writeIsTerminalReport(args.data)) {
+          entry.pty.write(args.data);
+          return { ok: true };
+        }
         markPtyUserInput(entry, args.data);
         if (args.fromUser === true) claimAgentShellForUser(entry, args.data);
         entry.pty.write(args.data);
@@ -8928,6 +9585,12 @@ export function createPtyService({
       if (!live) return false;
       const [, entry] = live;
       try {
+        // A terminal's own reply (a CLI's startup query, a focus change) is
+        // passed through but is not the user typing.
+        if (writeIsTerminalReport(data)) {
+          entry.pty.write(data);
+          return true;
+        }
         markPtyUserInput(entry, data);
         claimAgentShellForUser(entry, data);
         entry.pty.write(data);
@@ -9044,6 +9707,26 @@ export function createPtyService({
         logger.warn("pty.restore_desktop_size_failed", { sessionId, err: String(err) });
         return false;
       }
+    },
+
+    /**
+     * What a tracked agent CLI waiting on the person waits on, when its own
+     * signals said: a permission prompt or a question. Null otherwise.
+     */
+    getCliPromptKind(sessionId: string): "approval" | "question" | null {
+      const entry = liveEntryBySessionId(sessionId)?.[1];
+      const turn = entry?.cliTurn;
+      if (turn?.phase === "needs-input" && turn.needsInputPrompt) return turn.needsInputPrompt;
+      // Claude without its hooks (a Windows `.cmd` launch) never says. Its
+      // permission menu asks "Do you want to …" with a "Yes"; anything else
+      // (an AskUserQuestion list) is a question, so a key is never pressed blind.
+      if (entry && isClaudeTrackedCliToolType(entry.toolTypeHint)) {
+        const screen = entry.terminalSnapshot
+          ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal).map((row) => row.text).join("\n")
+          : stripAnsi(readRecentOutputTail(entry));
+        return /Do you want to\b/i.test(screen) && /\bYes\b/.test(screen) ? "approval" : "question";
+      }
+      return null;
     },
 
     getRuntimeState(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState {
@@ -9502,6 +10185,8 @@ export function createPtyService({
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
       flushFinalTerminalSnapshot(entry);
       scheduleTranscriptDependentWork(entry, "dispose");
+      if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
+      entry.cliTurnInterruptTimer = null;
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
       runtimeStates.delete(entry.sessionId);
@@ -9672,7 +10357,87 @@ export function createPtyService({
       return () => {
         exitListeners.delete(listener);
       };
-    }
+    },
+
+    /**
+     * A Claude hook's report for one tracked session (`ade __ade-cli-turn-hook`
+     * through `session.reportCliTurnSignal`). False when no live tracked CLI
+     * has that id here; an unknown or uninteresting event is accepted and
+     * ignored, so a newer Claude's extra events never error.
+     */
+    reportCliTurnHookEvent(args: {
+      sessionId: string;
+      provider: string;
+      payload: Record<string, unknown>;
+      token?: string | null;
+    }): boolean {
+      const live = liveEntryBySessionId(args.sessionId);
+      const entry = live?.[1];
+      if (!entry?.cliTurn) return false;
+      // Only this launch's own hooks know its token.
+      if (!entry.cliTurnHookToken || args.token !== entry.cliTurnHookToken) return false;
+      if (args.provider !== "claude" || !isClaudeTrackedCliToolType(entry.toolTypeHint)) return true;
+      const signal = claudeHookTurnSignal(args.payload);
+      if (signal) applyCliTurnSignal(entry, signal, "claude-hooks");
+      return true;
+    },
+
+    /**
+     * Stops a tracked CLI and resolves once its process has exited (or after
+     * `timeoutMs`), so its conversation files are no longer being written. A
+     * terminal is gone from the live map as soon as `dispose` starts, before
+     * the process is; this waits on the process itself. True when it exited.
+     */
+    async stopAndWaitForExit(sessionId: string, timeoutMs: number): Promise<boolean> {
+      const live = liveEntryBySessionId(sessionId);
+      // A retry after a timed-out wait finds no terminal: the process it
+      // stopped may still be exiting, so wait on that one again.
+      let pid = pendingAgentCliExitPids.get(sessionId) ?? null;
+      if (live) {
+        const [ptyId, entry] = live;
+        pid = entry.pty.pid ?? pid;
+        if (pid != null) pendingAgentCliExitPids.set(sessionId, pid);
+        service.dispose({ ptyId, sessionId });
+      }
+      if (pid == null) return true;
+      await waitForProcessExit(pid, timeoutMs);
+      let exited: boolean;
+      try {
+        process.kill(pid, 0);
+        exited = false;
+      } catch (error) {
+        exited = (error as NodeJS.ErrnoException)?.code !== "EPERM";
+      }
+      if (exited) pendingAgentCliExitPids.delete(sessionId);
+      return exited;
+    },
+
+    /** The live turn phase of a tracked agent CLI here, and where it came from; null when there is none. */
+    getTrackedCliTurn(sessionId: string): { phase: CliTurnPhase; source: CliTurnSource; turnStartedAt: string | null } | null {
+      const turn = liveEntryBySessionId(sessionId)?.[1].cliTurn;
+      if (!turn) return null;
+      return {
+        phase: turn.phase,
+        source: turn.source,
+        turnStartedAt: turn.turnStartedAt != null ? new Date(turn.turnStartedAt).toISOString() : null,
+      };
+    },
+
+    /** A tracked CLI's turn started (see TrackedCliTurnStartedEvent). */
+    onTrackedCliTurnStarted(listener: (event: TrackedCliTurnStartedEvent) => void): () => void {
+      cliTurnStartedListeners.add(listener);
+      return () => {
+        cliTurnStartedListeners.delete(listener);
+      };
+    },
+
+    /** A tracked CLI's turn stopped: done, or waiting on the person (see TrackedCliTurnEndedEvent). */
+    onTrackedCliTurnEnded(listener: (event: TrackedCliTurnEndedEvent) => void): () => void {
+      cliTurnEndedListeners.add(listener);
+      return () => {
+        cliTurnEndedListeners.delete(listener);
+      };
+    },
   };
   return service;
 }

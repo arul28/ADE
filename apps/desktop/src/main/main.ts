@@ -5355,6 +5355,8 @@ app.whenReady().then(async () => {
     // A new CLI session that names no account starts where a new chat would.
     ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
       agentChatService.pickNewCliSessionAccount(provider, modelId));
+    // A CLI that moved to another machine is not started here again.
+    ptyService.setMovedAwayCliLock((sessionId) => agentChatService.getCliMoveLock(sessionId));
     const prShellLinkWatcher = createPrShellLinkWatcher({
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),

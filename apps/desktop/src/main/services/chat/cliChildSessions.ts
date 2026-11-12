@@ -84,7 +84,8 @@ export function createCliChildSessionAccess(options: CliChildSessionAccessOption
         currentTurnStartedAt: busy ? enriched.currentTurnStartedAt ?? null : null,
         lastActivityAt: enriched.lastActivityAt ?? row.endedAt ?? row.startedAt,
         awaitingInput: waiting,
-        pendingTitle: waiting ? "waiting for input in the terminal" : null,
+        // What the CLI said it waits on (a permission, a question), when it said.
+        pendingTitle: waiting ? enriched.attentionMessage?.trim() || "waiting for input in the terminal" : null,
         subagents: [],
       }),
       cliSession: cliSessionStatusFields(enriched, lineage),
@@ -343,16 +344,20 @@ async function readProviderFileTail(filePath: string, maxBytes: number): Promise
 }
 
 export type CliChildSessionReaderOptions = {
-  findCodexRolloutPath?: (targetId: string) => Promise<string | null>;
+  findCodexRolloutPath?: (targetId: string, configHome?: string | null) => Promise<string | null>;
 };
 
 /** Async provider-file reader with a per-target rollout path cache. */
 export function createCliChildSessionReader(options: CliChildSessionReaderOptions = {}) {
-  const findCodexRolloutPath = options.findCodexRolloutPath ?? findCodexRolloutPathBySessionIdAsync;
+  const findCodexRolloutPath = options.findCodexRolloutPath
+    ?? ((targetId: string, configHome?: string | null) => findCodexRolloutPathBySessionIdAsync(
+      targetId,
+      configHome ? { env: { ...process.env, CODEX_HOME: configHome } } : {},
+    ));
   const rolloutPathCache = new Map<string, string>();
   const rolloutPathLookup = new Map<string, Promise<string | null>>();
 
-  const resolveCodexRolloutPath = async (targetId: string): Promise<string | null> => {
+  const resolveCodexRolloutPath = async (targetId: string, configHome: string | null): Promise<string | null> => {
     const cached = rolloutPathCache.get(targetId);
     if (cached) {
       try {
@@ -364,7 +369,7 @@ export function createCliChildSessionReader(options: CliChildSessionReaderOption
     }
     const existingLookup = rolloutPathLookup.get(targetId);
     if (existingLookup) return existingLookup;
-    const lookup = findCodexRolloutPath(targetId)
+    const lookup = findCodexRolloutPath(targetId, configHome)
       .then((filePath) => {
         if (filePath) rolloutPathCache.set(targetId, filePath);
         return filePath;
@@ -378,19 +383,22 @@ export function createCliChildSessionReader(options: CliChildSessionReaderOption
     provider: string;
     targetId: string | null | undefined;
     cwd: string | null | undefined;
+    /** The account's `CODEX_HOME` / `CLAUDE_CONFIG_DIR` the CLI ran under; null for the default. */
+    configHome?: string | null;
   }): Promise<string | null> => {
+    const configHome = args.configHome?.trim() || null;
     const targetId = args.targetId?.trim();
     if (!targetId) return null;
     try {
       if (args.provider === "codex") {
-        const rolloutPath = await resolveCodexRolloutPath(targetId);
+        const rolloutPath = await resolveCodexRolloutPath(targetId, configHome);
         if (!rolloutPath || rolloutPath.endsWith(".zst")) return null;
         return extractCodexFinalMessage(await readProviderFileTail(rolloutPath, PROVIDER_FILE_TAIL_BYTES));
       }
       if (args.provider === "claude") {
         const cwd = args.cwd?.trim();
         if (!cwd) return null;
-        const sessionPath = claudeSessionPath({ sessionId: targetId, cwd });
+        const sessionPath = claudeSessionPath({ sessionId: targetId, cwd, ...(configHome ? { configDir: configHome } : {}) });
         return extractClaudeFinalMessage(await readProviderFileTail(sessionPath, PROVIDER_FILE_TAIL_BYTES));
       }
     } catch {
@@ -416,6 +424,7 @@ export function readCliProviderFinalMessage(args: {
   provider: string;
   targetId: string | null | undefined;
   cwd: string | null | undefined;
+  configHome?: string | null;
 }): Promise<string | null> {
   return defaultCliChildSessionReader.readProviderFinalMessage(args);
 }
