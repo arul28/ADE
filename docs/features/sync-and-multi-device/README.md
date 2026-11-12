@@ -4602,29 +4602,41 @@ route needs from loopback:
 - **LAN:** nothing. Peers reach the wildcard bind, so the account directory
   publishes LAN whenever the listener is bound (`listenerBound`), not only
   when loopback validates.
-- **Tailscale:** everything. Serve forwards to `127.0.0.1:<port>`, so Tailscale
-  publishes only while loopback answers as this listener.
+- **Tailscale:** everything. Serve forwards to 127.0.0.1, so Tailscale
+  publishes only while some local route answers as this listener.
 
-The shared listener re-checks loopback every
-`SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request) and on
-`healNow()`. It also probes this machine's own external IPv4 addresses on
-the port, since a program can bind `<lan-ip>:<port>` the same way; only a
-foreign answer counts there, never a timeout or refusal. With loopback and
-LAN healthy and no project host attached, it moves back to the preferred
-port (normally 8787) once that frees. On a shadow it names the holder (`shadowedBy`, program name
-only), logs `sync_listener.loopback_shadowed_at_runtime`, and moves to the
-next free port that validates (24 ports up, then an OS-assigned one),
-emitting `sync_listener.moved_off_shadowed_port` and `onPortChanged`.
-Already-connected sockets stay up through any move: the old server stops
-accepting but its upgraded sockets are kept until they close. The scope's
-sync service (or the projectless brain) updates the lease port, the device
-row, Bonjour, Tailscale Serve and the directory. The 15-second move back to
-8787 validates its candidate without touching the live port's status, so it
-cannot flap the route. A project host never refuses to start over a shadow
-(`sync_host.loopback_shadowed_hosting_degraded`), and a startup bind where
-every candidate is shadowed serves degraded on the first one
-(`sync_listener.serving_degraded`) rather than not at all. Settings shows a
-warning naming the program, not a failure.
+**The public port does not move for a loopback shadow.** A phone that sees its
+machine's port change redials (seen on a real iPhone: a Wi-Fi socket dropped
+110 ms after a move), so the listener keeps its port and opens a **side door**:
+a second server bound on exactly `127.0.0.1:<free port>` (24 ports up, then an
+OS-assigned one), wired like the main one (`createServerPair`) and validated
+with the same identity probe. `getLoopbackPort()` returns it, the validation
+status records it as `loopbackPort` (with `shadowedBy`, program name only), and
+Tailscale Serve (`--tcp` and the HTTPS route) forwards there while the
+tailnet-facing port stays the sync port. The listener re-checks every
+`SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request per
+address) and on `healNow()`; it records only the final verdict, so a working
+side door never flaps Tailscale. When loopback answers as ADE again the side
+door closes (its sockets kept until they close). Logs:
+`sync_listener.loopback_side_door_opened` / `_closed`. A startup bind on a
+wildcard accepts a loopback-shadowed candidate for the same reason.
+
+The port **does** move (`sync_listener.loopback_shadowed_at_runtime`, then
+`sync_listener.moved_off_shadowed_port` and `onPortChanged`) only when it has
+to: another program answers on one of this machine's own LAN addresses (the
+self-check probes each external IPv4 address; only a foreign answer counts,
+never a timeout or refusal), a loopback-only bind is shadowed, or the side door
+cannot open. Already-connected sockets stay up through any move: the old
+server stops accepting but its upgraded sockets are kept. The scope's sync
+service (or the projectless brain) updates the lease port, the device row,
+Bonjour, Tailscale Serve and the directory. With no project host attached, the
+listener also moves back to the preferred port (normally 8787) once it frees;
+a scope's sync service does that itself every 15 s. The move back validates its
+candidate without touching the live port's status, so it cannot flap the route.
+A project host never refuses to start over a shadow
+(`sync_host.loopback_shadowed_hosting_degraded`), and a loopback-only startup
+bind where every candidate is shadowed serves degraded on the first one
+(`sync_listener.serving_degraded`) rather than not at all.
 
 - **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
   even when device-registry `lastPort` is 8788. Zombie reap may terminate a

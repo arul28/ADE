@@ -111,6 +111,13 @@ export type SyncLoopbackValidationStatus = {
    * Null when the check passed or no holder could be named.
    */
   shadowedBy?: string | null;
+  /**
+   * Where `127.0.0.1` reaches this listener: the listener's own port, or the
+   * local-only side door it opened because another program holds
+   * `127.0.0.1:<port>`. Tailscale Serve forwards here. Null when no local
+   * route is known to answer as ADE.
+   */
+  loopbackPort?: number | null;
 };
 
 /** The program name of a command line: its first token's basename, nothing else. */

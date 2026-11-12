@@ -211,7 +211,77 @@ describe("shared sync listener upgrade policy", () => {
   // Another program can take 127.0.0.1:<port> after ADE bound the wildcard
   // (macOS and Windows allow the more specific bind). The listener must notice
   // and move by itself, keep every connected socket, and say where it went.
-  it("moves off a port whose loopback another program took, keeping connected sockets", async () => {
+  // On the usual wildcard bind, another program on 127.0.0.1:<port> must not
+  // change the port phones know: LAN peers and relay pipes keep it, and a
+  // local-only side door on another port takes 127.0.0.1 traffic (Tailscale
+  // Serve) until the other program leaves. A phone that sees its machine's
+  // port change redials, so the port stays put.
+  it("keeps its port and opens a local side door while another program holds its loopback", async () => {
+    let shadowedPort: number | null = null;
+    const listener = createSharedSyncListener({
+      bindHost: "0.0.0.0",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      localAddresses: () => [],
+      inspectPort: (port) => ({
+        port,
+        holders: [{ pid: 999_995, command: "/opt/homebrew/bin/workerd serve", startTime: null }],
+      }),
+      loopbackProbe: async (port, expectedNonce) => {
+        const shadowed = port === shadowedPort;
+        return {
+          ok: !shadowed,
+          port,
+          statusCode: shadowed ? 404 : 426,
+          statusMessage: shadowed ? "Not Found" : "Upgrade Required",
+          markerValue: shadowed ? null : expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: shadowed ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.` : null,
+        };
+      },
+    });
+    listener.setConnectionHandler(({ ws }) => {
+      ws.on("message", (raw) => ws.send(`echo:${raw.toString()}`));
+    });
+    const moves: unknown[] = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const port = await listener.ensureListening([0]);
+      const connectedBefore = await connect(port, "/");
+      shadowedPort = port;
+
+      await listener.healNow();
+
+      expect(listener.getPort()).toBe(port);
+      expect(moves).toEqual([]);
+      const loopbackPort = listener.getLoopbackPort();
+      expect(loopbackPort).not.toBeNull();
+      expect(loopbackPort).not.toBe(port);
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port,
+        loopbackAdeValidated: true,
+        loopbackPort,
+        shadowedBy: "workerd",
+      });
+      const viaSideDoor = await connect(loopbackPort!, "/");
+      viaSideDoor.send("side-door");
+      const [sideEcho] = await once(viaSideDoor, "message");
+      expect(String(sideEcho)).toBe("echo:side-door");
+      viaSideDoor.close();
+      connectedBefore.send("still-here");
+      const [echo] = await once(connectedBefore, "message");
+      expect(String(echo)).toBe("echo:still-here");
+
+      // The other program leaves: loopback is the port itself again.
+      shadowedPort = null;
+      await listener.healNow();
+      expect(listener.getLoopbackPort()).toBe(port);
+      connectedBefore.close();
+    } finally {
+      await listener.close();
+    }
+  });
+
+  it("moves a loopback-only bind off a port whose loopback another program took, keeping connected sockets", async () => {
     const shadowedPorts = new Set<number>();
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",

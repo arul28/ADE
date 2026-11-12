@@ -68,8 +68,12 @@ type Logger = {
 
 export type TailnetHttpsServe = {
   route(): MachineTailnetHttpsRoute;
-  /** Publish for this sync port, or say which tailnet switch is missing. */
-  publish(syncPort: number, options?: { force?: boolean }): Promise<void>;
+  /**
+   * Publish for this sync port, or say which tailnet switch is missing.
+   * `targetPort` is where 127.0.0.1 reaches ADE (the sync port, or the
+   * listener's side door); the HTTPS port still follows the sync port.
+   */
+  publish(syncPort: number, options?: { force?: boolean; targetPort?: number }): Promise<void>;
   unpublish(): Promise<void>;
   /** Tear down ADE's HTTPS entries for earlier sync ports, from one `serve status --json` read. */
   reclaimStale(serveStatusJson: string): Promise<void>;
@@ -95,6 +99,7 @@ export function createTailnetHttpsServe(args: {
     error: "Tailscale has not been checked yet.",
   };
   let servedPort: number | null = null;
+  let servedTarget: number | null = null;
   // The HTTPS port the newest publish is for; null after an unpublish. A
   // publish that finishes after it was superseded removes what it added
   // unless a newer publish wants the same port.
@@ -107,7 +112,8 @@ export function createTailnetHttpsServe(args: {
     if (changed) args.onChanged();
   };
 
-  const publish = async (syncPort: number, options?: { force?: boolean }): Promise<void> => {
+  const publish = async (syncPort: number, options?: { force?: boolean; targetPort?: number }): Promise<void> => {
+    const targetPort = options?.targetPort ?? syncPort;
     const attempt = ++sequence;
     // A newer attempt that stops before `serve` must still let an older one
     // in flight take its entry back, so only an attempt that reaches `serve`
@@ -142,11 +148,17 @@ export function createTailnetHttpsServe(args: {
     }
     const httpsPort = tailnetHttpsPortFor(syncPort);
     const url = `wss://${status.dnsName}:${httpsPort}`;
-    if (!options?.force && servedPort === httpsPort && route.state === "published" && route.url === url) return;
+    if (
+      !options?.force
+      && servedPort === httpsPort
+      && servedTarget === targetPort
+      && route.state === "published"
+      && route.url === url
+    ) return;
     setRoute({ state: "publishing", url: null, error: null });
     wantedPort = httpsPort;
     try {
-      await runServe(["--bg", `--https=${httpsPort}`, `http://127.0.0.1:${syncPort}`], 15_000);
+      await runServe(["--bg", `--https=${httpsPort}`, `http://127.0.0.1:${targetPort}`], 15_000);
       if (!isCurrent()) {
         // Unpublished (or moved to another port) while this ran: take back the
         // entry it just added, so the computer isn't left reachable on it.
@@ -157,6 +169,7 @@ export function createTailnetHttpsServe(args: {
         return;
       }
       servedPort = httpsPort;
+      servedTarget = targetPort;
       setRoute({ state: "published", url, error: null });
       args.logger.info("sync_host.tailnet_https_published", { httpsPort, syncPort });
     } catch (error: unknown) {

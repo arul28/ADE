@@ -2843,6 +2843,16 @@ reached the computer's relay connection but ADE on it did not answer, and the
 copy says exactly that (`syncRelayHostDidNotAnswerMessage`); the close code is
 carried on the connect error for that purpose and recovery is unchanged.
 
+A Bonjour advertisement belongs to a saved machine by **device id first**
+(`matchesDiscoveredHost`, the PIN sheet's `latestDiscoveredHost`): every ADE
+install on one computer (ADE, ADE Beta, a dev home) shares its addresses and
+name but has its own device id and port. Matching on a shared address or name
+took another install's port, so the phone dialed the wrong ADE on Wi-Fi, was
+refused, and fell back to the relay; the PIN sheet sent the PIN to the wrong
+install. Address and name decide only when a side has no device id. A PIN
+pairing to a computer advertising its live port does not sweep ADE's default
+ports, and ranks routes only by history from that same machine.
+
 A CLI or shell session on another live machine opens on the phone at once,
 over that machine's roster connection. The focused machine and the active
 project do not change. The row must come from a project that the machine's

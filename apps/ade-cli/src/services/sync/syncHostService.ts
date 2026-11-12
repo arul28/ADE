@@ -4591,14 +4591,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // and it also pinned the listener to a constant port (8787) that never
     // matched the live socket. Per-node serve works on any node and targets the
     // actual port phones must connect to.
-    const signature = `serve:${port}`;
+    // Tailscale Serve forwards to 127.0.0.1: the listener's own port, or its
+    // local side door while another program holds 127.0.0.1:<port>. The
+    // tailnet-facing port stays the sync port either way.
+    const targetPort = sharedListener?.getLoopbackPort() ?? port;
+    const signature = `serve:${port}->${targetPort}`;
     if (tailnetServeSignature === signature && !options?.force) return;
     if (tailnetServeLastFailureSignature === signature && !options?.force) return;
     const publishToken = ++tailnetServePublishSequence;
     tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
     tailnetServePort = port;
-    const target = `tcp://127.0.0.1:${port}`;
+    const target = `tcp://127.0.0.1:${targetPort}`;
     updateTailnetDiscoveryStatus({
       state: "publishing",
       serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4641,7 +4645,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // must never delay or endanger advertising the live port.
         if (tailnetServeActivePublishToken === publishToken) {
           void reclaimStaleTailnetServes(port).catch(() => {});
-          if (discoveryEnabled) void tailnetHttps.publish(port);
+          if (discoveryEnabled) void tailnetHttps.publish(port, { targetPort });
         }
       })
       .catch((error: unknown) => {
@@ -4782,7 +4786,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     https: () => tailnetHttps.route(),
     recheckHttps: async () => {
       if (tailnetServePort == null || tailnetDiscoveryStatus.state !== "published") return;
-      await tailnetHttps.publish(tailnetServePort, { force: true });
+      await tailnetHttps.publish(tailnetServePort, {
+        force: true,
+        targetPort: sharedListener?.getLoopbackPort() ?? tailnetServePort,
+      });
     },
   });
 
@@ -4853,6 +4860,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     port: number,
     options?: { force?: boolean },
   ): Promise<void> => {
+    if (sharedListener) {
+      // The shared listener owns the local route: its own port, or a side
+      // door while another program holds 127.0.0.1:<port>. Probing the port
+      // here would call a working side door a failure.
+      try {
+        await sharedListener.revalidateLoopback();
+      } finally {
+        loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      }
+      return;
+    }
     // Re-publish paths pass force:true so a shadow that arose AFTER startup is
     // caught before we (re)advertise the port; the startup path keeps the cheap
     // short-circuit once a port is validated.
@@ -9501,9 +9519,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Re-enabling discovery must also re-validate the loopback listener so a
         // shadow that appeared while discovery was off cannot be published.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          publishLanDiscovery(port, { force: true });
-          publishTailnetDiscovery(port, { force: true });
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            // A shadow withholds only Tailscale (publishValidatedDiscovery).
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, { forceLan: true, forceTailnet: true });
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
