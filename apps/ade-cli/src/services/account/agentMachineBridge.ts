@@ -22,6 +22,8 @@ import { peerGitRemoteIdentity } from "../../../../desktop/src/main/services/git
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
 import { readChatLaunchKindsCapability } from "../../../../desktop/src/shared/chatLaunch";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
+import { githubRepoIdentityFromOrigin } from "../../../../desktop/src/shared/accountProject";
+import { parseAccountProjectSelector } from "../projects/accountProjectSelector";
 import type { ContainmentPlatform } from "../../../../desktop/src/shared/pathCase";
 import {
   REMOTE_CALLER_PARAM,
@@ -245,6 +247,19 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     const needle = selector.toLowerCase();
     const byId = records.find((record) => record.projectId === selector);
     if (byId) return byId;
+    // An account project id (the caller followed its merges) or a GitHub
+    // `owner/name`: that machine's copy, picked as the desktop picks.
+    const account = parseAccountProjectSelector(selector);
+    if (account) {
+      const copy = pickLiveCheckout(records.filter((record) =>
+        account.kind === "id"
+          ? record.accountProjectId === account.id
+          : githubRepoIdentityFromOrigin(record.gitOriginUrl)?.repoKey.toLowerCase() === account.repoKey));
+      if (copy) return copy;
+      if (account.kind === "id") {
+        throw new Error(`${machineName(machine)} has no copy of ${selector}. \`ade projects list --account\` shows where its copies are.`);
+      }
+    }
     const platform = targetPathPlatform(machine.platform ?? null);
     const byPath = records.find((record) => samePathOnPlatform(record.rootPath, selector, platform));
     if (byPath) return byPath;
