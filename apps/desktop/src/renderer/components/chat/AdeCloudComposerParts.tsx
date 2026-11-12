@@ -160,6 +160,7 @@ const TRAY_ACTION_LABEL: Record<AdeCloudTrayAction, string> = {
   upgrade: "Upgrade",
   "free-space": "Free up space",
   settings: "Open settings",
+  github: "Connect GitHub",
 };
 
 /**

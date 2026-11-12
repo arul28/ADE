@@ -7,6 +7,7 @@ import {
   type CloudMachine,
 } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursLeftLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
@@ -29,8 +30,8 @@ const NO_MACHINES: readonly CloudMachine[] = [];
 /** The Run on menu's ADE Cloud entry. One entry for every ADE Cloud lane. */
 export const ADE_CLOUD_MACHINE_ID = "__ade_cloud__";
 
-/** What can open from the label above the box: the plan row, the Free up space flow, or the ADE Cloud page. */
-export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings";
+/** What can open from the label above the box: the plan row, the Free up space flow, the ADE Cloud page, or GitHub's settings. */
+export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github";
 
 /**
  * The label above the prompt box while ADE Cloud is picked and Send can't go:
@@ -218,6 +219,34 @@ export function useAdeCloudComposer(input: {
   }, [draft.lanesKnown, laneId, selectedLane, setLaneId]);
   const newLane = mode && !selectedLane;
   const originUrl = originUrlForBinding(input.tabBinding);
+  // Can a new computer clone this repository with the account's credentials?
+  // Asked before Send (account-level, no pin), once per repository, so a
+  // private repository with no git credential that follows the account is a
+  // label here, never a failed "Clone repository" step after the computer was
+  // made (C4, beta.12 #15).
+  const [gitPreflight, setGitPreflight] = useState<{ originUrl: string; result: CloudGitPreflight | null } | null>(null);
+  const preflightWanted = mode && newLane && input.showControls && Boolean(originUrl);
+  useEffect(() => {
+    if (!preflightWanted || !originUrl) return undefined;
+    const read = window.ade?.cloud?.gitPreflight;
+    if (typeof read !== "function") return undefined;
+    let cancelled = false;
+    void read({ originUrl }).then(
+      (result) => {
+        if (!cancelled) setGitPreflight({ originUrl, result });
+      },
+      (error: unknown) => {
+        // Unknown is never a block: the launch's own check still says why.
+        console.warn("[chat] ADE Cloud git preflight failed", error);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [originUrl, preflightWanted]);
+  const gitRefusal = gitPreflight && gitPreflight.originUrl === originUrl && gitPreflight.result && !gitPreflight.result.ok
+    ? gitPreflight.result
+    : null;
   /**
    * Why Send can't go to ADE Cloud now, shown above the box before Send:
    * a fact of the account (out of hours, all computers in use, disk full) or
@@ -256,9 +285,19 @@ export function useAdeCloudComposer(input: {
       },
       originUrl,
     });
-    return problem ? { tone: "notice", message: problem.message, short: problem.short, actions: [] } : null;
+    if (problem) return { tone: "notice", message: problem.message, short: problem.short, actions: [] };
+    if (gitRefusal) {
+      return {
+        tone: "blocked",
+        message: gitRefusal.message,
+        short: "Connect GitHub to clone this repository.",
+        actions: ["github"],
+      };
+    }
+    return null;
   }, [
     draft.account,
+    gitRefusal,
     draft.tierId,
     mode,
     newLane,
@@ -287,7 +326,9 @@ export function useAdeCloudComposer(input: {
       ? adeCloudSettingsRoute(ADE_CLOUD_PLAN_ANCHOR)
       : action === "free-space"
         ? adeCloudSettingsRoute(ADE_CLOUD_FREE_SPACE_ANCHOR)
-        : settingsRouteFor("integrations.ade-cloud"));
+        : action === "github"
+          ? settingsRouteFor("integrations.github")
+          : settingsRouteFor("integrations.ade-cloud"));
   }, [navigate]);
 
   return { shelfLanes, selectedLane, newLane, notice, openSettings };
