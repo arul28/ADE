@@ -48,6 +48,7 @@ import {
 import { createConfigReloadService } from "../../desktop/src/main/services/projects/configReloadService";
 import { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import { createLaneService, type LaneDeleteTeardownDeps } from "../../desktop/src/main/services/lanes/laneService";
+import { brainStartIsInRestartLoop } from "./sentry/brainRestartLoop";
 import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
@@ -3039,6 +3040,8 @@ export async function createAdeRuntime(args: {
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         // One value per machine: this brain decides its own resumes.
         readContinueAfterRestart: () => resolveContinueAfterRestart(),
+        // A brain in a restart loop reopens no agent CLI by itself.
+        isRuntimeInRestartLoop: brainStartIsInRestartLoop,
         embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
         // The MCP registry's secret values: the generic vault kind, account-wide.

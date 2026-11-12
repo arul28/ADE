@@ -437,7 +437,15 @@ import {
 } from "./threadPointerLedger";
 import type { createFileService } from "../files/fileService";
 import type { createPtyService } from "../pty/ptyService";
-import { takeCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
+import {
+  claimCliCrashReopen,
+  countCliCrashReopen,
+  isProcessRunning,
+  pruneCliCrashReopenState,
+  readCliTurnsRunning,
+  resetCliCrashReopenCount,
+  takeCliSessionsToReopen,
+} from "../pty/cliReopenAfterRestart";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import {
   MAX_TRANSPARENT_HISTORY_BYTES,
@@ -1227,6 +1235,7 @@ import {
   collectRestartCancelledWork,
   RESTART_RESUME_PROMPT,
   MAX_CONSECUTIVE_RESTART_RESUMES,
+  cliReopenedNotice,
   nextRestartResumeStreak,
   restartInterruptedNotice,
   restartResumeHold,
@@ -12127,8 +12136,8 @@ export function createAgentChatService(args: {
     // shells that chat owns (see the shell cleanup below); without them the
     // rows are still archived, only the processes are left alone.
     // `resumeSession` + `hasLivePty` reopen the agent CLIs a stopped runtime
-    // left open (`reopenCliSessionsAfterRestart`).
-    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "ensureResumeTargets" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty">>
+    // left open (`reopenCliSessionsAfterRestart`); `showSessionNotice` says why.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "ensureResumeTargets" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty" | "showSessionNotice">>
     // The `ade chat` commands a tracked agent CLI answers (`agentCliSessionActions.ts`).
     & Partial<Pick<ReturnType<typeof createPtyService>, "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle">>
     // A tracked CLI's turn boundaries: its finished turns report to its parent
@@ -12216,6 +12225,12 @@ export function createAgentChatService(args: {
    * the project's old `ai.chat.continueAfterRestart`, on unless set to false.
    */
   readContinueAfterRestart?: () => boolean;
+  /**
+   * True when this brain's start completed a restart loop (`brainRestartLoop.ts`):
+   * it then reopens no agent CLI by itself, so a reopen cannot feed the loop.
+   * Absent (desktop, tests): no loop is known.
+   */
+  isRuntimeInRestartLoop?: () => boolean;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
     & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync" | "runChanged">>
@@ -71210,15 +71225,21 @@ export function createAgentChatService(args: {
 
   /**
    * Reopens the agent CLIs this project's previous runtime had open when it
-   * stopped on purpose (an update, a reboot; `cliReopenAfterRestart.ts`), as a
-   * chat comes back after a restart. The same rule as chats: only with
-   * Continue chats after restarts on, never an archived one, and only for a
-   * stop in the last few hours. A CLI whose turn was running gets the same
-   * durable "continue" row a chat does, which reopens it with that prompt; any
-   * other reopens at its prompt. One already open (a person or another
-   * runtime got there first) is left alone. As for a chat, a CLI is continued
-   * at most `MAX_CONSECUTIVE_RESTART_RESUMES` restarts in a row; after that it
-   * only reopens.
+   * stopped (`cliReopenAfterRestart.ts`), as a chat comes back after a restart.
+   * Two sources: the list a runtime that stopped on purpose (an update, a
+   * reboot) wrote, and, after a crash, force quit, kill or power loss, the
+   * session rows its dead owner left (`cliSessionsCutOffByCrash`). The planned
+   * list wins, and a claim per session and dead owner keeps a session from
+   * reopening twice. The same rules as chats: only with Continue chats after
+   * restarts on, never an archived one, and only for a stop in the last few
+   * hours. After unclean stops a session reopens at most
+   * `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row, and a brain in a restart
+   * loop reopens nothing. A CLI whose turn was running (the screen check at a
+   * planned stop, or its own exact turn signal for a crash) also gets the same
+   * durable "continue" row a chat does, unless it waits on the user's answer
+   * or was continued that many restarts in a row. One already open (a person
+   * or another runtime got there first) is left alone. Every reopened CLI
+   * shows one line in its terminal that says why.
    */
   const cliContinueStreakFor = (sessionId: string): number => {
     const previous = (scheduledWorkScheduler?.list(sessionId) ?? [])
@@ -71229,34 +71250,163 @@ export function createAgentChatService(args: {
     if (firedAt == null || Date.now() - firedAt > RESTART_RESUME_MAX_AGE_MS) return 1;
     return nextRestartResumeStreak(previous, null);
   };
+  type CliCutOffByCrash = {
+    sessionId: string;
+    ownerPid: number;
+    ownerStartedAt: string | null;
+  };
+  /**
+   * The agent CLIs a runtime that is gone left open: rows still `running`, or
+   * `detached` by the stale-row sweep, whose owner process no longer runs on
+   * this computer. A row this process owns, one with no owner, or one whose
+   * owner pid runs (a live peer, or a reused pid: the safe side) is not one.
+   * "Recent" is measured from the dead owner's last heartbeat, which is close
+   * to when it stopped; without one, from the row's own end or output time.
+   * Two indexed reads and one read of the process table, once per start.
+   */
+  const cliSessionsCutOffByCrash = (exclude: ReadonlySet<string>): { cutOff: CliCutOffByCrash[]; stale: number } => {
+    const ownPid = processRegistry?.pid ?? process.pid;
+    const lastSeenByIdentity = new Map<string, number>();
+    const lastSeenByPid = new Map<number, number>();
+    for (const proc of processRegistry?.listAllProcesses() ?? []) {
+      const seenMs = Date.parse(proc.lastSeen);
+      if (!Number.isFinite(seenMs)) continue;
+      lastSeenByIdentity.set(`${proc.pid}\0${proc.startedAt}`, seenMs);
+      lastSeenByPid.set(proc.pid, Math.max(seenMs, lastSeenByPid.get(proc.pid) ?? 0));
+    }
+    const toolTypes = [...TRACKED_AGENT_CLI_TOOL_TYPES];
+    const rows = [
+      ...sessionService.list({ status: "running", limit: 200, toolTypes, includeArchived: false }),
+      ...sessionService.list({ status: "detached", limit: 200, toolTypes, includeArchived: false }),
+    ];
+    const cutOff: CliCutOffByCrash[] = [];
+    let stale = 0;
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (seen.has(row.id) || exclude.has(row.id)) continue;
+      seen.add(row.id);
+      if (!row.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) continue;
+      const ownerPid = row.ownerPid;
+      if (ownerPid == null || ownerPid === ownPid || isProcessRunning(ownerPid)) continue;
+      const ownerStartedAt = row.ownerProcessStartedAt?.trim() || null;
+      const lastSeenMs = ownerStartedAt
+        ? lastSeenByIdentity.get(`${ownerPid}\0${ownerStartedAt}`)
+        : lastSeenByPid.get(ownerPid);
+      const fallbackIso = row.status === "detached" ? row.endedAt : (row.lastActivityAt ?? row.startedAt);
+      const cutOffMs = lastSeenMs ?? (fallbackIso ? Date.parse(fallbackIso) : Number.NaN);
+      if (!Number.isFinite(cutOffMs) || Date.now() - cutOffMs > RESTART_RESUME_MAX_AGE_MS) {
+        stale += 1;
+        continue;
+      }
+      cutOff.push({ sessionId: row.id, ownerPid, ownerStartedAt });
+    }
+    return { cutOff, stale };
+  };
   const reopenCliSessionsAfterRestart = async (): Promise<void> => {
     await scheduledWorkReady;
     if (serviceDisposed || !ptyService?.resumeSession) return;
-    let entries: ReturnType<typeof takeCliSessionsToReopen>;
+    const pruneCrashState = () => pruneCliCrashReopenState(projectRoot, { keepMs: 2 * RESTART_RESUME_MAX_AGE_MS });
+    let planned: ReturnType<typeof takeCliSessionsToReopen> = [];
     try {
-      entries = takeCliSessionsToReopen(projectRoot, RESTART_RESUME_MAX_AGE_MS);
+      planned = takeCliSessionsToReopen(projectRoot, RESTART_RESUME_MAX_AGE_MS);
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+    let crash: ReturnType<typeof cliSessionsCutOffByCrash> = { cutOff: [], stale: 0 };
+    try {
+      crash = cliSessionsCutOffByCrash(new Set(planned.map((entry) => entry.sessionId)));
+    } catch (error) {
+      logger.warn("agent_chat.cli_reopen_read_failed", {
+        source: "crash",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (planned.length === 0 && crash.cutOff.length === 0) {
+      pruneCrashState();
       return;
     }
-    if (entries.length === 0) return;
-    if (!continueAfterRestartEnabled()) {
-      logger.info("agent_chat.cli_reopen_skipped", { reason: "disabled", sessions: entries.length });
+    const hold = !continueAfterRestartEnabled()
+      ? "disabled"
+      : args.isRuntimeInRestartLoop?.() === true ? "restart_loop" : null;
+    if (hold) {
+      // Claimed all the same: a later start must not reopen what this one held back.
+      for (const entry of crash.cutOff) {
+        claimCliCrashReopen(projectRoot, entry.sessionId, { pid: entry.ownerPid, startedAt: entry.ownerStartedAt });
+      }
+      logger.info("agent_chat.cli_reopen_skipped", {
+        reason: hold,
+        planned: planned.length,
+        crash: crash.cutOff.length,
+        stale: crash.stale,
+      });
+      pruneCrashState();
       return;
+    }
+    const entries: Array<{ sessionId: string; midTurn: boolean; unexpected: boolean }> =
+      planned.map((entry) => ({ ...entry, unexpected: false }));
+    // A stop on purpose breaks a row of crashes.
+    resetCliCrashReopenCount(projectRoot, planned.map((entry) => entry.sessionId));
+    const tally = {
+      claimedElsewhere: 0,
+      capped: 0,
+      reopened: 0,
+      continued: 0,
+      continueHeld: 0,
+      alreadyOpen: 0,
+      notReopenable: 0,
+      failed: 0,
+    };
+    const turnsByOwner = new Map<string, Set<string>>();
+    for (const entry of crash.cutOff) {
+      if (!claimCliCrashReopen(projectRoot, entry.sessionId, { pid: entry.ownerPid, startedAt: entry.ownerStartedAt })) {
+        tally.claimedElsewhere += 1;
+        continue;
+      }
+      let streak: number;
+      try {
+        // Counted before the reopen starts: a reopen that stops this runtime counts too.
+        streak = countCliCrashReopen(projectRoot, entry.sessionId, RESTART_RESUME_MAX_AGE_MS);
+      } catch {
+        tally.failed += 1;
+        continue;
+      }
+      if (streak > MAX_CONSECUTIVE_RESTART_RESUMES) {
+        tally.capped += 1;
+        continue;
+      }
+      const ownerKey = `${entry.ownerPid}\0${entry.ownerStartedAt ?? ""}`;
+      let turns = turnsByOwner.get(ownerKey);
+      if (!turns) {
+        turns = readCliTurnsRunning(projectRoot, entry.ownerPid, entry.ownerStartedAt);
+        turnsByOwner.set(ownerKey, turns);
+      }
+      entries.push({ sessionId: entry.sessionId, midTurn: turns.has(entry.sessionId), unexpected: true });
     }
     // One at a time: each reopen starts a CLI process.
     for (const entry of entries) {
-      if (serviceDisposed) return;
+      if (serviceDisposed) break;
       const row = sessionService.get(entry.sessionId);
-      if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) continue;
-      if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) continue;
+      if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) {
+        tally.notReopenable += 1;
+        continue;
+      }
+      if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) {
+        tally.alreadyOpen += 1;
+        continue;
+      }
       try {
-        const streak = entry.midTurn && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
-        if (entry.midTurn && streak > MAX_CONSECUTIVE_RESTART_RESUMES) {
-          logger.info("agent_chat.cli_reopen_continue_capped", { sessionId: row.id, streak: streak - 1 });
-        }
-        if (entry.midTurn && scheduledWorkScheduler && streak <= MAX_CONSECUTIVE_RESTART_RESUMES) {
+        // A CLI that waits on the user's answer reopens, but is not told to go on.
+        const wantsContinue = entry.midTurn && !row.attentionRequestedAt;
+        const streak = wantsContinue && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
+        const continues = wantsContinue && scheduledWorkScheduler != null && streak <= MAX_CONSECUTIVE_RESTART_RESUMES;
+        if (wantsContinue && !continues) tally.continueHeld += 1;
+        const reopened = await ptyService.resumeSession({ sessionId: row.id });
+        // A CLI child's card closed with its process; reopening it reopens the card.
+        if (reopened.resumed) notifyParentOfCliChildSpawn(row.id, { resumed: true });
+        let continued = false;
+        if (continues && scheduledWorkScheduler) {
           const createdAt = Date.now();
+          // Fires once the reopened CLI is at its prompt (`canAcceptScheduledTurn`).
           await scheduledWorkScheduler.upsert({
             id: updateResumeScheduleId(row.id),
             sessionId: row.id,
@@ -71270,22 +71420,34 @@ export function createAgentChatService(args: {
             durable: true,
             source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
             restartResumeStreak: streak,
+          }).then(() => {
+            continued = true;
+          }, (error: unknown) => {
+            logger.warn("agent_chat.cli_reopen_continue_failed", {
+              sessionId: row.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-          logger.info("agent_chat.cli_reopen_armed", { sessionId: row.id, midTurn: true, streak });
-          continue;
         }
-        const reopened = await ptyService.resumeSession({ sessionId: row.id });
-        // A CLI child's card closed with its process; reopening it reopens the card.
-        if (reopened.resumed) notifyParentOfCliChildSpawn(row.id, { resumed: true });
-        logger.info("agent_chat.cli_reopened", { sessionId: row.id, midTurn: false });
+        ptyService.showSessionNotice?.(row.id, cliReopenedNotice({ unexpected: entry.unexpected, continued }));
+        tally.reopened += 1;
+        if (continued) tally.continued += 1;
       } catch (error) {
-        // No resume target, a deleted lane: it stays ended, as before.
+        // No resume target, a deleted lane, moved to another machine: it stays ended, as before.
+        tally.failed += 1;
         logger.warn("agent_chat.cli_reopen_failed", {
           sessionId: row.id,
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
+    logger.info("agent_chat.cli_reopened_after_restart", {
+      planned: planned.length,
+      crash: crash.cutOff.length,
+      stale: crash.stale,
+      ...tally,
+    });
+    pruneCrashState();
   };
   const listScheduledWork = async ({
     sessionId,
