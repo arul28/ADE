@@ -7032,102 +7032,6 @@ export function AgentChatPane({
     completionSoundArmedRef.current = true;
   }, [selectedSessionId]);
 
-  useEffect(() => {
-    if (!laneId) return;
-    if (lockSessionId || initialSessionId) return;
-    // The draft's machine; none known means nothing to recover yet.
-    const recoveryBinding = draftExecutionBindingRef.current;
-    if (!recoveryBinding) return;
-    const recoveryProjectRoot = recoveryBinding.rootPath?.trim();
-    if (!recoveryProjectRoot) return;
-    const recoveryKey = `${recoveryBinding.key}::${recoveryProjectRoot}::${laneId}`;
-    if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
-    recoveredParallelLaunchKeyRef.current = recoveryKey;
-    let cancelled = false;
-    let recoveryTimer: number | null = null;
-
-    const recoverParallelLaunchState = () => {
-      void (async () => {
-        let pendingState: AgentChatParallelLaunchState | null = null;
-        try {
-          pendingState = await agentChatApiRef.current.parallelLaunchState.get({
-            projectRoot: recoveryProjectRoot,
-            parentLaneId: laneId,
-          }, recoveryBinding);
-        } catch {
-          return;
-        }
-        if (!pendingState) return;
-        if (isCompletedParallelLaunchState(pendingState)) {
-          await persistParallelLaunchState(null, recoveryBinding);
-          return;
-        }
-
-        if (!pendingState.createdLaneIds.length) {
-          await persistParallelLaunchState(null, recoveryBinding);
-          return;
-        }
-
-        if (cancelled) return;
-        setParallelLaunchBusy(true);
-        setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
-        try {
-          const cleanupIssues = await cleanupTransientParallelLaunchLanes({
-            laneIds: pendingState.createdLaneIds,
-            deleteLane: (args) => window.ade.lanes.delete(args, recoveryBinding),
-            refreshLanes: projectBinding?.key === recoveryBinding.key
-              ? refreshLanesStore
-              : async () => {},
-            onCleanupError: logParallelLaunchCleanupError,
-          });
-
-          if (cleanupIssues.length === 0) {
-            await persistParallelLaunchState(null, recoveryBinding);
-          } else {
-            await persistParallelLaunchState(buildParallelLaunchState({
-              parentLaneId: pendingState.parentLaneId,
-              createdLaneIds: pendingState.createdLaneIds,
-              sentLaneIds: pendingState.sentLaneIds,
-              status: "cleanup_pending",
-              lastError: pendingState.lastError,
-            }), recoveryBinding);
-            if (!cancelled) {
-              setError(formatParallelLaunchFailureMessage({
-                launchError: "Recovered an unfinished parallel launch from before ADE closed.",
-                cleanupIssues,
-              }));
-            }
-          }
-        } finally {
-          setParallelLaunchBusy(false);
-          setParallelLaunchStatus(null);
-        }
-      })();
-    };
-
-    if (recoveryBinding.kind === "remote") {
-      recoveryTimer = window.setTimeout(recoverParallelLaunchState, REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS);
-    } else {
-      recoverParallelLaunchState();
-    }
-
-    return () => {
-      cancelled = true;
-      setParallelLaunchBusy(false);
-      setParallelLaunchStatus(null);
-      if (recoveryTimer != null) {
-        window.clearTimeout(recoveryTimer);
-      }
-    };
-  }, [
-    initialSessionId,
-    initialDraftMachineId,
-    laneId,
-    lockSessionId,
-    persistParallelLaunchState,
-    projectBinding,
-    refreshLanesStore,
-  ]);
 
   useEffect(() => {
     if (agentTurnCompletionSound === "off") {
@@ -17432,6 +17336,105 @@ export function AgentChatPane({
   draftExecutionBindingRef.current = draftExecutionBinding;
   draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
   const draftExecutionBindingKey = draftExecutionBinding?.key ?? null;
+  useEffect(() => {
+    if (!laneId) return;
+    if (lockSessionId || initialSessionId) return;
+    // The draft's machine; none known means nothing to recover yet. It is
+    // often unknown on the first render (a remote tab waits for its
+    // connection), so the effect runs again when the key arrives.
+    const recoveryBinding = draftExecutionBindingRef.current;
+    if (!recoveryBinding) return;
+    const recoveryProjectRoot = recoveryBinding.rootPath?.trim();
+    if (!recoveryProjectRoot) return;
+    const recoveryKey = `${recoveryBinding.key}::${recoveryProjectRoot}::${laneId}`;
+    if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
+    recoveredParallelLaunchKeyRef.current = recoveryKey;
+    let cancelled = false;
+    let recoveryTimer: number | null = null;
+
+    const recoverParallelLaunchState = () => {
+      void (async () => {
+        let pendingState: AgentChatParallelLaunchState | null = null;
+        try {
+          pendingState = await agentChatApiRef.current.parallelLaunchState.get({
+            projectRoot: recoveryProjectRoot,
+            parentLaneId: laneId,
+          }, recoveryBinding);
+        } catch {
+          return;
+        }
+        if (!pendingState) return;
+        if (isCompletedParallelLaunchState(pendingState)) {
+          await persistParallelLaunchState(null, recoveryBinding);
+          return;
+        }
+
+        if (!pendingState.createdLaneIds.length) {
+          await persistParallelLaunchState(null, recoveryBinding);
+          return;
+        }
+
+        if (cancelled) return;
+        setParallelLaunchBusy(true);
+        setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
+        try {
+          const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+            laneIds: pendingState.createdLaneIds,
+            deleteLane: (args) => window.ade.lanes.delete(args, recoveryBinding),
+            refreshLanes: projectBinding?.key === recoveryBinding.key
+              ? refreshLanesStore
+              : async () => {},
+            onCleanupError: logParallelLaunchCleanupError,
+          });
+
+          if (cleanupIssues.length === 0) {
+            await persistParallelLaunchState(null, recoveryBinding);
+          } else {
+            await persistParallelLaunchState(buildParallelLaunchState({
+              parentLaneId: pendingState.parentLaneId,
+              createdLaneIds: pendingState.createdLaneIds,
+              sentLaneIds: pendingState.sentLaneIds,
+              status: "cleanup_pending",
+              lastError: pendingState.lastError,
+            }), recoveryBinding);
+            if (!cancelled) {
+              setError(formatParallelLaunchFailureMessage({
+                launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+                cleanupIssues,
+              }));
+            }
+          }
+        } finally {
+          setParallelLaunchBusy(false);
+          setParallelLaunchStatus(null);
+        }
+      })();
+    };
+
+    if (recoveryBinding.kind === "remote") {
+      recoveryTimer = window.setTimeout(recoverParallelLaunchState, REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS);
+    } else {
+      recoverParallelLaunchState();
+    }
+
+    return () => {
+      cancelled = true;
+      setParallelLaunchBusy(false);
+      setParallelLaunchStatus(null);
+      if (recoveryTimer != null) {
+        window.clearTimeout(recoveryTimer);
+      }
+    };
+  }, [
+    draftExecutionBindingKey,
+    initialSessionId,
+    initialDraftMachineId,
+    laneId,
+    lockSessionId,
+    persistParallelLaunchState,
+    projectBinding,
+    refreshLanesStore,
+  ]);
   useEffect(() => {
     // Once per pane, and again when the chat moves to another machine or the
     // draft's Run on changes (the pins are read from their refs; their keys
