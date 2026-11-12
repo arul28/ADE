@@ -30953,6 +30953,8 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   startSyncHostOnDemand = () => startSyncHost();
+  // Stops the account project sync of the brain (set where that sync is built).
+  let stopAccountProjectSync: (() => void) | null = null;
   const disposeServeResources = async () => {
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
@@ -30964,6 +30966,10 @@ async function runServe(
     stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
     machinePairingAutoRecovery = null;
+    // The account project sync stops before the publisher releases the lease,
+    // so no copy is sent or written once shutdown has begun.
+    stopAccountProjectSync?.();
+    stopAccountProjectSync = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -31461,6 +31467,10 @@ async function runServe(
         logger: headlessProjectLogger,
       });
       return accountProjectSync;
+    };
+    stopAccountProjectSync = () => {
+      accountProjectSync?.stop();
+      accountProjectSync = null;
     };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
