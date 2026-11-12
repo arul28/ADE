@@ -43,7 +43,8 @@ export function AdeCloudClaudePage({
   signIns: AdeCloudSignInsState;
   busy: ReadonlySet<string>;
   runWrite: RunWrite;
-  setSwitch: (key: string, on: boolean, confirmOn: boolean) => Promise<void>;
+  /** The view's switch write (it asks first for Copilot); false when the person said no. */
+  setSwitch: (key: string, on: boolean, confirmOn: boolean) => Promise<boolean>;
   heldWrites: HeldWrites;
   recheck: () => void;
   openPassSheet: (request: ClaudePassRequest) => void;

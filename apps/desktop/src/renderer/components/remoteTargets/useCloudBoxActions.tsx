@@ -7,6 +7,7 @@ import {
   cloudMachineKindOf,
   formatCloudHoursRate,
   type CloudMachine,
+  type CloudMachineActionArgs,
   type CloudMachineActionKind,
   type CloudMachineActionResult,
   type CloudShapeId,
@@ -94,6 +95,36 @@ function chatsLine(count: number, name: string): string {
 }
 
 /**
+ * Asks before a sleep when chats are running on the computer: sleep freezes
+ * everything, so a turn in progress may fail. True with nothing running.
+ * Every Sleep asks this way (the machine list, a cloud lane's chat header).
+ */
+export async function confirmCloudSleep(name: string, runningChats: number): Promise<boolean> {
+  if (runningChats <= 0) return true;
+  return await confirmDialog({
+    title: `Sleep ${name}?`,
+    message: `${chatsLine(runningChats, name)} Sleep freezes everything on it, so a turn in progress may fail and need a retry after it wakes. It uses no hours while asleep.`,
+    confirmLabel: "Sleep",
+  });
+}
+
+/**
+ * One box action through this desktop's main process. ADE Cloud's refusals
+ * come back as results; a throw is the IPC itself, logged and turned into a
+ * refusal. Null when this window has no route to ADE Cloud.
+ */
+export async function callCloudMachineAction(input: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> {
+  const machineAction = window.ade?.cloud?.machineAction;
+  if (!machineAction) return null;
+  try {
+    return await machineAction(input);
+  } catch (error) {
+    captureError(error, { fingerprint: ["cloud", "machine_action_ipc"], handled: true });
+    return { ok: false, blocker: null, message: extractError(error) };
+  }
+}
+
+/**
  * Sleep, wake, resize, back up, Remove from ADE and Delete computer for
  * the ADE Cloud group, with the confirmations each one needs.
  *
@@ -137,23 +168,18 @@ export function useCloudBoxActions(args: {
     action: CloudMachineActionKind,
     extra: { shape?: CloudShapeId; disk?: number; computerIdle?: boolean } = {},
   ): Promise<CloudMachineActionResult | null> => {
-    const machineAction = window.ade?.cloud?.machineAction;
-    if (!machineAction) return null;
+    if (!window.ade?.cloud?.machineAction) return null;
     const { instanceId } = ctx.box;
     setPending(instanceId, action);
     setError(instanceId, null);
     let result: CloudMachineActionResult | null;
     try {
-      result = await machineAction({
+      result = await callCloudMachineAction({
         instanceId,
         action,
         ...extra,
         ...(action === "delete" ? { machineKey: ctx.accountMachine?.machineKey ?? null } : {}),
       });
-    } catch (error) {
-      // the provider's refusals come back as results; a throw is the IPC itself.
-      captureError(error, { fingerprint: ["cloud", "machine_action_ipc"], handled: true });
-      result = { ok: false, blocker: null, message: extractError(error) };
     } finally {
       setPending(instanceId, null);
     }
@@ -171,14 +197,7 @@ export function useCloudBoxActions(args: {
   }, [refresh, setError, setPending]);
 
   const sleep = useCallback(async (ctx: CloudBoxContext) => {
-    if (ctx.work.runningChats > 0) {
-      const ok = await confirmDialog({
-        title: `Sleep ${ctx.name}?`,
-        message: `${chatsLine(ctx.work.runningChats, ctx.name)} Sleep freezes everything on it, so a turn in progress may fail and need a retry after it wakes. It uses no hours while asleep.`,
-        confirmLabel: "Sleep",
-      });
-      if (!ok) return;
-    }
+    if (!(await confirmCloudSleep(ctx.name, ctx.work.runningChats))) return;
     await run(ctx, "sleep");
   }, [run]);
 

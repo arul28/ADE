@@ -9,6 +9,7 @@ import { cn } from "../ui/cn";
 import { CloudLaneJobCard } from "./CloudLaneJobCard";
 import { CloudLaneWithoutComputerNotice } from "./CloudLaneWithoutComputer";
 import { CloudTierChangeCard } from "./CloudTierChangeCard";
+import { tierChangeComputerOf } from "./cloudTierChangeFacts";
 import {
   cloudLaneJobFor,
   cloudLaneWithoutComputerForBinding,
@@ -24,8 +25,10 @@ import { cloudLaneLifeAvailable } from "./cloudLaneActions";
  *   the transcript, drawn as the tier-change card; once the person says yes
  *   it shows the change's steps in its place.
  * - `CloudLaneChatStatus`: above the prompt box of a chat on a cloud lane,
- *   the steps of a tier change or move while one runs, or "this lane has no
- *   computer now" with "New computer on the same branch".
+ *   the lane's size change or move: its start, its steps, its finish ("Moved
+ *   to a Large computer · your chat follows") or its failure with the reason
+ *   and an ×; or "this lane has no computer now" with "New computer on the
+ *   same branch".
  */
 
 const DISMISSED_KEY = "ade.cloudTierRequestsDismissed.v1";
@@ -75,6 +78,10 @@ export function CloudTierRequestCard({ card, sessionId }: { card: AdeCardPayload
   // The account (sizes, rates, hours) only while the card still asks.
   const machines = useCloudMachines(Boolean(request) && !dismissed);
   const account = machines.result?.state === "ok" ? machines.result.account : null;
+  const box = request && machines.result?.state === "ok"
+    ? machines.result.machines.find((entry) => entry.instanceId === request.instanceId) ?? null
+    : null;
+  const computer = box ? tierChangeComputerOf(box) : null;
 
   if (!request) {
     return <p className={cn(CHAT_CARD_WIDTH_CLASS, "adecl-muted px-3.5 py-2.5")}>{card.fallbackText}</p>;
@@ -99,6 +106,7 @@ export function CloudTierRequestCard({ card, sessionId }: { card: AdeCardPayload
           reason: request.reason || null,
         }}
         account={account}
+        computer={computer}
         pickable={false}
         requestId={request.requestId}
         requestedByChat={request.chatSessionId}
@@ -117,12 +125,26 @@ export function CloudTierRequestCard({ card, sessionId }: { card: AdeCardPayload
  * chat, and nothing while the lane's computer is simply there. The binding
  * is the chat's own (`pin` of its runtime scope), so the lane is the chat's.
  */
-export function CloudLaneChatStatus({ binding }: { binding: OpenProjectBinding | null }) {
+export function CloudLaneChatStatus({
+  binding,
+  laneId = null,
+}: {
+  binding: OpenProjectBinding | null;
+  /**
+   * The chat's own lane id. A cloud lane keeps it when its computer changes,
+   * so the card still finds the lane's job while the chat's pin names the old
+   * computer (mid-move, or right after one) or a computer this desktop never
+   * reached.
+   */
+  laneId?: string | null;
+}) {
   const lane = useAdeCloudLaneForBinding(binding);
   const remote = binding?.kind === "remote";
-  const jobs = useCloudLaneJobs(lane != null);
+  const jobs = useCloudLaneJobs(lane != null || (remote && laneId != null));
   const withoutState = useCloudLanesWithoutComputer(remote && cloudLaneLifeAvailable());
-  const job = lane ? cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.laneId }) : null;
+  const job = lane
+    ? cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.laneId })
+    : remote && laneId ? cloudLaneJobFor(jobs, { laneId }) : null;
   const without = !lane && remote ? cloudLaneWithoutComputerForBinding(binding, withoutState.lanes) : null;
   // A job's rates or the former size need the account; read only while a card shows.
   const machines = useCloudMachines(Boolean(job || without));

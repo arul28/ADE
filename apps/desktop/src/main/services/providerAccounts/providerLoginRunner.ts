@@ -78,7 +78,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
   ): void {
     if (record.timeout) clearTimeout(record.timeout);
     record.timeout = null;
-    Object.assign(record.status, patch, { endedAt: now().toISOString() });
+    Object.assign(record.status, patch, { checkingCode: false, endedAt: now().toISOString() });
     stopPty(record, options);
     if (record.cleanup) clearTimeout(record.cleanup);
     record.cleanup = setTimeout(() => logins.delete(record.status.loginId), LOGIN_FINISHED_RETENTION_MS);
@@ -94,6 +94,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     record.pty = null;
     record.status.state = "verifying";
     record.status.awaitingCode = false;
+    record.status.checkingCode = false;
     try {
       const instance = deps.getInstance(record.status.instanceId);
       const verified = instance ? await deps.verify(instance) : null;
@@ -162,12 +163,14 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
       // A device code is the last thing Codex prints before it waits. Claude's
       // printed link always ends in a code to paste, so its box stays up
       // while it waits; Codex asks only when it prints a prompt.
-      readLoginOutput(record, data, {
+      const { rejection } = readLoginOutput(record, data, {
         hosts: AUTH_HOSTS,
         deviceCode: deviceAuth,
         pasteCode: instance.provider === "claude" ? "while-waiting" : "prompt",
         promptTailLines: 4,
       });
+      // A CLI that refuses the code ends now, in its words.
+      if (rejection) finish(record, { state: "failed", awaitingCode: false, message: rejection });
     });
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);

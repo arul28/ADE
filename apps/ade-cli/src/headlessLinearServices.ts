@@ -2486,11 +2486,12 @@ export function createHeadlessGitHubService(
       const clean = nextToken.trim();
       const previousToken = readStoredPatToken();
       tokenOverride = clean || null;
+      let accountCopy: Promise<void> = Promise.resolve();
       if (clean) {
         credentialStore.setSync(tokenKey, clean);
         patAccountSync.markLocal();
         // A token pasted here follows the account to its other machines.
-        patAccountSync.publish(clean);
+        accountCopy = patAccountSync.publish(clean);
       } else {
         // Read before the local copy goes: the account's copy goes only if it is this token.
         patAccountSync.unpublish();
@@ -2507,6 +2508,10 @@ export function createHeadlessGitHubService(
       credentialRevision += 1;
       invalidateStatusCache();
       emitStatusChanged();
+      // Told again once the account's copy is written: a reader of that copy
+      // (the ADE Cloud git preflight) can race the first change. Never rejects.
+      if (clean) void accountCopy.then(emitStatusChanged);
+      return { accountCopy };
     },
     clearToken() {
       const previousToken = readStoredPatToken();

@@ -1141,6 +1141,10 @@ export const IPC = {
   accountSetRelayEnabled: "ade.account.setRelayEnabled",
   accountRenameMachine: "ade.account.renameMachine",
   accountPairMachine: "ade.account.pairMachine",
+  /** Contract C2: an address for one machine of the account, by machine key (`shared/machineAddress.ts`). */
+  machinesConnect: "ade.machines.connect",
+  /** The address from this computer's saved connections only; no network. */
+  machinesAddressFor: "ade.machines.addressFor",
   accountPairMachineProgress: "account:pairMachineProgress",
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
@@ -1180,9 +1184,17 @@ export const IPC = {
   cloudLaneLifeCall: "ade.cloud.laneLife.call",
   /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
   cloudLaneJobEvent: "cloud:laneJobEvent",
+  /** Contract C3 (`shared/laneComputer.ts`): the computer a lane is on now. Account level. */
+  cloudLaneComputer: "ade.cloud.laneComputer",
+  /** The lane's computer and an address for it (pairs and connects). */
+  cloudFollowLane: "ade.cloud.followLane",
+  /** A lane's computer changed (`LaneMovedEvent`), to every window. */
+  cloudLaneMoved: "cloud:laneMoved",
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",
+  /** C4: can a new cloud computer clone this repository with the account's GitHub sign-in? Account-level, no pin. The launch runs the same check itself; no renderer surface calls this yet. */
+  cloudGitPreflight: "ade.cloud.gitPreflight",
   /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new cloud machine. */
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",

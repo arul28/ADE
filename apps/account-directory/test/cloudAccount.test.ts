@@ -9,6 +9,7 @@ import { runPlanCleanups } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { runCloudMinuteCron } from "../src/cloud/cron";
+import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { applyCloudPlanChange, listComputers, type CloudEnv } from "../src/cloud/store";
@@ -34,6 +35,7 @@ const PROVIDER = "https://api.agent37.com/v1";
 const SANDBOX = "https://sandbox.agent37.app/v1";
 const STRIPE = "https://api.stripe.com/v1";
 const RESEND = "https://api.resend.com";
+const CLERK = "https://api.clerk.com/v1";
 
 type SqliteStatement = {
   run(...params: unknown[]): { changes: number | bigint };
@@ -133,6 +135,8 @@ function fakeNetwork() {
     }
     if (url.startsWith(STRIPE)) return reply({});
     if (url.startsWith(RESEND)) return reply({ id: "email_1" });
+    // The one-time sign-in ticket the device approval mints for a user.
+    if (url.startsWith(`${CLERK}/sign_in_tokens`)) return reply({ url: `https://clerk.test/v1/tickets/accept?ticket=t_${String(body?.user_id)}` });
     const rest = url.replace(PROVIDER, "").replace(SANDBOX, "");
     if (method === "GET" && rest === "/instances") return reply({ data: [...instances.values()].map(instanceJson) });
     if (method === "GET" && rest.startsWith("/usage")) return reply({ instances: [] });
@@ -169,7 +173,7 @@ function fakeNetwork() {
 
   const fetchStub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
-    if (![PROVIDER, SANDBOX, STRIPE, RESEND].some((prefix) => url.startsWith(prefix))) return realFetch(input as RequestInfo, init);
+    if (![PROVIDER, SANDBOX, STRIPE, RESEND, CLERK].some((prefix) => url.startsWith(prefix))) return realFetch(input as RequestInfo, init);
     const method = init?.method ?? "GET";
     // JSON to the provider, a form to Stripe.
     const body = typeof init?.body !== "string" ? null
@@ -630,7 +634,8 @@ describe("ADE Cloud account", () => {
       harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 })).status).toBe(504);
 
-      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 })).status).toBe(200);
+      // The first try woke it (the provider resizes only an awake computer), so the retry says it's idle.
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8, computerIdle: true })).status).toBe(200);
 
       expect(providerCalls(harness, /POST .*\/resize$/).map((call) => call.body?.disk)).toEqual([8, 8]);
       expect(computer(harness).disk_gb).toBe(8);
@@ -1296,5 +1301,211 @@ describe("ADE Cloud plan cleanup", () => {
     // A computer it keeps ends as it started: one it woke is never left running.
     if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
+  });
+});
+
+/*
+ * The server launcher (C6) and `/cloud/*` from a browser (C7): the launch id's
+ * replay, the one-time join code's rules, and the CORS gate. The join is the
+ * one `/cloud` route with no account token, so its code is the whole proof.
+ */
+describe("ADE Cloud server launcher", () => {
+  const LAUNCH = "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10";
+  const USER_CODE = "BCDF-2345";
+  const WEB = "https://app.ade.test";
+  const launchBody = {
+    launchId: LAUNCH,
+    kind: "chat",
+    sizeId: "small",
+    project: { origin: "https://github.com/Acme/Widgets.git" },
+    lane: { id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", name: "Fix the login page" },
+    chat: { provider: "codex", modelId: "gpt-5", permissions: "full-auto", prompt: "Fix the login page." },
+  };
+
+  beforeEach(() => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.env.WEB_CLIENT_ORIGIN = WEB;
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+  });
+
+  const madeCalls = () => providerCalls(harness, /POST .*\/instances$/);
+  const joinCode = (): string => (madeCalls()[0]!.body!.env as Record<string, string>).ADE_LAUNCH_JOIN!;
+  const join = (body: Record<string, unknown>, instanceId = "madenew12345") => handleCloudRequest(new Request(`https://directory.test/cloud/launches/${LAUNCH}/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-ade-instance": instanceId },
+    body: JSON.stringify(body),
+  }), harness.env);
+  const seedDeviceSignIn = (userCode = USER_CODE) => harness.insert("device_authorizations", {
+    device_code: `device-${userCode}`, user_code: userCode, device_secret_hash: "hash", status: "pending", poll_interval_seconds: 5, created_at: NOW, expires_at: NOW + 60 * 60_000,
+  });
+
+  it("one launch id makes one computer: a repeat answers the same launch, another account can't use it", async () => {
+    const first = await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    expect(first.status).toBe(201);
+    expect(await first.json()).toEqual(expect.objectContaining({ instanceId: "madenew12345", state: "joining" }));
+
+    const again = await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(expect.objectContaining({ instanceId: "madenew12345", state: "joining" }));
+    const theirs = await harness.send(OTHER, "POST", "/cloud/launches", launchBody);
+    expect(theirs.status).toBe(400);
+
+    expect(madeCalls()).toHaveLength(1);
+    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null")).toEqual([{ instance_id: "madenew12345" }]);
+    // Only the code's hash is kept, never the code.
+    expect(harness.row("select join_hash from cloud_launches where launch_id = ?", LAUNCH).join_hash).not.toBe(joinCode());
+    // Another account sees no such launch.
+    expect((await harness.send(OTHER, "GET", `/cloud/launches/${LAUNCH}`)).status).toBe(404);
+    expect((await harness.send(OTHER, "DELETE", `/cloud/launches/${LAUNCH}`)).status).toBe(404);
+  });
+
+  it.each<[string, (code: string) => Promise<Response>, number]>([
+    ["a wrong code", () => join({ nonce: "x".repeat(43), userCode: USER_CODE }), 403],
+    ["the code from another computer", (code) => join({ nonce: code, userCode: USER_CODE }, "otherbox1234"), 403],
+    ["the code after its 30 minutes", (code) => { clock = NOW + 31 * 60_000; return join({ nonce: code, userCode: USER_CODE }); }, 410],
+  ])("%s is refused and leaves the code unused", async (_label, attempt, status) => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    seedDeviceSignIn();
+
+    expect((await attempt(joinCode())).status).toBe(status);
+
+    expect(harness.row("select join_used_at from cloud_launches where launch_id = ?", LAUNCH).join_used_at).toBeNull();
+    expect(providerCalls(harness, /sign_in_tokens/)).toHaveLength(0);
+    if (status !== 410) expect((await join({ nonce: joinCode(), userCode: USER_CODE })).status).toBe(200);
+  });
+
+  it("the join code is spent by the first join, and its links sign in only the launch's account", async () => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    seedDeviceSignIn();
+    seedDeviceSignIn("GHJK-6789");
+
+    const first = await join({ nonce: joinCode(), userCode: USER_CODE });
+    // The same computer joining again while the launch still joins (a restart mid-sign-in) names a fresh sign-in.
+    const second = await join({ nonce: joinCode(), userCode: "GHJK-6789" });
+
+    expect(first.status).toBe(200);
+    expect((await first.json() as { url: string }).url).toContain(`ticket=t_${OWNER}`);
+    expect(second.status).toBe(200);
+    expect(providerCalls(harness, /sign_in_tokens/).map((call) => call.body?.user_id)).toEqual([OWNER, OWNER]);
+    // After it was spent, the same computer may still say a person has to confirm.
+    expect((await join({ nonce: joinCode(), needsApproval: true })).status).toBe(200);
+    const record = await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json();
+    expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: "GHJK-6789" }) }));
+  });
+
+  it.each<[string, Record<string, string>, number, string | null]>([
+    ["a preflight from the web client", { origin: WEB, "access-control-request-method": "POST", "access-control-request-headers": "authorization, content-type" }, 204, WEB],
+    ["a preflight from another site", { origin: "https://evil.test", "access-control-request-method": "POST" }, 403, null],
+  ])("CORS: %s", async (_label, headers, status, allowed) => {
+    const response = await handleCloudRequest(new Request("https://directory.test/cloud/launches", { method: "OPTIONS", headers }), harness.env);
+    expect(response.status).toBe(status);
+    expect(response.headers.get("access-control-allow-origin")).toBe(allowed);
+  });
+
+  it("CORS: a browser call from another site is refused before anything runs; the web client's is answered", async () => {
+    const refused = await harness.send(OWNER, "POST", "/cloud/launches", launchBody, { origin: "https://evil.test" });
+    expect(refused.status).toBe(403);
+    expect(madeCalls()).toHaveLength(0);
+
+    const answered = await harness.send(OWNER, "GET", "/cloud/account", undefined, { origin: WEB });
+    expect(answered.status).toBe(200);
+    expect(answered.headers.get("access-control-allow-origin")).toBe(WEB);
+  });
+});
+
+/*
+ * Automations whose home is ADE Cloud (C9): the server starts each run, so
+ * its own rules are the whole guard against running a rule twice at once,
+ * running it without end, and taking a delivery nobody signed.
+ */
+describe("ADE Cloud automations", () => {
+  const VERSION = "2026-11-09T12:00:00.000Z";
+  const spec = (triggers: unknown[], limits: Record<string, unknown> = {}) => ({
+    name: "Nightly review",
+    project: { origin: "https://github.com/Acme/Widgets.git" },
+    triggers,
+    sizeId: "small",
+    chat: { provider: "codex", modelId: "gpt-5", permissions: "full-auto", prompt: "Review the latest changes." },
+    limits,
+  });
+  const register = (ruleId: string, body: Record<string, unknown>) =>
+    harness.send(OWNER, "PUT", `/cloud/automations/${ruleId}`, { ruleVersion: VERSION, enabled: true, ...body });
+  const runs = (ruleId: string) => harness.rows("select state, reason from cloud_automation_runs where rule_id = ? order by created_at, rowid", ruleId) as Array<{ state: string; reason: string | null }>;
+
+  beforeEach(() => {
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    // The vault answers (a GitHub sign-in, no stored agent limits: the default): limits never read refuse spending.
+    Object.assign(harness.env, {
+      PUSH_RELAY_URL: "https://relay.test",
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).includes("/attention/account/vault")
+          ? { items: [{ kind: "integration", key: "github", value: JSON.stringify({ v: 1, token: "gho_test" }) }] }
+          : { ok: true }), { status: 200 }),
+      },
+    });
+  });
+
+  it("starts one run at a time with one waiting, and pauses a rule past its runs an hour", async () => {
+    expect((await register("nightly", { spec: spec([{ kind: "manual" }]) })).status).toBe(200);
+    const states = [];
+    for (let index = 0; index < 3; index += 1) {
+      states.push(((await (await harness.send(OWNER, "POST", "/cloud/automations/nightly/run")).json()) as { state: string }).state);
+    }
+    // One computer made: the second waits for the first, the third is recorded and dropped.
+    expect(states).toEqual(["running", "queued", "skipped"]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+
+    expect((await register("storm", { spec: spec([{ kind: "manual" }], { maxRunsPerHour: 1 }) })).status).toBe(200);
+    await harness.send(OWNER, "POST", "/cloud/automations/storm/run");
+    clock += 60_000;
+    const stopped = await (await harness.send(OWNER, "POST", "/cloud/automations/storm/run")).json() as { state: string; reason: string };
+    expect(stopped.state).toBe("skipped");
+    expect(harness.row("select enabled, paused_reason from cloud_automations where rule_id = 'storm'")).toEqual({ enabled: 0, paused_reason: "storm" });
+    expect(runs("storm").map((run) => run.state)).toEqual(["running", "skipped"]);
+  });
+
+  it("takes a webhook delivery only signed with the hook's own key, and one run per delivery", async () => {
+    const registered = await (await register("hooked", { spec: spec([{ kind: "webhook", hookId: "hook-abcdef12" }]) })).json() as { forward: { url: string; secret: string } };
+    const deliver = (body: string, options: { secret?: string; timestamp?: number; hookId?: string } = {}) => {
+      const timestamp = String(options.timestamp ?? clock);
+      const signature = createHmac("sha256", Buffer.from(options.secret ?? registered.forward.secret, "hex")).update(`${timestamp}.${body}`).digest("hex");
+      return handleCloudRequest(new Request(registered.forward.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-ade-hook-id": options.hookId ?? "hook-abcdef12", "x-ade-hook-timestamp": timestamp, "x-ade-hook-signature": signature },
+        body,
+      }), harness.env);
+    };
+    const delivery = JSON.stringify({ eventId: "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a11", method: "POST", body: "{\"ok\":true}", bodyEncoding: "utf8", receivedAt: new Date(clock).toISOString() });
+
+    expect((await deliver(delivery, { secret: "ab".repeat(32) })).status).toBe(401);
+    expect((await deliver(delivery, { timestamp: clock - 10 * 60_000 })).status).toBe(401);
+    expect((await deliver(delivery, { hookId: "hook-unknown1" })).status).toBe(410);
+    expect(runs("hooked")).toEqual([]);
+
+    const first = await deliver(delivery);
+    expect(first.status).toBe(202);
+    // The relay sends again until it hears 2xx: the same delivery is the same run.
+    const again = await deliver(delivery);
+    expect((await again.json() as { runId: string }).runId).toBe((await first.json() as { runId: string }).runId);
+    expect(runs("hooked")).toHaveLength(1);
+  });
+
+  it.each<[string, string, string, string, string | null]>([
+    ["9:00 the day the clocks go forward", "0 9 * * *", "America/New_York", "2026-03-07T15:00:00Z", "2026-03-08T13:00:00.000Z"],
+    ["3:30 the morning the clocks go forward", "30 3 * * *", "America/New_York", "2026-03-07T15:00:00Z", "2026-03-08T07:30:00.000Z"],
+    ["a time the clocks skip doesn't fire that day", "30 2 * * *", "America/New_York", "2026-03-07T08:00:00Z", "2026-03-09T06:30:00.000Z"],
+    ["a time the clocks pass twice fires at its first pass", "30 1 * * *", "America/New_York", "2026-11-01T04:00:00Z", "2026-11-01T05:30:00.000Z"],
+    ["...and not again at its second", "30 1 * * *", "America/New_York", "2026-11-01T05:30:00Z", "2026-11-02T06:30:00.000Z"],
+    ["Monday 9:00 in Berlin", "0 9 * * 1", "Europe/Berlin", "2026-11-11T12:00:00Z", "2026-11-16T08:00:00.000Z"],
+    ["every 15 minutes in UTC", "*/15 * * * *", "UTC", "2026-11-11T12:07:00Z", "2026-11-11T12:15:00.000Z"],
+    ["a zone ADE doesn't know", "0 9 * * *", "Mars/Olympus", "2026-11-11T12:00:00Z", null],
+  ])("a schedule's next fire: %s", (_label, cron, zone, after, expected) => {
+    const next = nextFireAt(cron, zone, Date.parse(after));
+    expect(next == null ? null : new Date(next).toISOString()).toBe(expected);
   });
 });

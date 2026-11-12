@@ -1,3 +1,4 @@
+import { goneTargetMachineKey } from "../machines/goneTargets";
 import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
@@ -144,6 +145,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
+/** What a runtime action through a gone connection adds to its own budget: pairing again (a woken computer, up to 2 min) and connecting. */
+const GONE_PIN_PAIRING_BUDGET_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
@@ -202,11 +205,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     return builtInBrowserRemoteCallDoneTimeoutMs(typeof request.method === "string" ? request.method : "", request.input);
   }
   if (channel === IPC.remoteRuntimeCallAction) {
-    const actionTimeoutMs = runtimeActionTimeoutMs(args);
-    if (actionTimeoutMs != null) return actionTimeoutMs;
-    const retryableActionTimeoutMs = retryableRemoteActionTimeoutMs(args);
-    if (retryableActionTimeoutMs != null) return retryableActionTimeoutMs;
-    return 30_000;
+    // A write through a pin whose connection is gone pairs again first, waking
+    // a sleeping cloud computer (machines/goneTargets.ts): up to two minutes.
+    const pinId = isRecord(args[0]) && typeof args[0].id === "string" ? args[0].id : null;
+    const actionTimeoutMs = runtimeActionTimeoutMs(args) ?? retryableRemoteActionTimeoutMs(args) ?? 30_000;
+    return pinId && goneTargetMachineKey(pinId) ? actionTimeoutMs + GONE_PIN_PAIRING_BUDGET_MS : actionTimeoutMs;
   }
   switch (channel) {
     // Switching projects can cold-start and bind the local runtime. Keep the
@@ -233,6 +236,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer reported a timeout while the update was still going.
     case IPC.remoteRuntimeUpdateAndRestart:
       return REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS;
+    // Pairs through the account (25 s) when needed, then connects, which can wake a cloud computer.
+    case IPC.machinesConnect:
+    case IPC.cloudFollowLane:
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:

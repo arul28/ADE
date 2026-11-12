@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { UserMinus } from "@phosphor-icons/react";
-import { cloudMachineSelfUpdating, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudMachineSelfUpdating, type CloudMachine } from "../../../shared/adeCloud";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { accountMachinePresence, machineIsAwake } from "../../../shared/machinePresence";
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
@@ -137,6 +137,7 @@ export function useCloudMachineGroup(args: {
   const boxStrip = (ctx: CloudBoxContext, wakeOnCard: boolean) => (
     <CloudBoxStrip
       box={ctx.box}
+      catalog={cloudCatalogOf(cloudResult?.account)}
       work={ctx.work}
       pending={cloudActions.pendingById[ctx.box.instanceId] ?? null}
       error={cloudActions.errorById[ctx.box.instanceId] ?? null}

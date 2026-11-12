@@ -884,6 +884,7 @@ import {
 } from "../../../shared/types/chat";
 
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { attachAgentStderrTail, processStderrErrorFields, readAgentStderrTail } from "./agentProcessStderr";
 import {
   classifyProviderRetryCause,
   formatProviderRetryActivityDetail,
@@ -1446,7 +1447,6 @@ import {
   ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
   pendingPermissionToInputRequest,
-  readAcpStderrTailFromError,
   setAcpReasoningEffort,
   textPromptBlock,
   type AcpDialect,
@@ -1529,6 +1529,7 @@ import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSd
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/inUse";
 import {
   acquirePiSdkConnection,
   isPiSdkPooledAlive,
@@ -1715,6 +1716,7 @@ import {
   externalStopSignal,
   isSandboxUnsupportedFailureText,
   presentChatFailure,
+  presentDiskFullRefusal,
   presentExternalProcessStop,
   sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
@@ -13234,6 +13236,23 @@ export function createAgentChatService(args: {
     const turnId = randomUUID();
     // The text stays in the chat so it can be copied and sent again once the
     // provider is fixed; the provider itself never saw it.
+    emitRefusedUserMessage(managed, args, turnId);
+    emitRefusedTurnEnd(managed, turnId, message);
+  };
+
+  /**
+   * The person's message of a turn ADE refused to start, recorded in that
+   * turn. Without it the message existed only as the sending window's pending
+   * bubble: drawn after the refusal (out of order), replaced by the next
+   * send, and missing for Retry and for every other client.
+   */
+  const emitRefusedUserMessage = (
+    managed: ManagedChatSession,
+    args: Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata">,
+    turnId: string,
+    /** "failed": a message refused while another turn runs; it never reached that turn. */
+    deliveryState?: "failed",
+  ): void => {
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
@@ -13241,10 +13260,12 @@ export function createAgentChatService(args: {
         ? { displayText: args.displayText.trim() }
         : {}),
       attachments: args.attachments ?? [],
+      ...(args.contextAttachments?.length ? { contextAttachments: args.contextAttachments } : {}),
+      ...(args.metadata ? { metadata: args.metadata } : {}),
       turnId,
       messageId: randomUUID(),
+      ...(deliveryState ? { deliveryState } : {}),
     });
-    emitRefusedTurnEnd(managed, turnId, message);
   };
 
   /** Preserve a blocked follow-up without ending the live turn it tried to steer. */
@@ -29832,12 +29853,19 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The error fields for a failure whose agent process left a stderr tail: the
+   * card leads with its meaningful line (as an ACP failure does) and keeps the
+   * tail behind Details. Nothing when there is no tail.
+   */
   const keepChatSessionOpen = (
     managed: ManagedChatSession,
     args: {
       message: string;
       turnId?: string | null;
       turnStatus?: "failed" | "interrupted";
+      /** The dead process's stderr, already redacted: shown behind the failure's Details. */
+      stderrTail?: string | null;
     },
   ): void => {
     if (managed.closed) return;
@@ -29855,6 +29883,7 @@ export function createAgentChatService(args: {
       type: "error",
       message: args.message,
       ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
+      ...processStderrErrorFields(providerDisplayLabel(managed.session.provider, String(managed.session.provider)), args.message, args.stderrTail),
     });
 
     if (resolvedTurnId && args.turnStatus) {
@@ -36232,6 +36261,7 @@ export function createAgentChatService(args: {
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ["ignore", "pipe", "pipe"],
       });
+      holdToolInstallsWhileRunning([resolved.path], child);
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -37476,7 +37506,7 @@ export function createAgentChatService(args: {
         managed,
         turnId,
         message,
-        managed.acpLastExitStderrTail ?? readAcpStderrTailFromError(error),
+        managed.acpLastExitStderrTail ?? readAgentStderrTail(error),
       );
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
@@ -46166,11 +46196,13 @@ export function createAgentChatService(args: {
     const download = pinnedToolDownload(tool);
     if (!download) return null;
     if (managed) {
+      // An expected wait, not a failure: the turn starts once the copy is in
+      // place (the caller awaits this before it spawns anything).
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: `Downloading ${label} for this machine`,
-        detail: "ADE downloads each agent the first time this machine uses it. The chat continues when it finishes.",
+        message: `Getting ${label} ready`,
+        detail: `ADE downloads each agent the first time this machine uses it. This turn starts when ${label} is ready.`,
       });
     }
     // onDemand.ts logs the outcome; a failure leaves resolution as it was.
@@ -46185,6 +46217,26 @@ export function createAgentChatService(args: {
   /** The app-server process each Codex runtime talks through, and its seat on it. */
   const codexHostByRuntime = new WeakMap<CodexRuntime, { host: CodexAppServerHost; client: CodexAppServerClient }>();
   const codexRedactionByClient = new WeakMap<CodexAppServerClient, (text: string) => string>();
+  /**
+   * Every chat that has been on a host, by its redaction: a shared host's
+   * stderr tail holds lines from all of them, including chats that left.
+   */
+  // Per host, one redaction per distinct server config (identical configs share
+  // one), the newest few only: the tail is 4,000 chars, so only recent chats show in it.
+  const codexRedactionsByHost = new WeakMap<CodexAppServerHost, Map<string, (text: string) => string>>();
+  const CODEX_HOST_REDACTIONS_KEPT = 32;
+  /**
+   * What the app-server printed last, for the chat that will show it: redacted
+   * with that chat's servers as they are now, and every chat's servers as they
+   * were when it joined (the tail is shared), then for secrets.
+   */
+  const codexStderrTailFor = (host: CodexAppServerHost, client: CodexAppServerClient): string => {
+    let text = host.stderrTail().trim();
+    if (!text) return "";
+    text = codexRedactionByClient.get(client)?.(text) ?? text;
+    for (const redact of codexRedactionsByHost.get(host)?.values() ?? []) text = redact(text);
+    return redactSecrets(text);
+  };
   /**
    * A chat that left a shared app-server releases its thread there
    * (interrupt + unsubscribe); its next runtime waits for that, so a resume
@@ -46394,7 +46446,7 @@ export function createAgentChatService(args: {
       key: hostKey,
       spawn: () => {
         const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
-        return spawn(invocation.command, invocation.args, {
+        const child = spawn(invocation.command, invocation.args, {
           cwd: processCwd,
           env: processEnv,
           stdio: ["pipe", "pipe", "pipe"],
@@ -46402,6 +46454,9 @@ export function createAgentChatService(args: {
           windowsVerbatimArguments: invocation.windowsVerbatimArguments,
           windowsHide: true,
         });
+        // A shared app-server can outlive any record of use: its copy stays while it runs.
+        holdToolInstallsWhileRunning([codexExecutable], child);
+        return child;
       },
     });
     const proc = host.process;
@@ -46639,6 +46694,7 @@ export function createAgentChatService(args: {
         message,
         turnId: runtime.activeTurnId,
         ...(runtime.activeTurnId ? { turnStatus: "failed" as const } : {}),
+        stderrTail: codexStderrTailFor(host, hostClient),
       });
     };
 
@@ -46664,6 +46720,14 @@ export function createAgentChatService(args: {
     };
     codexHostByRuntime.set(runtime, { host, client: hostClient });
     codexRedactionByClient.set(hostClient, (text) => redactCallerMcpText(text, callerMcpServersForRedaction(managed)));
+    // The servers as they are now, not the chat: a closed chat isn't kept alive by the host.
+    const serversAtAttach = callerMcpServersForRedaction(managed);
+    const hostRedactions = codexRedactionsByHost.get(host) ?? new Map<string, (text: string) => string>();
+    const configKey = JSON.stringify(serversAtAttach);
+    hostRedactions.delete(configKey);
+    hostRedactions.set(configKey, (text) => redactCallerMcpText(text, serversAtAttach));
+    while (hostRedactions.size > CODEX_HOST_REDACTIONS_KEPT) hostRedactions.delete(hostRedactions.keys().next().value!);
+    codexRedactionsByHost.set(host, hostRedactions);
     host.attach(hostClient);
     if (host.clientCount() > 1) {
       logger.info("agent_chat.codex_shared_app_server_join", {
@@ -46691,8 +46755,11 @@ export function createAgentChatService(args: {
       }, CODEX_REQUEST_TIMEOUT_MS);
     } catch (error) {
       runtime.suppressExitError = true;
+      // A process that died before it answered: what it printed is the only
+      // account of why, so the turn's Details shows it.
+      const tail = host.isGone() ? codexStderrTailFor(host, hostClient) : "";
       host.detach(hostClient);
-      throw error;
+      throw error instanceof Error ? attachAgentStderrTail(error, tail) : error;
     }
     runtime.serverVersion = parseCodexServerVersion(initializeResponse?.userAgent);
 
@@ -49683,6 +49750,8 @@ export function createAgentChatService(args: {
   };
 
   const listCodexModelsFromAppServer = async (): Promise<AgentChatModelInfo[]> => {
+    // A model list never downloads Codex: until a turn fetches it, ADE's own list.
+    if (!resolveCodexExecutable().path) return codexFallbackModels();
     const tempSession: ManagedChatSession = {
       session: {
         id: randomUUID(),
@@ -57088,9 +57157,15 @@ export function createAgentChatService(args: {
     const presentation = managed.session.provider === "codex"
       ? presentCodexModelProviderError(asRecord(error)?.data, message) ?? undefined
       : undefined;
+    // An agent process that died while the runtime started (Codex's
+    // app-server exiting before it answered): its stderr goes behind Details.
+    const stderrFields = !resumeFailure && !presentation
+      ? processStderrErrorFields(providerDisplayLabel(managed.session.provider, String(managed.session.provider)), message, readAgentStderrTail(error))
+      : {};
     emitChatEvent(managed, {
       type: "error",
       message,
+      ...stderrFields,
       ...(resumeFailure || presentation
         ? {
             errorInfo: {
@@ -57237,30 +57312,39 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * A turn the storage guard refused: the person's message (when the refusal
+   * is a send's), then one failure that says why. No notice beside it: the
+   * failure line is the turn's one state. A send refused while another turn
+   * runs is recorded the way a refused steer is (`emitLaunchRouteSteerFailure`):
+   * the message marked not delivered and the failure, with no turn end, since
+   * the running turn goes on.
+   */
   const emitDiskPressureSendFailure = (
     managed: ManagedChatSession,
     state: DiskPressureState,
     message: string,
+    sent?: Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata"> | null,
   ): void => {
     const turnId = randomUUID();
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "error",
-      severity: "error",
-      status: "failed",
-      message,
-      detail: { kind: "disk_pressure", state },
-      turnId,
-    });
-    emitRefusedTurnEnd(managed, turnId, message, "disk_full");
+    const midTurn = Boolean(sent) && (runtimeMidTurn(managed) || managed.session.status === "active");
+    if (sent) emitRefusedUserMessage(managed, sent, turnId, midTurn ? "failed" : undefined);
+    logger.info("agent_chat.disk_pressure_refused_turn", { sessionId: managed.session.id, state, turnId, recordedMessage: Boolean(sent), midTurn });
+    if (midTurn) {
+      emitRefusalError(managed, turnId, message, "disk_full", presentDiskFullRefusal(message));
+      persistChatState(managed);
+      return;
+    }
+    emitRefusedTurnEnd(managed, turnId, message, "disk_full", presentDiskFullRefusal(message));
   };
 
-  /** The error, failed status and done that end a turn ADE refused to start. */
-  const emitRefusedTurnEnd = (
+  /** The error of a turn (or a message) ADE refused. */
+  const emitRefusalError = (
     managed: ManagedChatSession,
     turnId: string,
     message: string,
     code?: AdeRecoveryErrorCode,
+    presentation?: ChatErrorPresentation,
   ): void => {
     emitChatEvent(managed, {
       type: "error",
@@ -57270,9 +57354,21 @@ export function createAgentChatService(args: {
         ...(code ? { code } : {}),
         provider: managed.session.provider,
         model: managed.session.model,
+        ...(presentation ? { presentation } : {}),
       },
       turnId,
     });
+  };
+
+  /** The error, failed status and done that end a turn ADE refused to start. */
+  const emitRefusedTurnEnd = (
+    managed: ManagedChatSession,
+    turnId: string,
+    message: string,
+    code?: AdeRecoveryErrorCode,
+    presentation?: ChatErrorPresentation,
+  ): void => {
+    emitRefusalError(managed, turnId, message, code, presentation);
     emitChatEvent(managed, { type: "status", turnStatus: "failed", message, turnId });
     emitChatEvent(managed, {
       type: "done",
@@ -64312,7 +64408,7 @@ export function createAgentChatService(args: {
         // A scheduled wake retries once the disk clears; posting the refusal
         // first would leave a failed turn for work that is still pending.
         throwForScheduledWakeRefusal(diskDecision.message, true);
-        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message, args);
         return;
       }
       if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
@@ -72638,17 +72734,20 @@ export function createAgentChatService(args: {
           ...(args.activateRuntime ? { force: true } : {}),
         });
         const cli = cliStatuses.find((entry) => entry.cli === provider) ?? null;
-        if (!cli?.installed) return [];
+        // A copy downloaded on first use still lists the curated rows, so a
+        // signed-in provider can start the chat whose turn fetches it.
+        if (!cli || (!cli.installed && !cli.pinnedDownloadPending)) return [];
         let health = getProviderRuntimeHealth(provider);
         let authReady = health ? health.state === "ready" : cli.authenticated;
-        if (!authReady && !health && args.activateRuntime) {
+        if (!authReady && !health && args.activateRuntime && cli.installed) {
           const probe = await probeAcpProviderAuth({ provider, cwd: projectRoot, logger });
           health = getProviderRuntimeHealth(provider);
           authReady = probe.state === "ready" || health?.state === "ready";
         }
         if (!authReady) return [];
         // The provider's live list is the picker once it exists; refresh it in
-        // the background when missing or old (never blocks this read).
+        // the background when missing or old (never blocks this read, and
+        // only from a copy already here).
         warmAcpModelCatalog(provider, { logger });
         if (provider === "qwen") {
           const settings = await loadQwenUserSettings();

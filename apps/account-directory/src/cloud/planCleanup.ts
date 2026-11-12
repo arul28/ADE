@@ -81,8 +81,8 @@ const PUSH_TIMEOUT_MS = 4 * 60_000;
 const CHECK_TIMEOUT_MS = 2 * 60_000;
 const DONE_SHOWN_MS = 14 * DAY_MS;
 
-/** `$ADE_HOME/bin` holds the newer ADE; ADE on the computer answers a few seconds after a start. */
-const commandWith = (...lines: string[]) => [
+/** `$ADE_HOME/bin` holds the newer ADE; ADE on the computer answers a few seconds after a start. Shared by every server-run command on a computer. */
+export const commandWith = (...lines: string[]) => [
   'export PATH="$ADE_HOME/bin:$PATH"',
   'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
   ...lines,
@@ -460,19 +460,9 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
   try {
     // Never woken for nothing.
     if (!(await stillDue(env, computer.user_id, computer.instance_id, now))) return await release();
-    const metadata = await wakeForPush(env, provider, computer, now, wake);
-    // Agents stopped and chats saved first: anything still writing could land after the check.
-    const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
-    if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return await keep("ADE on the computer couldn't stop its agents and save its chats.", "prepare_stop_failed");
-    const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
-    if (!pushed) return await keep("ADE on the computer didn't answer the push.", "push_unreadable");
-    const left = leftLanes(pushed);
-    if (left) return await keep(left, "push_left_work");
-    // Read once more: anything new or unknown keeps it.
-    const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
-    if (!checked) return await keep("ADE couldn't confirm all work is on GitHub.", "check_unreadable");
-    const stillLeft = leftLanes(checked);
-    if (stillLeft) return await keep(stillLeft, "check_left_work");
+    const work = await pushAllWork(env, provider, computer, now, wake, "plan_cleanup");
+    if (!work.ok) return await keep(work.reason, work.code);
+    const { metadata, pushed } = work;
     // The pushes took minutes: the person may have deleted computers or upgraded since.
     if (!(await stillDue(env, computer.user_id, computer.instance_id, now))) return await release();
 
@@ -496,7 +486,37 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
 }
 
 /** Whether this run started the computer, and the resting status it had before (`stopped` or `sleeping`). */
-type WakeRecord = { woke: boolean; from: string };
+export type WakeRecord = { woke: boolean; from: string };
+
+/** All of a computer's work pushed and checked (its metadata and the push's tally), or why some stays, with a code for the log. */
+export type PushAllOutcome =
+  | { ok: true; metadata: Record<string, string>; pushed: Tally }
+  | { ok: false; reason: string; code: string };
+
+/**
+ * The one push-before-delete run, on the computer itself: a free wake when it
+ * rests, its own ADE stops its agents and saves its chats, pushes every
+ * lane's work, then reads it all again; anything new or unknown keeps it.
+ * The plan cleanup and the project delete both delete only on `ok`. `wake`
+ * notes a wake, so a caller that keeps the computer puts it back to rest
+ * (`putBackToRest`). Provider errors are thrown.
+ */
+export async function pushAllWork(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason: string): Promise<PushAllOutcome> {
+  const metadata = await wakeForPush(env, provider, computer, now, wake, reason);
+  // Agents stopped and chats saved first: anything still writing could land after the check.
+  const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
+  if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+  const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
+  if (!pushed) return { ok: false, reason: "ADE on the computer didn't answer the push.", code: "push_unreadable" };
+  const left = leftLanes(pushed);
+  if (left) return { ok: false, reason: left, code: "push_left_work" };
+  // Read once more: anything new or unknown keeps it.
+  const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
+  if (!checked) return { ok: false, reason: "ADE couldn't confirm all work is on GitHub.", code: "check_unreadable" };
+  const stillLeft = leftLanes(checked);
+  if (stillLeft) return { ok: false, reason: stillLeft, code: "check_left_work" };
+  return { ok: true, metadata, pushed };
+}
 
 /**
  * Wakes a resting computer for the push, as the person's push-work wake does:
@@ -504,7 +524,7 @@ type WakeRecord = { woke: boolean; from: string };
  * sleeps leave it alone. Answers the computer's metadata, and notes in `wake`
  * that it started it (before the wait, so a wake that times out is put back too).
  */
-async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord): Promise<Record<string, string>> {
+async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason = "plan_cleanup"): Promise<Record<string, string>> {
   let instance = await provider.getInstance(computer.instance_id);
   if (isMeteredStatus(instance.status)) return instance.metadata;
   wake.from = instance.status;
@@ -515,7 +535,7 @@ async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: Com
       update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, free_wake_started_at = ?, free_wake_until = ?, zero_stop_started_at = null, cold_storage = 0
       where instance_id = ? and deleted_at is null and awake_since is null
     `).bind(status, now, now + FREE_WAKE_MS, now, now + FREE_WAKE_MS, computer.instance_id),
-    powerLogStatement(env, computer, "start", "plan_cleanup", now),
+    powerLogStatement(env, computer, "start", reason, now),
   ]);
   let awake = isMeteredStatus(status);
   for (let polls = 0; !awake && polls < WAKE_WAIT_MS / WAKE_POLL_MS; polls += 1) {
@@ -534,7 +554,7 @@ async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: Com
  * isn't charged). Best effort: a failure is reported, and the tick's
  * no-check-in sleep is the backstop.
  */
-async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId: string, from: string): Promise<void> {
+export async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId: string, from: string): Promise<void> {
   try {
     const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(instanceId).first<ComputerRow>();
     if (!row) return;
@@ -548,7 +568,7 @@ async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId:
 }
 
 /** The JSON a `--json` command printed: its `result`, or the object itself. Null when unreadable. */
-function readResult(stdout: string): Record<string, unknown> | null {
+export function readResult(stdout: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(stdout.trim()) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;

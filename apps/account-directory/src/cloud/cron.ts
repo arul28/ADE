@@ -8,6 +8,7 @@ import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanCleanups } from "./planCleanup";
+import { computersJoiningLaunches } from "./launches";
 import { runCloudAutoUpdates } from "./updates";
 import {
   DELETION_WARNING_LATE_MS,
@@ -343,14 +344,25 @@ async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: T
   }
 }
 
-/** Awake with no check-in for 10 minutes, or never checked in at all: sleep it. */
+/**
+ * Awake with no check-in for 10 minutes, or never checked in at all: sleep it.
+ * A server launch's new computer has no machine row to check in with until it
+ * signed in, and a person may take a while to tap Approve: it stays awake
+ * while its launch is joining, up to the join window's end.
+ */
 async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
-  await Promise.all(computers.filter((computer) => {
+  const unseen = computers.filter((computer) => {
     if (computer.status !== "running" || computer.awake_since == null) return false;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return false;
     const lastSign = Math.max(computer.last_seen_at ?? 0, computer.awake_since);
     return now - lastSign > NO_CHECK_IN_MS;
-  }).map(async (computer) => {
+  });
+  if (unseen.length === 0) return;
+  const joining = await computersJoiningLaunches(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.launch_joining_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return new Set<string>();
+  });
+  await Promise.all(unseen.filter((computer) => !joining.has(computer.instance_id)).map(async (computer) => {
     try {
       const status = await provider.sleepInstance(computer.instance_id);
       const statements = statusChangeStatements(env, computer, status, now, "no_check_in");
