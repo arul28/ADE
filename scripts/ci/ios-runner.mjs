@@ -23,8 +23,12 @@
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-/** A readiness stamp older than this is not trusted. Matches the 5-minute agent cadence. */
-export const READINESS_WINDOW_SECONDS = 15 * 60;
+/**
+ * A readiness stamp older than this is not trusted. The agent ticks every five
+ * minutes and republishes every four, so a healthy Mac always holds a stamp
+ * inside this window and a sleeping one leaves it within ten.
+ */
+export const READINESS_WINDOW_SECONDS = 10 * 60;
 
 /**
  * @returns {{ runner: string | string[], reason: string }}

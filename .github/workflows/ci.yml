@@ -918,13 +918,17 @@ jobs:
       # capacity. The readiness agent (scripts/ci/mac-studio-readiness.mjs)
       # stamps the Unix time it last proved the machine had free disk, free
       # memory and idle cores into `MAC_STUDIO_READY`, and stops stamping when
-      # it does not. Only a stamp younger than fifteen minutes is trusted, so a
-      # Mac that went to sleep, lost its runner or filled its disk ages out on
-      # its own. An unset variable always takes that fallback.
+      # it does not. Only a stamp younger than ten minutes is trusted, so a Mac
+      # that went to sleep, lost its runner or filled its disk ages out on its
+      # own. An unset variable always takes that fallback.
       #
-      # Fork PRs never route here: a self-hosted runner executes the workflow of
-      # the commit it checks out, so a fork branch could run arbitrary code on
-      # the machine.
+      # The router is defence in depth, not the trust boundary. A `pull_request`
+      # workflow runs code from the pull request, so a fork able to rewrite this
+      # job could rewrite the router too. What actually keeps a fork off the Mac
+      # is the repository's fork-approval policy (Settings → Actions → "Require
+      # approval for all outside collaborators"), which stops a fork workflow
+      # from running at all until a maintainer approves it. Do not loosen that
+      # setting while this runner exists.
       - name: Pick a runner
         id: pick
         env:

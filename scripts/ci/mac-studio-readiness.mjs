@@ -58,7 +58,7 @@ const DEFAULTS = {
   // router's 15-minute freshness window. Writes happen only on a state change
   // or on this refresh — on a busy Mac that is one write per transition, not
   // one per tick.
-  republishSeconds: 480,
+  republishSeconds: 240,
   runnerDir: path.join(process.env.HOME ?? "/tmp", "actions-runner-ade"),
 };
 
@@ -210,8 +210,22 @@ function writeState(next) {
   fs.writeFileSync(STATE, `${JSON.stringify(next, null, 2)}\n`);
 }
 
+/**
+ * launchd starts an agent with PATH=/usr/bin:/bin:/usr/sbin:/sbin, so a bare
+ * `gh` is not found even though the user's shell finds it. Resolve an absolute
+ * path once, preferring the Homebrew locations.
+ */
+function resolveGh() {
+  for (const candidate of ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "gh";
+}
+
+const GH_BIN = resolveGh();
+
 function publish(options, value) {
-  execFileSync("gh", [
+  execFileSync(GH_BIN, [
     "variable", "set", options.variable,
     "--repo", options.repo,
     "--body", String(value),
@@ -272,7 +286,14 @@ function install(options) {
     <string>--once</string>
     <string>--repo</string><string>${xmlEscape(options.repo)}</string>
     <string>--runner-dir</string><string>${xmlEscape(options.runnerDir)}</string>
+    <string>--min-free-gb</string><string>${xmlEscape(options.minFreeGb)}</string>
+    <string>--min-free-mem-pct</string><string>${xmlEscape(options.minFreeMemPct)}</string>
+    <string>--max-load-ratio</string><string>${xmlEscape(options.maxLoadRatio)}</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>${xmlEscape(path.join(os.homedir(), "Library", "Logs", "ade-mac-studio-readiness.log"))}</string>
