@@ -5,6 +5,7 @@ import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import { makeJiraIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import type { IssueRef } from "../../../shared/issueRefs";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { requestIssueCreate } from "../../lib/issueCreateRequests";
 import { buildJiraLaunchIssue } from "../../lib/linearBatchLaunch";
 import { requestIssueLaunch } from "../../lib/issueLaunchRequests";
@@ -30,6 +31,7 @@ import {
 import {
   copyIssueText,
   IssueActionDock,
+  IssueNoMachineNotice,
   IssueStaleBanner,
   IssueViewerFrame,
   IssueViewerHeader,
@@ -47,7 +49,7 @@ export function JiraIssueViewer({
   onViewAll,
   onClose,
   onOpenRelated,
-}: IssueViewerProps & { jiraRef: JiraRef }) {
+}: IssueViewerProps & { jiraRef: JiraRef; pin: OpenProjectBinding | null }) {
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const pinKey = pin?.key ?? null;
@@ -156,7 +158,9 @@ export function JiraIssueViewer({
   );
 
   let body: React.ReactNode;
-  if (!issue) {
+  if (!issue && !pin) {
+    body = <IssueNoMachineNotice url={url} openLabel="Open in Jira" onLeave={onClose} />;
+  } else if (!issue) {
     body = <JiraLoadState status={entry.status} error={entry.error} jiraRef={jiraRef} url={url} onRetry={entry.refresh} />;
   } else {
     body = (

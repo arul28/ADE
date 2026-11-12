@@ -8,7 +8,6 @@ type InFlightEntry<T> = {
 const prListInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
 const githubSnapshotInFlight = new Map<string, InFlightEntry<GitHubPrSnapshot>>();
 const prRefreshInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
-const prSurfaceWarmInFlight = new Map<string, InFlightEntry<void>>();
 const linkedPrRefreshInFlight = new Map<string, InFlightEntry<PrSummary | null>>();
 const linkedPrRecentRefresh = new Map<string, { refreshedAt: number; result: PrSummary | null }>();
 const machineReconcileRequestedAt = new Map<string, number>();
@@ -33,21 +32,22 @@ function projectKey(
 }
 
 /**
- * The scope of an unpinned GitHub snapshot read.
+ * The scope of a GitHub snapshot read: the machine that answers it.
  *
- * `getGitHubSnapshot` takes no pin, so the read follows the machine this
- * window's project tab is bound to — the same path on two machines is two
- * different credential stores and two different databases. The root alone
- * cannot say which one a memoized refusal came from, so the caller also names
- * the window's binding: one machine's "no GitHub credential" must never answer
- * the other machine's reads. It is an argument, not a store read, so the key
- * is a function of what the caller asked for.
+ * The same path on two machines is two different credential stores and two
+ * different databases. The root alone cannot say which one a memoized refusal
+ * came from, so the key also names the machine: the pin's key, or for an
+ * unpinned read the window's binding (where an unpinned read goes). One
+ * machine's "no GitHub credential" must never answer another machine's reads.
+ * A pin of the tab's own copy keys like the unpinned read of that copy, so the
+ * two share one entry and one in-flight read.
  */
 function snapshotReadScopeKey(
   projectRoot: string | null | undefined,
   bindingKey: string | null | undefined,
+  pin?: OpenProjectBinding | null,
 ): string {
-  return JSON.stringify([projectKey(projectRoot), bindingKey ?? null]);
+  return JSON.stringify([projectKey(projectRoot, pin), pin?.key ?? bindingKey ?? null]);
 }
 
 function summaryFreshness(summary: PrSummary): number {
@@ -201,11 +201,14 @@ export function getGitHubSnapshotCoalesced(
   } = {},
   options?: {
     projectRoot?: string | null;
-    /** The window's `projectBinding.key`: the read follows it (see `snapshotReadScopeKey`). */
+    /** The window's `projectBinding.key`: an unpinned read follows it (see `snapshotReadScopeKey`). */
     bindingKey?: string | null;
+    /** The machine that reads GitHub for the repository (the repository reader). */
+    pin?: OpenProjectBinding | null;
   },
 ): Promise<GitHubPrSnapshot> {
-  const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey);
+  const pin = options?.pin ?? null;
+  const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey, pin);
   // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
   // answers every snapshot read with the same refusal, and every PR event
   // here used to ask it again over the relay. Remember that answer briefly;
@@ -223,7 +226,7 @@ export function getGitHubSnapshotCoalesced(
       includeExternalClosed: args.includeExternalClosed === true,
       historyPageLimit: args.historyPageLimit ?? null,
     }),
-    () => window.ade.prs.getGitHubSnapshot(args).then(
+    () => window.ade.prs.getGitHubSnapshot(args, pin).then(
       (snapshot) => {
         githubSnapshotAuthRefusals.delete(scopeKey);
         return snapshot;
@@ -301,39 +304,6 @@ export function refreshLinkedPrCoalesced(
   );
 }
 
-export function warmPrSurfaceCoalesced(options?: {
-  projectRoot?: string | null;
-  /** The window's `projectBinding.key`, as for `getGitHubSnapshotCoalesced`. */
-  bindingKey?: string | null;
-  includeGithubSnapshot?: boolean;
-  forceGithubSnapshot?: boolean;
-}): Promise<void> {
-  const rootKey = projectKey(options?.projectRoot);
-  return coalesceInFlight(
-    prSurfaceWarmInFlight,
-    JSON.stringify({
-      projectRoot: rootKey,
-      bindingKey: options?.bindingKey ?? null,
-      includeGithubSnapshot: options?.includeGithubSnapshot !== false,
-      forceGithubSnapshot: options?.forceGithubSnapshot === true,
-    }),
-    async () => {
-      const tasks: Array<Promise<unknown>> = [
-        refreshPrsCoalesced({}, { projectRoot: options?.projectRoot }).catch(() => null),
-      ];
-      if (options?.includeGithubSnapshot !== false) {
-        tasks.push(
-          getGitHubSnapshotCoalesced(
-            { force: options?.forceGithubSnapshot === true },
-            { projectRoot: options?.projectRoot, bindingKey: options?.bindingKey },
-          ).catch(() => null),
-        );
-      }
-      await Promise.all(tasks);
-    },
-  );
-}
-
 export const MACHINE_PR_RECONCILE_COOLDOWN_MS = 60_000;
 
 /**
@@ -368,7 +338,6 @@ export function clearPrReadInFlightForTest(): void {
   prListGeneration.clear();
   githubSnapshotInFlight.clear();
   prRefreshInFlight.clear();
-  prSurfaceWarmInFlight.clear();
   linkedPrRefreshInFlight.clear();
   linkedPrRecentRefresh.clear();
   machineReconcileRequestedAt.clear();

@@ -10,7 +10,7 @@ import { requestIssueCreate } from "../../lib/issueCreateRequests";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { cn } from "../ui/cn";
 import { GitHubIssuesPane } from "./GitHubIssuesPane";
-import { refreshGitHubIssueSummary, useGitHubIssueSummary, useProjectGitHubRepo } from "./githubIssueStore";
+import { refreshGitHubIssueSummary, useGitHubIssuePin, useGitHubIssueSummary, useProjectGitHubRepo } from "./githubIssueStore";
 import { useIssueTopBarPreferences } from "./issueTopBarPreferences";
 
 const GITHUB_PANE_BRAND: IssuePaneBrand = {
@@ -42,14 +42,15 @@ export function GitHubIssuesButton({
 }) {
   const preferences = useIssueTopBarPreferences();
   const { repo } = useProjectGitHubRepo();
+  const pin = useGitHubIssuePin();
   const summary = useGitHubIssueSummary(preferences.github ? repo : null);
   const [open, setOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const openPane = useCallback(() => {
     setOpen(true);
-    if (repo) refreshGitHubIssueSummary(repo, { force: true });
-  }, [repo]);
+    if (repo) refreshGitHubIssueSummary(repo, { force: true, pin });
+  }, [pin, repo]);
 
   // "All issues" from the issue sheet, answered by the one icon instance.
   useEffect(() => {
@@ -119,7 +120,7 @@ export function GitHubIssuesButton({
           closeTitle="Close GitHub issues"
           onRefresh={() => {
             setRefreshKey((key) => key + 1);
-            refreshGitHubIssueSummary(repo, { force: true });
+            refreshGitHubIssueSummary(repo, { force: true, pin });
           }}
           onNew={() => requestIssueCreate({ provider: "github", origin: "pane" })}
           newTitle="New GitHub issue"

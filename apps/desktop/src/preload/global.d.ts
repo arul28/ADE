@@ -4781,16 +4781,20 @@ declare global {
         disconnect: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
         listProjects: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraProject[]>;
         listIssues: (args?: JiraListIssuesArgs, pin?: OpenProjectBinding | null) => Promise<JiraIssuePage>;
-        getIssue: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<JiraIssueDetail>;
-        listComments: (args: { key: string; cursor: string | null }, pin?: OpenProjectBinding | null) => Promise<{ comments: JiraComment[]; nextCursor: string | null }>;
-        addComment: (args: { key: string; body: string }, pin?: OpenProjectBinding | null) => Promise<JiraComment>;
-        updateIssue: (args: JiraUpdateIssueArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        listTransitions: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<JiraTransition[]>;
-        transitionIssue: (args: { key: string; transitionId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
-        listAssignableUsers: (args?: { projectKey?: string; key?: string; query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraUser[]>;
-        listLabels: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<string[]>;
-        getCreateMeta: (args: { projectKey: string }, pin?: OpenProjectBinding | null) => Promise<JiraCreateMeta>;
-        createIssue: (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null) => Promise<JiraCreateIssueResult>;
+        // Issue reads and writes (class A) go to the repository reader. The
+        // connection members above are machine-global (D); `listProjects` and
+        // `listIssues` keep an optional pin until Settings and the chat
+        // composer pass one (see the PRs and issues report).
+        getIssue: (args: { key: string }, pin: OpenProjectBinding) => Promise<JiraIssueDetail>;
+        listComments: (args: { key: string; cursor: string | null }, pin: OpenProjectBinding) => Promise<{ comments: JiraComment[]; nextCursor: string | null }>;
+        addComment: (args: { key: string; body: string }, pin: OpenProjectBinding) => Promise<JiraComment>;
+        updateIssue: (args: JiraUpdateIssueArgs, pin: OpenProjectBinding) => Promise<void>;
+        listTransitions: (args: { key: string }, pin: OpenProjectBinding) => Promise<JiraTransition[]>;
+        transitionIssue: (args: { key: string; transitionId: string }, pin: OpenProjectBinding) => Promise<void>;
+        listAssignableUsers: (args: { projectKey?: string; key?: string; query?: string } | undefined, pin: OpenProjectBinding) => Promise<JiraUser[]>;
+        listLabels: (args: { query?: string } | undefined, pin: OpenProjectBinding) => Promise<string[]>;
+        getCreateMeta: (args: { projectKey: string }, pin: OpenProjectBinding) => Promise<JiraCreateMeta>;
+        createIssue: (args: JiraCreateIssueArgs, pin: OpenProjectBinding) => Promise<JiraCreateIssueResult>;
       };
       account: {
         status: () => Promise<AdeAccountStatus>;

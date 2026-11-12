@@ -194,9 +194,17 @@ export function useCreateLaneFromPrBranch({
     setLoading(true);
     const api = createLaneFromPrBranchApi();
     const preflightArgs = createLaneFromPrBranchArgs(next);
+    // The check runs on the machine the lane will be made on: the picked one,
+    // or the tab's own (the same machine the create below is pinned to).
+    const preflightPin = nextTarget?.pin ?? tabBinding;
+    if (!preflightPin) {
+      setError("This project is still opening. Try again in a moment.");
+      setLoading(false);
+      return;
+    }
     void (nextTarget?.pin
       ? withMachineTimeout(api.preflightCreateLaneFromPrBranch(preflightArgs, nextTarget.pin), nextTarget.machineName)
-      : api.preflightCreateLaneFromPrBranch(preflightArgs))
+      : api.preflightCreateLaneFromPrBranch(preflightArgs, preflightPin))
       .then((result) => {
         if (isCurrent()) setPreflight(result);
       })

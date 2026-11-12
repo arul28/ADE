@@ -1,3 +1,4 @@
+import type { OpenProjectBinding } from "../../../../shared/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   applyGithubRequestBudget,
@@ -60,7 +61,13 @@ export type GithubPollGovernor = {
  *
  * See `githubPollGovernor.ts` for the incident this exists to prevent.
  */
-export function useGithubPollGovernor(active: boolean): GithubPollGovernor {
+export function useGithubPollGovernor(
+  active: boolean,
+  /** The machine whose GitHub request budget this surface spends. */
+  pin: OpenProjectBinding | null,
+): GithubPollGovernor {
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const stateRef = useRef<GithubPollGovernorState>(initialGithubPollGovernorState);
   const [githubPollGeneration, setGithubPollGeneration] = useState(0);
 
@@ -81,7 +88,9 @@ export function useGithubPollGovernor(active: boolean): GithubPollGovernor {
   const refreshBudget = useCallback(async () => {
     // Optional on purpose: an older remote runtime has no budget action, and a
     // renderer that threw here would lose the local failure ladder too.
-    const budget = await window.ade?.github?.getRequestBudget?.().catch(() => null);
+    const budgetPin = pinRef.current;
+    if (!budgetPin) return;
+    const budget = await window.ade?.github?.getRequestBudget?.(budgetPin).catch(() => null);
     if (!budget) return;
     commit(applyGithubRequestBudget(stateRef.current, budget, Date.now()));
   }, [commit]);
@@ -107,14 +116,15 @@ export function useGithubPollGovernor(active: boolean): GithubPollGovernor {
     [],
   );
 
+  const pinKey = pin?.key ?? null;
   useEffect(() => {
-    if (!active) return undefined;
+    if (!active || !pinKey) return undefined;
     void refreshBudget();
     const id = window.setInterval(() => {
       void refreshBudget();
     }, GITHUB_REQUEST_BUDGET_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [active, refreshBudget]);
+  }, [active, pinKey, refreshBudget]);
 
   return {
     isGithubPollStoodDown,

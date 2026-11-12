@@ -23,6 +23,15 @@ import { useActiveProjectRoot } from "../../state/appStore";
 import { createIssueEntryCache, type IssueEntry } from "./issueEntryCache";
 import { cacheScopePin } from "../../lib/tabBindingKey";
 
+/**
+ * Pins. Issue reads and writes go to the repository reader
+ * (`useActiveRepositoryReader`), so they take `pin: OpenProjectBinding | null`:
+ * null means no machine is online, and nothing is asked. The connection
+ * status is machine-global (Settings asks one machine; null there means the
+ * tab's own), so it still takes an optional pin.
+ */
+const NO_MACHINE_MESSAGE = "No computer that has this project is online.";
+
 const ISSUE_STALE_MS = 60_000;
 const LIST_STALE_MS = 60_000;
 const CONNECTION_STALE_MS = 60_000;
@@ -106,7 +115,12 @@ export function rememberJiraConnectionStatus(
   notify();
 }
 
-export function useJiraConnectionStatus(enabled = true, pin: OpenProjectBinding | null = null): {
+/**
+ * The connection of the machine that serves the issue views (`pin`, the
+ * repository reader or a chat's machine). A null pin means no machine is
+ * online: nothing is asked and the status stays empty.
+ */
+export function useJiraConnectionStatus(enabled: boolean, pin: OpenProjectBinding | null): {
   status: JiraConnectionStatus | null;
   loading: boolean;
   refresh: () => Promise<JiraConnectionStatus | null>;
@@ -117,9 +131,13 @@ export function useJiraConnectionStatus(enabled = true, pin: OpenProjectBinding 
   const pinKey = pin?.key ?? null;
   const scopedKey = scopeKey(projectRoot, pin);
   const entry = useSyncExternalStore(subscribe, () => connections.get(scopedKey) ?? EMPTY_CONNECTION, () => EMPTY_CONNECTION);
-  const refresh = useCallback(() => loadJiraConnectionStatus(projectRoot, { force: true, pin: pinRef.current }), [projectRoot, pinKey]);
+  const refresh = useCallback(() => (
+    pinRef.current
+      ? loadJiraConnectionStatus(projectRoot, { force: true, pin: pinRef.current })
+      : Promise.resolve(null)
+  ), [projectRoot, pinKey]);
   useEffect(() => {
-    if (!enabled) return undefined;
+    if (!enabled || !pinKey) return undefined;
     void loadJiraConnectionStatus(projectRoot, { pin: pinRef.current });
     const onFocus = () => { void loadJiraConnectionStatus(projectRoot, { pin: pinRef.current }); };
     const onChanged = () => { void loadJiraConnectionStatus(projectRoot, { force: true, pin: pinRef.current }); };
@@ -264,11 +282,12 @@ export function isCompleteJiraIssue(entry: { fetchedAt: number }): boolean {
 export function loadJiraIssue(
   projectRoot: string | null,
   ref: Extract<IssueRef, { provider: "jira" }>,
-  options: { force?: boolean; pin?: OpenProjectBinding | null } = {},
+  options: { force?: boolean; pin: OpenProjectBinding | null },
 ): Promise<JiraIssueDetail | null> {
   const pin = options.pin;
   const revisionAtStart = jiraConnectionRevision;
   const key = issueKey(projectRoot, ref.siteUrl, ref.key, pin);
+  if (!pin) return Promise.resolve(issueEntries.peek(key));
   const api = window.ade?.jira;
   return issueEntries.load(
     key,
@@ -302,7 +321,7 @@ export function jiraIssueToContextAttachment(issue: JiraIssueDetail, siteUrl: st
   return laneIssue ? makeJiraIssueContextAttachment(laneIssue) : null;
 }
 
-export function useJiraIssue(ref: Extract<IssueRef, { provider: "jira" }> | null, pin?: OpenProjectBinding | null): JiraIssueEntry & {
+export function useJiraIssue(ref: Extract<IssueRef, { provider: "jira" }> | null, pin: OpenProjectBinding | null): JiraIssueEntry & {
   refresh: () => void;
   projectRoot: string | null;
 } {
@@ -316,7 +335,7 @@ export function useJiraIssue(ref: Extract<IssueRef, { provider: "jira" }> | null
   const issueKeyValue = ref?.key ?? null;
   const partial = entry.issue != null && !isCompleteJiraIssue(entry);
   useEffect(() => {
-    if (!siteUrl || !issueKeyValue) return;
+    if (!siteUrl || !issueKeyValue || !pinRef.current) return;
     void loadJiraIssue(projectRoot, { provider: "jira", siteUrl, key: issueKeyValue }, { pin: pinRef.current });
   }, [issueKeyValue, partial, pinKey, projectRoot, siteUrl]);
   const refresh = useCallback(() => {
@@ -333,9 +352,10 @@ export function editJiraIssue(
   issue: JiraIssueDetail,
   patch: Omit<JiraUpdateIssueArgs, "key">,
   optimistic: Partial<JiraIssueDetail>,
-  options: { pin?: OpenProjectBinding | null } = {},
+  options: { pin: OpenProjectBinding | null },
 ): Promise<JiraIssueDetail | null> {
   const pin = options.pin;
+  if (!pin) return Promise.reject(new Error(NO_MACHINE_MESSAGE));
   const revisionAtStart = jiraConnectionRevision;
   const api = window.ade?.jira;
   const key = issueKey(projectRoot, siteUrl, issue.key, pin);
@@ -370,9 +390,10 @@ export function transitionJiraIssue(
   siteUrl: string,
   issue: JiraIssueDetail,
   transition: JiraTransition,
-  options: { pin?: OpenProjectBinding | null } = {},
+  options: { pin: OpenProjectBinding | null },
 ): Promise<JiraIssueDetail | null> {
   const pin = options.pin;
+  if (!pin) return Promise.reject(new Error(NO_MACHINE_MESSAGE));
   const revisionAtStart = jiraConnectionRevision;
   const api = window.ade?.jira;
   const key = issueKey(projectRoot, siteUrl, issue.key, pin);
@@ -408,11 +429,12 @@ export async function addJiraIssueComment(
   siteUrl: string,
   issue: JiraIssueDetail,
   body: string,
-  pin?: OpenProjectBinding | null,
+  pin: OpenProjectBinding | null,
 ): Promise<JiraComment> {
   const revisionAtStart = jiraConnectionRevision;
   const api = window.ade?.jira;
   if (!api?.addComment) throw new Error("Jira comments are not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   const status = await loadJiraConnectionStatus(projectRoot, { force: true, pin });
   if (revisionAtStart !== jiraConnectionRevision) throw new Error("Jira connection changed while adding a comment.");
   statusForIssue(siteUrl, status);
@@ -432,11 +454,12 @@ export async function loadJiraIssueComments(
   siteUrl: string,
   key: string,
   cursor: string | null,
-  pin?: OpenProjectBinding | null,
+  pin: OpenProjectBinding | null,
 ): Promise<{ comments: JiraComment[]; nextCursor: string | null }> {
   const revisionAtStart = jiraConnectionRevision;
   const api = window.ade?.jira;
   if (!api?.listComments) throw new Error("Jira comments are not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   const status = await loadJiraConnectionStatus(projectRoot, { force: true, pin });
   if (revisionAtStart !== jiraConnectionRevision) throw new Error("Jira connection changed while loading comments.");
   statusForIssue(siteUrl, status);
@@ -449,11 +472,12 @@ export async function loadJiraIssueTransitions(
   projectRoot: string | null,
   siteUrl: string,
   key: string,
-  pin?: OpenProjectBinding | null,
+  pin: OpenProjectBinding | null,
 ): Promise<JiraTransition[]> {
   const revisionAtStart = jiraConnectionRevision;
   const api = window.ade?.jira;
   if (!api?.listTransitions) throw new Error("Jira status changes are not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   const status = await loadJiraConnectionStatus(projectRoot, { pin });
   if (revisionAtStart !== jiraConnectionRevision) throw new Error("Jira connection changed while loading statuses.");
   statusForIssue(siteUrl, status);
@@ -468,16 +492,17 @@ type ProjectEntry = { projects: JiraProject[]; fetchedAt: number; promise: Promi
 const projects = new Map<string, ProjectEntry>();
 const EMPTY_PROJECTS: ProjectEntry = { projects: [], fetchedAt: 0, promise: null, error: null };
 
-export function loadJiraProjects(projectRoot: string | null, options: { force?: boolean; query?: string; siteUrl?: string; pin?: OpenProjectBinding | null } = {}): Promise<JiraProject[]> {
+export function loadJiraProjects(projectRoot: string | null, options: { force?: boolean; query?: string; siteUrl?: string; pin: OpenProjectBinding | null }): Promise<JiraProject[]> {
   const site = options.siteUrl ? normalizeJiraSite(options.siteUrl) : "";
   const key = `${jiraConnectionRevision}:${scopeKey(projectRoot, options.pin)}:${site}:${options.query?.trim().toLowerCase() ?? ""}`;
   const current = projects.get(key) ?? EMPTY_PROJECTS;
   if (current.promise) return current.promise;
   if (!options.force && Date.now() - current.fetchedAt < LIST_STALE_MS) return Promise.resolve(current.projects);
   const read = window.ade?.jira?.listProjects;
-  if (!read) return Promise.resolve([]);
+  const pin = options.pin;
+  if (!read || !pin) return Promise.resolve(current.projects);
   const revisionAtStart = jiraConnectionRevision;
-  const promise = read({ query: options.query }, options.pin)
+  const promise = read({ query: options.query }, pin)
     .then((rows) => {
       if (revisionAtStart !== jiraConnectionRevision) return [];
       const next = rows ?? [];
@@ -495,7 +520,7 @@ export function loadJiraProjects(projectRoot: string | null, options: { force?: 
   return promise;
 }
 
-export function useJiraProjects(enabled = true, siteUrl = "", pin?: OpenProjectBinding | null): { projects: JiraProject[]; loading: boolean; error: string | null; refresh: () => Promise<JiraProject[]> } {
+export function useJiraProjects(enabled: boolean, siteUrl: string, pin: OpenProjectBinding | null): { projects: JiraProject[]; loading: boolean; error: string | null; refresh: () => Promise<JiraProject[]> } {
   const projectRoot = useActiveProjectRoot();
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -504,7 +529,7 @@ export function useJiraProjects(enabled = true, siteUrl = "", pin?: OpenProjectB
   const entry = useSyncExternalStore(subscribe, () => projects.get(key) ?? EMPTY_PROJECTS, () => EMPTY_PROJECTS);
   const refresh = useCallback(() => loadJiraProjects(projectRoot, { force: true, siteUrl, pin: pinRef.current }), [pinKey, projectRoot, siteUrl]);
   useEffect(() => {
-    if (!enabled) return undefined;
+    if (!enabled || !pinKey) return undefined;
     void loadJiraProjects(projectRoot, { siteUrl, pin: pinRef.current }).catch(() => {});
     const onConnectionChanged = () => { void loadJiraProjects(projectRoot, { force: true, siteUrl, pin: pinRef.current }).catch(() => {}); };
     window.addEventListener(JIRA_CONNECTION_CHANGED_EVENT, onConnectionChanged);
@@ -514,13 +539,13 @@ export function useJiraProjects(enabled = true, siteUrl = "", pin?: OpenProjectB
 }
 
 const createMeta = new Map<string, { value: JiraCreateMeta | null; promise: Promise<JiraCreateMeta | null> | null }>();
-export function loadJiraCreateMeta(projectRoot: string | null, projectKey: string, force = false, pin?: OpenProjectBinding | null): Promise<JiraCreateMeta | null> {
+export function loadJiraCreateMeta(projectRoot: string | null, projectKey: string, force: boolean, pin: OpenProjectBinding | null): Promise<JiraCreateMeta | null> {
   const key = `${jiraConnectionRevision}:${scopeKey(projectRoot, pin)}:${projectKey.toUpperCase()}`;
   const current = createMeta.get(key) ?? { value: null, promise: null };
   if (current.promise) return current.promise;
   if (!force && current.value) return Promise.resolve(current.value);
   const read = window.ade?.jira?.getCreateMeta;
-  if (!read) return Promise.resolve(null);
+  if (!read || !pin) return Promise.resolve(current.value);
   const revisionAtStart = jiraConnectionRevision;
   const promise = read({ projectKey }, pin)
     .then((value) => {
@@ -541,13 +566,13 @@ export function loadJiraCreateMeta(projectRoot: string | null, projectKey: strin
 
 type AssignableEntry = { users: JiraUser[]; promise: Promise<JiraUser[]> | null };
 const assignableUsers = new Map<string, AssignableEntry>();
-export function loadJiraAssignableUsers(projectRoot: string | null, input: { projectKey?: string; key?: string; query?: string } = {}, pin?: OpenProjectBinding | null): Promise<JiraUser[]> {
+export function loadJiraAssignableUsers(projectRoot: string | null, input: { projectKey?: string; key?: string; query?: string }, pin: OpenProjectBinding | null): Promise<JiraUser[]> {
   const cacheKey = `${jiraConnectionRevision}:${scopeKey(projectRoot, pin)}:${input.projectKey ?? ""}:${input.key ?? ""}:${input.query?.trim().toLowerCase() ?? ""}`;
   const current = assignableUsers.get(cacheKey) ?? { users: [], promise: null };
   if (current.users.length > 0) return Promise.resolve(current.users);
   if (current.promise) return current.promise;
   const read = window.ade?.jira?.listAssignableUsers;
-  if (!read) return Promise.resolve([]);
+  if (!read || !pin) return Promise.resolve([]);
   const revisionAtStart = jiraConnectionRevision;
   const promise = read(input, pin)
     .then((users) => {
@@ -563,13 +588,13 @@ export function loadJiraAssignableUsers(projectRoot: string | null, input: { pro
 
 type LabelEntry = { labels: string[]; promise: Promise<string[]> | null };
 const labelCatalogs = new Map<string, LabelEntry>();
-export function loadJiraLabels(projectRoot: string | null, query = "", pin?: OpenProjectBinding | null): Promise<string[]> {
+export function loadJiraLabels(projectRoot: string | null, query: string, pin: OpenProjectBinding | null): Promise<string[]> {
   const key = `${jiraConnectionRevision}:${scopeKey(projectRoot, pin)}:${query.trim().toLowerCase()}`;
   const current = labelCatalogs.get(key) ?? { labels: [], promise: null };
   if (current.labels.length > 0) return Promise.resolve(current.labels);
   if (current.promise) return current.promise;
   const read = window.ade?.jira?.listLabels;
-  if (!read) return Promise.resolve([]);
+  if (!read || !pin) return Promise.resolve([]);
   const revisionAtStart = jiraConnectionRevision;
   const promise = read({ query }, pin)
     .then((labels) => {
@@ -728,9 +753,10 @@ function syncJiraIssueLists(projectRoot: string | null, siteUrl: string, detail:
 export function loadJiraIssueList(
   projectRoot: string | null,
   filters: JiraIssueFilters,
-  options: { force?: boolean; cursor?: string | null; siteUrl?: string; pin?: OpenProjectBinding | null } = {},
+  options: { force?: boolean; cursor?: string | null; siteUrl?: string; pin: OpenProjectBinding | null },
 ): Promise<void> {
   const pin = options.pin;
+  if (!pin) return Promise.resolve();
   const revisionAtStart = jiraConnectionRevision;
   const key = jiraListKey(projectRoot, filters, options.siteUrl, pin);
   const current = lists.get(key) ?? EMPTY_LIST;
@@ -795,7 +821,7 @@ export function loadJiraIssueList(
   return promise;
 }
 
-export function useJiraIssueList(filters: JiraIssueFilters, enabled = true, siteUrl = "", pin?: OpenProjectBinding | null): JiraIssueListEntry & { refresh: () => void; loadMore: () => void } {
+export function useJiraIssueList(filters: JiraIssueFilters, enabled: boolean, siteUrl: string, pin: OpenProjectBinding | null): JiraIssueListEntry & { refresh: () => void; loadMore: () => void } {
   const projectRoot = useActiveProjectRoot();
   const pinRef = useRef(pin);
   pinRef.current = pin;

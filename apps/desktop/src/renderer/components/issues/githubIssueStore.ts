@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
-import type { AgentChatContextAttachment, GitHubIssueTypeOption, GitHubIssueWriteAccess, GitHubRepoIssueSummary, LaneGitHubIssue } from "../../../shared/types";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import type { AgentChatContextAttachment, GitHubIssueTypeOption, GitHubIssueWriteAccess, GitHubRepoIssueSummary, LaneGitHubIssue, OpenProjectBinding } from "../../../shared/types";
 import type { GitHubIssueTemplateSet } from "../../../shared/githubIssueTemplates";
 import { makeGitHubIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { githubIssueId, type GitHubIssueCommentLike, type GitHubIssueLike, type GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import { createIssueEntryCache, errorMessage, type IssueEntry } from "./issueEntryCache";
 import { useActiveProjectRoot } from "../../state/appStore";
+import { useActiveRepositoryReader, useActiveRepositoryTab } from "../../state/repositoryScope";
+import { cacheScopePin } from "../../lib/tabBindingKey";
+import { repoRefForTab } from "../prs/state/prsReader";
 
 /**
  * GitHub issues, read the way the issue viewer needs them, inside GitHub's
@@ -17,7 +20,21 @@ import { useActiveProjectRoot } from "../../state/appStore";
  *   than `STALE_MS` and a view asks again, and on Refresh.
  * - The top-bar badge comes from one GraphQL point (`getRepoIssueSummary`),
  *   kept on disk and re-read at most every `SUMMARY_STALE_MS`.
+ *
+ * Every read goes to the repository reader (`useActiveRepositoryReader`): the
+ * tab's copy, else the first online copy. A null pin means no machine is
+ * online, and nothing is asked. GitHub's answer does not depend on the
+ * machine, so the caches are per repository; only write access (which
+ * credential an edit uses) is per machine.
  */
+
+/** A reader pin, or null when no machine is online (then nothing is asked). */
+export type GitHubIssuePin = OpenProjectBinding | null;
+
+/** The machine that reads GitHub issues for the open repository. */
+export function useGitHubIssuePin(): GitHubIssuePin {
+  return useActiveRepositoryReader();
+}
 
 const STALE_MS = 60_000;
 const LIST_STALE_MS = 60_000;
@@ -175,12 +192,19 @@ export function loadGitHubIssue(
   owner: string,
   repo: string,
   number: number,
-  options: { force?: boolean } = {},
+  /**
+   * `pin` null: no machine is online, nothing is asked. Left out, the call
+   * takes the tab's route (only callers outside the issue views do this).
+   */
+  options: { force?: boolean; pin?: GitHubIssuePin } = {},
 ): Promise<GitHubIssueDetail | null> {
+  const key = issueKey(projectRoot, owner, repo, number);
+  if (options.pin === null) return Promise.resolve(entries.peek(key));
+  const pin = options.pin;
   const read = window.ade?.github?.getIssue;
   return entries.load(
-    issueKey(projectRoot, owner, repo, number),
-    read ? async () => normalizeGitHubIssue(owner, repo, await read({ owner, name: repo, number })) : null,
+    key,
+    read ? async () => normalizeGitHubIssue(owner, repo, await read({ owner, name: repo, number }, pin)) : null,
     { unavailable: "GitHub is not available here.", failed: "GitHub request failed." },
     options,
   );
@@ -193,8 +217,14 @@ export function peekGitHubIssue(projectRoot: string | null, owner: string, repo:
 export function useGitHubIssue(ref: { owner: string; repo: string; number: number } | null): GitHubIssueEntry & {
   refresh: () => void;
   projectRoot: string | null;
+  /** The machine the issue was read through; edits go there too. */
+  pin: GitHubIssuePin;
 } {
   const projectRoot = useActiveProjectRoot();
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const key = ref ? issueKey(projectRoot, ref.owner, ref.repo, ref.number) : null;
   const entry = useSyncExternalStore(subscribe, () => entries.read(key), () => entries.empty);
   const owner = ref?.owner ?? null;
@@ -204,14 +234,16 @@ export function useGitHubIssue(ref: { owner: string; repo: string; number: numbe
   // the issue is open; that read again is what lets editing come back.
   const partial = entry.issue != null && !isCompleteGitHubIssue(entry);
   useEffect(() => {
-    if (!owner || !repo || !number) return;
-    ensureIssueEventSubscription();
-    void loadGitHubIssue(projectRoot, owner, repo, number);
-  }, [number, owner, partial, projectRoot, repo]);
+    const readPin = pinRef.current;
+    if (!owner || !repo || !number || !readPin) return;
+    ensureIssueEventSubscription(readPin);
+    void loadGitHubIssue(projectRoot, owner, repo, number, { pin: readPin });
+  }, [number, owner, partial, pinKey, projectRoot, repo]);
   const refresh = useCallback(() => {
-    if (owner && repo && number) void loadGitHubIssue(projectRoot, owner, repo, number, { force: true });
-  }, [number, owner, projectRoot, repo]);
-  return { ...entry, refresh, projectRoot };
+    const readPin = pinRef.current;
+    if (owner && repo && number && readPin) void loadGitHubIssue(projectRoot, owner, repo, number, { force: true, pin: readPin });
+  }, [number, owner, pinKey, projectRoot, repo]);
+  return { ...entry, refresh, projectRoot, pin };
 }
 
 /** The cached copy only, for chips and hover cards that must not fetch. */
@@ -221,10 +253,15 @@ export function useGitHubIssuePeek(ref: { owner: string; repo: string; number: n
   return useSyncExternalStore(subscribe, () => (key ? entries.peek(key) : null), () => null);
 }
 
-export async function loadGitHubIssueComments(owner: string, repo: string, number: number): Promise<GitHubIssueComment[]> {
+export async function loadGitHubIssueComments(
+  owner: string,
+  repo: string,
+  number: number,
+  pin: GitHubIssuePin,
+): Promise<GitHubIssueComment[]> {
   const read = window.ade?.github?.listIssueComments;
-  if (!read) return [];
-  const rows = await read({ owner, name: repo, number });
+  if (!read || !pin) return [];
+  const rows = await read({ owner, name: repo, number }, pin);
   return (rows ?? []).map(normalizeComment).filter((comment): comment is GitHubIssueComment => comment != null);
 }
 
@@ -234,13 +271,13 @@ type RepoEntry = { repo: GitHubRepo | null; promise: Promise<GitHubRepo | null> 
 const repos = new Map<string, RepoEntry>();
 const EMPTY_REPO: RepoEntry = { repo: null, promise: null, checked: false };
 
-function loadProjectRepo(projectRoot: string): Promise<GitHubRepo | null> {
+function loadProjectRepo(projectRoot: string, pin: GitHubIssuePin | undefined): Promise<GitHubRepo | null> {
   const current = repos.get(projectRoot);
   if (current?.promise) return current.promise;
   if (current?.checked) return Promise.resolve(current.repo);
   const detect = window.ade?.github?.detectRepo;
-  if (!detect) return Promise.resolve(null);
-  const promise = detect()
+  if (!detect || pin === null) return Promise.resolve(null);
+  const promise = detect(pin)
     .then((repo) => {
       repos.set(projectRoot, { repo: repo ? { owner: repo.owner, name: repo.name } : null, promise: null, checked: true });
       notify();
@@ -255,17 +292,34 @@ function loadProjectRepo(projectRoot: string): Promise<GitHubRepo | null> {
   return promise;
 }
 
-/** The GitHub repository behind this project's origin, or null. */
+/**
+ * The GitHub repository behind this project's origin, or null. An account
+ * project names its repository, so that answer needs no call (and works with
+ * no machine online). A folder on this computer only asks the reader machine.
+ */
 export function useProjectGitHubRepo(): { repo: GitHubRepo | null; checked: boolean } {
   const projectRoot = useActiveProjectRoot();
+  const tabRepo = repoRefForTab(useActiveRepositoryTab());
+  const tabRepoOwner = tabRepo?.owner ?? null;
+  const tabRepoName = tabRepo?.name ?? null;
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const entry = useSyncExternalStore(
     subscribe,
     () => (projectRoot ? repos.get(projectRoot) ?? EMPTY_REPO : EMPTY_REPO),
     () => EMPTY_REPO,
   );
   useEffect(() => {
-    if (projectRoot) void loadProjectRepo(projectRoot);
-  }, [projectRoot]);
+    if (tabRepoOwner || !projectRoot || !pinRef.current) return;
+    void loadProjectRepo(projectRoot, pinRef.current);
+  }, [pinKey, projectRoot, tabRepoOwner]);
+  const namedRepo = useMemo(
+    () => (tabRepoOwner && tabRepoName ? { owner: tabRepoOwner, name: tabRepoName } : null),
+    [tabRepoName, tabRepoOwner],
+  );
+  if (namedRepo) return { repo: namedRepo, checked: true };
   return { repo: entry.repo, checked: entry.checked };
 }
 
@@ -293,7 +347,7 @@ function readStoredSummary(key: string): SummaryEntry | null {
 }
 
 /** Re-read the summary now (pane open, Refresh) or when it has gone stale. */
-export function refreshGitHubIssueSummary(repo: GitHubRepo, options: { force?: boolean } = {}): void {
+export function refreshGitHubIssueSummary(repo: GitHubRepo, options: { force?: boolean; pin: GitHubIssuePin }): void {
   const key = repoKey(repo);
   let current = summaries.get(key);
   if (!current) {
@@ -303,8 +357,8 @@ export function refreshGitHubIssueSummary(repo: GitHubRepo, options: { force?: b
   if (current?.promise) return;
   if (!options.force && current && Date.now() - current.checkedAt < SUMMARY_STALE_MS) return;
   const read = window.ade?.github?.getRepoIssueSummary;
-  if (!read) return;
-  const promise = read({ owner: repo.owner, name: repo.name })
+  if (!read || !options.pin) return;
+  const promise = read({ owner: repo.owner, name: repo.name }, options.pin)
     .then((summary) => {
       const next: SummaryEntry = { summary, checkedAt: Date.now(), promise: null };
       summaries.set(key, next);
@@ -326,17 +380,21 @@ export function refreshGitHubIssueSummary(repo: GitHubRepo, options: { force?: b
 
 export function useGitHubIssueSummary(repo: GitHubRepo | null): GitHubRepoIssueSummary | null {
   const key = repo ? repoKey(repo) : null;
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const entry = useSyncExternalStore(subscribe, () => (key ? summaries.get(key) ?? EMPTY_SUMMARY : EMPTY_SUMMARY), () => EMPTY_SUMMARY);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;
   useEffect(() => {
-    if (!owner || !name) return undefined;
-    refreshGitHubIssueSummary({ owner, name });
+    if (!owner || !name || !pinKey) return undefined;
+    refreshGitHubIssueSummary({ owner, name }, { pin: pinRef.current });
     // A focus after the stale window is the only re-read; nothing ticks.
-    const onFocus = () => refreshGitHubIssueSummary({ owner, name });
+    const onFocus = () => refreshGitHubIssueSummary({ owner, name }, { pin: pinRef.current });
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [name, owner]);
+  }, [name, owner, pinKey]);
   return entry.summary;
 }
 
@@ -364,15 +422,15 @@ export function loadGitHubIssueList(
   projectRoot: string | null,
   repo: GitHubRepo,
   state: GitHubIssueStateFilter,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; pin: GitHubIssuePin },
 ): void {
   const key = listKey(repo, state);
   const current = lists.get(key);
   if (current?.promise) return;
   if (!options.force && current?.status === "ready" && Date.now() - current.fetchedAt < LIST_STALE_MS) return;
   const read = window.ade?.github?.listRepoIssueList;
-  if (!read) return;
-  const promise = read({ owner: repo.owner, name: repo.name, state })
+  if (!read || !options.pin) return;
+  const promise = read({ owner: repo.owner, name: repo.name, state }, options.pin)
     .then((rows) => {
       const issues = (rows ?? [])
         .map((row) => normalizeGitHubIssue(repo.owner, repo.name, row))
@@ -396,36 +454,44 @@ export function loadGitHubIssueList(
 
 export function useGitHubIssueList(repo: GitHubRepo | null, state: GitHubIssueStateFilter): ListEntry & { refresh: () => void } {
   const projectRoot = useActiveProjectRoot();
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const key = repo ? listKey(repo, state) : null;
   const entry = useSyncExternalStore(subscribe, () => (key ? lists.get(key) ?? EMPTY_LIST : EMPTY_LIST), () => EMPTY_LIST);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;
   useEffect(() => {
-    if (!owner || !name) return;
-    ensureIssueEventSubscription();
-    loadGitHubIssueList(projectRoot, { owner, name }, state);
-  }, [entry.fetchedAt, name, owner, projectRoot, state]);
+    const readPin = pinRef.current;
+    if (!owner || !name || !readPin) return;
+    ensureIssueEventSubscription(readPin);
+    loadGitHubIssueList(projectRoot, { owner, name }, state, { pin: readPin });
+  }, [entry.fetchedAt, name, owner, pinKey, projectRoot, state]);
   const refresh = useCallback(() => {
-    if (owner && name) loadGitHubIssueList(projectRoot, { owner, name }, state, { force: true });
-  }, [name, owner, projectRoot, state]);
+    if (owner && name) loadGitHubIssueList(projectRoot, { owner, name }, state, { force: true, pin: pinRef.current });
+  }, [name, owner, pinKey, projectRoot, state]);
   return { ...entry, refresh };
 }
 
 /* ── Webhook push ──────────────────────────────────────────────────────── */
 
-let issueEventsSubscribed = false;
+/** The machines whose PR events this store listens to, by pin key. */
+const issueEventPinKeys = new Set<string>();
 
 /**
  * Re-read what an `issues` / `issue_comment` webhook says changed. Only issues
  * a view has already read are refreshed (one ETag'd GET each), and the repo's
  * lists and badge count are marked stale so the next look re-reads them.
- * Nothing is fetched for an issue nobody has open.
+ * Nothing is fetched for an issue nobody has open. The events come from the
+ * reader machine (its webhook relay); one listener per machine, kept for the
+ * session like the reads it refreshes.
  */
-function ensureIssueEventSubscription(): void {
-  if (issueEventsSubscribed || typeof window === "undefined") return;
+function ensureIssueEventSubscription(pin: OpenProjectBinding): void {
+  if (issueEventPinKeys.has(pin.key) || typeof window === "undefined") return;
   const subscribeToPrEvents = window.ade?.prs?.onEvent;
   if (!subscribeToPrEvents) return;
-  issueEventsSubscribed = true;
+  issueEventPinKeys.add(pin.key);
   subscribeToPrEvents((event) => {
     if (event.type !== "github-issue-changed") return;
     const owner = event.repoOwner.toLowerCase();
@@ -434,10 +500,10 @@ function ensureIssueEventSubscription(): void {
     for (const key of [...entries.entries.keys()]) {
       if (!key.endsWith(suffix)) continue;
       const projectRoot = key.slice(0, key.length - suffix.length) || null;
-      void loadGitHubIssue(projectRoot, event.repoOwner, event.repoName, event.issueNumber, { force: true });
+      void loadGitHubIssue(projectRoot, event.repoOwner, event.repoName, event.issueNumber, { force: true, pin });
     }
     markRepoIssuesStale(owner, repo);
-  });
+  }, pin);
 }
 
 /** Lists and the badge re-read at the next look; mounted lists re-read now. */
@@ -455,7 +521,7 @@ function markRepoIssuesStale(owner: string, repo: string): void {
  * An issue ADE just created: shown at the top of the open lists at once, then
  * the lists and the badge re-read (no webhook may come for it).
  */
-export function noteGitHubIssueCreated(projectRoot: string | null, issue: GitHubIssueDetail): void {
+export function noteGitHubIssueCreated(projectRoot: string | null, issue: GitHubIssueDetail, pin: GitHubIssuePin): void {
   primeGitHubIssue(projectRoot, issue);
   const repo = { owner: issue.owner, name: issue.repo };
   for (const state of ["open", "all"] as const) {
@@ -464,7 +530,7 @@ export function noteGitHubIssueCreated(projectRoot: string | null, issue: GitHub
     if (list) lists.set(key, { ...list, issues: [issue, ...list.issues.filter((entry) => entry.number !== issue.number)] });
   }
   markRepoIssuesStale(issue.owner, issue.repo);
-  refreshGitHubIssueSummary(repo, { force: true });
+  refreshGitHubIssueSummary(repo, { force: true, pin });
 }
 
 /* ── Writing ───────────────────────────────────────────────────────────── */
@@ -477,14 +543,19 @@ type WriteAccessEntry = { access: GitHubIssueWriteAccess | null; checkedAt: numb
 const writeAccess = new Map<string, WriteAccessEntry>();
 const EMPTY_WRITE_ACCESS: WriteAccessEntry = { access: null, checkedAt: 0, promise: null };
 
-export function refreshGitHubIssueWriteAccess(repo: GitHubRepo, options: { force?: boolean } = {}): void {
-  const key = repoKey(repo);
+/** Write access names a machine's credential, so it is kept per machine (the tab's own shares the unpinned entry). */
+function writeAccessKey(repo: GitHubRepo, pin: GitHubIssuePin): string {
+  return `${cacheScopePin(pin)?.key ?? "bound"}|${repoKey(repo)}`;
+}
+
+export function refreshGitHubIssueWriteAccess(repo: GitHubRepo, options: { force?: boolean; pin: GitHubIssuePin }): void {
+  const key = writeAccessKey(repo, options.pin);
   const current = writeAccess.get(key);
   if (current?.promise) return;
   if (!options.force && current && Date.now() - current.checkedAt < WRITE_ACCESS_STALE_MS) return;
   const read = window.ade?.github?.getIssueWriteAccess;
-  if (!read) return;
-  const promise = read({ owner: repo.owner, name: repo.name, force: options.force === true })
+  if (!read || !options.pin) return;
+  const promise = read({ owner: repo.owner, name: repo.name, force: options.force === true }, options.pin)
     .then((access) => {
       writeAccess.set(key, { access, checkedAt: Date.now(), promise: null });
     })
@@ -500,13 +571,17 @@ export function refreshGitHubIssueWriteAccess(repo: GitHubRepo, options: { force
  * and the viewer's controls stay read-only with the reason.
  */
 export function useGitHubIssueWriteAccess(repo: GitHubRepo | null): GitHubIssueWriteAccess | null {
-  const key = repo ? repoKey(repo) : null;
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const key = repo ? writeAccessKey(repo, pin) : null;
   const entry = useSyncExternalStore(subscribe, () => (key ? writeAccess.get(key) ?? EMPTY_WRITE_ACCESS : EMPTY_WRITE_ACCESS), () => EMPTY_WRITE_ACCESS);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;
   useEffect(() => {
-    if (owner && name) refreshGitHubIssueWriteAccess({ owner, name });
-  }, [name, owner]);
+    if (owner && name && pinRef.current) refreshGitHubIssueWriteAccess({ owner, name }, { pin: pinRef.current });
+  }, [name, owner, pinKey]);
   return entry.access;
 }
 
@@ -521,17 +596,17 @@ type CatalogEntry = { catalog: GitHubRepoCatalog | null; checkedAt: number; prom
 const catalogs = new Map<string, CatalogEntry>();
 const EMPTY_CATALOG_ENTRY: CatalogEntry = { catalog: null, checkedAt: 0, promise: null };
 
-export function loadGitHubRepoCatalog(repo: GitHubRepo): void {
+export function loadGitHubRepoCatalog(repo: GitHubRepo, pin: GitHubIssuePin): void {
   const key = repoKey(repo);
   const current = catalogs.get(key);
   if (current?.promise || (current?.catalog && Date.now() - current.checkedAt < REPO_CATALOG_STALE_MS)) return;
   const github = window.ade?.github;
-  if (!github) return;
+  if (!github || !pin) return;
   const args = { owner: repo.owner, name: repo.name };
   const promise = Promise.all([
-    github.listRepoLabels?.(args).catch(() => []) ?? Promise.resolve([]),
-    github.listRepoCollaborators?.(args).catch(() => []) ?? Promise.resolve([]),
-    github.listRepoMilestones?.(args).catch(() => []) ?? Promise.resolve([]),
+    github.listRepoLabels?.(args, pin).catch(() => []) ?? Promise.resolve([]),
+    github.listRepoCollaborators?.(args, pin).catch(() => []) ?? Promise.resolve([]),
+    github.listRepoMilestones?.(args, pin).catch(() => []) ?? Promise.resolve([]),
   ])
     .then(([labels, people, milestones]) => {
       catalogs.set(key, {
@@ -572,16 +647,18 @@ export async function editGitHubIssue(
   issue: GitHubIssueDetail,
   patch: GitHubIssuePatch,
   optimistic: Partial<GitHubIssueDetail>,
+  pin: GitHubIssuePin,
 ): Promise<void> {
   const update = window.ade?.github?.updateIssue;
   if (!update) throw new Error("Editing GitHub issues is not available here.");
+  if (!pin) throw new Error("No computer that has this project is online.");
   const key = issueKey(projectRoot, issue.owner, issue.repo, issue.number);
   const snapshot = entries.peek(key) ?? issue;
   const next = await entries.edit(
     [key],
     snapshot,
     { ...snapshot, ...optimistic },
-    async () => normalizeGitHubIssue(issue.owner, issue.repo, await update({ owner: issue.owner, name: issue.repo, number: issue.number, patch })),
+    async () => normalizeGitHubIssue(issue.owner, issue.repo, await update({ owner: issue.owner, name: issue.repo, number: issue.number, patch }, pin)),
     "GitHub rejected the change.",
   );
   // A later edit owns the outcome; it updates the lists when it lands.
@@ -604,11 +681,12 @@ export async function editGitHubIssue(
   notify();
 }
 
-export async function commentOnGitHubIssue(issue: GitHubIssueDetail, body: string): Promise<GitHubIssueComment | null> {
+export async function commentOnGitHubIssue(issue: GitHubIssueDetail, body: string, pin: GitHubIssuePin): Promise<GitHubIssueComment | null> {
   const comment = window.ade?.github?.commentOnIssue;
   if (!comment) throw new Error("Commenting is not available here.");
+  if (!pin) throw new Error("No computer that has this project is online.");
   try {
-    const raw = await comment({ owner: issue.owner, name: issue.repo, number: issue.number, body });
+    const raw = await comment({ owner: issue.owner, name: issue.repo, number: issue.number, body }, pin);
     return raw ? normalizeComment(raw) : null;
   } catch (error) {
     throw new Error(errorMessage(error, "GitHub rejected the comment."));
@@ -626,11 +704,13 @@ export async function commentOnGitHubIssue(issue: GitHubIssueDetail, body: strin
 export async function resolveProjectGitHubIssueNumber(
   projectRoot: string | null,
   number: number,
+  /** Null: no machine is online, nothing is asked. Left out: the tab's route (callers outside the issue views). */
+  pin?: GitHubIssuePin,
 ): Promise<{ owner: string; repo: string; issue: GitHubIssueDetail } | null> {
-  if (!projectRoot) return null;
-  const repo = await loadProjectRepo(projectRoot);
+  if (!projectRoot || pin === null) return null;
+  const repo = await loadProjectRepo(projectRoot, pin);
   if (!repo) return null;
-  const issue = await loadGitHubIssue(projectRoot, repo.owner, repo.name, number).catch(() => null);
+  const issue = await loadGitHubIssue(projectRoot, repo.owner, repo.name, number, pin === undefined ? {} : { pin }).catch(() => null);
   if (!issue || issue.isPullRequest) return null;
   return { owner: repo.owner, repo: repo.name, issue };
 }
@@ -659,18 +739,23 @@ const EMPTY_CREATE_CATALOG: CreateCatalogEntry = { templates: null, types: [], p
 
 export function useGitHubCreateCatalog(repo: GitHubRepo | null): CreateCatalogEntry {
   const key = repo ? repoKey(repo) : null;
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const entry = useSyncExternalStore(subscribe, () => (key ? createCatalogs.get(key) ?? EMPTY_CREATE_CATALOG : EMPTY_CREATE_CATALOG), () => EMPTY_CREATE_CATALOG);
   const owner = repo?.owner ?? null;
   const name = repo?.name ?? null;
   useEffect(() => {
-    if (!owner || !name || !key) return;
+    const readPin = pinRef.current;
+    if (!owner || !name || !key || !readPin) return;
     const current = createCatalogs.get(key);
     if (current?.loaded || current?.promise) return;
     const github = window.ade?.github;
     if (!github) return;
     const promise = Promise.all([
-      github.listIssueTemplates?.({ owner, name }).catch(() => null) ?? Promise.resolve(null),
-      github.listIssueTypes?.({ owner, name }).catch(() => []) ?? Promise.resolve([]),
+      github.listIssueTemplates?.({ owner, name }, readPin).catch(() => null) ?? Promise.resolve(null),
+      github.listIssueTypes?.({ owner, name }, readPin).catch(() => []) ?? Promise.resolve([]),
     ])
       .then(([templates, types]) => {
         createCatalogs.set(key, { templates, types: types ?? [], promise: null, loaded: true });
@@ -678,6 +763,6 @@ export function useGitHubCreateCatalog(repo: GitHubRepo | null): CreateCatalogEn
       .finally(notify);
     createCatalogs.set(key, { ...EMPTY_CREATE_CATALOG, promise });
     notify();
-  }, [key, name, owner]);
+  }, [key, name, owner, pinKey]);
   return entry;
 }
