@@ -14502,6 +14502,20 @@ export function registerIpc({
     },
     /** The account machine directory, for the in-process `@mac:` mention path. */
     listAccountMachines: () => accountBridge.listMachines(),
+    /** This computer's account project list (with retired ids), for links that name an account project. */
+    async readAccountProjectList(): Promise<AccountProjectListResult> {
+      if (!localRuntimeConnectionPool) return { state: "not_loaded", projects: [] };
+      return coerceAccountProjectListResult(
+        await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
+      );
+    },
+    /** Account machine keys of the machines this desktop is connected to now. */
+    connectedMachineKeys(): string[] {
+      return runtimeBridge.snapshot().connections
+        .filter((connection) => connection.state === "connected")
+        .map((connection) => connection.target.pairedMachine?.machineKey?.trim() ?? "")
+        .filter(Boolean);
+    },
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
     resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
     readRemoteArtifactRange: runtimeBridge.readRemoteArtifactRange,

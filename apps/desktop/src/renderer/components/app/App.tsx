@@ -179,11 +179,13 @@ import {
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
 import {
+  accountProjectIdOfTarget,
   deeplinkToNavigationTarget,
   isValidRepoRelativePath,
   ownershipOfTarget,
   parseDeeplink,
 } from "../../../shared/deeplinks";
+import { showToast } from "./toast/toastStore";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
 import { useTabCopyPin } from "../../state/repositoryScope";
@@ -1543,6 +1545,24 @@ function AppNavigationBridge() {
       return true;
     }
 
+    if (target.kind === "account-project") {
+      // Main resolved the link's account project id first (L33). No computer
+      // that can be reached has a copy: the repository opens with no
+      // machine, as a Home row does.
+      if (target.reason === "no-copy") {
+        useAppStore.getState().showNoMachineTab({
+          id: target.accountProjectId,
+          displayName: target.name?.trim() || "Project",
+          iconDataUrl: null,
+        });
+        return true;
+      }
+      showToast(target.reason === "removed"
+        ? { tone: "info", title: `${target.name?.trim() || "This project"} was removed from ADE.` }
+        : { tone: "info", title: "This project isn't in your ADE account." });
+      return true;
+    }
+
     if (target.kind === "lane-share") {
       // An invite link: the shared lanes page opens it (sign in, accept or open).
       navigate(laneShareGuestPath(target.grantId));
@@ -1657,7 +1677,9 @@ function AppNavigationBridge() {
       const parsed = parseDeeplink(url);
       if (!parsed.ok) return;
       const target = deeplinkToNavigationTarget(parsed.target);
-      if (!ownershipOfTarget(parsed.target)) {
+      // A link that names an account project goes through main too: main
+      // reads the account list and picks the copy (L33).
+      if (!ownershipOfTarget(parsed.target) && !accountProjectIdOfTarget(parsed.target)) {
         void dispatchLatest(target);
         return;
       }

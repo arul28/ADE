@@ -129,7 +129,19 @@ export function githubRepoKey(host: string, owner: string, name: string): string
 export type AccountProjectListResult =
   | { state: "signed_out"; projects: [] }
   | { state: "not_loaded"; projects: [] }
-  | { state: "ready"; cursor: number; projects: AccountProjectView[] };
+  | { state: "ready"; cursor: number; projects: AccountProjectView[]; retired?: AccountProjectRetiredId[] };
+
+/**
+ * A project id that no longer names a live project: merged into another, or
+ * removed. Links and old phones still carry such ids, so the list keeps them.
+ * Absent from older brains.
+ */
+export type AccountProjectRetiredId = {
+  id: string;
+  name: string;
+  mergedInto: string | null;
+  removedAt: number | null;
+};
 
 function coerceCopy(value: unknown): AccountProjectCopyView | null {
   if (!value || typeof value !== "object") return null;
@@ -188,7 +200,71 @@ export function coerceAccountProjectListResult(value: unknown): AccountProjectLi
     .map(coerceAccountProjectView)
     .filter((project): project is AccountProjectView => project !== null);
   const cursor = typeof answer.cursor === "number" && Number.isFinite(answer.cursor) ? answer.cursor : 0;
-  return { state: "ready", cursor, projects };
+  const retired = Array.isArray(answer.retired)
+    ? answer.retired.flatMap((row): AccountProjectRetiredId[] => {
+      if (!row || typeof row !== "object") return [];
+      const entry = row as Record<string, unknown>;
+      if (typeof entry.id !== "string" || typeof entry.name !== "string") return [];
+      const mergedInto = typeof entry.mergedInto === "string" ? entry.mergedInto : null;
+      const removedAt = typeof entry.removedAt === "number" && Number.isFinite(entry.removedAt) ? entry.removedAt : null;
+      if (!mergedInto && removedAt === null) return [];
+      return [{ id: entry.id, name: entry.name, mergedInto, removedAt }];
+    })
+    : [];
+  return { state: "ready", cursor, projects, ...(retired.length > 0 ? { retired } : {}) };
+}
+
+/** Where a link's account project id leads (`resolveAccountProjectLink`). */
+export type AccountProjectLinkTarget =
+  | { kind: "copy"; project: AccountProjectView; machineKey: string; checkoutId: string }
+  | { kind: "noCopy"; project: AccountProjectView }
+  | { kind: "removed"; name: string }
+  | { kind: "unknown" };
+
+/**
+ * Resolves a link's account project id, in the phone's order
+ * (`resolveAccountProjectLink` in `apps/ios/ADE/App/DeepLinkURLParsing.swift`):
+ *
+ * 1. A merged id follows to the project it merged into.
+ * 2. The link's own pair wins when it names a copy of that project.
+ * 3. Then a copy on the computer the link names.
+ * 4. Then the first reachable copy in `machineOrder` (the desktop puts this
+ *    computer first, then the connected computers, then the online ones).
+ *
+ * A copy counts only on a computer `reachable` accepts; with none, the
+ * answer is `noCopy` and the desktop opens the repository tab with no machine.
+ */
+export function resolveAccountProjectLink(
+  id: string,
+  owner: { accountMachineKey: string; projectId: string } | null,
+  list: { projects: readonly AccountProjectView[]; retired?: readonly AccountProjectRetiredId[] },
+  machineOrder: readonly string[],
+  reachable: (machineKey: string) => boolean,
+): AccountProjectLinkTarget {
+  const live = new Map(list.projects.map((project) => [project.id, project]));
+  const retired = new Map((list.retired ?? []).map((row) => [row.id, row]));
+  let targetId = id;
+  for (let hops = 0; hops < 8 && !live.has(targetId); hops += 1) {
+    const next = retired.get(targetId)?.mergedInto;
+    if (!next) break;
+    targetId = next;
+  }
+  const project = live.get(targetId);
+  if (!project) {
+    const row = retired.get(targetId);
+    return row && row.removedAt !== null && !row.mergedInto ? { kind: "removed", name: row.name } : { kind: "unknown" };
+  }
+  const mainFirst = (left: AccountProjectCopyView, right: AccountProjectCopyView) => Number(right.isMain) - Number(left.isMain);
+  if (owner && reachable(owner.accountMachineKey)
+    && project.copies.some((copy) => copy.machineKey === owner.accountMachineKey && copy.checkoutId === owner.projectId)) {
+    return { kind: "copy", project, machineKey: owner.accountMachineKey, checkoutId: owner.projectId };
+  }
+  for (const machineKey of [...(owner ? [owner.accountMachineKey] : []), ...machineOrder]) {
+    if (!reachable(machineKey)) continue;
+    const copy = project.copies.filter((entry) => entry.machineKey === machineKey).sort(mainFirst)[0];
+    if (copy) return { kind: "copy", project, machineKey, checkoutId: copy.checkoutId };
+  }
+  return { kind: "noCopy", project };
 }
 
 /**

@@ -209,9 +209,15 @@ export type AccountProjectListRpcResult =
   | { state: "signed_out"; projects: [] }
   /** Signed in, but this machine has not read the account's list yet (or the directory has none). */
   | { state: "not_loaded"; projects: [] }
-  | { state: "ready"; cursor: number; projects: AccountProjectView[] };
+  | {
+    state: "ready";
+    cursor: number;
+    projects: AccountProjectView[];
+    /** Merged and removed ids (additive; older readers ignore it). */
+    retired?: Array<{ id: string; name: string; mergedInto: string | null; removedAt: number | null }>;
+  };
 
-/** The list as this machine last read it, for the signed-in account only. Removed and merged rows are left out. */
+/** The list as this machine last read it, for the signed-in account only. Removed and merged rows are in `retired`, not in `projects`. */
 export function readAccountProjectListForRpc(adeDir: string, accountUserId: string | null): AccountProjectListRpcResult {
   if (!accountUserId) return { state: "signed_out", projects: [] };
   const state = readAccountProjectState(adeDir);
@@ -219,7 +225,12 @@ export function readAccountProjectListForRpc(adeDir: string, accountUserId: stri
   const projects = Object.values(state.projects)
     .filter((project) => project.removedAt === null && project.mergedInto === null)
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
-  return { state: "ready", cursor: state.cursor, projects };
+  // Merged and removed ids, so a link or an old phone that names one is
+  // followed or told; only the four fields a reader needs.
+  const retired = Object.values(state.projects)
+    .filter((project) => project.removedAt !== null || project.mergedInto !== null)
+    .map((project) => ({ id: project.id, name: project.name, mergedInto: project.mergedInto, removedAt: project.removedAt }));
+  return { state: "ready", cursor: state.cursor, projects, ...(retired.length > 0 ? { retired } : {}) };
 }
 
 // ---------------------------------------------------------------------------
