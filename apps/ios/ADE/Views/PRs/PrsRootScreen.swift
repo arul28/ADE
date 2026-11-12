@@ -12,6 +12,8 @@ struct PRsTabView: View, Equatable {
   /// Open PRs read straight from GitHub while the computer is not reachable.
   @StateObject private var directPrs = PrDirectPullsModel()
   @State private var directOpened: GitHubDirectPull?
+  /// The repository read from GitHub the last time the tab showed.
+  @State private var lastActiveDirectRepo: String?
   let isActive: Bool
   let inputs: PrsRootInputs
 
@@ -350,7 +352,11 @@ struct PRsTabView: View, Equatable {
     }
     // A computer came online (or the repository changed): the PR read from
     // GitHub gives way to the machine's list.
-    .onChange(of: directRepo?.fullName) { _, repo in
+    .onChange(of: directRepo?.fullName, initial: true) { _, repo in
+      // A hidden tab's inputs drop the repository; coming back is not a
+      // change of repository, so the open PR stays.
+      guard isActive, repo != lastActiveDirectRepo else { return }
+      lastActiveDirectRepo = repo
       directOpened = nil
       // The machine's PR beside the list cannot update any more, and it
       // would hide a PR picked from the GitHub list.
