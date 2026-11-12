@@ -149,9 +149,10 @@ import {
   pointerToCapturePoint,
 } from "./browser/browserCapture";
 import { isInParkedSurface } from "../../lib/parkedSurface";
-import { useAgentChatApi } from "./agentChatApi";
+import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useTicker } from "../../lib/ticker";
+import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 
 /**
  * The preload's declared browser namespace, with presence relaxed.
@@ -352,6 +353,8 @@ export function ChatBuiltInBrowserPanel({
   // Screenshots go to the surrounding chat's attachment store: a personal
   // chat's own, not the active project's.
   const agentChatApi = useAgentChatApi();
+  // A personal chat's adapter is bound to its machine; see `chatApiPin`.
+  const personalPane = useChatPaneScope()?.kind === "personal";
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
@@ -828,7 +831,7 @@ export function ChatBuiltInBrowserPanel({
         const saved = await agentChatApi.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
-        }, ...(runtimePin ? [runtimePin] as const : []));
+        }, requireChatPin(chatApiPin(runtimePin, personalPane)));
         attachmentPath = saved.path;
         onAddAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
       } catch (error) {
@@ -1544,7 +1547,7 @@ export function ChatBuiltInBrowserPanel({
       const saved = await agentChatApi.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
-      }, ...(runtimePin ? [runtimePin] as const : []));
+      }, requireChatPin(chatApiPin(runtimePin, personalPane)));
       attachmentPath = saved.path;
       onAddAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
     }
@@ -2145,14 +2148,16 @@ export function ChatBuiltInBrowserPanel({
     void (async () => {
       const config = window.ade?.projectConfig;
       if (!config) throw new Error("This ADE build cannot save the link preference.");
-      const snapshot = await config.get();
+      // The preference is the browser machine's local config.
+      const configPin = requireChatPin(runtimePinRef.current);
+      const snapshot = await config.get(configPin);
       await config.save({
         shared: snapshot.shared,
         local: {
           ...snapshot.local,
           browser: { ...(snapshot.local.browser ?? {}), linkOpenMode: next },
         },
-      });
+      }, configPin);
     })().catch((error: unknown) => {
       setLinkModeState(previous);
       setLinkOpenMode(previous);
@@ -2402,7 +2407,7 @@ export function ChatBuiltInBrowserPanel({
     void (async () => {
       for (const port of DEV_SERVER_PROBE_PORTS) {
         if (cancelled) return;
-        const listening = await probePort(port, pin).catch(() => false);
+        const listening = await withChatPin(pin, (chatPin) => probePort(port, chatPin)).catch(() => false);
         if (listening && !cancelled) {
           setDevServers((previous) => mergeDevServer(previous, {
             url: `http://localhost:${port}`,

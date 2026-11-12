@@ -897,7 +897,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         return;
       }
       // A picked branch must be on GitHub before the computer is made ("Push this branch?").
-      const branchReady = await adeCloudStartBranchReady(args.laneConfig);
+      const branchReady = await adeCloudStartBranchReady(args.laneConfig, targetPinRef.current ?? readerPinRef.current);
       if (!branchReady.go) {
         if (branchReady.error) setCreateError(branchReady.error);
         return;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Check, Copy, Eye, EyeSlash, FileLock, LockKey, Prohibit, Sparkle, X } from "@phosphor-icons/react";
-import type { PendingInputRequest } from "../../../shared/types";
+import type { OpenProjectBinding, PendingInputRequest } from "../../../shared/types";
+import { requireChatPin } from "./chatMachinePin";
 import {
   PROJECT_SECRET_ACTION_QUESTION_ID,
   PROJECT_SECRET_DELIVERY_OPTIONS,
@@ -489,10 +490,13 @@ export function AddProjectSecretDialog({
   open,
   onOpenChange,
   onSaved,
+  pin,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: (name: string) => void;
+  /** The chat's machine, which keeps the project's secrets. Null: none known. */
+  pin: OpenProjectBinding | null;
 }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
@@ -515,7 +519,11 @@ export function AddProjectSecretDialog({
     }
     let cancelled = false;
     setListFailed(false);
-    void window.ade.projectSecrets.list()
+    if (!pin) {
+      setListFailed(true);
+      return;
+    }
+    void window.ade.projectSecrets.list(pin)
       .then((result) => {
         if (!cancelled) setExisting(new Set(result.secrets.map((secret) => secret.name)));
       })
@@ -525,7 +533,7 @@ export function AddProjectSecretDialog({
         if (!cancelled) setListFailed(true);
       });
     return () => { cancelled = true; };
-  }, [open]);
+  }, [open, pin?.key]);
 
   const trimmedName = name.trim();
   const nameError = nameTouched || trimmedName ? projectSecretNameError(trimmedName) : null;
@@ -538,7 +546,7 @@ export function AddProjectSecretDialog({
     setSaving(true);
     setError(null);
     try {
-      await window.ade.projectSecrets.set({ name: trimmedName, value });
+      await window.ade.projectSecrets.set({ name: trimmedName, value }, requireChatPin(pin));
       setValue("");
       onSaved(trimmedName);
       onOpenChange(false);

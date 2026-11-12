@@ -290,7 +290,7 @@ export async function listAutomationRules(
   const list = window.ade?.automations?.list;
   if (!list) return null;
   try {
-    return await list(pin);
+    return await withChatPin(pin, (chatPin) => list(chatPin));
   } catch (error) {
     console.error("[sessionLifecycle] automations.list failed", error);
     return null;
@@ -319,7 +319,7 @@ export async function saveAutoHandoffRules(args: {
   }
   try {
     for (const draft of args.drafts) {
-      await automations.saveDraft({ draft }, args.pin);
+      await withChatPin(args.pin, (chatPin) => automations.saveDraft({ draft }, chatPin));
     }
     // A delete that failed for anything other than "already gone" leaves the
     // rule the user just turned off still ARMED, so its result decides the
@@ -366,7 +366,7 @@ export async function deleteAutomationRules(
   let failure: unknown = null;
   for (const id of ruleIds) {
     try {
-      await deleteRule({ id }, pin);
+      await withChatPin(pin, (chatPin) => deleteRule({ id }, chatPin));
     } catch (error) {
       // `deleteRule` throws for an id that is not in the local config. A rule
       // this menu armed can retire itself (one-shot, or `maxRuns` reached), so

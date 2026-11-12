@@ -3075,9 +3075,9 @@ declare global {
           path: string,
           pin: OpenProjectBinding,
         ) => Promise<{ dataUrl: string }>;
-        resolveSmartLinkPreview: (args: { url: string }, pin: OpenProjectBinding) => Promise<SmartLinkPreview | null>;
+        resolveSmartLinkPreview: (args: { url: string }, pin?: OpenProjectBinding | null) => Promise<SmartLinkPreview | null>;
         /** A preview's og:image as a data URL (null: unavailable). Fetched lazily by the hover card. */
-        resolveSmartLinkImage: (args: { url: string }, pin: OpenProjectBinding) => Promise<{ dataUrl: string | null }>;
+        resolveSmartLinkImage: (args: { url: string }, pin?: OpenProjectBinding | null) => Promise<{ dataUrl: string | null }>;
         /** The MCP App a tool call produced, from the machine that owns the chat. */
         getMcpApp: (
           args: import("../shared/mcpApp").McpAppGetArgs,
@@ -3099,7 +3099,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
-        resolveSourceFavicons: (args: { domains: string[] }, pin: OpenProjectBinding) => Promise<{ icons: Record<string, string | null> }>;
+        resolveSourceFavicons: (args: { domains: string[] }, pin?: OpenProjectBinding | null) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
           args: {
             sessionId: string;

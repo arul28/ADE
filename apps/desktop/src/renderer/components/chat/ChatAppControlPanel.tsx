@@ -1079,7 +1079,7 @@ export function ChatAppControlPanel({
         const { path } = await window.ade.agentChat.saveTempAttachment({
           data: stripDataUrlPrefix(shot.dataUrl),
           filename: "app-control-screenshot.png",
-        }, ...(runtimePin ? [runtimePin] as const : []));
+        }, requireChatPin(runtimePin));
         onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
         setMessage({ tone: "info", text: "Attached a screenshot to the chat." });
       }),
@@ -1123,7 +1123,7 @@ export function ChatAppControlPanel({
           const { path } = await window.ade.agentChat.saveTempAttachment({
             data: stripDataUrlPrefix(screenshotDataUrl),
             filename: "app-control-selection.png",
-          }, ...(runtimePin ? [runtimePin] as const : []));
+          }, requireChatPin(runtimePin));
           attachmentPath = path;
           onAddAttachment({ path, type: inferAttachmentType(path, "image/png") });
         } catch (error) {

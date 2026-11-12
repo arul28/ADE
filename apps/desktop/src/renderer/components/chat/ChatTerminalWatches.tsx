@@ -66,10 +66,11 @@ export function useChatTerminalWatches(
     };
     void load();
     const subscribe = window.ade?.sessions?.onChanged;
-    const unsubscribe = isAdeAvailable(subscribe)
+    const feedPin = pinRef.current;
+    const unsubscribe = isAdeAvailable(subscribe) && feedPin
       ? subscribe((event: TerminalSessionChangedEvent) => {
         if (event?.sessionId === chatId) void load();
-      }, pinRef.current ?? undefined)
+      }, feedPin)
       : () => {};
     return () => {
       cancelled = true;

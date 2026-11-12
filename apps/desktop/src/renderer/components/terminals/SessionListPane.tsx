@@ -136,6 +136,7 @@ import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
 import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
+import { withChatPin } from "../chat/chatMachinePin";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -3252,7 +3253,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       message,
       tone: "error",
     });
-    void window.ade.lanes.cancelDelete({ laneId }, pin)
+    void withChatPin(pin, (chatPin) => window.ade.lanes.cancelDelete({ laneId }, chatPin))
       .then((result) => {
         if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
       })

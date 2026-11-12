@@ -28,6 +28,7 @@ import { ComputerUseInlineIcon } from "./ChatComputerUseActions";
 import { computerUseEntryCommand, computerUseSummaryForEntry } from "./chatComputerUseRows";
 import { computerUseActionText } from "../../../shared/computerUseActionPresentation";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { withChatPin } from "./chatMachinePin";
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
@@ -176,7 +177,7 @@ async function runPortProbe(port: number, pin: OpenProjectBinding | null): Promi
   if (!isAdeAvailable(probe)) return false;
   const promise = (async () => {
     try {
-      const alive = Boolean(await probe(port, pin));
+      const alive = Boolean(await withChatPin(pin, (chatPin) => probe(port, chatPin)));
       portProbeCache.set(key, { alive, checkedAtMs: Date.now() });
       return alive;
     } catch {

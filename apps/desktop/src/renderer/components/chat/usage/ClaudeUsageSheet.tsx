@@ -31,6 +31,7 @@ import { ClaudeLogo } from "../../terminals/ToolLogos";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { formatResetIn } from "../../usage/usageWindowFormat";
 import { abbreviateTokenCount } from "../../../../shared/contextCompaction";
+import { withChatPin } from "../chatMachinePin";
 import "./claudeUsageSheet.css";
 
 type Range = "day" | "week";
@@ -141,7 +142,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
     setReport(null);
     setNowMs(Date.now());
     // Limits first (no transcript scan), then the scan for "What's using it".
-    void api.getClaudeUsage({ sessionId, skipBehaviors: true }, pinRef.current)
+    void withChatPin(pinRef.current, (chatPin) => api.getClaudeUsage({ sessionId, skipBehaviors: true }, chatPin))
       .then((quick) => {
         if (request !== requestRef.current) return;
         setReport(quick);
@@ -154,7 +155,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
         if (request === requestRef.current) setLoading(false);
       });
     setBehaviors(undefined);
-    void api.getClaudeUsage({ sessionId }, pinRef.current)
+    void withChatPin(pinRef.current, (chatPin) => api.getClaudeUsage({ sessionId }, chatPin))
       .then((full) => {
         if (request !== requestRef.current) return;
         setReport(full);
@@ -193,12 +194,12 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
         // A running turn (or the Fix's own first message) is still going, so
         // the rest wait in the queue rather than steering it.
         if (queueBehindTurn) {
-          const steered = await api.steer({ sessionId, text }, pinRef.current);
+          const steered = await withChatPin(pinRef.current, (chatPin) => api.steer({ sessionId, text }, chatPin));
           if (steered.reason === "queue_full") {
             throw new Error("This chat's queue is full. Send the rest when the queue clears.");
           }
         } else {
-          await sendWithCloudWakeMark(sessionId, pinRef.current, () => api.send({ sessionId, text }, pinRef.current));
+          await sendWithCloudWakeMark(sessionId, pinRef.current, () => withChatPin(pinRef.current, (chatPin) => api.send({ sessionId, text }, chatPin)));
         }
         queueBehindTurn = true;
       }

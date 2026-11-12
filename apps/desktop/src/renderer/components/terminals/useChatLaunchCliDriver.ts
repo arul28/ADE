@@ -93,7 +93,7 @@ export function useChatLaunchCliDriver(
           // The launch was cancelled (or otherwise left `awaiting-client`)
           // while the PTY started, so the host did not take this session:
           // close it rather than leave a terminal in a lane that is gone.
-          if (!snapshot || snapshot.sessionId !== result.sessionId || snapshot.phase === "cancelled") {
+          if ((!snapshot || snapshot.sessionId !== result.sessionId || snapshot.phase === "cancelled") && ptyPin) {
             await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, ptyPin)
               .catch((disposeError: unknown) => console.warn("chat launch orphan pty cleanup failed", disposeError));
           }

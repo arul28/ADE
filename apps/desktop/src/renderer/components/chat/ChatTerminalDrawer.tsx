@@ -22,6 +22,7 @@ import {
   clearWorkTerminalShellCount,
   publishWorkTerminalShellCount,
 } from "../terminals/workTerminalShells";
+import { withChatPin } from "./chatMachinePin";
 
 type AppControlTabState = {
   terminalSessionId: string;
@@ -279,7 +280,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     const flight = (async (): Promise<string | null> => {
       const tabIndex = nextTabIndex++;
       const label = `Terminal ${tabIndex}`;
-      const created = await window.ade.pty.create({
+      const created = await withChatPin(pin, (chatPin) => window.ade.pty.create({
         laneId,
         chatSessionId,
         cols: 80,
@@ -287,7 +288,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         title: label,
         tracked: true,
         toolType: "shell",
-      }, pin);
+      }, chatPin));
 
       const tabId = `chat-term-${created.sessionId}`;
       const nextEntry: TabEntry = {
@@ -493,7 +494,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   useEffect(() => {
     const ptyBridge = window.ade?.pty;
-    if (!ptyBridge?.onExit) return undefined;
+    if (!ptyBridge?.onExit || !pin) return undefined;
     const unsubscribe = ptyBridge.onExit((ev: PtyExitEvent) => {
       setTabs((prev) => prev.map((tab) => (
         tab.ptyId === ev.ptyId
@@ -508,7 +509,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     if (!disposeTabsOnUnmount) return;
     for (const tab of tabsRef.current) {
       if (tab.remote) continue; // Another machine's command is not this drawer's to end.
-      window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }, pin).catch(() => {});
+      withChatPin(pin, (chatPin) => window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }, chatPin)).catch(() => {});
     }
   }, [disposeTabsOnUnmount, pin]);
 
@@ -519,14 +520,16 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   useEffect(() => {
     const sessionsBridge = window.ade?.sessions;
     if (!sessionsBridge?.onChanged) return undefined;
+    const feedPin = pinRef.current;
+    if (!feedPin) return undefined;
     return sessionsBridge.onChanged((event) => {
       if (event.reason !== "deleted") return;
       setTabs((prev) => {
         const removed = prev.find((tab) => tab.sessionId === event.sessionId);
         if (!removed) return prev;
         if (removed.ptyId) {
-          window.ade.pty
-            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, pinRef.current)
+          withChatPin(pinRef.current, (chatPin) => window.ade.pty
+            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, chatPin))
             .catch(() => {});
         }
         const next = prev.filter((tab) => tab.sessionId !== event.sessionId);
@@ -536,7 +539,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         });
         return next;
       });
-    }, pinRef.current);
+    }, feedPin);
   }, [pinKey]);
 
   useEffect(() => {
@@ -629,7 +632,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);
     if (entry) {
-      window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }, entry.remote?.pin ?? pin).catch(() => {});
+      withChatPin(entry.remote?.pin ?? pin, (chatPin) => window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }, chatPin)).catch(() => {});
     }
 
     setSplitTabId((current) => (current === tabId ? null : current));

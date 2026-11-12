@@ -22,3 +22,20 @@ export function withChatPin<T>(
 ): Promise<T> {
   return pin ? call(pin) : Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE));
 }
+
+/**
+ * The pin for a call through a personal chat's adapter. The adapter is bound
+ * to its machine when it is made and ignores the pin, so this value never
+ * reaches a runtime. Pass it only to the chat API of a personal pane.
+ */
+export const PERSONAL_CHAT_ADAPTER_PIN: OpenProjectBinding = Object.freeze({
+  kind: "local",
+  key: "personal-chat-adapter",
+  rootPath: "",
+  displayName: "Personal chat",
+});
+
+/** The pin for a call through a pane's chat API: the adapter's own for a personal pane. */
+export function chatApiPin(pin: OpenProjectBinding | null | undefined, personal: boolean): OpenProjectBinding | null {
+  return personal ? PERSONAL_CHAT_ADAPTER_PIN : pin ?? null;
+}

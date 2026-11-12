@@ -2,6 +2,7 @@ import { createContext, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Which side chat each main chat has, as this window last heard it.
@@ -146,10 +147,10 @@ export async function confirmSideChatToolClose(args: {
     // The side chat this window shows: if another client replaced it, the
     // brain refuses rather than deleting one the user never saw here.
     const shown = shownSideChats.get(mainSessionId);
-    const result = await window.ade.agentChat.endSideChat(
+    const result = await withChatPin(runtimePin, (chatPin) => window.ade.agentChat.endSideChat(
       { sessionId: mainSessionId, ...(shown ? { expectedSideSessionId: shown } : {}) },
-      runtimePin,
-    );
+      chatPin,
+    ));
     noteSideChatEnded(mainSessionId, result.endedSessionId);
   } catch (error) {
     showToast({

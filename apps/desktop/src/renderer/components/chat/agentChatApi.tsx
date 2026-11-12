@@ -21,6 +21,8 @@ export type AgentChatApi = Window["ade"]["agentChat"];
  */
 export type MachineBoundAgentChatApi = AgentChatApi & {
   onEvent(listener: (event: Parameters<Parameters<AgentChatApi["onEvent"]>[0]>[0]) => void): () => void;
+  slashCommands(args: Parameters<AgentChatApi["slashCommands"]>[0]): ReturnType<AgentChatApi["slashCommands"]>;
+  getImageDataUrl(path: string): Promise<{ dataUrl: string }>;
 };
 
 /** What a pane is routed to. Absent means the project chat domain. */

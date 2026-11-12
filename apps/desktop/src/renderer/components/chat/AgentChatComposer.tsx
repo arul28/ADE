@@ -306,6 +306,7 @@ import {
   type CodexPermissionPreset,
   type MusePermissionPickerValue,
 } from "../shared/permissionModePickerOptions";
+import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 
 export type ComposerDraftEditIntent = {
   previousText: string;
@@ -2155,11 +2156,11 @@ function JiraIssueSelectModal({
           if (!status.connected || !status.siteUrl) {
             throw new Error(status.error?.message ?? "Connect Jira in Settings to attach an issue.");
           }
-          const page = await jira.listIssues({
+          const page = await withChatPin(pinRef.current, (chatPin) => jira.listIssues({
             state: "all",
             query: query || undefined,
             limit: 50,
-          }, pinRef.current);
+          }, chatPin));
           if (cancelled) return;
           setSiteLabel(new URL(status.siteUrl).host);
           setIssues(page.issues
@@ -2966,10 +2967,20 @@ function AgentChatComposerImpl({
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
   const [jiraIssuePickerOpen, setJiraIssuePickerOpen] = useState(false);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
+  // The repository is read on the chat's machine; none known means no repo.
+  const githubRepoPin = useChatRuntimeScope().pin;
+  const githubRepoPinRef = useRef(githubRepoPin);
+  githubRepoPinRef.current = githubRepoPin;
+  const githubRepoPinKey = githubRepoPin?.key ?? null;
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade?.github?.detectRepo?.()
+    const pin = githubRepoPinRef.current;
+    if (!pin) {
+      setGitHubRepo(null);
+      return undefined;
+    }
+    void window.ade?.github?.detectRepo?.(pin)
       .then((repo) => {
         if (!cancelled) setGitHubRepo(repo);
       })
@@ -2979,7 +2990,7 @@ function AgentChatComposerImpl({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [githubRepoPinKey]);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
@@ -3783,7 +3794,8 @@ function AgentChatComposerImpl({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, chatRuntimePinRef.current)?.catch?.(() => {});
+      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, chatPaneScope?.kind === "personal"));
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, warmPin)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
@@ -4068,13 +4080,13 @@ function AgentChatComposerImpl({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await attachmentApi.stageFileAttachment(
+            const { path: stagedPath } = await withChatPin(attachmentOwnerBinding, (chatPin) => attachmentApi.stageFileAttachment(
               {
                 sourcePath: plan.sourcePath,
                 filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
               },
-              attachmentOwnerBinding,
-            );
+              chatPin,
+            ));
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
             rememberDraftAttachmentSource(stagedPath, {
               kind: "local",
@@ -4183,10 +4195,10 @@ function AgentChatComposerImpl({
         setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
         return;
       }
-      const { path: tempPath } = await attachmentApi.saveTempAttachment({
+      const { path: tempPath } = await withChatPin(attachmentOwnerBinding, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
-      }, attachmentOwnerBinding);
+      }, chatPin));
       if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
         dropPendingImageAttachment(pendingImage.id);
         setAttachError("Clipboard image was not attached because the selected machine changed. Paste it again.");
@@ -7453,11 +7465,11 @@ function AgentChatComposerImpl({
       if (request.mode === "draft") {
         const draftsApi = agentChatApiRef.current?.drafts;
         const updated = draftsApi && typeof draftsApi.update === "function"
-          ? await draftsApi.update({ id: request.entry.id, schedule: input }, composerMachineBinding)
-          : await window.ade.agentChat.drafts.update(
+          ? await withChatPin(composerMachineBinding, (chatPin) => draftsApi.update({ id: request.entry.id, schedule: input }, chatPin))
+          : await withChatPin(composerMachineBinding, (chatPin) => window.ade.agentChat.drafts.update(
             { id: request.entry.id, schedule: input },
-            composerMachineBinding,
-          );
+            chatPin,
+          ));
         if (!updated) throw new Error("That draft was taken on another machine.");
       } else {
         const created = await draftsRef.current?.activateScheduled(input);
@@ -8344,6 +8356,7 @@ function AgentChatComposerImpl({
         open={addSecretOpen}
         onOpenChange={setAddSecretOpen}
         onSaved={handleProjectSecretSaved}
+        pin={chatRuntimePin}
       />
 
       {/* Codex voice: talk with this chat. */}

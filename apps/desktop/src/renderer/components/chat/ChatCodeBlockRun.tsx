@@ -11,6 +11,7 @@ import { CODE_BLOCK_ACTION_BUTTON_CLASS, CODE_BLOCK_ACTION_BUTTON_STYLE } from "
 import { captureError } from "../../../shared/sentry/capture";
 import { useChatMachineWake } from "./useChatMachineWake";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
+import { withChatPin } from "./chatMachinePin";
 
 type RevealTerminal = (terminal: { chatSessionId: string; terminalId: string; ptyId: string; label: string }) => void;
 
@@ -181,10 +182,13 @@ async function startRun(args: {
   let ptyId: string | null = null;
   const earlyExits: PtyExitEvent[] = [];
   let done = false;
-  const unsubscribe = window.ade.pty.onExit((event: PtyExitEvent) => {
-    if (ptyId === null) earlyExits.push(event);
-    else if (event.ptyId === ptyId) finish(event.exitCode);
-  }, pin);
+  // No known machine: no feed; the create below fails with the reason.
+  const unsubscribe = pin
+    ? window.ade.pty.onExit((event: PtyExitEvent) => {
+      if (ptyId === null) earlyExits.push(event);
+      else if (event.ptyId === ptyId) finish(event.exitCode);
+    }, pin)
+    : () => undefined;
   function finish(exitCode: number | null): void {
     if (done) return;
     done = true;
@@ -193,7 +197,7 @@ async function startRun(args: {
   }
 
   try {
-    const created = await window.ade.pty.create({
+    const created = await withChatPin(pin, (chatPin) => window.ade.pty.create({
       laneId: scope.laneId,
       chatSessionId: scope.sessionId,
       cols: 100,
@@ -204,7 +208,7 @@ async function startRun(args: {
       command: plan.command,
       args: plan.args,
       env: { ...SHELL_BLOCK_RUN_ENV },
-    }, pin);
+    }, chatPin));
     ptyId = created.ptyId;
     updateRun(key, id, { terminalId: created.sessionId, ptyId: created.ptyId, status: "running" });
     captureCodeBlockRunFact("code_block_run");
@@ -246,7 +250,7 @@ async function settleFromSessionStatus(
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     if (isDone()) return;
     try {
-      const session = await window.ade.sessions.get(terminalId, pin);
+      const session = await withChatPin(pin, (chatPin) => window.ade.sessions.get(terminalId, chatPin));
       // A terminal deleted while it ran leaves the run to its exit event.
       if (!session) return;
       if (session.status !== "running") {
@@ -289,7 +293,7 @@ async function readRunOutput(terminalId: string, pin: OpenProjectBinding | null)
     if (text !== null) return text;
   }
   // Raw, so a progress bar's carriage returns survive to be collapsed.
-  return window.ade.sessions.readTranscriptTail({ sessionId: terminalId, maxBytes: 64_000, raw: true }, pin);
+  return withChatPin(pin, (chatPin) => window.ade.sessions.readTranscriptTail({ sessionId: terminalId, maxBytes: 64_000, raw: true }, chatPin));
 }
 
 /** A terminal snapshot's normal buffer (scrollback, then screen) as plain lines. */
@@ -335,7 +339,7 @@ async function sendRunOutput(key: string): Promise<void> {
       exitCode: run.exitCode,
       output,
     });
-    await window.ade.agentChat.send({ sessionId: run.sessionId, text }, run.pin);
+    await withChatPin(run.pin, (chatPin) => window.ade.agentChat.send({ sessionId: run.sessionId, text }, chatPin));
     updateRun(key, run.id, { send: { kind: "sent" } });
     captureCodeBlockRunFact("code_block_output_sent");
   } catch (error) {

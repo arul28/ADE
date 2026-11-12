@@ -1,5 +1,6 @@
 import type { LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import type { CursorCloudLaunchGit } from "../../../lib/cursorCloudUtils";
+import { withChatPin } from "../chatMachinePin";
 
 /**
  * Where a Cursor or Devin Cloud launch runs: the chat's machine, through its
@@ -18,8 +19,8 @@ export function cloudLaunchScope(
     pin,
     isActiveBinding,
     git: {
-      getSyncStatus: (args) => window.ade.git.getSyncStatus(args, pin),
-      push: (args) => window.ade.git.push(args, pin),
+      getSyncStatus: (args) => withChatPin(pin, (chatPin) => window.ade.git.getSyncStatus(args, chatPin)),
+      push: (args) => withChatPin(pin, (chatPin) => window.ade.git.push(args, chatPin)),
     },
   };
 }

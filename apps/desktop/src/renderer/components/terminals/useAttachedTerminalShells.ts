@@ -49,11 +49,13 @@ export function useAttachedTerminalShells(
 
   const [epoch, setEpoch] = useState(0);
   useEffect(() => {
-    if (!active) return undefined;
+    // The shells live on the chat's machine; none known means no feed.
+    const feedPin = pinRef.current;
+    if (!active || !feedPin) return undefined;
     const bump = () => setEpoch((value) => value + 1);
     const disposers: Array<(() => void) | undefined> = [
-      window.ade?.sessions?.onChanged?.(bump),
-      window.ade?.pty?.onExit?.(bump, pinRef.current),
+      window.ade?.sessions?.onChanged?.(bump, feedPin),
+      window.ade?.pty?.onExit?.(bump, feedPin),
     ];
     return () => {
       for (const dispose of disposers) dispose?.();

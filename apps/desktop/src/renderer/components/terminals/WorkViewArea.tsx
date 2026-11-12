@@ -66,7 +66,7 @@ import type {
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { isImeComposing } from "../../lib/imeComposition";
-import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
+import { NO_CHAT_MACHINE_MESSAGE, withChatPin } from "../chat/chatMachinePin";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -434,9 +434,7 @@ function WorkCliContinuationComposer({
       cancelled = true;
     };
     const args = { laneId: session.laneId, provider };
-    void (runtimePin
-      ? window.ade.agentChat.slashCommands(args, runtimePin)
-      : window.ade.agentChat.slashCommands(args))
+    void (withChatPin(runtimePin, (chatPin) => window.ade.agentChat.slashCommands(args, chatPin)))
       .then((commands) => {
         if (!cancelled) {
           setSlashCommands(commands.filter((command) => command.source !== "local"));

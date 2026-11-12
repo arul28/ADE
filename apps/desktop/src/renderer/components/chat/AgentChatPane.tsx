@@ -237,7 +237,7 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
-import { requireChatPin } from "./chatMachinePin";
+import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 import { ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
@@ -603,7 +603,7 @@ import {
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
-import { useActiveRepositoryTab, useActiveStartOn } from "../../state/repositoryScope";
+import { useActiveRepositoryTab, useActiveStartOn, useTabCopyPin } from "../../state/repositoryScope";
 import type { StartOnChoice } from "../../../shared/repositoryTab";
 import { recordStartOnLastMachine } from "./startOnLastMachine";
 
@@ -2925,11 +2925,9 @@ function appendRetainedChatSessionEvents(
 }
 
 configureChatSessionRetention({
-  subscribe: (listener) => {
-    const onEvent = window.ade?.agentChat?.onEvent;
-    if (typeof onEvent !== "function") return () => undefined;
-    return onEvent(listener);
-  },
+  // The pane's retain call passes the chat's own machine feed. A retain with
+  // no machine has nothing to follow.
+  subscribe: () => () => undefined,
   appendEvents: appendRetainedChatSessionEvents,
 });
 
@@ -5627,6 +5625,13 @@ export function AgentChatPane({
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   const draftStartedOnRef = useRef<{ tabId: string | null; machineKey: string | null }>({ tabId: null, machineKey: null });
   chatRuntimePinRef.current = chatRuntimePin;
+  // The tab's own copy, for the draft's branch picks (an ADE Cloud start).
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  // A personal chat's adapter is bound to its machine; see `chatApiPin`.
+  const isPersonalPaneRef = useRef(isPersonalPane);
+  isPersonalPaneRef.current = isPersonalPane;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   // The chat's pin when it names another copy than the tab's own; null for the
   // tab's copy. Branches that mean "another machine" read this, not the pin.
@@ -6089,7 +6094,7 @@ export function AgentChatPane({
     const refresh = () => {
       const listIssues = window.ade?.lanes?.listJiraIssuesForSession;
       if (!listIssues) return;
-      void listIssues({ chatSessionId: renderedSessionId }, chatRuntimePinRef.current)
+      void withChatPin(chatRuntimePinRef.current, (chatPin) => listIssues({ chatSessionId: renderedSessionId }, chatPin))
         .then((links) => {
           if (cancelled) return;
           setJiraIssueSnapshots({
@@ -6102,7 +6107,8 @@ export function AgentChatPane({
         });
     };
     refresh();
-    const unsubscribe = chatScopeLaneId
+    const lanePin = chatRuntimePinRef.current;
+    const unsubscribe = chatScopeLaneId && lanePin
       ? window.ade?.lanes?.onLifecycleEvent?.((event) => {
         if (event.type !== "lanes-invalidated" || event.laneId !== chatScopeLaneId) return;
         if (refreshTimer != null) window.clearTimeout(refreshTimer);
@@ -6110,7 +6116,7 @@ export function AgentChatPane({
           refreshTimer = null;
           refresh();
         }, 150);
-      })
+      }, lanePin)
       : undefined;
 
     return () => {
@@ -6227,29 +6233,29 @@ export function AgentChatPane({
   }, [selectedEventsForDisplay, selectedSession?.claudeGoal]);
   const cancelQueuedMessageFromReceipt = useCallback((steerId: string) => {
     if (!selectedSessionId) return;
-    void agentChatApiRef.current
+    void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current
       .cancelDispatchedSteer(
         { sessionId: selectedSessionId, steerId },
-        chatRuntimePinRef.current,
-      )
+        chatPin,
+      ))
       .catch(() => { /* best-effort: already delivered or unknown steer */ });
   }, [selectedSessionId]);
   const recoverContinuity = useCallback(
     (args: AgentChatRecoverContinuityArgs) =>
-      agentChatApiRef.current.recoverContinuity(
+      withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.recoverContinuity(
         args,
-        chatRuntimePinRef.current,
-      ),
+        chatPin,
+      )),
     [],
   );
   const restoreCancelledQueue = useCallback(async (recoveryId: string): Promise<boolean> => {
     if (!selectedSessionId) return false;
     try {
-      const result = await agentChatApiRef.current
+      const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current
         .restoreCancelledQueue(
           { sessionId: selectedSessionId, recoveryId },
-          chatRuntimePinRef.current,
-        );
+          chatPin,
+        ));
       return result.restored;
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
@@ -6356,10 +6362,10 @@ export function AgentChatPane({
         next.add(workerSessionId);
         return next;
       });
-      void killWorker(
+      void withChatPin(chatRuntimePinRef.current, (chatPin) => killWorker(
         { sessionId: selectedSessionId, workerSessionId },
-        chatRuntimePinRef.current,
-      )
+        chatPin,
+      ))
         .catch((killError) => {
           // eslint-disable-next-line no-console
           console.error("agentChat.killDroidWorker failed", killError);
@@ -6519,11 +6525,11 @@ export function AgentChatPane({
       tickInFlight = true;
       try {
         setSubagentTranscriptLoading(true);
-        const result = await fetchTranscript({
+        const result = await withChatPin(chatRuntimePinRef.current, (chatPin) => fetchTranscript({
           sessionId: selectedSessionId,
           agentId: subagentView.agentId ?? subagentView.taskId,
           taskId: subagentView.taskId,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         if (cancelled) return;
         if (result === null) {
           setSubagentTranscriptUnsupported(true);
@@ -6722,12 +6728,12 @@ export function AgentChatPane({
       const fetchTranscript = agentChatApiRef.current?.getSubagentTranscript;
       if (typeof fetchTranscript !== "function" || !selectedSessionId) return false;
       try {
-        const result = await fetchTranscript({
+        const result = await withChatPin(chatRuntimePinRef.current, (chatPin) => fetchTranscript({
           sessionId: selectedSessionId,
           agentId: args.agentId ?? args.taskId,
           taskId: args.taskId,
           limit: 1,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         return Array.isArray(result) && result.length > 0;
       } catch {
         return false;
@@ -6868,10 +6874,10 @@ export function AgentChatPane({
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      await agentChatApiRef.current.codex.setGoal(
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.codex.setGoal(
         { sessionId, objective },
-        chatRuntimePinRef.current,
-      );
+        chatPin,
+      ));
     } catch (goalError) {
       setError(errorMessage(goalError));
     } finally {
@@ -6887,10 +6893,10 @@ export function AgentChatPane({
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      await agentChatApiRef.current.codex.clearGoal(
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.codex.clearGoal(
         { sessionId },
-        chatRuntimePinRef.current,
-      );
+        chatPin,
+      ));
     } catch (goalError) {
       setError(errorMessage(goalError));
     } finally {
@@ -6908,7 +6914,7 @@ export function AgentChatPane({
     setError(null);
     try {
       await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => (
-        agentChatApiRef.current.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current)
+        withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.send({ sessionId, text: `/goal ${argument}` }, chatPin))
       ));
     } catch (goalError) {
       setError(errorMessage(goalError));
@@ -6921,10 +6927,10 @@ export function AgentChatPane({
     setError(null);
     setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
-      await agentChatApiRef.current.codex.setGoalStatus(
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.codex.setGoalStatus(
         { sessionId, status },
-        chatRuntimePinRef.current,
-      );
+        chatPin,
+      ));
     } catch (goalError) {
       setError(errorMessage(goalError));
     } finally {
@@ -7006,9 +7012,7 @@ export function AgentChatPane({
         parentLaneId: laneId,
         state,
       };
-      await (pin
-        ? agentChatApiRef.current.parallelLaunchState.set(args, pin)
-        : agentChatApiRef.current.parallelLaunchState.set(args));
+      await agentChatApiRef.current.parallelLaunchState.set(args, requireChatPin(pin));
     } catch (persistError) {
       console.error("parallel launch state persist failed", {
         laneId,
@@ -7026,7 +7030,8 @@ export function AgentChatPane({
   useEffect(() => {
     if (!laneId) return;
     if (lockSessionId || initialSessionId) return;
-    const recoveryBinding = draftExecutionBindingRef.current ?? projectBinding;
+    // The draft's machine; none known means nothing to recover yet.
+    const recoveryBinding = draftExecutionBindingRef.current;
     if (!recoveryBinding) return;
     const recoveryProjectRoot = recoveryBinding.rootPath?.trim();
     if (!recoveryProjectRoot) return;
@@ -8752,7 +8757,7 @@ export function AgentChatPane({
       seededInitialSummaryRef.current = true;
     } else {
       try {
-        summary = await agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatRuntimePinRef.current);
+        summary = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.getSummary({ sessionId: lockSessionId }, chatPin));
       } catch {
         summary = null;
         readFailed = true;
@@ -8835,9 +8840,11 @@ export function AgentChatPane({
       return;
     }
 
+    // The lane's chats live on the chat's machine.
     const allRows = await listAgentChatSessionsCached(
       { laneId },
       options?.force ? { force: true } : undefined,
+      chatRuntimePinRef.current,
     );
     const rows = allRows.filter((session) => !session.archivedAt);
     const nextArchived = sortSessionSummariesByRecency(
@@ -9179,12 +9186,12 @@ export function AgentChatPane({
       };
       try {
         if (typeof agentChatApiRef.current.getEventHistory === "function") {
-          const readSnapshot = (resumeFrom: typeof resume) => agentChatApiRef.current.getEventHistory({
+          const readSnapshot = (resumeFrom: typeof resume) => withChatPin(chatApiPin(historyPin, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.getEventHistory({
             sessionId,
             maxEvents: INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
             maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
             ...(resumeFrom ? { afterOffset: resumeFrom.offset, historyGeneration: resumeFrom.generation } : {}),
-          }, historyPin);
+          }, chatPin));
           let snapshot: AgentChatEventHistorySnapshot = await readSnapshot(resume);
           if (resume && snapshot?.sessionId === sessionId && snapshot.resumedFromOffset === resume.offset) {
             // The delta opens with the last event this pane already had; if that
@@ -9215,7 +9222,7 @@ export function AgentChatPane({
             return;
           }
           if (snapshot?.sessionId === sessionId && !snapshot.events?.length && snapshot.sessionFound !== true) {
-            const summary = await agentChatApiRef.current.getSummary({ sessionId }, historyPin).catch(() => null);
+            const summary = await withChatPin(chatApiPin(historyPin, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.getSummary({ sessionId }, chatPin)).catch(() => null);
             if (!summary) {
               applyHistoryMiss({ unavailable: snapshot.unavailable });
               return;
@@ -9237,7 +9244,7 @@ export function AgentChatPane({
         return;
       }
       if (!usedSnapshotPath) {
-        const summary = await window.ade.sessions.get(sessionId, historyPin);
+        const summary = await withChatPin(historyPin, (chatPin) => window.ade.sessions.get(sessionId, chatPin));
         if (!summary || !isChatToolType(summary.toolType)) {
           // Clear the loaded flag so a subsequent remount/tab switch can retry.
           // Without this, a transient lookup miss (e.g. session summary not yet
@@ -9246,11 +9253,11 @@ export function AgentChatPane({
           loadedHistoryRef.current.delete(sessionId);
           return;
         }
-        const raw = await window.ade.sessions.readTranscriptTail({
+        const raw = await withChatPin(historyPin, (chatPin) => window.ade.sessions.readTranscriptTail({
           sessionId,
           maxBytes: CHAT_HISTORY_READ_MAX_BYTES,
           raw: true
-        }, historyPin);
+        }, chatPin));
         parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
         // This read has no byte positions. The next one starts over in full,
         // so it can set the paging position again.
@@ -9465,11 +9472,11 @@ export function AgentChatPane({
         sessionId,
         beforeOffset: cursor,
         isCurrent: isCurrentRequest,
-        readPage: (beforeOffset) => agentChatApiRef.current.getEventHistoryPage({
+        readPage: (beforeOffset) => withChatPin(chatApiPin(pin, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.getEventHistoryPage({
           sessionId,
           beforeOffset,
           maxBytes: options?.backfill ? CHAT_HISTORY_BACKFILL_PAGE_MAX_BYTES : CHAT_HISTORY_PAGE_MAX_BYTES,
-        }, pin),
+        }, chatPin)),
       });
       if (!batch || !isCurrentRequest()) return false;
       const { events: olderEvents, nextCursor } = batch;
@@ -9717,10 +9724,10 @@ export function AgentChatPane({
     const warmupKey = `${selectedSessionId}:${selectedSessionModelId}:${selectedSession?.cursorModeSnapshot?.currentModeId ?? cursorModeId ?? "agent"}`;
     if (cursorWarmupKeyRef.current === warmupKey) return;
     cursorWarmupKeyRef.current = warmupKey;
-    agentChatApiRef.current.warmupModel({
+    withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
       sessionId: selectedSessionId,
       modelId: selectedSessionModelId,
-    }, chatRuntimePinRef.current).then(() => refreshSessions()).catch(() => {});
+    }, chatPin)).then(() => refreshSessions()).catch(() => {});
   }, [
     cursorModeId,
     refreshSessions,
@@ -9751,7 +9758,7 @@ export function AgentChatPane({
       // catalog on every single boot.
       // With no project open there is no project config: the default holds.
       if (projectRoot) {
-        void getProjectConfigCached({ projectRoot })
+        void getProjectConfigCached({ projectRoot, pin: chatRuntimePinRef.current })
           .then((snapshot) => {
             if (cancelled) return;
             // Don't auto-restore model — user must pick one explicitly each session
@@ -9857,6 +9864,8 @@ export function AgentChatPane({
     // The chat's agent opens its terminals on the chat's machine, so that is
     // the machine to hear them from and read them on.
     const pin = chatRuntimePinRef.current;
+    // No known machine: no terminal feed to follow.
+    if (!pin) return undefined;
     const knownTerminalIds = knownTerminalIdsRef.current;
     const knownTerminalOwners = knownTerminalOwnersRef.current;
     // Re-subscribing replays events the new subscriber missed, so a terminal
@@ -9876,11 +9885,11 @@ export function AgentChatPane({
       if (baselineLoaded || !baselineChatSessionId) return Promise.resolve(true);
       // Events that arrive while a read is in flight share it.
       if (!baselineRead) {
-        baselineRead = sessionsApi.list(
+        baselineRead = withChatPin(pin, (chatPin) => sessionsApi.list(
           { chatSessionId: baselineChatSessionId, limit: null },
-          pin,
+          chatPin,
           { authoritative: true },
-        )
+        ))
           .then((rows) => {
             // Anything but a list is a failed read, not an empty chat.
             if (!Array.isArray(rows)) throw new Error("the chat's terminal list did not come back as a list");
@@ -9898,7 +9907,7 @@ export function AgentChatPane({
               chatSessionId: baselineChatSessionId,
               listedIds,
               // Authoritative, so an unanswered read rejects and keeps the id rather than reading as "gone".
-              lookup: (id) => sessionsApi.get(id, pin, { authoritative: true }),
+              lookup: (id) => withChatPin(pin, (chatPin) => sessionsApi.get(id, chatPin, { authoritative: true })),
             });
             baselineLoaded = true;
             return true;
@@ -9919,7 +9928,7 @@ export function AgentChatPane({
       if (knownTerminalIds.has(sessionId)) return;
       let session: TerminalSessionDetail | null = null;
       try {
-        session = await sessionsApi.get(sessionId, pin);
+        session = await withChatPin(pin, (chatPin) => sessionsApi.get(sessionId, chatPin));
       } catch {
         return;
       }
@@ -10407,17 +10416,14 @@ export function AgentChatPane({
     // cleanup briefly hands the old binding to retention; adopt it immediately
     // so the visible pane never leaves a second, stale subscription behind.
     adoptRetainedSession(selectedSessionId);
-    // Capture the concrete outgoing binding. `chatRuntimePin` is intentionally
-    // null for the active project, but retention must remain attached to that
-    // project after the window switches elsewhere.
-    const retainedBinding = chatRuntimePin ?? projectBinding;
+    // Capture the concrete outgoing machine, so retention stays on it after
+    // the window switches elsewhere. No known machine: nothing to follow.
+    const retainedBinding = chatRuntimePin;
     return () => {
       retainChatSession(selectedSessionId, {
-        subscribe: (listener) => agentChatApiRef.current.onEvent(
-          listener,
-          retainedBinding,
-          { forcePinned: true },
-        ),
+        subscribe: (listener) => (retainedBinding
+          ? agentChatApiRef.current.onEvent(listener, retainedBinding, { forcePinned: true })
+          : () => undefined),
       });
     };
   }, [chatRuntimePin, isTileVisible, projectBinding, selectedSessionId]);
@@ -10574,10 +10580,10 @@ export function AgentChatPane({
   // Fetch provider slash commands when session, lane, or draft provider changes.
   useEffect(() => {
     if (!isTileActive) { setSdkSlashCommands([]); return; }
-    if (isPersonalPane) {
+    if (personalScope) {
       // The personal scope answers for its own chats and its own workspace.
       let cancelledPersonal = false;
-      agentChatApiRef.current.slashCommands(
+      personalScope.agentChat.slashCommands(
         selectedSessionId ? { sessionId: selectedSessionId } : { provider: sessionProvider },
       )
         .then((cmds) => { if (!cancelledPersonal) setSdkSlashCommands(cmds); })
@@ -10661,7 +10667,7 @@ export function AgentChatPane({
     }
     let cancelled = false;
     const fetchDelta = () => {
-      window.ade.sessions.getDelta(readableSessionId, chatRuntimePinRef.current)
+      withChatPin(chatRuntimePinRef.current, (chatPin) => window.ade.sessions.getDelta(readableSessionId, chatPin))
         .then((delta) => {
           if (cancelled) return;
           if (delta && (delta.insertions > 0 || delta.deletions > 0)) {
@@ -10901,7 +10907,16 @@ export function AgentChatPane({
 
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
-    const unsubscribe = agentChatApiRef.current.onEvent((envelope) => {
+    // A personal chat's adapter is bound to its machine. A project chat needs
+    // its machine; none known means no feed.
+    type ChatEventListener = Parameters<typeof agentChatApiRef.current.onEvent>[0];
+    const subscribe: ((listener: ChatEventListener) => () => void) | null = personalScope
+      ? (listener) => personalScope.agentChat.onEvent(listener)
+      : chatRuntimePin
+        ? (listener) => agentChatApiRef.current.onEvent(listener, chatRuntimePin)
+        : null;
+    if (!subscribe) return undefined;
+    const unsubscribe = subscribe((envelope) => {
       // Liveness stamp for the active-turn stall detector — recorded before any
       // filtering so an event for a sibling chat still proves the stream is up.
       lastEventReceivedAtMsRef.current = Date.now();
@@ -11189,8 +11204,8 @@ export function AgentChatPane({
 
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
-          (isPersonalPane
-            ? agentChatApiRef.current.slashCommands({ sessionId: envelope.sessionId })
+          (personalScope
+            ? personalScope.agentChat.slashCommands({ sessionId: envelope.sessionId })
             : getAgentChatSlashCommandsCached(
               { sessionId: envelope.sessionId, projectRoot },
               {
@@ -11202,9 +11217,9 @@ export function AgentChatPane({
             .catch(() => {});
         }
       }
-    }, chatRuntimePin);
+    });
     return unsubscribe;
-  }, [isPersonalPane, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
+  }, [isPersonalPane, personalScope, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     const eventPin = chatRuntimePinRef.current;
@@ -11299,7 +11314,7 @@ export function AgentChatPane({
     // Try Codex fuzzy file search if we have an active Codex session
     if (trimmed.length && selectedSessionId && sessionProvider === "codex") {
       try {
-        const codexHits = await agentChatApiRef.current.fileSearch({ sessionId: selectedSessionId, query: trimmed }, chatRuntimePinRef.current);
+        const codexHits = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.fileSearch({ sessionId: selectedSessionId, query: trimmed }, chatPin));
         if (codexHits.length > 0) {
           return codexHits.map((hit) => ({
             path: hit.path,
@@ -11315,7 +11330,7 @@ export function AgentChatPane({
     if (isPersonalPane) return [];
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
-    const hits = await window.ade.files.quickOpen({
+    const hits = await withChatPin(pin, (chatPin) => window.ade.files.quickOpen({
       workspaceId: laneId,
       query: trimmed,
       limit: 60,
@@ -11323,7 +11338,7 @@ export function AgentChatPane({
       // The composer is the only caller that wants folders: it inserts a pointer
       // chip rather than opening what it receives.
       includeDirectories: true,
-    }, pin);
+    }, chatPin));
     return hits.map((hit) => ({
       path: hit.path,
       // A folder is a pointer, not an attachment: it has no bytes to upload.
@@ -11338,7 +11353,7 @@ export function AgentChatPane({
   const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
     if (isPersonalPane) return [];
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
-    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
+    if (!pin) return [];
     try {
       const all = await window.ade.prs.listAll?.(pin);
       if (!all?.length) return [];
@@ -11368,7 +11383,7 @@ export function AgentChatPane({
   // yields an empty list rather than an error, so the file section still works.
   const searchMentions = useCallback(async (query: string): Promise<ChatMentionSuggestion[]> => {
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
-    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
+    if (!pin) return [];
     try {
       // Optional call: the webclient adapter's agentChat surface may not
       // implement this yet, and a missing method must degrade to "no rows".
@@ -11416,10 +11431,10 @@ export function AgentChatPane({
       return { path: null, cancelled: true };
     }
     try {
-      const saved = await agentChatApiRef.current.saveTempAttachment({
+      const saved = await withChatPin(chatApiPin(attachmentOwnerBinding, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.saveTempAttachment({
         data: stripDataUrlPrefix(args.dataUrl),
         filename: args.filename,
-      }, attachmentOwnerBinding);
+      }, chatPin));
       const currentBinding = selectedSessionIdRef.current
         ? chatRuntimePinRef.current
         : draftExecutionBindingRef.current;
@@ -11753,7 +11768,7 @@ export function AgentChatPane({
       if (options?.afterSignIn) await refreshAvailableModels({ force: true });
       try {
         await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => (
-          agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current)
+          withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatPin))
         ));
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
@@ -12424,9 +12439,11 @@ export function AgentChatPane({
       const built = buildChatCreateArgs(options.launchState);
       const { createArgs: laneFreeCreateArgs, desc, launchModelId } = built;
       const createArgs = { laneId: targetLaneId, ...laneFreeCreateArgs };
-      const created = options.pin
-        ? await agentChatApiRef.current.create(createArgs, options.pin)
-        : await agentChatApiRef.current.create(createArgs);
+      // No pin given: the pane's own lane, on the chat's machine.
+      const created = await agentChatApiRef.current.create(
+        createArgs,
+        requireChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isPersonalPaneRef.current)),
+      );
       // Name the failure here rather than letting it travel. A runtime that
       // answers with a session carrying no id (a contract drift, an
       // unreachable host resolving to a fallback) used to surface three calls
@@ -12451,10 +12468,10 @@ export function AgentChatPane({
         setSelectedSessionId(created.id);
       }
       if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
-        agentChatApiRef.current.warmupModel({
+        withChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
           sessionId: created.id,
           modelId: launchModelId,
-        }, options.pin ?? chatRuntimePinRef.current).then(() => {
+        }, chatPin)).then(() => {
           if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true });
         }).catch(() => { /* warmup is best-effort */ });
       }
@@ -12921,9 +12938,7 @@ export function AgentChatPane({
         ...(args.temporaryBranch ? { temporaryBranch: args.temporaryBranch } : {}),
         ...(args.attachments?.length ? { attachments: args.attachments.slice(0, 8) } : {}),
       };
-      const suggestLaneName = () => (args.pin
-        ? agentChatApiRef.current.generateAutoLaneIdentity(suggestArgs, args.pin)
-        : agentChatApiRef.current.generateAutoLaneIdentity(suggestArgs));
+      const suggestLaneName = () => withChatPin(args.pin, (chatPin) => agentChatApiRef.current.generateAutoLaneIdentity(suggestArgs, chatPin));
       const sleep = (ms: number) => new Promise<void>((resolve) => {
         window.setTimeout(resolve, ms);
       });
@@ -13010,9 +13025,7 @@ export function AgentChatPane({
       applySuggestion: async (suggested) => {
         for (const child of args.children) {
           const renameArgs = { laneId: child.laneId, name: `${suggested}-${child.suffix}` };
-          const rename = args.pin
-            ? window.ade.lanes.rename(renameArgs, args.pin)
-            : window.ade.lanes.rename(renameArgs);
+          const rename = window.ade.lanes.rename(renameArgs, requireChatPin(args.pin));
           await rename
             .catch((error: unknown) => console.warn("background parallel lane rename failed", error));
         }
@@ -13058,9 +13071,7 @@ export function AgentChatPane({
       if (configured?.mode === "existing") {
         const branchRef = configured.branchRef?.trim() ?? "";
         if (!branchRef) throw new Error("Choose a branch for the lane to work on.");
-        createdLane = pin
-          ? await window.ade.lanes.importBranch({ branchRef, name: laneName }, pin)
-          : await window.ade.lanes.importBranch({ branchRef, name: laneName });
+        createdLane = await window.ade.lanes.importBranch({ branchRef, name: laneName }, requireChatPin(pin));
       } else {
         // No start: the host applies the project's new-lane defaults.
         assertActive?.();
@@ -13077,9 +13088,7 @@ export function AgentChatPane({
           ...(configured?.start ? { start: configured.start } : {}),
           ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };
-        createdLane = pin
-          ? await window.ade.lanes.create(createArgs, pin)
-          : await window.ade.lanes.create(createArgs);
+        createdLane = await window.ade.lanes.create(createArgs, requireChatPin(pin));
       }
       // lanes.create is not cancellable, so if the launch timed out while it
       // was in flight, the outer wait has already rejected with targetLane ===
@@ -13088,7 +13097,7 @@ export function AgentChatPane({
       try {
         assertActive?.();
       } catch (abortError) {
-        await window.ade.lanes.delete({ laneId: createdLane.id, force: true }, pin).catch((cleanupError: unknown) => {
+        await withChatPin(pin, (chatPin) => window.ade.lanes.delete({ laneId: createdLane.id, force: true }, chatPin)).catch((cleanupError: unknown) => {
           console.warn("draft launch lane cleanup after abort failed", cleanupError);
         });
         if (canRefreshPinnedProject(pin)) {
@@ -13097,13 +13106,15 @@ export function AgentChatPane({
         throw abortError;
       }
       if (configured?.color) {
-        await window.ade.lanes
-          .updateAppearance({ laneId: createdLane.id, color: configured.color }, pin)
+        const color = configured.color;
+        await withChatPin(pin, (chatPin) => window.ade.lanes
+          .updateAppearance({ laneId: createdLane.id, color }, chatPin))
           .catch(() => undefined);
       }
       if (configured?.templateId) {
-        await window.ade.lanes
-          .applyTemplate({ laneId: createdLane.id, templateId: configured.templateId }, pin)
+        const templateId = configured.templateId;
+        await withChatPin(pin, (chatPin) => window.ade.lanes
+          .applyTemplate({ laneId: createdLane.id, templateId }, chatPin))
           .catch(() => undefined);
       }
       // A user-named lane keeps its name; only prompt-derived lanes get AI-named.
@@ -13189,7 +13200,7 @@ export function AgentChatPane({
   ) => {
     // Pin the rollback to the project that owns the session so a concurrent
     // project switch can't route the delete at the now-active project.
-    await agentChatApiRef.current.delete({ sessionId: session.id }, pin).catch((cleanupError: unknown) => {
+    await withChatPin(chatApiPin(pin, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.delete({ sessionId: session.id }, chatPin)).catch((cleanupError: unknown) => {
       console.warn("draft chat launch session cleanup failed", cleanupError);
     });
     loadedHistoryRef.current.delete(session.id);
@@ -13231,11 +13242,7 @@ export function AgentChatPane({
           createdSession.interactionMode ?? prepared.interactionMode,
         ),
       };
-      if (pin) {
-        await agentChatApiRef.current.send(sendArgs, pin);
-      } else {
-        await agentChatApiRef.current.send(sendArgs);
-      }
+      await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
       // If the launch timed out while the prompt was in flight, tear the
       // session down rather than leaving a started-but-orphaned chat.
       assertActive?.();
@@ -13395,7 +13402,7 @@ export function AgentChatPane({
     } catch (abortError) {
       // Pin the dispose to the originating project so a concurrent switch can't
       // route it at the now-active runtime (or throw under the transition guard).
-      await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, pin).catch((disposeError: unknown) => {
+      await withChatPin(pin, (chatPin) => window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, chatPin)).catch((disposeError: unknown) => {
         console.warn("draft cli launch pty cleanup failed", disposeError);
       });
       throw abortError;
@@ -13707,6 +13714,7 @@ export function AgentChatPane({
         // before the computer is made. Send waits here; the draft stays.
         const branchReady = await adeCloudStartBranchReady(
           draftNewLaneConfig ? chatLaunchLaneConfigFromDraft(draftNewLaneConfig) : null,
+          tabCopyPinRef.current,
         );
         if (!branchReady.go) {
           draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
@@ -13954,11 +13962,12 @@ export function AgentChatPane({
     if (cursorCloudBackfillAttemptedRef.current.has(session.sessionId)) return;
     cursorCloudBackfillAttemptedRef.current.add(session.sessionId);
     setCloudHydrateFailed(false);
-    void window.ade.ai.cursorCloudOpenChat({
-      cloudAgentId: session.cursorCloudAgentId,
+    const cloudAgentId = session.cursorCloudAgentId;
+    void withChatPin(chatRuntimePinRef.current, (chatPin) => window.ade.ai.cursorCloudOpenChat({
+      cloudAgentId,
       laneId: session.laneId,
       sessionId: session.sessionId,
-    }).then((result) => {
+    }, chatPin)).then((result) => {
       if (result.session) notifySessionCreated(result.session);
       loadedHistoryRef.current.delete(session.sessionId);
       void refreshSessions().catch(() => undefined);
@@ -13987,10 +13996,10 @@ export function AgentChatPane({
     if (devinCloudBackfillAttemptedRef.current.has(session.sessionId)) return;
     devinCloudBackfillAttemptedRef.current.add(session.sessionId);
     setCloudHydrateFailed(false);
-    void window.ade.cloudAgents.open({
+    void withChatPin(chatRuntimePinRef.current, (chatPin) => window.ade.cloudAgents.open({
       provider: "devin",
       id: devinSessionId,
-    }).then(() => {
+    }, chatPin)).then(() => {
       loadedHistoryRef.current.delete(session.sessionId);
       void refreshSessions().catch(() => undefined);
     }).catch((error) => {
@@ -14010,22 +14019,25 @@ export function AgentChatPane({
     const sessionId = selectedSession?.sessionId;
     const agentId = selectedSession?.cursorCloudAgentId?.trim();
     const watchFn = window.ade.ai.cursorCloudWatchMirror;
-    if (!sessionId || !agentId || subagentView || typeof watchFn !== "function") return;
+    // The mirror runs on the chat's machine.
+    const watchPin = chatRuntimePinRef.current;
+    if (!sessionId || !agentId || subagentView || typeof watchFn !== "function" || !watchPin) return;
 
     let watching = false;
     const sync = () => {
       const shouldWatch = document.visibilityState !== "hidden";
       if (shouldWatch === watching) return;
       watching = shouldWatch;
-      void watchFn({ sessionId, watching }).catch(() => undefined);
+      void watchFn({ sessionId, watching }, watchPin).catch(() => undefined);
     };
     document.addEventListener("visibilitychange", sync);
     sync();
     return () => {
       document.removeEventListener("visibilitychange", sync);
-      if (watching) void watchFn({ sessionId, watching: false }).catch(() => undefined);
+      if (watching) void watchFn({ sessionId, watching: false }, watchPin).catch(() => undefined);
     };
   }, [
+    chatRuntimePinKey,
     selectedSession?.cursorCloudAgentId,
     selectedSession?.sessionId,
     subagentView,
@@ -14172,21 +14184,21 @@ export function AgentChatPane({
         });
       }
       if (!targetLaneId) throw new Error("Select a lane before sending.");
-      const info = await window.ade.git.getOriginRemote({ laneId: targetLaneId }, cloudPin).catch(() => null);
+      const info = await withChatPin(cloudPin, (chatPin) => window.ade.git.getOriginRemote({ laneId: targetLaneId }, chatPin)).catch(() => null);
       const startingRef = info?.branch ?? null;
       if (!startingRef) {
         throw new Error("Could not read this lane's branch, so there is nothing for the cloud agent to work on.");
       }
       const sessionId = crypto.randomUUID();
-      const openPr = await window.ade.git.getOpenPrForBranch({
+      const openPr = await withChatPin(cloudPin, (chatPin) => window.ade.git.getOpenPrForBranch({
         laneId: targetLaneId,
         branch: startingRef,
-      }, cloudPin).catch(() => null);
+      }, chatPin)).catch(() => null);
       const prFields = resolveCursorCloudPrCreateFields({
         existingPrUrl: openPr?.prUrl,
         autoCreatePR: cursorCloudAutoPr,
       });
-      created = await window.ade.ai.cursorCloudCreateRun({
+      created = await withChatPin(cloudPin, (chatPin) => window.ade.ai.cursorCloudCreateRun({
         promptText: prompt,
         repoUrl: cursorCloudRepoUrl,
         startingRef,
@@ -14207,24 +14219,25 @@ export function AgentChatPane({
         linearIssueId: pinnedLinearIssue?.identifier ?? null,
         secretNames: selectedSecretNames,
         rememberSecretNames,
-      }, cloudPin);
+      }, chatPin));
       // The lane now lives on Cursor Cloud: the agent works on its branch.
       {
         const targetLane = laneOnLaunchMachine(targetLaneId, cloudOnTab, chatMachineLanes, lanes);
         if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("cursor"))) {
-          void window.ade.lanes.updateAppearance({
+          void withChatPin(cloudPin, (chatPin) => window.ade.lanes.updateAppearance({
             laneId: targetLaneId,
             tags: withCloudLaneTag(targetLane.tags, "cursor"),
-          }, cloudPin).then(() => refreshLanesStore()).catch(() => undefined);
+          }, chatPin)).then(() => refreshLanesStore()).catch(() => undefined);
         }
       }
       // The agent exists; leave the draft pane immediately. Hydrate/attach
       // continue in the daemon and fill the transcript as Cursor's VM comes up.
       patchDraftLaunchJob(jobId, { status: "starting-session", sessionId });
       let opened: Awaited<ReturnType<typeof window.ade.ai.cursorCloudOpenChat>>;
+      const cloudAgentId = created.agent.agentId;
       try {
-        opened = await window.ade.ai.cursorCloudOpenChat({
-          cloudAgentId: created.agent.agentId,
+        opened = await withChatPin(cloudPin, (chatPin) => window.ade.ai.cursorCloudOpenChat({
+          cloudAgentId,
           laneId: targetLaneId,
           sessionId,
           ...(cloudModelId ? { modelId: cloudModelId } : {}),
@@ -14232,7 +14245,7 @@ export function AgentChatPane({
           ...(snapshot.cursorCloudServiceTier
             ? { serviceTier: snapshot.cursorCloudServiceTier }
             : {}),
-        }, cloudPin);
+        }, chatPin));
       } catch {
         opened = { sessionId };
       }
@@ -14365,7 +14378,7 @@ export function AgentChatPane({
     }
     // The chat's machine launches it, through its own (shared) Devin sign-in.
     // A hand-off from an open chat goes from that chat's machine.
-    const launchBinding = selectedSessionId ? chatRuntimePinRef.current ?? projectBinding ?? null : draftExecutionBindingRef.current;
+    const launchBinding = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     const { pin: cloudPin, isActiveBinding: cloudOnTab, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     devinCloudLaunchInFlightRef.current = true;
     setError(null);
@@ -14439,22 +14452,22 @@ export function AgentChatPane({
       // and every chat in it is a Devin Cloud chat.
       const targetLane = laneOnLaunchMachine(targetLaneId, cloudOnTab, chatMachineLanes, lanes);
       if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("devin"))) {
-        await window.ade.lanes.updateAppearance({
+        await withChatPin(cloudPin, (chatPin) => window.ade.lanes.updateAppearance({
           laneId: targetLaneId,
           tags: withCloudLaneTag(targetLane.tags, "devin"),
-        }, cloudPin).catch(() => undefined);
+        }, chatPin)).catch(() => undefined);
       }
       patchDraftLaunchJob(jobId, { status: "starting-session" });
       // One call does the rest: push the branch, open a chat over the Devin
       // relay (`devin acp --cloud`), and send the first message. The chat
       // streams live from here.
-      const launched = await window.ade.cloudAgents.launch({
+      const launched = await withChatPin(cloudPin, (chatPin) => window.ade.cloudAgents.launch({
         provider: "devin",
         prompt,
         model: devinCloudVersionSel,
         platform: devinCloudPlatformSel || null,
         laneId: targetLaneId,
-      }, cloudPin);
+      }, chatPin));
       const now = new Date().toISOString();
       const openedSession = {
         id: launched.chatSessionId,
@@ -14598,7 +14611,7 @@ export function AgentChatPane({
           // The handoff itself is pinned to this chat's machine, so the lane it
           // targets has to be created there too — a lane made on the tab's
           // machine is simply unknown to the runtime that runs the handoff.
-          const createdLane = await window.ade.lanes.create({ name: laneName }, handoffPin);
+          const createdLane = await withChatPin(handoffPin, (chatPin) => window.ade.lanes.create({ name: laneName }, chatPin));
           resolvedTargetLaneId = createdLane.id;
           patchHandoffJob({ laneId: createdLane.id, laneName });
           // Only the bound project's lane store is the one this refresh writes.
@@ -14615,7 +14628,7 @@ export function AgentChatPane({
           });
         }
       }
-      const result = await agentChatApiRef.current.handoff({
+      const result = await withChatPin(chatApiPin(handoffPin, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.handoff({
         sourceSessionId: selectedSessionId,
         targetModelId: handoffModelId,
         mode,
@@ -14644,7 +14657,7 @@ export function AgentChatPane({
         ...(resolvedHandoffPermissionMode != null ? { permissionMode: resolvedHandoffPermissionMode } : {}),
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
-      }, handoffPin);
+      }, chatPin));
       setReplayForkDisclosure(result.replayFork?.truncated ? result.replayFork : null);
       notifySessionCreated(result.session, { source: "handoff" });
       setHandoffNote("");
@@ -14745,10 +14758,10 @@ export function AgentChatPane({
 
     setError(null);
     setDeletingChatSessionId(selectedSessionId);
-    void agentChatApiRef.current.delete(
+    void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.delete(
       { sessionId: selectedSessionId },
-      chatRuntimePinRef.current,
-    )
+      chatPin,
+    ))
       .then(async () => {
         invalidateSessionListCache();
         invalidateCurrentChatSessionList();
@@ -14772,7 +14785,7 @@ export function AgentChatPane({
 
   const handleArchiveChat = useCallback((sessionId: string) => {
     setError(null);
-    void agentChatApiRef.current.archive({ sessionId }, chatRuntimePinRef.current)
+    void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.archive({ sessionId }, chatPin))
       .then(async () => {
         invalidateSessionListCache();
         invalidateCurrentChatSessionList();
@@ -14801,7 +14814,7 @@ export function AgentChatPane({
 
   const handleUnarchiveChat = useCallback((sessionId: string) => {
     setError(null);
-    void agentChatApiRef.current.unarchive({ sessionId }, chatRuntimePinRef.current)
+    void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.unarchive({ sessionId }, chatPin))
       .then(async () => {
         invalidateSessionListCache();
         invalidateCurrentChatSessionList();
@@ -14849,13 +14862,13 @@ export function AgentChatPane({
     try {
       touchSession(selectedSessionId);
       setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
-      await agentChatApiRef.current.respondToInput({
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.respondToInput({
         sessionId: selectedSessionId,
         itemId,
         decision,
         responseText,
         ...(answers ? { answers } : {}),
-      }, chatRuntimePinRef.current);
+      }, chatPin));
       setPendingInputsBySession((prev) => ({
         ...prev,
         [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
@@ -14895,10 +14908,10 @@ export function AgentChatPane({
     try {
       touchSession(selectedSessionId);
       setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
-      await agentChatApiRef.current.dismissPendingInput({
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.dismissPendingInput({
         sessionId: selectedSessionId,
         itemId,
-      }, chatRuntimePinRef.current);
+      }, chatPin));
       setPendingInputsBySession((prev) => ({
         ...prev,
         [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId),
@@ -15019,7 +15032,7 @@ export function AgentChatPane({
         return true;
       }
       try {
-        await sendWithCloudWakeMark(continuation.targetSessionId, pin, () => window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin));
+        await sendWithCloudWakeMark(continuation.targetSessionId, pin, () => withChatPin(pin, (chatPin) => window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, chatPin)));
       } catch (sendError) {
         // ADE Web reaches one machine; a chat elsewhere gets the hand-over.
         if (isWebRuntimePinUnroutableError(sendError)) {
@@ -15087,7 +15100,7 @@ export function AgentChatPane({
     const alreadyOpen = resolveSideChatView(mainSessionId, selectedSession?.sideChatSessionId ?? null).kind === "open";
     if (!alreadyOpen) noteSideChatStarting(mainSessionId, prompt);
     workSidebar.setTool("side-chat");
-    void window.ade.agentChat.startSideChat({ sessionId: mainSessionId, text: prompt }, pin)
+    void withChatPin(pin, (chatPin) => window.ade.agentChat.startSideChat({ sessionId: mainSessionId, text: prompt }, chatPin))
       .then((result) => noteSideChat(mainSessionId, result.session.id))
       .catch((startError: unknown) => {
         const message = errorMessage(startError);
@@ -15153,11 +15166,11 @@ export function AgentChatPane({
       setBusy(true);
       setError(null);
       try {
-        const result = await agentChatApiRef.current.messageSubagent({
+        const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.messageSubagent({
           sessionId: selectedSessionId,
           taskId: subagentView.taskId,
           text,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         if (result.delivered) updateComposerDraft("");
         else setError(result.reason ?? "The subagent did not take the message.");
       } catch (messageError) {
@@ -15629,7 +15642,7 @@ export function AgentChatPane({
       draftsPerSessionRef.current.delete(selectedSessionId);
       try {
         touchSession(selectedSessionId);
-        await agentChatApiRef.current.getContextUsage({ sessionId: selectedSessionId }, chatRuntimePinRef.current);
+        await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.getContextUsage({ sessionId: selectedSessionId }, chatPin));
       } catch (contextError) {
         setDraft((current) => (current.trim().length ? current : draft));
         setError(contextError instanceof Error ? contextError.message : String(contextError));
@@ -15652,11 +15665,11 @@ export function AgentChatPane({
       draftsPerSessionRef.current.delete(selectedSessionId);
       try {
         touchSession(selectedSessionId);
-        await sendWithCloudWakeMark(selectedSessionId, chatRuntimePinRef.current, () => agentChatApiRef.current.send({
+        await sendWithCloudWakeMark(selectedSessionId, chatRuntimePinRef.current, () => withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.send({
           sessionId: selectedSessionId,
           text,
           displayText: text,
-        }, chatRuntimePinRef.current));
+        }, chatPin)));
         void refreshSessions().catch(() => {});
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
@@ -15679,7 +15692,7 @@ export function AgentChatPane({
       setDraft("");
       draftsPerSessionRef.current.delete(selectedSessionId);
       try {
-        await agentChatApiRef.current.codex.resetMemory({ sessionId: selectedSessionId }, chatRuntimePinRef.current);
+        await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.codex.resetMemory({ sessionId: selectedSessionId }, chatPin));
       } catch (resetError) {
         setDraft((current) => (current.trim().length ? current : text));
         setError(resetError instanceof Error ? resetError.message : String(resetError));
@@ -15875,14 +15888,15 @@ export function AgentChatPane({
         const pendingCursorConfig = selectedModelChanged && sessionProvider === "cursor"
           ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
           : {};
-        await agentChatApiRef.current.updateSession({
-          sessionId,
+        const updateSessionId = sessionId;
+        await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
+          sessionId: updateSessionId,
           ...modelUpdate,
           ...fastModeUpdate,
           ...reasoningUpdate,
           ...pendingNativeUpdate,
           ...pendingCursorConfig,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         deferredComposerSessionIdRef.current = null;
         setSessionRoutePick(null);
         void refreshSessions().catch(() => {});
@@ -15933,7 +15947,7 @@ export function AgentChatPane({
       );
 
       const steerMessage = async (): Promise<AgentChatSteerResult> => {
-        return await agentChatApiRef.current.steer({
+        return await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.steer({
           sessionId,
           text: finalText,
           displayText: finalDisplayText,
@@ -15950,7 +15964,7 @@ export function AgentChatPane({
             ? { dispatchMode: activeTurnDispatchMode }
             : {}),
           sentByUser: true,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
       };
 
       const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
@@ -15964,7 +15978,7 @@ export function AgentChatPane({
           }
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude" ? interactionMode : null;
-          await agentChatApiRef.current.send({
+          await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.send({
             sessionId,
             text: finalText,
             ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
@@ -15978,7 +15992,7 @@ export function AgentChatPane({
             executionMode: launchModeEditable ? executionMode : null,
             interactionMode: sendInteractionMode,
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
-          }, chatRuntimePinRef.current);
+          }, chatPin));
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -16210,10 +16224,10 @@ export function AgentChatPane({
     setBusy(true);
     setError(null);
     try {
-      await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => agentChatApiRef.current.send({
+      await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.send({
         sessionId,
         text: "/compact",
-      }, chatRuntimePinRef.current));
+      }, chatPin)));
     } catch (compactError) {
       const message = compactError instanceof Error ? compactError.message : String(compactError);
       setError(message);
@@ -16242,7 +16256,7 @@ export function AgentChatPane({
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.
   const dispatchSteerSafely = useCallback(
     (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
-      void agentChatApiRef.current.dispatchSteer(args, chatRuntimePinRef.current).catch((error: unknown) => {
+      void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.dispatchSteer(args, chatPin)).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         setError(`Couldn't deliver the message to the running turn: ${message}`);
       });
@@ -16275,11 +16289,11 @@ export function AgentChatPane({
     setBusy(true);
     setError(null);
     try {
-      const preview = await agentChatApiRef.current.rewindFiles({
+      const preview = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.rewindFiles({
         sessionId: selectedSessionId,
         userMessageId: request.messageId,
         dryRun: true,
-      }, chatRuntimePinRef.current);
+      }, chatPin));
       if (!preview.canRewind) {
         setError(preview.error ?? "No file checkpoint is available for that message.");
         return;
@@ -16294,11 +16308,11 @@ export function AgentChatPane({
       });
       if (!confirmed) return;
       setBusy(true);
-      const result = await agentChatApiRef.current.rewindFiles({
+      const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.rewindFiles({
         sessionId: selectedSessionId,
         userMessageId: request.messageId,
         dryRun: false,
-      }, chatRuntimePinRef.current);
+      }, chatPin));
       if (!result.canRewind) {
         setError(result.error ?? "File rewind failed.");
         return;
@@ -16337,18 +16351,18 @@ export function AgentChatPane({
             ? "restart_resume"
             : "wait";
       try {
-        const result = await agentChatApiRef.current.recoverTurn({
+        const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.recoverTurn({
           sessionId: args.sessionId,
           turnId: args.turnId,
           action,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         return {
           ...result,
           action: args.action,
         };
       } catch (error) {
         if (!isUnsupportedAgentChatRecoveryActionError(error)) throw error;
-        return agentChatApiRef.current.recoverCodexTurn(args, chatRuntimePinRef.current);
+        return withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.recoverCodexTurn(args, chatPin));
       }
     },
     [],
@@ -16370,11 +16384,11 @@ export function AgentChatPane({
         touchSession(sessionId);
         const steerId = event.steerId?.trim();
         if (!steerId) throw new Error("This message is missing its durable delivery identifier.");
-        await agentChatApiRef.current.resolveUnprocessedMessage({
+        await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.resolveUnprocessedMessage({
           sessionId,
           steerId,
           action: "run_next",
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         void refreshSessions().catch(() => {});
       } catch (runError) {
         const message = runError instanceof Error ? runError.message : String(runError);
@@ -16399,11 +16413,11 @@ export function AgentChatPane({
       const steerId = event.steerId?.trim();
       if (!sessionId) throw new Error("This chat is no longer selected.");
       if (!steerId) throw new Error("This message is missing its durable delivery identifier.");
-      await agentChatApiRef.current.resolveUnprocessedMessage({
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.resolveUnprocessedMessage({
         sessionId,
         steerId,
         action: "dismiss",
-      }, chatRuntimePinRef.current);
+      }, chatPin));
       void refreshSessions().catch(() => {});
     },
     [refreshSessions],
@@ -16431,10 +16445,10 @@ export function AgentChatPane({
     setTurnActiveBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
     try {
       touchSession(selectedSessionId);
-      await agentChatApiRef.current.interrupt(
+      await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.interrupt(
         { sessionId: selectedSessionId, mode },
-        chatRuntimePinRef.current,
-      );
+        chatPin,
+      ));
     } catch (interruptError) {
       setError(interruptError instanceof Error ? interruptError.message : String(interruptError));
     }
@@ -16522,10 +16536,10 @@ export function AgentChatPane({
       }
 
       try {
-        const updatedSession = await agentChatApiRef.current.updateSession({
+        const updatedSession = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
           sessionId: selectedSessionId,
           ...nextSummary,
-        }, chatRuntimePinRef.current);
+        }, chatPin));
         patchSessionSummary(selectedSessionId, {
           permissionMode: updatedSession.permissionMode,
           interactionMode: updatedSession.interactionMode ?? null,
@@ -16613,10 +16627,10 @@ export function AgentChatPane({
     const seq = ++reasoningEffortUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
     patchSessionSummary(targetSessionId, { reasoningEffort: nextReasoningEffort });
-    void agentChatApiRef.current.updateSession({
+    void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
       sessionId: targetSessionId,
       reasoningEffort: nextReasoningEffort,
-    }, chatRuntimePinRef.current).then((updatedSession) => {
+    }, chatPin)).then((updatedSession) => {
       if (seq !== reasoningEffortUpdateCounterRef.current) return;
       const reconciled = updatedSession.reasoningEffort ?? null;
       patchSessionSummary(targetSessionId, { reasoningEffort: reconciled });
@@ -16660,10 +16674,10 @@ export function AgentChatPane({
     // own machine stores it, through the pin every chat update uses.
     const chain = entry.chain
       .catch(() => {})
-      .then(() => agentChatApiRef.current.updateSession({
+      .then(() => withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
         sessionId: targetSessionId,
         codexDaybreak: enabled,
-      }, chatRuntimePinRef.current))
+      }, chatPin)))
       .then((updatedSession) => {
         const current = updates.get(targetSessionId);
         if (!current) return;
@@ -16716,11 +16730,11 @@ export function AgentChatPane({
       : null;
     const updatePromise = Promise.resolve(previousUpdate)
       .catch(() => {})
-      .then(() => agentChatApiRef.current.updateSession({
+      .then(() => withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
         sessionId: targetSessionId,
         fastMode: enabled,
         fastTier: nextFastTier,
-      }, chatRuntimePinRef.current))
+      }, chatPin)))
       .then((updatedSession) => {
       if (updateId !== fastModeUpdateCounterRef.current) return;
       const reconciled = updatedSession.fastMode === true;
@@ -16773,11 +16787,11 @@ export function AgentChatPane({
     }
     if (isPersistentIdentitySurface && sessionMutationKind) return;
     patchSessionSummary(selectedSessionId, { cursorCloudServiceTier: tier, fastMode: tier === "fast" });
-    void agentChatApiRef.current.updateSession({
+    void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
       sessionId: selectedSessionId,
       cursorCloudServiceTier: tier,
       fastMode: tier === "fast",
-    }, chatRuntimePinRef.current).then((updatedSession) => {
+    }, chatPin)).then((updatedSession) => {
       patchSessionSummary(selectedSessionId, {
         cursorCloudServiceTier: updatedSession.cursorCloudServiceTier ?? null,
         fastMode: updatedSession.fastMode === true,
@@ -17411,7 +17425,10 @@ export function AgentChatPane({
     const load = () => {
       // Optional call: a host bridge without it (an older embedder, a test
       // double) leaves the draft on this window's own memory.
-      void agentChatApiRef.current.launchDefaults?.(draftExecutionBindingRef.current ?? null)
+      // No machine picked yet: the draft keeps this window's memory.
+      const defaultsPin = chatApiPin(draftExecutionBindingRef.current, isPersonalPaneRef.current);
+      if (!defaultsPin) return;
+      void agentChatApiRef.current.launchDefaults?.(defaultsPin)
         .then((defaults) => {
           if (cancelled) return;
           // The machine that will run this draft also owns the account policy
@@ -17701,12 +17718,12 @@ export function AgentChatPane({
     if (!selectedSessionId || !selectedSessionModelId) return "ADE could not tell this chat's model.";
     const note = lastParentUserText();
     // A brief hand-off: the new chat gets the history as text, then the message.
-    const result = await agentChatApiRef.current.handoff({
+    const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.handoff({
       sourceSessionId: selectedSessionId,
       targetModelId: selectedSessionModelId,
       mode: "brief",
       ...(note ? { handoffNote: note } : {}),
-    }, chatRuntimePinRef.current);
+    }, chatPin));
     notifySessionCreated(result.session, { source: "handoff" });
     invalidateCurrentChatSessionList();
     void refreshSessions({ force: true }).catch(() => {});
@@ -17715,7 +17732,7 @@ export function AgentChatPane({
   const changeSwitchBack = useCallback(async (): Promise<string | null> => {
     const instanceId = accountSwitchShown?.notice.from?.instanceId;
     if (!selectedSessionId || !instanceId) return "ADE could not tell the account to change back to.";
-    const result = await agentChatApiRef.current.switchAccount({ sessionId: selectedSessionId, instanceId }, chatRuntimePinRef.current);
+    const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.switchAccount({ sessionId: selectedSessionId, instanceId }, chatPin));
     if (!result.ok) return result.message;
     const failure = await resendLastUserMessage(selectedSessionId, null);
     return typeof failure === "string" ? failure : null;
@@ -17942,10 +17959,10 @@ export function AgentChatPane({
     && selectedSessionId
     && providerSupportsPerTaskStop(transcriptSessionProvider)
       ? (taskId: string) => {
-          void agentChatApiRef.current.stopTask({
+          void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.stopTask({
             sessionId: selectedSessionId,
             taskId,
-          }, chatRuntimePinRef.current).catch((stopError) => {
+          }, chatPin)).catch((stopError) => {
             setError(stopError instanceof Error ? stopError.message : String(stopError));
           });
         }
@@ -17993,9 +18010,7 @@ export function AgentChatPane({
       try {
         const pin = chatRuntimePinRef.current;
         const args = { chatSessionId: sessionId, limit: null };
-        const listed = pin
-          ? await listSessions(args, pin)
-          : await listSessions(args);
+        const listed = await listSessions(args, requireChatPin(pin));
         if (cancelled) return;
         // A runtime that cannot answer this read answers with nothing; that is
         // "no shells", not a failure (only a rejected promise is one).
@@ -18029,6 +18044,12 @@ export function AgentChatPane({
         cancelled = true;
       };
     }
+    const feedPin = chatRuntimePinRef.current;
+    if (!feedPin) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const unsubscribe = subscribe((event: TerminalSessionChangedEvent) => {
       const changedId = event?.sessionId ?? null;
       // Anything touching this chat or one of its shells reloads, and a bulk
@@ -18039,7 +18060,7 @@ export function AgentChatPane({
       const isNewSession = event?.reason === "created";
       if (changedId && !isNewSession && changedId !== sessionId && !shellIdsRef.current.has(changedId)) return;
       void load();
-    }, chatRuntimePinRef.current ?? undefined);
+    }, feedPin);
     return () => {
       cancelled = true;
       unsubscribe();
@@ -18141,10 +18162,10 @@ export function AgentChatPane({
       schedulesPaused={selectedSession?.scheduledWorkPaused === true}
       onToggleSchedulesPaused={selectedSessionId ? () => {
         const paused = selectedSession?.scheduledWorkPaused !== true;
-        void agentChatApiRef.current.setScheduledWorkPaused({
+        void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.setScheduledWorkPaused({
           sessionId: selectedSessionId,
           paused,
-        }, chatRuntimePinRef.current).then((result) => {
+        }, chatPin)).then((result) => {
           patchSessionSummary(selectedSessionId, {
             scheduledWorkPaused: result.paused,
             nextWakeAt: result.nextWakeAt,
@@ -18154,10 +18175,10 @@ export function AgentChatPane({
         });
       } : undefined}
       onCancelScheduledWork={selectedSessionId ? (schedule) => {
-        void agentChatApiRef.current.cancelScheduledWork({
+        void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.cancelScheduledWork({
           sessionId: selectedSessionId,
           scheduleId: schedule.id,
-        }, chatRuntimePinRef.current).then((result) => {
+        }, chatPin)).then((result) => {
           const current = selectedSession?.scheduledWork ?? [];
           patchSessionSummary(selectedSessionId, {
             scheduledWork: result.providerCancellationConfirmed || result.schedule.status === "cancelled"
@@ -18177,19 +18198,19 @@ export function AgentChatPane({
         }
         const provider = selectedSession?.provider ?? sessionProvider;
         if (provider === "codex") {
-          void agentChatApiRef.current.codex.terminateBackgroundTerminal({
+          void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.codex.terminateBackgroundTerminal({
             sessionId: selectedSessionId,
             processId,
-          }, chatRuntimePinRef.current).catch((stopError) => {
+          }, chatPin)).catch((stopError) => {
             setError(stopError instanceof Error ? stopError.message : String(stopError));
           });
           return;
         }
         if (providerSupportsPerTaskStop(provider)) {
-          void agentChatApiRef.current.stopTask({
+          void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.stopTask({
             sessionId: selectedSessionId,
             taskId: processId,
-          }, chatRuntimePinRef.current).catch((stopError) => {
+          }, chatPin)).catch((stopError) => {
             setError(stopError instanceof Error ? stopError.message : String(stopError));
           });
           return;
@@ -18200,10 +18221,10 @@ export function AgentChatPane({
         ? (snapshot) => {
           const taskId = snapshot.taskId.trim();
           if (!taskId || snapshot.childSessionId) return;
-          void agentChatApiRef.current.stopTask({
+          void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.stopTask({
             sessionId: selectedSessionId,
             taskId,
-          }, chatRuntimePinRef.current).catch((stopError) => {
+          }, chatPin)).catch((stopError) => {
             setError(stopError instanceof Error ? stopError.message : String(stopError));
           });
         }
@@ -19264,10 +19285,10 @@ export function AgentChatPane({
             spawnKind: "peer",
             subagentTakeoverPromptShownAt: shownAt,
           });
-          void agentChatApiRef.current.updateSession({
+          void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
             sessionId,
             spawnKind: "peer",
-          }, chatRuntimePinRef.current).then((updated) => {
+          }, chatPin)).then((updated) => {
             patchSessionSummary(sessionId, {
               spawnKind: updated.spawnKind ?? "peer",
               subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
@@ -19285,10 +19306,10 @@ export function AgentChatPane({
           const sessionId = composerSessionId;
           const shownAt = new Date().toISOString();
           patchSessionSummary(sessionId, { subagentTakeoverPromptShownAt: shownAt });
-          void agentChatApiRef.current.updateSession({
+          void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
             sessionId,
             subagentTakeoverPromptShown: true,
-          }, chatRuntimePinRef.current).then((updated) => {
+          }, chatPin)).then((updated) => {
             patchSessionSummary(sessionId, {
               spawnKind: updated.spawnKind,
               subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt ?? shownAt,
@@ -19703,8 +19724,8 @@ export function AgentChatPane({
                 // A cancel that fails leaves the message queued and the agent
                 // will still send it. Report it the way the edit and dispatch
                 // paths do rather than dropping the rejection on the floor.
-                void agentChatApiRef.current
-                  .cancelSteer({ sessionId: selectedSessionId, steerId }, chatRuntimePinRef.current)
+                void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current
+                  .cancelSteer({ sessionId: selectedSessionId, steerId }, chatPin))
                   .catch((error: unknown) => {
                     setError(`Couldn't remove the queued message: ${error instanceof Error ? error.message : String(error)}`);
                   });
@@ -19739,7 +19760,7 @@ export function AgentChatPane({
                 draftLaunchTargetId,
                 updatedAt: new Date().toISOString(),
               };
-              void agentChatApiRef.current.cancelSteer({ sessionId, steerId, requireQueued: true }, chatRuntimePinRef.current).then(() => {
+              void withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.cancelSteer({ sessionId, steerId, requireQueued: true }, chatPin)).then(() => {
                 setPendingSteersBySession((current) => ({
                   ...current,
                   [sessionId]: (current[sessionId] ?? []).filter((entry) => entry.steerId !== steerId),
@@ -19776,7 +19797,7 @@ export function AgentChatPane({
             onMoveSteer={selectedSessionId && queuedSteersCanReorder(selectedSession?.provider)
               ? async (steerId, toIndex) => {
                 try {
-                  await agentChatApiRef.current.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatRuntimePinRef.current);
+                  await withChatPin(chatApiPin(chatRuntimePinRef.current, isPersonalPaneRef.current), (chatPin) => agentChatApiRef.current.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatPin));
                 } catch (error) {
                   setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
                   throw error;

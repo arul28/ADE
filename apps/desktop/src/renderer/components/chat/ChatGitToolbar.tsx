@@ -36,6 +36,7 @@ import { HoverCard } from "../ui/HoverCard";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { PrWatchPill } from "./PrWatchPill";
+import { withChatPin } from "./chatMachinePin";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -214,7 +215,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   const refreshStatus = useCallback(async () => {
     try {
-      const changes = await window.ade.diff.getChanges({ laneId }, runtimePinRef.current);
+      const changes = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.diff.getChanges({ laneId }, chatPin));
       setDirtyCount(dirtyFileCount(changes));
     } catch {
       // best-effort
@@ -237,7 +238,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         // Older web-preview/test bridges only expose the original single-PR
         // lookup. Keep that compatibility path while the desktop bridge rolls
         // forward to the plural list.
-        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        const legacy = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getForLane(laneId, chatPin));
         lanePrs = legacy ? [legacy] : [];
       }
       const visibleLanePrs = selectChatPrs(laneForPr, lanePrs, sessionId);
@@ -316,13 +317,15 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // The visible ⟳ affordance and its spin/debounce state now live in
   // ChatPrPane's title bar; the header only needs the heal-the-pill re-read.
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "pr-reconcile") return;
       if (event.state === "running") return;
       // A reconcile just healed backend state — re-read the linked PR.
       invalidatePrListCache({ projectRoot, pin: runtimePinRef.current, bindingKey: prListBindingKey });
       void refreshPr();
-    }, runtimePinRef.current);
+    }, feedPin);
     return () => {
       unsubscribe();
     };
@@ -344,6 +347,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       const current = linkedPrRef.current;
       if (event.type === "pr-notification") {
@@ -366,7 +371,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         setLinkedPrs([]);
         setLinkedPr(null);
       }
-    }, runtimePinRef.current);
+    }, feedPin);
     return () => {
       unsubscribe();
     };
@@ -464,7 +469,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     if (!prMenuOpen || !linkedPr || linkedPr.unmapped) return;
     let cancelled = false;
     setPrChecksLoading(true);
-    window.ade.prs.getChecks(linkedPr.id, runtimePinRef.current)
+    withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getChecks(linkedPr.id, chatPin))
       .then((checks) => {
         if (!cancelled) setPrChecks(checks);
       })

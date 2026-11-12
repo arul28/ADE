@@ -45,7 +45,7 @@ export function useClaudeModsPrompt(sessionId: string | null, pin: OpenProjectBi
     if (!sessionId || !pin || isClaudeModsOfferDismissed()) return;
     let cancelled = false;
     void (async () => {
-      const config = await window.ade.projectConfig.get();
+      const config = await window.ade.projectConfig.get(pin);
       if (cancelled || config.effective.ai?.chat?.claudePluginUiEnabled === true) return;
       // The plugin list is read only while there is an offer to make.
       const hasMods = await findInstalledMods(sessionId, pin);

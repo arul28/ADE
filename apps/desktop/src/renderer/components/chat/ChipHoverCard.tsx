@@ -78,6 +78,7 @@ import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { McpMentionCardBody } from "./McpMentionCardBody";
 import { settingsEntryById, settingsEntryLabel, settingUnavailableReason } from "../settings/settingsManifest";
 import { settingAgentAccess, settingIsProtected } from "../../../shared/settingsAgentAccess";
+import { withChatPin } from "./chatMachinePin";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -315,7 +316,7 @@ export async function loadChipCardData(
     const laneId = target.laneId ?? sources.laneId;
     const lane = laneId ? sources.lanes.find((candidate) => candidate.id === laneId) : null;
     if (!laneId || !lane) return null;
-    const commit = await window.ade.git.getCommit({ laneId, commitSha: target.sha }, sources.pin).catch(() => null);
+    const commit = await withChatPin(sources.pin, (chatPin) => window.ade.git.getCommit({ laneId, commitSha: target.sha }, chatPin)).catch(() => null);
     if (!commit) return null;
     return {
       kind: "commit",
@@ -345,6 +346,7 @@ export async function loadChipCardData(
   }
   if (target.kind === "machine") return { kind: "machine", machineKey: target.machineKey };
   if (target.kind === "mcp") {
+    if (!sources.pin) return null;
     const result = await window.ade?.agentChat?.listMentionSuggestions?.(
       { query: `mcp ${target.name}`, ...(sources.sessionId ? { excludeSessionId: sources.sessionId } : {}) },
       sources.pin,

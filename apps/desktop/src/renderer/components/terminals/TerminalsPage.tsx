@@ -132,6 +132,7 @@ import {
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
 import { writeClientLayout } from "../ui/clientLayoutStore";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
@@ -712,7 +713,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return;
       }
       const undo = () => {
-        void window.ade.agentChat.reopenDeleted({ id: session.id }, pin)
+        void withChatPin(pin, (chatPin) => window.ade.agentChat.reopenDeleted({ id: session.id }, chatPin))
           .then(async (result) => {
             invalidateSessionListCache();
             // The select handler loads the seconds-old chat, then opens it.
@@ -783,9 +784,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // resolves the owning machine the same way resume/continue/stop already
       // do, instead of defaulting to whichever machine the tab is bound to.
       const pin = runtimePin ?? resolveSessionRuntimePin(session);
-      const deletion = pin
-        ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
-        : window.ade.agentChat.delete({ sessionId: session.id });
+      const deletion = withChatPin(pin, (chatPin) => window.ade.agentChat.delete({ sessionId: session.id }, chatPin));
       void deletion
         .then(async (result) => {
           invalidateSessionListCache();
@@ -833,9 +832,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setDeletingSessionId(session.id);
       // Same ownership resolution as `handleDeleteChat` — see the note there.
       const pin = runtimePin ?? resolveSessionRuntimePin(session);
-      const deletion = pin
-        ? window.ade.sessions.delete({ sessionId: session.id }, pin)
-        : window.ade.sessions.delete({ sessionId: session.id });
+      const deletion = withChatPin(pin, (chatPin) => window.ade.sessions.delete({ sessionId: session.id }, chatPin));
       void deletion
         .then(async () => {
           invalidateSessionListCache();
@@ -879,9 +876,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // record, so a single call covers both steps for CLI and shell sessions.
         try {
           const pin = runtimePin ?? resolveSessionRuntimePin(session);
-          await (pin
-            ? window.ade.sessions.delete({ sessionId: session.id }, pin)
-            : window.ade.sessions.delete({ sessionId: session.id }));
+          await (window.ade.sessions.delete({ sessionId: session.id }, requireChatPin(pin)));
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
           work.closeTab(session.id);
@@ -927,15 +922,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     async (session: TerminalSessionSummary) => {
       const pin = resolveSessionRuntimePin(session);
       if (isChatToolType(session.toolType)) {
-        await (pin
-          ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
-          : window.ade.agentChat.delete({ sessionId: session.id }));
+        await (window.ade.agentChat.delete({ sessionId: session.id }, requireChatPin(pin)));
         if (pin) cancelCrossMachineOptimisticChatSession(pin, session.id);
         return;
       }
-      await (pin
-        ? window.ade.sessions.delete({ sessionId: session.id }, pin)
-        : window.ade.sessions.delete({ sessionId: session.id }));
+      await (window.ade.sessions.delete({ sessionId: session.id }, requireChatPin(pin)));
     },
     [resolveSessionRuntimePin],
   );
@@ -1175,7 +1166,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...buildPtyContinuationLaunchFields(launch),
       };
       await runCliResumeRequest(session, "Send", (pin) => (
-        pin ? window.ade.pty.sendToSession(args, pin) : window.ade.pty.sendToSession(args)
+        window.ade.pty.sendToSession(args, requireChatPin(pin))
       ));
     },
   );
@@ -1184,7 +1175,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     async (session: TerminalSessionSummary) => {
       const args = { sessionId: session.id, cols: 100, rows: 30 };
       await runCliResumeRequest(session, "Resume", (pin) => (
-        pin ? window.ade.pty.resumeSession(args, pin) : window.ade.pty.resumeSession(args)
+        window.ade.pty.resumeSession(args, requireChatPin(pin))
       ));
     },
   );
@@ -2334,7 +2325,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             const ownership = await linkOwnershipFor(pin);
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;
             const remote = session.laneId
-              ? await window.ade.git.getOriginRemote({ laneId: session.laneId }, pin ?? null).catch(() => null)
+              ? await withChatPin(pin ?? null, (chatPin) => window.ade.git.getOriginRemote({ laneId: session.laneId }, chatPin)).catch(() => null)
               : null;
             const repo = parseGithubRemoteUrl(remote?.remoteUrl ?? null);
             const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") || remote?.branch || null;
@@ -2374,9 +2365,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         gridSessionIds={gridSessionIds}
         onRemoveFromGrid={(session) => handleRemoveSessionFromGrid(session.id)}
         onSetChatTag={(session, tag, runtimePin) => {
-          const update = runtimePin
-            ? window.ade.agentChat.updateSession({ sessionId: session.id, tag }, runtimePin)
-            : window.ade.agentChat.updateSession({ sessionId: session.id, tag });
+          const update = withChatPin(runtimePin, (chatPin) => window.ade.agentChat.updateSession({ sessionId: session.id, tag }, chatPin));
           runSessionMutation(session.id, update, {
             actionName: "set session tag",
             errorLabel: "Set tag",
@@ -2393,9 +2382,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onRegenerateMetadata={(session, fields, runtimePin) => {
           if (getSessionMetadataGenerating(session.id)) return;
           setSessionMetadataGenerating(session.id, { fields, laneId: session.laneId });
-          const regenerate = runtimePin
-            ? window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields }, runtimePin)
-            : window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields });
+          const regenerate = withChatPin(runtimePin, (chatPin) => window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields }, chatPin));
           runSessionMutation(session.id, regenerate.finally(() => {
             setSessionMetadataGenerating(session.id, null);
           }), {

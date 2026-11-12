@@ -7,6 +7,7 @@ import { showToast } from "../app/toast/toastStore";
 import { nextFilesOpenNonce, requestFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { cacheScopePin } from "../../lib/tabBindingKey";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Recognising the file paths an agent writes into chat, and turning them into
@@ -436,7 +437,7 @@ async function loadFilesWorkspaces(
   }
   let pending = inflightFilesWorkspaces.get(key);
   if (!pending) {
-    pending = listWorkspaces({}, pin)
+    pending = withChatPin(pin, (chatPin) => listWorkspaces({}, chatPin))
       .then((next) => {
         cachedFilesWorkspaces.set(key, next);
         return next;
@@ -486,13 +487,13 @@ export async function probeWorkspacePath(args: {
 
   let items: { path: string }[] = [];
   try {
-    items = await quickOpen({
+    items = await withChatPin(args.pin, (chatPin) => quickOpen({
       workspaceId: args.workspaceId,
       query,
       limit: PATH_PROBE_LIMIT,
       includeIgnored: false,
       ...(args.refreshIndex ? { refreshIndex: true } : {}),
-    }, args.pin);
+    }, chatPin));
   } catch {
     // A failed probe must not swallow the click: fall back to the old
     // assumption and let the workbench report whatever it hits.
@@ -527,7 +528,7 @@ async function workspaceFileIsMissing(args: {
   const readFile = typeof window !== "undefined" ? window.ade?.files?.readFile : undefined;
   if (typeof readFile !== "function") return false;
   try {
-    await readFile({ workspaceId: args.workspaceId, path: args.path }, args.pin);
+    await withChatPin(args.pin, (chatPin) => readFile({ workspaceId: args.workspaceId, path: args.path }, chatPin));
     return false;
   } catch (error) {
     // Anything other than "not there" (a binary refusal, a permission error) is

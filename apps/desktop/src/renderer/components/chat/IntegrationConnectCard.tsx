@@ -20,6 +20,7 @@ import { SolidLogo } from "../settings/providers/ProviderHero";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatSettingsMachineId } from "./chatDeeplinks";
 import { CardBannerButtons, CardError, CardFieldInput, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * The connect card.
@@ -81,7 +82,7 @@ function useLinearOAuth(onSignedIn: () => void): {
     setState({ phase: "starting" });
     void (async () => {
       try {
-        const session = await cto.startLinearOAuth(pin);
+        const session = await withChatPin(pin, (chatPin) => cto.startLinearOAuth(chatPin));
         await window.ade.app.openExternal(session.authUrl);
         setState({ phase: "waiting", sessionId: session.sessionId });
       } catch (startError) {
@@ -102,7 +103,7 @@ function useLinearOAuth(onSignedIn: () => void): {
     let active = true;
     const poll = async () => {
       try {
-        const session = await cto.getLinearOAuthSession({ sessionId }, pin);
+        const session = await withChatPin(pin, (chatPin) => cto.getLinearOAuthSession({ sessionId }, chatPin));
         if (!active) return;
         if (session.status === "completed") {
           active = false;
