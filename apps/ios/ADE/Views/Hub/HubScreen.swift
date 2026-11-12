@@ -132,7 +132,8 @@ struct HubScreen: View {
     .animation(.spring(response: 0.35, dampingFraction: 0.85), value: createdToast)
     // A project the machine refused to open says why, instead of the tap
     // looking like it hung on the hub.
-    .adeToast($projectOpenFailureToast)
+    // Above the composer, as the created-chat toast is.
+    .adeToast($projectOpenFailureToast, bottomInset: 66)
     // A tap from outside the app that could not land where it pointed lands
     // here and says why ("Arul's Mac Studio is offline.").
     .onChange(of: syncService.hubNotice, initial: true) { _, _ in

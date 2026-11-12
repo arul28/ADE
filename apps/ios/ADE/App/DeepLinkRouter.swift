@@ -89,6 +89,7 @@ final class DeepLinkRouter {
         sessionId: sessionId,
         scope: scope,
         ownership: ownershipParse(from: url),
+        accountProject: accountProjectParse(from: url),
         attentionItemId: attentionItemId
       )
     case "pr":
@@ -112,6 +113,7 @@ final class DeepLinkRouter {
           detailTab: prDetailTab(from: url),
           accountMachineKey: accountMachineKey(from: url),
           ownership: ownership,
+          accountProject: accountProjectParse(from: url),
           attentionItemId: attentionItemId,
           eventId: eventId(from: url)
         )
@@ -123,13 +125,14 @@ final class DeepLinkRouter {
         detailTab: prDetailTab(from: url),
         accountMachineKey: accountMachineKey(from: url),
         ownership: ownership,
+        accountProject: accountProjectParse(from: url),
         attentionItemId: attentionItemId,
         eventId: eventId(from: url)
       )
     case "lane":
       guard let laneId = pathComponents.first,
             ADEDeepLinkURLParsing.isValidUUID(laneId) else { return landOnBrokenLink() }
-      routeLane(laneId: laneId, ownership: ownershipParse(from: url), url: url)
+      routeLane(laneId: laneId, ownership: ownershipParse(from: url), accountProject: accountProjectParse(from: url), url: url)
     case "file":
       let path = pathComponents.joined(separator: "/")
       guard isValidFileTarget(path: path, url: url) else { return }
@@ -274,7 +277,12 @@ final class DeepLinkRouter {
         landOnBrokenLink()
         return true
       }
-      routeLane(laneId: laneId, ownership: ADEDeepLinkURLParsing.ownership(from: query), url: url)
+      routeLane(
+        laneId: laneId,
+        ownership: ADEDeepLinkURLParsing.ownership(from: query),
+        accountProject: ADEDeepLinkURLParsing.accountProjectId(from: query),
+        url: url
+      )
     case "session":
       guard let sessionId = query["id"],
             ADEDeepLinkURLParsing.isValidOpaqueId(sessionId),
@@ -286,6 +294,7 @@ final class DeepLinkRouter {
         sessionId: sessionId,
         scope: scope,
         ownership: ADEDeepLinkURLParsing.ownership(from: query),
+        accountProject: ADEDeepLinkURLParsing.accountProjectId(from: query),
         attentionItemId: attentionItemId
       )
     case "file":
@@ -311,6 +320,7 @@ final class DeepLinkRouter {
       let eventId = eventId(from: url)
       let detailTab = prDetailTab(from: query["tab"])
       let ownership = ADEDeepLinkURLParsing.ownership(from: query)
+      let accountProject = ADEDeepLinkURLParsing.accountProjectId(from: query)
       if query["repo"]?.isEmpty ?? true {
         routePr(
           identifier: "\(number)",
@@ -318,6 +328,7 @@ final class DeepLinkRouter {
           detailTab: detailTab,
           accountMachineKey: accountMachineKey,
           ownership: ownership,
+          accountProject: accountProject,
           attentionItemId: attentionItemId,
           eventId: eventId
         )
@@ -335,6 +346,7 @@ final class DeepLinkRouter {
         detailTab: detailTab,
         accountMachineKey: accountMachineKey,
         ownership: ownership,
+        accountProject: accountProject,
         attentionItemId: attentionItemId,
         eventId: eventId
       )
@@ -357,6 +369,11 @@ final class DeepLinkRouter {
     landOnHub("This ADE link is broken.")
   }
 
+  private func accountProjectParse(from url: URL) -> ADEDeeplinkAccountProjectParse {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return .none }
+    return ADEDeepLinkURLParsing.accountProjectId(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
   private func ownershipParse(from url: URL) -> ADEDeeplinkOwnershipParse {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return .none }
     return ADEDeepLinkURLParsing.ownership(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
@@ -364,21 +381,37 @@ final class DeepLinkRouter {
 
   /// A lane link that names its machine and project opens that lane there.
   /// One that names neither keeps the old "Send to your computer" card.
-  private func routeLane(laneId: String, ownership: ADEDeeplinkOwnershipParse, url: URL) {
-    switch ownership {
-    case .malformed:
+  private func routeLane(
+    laneId: String,
+    ownership: ADEDeeplinkOwnershipParse,
+    accountProject: ADEDeeplinkAccountProjectParse = .none,
+    url: URL
+  ) {
+    let openLane: @MainActor (MobileProjectSummary) -> Void = { project in
+      guard let sync = SyncService.shared else { return }
+      sync.closeProjectHub()
+      sync.requestedLaneNavigation = LaneNavigationRequest(
+        laneId: laneId,
+        projectName: project.displayName
+      )
+    }
+    switch (ownership, accountProject) {
+    case (.malformed, _), (_, .malformed):
       landOnBrokenLink()
-    case .none:
+    case (.none, .none):
       postSendToMac(url: url)
-    case .owned(let owner):
-      routeOwned(owner) { project in
-        guard let sync = SyncService.shared else { return }
-        sync.closeProjectHub()
-        sync.requestedLaneNavigation = LaneNavigationRequest(
-          laneId: laneId,
-          projectName: project.displayName
-        )
-      }
+    case (.owned(let owner), .none):
+      routeOwned(owner, open: openLane)
+    case (_, .id(let id)):
+      routeAccountProject(
+        id,
+        owner: ownership.owner,
+        machineHint: accountMachineKey(from: url),
+        open: { _, project in openLane(project) },
+        fallback: { [weak self] in
+          if let owner = ownership.owner { self?.routeOwned(owner, open: openLane) } else { self?.postSendToMac(url: url) }
+        }
+      )
     }
   }
 
@@ -398,6 +431,7 @@ final class DeepLinkRouter {
     sessionId: String,
     scope: SessionScope,
     ownership: ADEDeeplinkOwnershipParse,
+    accountProject: ADEDeeplinkAccountProjectParse = .none,
     attentionItemId: String?
   ) {
     let postSession: (_ machineKey: String?, _ projectName: String?) -> Void = { [weak self] machineKey, projectName in
@@ -416,6 +450,21 @@ final class DeepLinkRouter {
         offset: scope.offset,
         projectName: projectName
       )
+    }
+    if case .malformed = accountProject { return landOnBrokenLink() }
+    if case .id(let id) = accountProject, ownership != .malformed {
+      // A session id names one chat on one machine: a link that names that
+      // machine keeps the session route below, after the removed check.
+      routeAccountProject(
+        id,
+        owner: ownership.owner,
+        machineHint: scope.accountMachineKey,
+        open: { owner, project in postSession(owner.accountMachineKey, project.displayName) },
+        fallback: { [weak self] in
+          self?.routeSession(sessionId: sessionId, scope: scope, ownership: ownership, attentionItemId: attentionItemId)
+        }
+      )
+      return
     }
     switch ownership {
     case .malformed:
@@ -448,6 +497,7 @@ final class DeepLinkRouter {
     detailTab: PrDetailTab?,
     accountMachineKey: String?,
     ownership: ADEDeeplinkOwnershipParse,
+    accountProject: ADEDeeplinkAccountProjectParse = .none,
     attentionItemId: String?,
     eventId: String?
   ) {
@@ -464,6 +514,23 @@ final class DeepLinkRouter {
         eventId: eventId,
         projectName: projectName
       )
+    }
+    if case .malformed = accountProject { return landOnBrokenLink() }
+    if case .id(let id) = accountProject, ownership != .malformed {
+      routeAccountProject(
+        id,
+        owner: ownership.owner,
+        machineHint: accountMachineKey,
+        open: { owner, project in postPr(owner.accountMachineKey, project.displayName) },
+        fallback: { [weak self] in
+          self?.routePr(
+            identifier: identifier, prNumber: prNumber, repoOwner: repoOwner, repoName: repoName,
+            detailTab: detailTab, accountMachineKey: accountMachineKey, ownership: ownership,
+            attentionItemId: attentionItemId, eventId: eventId
+          )
+        }
+      )
+      return
     }
     switch ownership {
     case .malformed:
@@ -520,6 +587,66 @@ final class DeepLinkRouter {
     ownedLinkTask = Task { @MainActor [weak self] in
       guard let self else { return }
       await self.performOwnedRoute(ownership, open: open)
+    }
+  }
+
+  /// A link that names an account project (spec 2.8). It follows a merge,
+  /// says so for a removed project, and opens the copy that the link's pair,
+  /// the link's computer or the Start-on order names. `fallback` is the
+  /// route the link takes without its account id: signed out, an older
+  /// server, or an id the account list does not hold while the link still
+  /// carries a pair.
+  private func routeAccountProject(
+    _ id: String,
+    owner: ADEDeeplinkOwnership?,
+    machineHint: String?,
+    open: @escaping @MainActor (ADEDeeplinkOwnership, MobileProjectSummary) -> Void,
+    fallback: @escaping @MainActor () -> Void
+  ) {
+    routedCount += 1
+    ownedLinkTask?.cancel()
+    ownedLinkTask = Task { @MainActor [weak self] in
+      guard let self, let sync = SyncService.shared else { return }
+      let account = AccountService.shared
+      if account.phase == .loading {
+        guard await self.waitUntilSignedIn(account), !Task.isCancelled else { return }
+      }
+      let store = AccountProjectStore.shared
+      guard account.phase == .signedIn, store.governsHub else { return fallback() }
+      @MainActor func resolve() -> AccountProjectLinkTarget {
+        resolveAccountProjectLink(
+          id: id,
+          owner: owner,
+          machineHint: machineHint,
+          state: store.listState,
+          startOnOrder: { sync.startOnCandidates(for: $0) }
+        )
+      }
+      var target = resolve()
+      if target == .unknown || !store.hasList {
+        // A project added since the last read: read the changes once.
+        if account.machines.isEmpty { await account.loadMachines() }
+        await store.refresh()
+        guard !Task.isCancelled else { return }
+        target = resolve()
+      }
+      if case .noCopy = target, account.machines.isEmpty {
+        await account.loadMachines()
+        guard !Task.isCancelled else { return }
+        target = resolve()
+      }
+      switch target {
+      case .removed:
+        sync.landOnHub(notice: "This project was removed from ADE.")
+      case .unknown:
+        if owner != nil { return fallback() }
+        sync.landOnHub(notice: "This project isn't in your ADE account.")
+      case .noCopy(let name):
+        sync.landOnHub(notice: "No computer that is online has a copy of \(name).")
+      case .copy(let machineKey, let checkoutId):
+        let ownership = ADEDeeplinkOwnership(accountMachineKey: machineKey, projectId: checkoutId, accountProjectId: id)
+        await self.performOwnedRoute(ownership) { project in open(ownership, project) }
+      }
     }
   }
 
@@ -1054,4 +1181,23 @@ extension Notification.Name {
   /// Posted when the phone opens the sign-in link of another computer.
   /// `userInfo["url"]` is the link; `DeviceSignInRequest(url:)` reads its code.
   static let adeDeviceSignInRequested = Notification.Name("ade.deviceSignInRequested")
+}
+
+extension SyncService {
+  /// The account project of one computer's folder, for a minted link. Nil
+  /// when the account does not hold the list or the folder is not on it.
+  func accountProjectIdForLink(accountMachineKey: String, checkoutId: String) -> String? {
+    let store = AccountProjectStore.shared
+    guard store.governsHub else { return nil }
+    if let project = store.liveProjects.first(where: { project in
+      project.copies.contains { $0.machineKey == accountMachineKey && $0.checkoutId == checkoutId }
+    }) {
+      return project.id
+    }
+    // The open folder on the primary can name its project before the list
+    // holds its copy.
+    guard checkoutId == activeProjectId,
+          accountMachineKey == currentAccountMachineIdentity()?.key else { return nil }
+    return accountProjectForActiveProject()?.id
+  }
 }

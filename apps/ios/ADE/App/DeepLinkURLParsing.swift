@@ -24,6 +24,27 @@ struct ADEDeeplinkOwnership: Equatable {
   var accountMachineKey: String
   /// The owning machine's canonical project id (`project_<hash>`), never a path.
   var projectId: String
+  /// The account project of that folder (`ap_<32 hex>`), when the phone knows
+  /// it. A minted link adds it next to the pair; a reader that does not know
+  /// it keeps the pair.
+  var accountProjectId: String? = nil
+}
+
+extension ADEDeeplinkOwnershipParse {
+  /// The pair, when the link carries a valid one.
+  var owner: ADEDeeplinkOwnership? {
+    if case .owned(let owner) = self { return owner }
+    return nil
+  }
+}
+
+/// What a link's `accountProjectId` parsed to.
+enum ADEDeeplinkAccountProjectParse: Equatable {
+  /// The link names no account project.
+  case none
+  case id(String)
+  /// The key is present, but its value is not an account project id.
+  case malformed
 }
 
 /// What a link's ownership pair parsed to.
@@ -134,6 +155,19 @@ enum ADEDeepLinkURLParsing {
     return .owned(ADEDeeplinkOwnership(accountMachineKey: machineKey, projectId: projectId))
   }
 
+  /// Reads `accountProjectId` off a lowercased query map. The id pattern is the
+  /// directory's `ACCOUNT_PROJECT_ID_PATTERN`.
+  static func accountProjectId(from query: [String: String]) -> ADEDeeplinkAccountProjectParse {
+    guard let raw = query["accountprojectid"] else { return .none }
+    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return isAccountProjectId(value) ? .id(value) : .malformed
+  }
+
+  static func isAccountProjectId(_ value: String?) -> Bool {
+    guard let value else { return false }
+    return value.range(of: #"^ap_[0-9a-f]{32}$"#, options: .regularExpression) != nil
+  }
+
   /// The ownership query items for a minted link, or none when either half is
   /// unknown. Only a canonical `project_<hash>` id is minted: an older host's
   /// local id or a path would point the reader at nothing (or leak the path).
@@ -143,7 +177,11 @@ enum ADEDeepLinkURLParsing {
           ownership.accountMachineKey.count <= 128,
           ownership.projectId.hasPrefix("project_"),
           isValidScopeComponent(ownership.projectId) else { return [] }
-    return [("accountMachineKey", ownership.accountMachineKey), ("projectId", ownership.projectId)]
+    var items: [(String, String?)] = [("accountMachineKey", ownership.accountMachineKey), ("projectId", ownership.projectId)]
+    if let accountProjectId = ownership.accountProjectId, isAccountProjectId(accountProjectId) {
+      items.append(("accountProjectId", accountProjectId))
+    }
+    return items
   }
 
   static func isValidUUID(_ value: String?) -> Bool {
@@ -236,4 +274,53 @@ enum ADEDeepLinkURLParsing {
       scalar.value < 0x20 || scalar.value == 0x7f
     }
   }
+}
+
+// MARK: - Links that name an account project
+
+/// Where a link that names an account project goes (spec 2.8).
+enum AccountProjectLinkTarget: Equatable {
+  /// Open this folder on this computer.
+  case copy(accountMachineKey: String, checkoutId: String)
+  /// The project was removed from the account.
+  case removed
+  /// The account list has no row with this id.
+  case unknown
+  /// The project is on the account, but no computer that can start holds a copy.
+  case noCopy(projectName: String)
+}
+
+/// Pure: resolves a link's `accountProjectId`.
+///
+/// 1. A merged id follows to the project it merged into.
+/// 2. The link's own pair wins when it names a copy of that project.
+/// 3. Then a copy on the computer the link names.
+/// 4. Then the first copy in the Start-on order (`startOnOrder`).
+func resolveAccountProjectLink(
+  id: String,
+  owner: ADEDeeplinkOwnership?,
+  machineHint: String?,
+  state: AccountProjectListState,
+  startOnOrder: (AccountProject) -> [StartOnCandidate]
+) -> AccountProjectLinkTarget {
+  let targetId = state.mergedTargets[id] ?? id
+  guard let project = state.rows[targetId], project.isLive else {
+    if let row = state.rows[targetId], row.removedAt != nil, row.mergedInto == nil { return .removed }
+    return .unknown
+  }
+  if let owner,
+     project.copies.contains(where: { $0.machineKey == owner.accountMachineKey && $0.checkoutId == owner.projectId }) {
+    return .copy(accountMachineKey: owner.accountMachineKey, checkoutId: owner.projectId)
+  }
+  if let hint = owner?.accountMachineKey ?? machineHint,
+     let copy = project.copies.filter({ $0.machineKey == hint }).sorted(by: { $0.isMain && !$1.isMain }).first {
+    return .copy(accountMachineKey: hint, checkoutId: copy.checkoutId)
+  }
+  for candidate in startOnOrder(project) where candidate.kind == .copy {
+    if let copy = project.copies.filter({ $0.machineKey == candidate.accountMachineKey })
+      .sorted(by: { $0.isMain && !$1.isMain }).first {
+      return .copy(accountMachineKey: candidate.accountMachineKey, checkoutId: copy.checkoutId)
+    }
+  }
+  return .noCopy(projectName: project.name)
 }

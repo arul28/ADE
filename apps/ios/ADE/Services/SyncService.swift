@@ -9046,7 +9046,11 @@ final class SyncService: ObservableObject {
     guard let machineKey = syncNonEmpty(machineKey),
           let projectId = syncNonEmpty(projectId ?? activeProjectId),
           projectId.hasPrefix("project_") else { return nil }
-    return ADEDeeplinkOwnership(accountMachineKey: machineKey, projectId: projectId)
+    return ADEDeeplinkOwnership(
+      accountMachineKey: machineKey,
+      projectId: projectId,
+      accountProjectId: accountProjectIdForLink(accountMachineKey: machineKey, checkoutId: projectId)
+    )
   }
 
   /// A lane as a shared link names it: the plain lane id (another machine's

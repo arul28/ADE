@@ -364,6 +364,8 @@ final class AccountProjectStore: ObservableObject {
 
   private var userId: String?
   private var state = AccountProjectListState()
+  /// Every row the phone holds, removed and merged rows included.
+  var listState: AccountProjectListState { state }
   private var lastAttemptAt: Date?
   private var failureCount = 0
   private var inFlight: Task<Void, Never>?
