@@ -377,7 +377,8 @@ export function logGithubApp(args: {
     | "github_app.adopted"
     | "github_app.retired"
     | "github_app.disconnected"
-    | "github_app.keepalive";
+    | "github_app.keepalive"
+    | "github_app.abandoned_confirms_dropped";
   userId: string;
   [field: string]: string | number | boolean | undefined;
 }): void {

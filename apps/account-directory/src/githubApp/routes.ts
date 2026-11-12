@@ -34,8 +34,8 @@ import {
   type GithubAppRuntime,
 } from "./grants";
 import { checkToken, deleteToken, exchangeCode, readGithubUser, refreshTokens, type GithubTokens, type GithubUser } from "./oauth";
-import { connectedPage, failurePage, installedPage, maskEmail, type FailureKind } from "./pages";
-import { constantTimeEqual, randomBase64Url, randomHex, seal, sha256Base64Url, sha256Hex, signInAad, unseal } from "./seal";
+import { confirmPage, connectedPage, failurePage, installedPage, maskEmail, type FailureKind } from "./pages";
+import { constantTimeEqual, randomBase64Url, randomHex, seal, sha256Base64Url, sha256Hex, signInAad, signInTokensAad, unseal } from "./seal";
 
 export type { GithubAppEnv } from "./grants";
 
@@ -98,7 +98,7 @@ function methodsFor(route: Route): string[] {
   }
 }
 
-/** Browser pages: GitHub (or the person) navigates here, with no bearer and no CORS. */
+/** Browser pages: GitHub (or the person) navigates here, with no bearer and no CORS. The callback also takes the confirm form's POST. */
 const isPage = (route: Route | null): boolean => route?.kind === "callback" || route?.kind === "installed";
 /** Machines only: a browser origin may never call these. */
 const isMachineOnly = (route: Route | null): boolean => route?.kind === "adopt" || route?.kind === "retire";
@@ -135,9 +135,11 @@ export async function handleGithubAppRequest(request: Request, env: GithubAppEnv
   const route = matchRoute(path);
 
   if (route && isPage(route)) {
-    if (request.method !== "GET" && request.method !== "HEAD") return notFound();
-    if (route.kind === "installed") return installedPage();
-    return handleCallback(request, env, url, waitUntil);
+    if (route.kind === "installed") return request.method === "GET" || request.method === "HEAD" ? installedPage() : notFound();
+    // Not HEAD: the GET spends the state and exchanges the code.
+    if (request.method === "GET") return handleCallback(request, env, url, waitUntil);
+    if (request.method === "POST") return handleConfirm(request, env, waitUntil);
+    return notFound();
   }
 
   const requestOrigin = request.headers.get("origin");
@@ -301,9 +303,12 @@ type SignInRow = {
   client_kind: GithubAppClientKind;
   return_to: string | null;
   redirect_uri: string;
-  status: "pending" | "exchanging" | "done" | "failed" | "expired";
+  status: "pending" | "exchanging" | "confirming" | "done" | "failed" | "expired";
   result_code: "ok" | "denied" | "error" | null;
   github_login: string | null;
+  github_user_id: number | null;
+  tokens_sealed: string | null;
+  confirm_hash: string | null;
   expires_at: number;
 };
 
@@ -313,14 +318,15 @@ async function handleSignInRead(rt: GithubAppRuntime, userId: string, id: string
   if (!row) return notFound();
   let status: GithubAppSignInReadResponse["status"];
   if (row.status === "done" || row.status === "failed" || row.status === "expired") status = row.status;
-  else if (row.status === "pending" && row.expires_at <= now) status = "expired";
+  else if ((row.status === "pending" || row.status === "confirming") && row.expires_at <= now) status = "expired";
   else status = "pending";
   const response: GithubAppSignInReadResponse = { status, resultCode: row.result_code, githubLogin: row.github_login };
   return json(response);
 }
 
-const redirect = (location: string): Response => new Response(null, {
-  status: 302,
+/** 303 after the confirm form's POST, so the client page loads with a GET. */
+const redirect = (location: string, status: 302 | 303 = 302): Response => new Response(null, {
+  status,
   headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" },
 });
 
@@ -338,15 +344,25 @@ function clientReturn(row: SignInRow, status: "ok" | "denied" | "error" | "expir
   return null;
 }
 
-async function finishSignIn(rt: GithubAppRuntime, row: SignInRow, status: "failed" | "expired", resultCode: "denied" | "error" | null): Promise<void> {
-  await rt.db.prepare("update github_app_sign_ins set status = ?, result_code = ? where id = ? and status in ('pending', 'exchanging')")
-    .bind(status, resultCode, row.id).run();
+/** The one place `clientReturn` sends the browser, for the confirm page's `form-action`. */
+function returnTarget(row: SignInRow): string | null {
+  if (row.client_kind === "ios") return "ade:";
+  if (row.client_kind === "web" && row.return_to) return new URL(row.return_to).origin;
+  return null;
 }
 
-function failureResponse(row: SignInRow | null, kind: FailureKind): Response {
+/** Ends a sign-in that did not save a grant, and drops the tokens it held. */
+async function finishSignIn(rt: GithubAppRuntime, row: SignInRow, status: "failed" | "expired", resultCode: "denied" | "error" | null): Promise<void> {
+  await rt.db.prepare(`
+    update github_app_sign_ins set status = ?, result_code = ?, tokens_sealed = null, confirm_hash = null
+    where id = ? and status in ('pending', 'exchanging', 'confirming')
+  `).bind(status, resultCode, row.id).run();
+}
+
+function failureResponse(row: SignInRow | null, kind: FailureKind, redirectStatus: 302 | 303 = 302): Response {
   if (row && (kind === "denied" || kind === "error" || kind === "expired")) {
     const location = clientReturn(row, kind);
-    if (location) return redirect(location);
+    if (location) return redirect(location, redirectStatus);
   }
   return failurePage(kind);
 }
@@ -356,8 +372,14 @@ function failureResponse(row: SignInRow | null, kind: FailureKind): Response {
  * the sign-in by its hash and is spent by one conditional update, so it works
  * once and only within ten minutes. The code is exchanged with the client
  * secret and the PKCE verifier; the token's `GET /user` names the GitHub
- * user. The callback has no bearer: the state alone ties it to the ADE
- * account that started it, and the success page names both identities.
+ * user.
+ *
+ * The callback has no bearer, and the state only proves that someone started
+ * this sign-in, not that this browser's person did: GitHub returns at once,
+ * with no prompt, to a person who already authorized the App. So the grant is
+ * not saved here. The tokens wait sealed on the sign-in row, and the page asks
+ * the person to connect the named GitHub login to the named ADE account
+ * (`handleConfirm` saves it).
  */
 async function handleCallback(request: Request, env: GithubAppEnv, url: URL, waitUntil?: WaitUntil): Promise<Response> {
   const rt = await githubAppRuntime(env);
@@ -430,18 +452,102 @@ async function handleCallback(request: Request, env: GithubAppEnv, url: URL, wai
     return failureResponse(row, "error");
   }
 
-  const savedAt = Date.now();
-  const { saved, previous } = await saveGrant(rt, row.user_id, user.user, exchanged.tokens, "web_flow", savedAt);
-  if (!saved) throw new Error("github_app_grant_not_saved");
+  const confirm = randomBase64Url(32);
+  const held = await rt.db.prepare(`
+    update github_app_sign_ins set status = 'confirming', github_login = ?, github_user_id = ?, tokens_sealed = ?, confirm_hash = ?, expires_at = ?
+    where id = ? and status = 'exchanging'
+  `).bind(
+    user.user.login,
+    user.user.id,
+    await seal(rt.key, JSON.stringify(exchanged.tokens), signInTokensAad(row.id, row.user_id)),
+    await sha256Hex(confirm),
+    Date.now() + GITHUB_APP_SIGN_IN_TTL_MS,
+    row.id,
+  ).run();
+  if ((held.meta?.changes ?? 0) !== 1) {
+    const dropped = deleteToken(rt.config, exchanged.tokens.accessToken);
+    if (waitUntil) waitUntil(dropped); else await dropped;
+    return failurePage("used");
+  }
+  const previous = await loadGrant(rt.db, row.user_id);
+  const account = await clerkAccount(env, row.user_id);
+  return confirmPage({
+    identity: { githubLogin: user.user.login, adeAccount: maskEmail(account?.verifiedEmails[0]) },
+    replacedLogin: previous && previous.github_user_id !== user.user.id ? previous.github_login : null,
+    action: GITHUB_APP_PATHS.callback,
+    signInId: row.id,
+    confirm,
+    returnTarget: returnTarget(row),
+  });
+}
+
+/**
+ * `POST /github/app/callback`: the confirm page's answer. The one-time
+ * confirm value is the proof that this browser saw the page, and is spent by
+ * one conditional update. Connect saves the held tokens as the account's
+ * grant; Cancel, or an answer after ten minutes, deletes the token at GitHub.
+ */
+async function handleConfirm(request: Request, env: GithubAppEnv, waitUntil?: WaitUntil): Promise<Response> {
+  const rt = await githubAppRuntime(env);
+  if (!rt) return failurePage("not_configured");
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return failurePage("unknown");
+  }
+  const id = String(form.get("signIn") ?? "");
+  const confirm = String(form.get("confirm") ?? "");
+  const choice = form.get("choice");
+  if (!GITHUB_APP_SIGN_IN_ID_PATTERN.test(id) || !confirm || confirm.length > 128 || (choice !== "connect" && choice !== "cancel")) {
+    return failurePage("unknown");
+  }
+  const row = await rt.db.prepare("select * from github_app_sign_ins where id = ?").bind(id).first<SignInRow>();
+  if (!row?.confirm_hash || !constantTimeEqual(await sha256Hex(confirm), row.confirm_hash)) {
+    return failurePage(row && row.status !== "confirming" && row.status !== "pending" ? "used" : "unknown");
+  }
+  const now = Date.now();
+  const claim = await rt.db.prepare("update github_app_sign_ins set status = 'exchanging', confirm_hash = null where id = ? and status = 'confirming'")
+    .bind(row.id).run();
+  if ((claim.meta?.changes ?? 0) !== 1 || !row.tokens_sealed || row.github_user_id == null || !row.github_login) {
+    return failurePage("used");
+  }
+  let tokens: GithubTokens;
+  try {
+    tokens = JSON.parse(await unseal(rt.key, row.tokens_sealed, signInTokensAad(row.id, row.user_id))) as GithubTokens;
+  } catch {
+    await finishSignIn(rt, row, "failed", "error");
+    logGithubApp({ event: "github_app.sign_in_failed", userId: row.user_id, client: row.client_kind, kind: "confirm_tokens_unreadable" });
+    return failureResponse(row, "error", 303);
+  }
+  if (choice === "cancel" || row.expires_at <= now) {
+    const dropped = deleteToken(rt.config, tokens.accessToken);
+    if (waitUntil) waitUntil(dropped); else await dropped;
+    if (choice === "cancel") {
+      await finishSignIn(rt, row, "failed", "denied");
+      logGithubApp({ event: "github_app.sign_in_failed", userId: row.user_id, client: row.client_kind, kind: "cancelled_at_confirm" });
+      return failureResponse(row, "denied", 303);
+    }
+    await finishSignIn(rt, row, "expired", null);
+    logGithubApp({ event: "github_app.sign_in_refused", userId: row.user_id, code: "expired_confirm", client: row.client_kind });
+    return failureResponse(row, "expired", 303);
+  }
+
+  const user: GithubUser = { id: row.github_user_id, login: row.github_login };
+  const { saved, previous } = await saveGrant(rt, row.user_id, user, tokens, "web_flow", Date.now());
+  if (!saved) {
+    await finishSignIn(rt, row, "failed", "error");
+    return failureResponse(row, "error", 303);
+  }
   // C13: one live chain per account. Delete the previous token at GitHub
   // (that one token, never the whole authorization).
   if (previous) {
     const cleanup = deletePreviousToken(rt, previous, saved.access_token_sha256);
     if (waitUntil) waitUntil(cleanup); else await cleanup;
   }
-  await rt.db.prepare("update github_app_sign_ins set status = 'done', result_code = 'ok', github_login = ? where id = ? and status = 'exchanging'")
-    .bind(user.user.login, row.id).run();
-  const replacedLogin = previous && previous.github_user_id !== user.user.id ? previous.github_login : null;
+  await rt.db.prepare("update github_app_sign_ins set status = 'done', result_code = 'ok', tokens_sealed = null where id = ? and status = 'exchanging'")
+    .bind(row.id).run();
+  const replacedLogin = previous && previous.github_user_id !== user.id ? previous.github_login : null;
   logGithubApp({
     event: "github_app.sign_in_completed",
     userId: row.user_id,
@@ -451,9 +557,9 @@ async function handleCallback(request: Request, env: GithubAppEnv, url: URL, wai
   });
 
   const location = clientReturn(row, "ok");
-  if (location) return redirect(location);
+  if (location) return redirect(location, 303);
   const account = await clerkAccount(env, row.user_id);
-  return connectedPage({ githubLogin: user.user.login, adeAccount: maskEmail(account?.verifiedEmails[0]) }, replacedLogin);
+  return connectedPage({ githubLogin: user.login, adeAccount: maskEmail(account?.verifiedEmails[0]) }, replacedLogin);
 }
 
 // ---------------------------------------------------------------------------

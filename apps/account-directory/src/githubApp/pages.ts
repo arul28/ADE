@@ -105,13 +105,20 @@ p.lead { color: var(--ink); }
   text-decoration: none;
 }
 .action:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+button.action { border: 0; font: inherit; font-weight: 600; cursor: pointer; }
+button.action.quiet { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.choices { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.choices .action { margin-top: 0; }
 .done { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 0.9375rem; }
 `;
 
 /** The ADE mark: two linked nodes, drawn in currentColor. */
 const MARK = `<svg class="mark" viewBox="0 0 28 28" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="4.5"/><circle cx="20" cy="20" r="4.5"/><path d="M11.5 11.5l5 5"/></svg>`;
 
-function page(title: string, body: string, status: number): Response {
+/** No form, no subresource, no frame. */
+const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+function page(title: string, body: string, status: number, csp: string = PAGE_CSP): Response {
   const document = `<!doctype html>
 <html lang="en">
 <head>
@@ -129,7 +136,7 @@ function page(title: string, body: string, status: number): Response {
     headers: {
       "cache-control": "no-store",
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "content-security-policy": csp,
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
     },
@@ -139,6 +146,48 @@ function page(title: string, body: string, status: number): Response {
 function pair(rows: Array<{ label: string; value: string }>, broken = false): string {
   const items = rows.map((row) => `<div class="row"><span class="dot"></span><span><span class="label">${escapeHtml(row.label)}</span><span class="value">${escapeHtml(row.value)}</span></span></div>`).join("");
   return `<div class="pair${broken ? " broken" : ""}">${items}</div>`;
+}
+
+/**
+ * The question before the grant is saved: connect this GitHub login to this
+ * ADE account? It names both identities, so a person who opened someone
+ * else's link sees an ADE account that is not theirs and cancels.
+ *
+ * The form posts to this Worker's callback. Browsers apply `form-action` to
+ * the redirect that answers the post, so it also lists the one place that
+ * redirect can go (`returnTarget`: `ade:` for the phone, the web client's
+ * origin for the web), and nothing else.
+ */
+export function confirmPage(input: {
+  identity: PageIdentity;
+  replacedLogin: string | null;
+  action: string;
+  signInId: string;
+  confirm: string;
+  returnTarget: string | null;
+}): Response {
+  const { identity, replacedLogin } = input;
+  const replaced = replacedLogin && replacedLogin.toLowerCase() !== identity.githubLogin.toLowerCase()
+    ? `<p class="note">This replaces GitHub @${escapeHtml(replacedLogin)}, which is connected now.</p>`
+    : "";
+  const formAction = ["'self'", input.returnTarget].filter(Boolean).join(" ");
+  return page("Connect GitHub to ADE?", `<h1>Connect GitHub to ADE?</h1>
+<p class="lead">Connect only if you started this from ADE and the ADE account below is yours.</p>
+${pair([
+    { label: "GitHub", value: `@${identity.githubLogin}` },
+    { label: "ADE account", value: identity.adeAccount ?? "The ADE account that started this sign-in" },
+  ])}
+${replaced}
+<form method="post" action="${escapeHtml(input.action)}">
+<input type="hidden" name="signIn" value="${escapeHtml(input.signInId)}">
+<input type="hidden" name="confirm" value="${escapeHtml(input.confirm)}">
+<div class="choices">
+<button class="action" type="submit" name="choice" value="connect">Connect GitHub</button>
+<button class="action quiet" type="submit" name="choice" value="cancel">Cancel</button>
+</div>
+</form>
+<p class="done">The link works for ten minutes.</p>`, 200,
+  `default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action ${formAction}; frame-ancestors 'none'`);
 }
 
 /** Desktop and CLI: the grant is saved. `replacedLogin`: the account was connected to another GitHub user before. */

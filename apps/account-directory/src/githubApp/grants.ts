@@ -16,7 +16,7 @@ import {
   type GithubTokens,
   type GithubUser,
 } from "./oauth";
-import { grantAad, randomHex, seal, sha256Hex, tokenKey, unseal } from "./seal";
+import { grantAad, randomHex, seal, sha256Hex, signInTokensAad, tokenKey, unseal } from "./seal";
 
 /**
  * The account's GitHub App grant: storage, and renewal with one writer.
@@ -474,8 +474,14 @@ const PRUNE_BATCH = 500;
 const CRON_MINUTE = 17;
 const KEEPALIVE_HOUR_UTC = 3;
 
+const ABANDONED_CONFIRM_BATCH = 50;
+/** A confirm that a stopped request left mid-save (`exchanging`, tokens held) is ended only this long after its expiry. */
+const STUCK_CONFIRM_MARGIN_MS = 10 * 60_000;
+
 /**
- * Hourly (minute 17): delete sign-ins and rate windows older than a day.
+ * Hourly (minute 17): end each sign-in left on the confirm page past its
+ * expiry (its token is deleted at GitHub), then delete sign-ins and rate
+ * windows older than a day.
  * Daily (03:17 UTC): refresh up to 50 active grants whose refresh token ends
  * within 30 days and whose access token no client can still be using, so a
  * grant of an account whose machines are all off does not lapse. Every other
@@ -488,12 +494,52 @@ export async function runGithubAppCron(env: GithubAppEnv, tickTime: number = Dat
   if (date.getUTCMinutes() !== CRON_MINUTE || !env.DB) return;
   const now = Date.now();
   const cutoff = now - PRUNE_AFTER_MS;
+  await dropAbandonedConfirms(env, now);
   await env.DB.batch([
     env.DB.prepare("delete from github_app_sign_ins where id in (select id from github_app_sign_ins where created_at < ? limit ?)").bind(cutoff, PRUNE_BATCH),
     env.DB.prepare("delete from github_app_rate where rowid in (select rowid from github_app_rate where window_start < ? limit ?)").bind(cutoff, PRUNE_BATCH),
   ]);
   if (date.getUTCHours() !== KEEPALIVE_HOUR_UTC) return;
   await runGithubAppKeepalive(env, now);
+}
+
+/**
+ * A sign-in that reached the confirm page and was never answered holds a
+ * live GitHub token, sealed. Mark it expired (so the confirm form answers
+ * "used") and delete that token at GitHub. The same for a confirm that a
+ * request stopped in the middle of its save (`exchanging` with tokens held),
+ * well after its expiry, so a save in progress is never cut off.
+ */
+async function dropAbandonedConfirms(env: GithubAppEnv, now: number): Promise<void> {
+  const rt = await githubAppRuntime(env);
+  if (!rt) return;
+  const due = await rt.db.prepare(`
+    select id, user_id, status, tokens_sealed from github_app_sign_ins
+    where tokens_sealed is not null
+      and ((status = 'confirming' and expires_at <= ?) or (status = 'exchanging' and expires_at <= ?))
+    limit ?
+  `).bind(now, now - STUCK_CONFIRM_MARGIN_MS, ABANDONED_CONFIRM_BATCH)
+    .all<{ id: string; user_id: string; status: string; tokens_sealed: string | null }>();
+  const rows = due.results ?? [];
+  let deletedAtGitHub = 0;
+  let unreadable = 0;
+  for (const row of rows) {
+    const claim = await rt.db.prepare(
+      "update github_app_sign_ins set status = 'expired', tokens_sealed = null, confirm_hash = null where id = ? and status = ?",
+    ).bind(row.id, row.status).run();
+    if ((claim.meta?.changes ?? 0) !== 1 || !row.tokens_sealed) continue;
+    let tokens: GithubTokens;
+    try {
+      tokens = JSON.parse(await unseal(rt.key, row.tokens_sealed, signInTokensAad(row.id, row.user_id))) as GithubTokens;
+    } catch {
+      unreadable += 1;
+      continue;
+    }
+    if (await deleteToken(rt.config, tokens.accessToken)) deletedAtGitHub += 1;
+  }
+  if (rows.length) {
+    logGithubApp({ event: "github_app.abandoned_confirms_dropped", userId: "cron", due: rows.length, deletedAtGitHub, unreadable });
+  }
 }
 
 async function runGithubAppKeepalive(env: GithubAppEnv, now: number = Date.now()): Promise<{ due: number; refreshed: number }> {

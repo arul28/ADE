@@ -7,6 +7,7 @@ import {
   type AccountCacheLogger,
   type AccountCacheSyncListener,
   type AccountCacheSyncStatus,
+  type AccountCacheUploadResult,
 } from "./accountCacheStore";
 import { machineAccountStoreLogger } from "./accountCacheDiagnostics";
 import { uploadAccountItems } from "./accountCacheUpload";
@@ -48,6 +49,9 @@ const CACHE_FILE = "account-vault.json.enc";
 const LEGACY_CACHE_FILE = "account-vault.json";
 const CACHE_VERSION = 1;
 const DEFAULT_SYNC_INTERVAL_MS = 30_000;
+/** How long checked writes over a row the relay cannot open wait (see `unreadableHolds`). */
+const UNREADABLE_HOLD_MIN_MS = 60_000;
+const UNREADABLE_HOLD_MAX_MS = 60 * 60_000;
 const CACHE_PAYLOAD_KEY = "account.vault.cache.v1";
 /** The Worker's `MAX_ITEMS_PER_WRITE`; a longer batch is refused whole (413). */
 const MAX_ITEMS_PER_PUT = 100;
@@ -276,6 +280,38 @@ export function createAccountVaultStore(args: {
     if (legacyCacheLoaded || fs.existsSync(legacyCachePath)) removeLegacyCache();
   };
 
+  /**
+   * Checked writes on hold, by cache key. A checked write that loses to a row
+   * the relay cannot open (a rotated `VAULT_ENCRYPTION_KEY`) leaves the cache
+   * on its old revision, because the cache keeps the readable value (see
+   * `toRow`). Without this hold, the caller reads that old revision again
+   * and sends the same refused write on each tick. The wait doubles from 1
+   * minute to 1 hour, and a write that reaches the account clears it.
+   */
+  const unreadableHolds = new Map<string, { refusals: number; until: number }>();
+  const holdUnreadable = (composite: string, kind: string): void => {
+    const refusals = (unreadableHolds.get(composite)?.refusals ?? 0) + 1;
+    const waitMs = Math.min(UNREADABLE_HOLD_MAX_MS, UNREADABLE_HOLD_MIN_MS * 2 ** Math.min(refusals - 1, 6));
+    unreadableHolds.set(composite, { refusals, until: now() + waitMs });
+    logger.info("account.vault_checked_write_held", { kind, refusals, waitMs });
+  };
+  const noteUploadResult = (
+    pending: readonly PendingWrite[],
+    result: AccountCacheUploadResult<AccountVaultItem> | null,
+  ): void => {
+    if (!result) return;
+    const bySeq = new Map(pending.map((entry) => [entry.seq, entry]));
+    for (const seq of result.completedSeqs ?? []) {
+      const entry = bySeq.get(seq);
+      if (entry) unreadableHolds.delete(cacheKey(entry.scope, entry.kind, entry.key));
+    }
+    for (const { seq, current } of result.superseded ?? []) {
+      const entry = bySeq.get(seq);
+      if (!entry || !current || current.deleted || current.value !== null) continue;
+      holdUnreadable(cacheKey(entry.scope, entry.kind, entry.key), entry.kind);
+    }
+  };
+
   const cache = createAccountCacheStore<CachedItem, PendingWrite, AccountVaultItem>({
     adeDir: args.adeDir,
     cacheFileName: CACHE_FILE,
@@ -318,7 +354,7 @@ export function createAccountVaultStore(args: {
       // older Worker refuses only those rows, never every other credential.
       // Within a group, one item a Worker will not take is set aside on its
       // own, never held against the rest.
-      return await uploadAccountItems<PendingWrite, AccountVaultItem>({
+      const result = await uploadAccountItems<PendingWrite, AccountVaultItem>({
         groups: [
           allWrites.filter((entry) => !NEWER_VAULT_KINDS.has(entry.kind)),
           allWrites.filter((entry) => NEWER_VAULT_KINDS.has(entry.kind)),
@@ -343,6 +379,8 @@ export function createAccountVaultStore(args: {
           ...(entry.checkRevision && entry.baseRevision ? { ifRevision: entry.baseRevision } : {}),
         }),
       });
+      noteUploadResult(pending, result);
+      return result;
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountVault({ since: cursor });
@@ -429,7 +467,9 @@ export function createAccountVaultStore(args: {
       const composite = cacheKey(scope, kind, key);
       const baseRevision = baseFor(current, composite);
       if (expectedRevision !== undefined
-        && (revisionOf(current, composite) !== expectedRevision || baseRevision === undefined)) {
+        && (revisionOf(current, composite) !== expectedRevision
+          || baseRevision === undefined
+          || (unreadableHolds.get(composite)?.until ?? 0) > now())) {
         stale = true;
         return;
       }

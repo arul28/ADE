@@ -78,6 +78,8 @@ export async function unseal(key: CryptoKey, sealed: string, aad: string): Promi
 export const grantAad = (userId: string, field: "access" | "refresh"): string => `ade.github-app.v1:${userId}:${field}`;
 /** The additional data of a sign-in's PKCE verifier. */
 export const signInAad = (signInId: string, userId: string): string => `ade.github-app.v1:sign-in:${signInId}:${userId}`;
+/** The additional data of the tokens a sign-in holds while it waits for the person's confirmation. */
+export const signInTokensAad = (signInId: string, userId: string): string => `ade.github-app.v1:sign-in-tokens:${signInId}:${userId}`;
 
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));

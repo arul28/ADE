@@ -363,7 +363,7 @@ export function GitHubAppInstallPanel({
 
   // "Use @y here": drop this machine's own sign-in (ADE deletes it at GitHub)
   // so the machine uses the account's.
-  const useAccountSignInHere = useCallback(async () => {
+  const switchToAccountSignIn = useCallback(async () => {
     await disconnectAppAuthorizationRef.current?.();
     setDeviceMessage(null);
     onAccountAppChanged?.();
@@ -476,7 +476,7 @@ export function GitHubAppInstallPanel({
         tone: "info",
         title: `This computer uses GitHub @${accountApp.localLogin ?? appAuth?.userLogin ?? "unknown"}. Your ADE account uses @${accountApp.githubLogin}.`,
         detail: "ADE keeps using this computer's sign-in until you choose.",
-        actions: [{ label: `Use @${accountApp.githubLogin} here`, onClick: () => void useAccountSignInHere() }],
+        actions: [{ label: `Use @${accountApp.githubLogin} here`, onClick: () => void switchToAccountSignIn() }],
       }}
     />
   ) : null;

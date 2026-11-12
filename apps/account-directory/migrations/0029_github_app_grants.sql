@@ -42,6 +42,14 @@ create index if not exists github_app_grants_refresh_due on github_app_grants(st
 -- One row per web-flow sign-in. The OAuth state is stored only as a hash and
 -- is spent by one conditional update (`pending` -> `exchanging`), so a state
 -- works once and for ten minutes. The PKCE verifier is sealed.
+--
+-- The callback does not save the grant. It holds the new tokens sealed here
+-- (`confirming`) and asks the person in that browser to connect the named
+-- GitHub login to the named ADE account; only the page's one-time confirm
+-- value (stored as a hash) saves it. Without that step, someone could send a
+-- person who already authorized the App their own authorize link: GitHub
+-- returns at once with no prompt, and the person's token would land on the
+-- sender's account.
 create table if not exists github_app_sign_ins (
   id text primary key,
   state_hash text not null unique,
@@ -50,9 +58,12 @@ create table if not exists github_app_sign_ins (
   client_kind text not null check (client_kind in ('desktop', 'web', 'ios', 'cli')),
   return_to text,
   redirect_uri text not null,
-  status text not null check (status in ('pending', 'exchanging', 'done', 'failed', 'expired')),
+  status text not null check (status in ('pending', 'exchanging', 'confirming', 'done', 'failed', 'expired')),
   result_code text,
   github_login text,
+  github_user_id integer,
+  tokens_sealed text,
+  confirm_hash text,
   created_at integer not null,
   expires_at integer not null
 );
