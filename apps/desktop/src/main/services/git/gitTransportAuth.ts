@@ -17,8 +17,13 @@ import { gitCommonDirFor, gitStdoutOrThrow, runGit, runGitOrThrow, type GitRunOp
  * `GitHubStatus.gitTransport`, which drives the "Git can't sign in" banner.
  */
 
-/** Resolves ADE's GitHub credential for git, or null when it has none. */
-export type GitTransportTokenReader = () => Promise<string | null | undefined>;
+/**
+ * Resolves ADE's GitHub credential for git, or null when it has none.
+ * `owner` is the GitHub owner of the remote the command talks to, when ADE
+ * knows it: the account's GitHub App sign-in may push only where the App
+ * installation on that owner allows it.
+ */
+export type GitTransportTokenReader = (context?: { owner?: string | null }) => Promise<string | null | undefined>;
 
 /**
  * The reader every remote git call falls back to. ADE's GitHub credentials
@@ -51,13 +56,22 @@ export function githubExtraHeaderGitEnv(token: string | null | undefined): NodeJ
   const trimmed = token?.trim();
   if (!trimmed) return env;
   const basic = Buffer.from(`x-access-token:${trimmed}`, "utf8").toString("base64");
+  return { ...env, ...githubAuthHeaderGitEnv(`basic ${basic}`) };
+}
+
+/**
+ * One GitHub Authorization header (`basic …`) for one git command, through
+ * Git's config environment (Git 2.31+): the empty entry first resets any
+ * header from .git/config or a global config, then ADE's. Never in command
+ * arguments, remote URLs or anything persisted.
+ */
+export function githubAuthHeaderGitEnv(authHeader: string): NodeJS.ProcessEnv {
   return {
-    ...env,
     GIT_CONFIG_COUNT: "2",
     GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
     GIT_CONFIG_VALUE_0: "",
     GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${basic}`,
+    GIT_CONFIG_VALUE_1: `AUTHORIZATION: ${authHeader}`,
   };
 }
 
@@ -102,6 +116,17 @@ function resultOutput(result: GitRunResult): string {
   return `${result.stderr}\n${result.stdout}`;
 }
 
+/** The owner in an https GitHub remote URL (`https://github.com/<owner>/<repo>`), or null. */
+export function githubHttpsRemoteOwner(url: string | null | undefined): string | null {
+  if (!isGithubHttpsRemote(url)) return null;
+  try {
+    const owner = new URL(String(url).trim()).pathname.split("/").filter(Boolean)[0] ?? "";
+    return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(owner) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Only an https GitHub remote can take ADE's token; SSH signs in with keys. */
 export function isGithubHttpsRemote(url: string | null | undefined): boolean {
   if (!url) return false;
@@ -144,6 +169,9 @@ type RepoTransportRecord = {
   githubOrigin: boolean | null;
   /** The same for origin's fetch URL, which can differ (https fetch, SSH push). */
   githubFetchOrigin: boolean | null;
+  /** The GitHub owner in origin's push and fetch URLs, for the App installation check. */
+  githubPushOwner?: string | null;
+  githubFetchOwner?: string | null;
   githubOriginCheckedAtMs: number;
 };
 
@@ -193,7 +221,13 @@ async function originIsGithubHttps(key: string, cwd: string, direction: "push" |
   ]);
   const githubOrigin = pushUrl.exitCode === 0 && isGithubHttpsRemote(pushUrl.stdout);
   const githubFetchOrigin = fetchUrl.exitCode === 0 && isGithubHttpsRemote(fetchUrl.stdout);
-  record(key, { githubOrigin, githubFetchOrigin, githubOriginCheckedAtMs: Date.now() });
+  record(key, {
+    githubOrigin,
+    githubFetchOrigin,
+    githubPushOwner: githubOrigin ? githubHttpsRemoteOwner(pushUrl.stdout) : null,
+    githubFetchOwner: githubFetchOrigin ? githubHttpsRemoteOwner(fetchUrl.stdout) : null,
+    githubOriginCheckedAtMs: Date.now(),
+  });
   return direction === "push" ? githubOrigin : githubFetchOrigin;
 }
 
@@ -201,9 +235,15 @@ function commandDirection(args: string[]): "push" | "fetch" {
   return args[0] === "push" ? "push" : "fetch";
 }
 
-async function readTokenSafely(readToken: GitTransportTokenReader): Promise<string> {
+/** The remote owner recorded for this repository and direction, or null. */
+function remoteOwner(key: string, direction: "push" | "fetch"): string | null {
+  const cached = records.get(key);
+  return (direction === "push" ? cached?.githubPushOwner : cached?.githubFetchOwner) ?? null;
+}
+
+async function readTokenSafely(readToken: GitTransportTokenReader, owner: string | null = null): Promise<string> {
   try {
-    return (await readToken())?.trim() ?? "";
+    return (await readToken({ owner }))?.trim() ?? "";
   } catch (error) {
     transportLogger?.warn("git.transport_token_read_failed", {
       error: error instanceof Error ? error.message : String(error),
@@ -249,8 +289,9 @@ export async function runGitWithGithubAuthFallback(
   // not run a second time below.
   let refusedTokenResult: GitRunResult | null = null;
   const systemFailedAtMs = records.get(key)?.systemFailedAtMs ?? null;
+  const owner = remoteOwner(key, commandDirection(args));
   if (systemFailedAtMs != null && Date.now() - systemFailedAtMs < SYSTEM_CREDENTIAL_FAILED_TTL_MS) {
-    const token = await readTokenSafely(readToken);
+    const token = await readTokenSafely(readToken, owner);
     if (token) {
       const result = await runGit(args, withTokenEnv(runOpts, token));
       if (!isGitAuthFailure(resultOutput(result))) {
@@ -287,7 +328,7 @@ export async function runGitWithGithubAuthFallback(
     recordOutcome(key, refusedTokenResult, "ade", true);
     return refusedTokenResult;
   }
-  const token = await readTokenSafely(readToken);
+  const token = await readTokenSafely(readToken, owner);
   const retryOptions = withinDeadline(runOpts);
   if (!token || !retryOptions) {
     recordOutcome(key, first, "system", false);
@@ -411,7 +452,7 @@ export async function readGitTransportStatus(
     const credentialAppeared = cached.status?.state === "auth_failed"
       && !cached.status.adeCredentialTried
       && readToken != null
-      && Boolean(await readTokenSafely(readToken));
+      && Boolean(await readTokenSafely(readToken, remoteOwner(key, "push")));
     if (fresh && !credentialAppeared) return cached.status;
   }
   const lastKnown = cached?.status ?? null;

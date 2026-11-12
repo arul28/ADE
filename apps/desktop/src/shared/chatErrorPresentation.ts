@@ -267,6 +267,19 @@ export function presentExternalProcessStop(args: {
   };
 }
 
+/**
+ * Card for a turn ADE refused because the chat's computer is almost out of
+ * storage. The storage guard's own sentence is the body: it already names the
+ * disk and the way out (an ADE Cloud computer says how its disk grows).
+ */
+export function presentDiskFullRefusal(message: string | null | undefined): ChatErrorPresentation {
+  return {
+    title: "Not enough storage",
+    body: trimText(message) ?? "This computer is almost out of storage, so ADE didn't start this turn.",
+    nextAction: "Free up space, then retry.",
+  };
+}
+
 const PRESENTABLE_ERROR_CATEGORIES = new Set(["rate_limit", "auth", "network", "busy"]);
 
 /**

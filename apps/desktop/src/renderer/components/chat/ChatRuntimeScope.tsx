@@ -209,6 +209,11 @@ export type ChatScopeDerivation = {
   chatScopeLaneId: string | null;
   /** Pin for every chat-scoped call, the tab's own copy included. Null = unknown. */
   chatRuntimePin: OpenProjectBinding | null;
+  /**
+   * `chatRuntimePin` when it names another copy than the tab's own; null for
+   * the tab's copy. Branches that mean "another machine" read this, not the pin.
+   */
+  chatForeignPin: OpenProjectBinding | null;
   /** `chatRuntimePin ?? projectBinding`. */
   chatEffectiveBinding: OpenProjectBinding | null;
   isRemoteChat: boolean;
@@ -256,11 +261,12 @@ export function useChatScopeDerivation({
    * pinned to a remote machine cannot — regardless of the tab.
    */
   const chatEffectiveBinding = chatRuntimePin ?? projectBinding ?? null;
+  const chatForeignPin = chatRuntimePin && !isActiveBindingPin(chatRuntimePin, projectBinding)
+    ? chatRuntimePin
+    : null;
   // The chat machine's own lane list, or null for a chat on the tab's copy —
   // which keeps its existing tab-bound source (`availableLanes ?? lanes`).
-  const pinnedLanes = useLanesForPin(
-    chatRuntimePin && !isActiveBindingPin(chatRuntimePin, projectBinding) ? chatRuntimePin : null,
-  );
+  const pinnedLanes = useLanesForPin(chatForeignPin);
   /**
    * A brief handoff lands in a lane on the CHAT's machine, so both the picker
    * and the auto-created lane have to target that machine. `availableLanes`/
@@ -286,6 +292,7 @@ export function useChatScopeDerivation({
   return {
     chatScopeLaneId,
     chatRuntimePin,
+    chatForeignPin,
     chatEffectiveBinding,
     isRemoteChat: chatEffectiveBinding?.kind === "remote",
     chatMachineName: machineNameForBinding(chatEffectiveBinding),

@@ -263,7 +263,7 @@ function connectionFreeBytes(connection: RemoteRuntimeConnectionStatus): number 
 }
 
 function resolveProjectMatch(
-  allProjects: ReadonlyArray<{
+  projects: ReadonlyArray<{
     projectId: string;
     rootPath: string;
     displayName: string;
@@ -277,30 +277,21 @@ function resolveProjectMatch(
   // Two checkouts are one repository when their account project ids are equal
   // OR their origins are equal. The id adds a join (a rename or transfer seen on
   // one machine only); it never removes the origin join, so machines signed in
-  // to different accounts still join on the origin, as before.
-  const projects = allProjects;
-  if (repoAccountProjectId) {
-    const byAccount = pickLiveCheckout(allProjects.filter((project) => project.accountProjectId === repoAccountProjectId));
-    if (byAccount) {
-      return {
-        projectId: byAccount.projectId,
-        rootPath: byAccount.rootPath,
-        displayName: byAccount.displayName,
-        matchedBy: "origin",
-      };
-    }
-  }
-  if (repoIdentity) {
+  // to different accounts still join on the origin, as before. Both joins rank
+  // as one set, so a deleted checkout that carries the id cannot hide a live
+  // one that matches only on the origin.
+  if (repoAccountProjectId || repoIdentity) {
     // Same rule as `--machine` calls from the CLI: the live checkout, not the
     // first registry entry, which is often a deleted temp copy of the repo.
-    const byOrigin = pickLiveCheckout(projects.filter(
-      (project) => cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity,
+    const joined = pickLiveCheckout(projects.filter((project) =>
+      (!!repoAccountProjectId && project.accountProjectId === repoAccountProjectId)
+      || (!!repoIdentity && cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity),
     ));
-    if (byOrigin) {
+    if (joined) {
       return {
-        projectId: byOrigin.projectId,
-        rootPath: byOrigin.rootPath,
-        displayName: byOrigin.displayName,
+        projectId: joined.projectId,
+        rootPath: joined.rootPath,
+        displayName: joined.displayName,
         matchedBy: "origin",
       };
     }

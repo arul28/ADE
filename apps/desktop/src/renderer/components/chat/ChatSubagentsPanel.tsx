@@ -984,6 +984,7 @@ function SubagentRow({
   needsYou = false,
   sessionModelLabel = null,
   onStop,
+  stopsSpawnedChat = false,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
@@ -1009,6 +1010,8 @@ function SubagentRow({
   sessionModelLabel?: string | null;
   onClick: () => void;
   onStop?: (snapshot: ChatSubagentSnapshot) => void;
+  /** `onStop` also stops a spawned child session (a CLI parent's pane). */
+  stopsSpawnedChat?: boolean;
 }) {
   const isSpawnedChat = snapshot.childSessionId != null;
   // Spawned-chat rows read as the chat they open: prefer the resolved live
@@ -1174,7 +1177,7 @@ function SubagentRow({
           ) : null}
         </span>
       </button>
-      {isRunning && onStop && !isSpawnedChat && !isSyntheticWorkflowAgent(snapshot) ? (
+      {isRunning && onStop && (!isSpawnedChat || stopsSpawnedChat) && !isSyntheticWorkflowAgent(snapshot) ? (
         <button
           type="button"
           aria-label={`Stop ${name}`}
@@ -1314,6 +1317,7 @@ export function ChatSubagentsPanel({
   onCancelScheduledWork,
   onStopBackgroundTask,
   onStopSubagent,
+  onStopSpawnedChild,
   sessionModelLabel = null,
   runtimeAlive,
   childChatStatuses,
@@ -1384,6 +1388,12 @@ export function ChatSubagentsPanel({
   /** Stop a running Codex background terminal via `thread/backgroundTerminals/terminate`. */
   onStopBackgroundTask?: (snapshot: ChatScheduledWorkSnapshot) => void;
   onStopSubagent?: (snapshot: ChatSubagentSnapshot) => void;
+  /**
+   * Stop a spawned child session from its row. A chat's pane leaves that to the
+   * child's own surface; a CLI parent's pane, which is where its children are
+   * reached, offers it.
+   */
+  onStopSpawnedChild?: (childSessionId: string) => void;
   sessionModelLabel?: string | null;
   /**
    * Whether the host still holds a provider runtime for this chat. `false`
@@ -1863,7 +1873,10 @@ export function ChatSubagentsPanel({
       }
       needsYou={subagentNeedsYou(snap)}
       sessionModelLabel={sessionModelLabel}
-      onStop={onStopSubagent}
+      onStop={snap.childSessionId != null && onStopSpawnedChild
+        ? () => onStopSpawnedChild(snap.childSessionId!)
+        : onStopSubagent}
+      stopsSpawnedChat={onStopSpawnedChild != null}
       onClick={() => handleRowClick(snap)}
     />
   );

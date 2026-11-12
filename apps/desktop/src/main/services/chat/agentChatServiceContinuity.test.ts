@@ -1003,9 +1003,9 @@ describe("explicit provider-thread continuity recovery", () => {
       continuityRecovery,
     });
     expect(mockState.codexRequestPayloads).toEqual([]);
-    expect(events.filter((entry) => entry.event.type === "system_notice"
-      && typeof entry.event.detail === "object"
-      && entry.event.detail?.kind === "disk_pressure")).toHaveLength(1);
+    expect(events.filter((entry) => entry.event.type === "error"
+      && typeof entry.event.errorInfo === "object"
+      && entry.event.errorInfo?.code === "disk_full")).toHaveLength(1);
   });
 
   it("restores required recovery and the original pointer when capsule dispatch rejects", async () => {

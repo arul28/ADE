@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type ReactNode } from "react";
 import { ContextMenuSurface } from "../ui/ContextMenu";
 import {
   Alarm,
+  Archive,
   ArrowBendUpRight,
   ArrowCounterClockwise,
   ArrowDown,
@@ -41,6 +42,7 @@ import type {
   WorkBoardWaitingReason,
 } from "../../../shared/types";
 import { type WorkBoardMoveTarget } from "../../../shared/types/chat";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { sessionStatusChangeModel, type SessionStatusOption } from "../../lib/sessionStatusChange";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { cursorOwnsSessionName, isChatToolType } from "../../lib/sessions";
@@ -70,6 +72,8 @@ import {
   removeAutomationRules,
   setSessionSettleOverride,
   restartAgentSession,
+  archiveAgentCliSession,
+  handoffAgentCliSession,
   setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
@@ -367,6 +371,8 @@ function SessionContextMenuPanel({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  // An agent CLI (Claude Code, Codex, …) hands off, archives and deletes like a chat.
+  const isAgentCli = !isChat && Boolean(session.tracked) && isTrackedAgentCliToolType(session.toolType ?? null);
   const canRename = !cursorOwnsSessionName(session);
   const isPrimaryLane = laneType === "primary";
   const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
@@ -850,6 +856,48 @@ function SessionContextMenuPanel({
           </MenuSubmenu>
         ) : null}
 
+        {/* An agent CLI hands off into a new chat on its own model, or moves
+            to another machine as a CLI (its conversation file travels for
+            Claude Code and Codex; other agents start fresh with a brief).
+            `binding` is the row's own machine, so the move starts there. */}
+        {isAgentCli ? (
+          <MenuSubmenu
+            label="Hand off"
+            icon={<MenuRowIcon icon={ArrowBendUpRight} />}
+            className={MENU_ITEM_CLASS}
+            data-testid="session-menu-cli-handoff"
+          >
+            <button
+              type="button"
+              data-testid="session-menu-cli-fork"
+              className={MENU_ITEM_CLASS}
+              title="A new chat that carries this CLI's conversation"
+              onClick={() => { void handoffAgentCliSession(session, "fork", binding); onClose(); }}
+            >
+              <MenuRowIcon icon={GitFork} />
+              Fork into a chat
+            </button>
+            <button
+              type="button"
+              data-testid="session-menu-cli-brief"
+              className={MENU_ITEM_CLASS}
+              title="A new chat that starts from a short brief of this CLI's work"
+              onClick={() => { void handoffAgentCliSession(session, "brief", binding); onClose(); }}
+            >
+              <MenuRowIcon icon={ArrowBendUpRight} />
+              Hand off with a brief
+            </button>
+            <CrossMachineMoveSubmenu
+              session={session}
+              binding={binding}
+              busy={isActivelyRunning}
+              onClose={onClose}
+              onOpenFullSetup={() => undefined}
+              cli
+            />
+          </MenuSubmenu>
+        ) : null}
+
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
           <button
             type="button"
@@ -950,6 +998,18 @@ function SessionContextMenuPanel({
         {/* ── Disruptive and destructive, last and fenced off. Restarting the
             agent process sits here, not among the everyday lifecycle rows. ── */}
         {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}
+        {isAgentCli ? (
+          <button
+            type="button"
+            data-testid="session-menu-cli-archive"
+            className={MENU_ITEM_CLASS}
+            title="Hide it from Work. At its prompt it stops and resumes later; mid-turn it finishes first."
+            onClick={() => { void archiveAgentCliSession(session, binding); onClose(); }}
+          >
+            <MenuRowIcon icon={Archive} />
+            Archive
+          </button>
+        ) : null}
         {isChat ? (
           <button
             type="button"

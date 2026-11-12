@@ -936,6 +936,13 @@ export type CloneProjectInput = {
 
 export type CloneProjectResult = {
   rootPath: string;
+  /**
+   * True when the clone signed in with another computer's one-shot header
+   * (`githubAuthHeader`) and this computer has no GitHub sign-in of its own:
+   * its fetch and push won't sign in until GitHub is connected there. The
+   * header is never stored. Absent otherwise, and from an older ADE.
+   */
+  githubSignInMissing?: boolean;
 };
 
 export type MyGitHubRepoSummary = {

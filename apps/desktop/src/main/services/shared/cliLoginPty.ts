@@ -38,6 +38,28 @@ const DEVICE_CODE_EXACT = /^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/;
  * the words: a cursor move and a printed space can both stand in one gap.
  */
 export const CODE_PROMPT_PATTERN = /paste\s+(?:the\s+)?(?:authorization\s+)?code|enter\s+(?:the\s+)?(?:authorization\s+)?code|code\s+here/i;
+/**
+ * The pause between a pasted code and its Enter. A CLI with a full-screen
+ * input (Claude Code's `setup-token`) takes a long code and an Enter that
+ * arrive in one read as a paste and never submits it; a key on its own is
+ * read as Enter. Measured on Claude Code 2.1.322: 5 ms already works.
+ */
+export const LOGIN_CODE_ENTER_DELAY_MS = 150;
+/**
+ * A CLI refusing a pasted code. Each pattern ends the sign-in on the CLI's
+ * output, at once, with its own reason: Claude Code's `setup-token` prints
+ * "OAuth error: …" and waits on "Press Enter to retry", and CLIs that exit on
+ * a bad code (`claude auth login`: "Login failed: …", Devin: "Error: Failed
+ * to exchange code …") end here before their exit does. The first group is
+ * the reason, read only once its line has ended, so a reason split across
+ * two reads is never cut.
+ */
+const CODE_REJECTED_PATTERNS: readonly RegExp[] = [
+  /OAuth error:\s*([^\n]+)\n/i,
+  /Login failed:\s*([^\n]+)\n/i,
+  /(That code wasn't accepted[^\n]*)\n/i,
+  /(Failed to exchange code[^\n]*)\n/i,
+];
 
 const requireFromRuntime = createRequire(
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
@@ -187,8 +209,20 @@ export type LoginOutputRecord = {
   /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
   rawSinceSubmit: string | null;
   pty: { write: (data: string) => void } | null;
-  status: { state: string; output: string; url: string | null; deviceCode?: string; awaitingCode: boolean };
+  status: { state: string; output: string; url: string | null; deviceCode?: string; awaitingCode: boolean; checkingCode?: boolean };
 };
+
+/** One read of the CLI's output: the whole cleaned text, and the CLI's reason for refusing the pasted code, once it printed one. */
+export type LoginOutputRead = { text: string; rejection: string | null };
+
+/** The CLI's reason for refusing a pasted code, from its output since the paste; null when it printed none. */
+function findCodeRejection(textSinceSubmit: string): string | null {
+  for (const pattern of CODE_REJECTED_PATTERNS) {
+    const reason = pattern.exec(textSinceSubmit)?.[1]?.trim();
+    if (reason) return reason;
+  }
+  return null;
+}
 
 /**
  * Reads one chunk of the CLI's output into the record: the cleaned output,
@@ -197,13 +231,15 @@ export type LoginOutputRecord = {
  * `pasteCode: "while-waiting"` offers it from the moment the link is printed
  * until a code is pasted, for a CLI whose sign-in page always ends in a code
  * (Claude Code, Devin): a prompt the reader misses must not hide the box.
- * Returns the whole cleaned text.
+ * Returns the whole cleaned text, and the CLI's refusal of a pasted code
+ * (the runner ends the sign-in with it at once, with Try again, never after
+ * the 10-minute timeout).
  */
 export function readLoginOutput(
   record: LoginOutputRecord,
   data: string,
   options: { hosts: readonly string[]; deviceCode: boolean; pasteCode: false | "prompt" | "while-waiting"; promptTailLines: number },
-): string {
+): LoginOutputRead {
   record.rawOutput = `${record.rawOutput}${data}`.slice(-LOGIN_OUTPUT_LIMIT * 2);
   const text = cleanLoginOutput(record.rawOutput, record.submittedCodes);
   record.status.output = text.slice(-LOGIN_OUTPUT_LIMIT);
@@ -223,7 +259,14 @@ export function readLoginOutput(
     const waitingForFirstCode = options.pasteCode === "while-waiting" && record.rawSinceSubmit === null && record.status.url !== null;
     record.status.awaitingCode = waitingForFirstCode || CODE_PROMPT_PATTERN.test(lastTextLines(promptText, options.promptTailLines));
   }
-  return text;
+  let rejection: string | null = null;
+  if (record.rawSinceSubmit !== null) {
+    // The CLI's answer to the pasted code.
+    rejection = findCodeRejection(cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes));
+    // A new prompt means the code was taken and another is asked for.
+    if (record.status.awaitingCode || rejection) record.status.checkingCode = false;
+  }
+  return { text, rejection };
 }
 
 /** Types a code pasted from the browser into the CLI, or throws why it cannot. */
@@ -236,6 +279,14 @@ export function writeLoginCode(record: LoginOutputRecord, code: unknown): void {
   // A paste as short as "y" would blank every match in the output.
   if (trimmed.length >= 4) record.submittedCodes.push(trimmed);
   record.rawSinceSubmit = "";
-  record.pty.write(`${trimmed}\r`);
+  const pty = record.pty;
+  // The code, then Enter on its own: in one write Claude Code's input takes
+  // both as a paste and sits on the masked code.
+  pty.write(trimmed);
+  const enter = setTimeout(() => {
+    if (record.pty === pty && record.status.state === "running") pty.write("\r");
+  }, LOGIN_CODE_ENTER_DELAY_MS);
+  enter.unref?.();
   record.status.awaitingCode = false;
+  record.status.checkingCode = true;
 }

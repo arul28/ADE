@@ -129,9 +129,19 @@ export type CloudLaneJobSnapshot = {
   error: string | null;
   /** The agent's chat whose request card the person confirmed, or null. */
   requestedByChat: string | null;
+  /**
+   * A resize that also grows the disk: the disk's new size in GB. Null (or
+   * absent, from an older record) keeps the disk as it is.
+   */
+  diskGb?: number | null;
   startedAt: string;
   updatedAt: string;
   endedAt: string | null;
+  /**
+   * The person closed the job's card (a failure read, a finish seen). It
+   * leaves every view; nothing about the computer changes. Absent on older records.
+   */
+  dismissedAt?: string | null;
 };
 
 /** The calls `IPC.cloudLaneLifeCall` answers. */
@@ -144,7 +154,8 @@ export type CloudLaneLifeMethod =
   | "changeTier"
   | "listJobs"
   | "retryJob"
-  | "cancelJob";
+  | "cancelJob"
+  | "dismissJob";
 
 export type CloudLaneLifeCallRequest<M extends CloudLaneLifeMethod = CloudLaneLifeMethod> = { method: M; args?: unknown };
 
@@ -159,12 +170,18 @@ export type CloudLaneLifeResults = {
   listJobs: CloudLaneJobSnapshot[];
   retryJob: CloudLaneJobSnapshot | null;
   cancelJob: CloudLaneJobSnapshot | null;
+  dismissJob: CloudLaneJobSnapshot | null;
 };
 
 export type CloudLaneChangeTierArgs = {
   instanceId: string;
   sizeId: CloudTierId;
   timing: CloudLaneTierTiming;
+  /**
+   * A resize only: grow the disk to this many GB in the same step. A size
+   * change never shrinks the disk, and keeps it as it is without this.
+   */
+  diskGb?: number | null;
   /** The request card the person confirmed, if any (`CloudTierRequest.requestId`). */
   requestId?: string | null;
   requestedByChat?: string | null;

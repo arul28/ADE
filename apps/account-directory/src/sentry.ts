@@ -47,7 +47,15 @@ export function sentryOptions(env: SentryEnv): CloudflareOptions {
       queues: false,
       stackFrameVariables: false,
     },
-    beforeSend: (event) => (admitEvent(event) ? scrubEvent(event) : null),
+    // `urlQueryParams: false` already keeps the query out of `request.url`,
+    // `url.full` and `url.query` (checked in @sentry/core 11.7). The GitHub
+    // App callback's query holds an OAuth code and state, so a
+    // `query_string` that any later SDK path fills is dropped here too;
+    // `scrubString` only strips a query that follows a path.
+    beforeSend: (event) => {
+      if (event.request) delete event.request.query_string;
+      return admitEvent(event) ? scrubEvent(event) : null;
+    },
     beforeSendSpan: (span) => scrubSpan(span),
     beforeBreadcrumb: (breadcrumb) => scrubBreadcrumb(breadcrumb),
   };

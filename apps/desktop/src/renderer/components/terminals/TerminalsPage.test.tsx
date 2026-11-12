@@ -26,7 +26,6 @@ import {
 import { setProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
 import {
   forgetWorkPtyLaunchPin,
-  rememberWorkPtyLaunchPin,
   workPtyLaunchPinFor,
 } from "./cliLaunch";
 import {
@@ -910,43 +909,6 @@ describe("TerminalsPage chat session activation", () => {
 
     expect(workPtyLaunchPinFor(session)).toBeNull();
     expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)?.key).toBe(studioBinding.key);
-  });
-
-  it("leaves a session on the tab's own machine unpinned", async () => {
-    workMocks.projectRoot = "/repo";
-    workMocks.projectBinding = {
-      kind: "local",
-      key: "local:/repo",
-      rootPath: "/repo",
-      displayName: "repo",
-    };
-    // A foreign machine is present, so the lane index is non-empty and the null
-    // below is a real "this lane is on the active binding", not an empty map.
-    workMocks.crossMachineLanesByMachineId = {
-      "target-studio": studioMachine("lane-foreign", []),
-    };
-    mockBrowserEvents();
-    render(<TerminalsPage />);
-    await screen.findByTestId("session-list-pane");
-
-    const local = workMocks.makeTerminalSession("shell-local", "lane-primary", "shell");
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(local)).toBeNull();
-  });
-
-  it("drops a remembered pin when that binding is now active", async () => {
-    const activeBinding = STUDIO_BINDING;
-    const session = workMocks.makeTerminalSession("shell-now-active", "lane-primary", "shell");
-    // This pin was remembered while the same binding was foreign. After the
-    // project tab rebinds to it, lane routing returns null and the registry is
-    // the fallback that must also collapse to the unpinned fast path.
-    rememberWorkPtyLaunchPin(session, activeBinding);
-    workMocks.projectBinding = activeBinding;
-    mockBrowserEvents();
-
-    render(<TerminalsPage />);
-    await screen.findByTestId("session-list-pane");
-
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBeNull();
   });
 
   it("opens a foreign CLI session in place even when that checkout is not an open tab", async () => {
@@ -1857,7 +1819,7 @@ describe("TerminalsPage chat session activation", () => {
     await screen.findByTestId("work-view-area");
     expect(miniPlayerProps.latest?.surface).toEqual({
       laneId: "lane-background",
-      runtimePin: null,
+      runtimePin: bound,
       boundBinding: bound,
     });
   });
@@ -2209,18 +2171,20 @@ describe("TerminalsPage chat session activation", () => {
     }));
 
     await waitFor(() => {
-      // The session-delete service stops the runtime and removes the record in one call;
-      // the chat-delete path must not be touched for a non-chat session.
-      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
+      // An agent CLI is deleted through the chat delete, which stops it and
+      // keeps it in Recently deleted; the raw terminal delete would lose it.
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-single");
       expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
     });
-    expect(agentChatDelete).not.toHaveBeenCalled();
+    expect(sessionDelete).not.toHaveBeenCalled();
   });
 
-  it("keeps a foreign runtime pin after the context menu closes for confirmation", async () => {
+  it("keeps a foreign runtime pin after the context menu closes, and falls back on an older machine", async () => {
     const runningCli = workMocks.makeTerminalSession("cli-studio", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    // An older ADE on that machine has no chat delete for a CLI.
+    const agentChatDelete = vi.fn().mockRejectedValue(new Error("Session 'cli-studio' is not an agent chat session."));
     vi.mocked(confirmDialog).mockResolvedValue(true);
     const binding: OpenProjectBinding = {
       kind: "remote",
@@ -2235,7 +2199,7 @@ describe("TerminalsPage chat session activation", () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
-        agentChat: { delete: vi.fn() },
+        agentChat: { delete: agentChatDelete },
         builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
         sessions: { delete: sessionDelete },
       },
@@ -2265,6 +2229,7 @@ describe("TerminalsPage chat session activation", () => {
     }));
 
     await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-studio" }, binding);
       expect(sessionDelete).toHaveBeenCalledWith(
         { sessionId: "cli-studio" },
         binding,
@@ -2417,7 +2382,7 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => {
       // The running CLI session is stopped+deleted via the session-delete service,
       // and the chat is removed via the chat delete flow — both in one action.
-      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
       expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" });
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");

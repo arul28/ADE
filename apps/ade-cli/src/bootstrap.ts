@@ -84,6 +84,11 @@ import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/gi
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createCachedProjectOriginReader, createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
 import { createAutomationRuleAccountStore } from "../../desktop/src/main/services/automations/automationRuleAccountStore";
+import { createAutomationCloudRegistrar, type AutomationCloudRegistrar } from "../../desktop/src/main/services/automations/automationCloudRegistrar";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "../../desktop/src/main/services/adeCloud/cloudSleep";
+import { resolveWebhookRelayBaseUrl } from "../../desktop/src/main/services/automations/customWebhookService";
+import { ACCOUNT_RELAY_TOKEN_HEADER } from "../../desktop/src/main/services/github/githubRelayConfig";
+import { createCloudApiClient } from "../../desktop/src/shared/cloudApiClient";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
@@ -95,6 +100,7 @@ import {
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
@@ -134,7 +140,16 @@ import { createJevService, type JevService } from "../../desktop/src/main/servic
 import { jevTallyFileStore } from "../../desktop/src/main/services/jev/jevTally";
 import { jevEnabled } from "../../desktop/src/shared/jevSettings";
 import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
-import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
+import {
+  adoptPlaintextApiKey,
+  initApiKeyStore,
+  isKnownApiKeyProvider,
+  saveOfferedApiKey,
+} from "../../desktop/src/main/services/ai/apiKeyStore";
+import {
+  moveLocalYamlApiKeys,
+  moveLocalYamlApiKeysForProject,
+} from "../../desktop/src/main/services/config/localYamlApiKeys";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import { createSyncStatusEventPublisher } from "./services/sync/syncStatusEventPublisher";
@@ -309,7 +324,6 @@ import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
-import { isCloudMachine } from "./services/power/cloudKeepAwake";
 import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
 import { readGitOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
@@ -336,6 +350,7 @@ import {
 import { ADE_ACCENT_COLOR } from "../../desktop/src/shared/themeTokens";
 import type { AccountVaultStore } from "./services/account/accountVaultStore";
 import { MCP_SECRET_VAULT_KIND } from "../../desktop/src/shared/mcpRegistry";
+import { setTrackedCliRegistrySecretReader } from "../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import { createMcpRegistryAuthTokenResolver } from "../../desktop/src/main/services/mcp/mcpRegistryService";
 import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
@@ -1134,8 +1149,14 @@ export async function createAdeRuntime(args: {
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
+  // On an ADE Cloud computer the guard follows the computer's own small,
+  // growing disk and names it in its refusal (`cloudDiskGuard.ts`).
+  const cloudDiskGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudDiskGuard")).cloudDiskGuardOptions(machineRuntimeLayout.adeDir)
+    : null;
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, machineRuntimeLayout.adeDir],
+    ...(cloudDiskGuard ?? {}),
   });
   // An embedded runtime is a guest inside an external process. It must never
   // take machine-brain authority, host a sync listener, or answer for the
@@ -1529,6 +1550,8 @@ export async function createAdeRuntime(args: {
       projectId,
       db,
       logger,
+      // A key a config write offers goes to the key store, never the file.
+      storeOfferedApiKey: saveOfferedApiKey,
     });
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
@@ -1544,6 +1567,8 @@ export async function createAdeRuntime(args: {
     let onAccountAutomationRulesChangedRef: (() => void) | null = null;
     /** Account rows changed (another computer wrote): claim, confirm and re-read rules. */
     let onAccountAutomationRuleRowsChangedRef: (() => void) | null = null;
+    /** Sends ADE Cloud the rules homed there (C9) after each sync; set once automations exist. */
+    let cloudAutomationRegistrarRef: AutomationCloudRegistrar | null = null;
     const syncDeviceIdPath = path.join(
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
@@ -1600,6 +1625,11 @@ export async function createAdeRuntime(args: {
       accountSettingsStore,
       accountVaultStore,
     } = accountRuntimeLifecycle;
+    // The registry's secret values for the tracked agent CLIs this brain
+    // starts (`trackedCliUserMcp.ts`): one account vault per brain process.
+    if (accountVaultStore) {
+      setTrackedCliRegistrySecretReader((vaultKey) => accountVaultStore.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null);
+    }
     const keepAwakeService = resolvedArgs.keepAwakeService ?? null;
     initApiKeyStore(projectRoot, {
       credentialStore: new EncryptedFileCredentialStore(),
@@ -1608,6 +1638,32 @@ export async function createAdeRuntime(args: {
       logger,
       analytics: productAnalyticsService,
     });
+    // Provider keys in plain text in `.ade/local.yaml` move to this store
+    // (localYamlApiKeys.ts). Only the runtime does it: its store is the one
+    // chats read and Settings writes, while the desktop's own store (Electron
+    // safeStorage) is one this runtime cannot read. The project's file first,
+    // now; then the copies in its lane worktrees, once the lane list is read.
+    moveLocalYamlApiKeys({
+      localPath: path.join(paths.adeDir, "local.yaml"),
+      adopt: adoptPlaintextApiKey,
+      isKnownProvider: isKnownApiKeyProvider,
+      logger,
+    });
+    void laneService
+      .list({ includeArchived: true, includeStatus: false })
+      .then((lanes) => moveLocalYamlApiKeysForProject({
+        projectRoot,
+        worktreePaths: lanes.map((lane) => lane.worktreePath).filter((worktreePath) => worktreePath && worktreePath !== projectRoot),
+        adopt: adoptPlaintextApiKey,
+        isKnownProvider: isKnownApiKeyProvider,
+        logger,
+      }))
+      .catch((error: unknown) => {
+        logger.warn("projectConfig.api_keys_move_failed", {
+          scope: "lane_worktrees",
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      });
     const projectSecretService = createProjectSecretService(projectRoot, {
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
@@ -1677,6 +1733,8 @@ export async function createAdeRuntime(args: {
             const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
             if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
             onAccountAutomationRulesChangedRef?.();
+            // Off this loop: a slow directory never holds the rules' own sync.
+            void cloudAutomationRegistrarRef?.reconcile();
           } while (ruleSyncAgain);
         } catch (error) {
           logger.warn("automations.account_rules_sync_failed", {
@@ -1918,6 +1976,7 @@ export async function createAdeRuntime(args: {
           laneId: signal.laneId,
           sessionId: signal.sessionId,
           runtimeState: signal.runtimeState,
+          ...(signal.exactTurnState ? { exactTurnState: true } : {}),
         });
       },
       onSessionAttentionRequested: (request) => runtimeForCtoActions
@@ -1937,6 +1996,8 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
+      // The GitHub service starts after this one; until then shells get no token.
+      getSessionGithubEnv: async (env) => (await githubServiceRef?.sessionGithubEnv(env)) ?? null,
       releaseChatBrowser,
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeLayout().adeDir, logger),
@@ -2778,6 +2839,7 @@ export async function createAdeRuntime(args: {
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
       getDeviceId: readSyncDeviceId,
       onPrHotRefreshChanged: () => prPollingServiceForHotRefresh?.poke(),
       refreshDefaultBranchAfterMerge: embeddedRuntime
@@ -2898,7 +2960,7 @@ export async function createAdeRuntime(args: {
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     // Saved chats: a cloud computer only. Fed by the chat service's events below.
-    const cloudChatUploader = isCloudMachine() && resolvedArgs.chatRuntime === "agent"
+    const cloudChatUploader = isAdeCloudComputer() && resolvedArgs.chatRuntime === "agent"
       ? createCloudChatUploader({
           adeDir: paths.adeDir,
           chatTranscriptsDir: paths.chatTranscriptsDir,
@@ -2940,7 +3002,7 @@ export async function createAdeRuntime(args: {
       : null;
     cloudChatUploaderRef.current = cloudChatUploader;
     teardown.push(() => cloudChatUploader?.dispose());
-    if (isCloudMachine() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+    if (isAdeCloudComputer() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
       const laneNameClient = createCloudServerProvider({
         accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null,
         baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
@@ -3108,6 +3170,7 @@ export async function createAdeRuntime(args: {
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
+        getSessionGithubEnv: (env) => headlessLinearServices.githubService.peekSessionGithubEnv(env),
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
@@ -3209,6 +3272,8 @@ export async function createAdeRuntime(args: {
     if (chatServiceForCliAccounts) {
       ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
         chatServiceForCliAccounts.pickNewCliSessionAccount(provider, modelId));
+      // A CLI that moved to another machine is not started here again.
+      ptyService.setMovedAwayCliLock((sessionId) => chatServiceForCliAccounts.getCliMoveLock(sessionId));
     }
     applyFastModePolicyRef = () => agentChatService?.applyFastModePolicy();
     teardown.push(() => agentChatService?.forceDisposeAll?.());
@@ -3410,6 +3475,60 @@ export async function createAdeRuntime(args: {
         }
         pushEvent("runtime", { type: "runs-updated", source: "automations" });
       };
+    }
+    if (automationService) {
+      // ADE Cloud as a rule's home (C9): this brain sends the server the rules
+      // homed there, after every account sync; never on a timer.
+      const readOrigin = createCachedProjectOriginReader(projectRoot);
+      const registrar = createAutomationCloudRegistrar({
+        listCloudHomes: () => projectConfigService.cloudHomedAutomationRules(),
+        compile: (ruleId) => {
+          const origin = readOrigin();
+          return origin ? automationService.cloudHomeSpec(ruleId, origin) : { problem: "This project has no GitHub remote." };
+        },
+        api: () => {
+          const baseUrl = getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] });
+          if (!baseUrl || !accountAuthService.getStatus().signedIn) return null;
+          return createCloudApiClient({ baseUrl, accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null });
+        },
+        setHookForward: async (hookId, forward) => {
+          const token = await getAccountAccessToken().catch(() => null);
+          if (!token) throw new Error("Sign in to ADE to point this webhook at ADE Cloud.");
+          const response = await fetch(`${resolveWebhookRelayBaseUrl(db)}/hooks/forward`, {
+            method: "POST",
+            headers: { "content-type": "application/json", [ACCOUNT_RELAY_TOKEN_HEADER]: token },
+            body: JSON.stringify({ hookId, forward }),
+            signal: AbortSignal.timeout(15_000),
+          });
+          // A hook already gone (retired with its rule) forwards nowhere.
+          if (!response.ok && !(response.status === 404 && forward === null)) {
+            throw new Error(`ADE's webhook relay answered HTTP ${response.status}.`);
+          }
+        },
+        origin: () => readOrigin(),
+        onStateChanged: () => automationService.noteCloudHomeStateChanged(),
+        logger,
+      });
+      cloudAutomationRegistrarRef = registrar;
+      automationService.setCloudHome({ stateFor: (ruleId) => registrar.stateFor(ruleId), runNow: (rule) => registrar.runNow(rule) });
+      teardown.push(automationService.onRuleDeleted((rule) => void registrar.forget(rule)));
+      // The server reads the agent limits when a rule is registered: a change of
+      // them (on any computer) sends the cloud rules again, so it takes effect.
+      if (accountVaultStore) {
+        const vault = accountVaultStore;
+        let limitsSeen: string | null | undefined;
+        teardown.push(vault.startPeriodicSync(undefined, (status) => {
+          if (status !== "ready") return;
+          const limits = vault.get(ACCOUNT_SCOPE_ALL, "integration", CLOUD_AGENT_LIMITS_VAULT_KEY);
+          if (limitsSeen !== undefined && limits !== limitsSeen) {
+            logger.info("automations.cloud_home_limits_changed", {});
+            void registrar.resendAll();
+          }
+          limitsSeen = limits;
+        }));
+      }
+      void registrar.reconcile();
+      teardown.push(() => registrar.dispose());
     }
     teardown.push(() => automationService?.dispose());
     const automationSecretService = createAutomationSecretService({

@@ -29,6 +29,22 @@ export type RelayEnv = {
   /** Comma-separated public Clerk OAuth client ids accepted besides CLERK_OAUTH_CLIENT_ID. */
   CLERK_EXTRA_OAUTH_CLIENT_IDS?: string;
   /**
+   * Comma-separated https origins a custom webhook may forward to, besides
+   * ADE's own account directories (`HOOK_FORWARD_ORIGINS` in customHooks.ts).
+   * Unset in production; for a local directory in development.
+   */
+  HOOK_FORWARD_ORIGINS?: string;
+  /**
+   * The account directories, over service bindings. A Worker can't fetch
+   * another Worker of the same account on workers.dev (error 1042), so a
+   * forward goes through the binding of its URL's origin
+   * (`ACCOUNT_DIRECTORY` the default `ade-account-directory`,
+   * `ACCOUNT_DIRECTORY_PRODUCTION` `ade-account-directory-production`).
+   * A binding ignores the URL's host, so it is never used for another origin.
+   */
+  ACCOUNT_DIRECTORY?: { fetch: typeof fetch };
+  ACCOUNT_DIRECTORY_PRODUCTION?: { fetch: typeof fetch };
+  /**
    * Optional worker-level Cursor Cloud webhook signing secret. Tried before
    * per-account secrets registered in D1. Cursor signs with HMAC-SHA256 of the
    * raw body as `X-Webhook-Signature: sha256=<hex>`.

@@ -467,6 +467,26 @@ describe("apiKeyStore", () => {
     expect(credentialStore.values.has(`ai.api_key.openai#${credentialId}.v1`)).toBe(false);
   });
 
+  // A key found in plain text (.ade/local.yaml) leaves the file only on
+  // `stored` or `already_stored`, so those two must mean the provider's
+  // default credential holds that very key.
+  it.each([
+    { label: "no default yet", setDefault: null, other: null, outcome: "stored", defaultAfter: "sk-from-file" },
+    { label: "the same key as the default", setDefault: "sk-from-file", other: null, outcome: "already_stored", defaultAfter: "sk-from-file" },
+    { label: "a different default", setDefault: "sk-chosen-in-settings", other: null, outcome: "conflict", defaultAfter: "sk-chosen-in-settings" },
+    { label: "the same key on another credential only", setDefault: null, other: "sk-from-file", outcome: "stored", defaultAfter: "sk-from-file" },
+  ])("adopts a plain-text key with $label as $outcome", async ({ setDefault, other, outcome, defaultAfter }) => {
+    delete process.env.OPENAI_API_KEY;
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+    if (setDefault) store.storeApiKey("openai", setDefault);
+    if (other) store.storeApiCredential({ provider: "openai", label: "Work", key: other });
+
+    expect(store.adoptPlaintextApiKey("openai", " sk-from-file ")).toBe(outcome);
+    expect(store.getApiCredentialKey("openai", "default")).toBe(defaultAfter);
+  });
+
   it("only reports a credential removal that actually removed something", async () => {
     const captured: Array<Record<string, unknown>> = [];
     const analytics = { captureInternal: (input: unknown) => { captured.push(input as Record<string, unknown>); } };

@@ -1,8 +1,10 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
-import { parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, isAdeCloudHome } from "../../../shared/automationHome";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 import cron from "node-cron";
 import { z } from "zod";
@@ -89,7 +91,7 @@ import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
-import { createAutomationRuleAccountSync, type AutomationRuleAccountSync } from "../automations/automationRuleAccountSync";
+import { createAutomationRuleAccountSync, type AutomationRuleAccountSync, type CloudHomesView } from "../automations/automationRuleAccountSync";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -444,6 +446,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
 
   const out: AutomationTrigger = { type };
   const cron = asString(value.cron);
+  const timezone = asString(value.timezone)?.trim();
+  if (timezone && isIanaTimeZone(timezone)) out.timezone = timezone;
   const branch = asString(value.branch);
   const targetBranch = asString(value.targetBranch);
   const event = asString(value.event);
@@ -904,6 +908,17 @@ export function coerceAutomationRuleHome(value: unknown): AutomationRuleHome | u
   if (!deviceId || !name || !chosenAt) return undefined;
   const checkout = asString(value.checkout)?.trim();
   const previousDeviceId = asString(value.previousDeviceId)?.trim();
+  // ADE Cloud's home names no computer and no checkout, whatever the row says.
+  if (isAdeCloudHome({ deviceId, kind: asString(value.kind) })) {
+    return {
+      kind: "cloud",
+      deviceId: ADE_CLOUD_HOME_DEVICE_ID,
+      name: ADE_CLOUD_HOME_NAME,
+      chosenAt,
+      checkout: null,
+      ...(previousDeviceId && previousDeviceId !== ADE_CLOUD_HOME_DEVICE_ID ? { previousDeviceId } : {}),
+    };
+  }
   return {
     deviceId,
     name,
@@ -2470,6 +2485,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       triggers: triggers.map((trigger) => ({
         type: trigger.type,
         ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
+        ...(trigger.timezone ? { timezone: trigger.timezone } : {}),
         ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
         ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch.trim() } : {}),
         ...(trigger.event ? { event: trigger.event.trim() } : {}),
@@ -3171,13 +3187,20 @@ export function createProjectConfigService({
   adeDir,
   projectId,
   db,
-  logger
+  logger,
+  storeOfferedApiKey
 }: {
   projectRoot: string;
   adeDir: string;
   projectId: string;
   db: AdeDb;
   logger: Logger;
+  /**
+   * Saves a provider key that a config write offers (a new or changed
+   * `ai.apiKeys` entry) in the API key store instead of the file. Throws when
+   * it cannot. Without it, such a write is refused.
+   */
+  storeOfferedApiKey?: (provider: string, key: string) => void;
 }) {
   const sharedPath = path.join(adeDir, "ade.yaml");
   const localPath = path.join(adeDir, "local.yaml");
@@ -3465,15 +3488,63 @@ export function createProjectConfigService({
     automationRuleSync?.stamp(snapshot.effective.automations, automationNotes);
   };
 
-  const writeLocalFile = (local: ProjectConfigFile): void => {
-    initializeOrRepairAdeProject(projectRoot, { logger });
-    fs.mkdirSync(path.dirname(localPath), { recursive: true });
-    writeFileAtomicSync(localPath, toCanonicalYaml(local));
-    cachedLocalFile = null;
-  };
-
   /** The file's own config, without the account's rules. */
   const readLocalFileConfig = (): ProjectConfigFile => normalizeConfigFilePaths(readConfigFile(localPath).config, projectRoot);
+
+  /**
+   * `.ade/local.yaml` never gets a new provider key (account project plan,
+   * slice Y1). A write keeps an `ai.apiKeys` entry only when the file already
+   * holds that exact value: a key still waiting to move to the key store
+   * (`localYamlApiKeys.ts`). A new or changed key goes to the key store
+   * through `storeOfferedApiKey`, before anything is written; without that
+   * hook the write is refused, so the caller still has the key. The dead
+   * `providers` block keeps only the entries the file already has.
+   */
+  const withoutNewPlaintextKeys = (local: ProjectConfigFile): ProjectConfigFile => {
+    const offeredKeys = local.ai?.apiKeys ?? {};
+    if (Object.keys(offeredKeys).length === 0 && !local.providers) return local;
+    const onDisk = readLocalFileConfig();
+    const diskKeys = onDisk.ai?.apiKeys ?? {};
+    const keptKeys: Record<string, string> = {};
+    const offered: Array<[string, string]> = [];
+    for (const [provider, value] of Object.entries(offeredKeys)) {
+      if (diskKeys[provider] === value) keptKeys[provider] = value;
+      else offered.push([provider, value]);
+    }
+    if (offered.length > 0) {
+      if (!storeOfferedApiKey) {
+        throw new Error("Provider API keys are not saved in .ade/local.yaml any more. Add the key in ADE Settings.");
+      }
+      for (const [provider, value] of offered) storeOfferedApiKey(provider, value);
+      logger.info("projectConfig.api_key_saved_to_store", { providers: offered.map(([provider]) => provider) });
+    }
+    let ai = local.ai;
+    if (ai?.apiKeys) {
+      const { apiKeys: _offered, ...rest } = ai;
+      ai = Object.keys(keptKeys).length > 0 ? { ...rest, apiKeys: keptKeys } : rest;
+    }
+    let providers = local.providers;
+    if (providers) {
+      const diskProviders = onDisk.providers ?? {};
+      const kept: Record<string, unknown> = {};
+      const refused: string[] = [];
+      for (const [name, entry] of Object.entries(providers)) {
+        if (isDeepStrictEqual(diskProviders[name], entry)) kept[name] = entry;
+        else refused.push(name);
+      }
+      if (refused.length > 0) logger.warn("projectConfig.providers_write_refused", { providers: refused });
+      providers = Object.keys(kept).length > 0 ? kept : undefined;
+    }
+    return { ...local, ...(ai ? { ai } : {}), providers };
+  };
+
+  const writeLocalFile = (local: ProjectConfigFile): void => {
+    const safeLocal = withoutNewPlaintextKeys(local);
+    initializeOrRepairAdeProject(projectRoot, { logger });
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    writeFileAtomicSync(localPath, toCanonicalYaml(safeLocal));
+    cachedLocalFile = null;
+  };
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
     const sharedHash = hashContent(toCanonicalYaml(shared));
@@ -3493,9 +3564,10 @@ export function createProjectConfigService({
       throw invalidConfigError(validation);
     }
     // Account rules never land in the file; a new one is filed in the account.
-    const local = options.divert === false || !automationRuleSync
+    const diverted = options.divert === false || !automationRuleSync
       ? candidateLocal
       : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
+    const local = withoutNewPlaintextKeys(diverted);
 
     const localYaml = toCanonicalYaml(local);
 
@@ -3551,6 +3623,21 @@ export function createProjectConfigService({
       return automationRuleSync?.fingerprint() ?? null;
     },
 
+    /**
+     * What ADE Cloud's copy of this repository's rules must follow; see
+     * `AutomationRuleAccountSync.cloudHomes`. Null (logged on a failure) when
+     * the account can't be read: never an empty list, which would read as
+     * "every cloud rule is gone".
+     */
+    cloudHomedAutomationRules(): CloudHomesView | null {
+      try {
+        return automationRuleSync?.cloudHomes() ?? null;
+      } catch (error) {
+        logger.warn("projectConfig.cloud_homed_rules_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+    },
+
     /** Move rules from `.ade/local.yaml` into the account; see `AutomationRuleAccountSync.migrate`. */
     migrateAutomationRulesToAccount(): { moved: number; renamed: string[] } {
       try {
@@ -3583,7 +3670,7 @@ export function createProjectConfigService({
      */
     saveAutomationRule(
       rule: ConfigAutomationRule,
-      options: { home?: AutomationRuleHome | "this-computer" | null } = {},
+      options: { home?: AutomationRuleHome | "this-computer" | "ade-cloud" | null } = {},
     ): ProjectConfigSnapshot {
       const id = rule.id.trim();
       if (!id) throw new Error("Automation id is required");

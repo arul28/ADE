@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
+import { windowsScaledTimeout } from "../../../../vitest.timeouts";
 
 const { acquireSyncHostSingletonMock, createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => {
   const syncHostServiceMockState = {
@@ -453,7 +454,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(transferred.clusterState?.brainEpoch).toBe(4);
     expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
     expect(transferred.transferReadiness.ready).toBe(true);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("reclaims host role from a stale local viewer draft after transport failure", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-stale-local-draft-");
@@ -539,7 +540,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     // The untagged draft names 127.0.0.1:1, not this cluster's brain (port 8789), so
     // it is no longer dialed. This project does not own it, so it stays on disk.
     expect(fs.existsSync(path.join(appPairingDir, "sync-peer-draft.json"))).toBe(true);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("reclaims a stale unreachable viewer draft when the draft target is remote", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-stale-remote-draft-");
@@ -623,7 +624,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.pairingConnectInfo).not.toBeNull();
     expect(fs.existsSync(draftPath)).toBe(false);
     expect(service.getHostBlocker()).toBeNull();
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("hosts a project that ignores a viewer draft another project wrote", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-foreign-draft-");
@@ -691,7 +692,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(JSON.parse(fs.readFileSync(draftPath, "utf8")).projectSiteId).toBe(
       "another-projects-site-id",
     );
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("hosts a project with no cluster record despite an untagged legacy viewer draft", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-legacy-draft-");
@@ -755,7 +756,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
     expect(service.getHostBlocker()).toBeNull();
     expect(fs.existsSync(draftPath)).toBe(true);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("reports a blocker when a local viewer draft would not reclaim a fresh remote cluster", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-local-draft-fresh-cluster-");
@@ -845,7 +846,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       host: "10.0.0.9",
       port: 8789,
     });
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("does not delete another project's viewer draft when disconnecting", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-foreign-draft-clear-");
@@ -936,7 +937,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(JSON.parse(fs.readFileSync(draftPath, "utf8")).projectSiteId).toBe(
       "another-projects-site-id",
     );
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("builds pairing runtime addresses with LAN-first address candidates and tailscale fallback", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-pairing-");
@@ -1056,7 +1057,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     expect(status.pairingConnectInfo?.hostIdentity.deviceId).toBe(localDeviceId);
     expect(addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("reports the live host port in pairing info when the sync host falls back", async () => {
     syncHostServiceMockState.port = 8788;
@@ -1094,7 +1095,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.localDevice.lastPort).toBe(8788);
     expect(status.currentBrain?.lastPort).toBe(8788);
     expect(status.pairingConnectInfo?.port).toBe(8788);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-host-disabled-");
@@ -1152,7 +1153,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       "Phone pairing is unavailable because the sync host is disabled for this ADE process.",
     );
     expect(service.getPin()).toBeNull();
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("starts the sync host when setHostStartupEnabled flips on after init", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-host-toggle-");
@@ -1201,7 +1202,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     const enabledStatus = await service.getStatus();
     expect(enabledStatus.bootstrapToken).toBe("toggled-token");
     expect(enabledStatus.pairingConnectInfo).toBeTruthy();
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("does not overwrite an existing app-level pairing file when a legacy file is also present", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-no-overwrite-");
@@ -1254,7 +1255,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       ).trim(),
     ).toBe("legacy-token");
     expect((await service.getStatus()).bootstrapToken).toBe("app-token");
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("rejects PIN changes when CRDT sync is unavailable", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-crdt-disabled-");
@@ -1310,7 +1311,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
     );
     expect(service.getPin()).toBeNull();
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("retries the sync host on bind conflicts so another project can still initialize", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-port-retry-");
@@ -1422,7 +1423,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     ]);
     expect(disposeFirstAttempt).toHaveBeenCalledTimes(8);
     expect(service.getHostService()?.getPort()).toBe(8788);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("starts on a legacy-discoverable port when the saved port drifted past the old phone range", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-legacy-phone-port-");
@@ -1485,7 +1486,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)[0]).toBe(8787);
     expect(status.localDevice.lastPort).toBe(8787);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("does not fall back to an out-of-range sync host port", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-no-random-port-");
@@ -1566,7 +1567,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(attemptedPorts).not.toContain(55035);
     expect(attemptedPorts).not.toContain(0);
     expect(attemptedPorts.every((port) => port >= 8787 && port <= 8999)).toBe(true);
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   describe("cooperative brain election", () => {
     it("leaves a fresh remote brain cluster row untouched", async () => {
@@ -1626,7 +1627,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       expect(status.clusterState?.brainDeviceId).toBe("remote-brain");
       expect(status.clusterState?.brainEpoch).toBe(5);
       expect(createSyncHostServiceMock).not.toHaveBeenCalled();
-    }, 30_000);
+    }, windowsScaledTimeout(30_000));
 
     it("reassigns a stale remote brain cluster row to the local device", async () => {
       const projectRoot = makeProjectRoot("ade-sync-service-stale-remote-cluster-");
@@ -1687,7 +1688,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
       expect(status.clusterState?.brainDeviceId).not.toBe("remote-brain");
       expect(status.clusterState?.brainEpoch).toBe(6);
-    }, 30_000);
+    }, windowsScaledTimeout(30_000));
 
     it.each([
       {
@@ -1765,7 +1766,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       expect(createSyncHostServiceMock).not.toHaveBeenCalled();
       expect(status.clusterState?.brainDeviceId ?? null).toBe(expectedBrainDeviceId);
       expect(status.clusterState?.brainEpoch ?? null).toBe(expectedBrainEpoch);
-    }, 30_000);
+    }, windowsScaledTimeout(30_000));
   });
 
   describe("setHostDiscoveryEnabled / setHostStartupEnabled", () => {
@@ -1807,7 +1808,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       service.setHostDiscoveryEnabled(false);
       expect(setDiscoveryEnabledSpy).toHaveBeenCalledTimes(1);
       expect(setDiscoveryEnabledSpy).toHaveBeenCalledWith(false);
-    }, 30_000);
+    }, windowsScaledTimeout(30_000));
 
     it("setHostStartupEnabled returns an awaitable promise that resolves after refreshRoleState", async () => {
       const projectRoot = makeProjectRoot("ade-sync-service-startup-await-");
@@ -1847,7 +1848,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       expect(createSyncHostServiceMock).toHaveBeenCalled();
       const enabledStatus = await service.getStatus();
       expect(enabledStatus.bootstrapToken).toBe("await-token");
-    }, 30_000);
+    }, windowsScaledTimeout(30_000));
 
     it("waits for a queued host rollback before resolving either toggle", async () => {
       const projectRoot = makeProjectRoot("ade-sync-service-startup-rollback-");
@@ -1906,6 +1907,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
       expect(disposeHost).toHaveBeenCalledTimes(1);
       expect(service.getHostService()).toBeNull();
-    }, 30_000);
+    }, windowsScaledTimeout(30_000));
   });
 });

@@ -6,7 +6,9 @@
  *   into the account, only while the account has ADE Cloud and the person
  *   switched its sign-ins on.
  * - Apply (`providerLoginApplyPass.ts`): a cloud computer writes the sign-in
- *   the account picked for each provider.
+ *   the account picked for each provider. A person's own computer takes it
+ *   down only where it has no sign-in of its own (B14-9); never Claude, never
+ *   a GitHub credential, never over a local sign-in.
  * - The gate (`providerLoginGate.ts`): a cloud computer checks the copy
  *   before a turn, with a short wait when it is about to expire.
  * - Renewal (`providerLoginTakeover.ts`): the owner computer renews ahead of
@@ -72,6 +74,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     isAppliedBundle: apply.isAppliedBundle,
     ownedPlaceFor: apply.ownedPlaceFor,
     noteOwnedCopy: apply.noteOwnedCopy,
+    appliedSourceOf: apply.appliedSourceOf,
     ...takeover,
     keychainStatus: allow.keychainStatus,
     ghCliStatus: allow.ghCliStatus,

@@ -32,7 +32,7 @@ import {
 } from "../../../shared/acpProviderMetadata";
 import { claudeConfigHome, codexConfigHome, COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
-import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
+import { isLiveLockTimeout, pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 /**
@@ -49,14 +49,17 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
 
 /**
  * Whether ADE's copy of `provider` is on its way: downloading now, or
- * downloaded the first time this machine uses it. Either way nothing is wrong
- * yet. A failed or unavailable copy is not pending.
+ * downloaded the first time this machine uses it, or still being installed by
+ * another ADE on this machine. Either way nothing is wrong yet. A failed or
+ * unavailable copy is not pending.
  */
 function runtimeDownloadPending(provider: string): boolean {
   const tool = pinnedToolForProvider(provider);
   if (!tool) return false;
   const { status } = pinnedToolState(tool.tool, tool.label);
-  return status.state === "downloading" || (status.state === "missing" && status.fetchAllowed);
+  return status.state === "downloading"
+    || (status.state === "missing" && status.fetchAllowed)
+    || (status.state === "failed" && isLiveLockTimeout(status));
 }
 
 /** Providers whose current snapshot disagreement Sentry has already heard about. */
@@ -147,8 +150,8 @@ function copilotRuntimeMissingBlocker(cli: CliAuthStatus | null, authAvailable: 
   const state = cli?.pinnedState ?? pinnedToolState("copilot", "the Copilot runtime").state;
   if (state !== "missing") return runtimeMissingBlocker("copilot", cli);
   return authAvailable
-    ? "ADE has not downloaded the Copilot runtime on this machine yet. Refresh to download it."
-    : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login` and refresh, and ADE downloads it.";
+    ? "ADE has not downloaded the Copilot runtime on this machine yet. It downloads the first time this machine uses it."
+    : "ADE has not downloaded the Copilot runtime on this machine yet. Sign in with `copilot login` or `gh auth login`; ADE downloads it the first time this machine uses it.";
 }
 
 function createUnavailableStatus(
@@ -190,6 +193,18 @@ async function codexAuthFilePresent(env: NodeJS.ProcessEnv): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether Claude or Codex has a saved sign-in on this machine, read from disk,
+ * the keychain's attributes and the environment (never a probe, which needs
+ * the CLI). One answer for the CLI status before ADE's copy is here
+ * (`detectCliAuthStatuses`) and for this connection row's own evidence.
+ */
+export async function savedSignInPresent(provider: "claude" | "codex", env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (provider === "codex") return Boolean(await readCodexCredentials()) || await codexAuthFilePresent(env);
+  if (CLAUDE_AUTH_ENV_KEYS.some((key) => Boolean(env[key]?.trim())) || await readClaudeCredentials()) return true;
+  return process.platform === "darwin" && (await probeClaudeKeychainLogin()) === "present";
 }
 
 /** A settings file is a few kilobytes; anything far larger is not one to parse. */

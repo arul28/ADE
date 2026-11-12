@@ -251,9 +251,7 @@ export const PRELOAD_PASS_PINNED_MEMBERS: Record<string, Record<string, number>>
     rebuildIndex: 0,
   },
   sessions: {
-    settleMany: 1,
     snoozeSessions: 2,
-    unsettleMany: 1,
     wakeSessions: 2,
   },
   sync: {

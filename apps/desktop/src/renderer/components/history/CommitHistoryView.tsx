@@ -443,14 +443,14 @@ export function CommitHistoryView({
   const lanePrMap = useLanePrsByLaneId();
   const prsByLaneId = useMemo(() => {
     const map = new Map<string, PrSummary>();
-    if (pin) return map;
+    if (!pinTargetsTab) return map;
     for (const lane of liveLanes) {
       const prs = prsForLaneBranch(boundMachineLanePrs(lanePrMap, lane.id), lane);
       const live = prs.find((pr) => pr.state === "open" || pr.state === "draft") ?? prs[0];
       if (live) map.set(lane.id, live);
     }
     return map;
-  }, [lanePrMap, liveLanes, pin]);
+  }, [lanePrMap, liveLanes, pinTargetsTab]);
 
   const badgesBySha = useMemo(
     () => buildRefBadges({ branches, lanesByBranch, prsByLaneId, focusLaneId: laneId }),

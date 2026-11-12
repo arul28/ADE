@@ -1,9 +1,11 @@
 import { defineConfig } from "vitest/config";
+import { windowsScaledTimeout } from "./vitest.timeouts";
 
 // Windows runners do real file, SQLite and pipe work several times slower than
 // macOS/Linux, so the 5 s default times out there on tests that pass. Assertion
 // failures still fail; only the clock is loosened, and only on Windows.
-const timeoutMs = process.platform === "win32" ? 15_000 : 5_000;
+// Factor 3 keeps the 15 s Windows default this config used before the helper.
+const timeoutMs = windowsScaledTimeout(5_000, 3);
 
 export default defineConfig({
   test: {

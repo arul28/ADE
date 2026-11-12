@@ -67,7 +67,7 @@ import type {
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
-import { isRemoteRuntimeEventCategory } from "../../../shared/types/remoteRuntime";
+import { isRemoteRuntimeEventCategory, REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../../shared/types/remoteRuntime";
 import { parseRuntimeUpdateImpact, UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { PROJECT_ICON_DIALOG_EXTENSIONS } from "../../../shared/projectIcons";
 import { readProjectIconForUpload } from "../projects/projectIconResolver";
@@ -96,6 +96,9 @@ import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { shouldSendAppControlFrameToWebContents } from "../appControl/appControlFrameSubscriptions";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../../shared/adeActionAccess";
+import { goneTargetMachineKey, noteGoneTarget, reachGoneTarget } from "../machines/goneTargets";
+import { sameMachineKey } from "../../../shared/machineAddress";
 import { appControlFrameEventLaneId } from "../../../shared/appControlFrameDemand";
 import { forgetRemoteTunnelOrigins, recordRemoteTunnelOrigin } from "../builtInBrowser/remoteTunnelOrigins";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
@@ -677,10 +680,38 @@ export function registerRuntimeBridge({
   const pinFolder = (value: unknown): string | null =>
     typeof value === "string" ? value.trim() || null : null;
   /** A saved remote target by id. One that is gone (removed, or never saved here) is the caller's to fix. */
+  /**
+   * A saved remote target by id. A pin to a connection that is gone (removed,
+   * or a saved chat's stand-in) uses its machine's connection now
+   * (machines/goneTargets.ts); one that reaches nothing is the caller's to fix.
+   */
+  const savedOrGoneTarget = (id: string | null | undefined): RemoteRuntimeTarget | null => {
+    if (!id) return null;
+    const saved = remoteConnectionService.getTarget(id);
+    if (saved) return saved;
+    const goneKey = goneTargetMachineKey(id);
+    return goneKey ? targetForMachineKey(goneKey) : null;
+  };
   const requireRemoteTarget = (id: string | null | undefined) => {
-    const target = id ? remoteConnectionService.getTarget(id) : null;
-    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+    const target = savedOrGoneTarget(id);
+    if (!target) throw new AdeExpectedError(REMOTE_TARGET_NOT_FOUND_MESSAGE, "user");
     return target;
+  };
+  /**
+   * The target a runtime action goes to. A person's write through a pin whose
+   * machine has no connection saved here first reaches it through the account
+   * (contract C2), which wakes a sleeping cloud computer, as a write through a
+   * saved connection does. A read or a background write (window focus, a view)
+   * never wakes one, the same rule as `remoteConnectionService.callAction`; the
+   * window reads the chat's saved copy instead.
+   */
+  const targetForAction = async (id: string, domain: string, action: string): Promise<RemoteRuntimeTarget> => {
+    if (!savedOrGoneTarget(id) && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action)) {
+      const reached = await reachGoneTarget(id, { domain, action });
+      // The machine's own reason (off the account, out of hours, unreachable), not "not found".
+      if (reached && !reached.ok) throw new AdeExpectedError(reached.message, "user");
+    }
+    return requireRemoteTarget(id);
   };
   // The media server's `/remote/...` route reads a proof video from a paired
   // computer through this, one bounded chunk per call. The broker on that
@@ -787,7 +818,7 @@ export function registerRuntimeBridge({
     const normalized = machineKey.trim();
     if (!normalized) return null;
     return remoteConnectionService.listTargets().find(
-      (target) => target.pairedMachine?.machineKey?.trim() === normalized,
+      (target) => sameMachineKey(target.pairedMachine?.machineKey, normalized),
     ) ?? null;
   };
 
@@ -808,10 +839,16 @@ export function registerRuntimeBridge({
       const key = machineKey?.trim() || null;
       const host = hostname?.trim().toLowerCase() || null;
       const ids = remoteConnectionService.listTargets()
-        .filter((target) => (key && target.pairedMachine?.machineKey?.trim() === key)
+        .filter((target) => (key && sameMachineKey(target.pairedMachine?.machineKey, key))
           || (host && target.hostname?.trim().toLowerCase() === host))
         .map((target) => target.id);
-      for (const id of ids) remoteConnectionService.removeTarget(id);
+      for (const id of ids) {
+        // A machine that moved or went away: pins to it still reach its
+        // machine by key (machines/goneTargets.ts). A connection the person
+        // removes by hand is never remembered, so nothing pairs it again.
+        noteGoneTarget(id, remoteConnectionService.getTarget(id)?.pairedMachine?.machineKey);
+        remoteConnectionService.removeTarget(id);
+      }
       return ids;
     },
     readRemoteArtifactRange,
@@ -1650,7 +1687,6 @@ export function registerRuntimeBridge({
         !Array.isArray(arg.request)
           ? arg.request
           : null;
-      const target = requireRemoteTarget(id);
       const domain =
         typeof request?.domain === "string" ? request.domain.trim() : "";
       const action =
@@ -1658,6 +1694,7 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project is required.");
       if (!domain || !action)
         throw new Error("Remote action domain and action are required.");
+      const target = await targetForAction(id, domain, action);
       const actionRequest = withRuntimeActionClientMetadata(
         { ...request!, domain, action },
         event.sender.id,

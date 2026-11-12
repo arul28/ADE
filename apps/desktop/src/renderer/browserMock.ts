@@ -8211,6 +8211,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           });
         }
       },
+      // No live CLI here, so the Work input box always reaches a free prompt.
+      typeIntoCli: async () => ({ outcome: "delivered" as const }),
       // The staged queue behaves like the host's: a steer stages a queued
       // bubble, a cancel retires it, and a move publishes the new order.
       steer: async (args: AgentChatSteerArgs) => {
@@ -8481,6 +8483,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       getTurnFileDiff: resolvedArg(null),
       listSubagents: resolvedArg([]),
+      listPendingInputs: resolvedArg({ requests: [] }),
       killDroidWorker: resolvedArg(undefined),
       getSessionCapabilities: resolvedArg({
         supportsSubagentInspection: false,

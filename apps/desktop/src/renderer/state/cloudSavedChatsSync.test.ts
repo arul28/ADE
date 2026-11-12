@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../shared/types";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { useAppStore } from "./appStore";
-import { SAVED_CHATS_MACHINE_PREFIX } from "./cloudSavedChats";
+import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
 import { markCloudWakeForSend, refreshCloudSavedChats, sendWithCloudWakeMark } from "./cloudSavedChatsSync";
+import { noteCloudLaneMachines } from "./adeCloudLaneIndex";
 
 const originalAde = globalThis.window.ade;
 
@@ -98,6 +99,8 @@ beforeEach(async () => {
     state,
     projects: [{ projectId: "proj", rootPath: "/repo", displayName: "repo" }],
   });
+  // A fresh read of the account's computers, which no longer lists the deleted one.
+  noteCloudLaneMachines([]);
   await refreshCloudSavedChats({
     projectKey: "repo-key",
     isActive: () => true,

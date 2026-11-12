@@ -209,6 +209,11 @@ export function checkRemoteAdeCommand(
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
     return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
   }
+  // Git's credential helper prints this computer's GitHub token; it is for
+  // git on this computer only, never a connected app.
+  if (command === "git" && words[0] === "credential") {
+    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this computer and is not available remotely." };
+  }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
@@ -254,7 +259,7 @@ export function checkRemoteAdeCommand(
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"], ["provider", "providers"]]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
@@ -345,7 +350,7 @@ const ANDROID_SDK_REASON =
  * runs full access as `cto`, which these actions otherwise allow.
  */
 const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
-  ["github", new Set(["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
+  ["github", new Set(["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],
@@ -371,12 +376,19 @@ const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credent
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
 
+/** `ade providers sign-in`, `sign-in-code` and `sign-in-status` (cli.ts `buildRemoteSignInPlan`). */
+const REMOTE_PROVIDER_SIGN_INS: ReadonlySet<string> = new Set(["sign-in", "sign-in-code", "sign-in-status"]);
+
 /** Signing this machine in or out of a connected service. */
 function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
   if (command === "github") return GITHUB_AUTH_GROUPS.has(words[0] ?? "") && GITHUB_AUTH_CHANGES.has(words[1] ?? "");
   if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
   if (command === "integrations" || command === "integration") return words[0] === "connect";
   if (command === "providers") {
+    // A provider sign-in for another screen hands its link and code to the
+    // caller, so whoever approves it signs this computer's provider in as
+    // themselves. Only ADE's server runs these, over exec, for the person.
+    if (REMOTE_PROVIDER_SIGN_INS.has(words[0] ?? "")) return true;
     return words[0] === "opencode" && (words[1] === "accounts" || words[1] === "account")
       && OPENCODE_ACCOUNT_REMOVALS.has(words[2] ?? "");
   }

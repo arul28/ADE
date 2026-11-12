@@ -163,7 +163,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Installing or removing the ADE agent, or changing who runs unrouted
   // delegations, changes a Linear workspace for everyone in it.
   linear_agent: { only: ["startInstall", "uninstall", "updateSettings"] },
-  github: { only: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
+  github: { only: ["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
   // Jira credentials are machine-wide and never belong in an agent's hands.
   jira: { only: ["connect", "disconnect"] },
   update: { only: ["quitAndInstall"] },
@@ -395,6 +395,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // Sharing a gh sign-in with the account hands it to every computer the
+  // person signs in to; only the person decides, from Settings › GitHub.
+  github: ["setGhAccountSharing"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
   // Entering an invite code sets the account's referrer once, forever: the
   // person enters it in Settings › Account (desktop, or the phone's own
@@ -947,6 +950,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     ...THREAD_COMMENT_ACTION_NAMES,
     ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
+    // The Work input box's text for a running agent CLI, typed only at a free prompt.
+    "typeIntoCli",
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
@@ -1145,6 +1150,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "moveOnBoard",
     "readTranscriptTail",
+    "reportCliTurnSignal",
     "requestSessionAttention",
     "setSessionActivity",
     "setSessionStatusNote",
@@ -1294,6 +1300,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
+    "setGhAccountSharing",
     "setToken",
     "startAppUserDeviceAuth",
   ],

@@ -356,15 +356,23 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       assertWebRuntimePinRoutable("sessions.unsettle", pin, infra);
       await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, UNSETTLE_PATCH);
     },
-    settleMany: async (sessionIds: string[]) =>
-      (await lifecycleCall<string[]>(
+    // The Work list sends one batch per machine, each with that machine's pin
+    // (`SessionListPane` groups the rows). The federated surface hands a
+    // pinned batch to the adapter of the machine it names; this guard refuses
+    // one that reached the wrong adapter instead of settling another
+    // machine's ids against this host.
+    settleMany: async (sessionIds: string[], pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.settleMany", pin, infra);
+      return (await lifecycleCall<string[]>(
         "session.settleSessions",
         { sessionIds },
         sessionIds,
         settlePatch(),
         appliedToId,
-      )) ?? [],
-    unsettleMany: async (sessionIds: string[]) => {
+      )) ?? [];
+    },
+    unsettleMany: async (sessionIds: string[], pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.unsettleMany", pin, infra);
       await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
     },
     snoozeSession: async (sessionId: string, untilIso: string, pin?: RuntimePinArg) => {
@@ -525,22 +533,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       const result = await commands.call<Record<string, unknown> | null>(
         "work.startCliSession",
-        {
-          laneId: record.laneId,
-          provider: providerFromToolType(record.toolType),
-          title: record.title,
-          initialInput: record.initialInput ?? record.startupCommand ?? record.command ?? null,
-          cols: record.cols,
-          rows: record.rows,
-          model: record.model,
-          modelId: record.modelId,
-          reasoningEffort: record.reasoningEffort,
-          permissionMode: record.permissionMode,
-          // `work.startCliSession` resolves the account on the host that owns
-          // the lane, so only the id crosses — never a config path from this
-          // client's filesystem.
-          instanceId: launchInstanceId(record),
-        },
+        startCliSessionArgs(record),
         mutation
       );
       const sessionId = stringField(result ?? {}, "sessionId") || stringField(record, "sessionId");
@@ -787,6 +780,52 @@ function numberField(record: Record<string, unknown>, key: string): number | nul
  */
 function launchInstanceId(record: Record<string, unknown>): string | null {
   return stringField(asRecord(record.runtimeCliLaunch), "instanceId").trim() || null;
+}
+
+function optionalLaunchString(launch: Record<string, unknown>, key: string): string | undefined {
+  return stringField(launch, key).trim() || undefined;
+}
+
+/**
+ * `pty.create` as `work.startCliSession` takes it. A desktop CLI launch puts
+ * the provider intent in `runtimeCliLaunch` (provider, model, prompt, account,
+ * preset, key), which the host that owns the lane materializes — the same
+ * split `pty.create` makes on the desktop. Only ids cross: the account, preset
+ * and key resolve on that host, never against this client's filesystem.
+ */
+function startCliSessionArgs(record: Record<string, unknown>): Record<string, unknown> {
+  const launch = asRecord(record.runtimeCliLaunch);
+  const runtimeProvider = optionalLaunchString(launch, "provider");
+  // Fields of a runtime launch win; a plain launch keeps its top-level ones.
+  const fromLaunch = (key: string) => (runtimeProvider ? optionalLaunchString(launch, key) : undefined);
+  const presetId = optionalLaunchString(launch, "presetId");
+  const credentialId = optionalLaunchString(launch, "credentialId");
+  const droidPermissionMode = fromLaunch("droidPermissionMode");
+  const startupDelayMs = numberField(record, "startupDelayMs");
+  const initialInputDelayMs = numberField(record, "initialInputDelayMs");
+  return {
+    laneId: record.laneId,
+    provider: runtimeProvider ?? providerFromToolType(record.toolType),
+    title: record.title,
+    initialInput: runtimeProvider
+      ? launch.initialPrompt ?? record.initialInput ?? null
+      : record.initialInput ?? record.startupCommand ?? record.command ?? null,
+    cols: record.cols,
+    rows: record.rows,
+    model: fromLaunch("model") ?? record.model,
+    modelId: record.modelId,
+    reasoningEffort: fromLaunch("reasoningEffort") ?? record.reasoningEffort,
+    permissionMode: fromLaunch("permissionMode") ?? record.permissionMode,
+    instanceId: launchInstanceId(record),
+    ...(droidPermissionMode ? { droidPermissionMode } : {}),
+    ...(typeof launch.fastMode === "boolean" ? { fastMode: launch.fastMode } : {}),
+    ...(launch.fastTier === "ultrafast" ? { fastTier: "ultrafast" } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(credentialId ? { credentialId } : {}),
+    ...(Array.isArray(record.linearIssues) && record.linearIssues.length ? { linearIssues: record.linearIssues } : {}),
+    ...(startupDelayMs != null ? { startupDelayMs } : {}),
+    ...(initialInputDelayMs != null ? { initialInputDelayMs } : {}),
+  };
 }
 
 function providerFromToolType(toolType: unknown): string {

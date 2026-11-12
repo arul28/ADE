@@ -42,7 +42,7 @@ import {
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
 import { resolveAcpExecutable } from "./acpExecutables";
-import { awaitPinnedToolDownload, pinnedToolForProvider, pinnedToolNotReadyError } from "./pinnedProviderTools";
+import { pinnedToolForProvider, pinnedToolNotReadyError } from "./pinnedProviderTools";
 import { prepareAcpProbeSpawnPlan } from "./acpProbeSpawnPlan";
 import {
   getProviderRuntimeHealth,
@@ -273,13 +273,12 @@ export async function probeAcpProviderAuth(
     return result;
   }
 
-  // The probe runs ADE's pinned copy, so it waits for that copy's download.
-  // A miss is neither cached nor published as runtime health: it is a
+  // The probe runs ADE's pinned copy only when it is already here: a sign-in
+  // check is a status read, and never downloads an agent (the first turn
+  // does). A miss is neither cached nor published as runtime health: it is a
   // download state, and the next probe after the download lands must run.
-  // A limited probe does not wait: a download is not a sign-in answer.
   const baseEnv = args.env ?? process.env;
   const tool = pinnedToolForProvider(provider);
-  if (tool && args.limitMs == null) await awaitPinnedToolDownload(tool.tool);
   const deadline = args.limitMs != null ? Date.now() + args.limitMs : null;
   const within = (defaultMs: number): number =>
     deadline == null ? defaultMs : Math.max(1, Math.min(defaultMs, deadline - Date.now()));

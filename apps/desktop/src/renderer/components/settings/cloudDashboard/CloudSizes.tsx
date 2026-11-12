@@ -1,10 +1,10 @@
 import { useMemo } from "react";
-import { Check, Cpu } from "@phosphor-icons/react";
+import { Cpu } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
-import { cloudTierFacts, cloudTierHoursLeftLabel, cloudTiers } from "../../../../shared/cloudTiers";
+import { CLOUD_AWAKE_TIME_LINE, cloudTiers } from "../../../../shared/cloudTiers";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
-import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
+import { CloudSizeCards } from "./CloudSizeCards";
 
 /**
  * The four sizes, side by side: CPU, memory, how far the disk can grow, what
@@ -26,43 +26,17 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
         <span className="adecd-head-note">New cloud lanes start on {current?.label ?? "Small"}. Each lane can change size later.</span>
       </header>
       <div className="kit-card-body">
-        <div className="adecd-sizes" role="radiogroup" aria-label="Size for new cloud lanes">
-          {tiers.map((tier) => {
-            const facts = cloudTierFacts(tier);
-            const picked = tier.id === current?.id;
-            return (
-              <button
-                key={tier.id}
-                type="button"
-                role="radio"
-                aria-checked={picked}
-                className="kit-panel adecd-sizecard"
-                onClick={() => pickCloudDefaultTier(tier.id)}
-              >
-                <span className="adecd-sizecard-top">
-                  <CloudSizeIcon tier={tier.id} size={26} />
-                  <b>{tier.label}</b>
-                  {picked ? <span className="kit-tag adecd-sizecard-pick" data-tone="accent"><Check size={10} weight="bold" />Default</span> : null}
-                </span>
-                <span className="adecd-sizecard-specs">
-                  {facts.specs.map((spec) => <span key={spec}>{spec}</span>)}
-                </span>
-                <span className="adecd-sizecard-runs">
-                  {facts.full ? <span className="kit-tag">Full computer</span> : null}
-                  {facts.runs}
-                </span>
-                <span className="adecd-sizecard-rate">
-                  <b className="kit-num" data-face="ui">{facts.rate}×</b>
-                  <span>{facts.rateLine}</span>
-                </span>
-                <span className="adecd-sizecard-left">
-                  Your hours last <b className="kit-num" data-face="ui">{cloudTierHoursLeftLabel(tier, leftMilli)}</b> here
-                  {extraCents != null ? <>, then <span className="kit-num" data-face="ui">{Math.round(extraCents * facts.rate * 100) / 100}¢</span> an hour</> : null}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <CloudSizeCards
+          tiers={tiers}
+          picked={current?.id ?? null}
+          onPick={(id) => pickCloudDefaultTier(id)}
+          leftMilli={leftMilli}
+          extraHourCents={extraCents}
+          markId={current?.id ?? null}
+          markLabel="Default"
+          ariaLabel="Size for new cloud lanes"
+        />
+        <p className="adecd-sizes-note">{CLOUD_AWAKE_TIME_LINE}</p>
       </div>
     </section>
   );

@@ -25,9 +25,10 @@ export type RemoteRuntimeFanout<T> = RemoteRuntimeFanoutEntry & {
   subscribe: (cb: (payload: T) => void) => () => void;
   /**
    * The domain payload of one runtime envelope, or null when the envelope is
-   * not this domain's. A match runs the cache invalidation, as `dispatch` does.
-   * A pinned listener (another machine's pump) decodes with this, so the
-   * domain keeps one shape in one place.
+   * not this domain's. A pinned listener (another copy's pump) decodes with
+   * this, so the domain keeps one shape in one place. It does not run the
+   * invalidation: the domain's caches hold the tab's copy, and another copy's
+   * event says nothing about them.
    */
   decode: (payload: Record<string, unknown>) => T | null;
 };
@@ -75,10 +76,7 @@ export function createRemoteRuntimeFanout<T>(args: {
       };
     },
     decode(payload) {
-      const event = extract(payload);
-      if (event == null) return null;
-      args.invalidate?.();
-      return event;
+      return extract(payload);
     },
     dispatch(payload) {
       const event = extract(payload);

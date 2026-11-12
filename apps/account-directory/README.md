@@ -1091,6 +1091,58 @@ the field out of the heartbeat answer and goes to Sentry as
 `account_project.heartbeat_cursor_failed`. A Clerk `user.deleted` deletes
 every row of the account.
 
+## GitHub App sign-in
+
+The account holds one ADE GitHub App sign-in (`src/githubApp`, tables in
+migration 0029, shapes in `src/githubApp/contract.ts`). This Worker keeps the
+refresh token sealed and renews the access token. Clients get the access
+token only. The refresh token and the client secret never leave the Worker.
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `POST /github/app/sign-in` | desktop, CLI, web, phone | Starts a web-flow sign-in (state + PKCE S256) and returns the GitHub authorize URL. 10 per account per 10 minutes. |
+| `GET /github/app/callback` | the browser, from GitHub | Spends the state (once, 10 minutes), exchanges the code, saves the grant. Desktop and CLI get a page; the phone gets `ade://github/connected?...`; the web gets its `returnTo`. |
+| `GET /github/app/sign-in/:id` | the client that started it | `pending`, `done`, `failed` or `expired`. Another account gets 404. |
+| `POST /github/app/token` | every signed-in client | The access token and `useForSec`. Renews it when due. 120 per account per hour. |
+| `GET /github/app/status` | every signed-in client | Connected or not, the state, and the GitHub login. No token. |
+| `DELETE /github/app/grant` | every signed-in client | Deletes the token at GitHub and the grant. |
+| `POST /github/app/adopt` | machines only | Moves a machine's device-flow token to the account when the account has none. |
+| `POST /github/app/retire` | machines only | Deletes a machine's old token at GitHub. Refuses the account's live token. |
+| `GET /github/app/installed` | the browser | The App's Setup URL page. Ignores `installation_id`. |
+
+Renewal with one writer:
+
+- A served token carries `useForSec`, counted to 20 minutes before GitHub's
+  expiry. A client stops 30 s before that and asks again, so all clients
+  share one stop time.
+- The Worker refreshes 15 s after that stop time. A request in those 45 s
+  waits on the Worker for at most 15 s, then renews.
+- One request takes the lease (one conditional D1 update, 45 s). The others
+  read the row for up to 3 s, then answer 503 `renewing` with `retry-after`.
+- `bad_refresh_token` ends the grant (409 `needs_reauth`). 429, 5xx, a
+  network failure and a 200 with no token back off 1 minute, doubling to
+  1 hour. Meanwhile the old token is served for a short time while it is
+  safe, else 503 `github_unavailable`.
+- A lease left past its time means the holder died. If GitHub had taken
+  that refresh, the next one gets `bad_refresh_token` and the reason is
+  `unpersisted_refresh`.
+- A client that gets a 401 sends the token's SHA-256. The Worker asks GitHub
+  about it at most once a minute per account and renews at once when GitHub
+  no longer knows it.
+
+The cron makes no query except at minute 17 of each hour (it deletes
+sign-ins and limit rows older than a day) and at 03:17 UTC (it renews up to
+50 grants whose refresh token ends within 30 days and whose access token no
+client can still use). A new sign-in deletes the previous token at GitHub
+(one token, never the whole authorization). A Clerk `user.deleted` deletes
+the token at GitHub where it can, then every row of the account.
+
+Secrets `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_TOKEN_KEY` (32 bytes,
+base64) turn the routes on. Without them every bearer route answers 503
+`github_app_not_configured` and nothing else changes. The vars
+`GITHUB_WEB_BASE_URL` and `GITHUB_API_BASE_URL` let a local run point at a
+fake GitHub.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`

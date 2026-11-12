@@ -23,7 +23,8 @@ export type FeatureAnalyticsName =
   | "attention"
   | "home"
   | "mcp_servers"
-  | "ade_mcp";
+  | "ade_mcp"
+  | "connections";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -68,7 +69,11 @@ export type FeatureAnalyticsAction =
   | "server_toggled"
   | "app_connected"
   | "token_created"
-  | "connection_removed";
+  | "connection_removed"
+  | "github_cli_shared"
+  | "github_cli_removed"
+  | "github_app_connected"
+  | "github_app_disconnected";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -285,6 +290,42 @@ export function captureMcpServerSignInAnalytics(args: {
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "cancelled" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "mcp_servers", action: "sign_in" });
+}
+
+/**
+ * The person shared this computer's `gh` sign-in with the account, or took it
+ * off, and the vault accepted the change. Settings reaches it through the IPC
+ * handler or the runtime action (pinned or bound), never both, so each of
+ * them records it once.
+ */
+export function captureGhAccountSharingAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  enabled: boolean;
+}): void {
+  captureFeatureUsedAnalytics({
+    analytics: args.analytics,
+    surface: args.surface,
+    feature: "connections",
+    action: args.enabled ? "github_cli_shared" : "github_cli_removed",
+    outcome: "completed",
+  });
+}
+
+/**
+ * How a connect of the account's ADE GitHub App sign-in ended, read in
+ * Settings once the server settles it: completed (connected), cancelled (the
+ * person declined on GitHub or on ADE's confirm page, or let the link run
+ * out), failed. Or the person disconnected it. Never the login, the account,
+ * or an error.
+ */
+export function captureGithubAppConnectionAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "github_app_connected" | "github_app_disconnected";
+  outcome: "completed" | "cancelled" | "failed";
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "connections" });
 }
 
 /** A private webhook URL was made (with or without its automation). */

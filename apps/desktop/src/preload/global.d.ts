@@ -1,5 +1,6 @@
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type {
   ProjectRemovalOutcome,
   ProjectRemovalReport,
@@ -8,6 +9,7 @@ import type {
 } from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
@@ -479,6 +481,8 @@ import type {
   CodexThreadGoal,
   AgentChatSteerArgs,
   AgentChatSteerResult,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatMoveSteerArgs,
@@ -673,6 +677,16 @@ import type {
   GitHubIssueCreateResult,
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
+  GitHubAccountAppAccountStatus,
+  GitHubAccountAppSignInReadResult,
+  GitHubAccountAppSignInStartResult,
+  GitHubAccountAppSignOutResult,
+  GithubDirectClientState,
+  GithubDirectData,
+  GithubDirectOp,
+  GithubDirectRequest,
+  GithubDirectRequestOptions,
+  GithubDirectResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -1145,6 +1159,7 @@ import type {
   SearchQueryArgs,
   SearchQueryResult,
   SearchRebuildResult,
+  AdeUsagePriceOverrides,
 } from "../shared/types";
 import type {
   ApiCredentialGetArgs,
@@ -2319,7 +2334,7 @@ declare global {
           args?: { provider?: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ catalog: import("../main/services/router/modelCatalog").UserModelCatalog } | null>;
-        getModelPriceOverrides?: (pin?: OpenProjectBinding | null) => Promise<import("../shared/types").AdeUsagePriceOverrides | null>;
+        getModelPriceOverrides?: (pin?: OpenProjectBinding | null) => Promise<AdeUsagePriceOverrides | null>;
         /**
          * This machine's GitHub contribution calendar (the profile's year of
          * green squares), read with its `gh` login; null without one.
@@ -2780,6 +2795,11 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        /** Text for a running agent CLI, typed only at a free prompt (`AgentCliTypeArgs`). */
+        typeIntoCli: (
+          args: AgentCliTypeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentCliTypeResult>;
         steer: (
           args: AgentChatSteerArgs,
           pin?: OpenProjectBinding | null,
@@ -3042,6 +3062,11 @@ declare global {
           args: AgentChatSubagentListArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSubagentSnapshot[]>;
+        /** The open cards of a chat, or of a tracked agent CLI (ADE's cards and the CLI's own prompt). */
+        listPendingInputs: (
+          args: { sessionId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ requests: import("../shared/types").PendingInputRequest[] }>;
         killDroidWorker: (
           args: AgentChatKillDroidWorkerArgs,
           pin?: OpenProjectBinding | null,
@@ -4695,6 +4720,18 @@ declare global {
         ) => Promise<ConflictProposal>;
         onEvent: (cb: (ev: ConflictEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
+      /**
+       * Direct GitHub reads with the ADE account's GitHub App sign-in
+       * (`shared/github/directClient.ts`). Account-scoped: no machine, so no
+       * pin. Optional: an older ADE does not have it.
+       */
+      githubDirect?: {
+        request: <O extends GithubDirectOp>(
+          request: Extract<GithubDirectRequest, { op: O }>,
+          options?: GithubDirectRequestOptions,
+        ) => Promise<GithubDirectResult<GithubDirectData[O]>>;
+        getState: () => Promise<GithubDirectClientState>;
+      };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
@@ -4702,12 +4739,26 @@ declare global {
         }, pin?: OpenProjectBinding | null) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
+        /**
+         * Optional: an older ADE does not have it. `enabled: false` takes the
+         * gh login off the ADE account; `enabled: true` shares this machine's.
+         */
+        setGhAccountSharing?: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
         startAppUserDeviceAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthStartResult>;
         pollAppUserDeviceAuth: (args: {
           sessionId: string;
         }, pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthPollResult>;
         clearAppUserAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
+        /**
+         * The ADE account's GitHub App sign-in. Account-scoped (no pin): it
+         * lives in the account directory, not on a machine. Optional: an older
+         * ADE, and the web client before it has them, do not.
+         */
+        getAccountAppStatus?: () => Promise<GitHubAccountAppAccountStatus>;
+        startAccountAppSignIn?: () => Promise<GitHubAccountAppSignInStartResult>;
+        readAccountAppSignIn?: (args: { signInId: string }) => Promise<GitHubAccountAppSignInReadResult>;
+        signOutAccountApp?: () => Promise<GitHubAccountAppSignOutResult>;
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: (pin?: OpenProjectBinding | null) => Promise<GitHubRequestBudget>;
@@ -4788,6 +4839,17 @@ declare global {
         listLabels: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<string[]>;
         getCreateMeta: (args: { projectKey: string }, pin?: OpenProjectBinding | null) => Promise<JiraCreateMeta>;
         createIssue: (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null) => Promise<JiraCreateIssueResult>;
+      };
+      /**
+       * Contract C2 (shared/machineAddress.ts): an address for one machine of
+       * the account, by machine key. Pairs through the account when this
+       * computer has no saved connection; `connect: false` leaves a sleeping
+       * cloud computer asleep. Never reads or changes the tab's machine.
+       */
+      machines: {
+        connect: (machineKey: string, options?: MachineConnectOptions) => Promise<MachineConnectResult>;
+        /** From saved connections only; no network. */
+        addressFor: (machineKey: string) => Promise<MachineAddress | null>;
       };
       account: {
         status: () => Promise<AdeAccountStatus>;
@@ -4877,6 +4939,13 @@ declare global {
         machineAction?: (args: CloudMachineActionArgs) => Promise<CloudMachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
         /**
+         * C4: can a new cloud computer clone this repository? The account's
+         * GitHub sign-in, else the repository is public. Account-level, so
+         * no pin. Null from an untrusted sender. The lane launch runs the
+         * same check at its start; no renderer surface calls this yet.
+         */
+        gitPreflight?: (args: { originUrl: string }) => Promise<CloudGitPreflight | null>;
+        /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this
          * computer's brain, so no pin: every computer answers the same.
@@ -4935,6 +5004,12 @@ declare global {
         ) => Promise<import("../shared/cloudLaneLife").CloudLaneLifeResults[M]>;
         /** A tier change's steps as they move. */
         onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
+        /** Contract C3 (shared/laneComputer.ts): the computer a lane is on now, by lane id. Account level. */
+        laneComputer?: (laneId: string) => Promise<import("../shared/laneComputer").LaneComputer | null>;
+        /** The lane's computer and an address for it; pairs, and connects (which wakes it) unless `connect: false`. */
+        followLane?: (laneId: string, options?: { connect?: boolean }) => Promise<import("../shared/laneComputer").LaneFollowResult>;
+        /** A lane's computer changed: same lane id and chat ids, a new machine key. */
+        onLaneMoved?: (cb: (move: import("../shared/laneComputer").LaneMovedEvent) => void) => () => void;
         /**
          * Clears a lane computer's caches (`cloud.clear_caches`) on THAT
          * computer: `pin` is the lane's machine binding, `instanceId` its

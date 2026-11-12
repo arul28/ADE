@@ -159,6 +159,8 @@ describe("isAllowedAdeAction", () => {
       ["android_emulator", "setSdkPath"],
       // An invite code sets the account's referrer once, forever.
       ["cloud", "invite_redeem"],
+      // Sharing the gh sign-in hands it to every computer of the account.
+      ["github", "setGhAccountSharing"],
     ] as const) {
       expect(isAllowedAdeAction(domain, action), action).toBe(true);
       expect(isUserOnlyAdeAction(domain, action), action).toBe(true);
