@@ -441,6 +441,7 @@ import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createAccountProjectSync, type AccountProjectSync } from "./services/projects/accountProjectSync";
 import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
+import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeaderCleanup";
 import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { isDevTestMachineHome, isDevTestMachineProcess } from "./services/sync/devTestMachine";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
@@ -30510,6 +30511,9 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    // Older clones saved the GitHub sign-in header in .git/config: take it out
+    // once per project, off the open path (one file read when there is none).
+    onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
     // A project removed during a repair's teardown: that teardown already
     // handed its emulators off, and nothing will re-adopt them.
     onUnregisterAfterHandOff: async (projectRoot) => {

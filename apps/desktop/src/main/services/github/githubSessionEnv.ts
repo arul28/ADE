@@ -91,6 +91,12 @@ export function createGithubSessionEnv(deps: {
   peekRepoOwner?: () => string | null;
   hasOwnGhLogin?: (env: NodeJS.ProcessEnv) => boolean;
   now?: () => number;
+  /**
+   * False for a service with no account App client (a repository lookup with
+   * no account). It must not replace the process-wide shell answer: running
+   * shells would then get no token while the account is still connected.
+   */
+  answersShells?: boolean;
 }) {
   const now = deps.now ?? (() => Date.now());
   const hasOwnGhLogin = deps.hasOwnGhLogin ?? ghHasOwnGithubLogin;
@@ -128,7 +134,7 @@ export function createGithubSessionEnv(deps: {
       return null;
     }
   };
-  setGithubShellTokenAnswer(tokenForOwner);
+  if (deps.answersShells !== false) setGithubShellTokenAnswer(tokenForOwner);
 
   const needsToken = (env: NodeJS.ProcessEnv): boolean => !envHasOwnGithubToken(env) && !hasOwnGhLogin(env);
 

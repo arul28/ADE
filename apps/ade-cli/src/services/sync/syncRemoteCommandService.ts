@@ -7613,6 +7613,15 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     );
     return redactProjectConfigSnapshotForRemote(projectConfigService.save(candidate));
   });
+  // The answer to a setting that moved to the account with a different value
+  // on this computer (the hosted web client's Settings).
+  register("projectConfig.resolveAccountSettingNotice", { viewerAllowed: true }, async (payload) => {
+    const key = requireString(payload.key, "projectConfig.resolveAccountSettingNotice requires key.");
+    const choice = payload.choice === "use_local" ? "use_local" : "keep";
+    return redactProjectConfigSnapshotForRemote(
+      requireService(args.projectConfigService, "Project config service not available.").resolveAccountSettingNotice({ key, choice }),
+    );
+  });
   register("ai.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload, context) => {
     try {
       return await runAiStatusWithTimeout(

@@ -55,6 +55,59 @@ and re-applies its change up to three times. A save without `baseLocalHash`
 logged by the config reload watcher (`project.config_reload.snapshot_failed`)
 and picked up again on the next write.
 
+## Settings that follow the ADE account
+
+Some `local.yaml` keys follow the ADE account, per repository, so every
+computer signed in to the account gets them
+(`main/services/config/projectConfigAccountLayer.ts`, key table in
+`projectConfigAccountKeys.ts`). The rows live in the account store under
+`repo:<normalized origin>`, the same scope as automation rules.
+
+| Row | `local.yaml` key |
+|---|---|
+| `prs.pollIntervalSeconds`, `prs.transcriptGists`, `prs.autoMapByBranch` | `github.prPollingIntervalSeconds`, `github.prTranscriptGists.enabled`, `github.autoMapByBranch` |
+| `jira.projectKeys` (joined) | `issueTrackers.jira.projectKeys` |
+| `linear.batchLaunchPrompt` | `ui.linearBatchLaunchDefaultPrompt` |
+| `ai.<group>`, `ai.chat.<field>` | `ai.*`, except `ai.chat.scheduledWorkPaused`, `ai.chat.continueAfterRestart`, `ai.chat.jevZenCreditEnabled` (it spends this computer's own Zen sign-in), and the `writablePaths` lists, which stay on the computer |
+| `lanes.envInit` | `laneEnvInit` |
+| `tests.suite.<id>` | one row per entry of `testSuites` |
+
+- **Read.** The account value wins over the file. With no sign-in, no account
+  store, or no Git remote, ADE reads the file alone.
+- **Move.** When the account syncs, each key the account does not have yet is
+  written to it (write-if-absent). A joined list takes the union. A different
+  value keeps the account's and records a notice; the person answers with
+  "Use this computer's value" or "Keep" where the setting is edited. A joined
+  list the account refuses gets a notice too. Until the first move for the
+  signed-in account, the file alone is the setting, so nothing replaces this
+  computer's values before the move has seen them. After it, a value the file
+  got from the account is never moved back: the account's newer value wins.
+  That holds after a sign-in to another account too: the first account's
+  values in the file are not copied to the new one. When two computers move
+  the same setting at once, the account keeps the last write; for an hour
+  after its write, the other computer files a notice with its value when that
+  write reaches it (nothing is joined back, so a removed item stays removed).
+  A value edited while signed out is this computer's own again and moves.
+- **Save.** A changed value goes to the account. A cleared value removes the
+  row, and the other computers remove their copy only when it came from the
+  account. This computer's own parts (the `writablePaths` lists) stay. When
+  the account store refuses the write, the whole save fails with an error, so
+  the person can try again; nothing is written to the file alone, and the
+  rows the save already wrote get their earlier account values back. A
+  notice answer the store refuses fails too, and the notice stays. Notices
+  belong to one repository: after `origin` changes, the old ones are gone. For one release ADE also writes the account values back into
+  `local.yaml` (the mirror), so an older ADE on the same computer still reads
+  them.
+- **Held on this computer.** A value with a credential-shaped key (for
+  example `API_TOKEN` in a suite's `env`), a folder path under `cwd`,
+  `source`, `dest` or `composePath`, or over 16,000 characters stays in the
+  file. Settings names the key and the reason.
+- **Checked.** A value from the account must pass the config's own
+  validation alone, or this computer ignores it.
+- **Stale saves.** `trust.localHash` includes a fingerprint of the account
+  values, so a save from a window that read older account values is refused
+  with `project_config_changed_on_disk` and re-applied.
+
 ## Top-level type
 
 ```ts
@@ -446,7 +499,8 @@ every Jev call answer `null` with no network call. The group switches
 (`smartChatStatusEnabled`, `smartSettleNudgeEnabled`, `smartPaletteEnabled`,
 `smartLaneEmojiEnabled`, each default true) turn off one group of features.
 `jevZenCreditEnabled?: boolean` (default false) spends the user's own OpenCode
-Zen balance on Jev once the free allowance is out, before the bonus. See
+Zen balance on Jev once the free allowance is out, before the bonus. It stays
+on each computer and never follows the ADE account. See
 [Chat › Jev decisions](../chat/README.md#jev-decisions).
 
 `AiChatConfig.modelHintMode?: "model_and_effort" | "effort_only" | "off"`
@@ -512,8 +566,10 @@ type LinearSyncConfig = {
 };
 ```
 
-Resolved through `projectConfigService.linearSync` and surfaced in
-`LinearSection.tsx`.
+The config service still parses, merges and validates `linearSync`, but no
+runtime code reads it. Linear work starts from automation rules (one home
+computer per rule) and from the Linear agent's relay claim (the first claim
+wins). So `linearSync` stays on the computer and does not follow the account.
 
 ## Context refresh events
 

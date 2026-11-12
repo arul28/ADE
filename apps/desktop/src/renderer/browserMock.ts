@@ -10334,6 +10334,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT;
       },
       diffAgainstDisk: resolved({ changed: false } as any),
+      resolveAccountSettingNotice: resolved(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
     },
     adeCli: {
       getStatus: resolved({

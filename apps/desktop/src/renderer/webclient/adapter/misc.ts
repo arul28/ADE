@@ -986,6 +986,17 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       unavailableOnHost("That machine is running an older ADE that can't save these settings."),
       false,
     ),
+    // A fallback snapshot would hide the notice without answering it, so a
+    // host without the command fails loudly.
+    resolveAccountSettingNotice: async (args: { key: string; choice: "use_local" | "keep" }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("projectConfig.resolveAccountSettingNotice", pin, infra);
+      return await call(
+        "projectConfig.resolveAccountSettingNotice",
+        { key: args.key, choice: args.choice },
+        unavailableOnHost("That machine is running an older ADE that can't answer this notice."),
+        false,
+      );
+    },
     diffAgainstDisk: async () => ({
       sharedChanged: false,
       localChanged: false,

@@ -334,7 +334,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "diffAgainstDisk", "get",
     ],
     write: [
-      "save", "setPrTranscriptGists", "validate",
+      "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate",
     ],
   },
   project_secret: {

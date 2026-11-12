@@ -372,6 +372,7 @@ export function logGithubApp(args: {
     | "github_app.refreshed"
     | "github_app.refresh_failed"
     | "github_app.refresh_unpersisted"
+    | "github_app.refresh_unpersisted_dropped"
     | "github_app.refresh_replaced"
     | "github_app.needs_reauth"
     | "github_app.rejected_checked"
@@ -389,6 +390,8 @@ export function logGithubApp(args: {
     if (value === undefined) continue;
     line[key] = typeof value === "string" ? value.slice(0, 64) : value;
   }
-  const failed = event === "github_app.refresh_failed" || event === "github_app.refresh_unpersisted";
+  const failed = event === "github_app.refresh_failed"
+    || event === "github_app.refresh_unpersisted"
+    || event === "github_app.refresh_unpersisted_dropped";
   (failed ? console.error : console.log)(JSON.stringify(line));
 }
