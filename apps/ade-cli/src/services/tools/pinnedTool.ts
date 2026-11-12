@@ -39,7 +39,10 @@ export type PinnedToolState =
   | "failed"
   /** This machine has no pinned build (platform/arch), or the tool is not pinned at all. */
   | "unavailable"
-  /** Pinned and supported but not on disk, and nothing is downloading. */
+  /**
+   * Pinned and supported but not on disk, and nothing is downloading: "not
+   * installed yet". The first run downloads it; a status read never does.
+   */
   | "missing";
 
 export type PinnedToolStatus = {

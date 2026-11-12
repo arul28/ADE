@@ -71,7 +71,8 @@ function homeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
  * channels either pin the same version and reuse the directory, or pin
  * different versions and get different directories.
  *
- * `ADE_TOOLS_ROOT` relocates it wholesale (large disks, tests, CI).
+ * `ADE_TOOLS_ROOT` relocates it wholesale (large disks, tests, CI), and a
+ * machine image can move it off the person's disk (`resolveToolsRootLayout`).
  * On Windows this lands under `%LOCALAPPDATA%`, matching where the rest of ADE
  * keeps machine-local caches (`services/cli/adeCliService.ts`), rather than the
  * roaming profile — 650 MB must never roam.
@@ -80,13 +81,111 @@ export function resolveMachineToolsRoot(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const explicit = env.ADE_TOOLS_ROOT?.trim();
-  if (explicit) return path.resolve(explicit);
+  return resolveToolsRootLayout(env, platform).primary;
+}
+
+/** The per-user tools cache: `~/.ade/tools`, or `%LOCALAPPDATA%\ADE\tools` on Windows. */
+function homeToolsRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   if (platform === "win32") {
     const localAppData = env.LOCALAPPDATA?.trim() || path.win32.join(homeDir(env, platform), "AppData", "Local");
     return path.win32.join(localAppData, "ADE", "tools");
   }
   return path.join(homeDir(env, platform), ".ade", "tools");
+}
+
+/**
+ * Where the tools cache lives on this machine. Every field comes from the
+ * machine's own environment, so a machine image says where its rebuildable
+ * caches go; ADE has no code path per provider or OS for it.
+ *
+ *   - `ADE_TOOLS_ROOT` relocates the whole cache (tests, CI, large disks).
+ *   - `ADE_SYSTEM_CACHE_ROOT` names a folder for caches ADE can rebuild that
+ *     is not the person's own disk (an ADE Cloud computer's system layer).
+ *     Tools then install under `<root>/tools`, within
+ *     `ADE_SYSTEM_CACHE_BUDGET_BYTES` (default about 7 GB) for everything in
+ *     that folder, least recently used out first, and a tool that still does
+ *     not fit goes to the per-user cache instead.
+ *   - `ADE_TOOLS_BAKED_ROOTS` lists read-only caches in the same layout that a
+ *     machine image ships (separated like PATH). A pinned version found there
+ *     is used before any download.
+ */
+export type ToolsRootLayout = {
+  /** Installs, locks, the ledgers and overrides. */
+  primary: string;
+  /** Where an install goes when the primary cannot take it. Null: nowhere else. */
+  fallback: string | null;
+  /** Read-only roots holding finished installs (a machine image's). */
+  baked: string[];
+  /** The folder the primary sits in and its byte budget, when it has one. */
+  budget: { root: string; bytes: number } | null;
+};
+
+/** "About 7 GB" of the 10 GB system layer, leaving room for the system itself. */
+export const DEFAULT_SYSTEM_CACHE_BUDGET_BYTES = 7 * 1000 ** 3;
+export const SYSTEM_CACHE_TOOLS_DIR = "tools";
+
+const writableDirCache = new Map<string, boolean>();
+
+/** True when `dir` exists (or can be made) and this process may write it. Cached per process. */
+function writableDir(dir: string): boolean {
+  const cached = writableDirCache.get(dir);
+  if (cached !== undefined) return cached;
+  let writable = false;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    writable = true;
+  } catch {
+    writable = false;
+  }
+  writableDirCache.set(dir, writable);
+  return writable;
+}
+
+function parseBudgetBytes(raw: string | undefined): number {
+  const value = Number(raw?.trim());
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_SYSTEM_CACHE_BUDGET_BYTES;
+}
+
+/**
+ * Where the record of tool use lives: the per-user root, which survives what a
+ * system cache does not (an image update resets it), so a machine still knows
+ * which agents it uses after one.
+ */
+export function toolUsageRoot(layout: ToolsRootLayout): string {
+  return layout.fallback ?? layout.primary;
+}
+
+export function resolveToolsRootLayout(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ToolsRootLayout {
+  const explicit = env.ADE_TOOLS_ROOT?.trim();
+  const home = homeToolsRoot(env, platform);
+  let primary = explicit ? path.resolve(explicit) : home;
+  let fallback: string | null = null;
+  let budget: ToolsRootLayout["budget"] = null;
+  const systemRoot = env.ADE_SYSTEM_CACHE_ROOT?.trim();
+  if (!explicit && systemRoot && path.isAbsolute(systemRoot)) {
+    const root = path.resolve(systemRoot);
+    const tools = path.join(root, SYSTEM_CACHE_TOOLS_DIR);
+    // A machine whose image names the folder but never made it (or made it
+    // read-only) keeps the per-user cache rather than failing every install.
+    if (writableDir(tools)) {
+      primary = tools;
+      fallback = home;
+      budget = { root, bytes: parseBudgetBytes(env.ADE_SYSTEM_CACHE_BUDGET_BYTES) };
+    }
+  }
+  const delimiter = platform === "win32" ? ";" : ":";
+  const baked = [...new Set(
+    (env.ADE_TOOLS_BAKED_ROOTS ?? "")
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry && path.isAbsolute(entry))
+      .map((entry) => path.resolve(entry)),
+  )].filter((entry) => entry !== primary && entry !== fallback);
+  return { primary, fallback, baked, budget };
 }
 
 /** npm package names, including one optional scope segment. */
