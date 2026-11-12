@@ -516,7 +516,7 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "shell"] },
+        provider: { type: "string", enum: ["claude", "codex", "muse", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "devin", "antigravity", "shell"] },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES], default: "default" },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
         musePermissionMode: { type: "string", enum: [...AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES] },
@@ -2154,7 +2154,7 @@ function parseCliSessionProvider(value: unknown): LaunchProfile {
   if (!isLaunchProfile(provider)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or shell",
+      "provider must be one of claude, codex, muse, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, devin, antigravity, or shell",
     );
   }
   return provider;

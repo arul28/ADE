@@ -183,13 +183,14 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
   {
     agent: "antigravity",
     displayName: "Antigravity",
-    binaryNames: ["agy_acp_server"],
-    // No terminal login: ADE runs the agent's own ACP `authenticate` from
-    // Settings > Providers > Antigravity on the machine that runs the chat.
+    // `agy` only: `antigravity` is also the Antigravity editor's launcher.
+    binaryNames: ["agy"],
+    // Sign-in is Settings > Providers > Antigravity on the machine that runs
+    // the chat (`agy acp --login`, a code pasted back), not a command to run.
     authCommand: "",
     notAuthErrorPatterns: [
-      // agy_acp_server 1.4.1: unauthenticated `session/new` is -32000
-      // "Authentication required", data.message "No authentication method selected. …".
+      // agy 1.5: "You are not logged into Antigravity." 1.4: "No authentication method selected. …".
+      /\bnot logged into antigravity\b/i,
       /\bno authentication method selected\b/i,
       /\bantigravity\b.*\b(not logged in|not authenticated|unauthorized|authentication (?:failed|required)|login required|sign\s*in)\b/i,
       /\bgemini[_ ]api[_ ]key\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,

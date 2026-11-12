@@ -1080,6 +1080,7 @@ import {
   replaceDynamicMuseModelDescriptors,
   type MuseModelCatalogRow,
   mergeDynamicAcpModelDescriptors,
+  resolveAcpModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
@@ -1474,6 +1475,8 @@ import {
   type AcpSessionConfigOption,
   type AcpSlashCommand,
   type AcpRuntimeState,
+  type AcpTurnFailure,
+  type AcpBackgroundEvent,
 } from "./acpHost";
 import {
   codexConfigHome,
@@ -4643,13 +4646,16 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
       return runtime.runningBackgroundItems.size
         ? summarizeBackgroundWork([...runtime.runningBackgroundItems.values()])
         : NO_BACKGROUND_WORK;
+    case "acp": {
+      // Antigravity's subagents and the tools agy runs after one reports
+      // outlive the turn (its dialect's `backgroundWork`). Other ACP dialects
+      // have no such work and report none.
+      const running = runtime.backgroundWork?.runningCount() ?? 0;
+      return running ? summarizeBackgroundWork(new Array(running).fill(null)) : NO_BACKGROUND_WORK;
+    }
     case "droid":
     case "pi":
     case "copilot":
-    // ACP: a session is bounded by its prompt. No dialect exposes a background
-    // task, a scheduled run, or anything else that outlives a turn, and none is
-    // in `SUBAGENT_CAPABILITIES`. Zero here is a verified fact, not a default.
-    case "acp":
       return NO_BACKGROUND_WORK;
     default: {
       // A new harness must state whether it owns work that outlives a turn.
@@ -4900,6 +4906,9 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.pendingSteers.length > 0
         || runtime.runningBackgroundItems.size > 0
       );
+    case "acp":
+      // Background subagents live in the agent's process (Antigravity).
+      return runtime.backgroundWork?.hasOpenWork() === true;
     default:
       return false;
   }
@@ -7708,7 +7717,7 @@ function providerFromToolType(toolType: TerminalToolType | null | undefined): Ag
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
   if (toolType === "devin" || toolType === "devin-chat") return "devin";
-  if (toolType === "antigravity-chat") return "antigravity";
+  if (toolType === "antigravity" || toolType === "antigravity-chat") return "antigravity";
   return "codex";
 }
 
@@ -23636,6 +23645,10 @@ export function createAgentChatService(args: {
       const parsed = typeof resetAt === "string" ? Date.parse(resetAt) : Number.NaN;
       if (Number.isFinite(parsed)) return parsed;
     }
+    if (runtime?.kind === "acp" && runtime.usageLimitResetAt) {
+      const parsed = Date.parse(runtime.usageLimitResetAt);
+      if (Number.isFinite(parsed)) return parsed;
+    }
     // Last resort: the reset instant recorded with the live limit. Claude's
     // quota snapshot is in-memory only, so after a restart — or on the Turn on
     // re-arm, which has no fresh provider frame behind it — this is the only
@@ -29886,6 +29899,8 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "acp") {
       const rt = managed.runtime;
       rt.interrupted = true;
+      rt.backgroundWork?.dispose();
+      rt.backgroundWork = null;
       cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingInputsFrom(managed, "acp", "ade");
       // Persist before detaching: the ACP session id is this chat's only handle
@@ -36874,6 +36889,8 @@ export function createAgentChatService(args: {
     mode: AgentChatAcpPermissionMode,
   ): boolean => {
     if (mode !== "yolo") return false;
+    // Antigravity's CLI has no full-access mode: it opens in `default` and asks.
+    if (dialect.hostAnswersFullAccess) return true;
     // Qwen and Kimi take the whole posture through the `mode` config option,
     // so the agent stops asking and there is nothing for ADE
     // to auto-answer. Grok sets only model and effort through
@@ -36999,6 +37016,18 @@ export function createAgentChatService(args: {
           ),
         }),
       );
+    }
+
+    // A chat started without a model (`ade new chat` with no `--model`) runs
+    // on the agent's own default. The chat names that model, so its picker
+    // shows what answers instead of "Loading model…" for good.
+    if (!managed.session.modelId && !managed.session.model?.trim() && next.currentModelId) {
+      const descriptor = resolveAcpModelDescriptor(runtime.provider, next.currentModelId);
+      if (descriptor) {
+        managed.session.model = descriptor.id;
+        managed.session.modelId = descriptor.id;
+        persistChatState(managed);
+      }
     }
   };
 
@@ -37238,6 +37267,17 @@ export function createAgentChatService(args: {
       supervisionPreflight,
       supervisionAlreadyNotified: managed.acpSupervisionNoticeShown === true,
       mcpServers: acpMcpServersFor(managed),
+      // An agent with a system-prompt channel hears ADE's guidance there, on
+      // every session it opens; the turn below then finds it delivered.
+      ...(dialect.systemPromptMeta && !devinCloud && !isPersonalSession(managed.session)
+        ? {
+            systemPromptAppend: buildAdeGuidanceForLane(
+              managed.laneWorktreePath,
+              managed.session,
+              spawnSelfReportOpts(managed.session),
+            ),
+          }
+        : {}),
       logger,
       runtimeBudget,
       existingRuntime: existing?.kind === "acp" ? existing : null,
@@ -37261,7 +37301,11 @@ export function createAgentChatService(args: {
       callbacks: {
         onEvents: (runtime, events) => {
           if (!runtime || managed.runtime !== runtime) return;
-          for (const event of events) emitChatEvent(managed, event);
+          for (const event of events) {
+            emitChatEvent(managed, event);
+            const question = acpAsyncQuestionRequest(managed, runtime, event);
+            if (question) raiseAsyncQuestion(managed, question);
+          }
         },
         onPermissionRequested: (runtime, pending) => {
           if (!runtime) {
@@ -37302,6 +37346,10 @@ export function createAgentChatService(args: {
           if (!isCurrentRuntime || !runtime) return;
           runtime.processFailed = true;
           runtime.interrupted = true;
+          // The agent's subagents and background tools died with it: settle
+          // their cards, and stop counting them as work that keeps the chat open.
+          runtime.backgroundWork?.dispose();
+          runtime.backgroundWork = null;
           managed.runtimeInvalidated = true;
           managed.acpReasoningEffortInvalidated = false;
           cancelPendingInputsFrom(managed, "acp", "ade");
@@ -37319,6 +37367,13 @@ export function createAgentChatService(args: {
           managed.acpReasoningEffortInvalidated = false;
           managed.seededAcpSessionId = runtime.session.sessionId;
           managed.session.acpPermissionMode = permissionMode;
+          if (runtime.session.systemPromptAppended) {
+            markLaneGuidanceDelivered(managed, runtime.session.sessionId, runtime.session.systemPromptAppended);
+          }
+          runtime.backgroundWork = runtime.dialect.backgroundWork?.({
+            sessionId: runtime.session.sessionId,
+            emit: (events) => applyAcpBackgroundEvents(managed, runtime, events),
+          }) ?? null;
           if (devinCloud) {
             // The ACP id and the web id name one session; the panel,
             // the header link and `devin ssh` all key on the bare form.
@@ -37435,6 +37490,151 @@ export function createAgentChatService(args: {
       ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
       turnId,
       errorInfo: { category: "unknown", provider: providerLabel, presentation: presented },
+    });
+  };
+
+  /** The turn whose end last reported this runtime's background work. */
+  const acpBackgroundTurnIds = new WeakMap<AcpRuntime, string>();
+  /** The turn each background subagent was launched in, so its card stays there. */
+  const acpBackgroundTaskTurns = new Map<string, string>();
+
+  /**
+   * Publish what an ACP dialect's background work saw (Antigravity's
+   * subagents, and what the agent did after one reported back). Activity
+   * outside any turn becomes a short turn of its own; activity read as the
+   * next prompt starts leads that turn.
+   */
+  const applyAcpBackgroundEvents = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    events: AcpBackgroundEvent[],
+  ): void => {
+    let changed = false;
+    for (const event of events) {
+      // A closed chat still records how its subagents ended (teardown
+      // settles them), so a saved transcript shows no card still running.
+      if (managed.closed && event.kind !== "subagent_result") continue;
+      if (event.kind === "agent_activity") {
+        if (managed.runtime !== runtime) continue;
+        // The running turn first: the saved id can still name the turn before it.
+        const activeTurnId = runtime.busy ? runtime.activeTurnId ?? acpBackgroundTurnIds.get(runtime) : null;
+        if (!activeTurnId && runtime.busy) continue;
+        const turnId = activeTurnId ?? randomUUID();
+        const batch = `${turnId}:bg-${randomUUID().slice(0, 8)}`;
+        const providerLabel = providerDisplayLabel(managed.session.provider, String(managed.session.provider));
+        if (!activeTurnId) emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+        event.items.forEach((item, index) => {
+          const itemId = `${batch}:${index}`;
+          switch (item.kind) {
+            case "thinking":
+              emitChatEvent(managed, { type: "reasoning", text: item.text, turnId, itemId });
+              return;
+            case "text":
+              emitChatEvent(managed, { type: "text", text: item.text, turnId, itemId, messageId: itemId });
+              return;
+            case "tool": {
+              const toolItemId = item.toolCallId || itemId;
+              emitChatEvent(managed, { type: "tool_call", tool: item.name, args: item.input, itemId: toolItemId, turnId });
+              emitChatEvent(managed, {
+                type: "tool_result",
+                tool: item.name,
+                result: item.output,
+                itemId: toolItemId,
+                status: item.status,
+                turnId,
+              });
+              return;
+            }
+            case "waiting":
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                severity: "info",
+                message: `${providerLabel} is waiting to run "${item.title}". It asks for your approval when you send your next message.`,
+                turnId,
+              });
+              return;
+          }
+        });
+        if (!activeTurnId) {
+          emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+          emitChatEvent(managed, { type: "done", turnId, status: "completed" });
+        }
+        changed = true;
+        continue;
+      }
+      const launchTurn = event.kind === "subagent_started"
+        ? acpBackgroundTurnIds.get(runtime)
+        : acpBackgroundTaskTurns.get(event.taskId);
+      if (event.kind === "subagent_started" && launchTurn) acpBackgroundTaskTurns.set(event.taskId, launchTurn);
+      const turn = launchTurn ? { turnId: launchTurn } : {};
+      if (event.kind === "subagent_started") {
+        emitChatEvent(managed, {
+          type: "subagent_started",
+          taskId: event.taskId,
+          ...(event.agentType ? { agentType: event.agentType } : {}),
+          label: event.label,
+          parentToolUseId: event.parentToolUseId,
+          description: event.description,
+          background: true,
+          taskType: "subagent",
+          ...turn,
+        });
+      } else if (event.kind === "subagent_progress") {
+        emitChatEvent(managed, {
+          type: "subagent_progress",
+          taskId: event.taskId,
+          summary: event.summary,
+          ...(event.lastToolName ? { lastToolName: event.lastToolName } : {}),
+          taskType: "subagent",
+          ...turn,
+        });
+      } else {
+        acpBackgroundTaskTurns.delete(event.taskId);
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: event.taskId,
+          status: event.status,
+          summary: event.summary,
+          taskType: "subagent",
+          ...turn,
+        });
+      }
+      changed = true;
+    }
+    if (changed) persistChatState(managed);
+  };
+
+  /**
+   * The card for a turn the agent called finished that failed upstream. A
+   * usage limit records its reset on the runtime first, so the auto-resume
+   * the error arms finds it (`usageLimitResetAtMs`).
+   */
+  const emitAcpUpstreamFailure = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    turnId: string,
+    failure: AcpTurnFailure,
+  ): void => {
+    const providerLabel = providerDisplayLabel(managed.session.provider, String(managed.session.provider));
+    const usageLimit = failure.kind === "usage_limit";
+    runtime.usageLimitResetAt = usageLimit ? failure.resetAt : null;
+    const presented = presentChatFailure({
+      kind: usageLimit ? "rate_limit" : "unknown",
+      message: failure.message,
+      errorCode: failure.code,
+      provider: providerLabel,
+    });
+    emitChatEvent(managed, {
+      type: "error",
+      message: presented.body,
+      ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
+      turnId,
+      errorInfo: {
+        category: usageLimit ? "rate_limit" : "unknown",
+        provider: providerLabel,
+        presentation: presented,
+      },
     });
   };
 
@@ -37637,6 +37837,8 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
 
     let acpLaneGuidance: string | null = null;
+    /** Whether the background watcher was told this turn began; only then may it hear the end. */
+    let backgroundTurnStarted = false;
     try {
       const slashRoute = await resolveAcpSlashRoute(managed, runtime, args);
       let prompt = slashRoute.body;
@@ -37675,7 +37877,25 @@ export function createAgentChatService(args: {
         agentSupportsImages: runtime.session.connection.initializeResult?.agentCapabilities?.promptCapabilities?.image === true,
         imagePrompt,
         readAttachmentBytes: readResolvedAttachmentBytes,
+        agentReadsBinaryFiles: runtime.dialect.readsBinaryAttachments === true,
       });
+      acpBackgroundTurnIds.set(runtime, turnId);
+      runtime.backgroundWork?.turnStarting();
+      backgroundTurnStarted = true;
+      // The agent reads this message as the answer to any question it asked
+      // (`dialect.asyncQuestions`), so those cards are answered now. A card
+      // sending its own answer is `responding` and settles itself.
+      for (const [itemId, banked] of [...managed.asyncQuestions]) {
+        if (!itemId.startsWith("acp-question:") || banked.responding) continue;
+        managed.asyncQuestions.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: "accept",
+          turnId: banked.request.turnId ?? null,
+          responseText: args.userText ?? args.displayText ?? args.promptText,
+          questions: banked.request.questions,
+        });
+      }
       const outcome = await runtime.session.prompt({
         turnId,
         blocks,
@@ -37690,6 +37910,8 @@ export function createAgentChatService(args: {
       // notifications, provider-local ledgers). A provider that reported
       // nothing yields no events, so no usage row is fabricated.
       for (const event of outcome.events) emitChatEvent(managed, event);
+      // Subagents the turn launched, inside the turn they belong to.
+      runtime.backgroundWork?.turnEnded();
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       if (acpLaneGuidance) markLaneGuidanceDelivered(managed, runtime.session.sessionId, acpLaneGuidance);
@@ -37698,7 +37920,11 @@ export function createAgentChatService(args: {
       // reports a stopped turn as `end_turn`, so the agent's stopReason is
       // never the deciding word, and a Stop after the answer is not either.
       const interrupted = outcome.interrupted;
+      // The agent answered the turn as finished, but it failed upstream (a
+      // quota, an API error the agent only wrote as text).
+      const upstreamFailure = interrupted ? null : outcome.failure ?? null;
       if (!interrupted) reportProviderRuntimeReady(provider);
+      if (upstreamFailure) emitAcpUpstreamFailure(managed, runtime, turnId, upstreamFailure);
       if (devinCloudTurn) {
         if (devinCloudFirstTurn && !interrupted && managed.session.devinCloud) {
           managed.session.devinCloud = { ...managed.session.devinCloud, pinned: true };
@@ -37713,15 +37939,16 @@ export function createAgentChatService(args: {
       } else {
         void emitTurnDiffSummaryIfChanged(managed, turnId);
       }
+      const settledStatus = interrupted ? "interrupted" : upstreamFailure ? "failed" : "completed";
       emitChatEvent(managed, {
         type: "status",
-        turnStatus: interrupted ? "interrupted" : "completed",
+        turnStatus: settledStatus,
         turnId,
       });
       emitChatEvent(managed, {
         type: "done",
         turnId,
-        status: interrupted ? "interrupted" : "completed",
+        status: settledStatus,
         ...doneModel,
         // Turn totals, context, cost, served model, account, plan usage.
         ...outcome.done,
@@ -37729,6 +37956,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
+      if (backgroundTurnStarted) runtime.backgroundWork?.turnEnded();
       const message = error instanceof Error ? error.message : String(error);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted && !runtime.processFailed) {
@@ -43604,7 +43832,7 @@ export function createAgentChatService(args: {
    * second `approval_request` for a card already on screen is a duplicate the
    * renderer would draw twice.
    */
-  const raiseCodexAsyncQuestion = (
+  const raiseAsyncQuestion = (
     managed: ManagedChatSession,
     request: PendingInputRequest,
   ): void => {
@@ -43628,9 +43856,56 @@ export function createAgentChatService(args: {
     }
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
-      description: request.description ?? CODEX_ASYNC_QUESTION_TITLE,
+      description: request.description ?? request.title ?? CODEX_ASYNC_QUESTION_TITLE,
       detail: { asyncQuestion: true },
     });
+  };
+
+  /**
+   * An ACP agent's question tool whose answer is the next user message
+   * (`dialect.asyncQuestions`): the same answer-by-sending card as a Codex
+   * async question. Nothing waits on it, so it is dismissible.
+   */
+  const acpAsyncQuestionRequest = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    event: AgentChatEvent,
+  ): PendingInputRequest | null => {
+    if (event.type !== "tool_call" || !runtime.dialect.asyncQuestions) return null;
+    const asked = runtime.dialect.asyncQuestions(event.tool, event.args);
+    if (!asked?.length) return null;
+    const title = `${runtime.dialect.displayName} has a question`;
+    const questions: PendingInputQuestion[] = asked.map((entry, index) => ({
+      id: String(index),
+      header: "Question",
+      question: entry.question,
+      options: entry.options.map((option) => ({
+        label: option.label,
+        value: option.label,
+        description: "",
+        ...(option.recommended ? { recommended: true } : {}),
+      })),
+      allowsFreeform: true,
+      multiSelect: entry.multiSelect,
+      ...(entry.multiSelect
+        ? { impact: "This question allows multiple selections. Pick more than one, or type them comma-separated." }
+        : {}),
+    }));
+    const itemId = `acp-question:${event.itemId}`;
+    return {
+      requestId: itemId,
+      itemId,
+      source: "acp",
+      kind: "structured_question",
+      title,
+      description: questions[0]?.question ?? title,
+      questions,
+      allowsFreeform: true,
+      blocking: false,
+      canProceedWithoutAnswer: true,
+      providerMetadata: { responseMode: "message", dismissible: true, itemId, tool: event.tool },
+      turnId: event.turnId ?? null,
+    };
   };
 
   const handleCodexItemEvent = (
@@ -44457,7 +44732,7 @@ export function createAgentChatService(args: {
         stringOrNull(item.threadId),
       );
       if (asyncRequest) {
-        raiseCodexAsyncQuestion(managed, asyncRequest);
+        raiseAsyncQuestion(managed, asyncRequest);
         return;
       }
     }
@@ -44567,7 +44842,7 @@ export function createAgentChatService(args: {
         stringOrNull(item.threadId),
       );
       if (asyncRequest) {
-        raiseCodexAsyncQuestion(managed, asyncRequest);
+        raiseAsyncQuestion(managed, asyncRequest);
         rememberReconciledItemSignature(runtime, turnId, signature);
         return true;
       }

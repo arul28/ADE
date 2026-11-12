@@ -256,8 +256,8 @@ function readRawInputString(rawInput: unknown, keys: readonly string[]): string 
  */
 export function buildUnifiedDiff(path: string, oldText: string, newText: string): string {
   if (oldText === newText) return "";
-  const oldLines = oldText.length ? oldText.split("\n") : [];
-  const newLines = newText.length ? newText.split("\n") : [];
+  const oldLines = diffLines(oldText);
+  const newLines = diffLines(newText);
 
   let prefix = 0;
   while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
@@ -277,10 +277,43 @@ export function buildUnifiedDiff(path: string, oldText: string, newText: string)
   const header = [`--- a/${path}`, `+++ b/${path}`];
   const hunk = `@@ -${prefix + 1},${removed.length} +${prefix + 1},${added.length} @@`;
   const body = [
-    ...removed.map((line) => `-${line}`),
-    ...added.map((line) => `+${line}`),
+    ...removed.flatMap((line) => diffBodyLine("-", line)),
+    ...added.flatMap((line) => diffBodyLine("+", line)),
   ];
   return [...header, hunk, ...body].join("\n");
+}
+
+/** The exit code an execute tool's structured result names, if it names one. */
+function commandExitCode(rawOutput: unknown): number | null {
+  if (!rawOutput || typeof rawOutput !== "object" || Array.isArray(rawOutput)) return null;
+  const record = rawOutput as Record<string, unknown>;
+  for (const key of ["exitCode", "exit_code"]) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isInteger(value)) return value;
+  }
+  return null;
+}
+
+/** Marks a last line with no newline after it, so it differs from the same line with one. */
+const NO_FINAL_NEWLINE = "\u0000no-eol";
+
+/**
+ * A file's lines. A final newline ends the last line; it is not one more,
+ * empty line. A last line without one carries `NO_FINAL_NEWLINE`.
+ */
+function diffLines(text: string): string[] {
+  if (!text.length) return [];
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  else lines[lines.length - 1] += NO_FINAL_NEWLINE;
+  return lines;
+}
+
+/** One patch line, followed by git's marker when it has no final newline. */
+function diffBodyLine(sign: "-" | "+", line: string): string[] {
+  return line.endsWith(NO_FINAL_NEWLINE)
+    ? [`${sign}${line.slice(0, -NO_FINAL_NEWLINE.length)}`, "\\ No newline at end of file"]
+    : [`${sign}${line}`];
 }
 
 function diffKind(oldText: string | null | undefined, newText: string): "create" | "modify" | "delete" {
@@ -381,14 +414,18 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
     return events;
   };
 
-  const commandRow = (tracked: TrackedToolCall, toolCallId: string): AgentChatEvent => withTurn({
-    type: "command" as const,
-    command: tracked.command ?? tracked.title,
-    cwd: tracked.cwd,
-    output: tracked.lastOutput,
-    itemId: toolCallId,
-    status: toolStatusToAde(tracked.status),
-  });
+  const commandRow = (tracked: TrackedToolCall, toolCallId: string): AgentChatEvent => {
+    const exitCode = commandExitCode(tracked.rawOutput);
+    return withTurn({
+      type: "command" as const,
+      command: tracked.command ?? tracked.title,
+      cwd: tracked.cwd,
+      output: tracked.lastOutput,
+      itemId: toolCallId,
+      status: toolStatusToAde(tracked.status),
+      ...(exitCode !== null ? { exitCode } : {}),
+    });
+  };
 
   const openRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent[] => {
     switch (tracked.rowKind) {

@@ -12043,14 +12043,15 @@ const adeBridge = {
     captureNow: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("captureNow", args, pin),
     /**
-     * The one Keychain read that macOS asks the person about, on the Mac in
-     * front of them. Never the tab's bound machine: a call for another
+     * The one OS keyring read (the macOS Keychain, Windows Credential Manager
+     * or a Linux keyring) for Antigravity's agy CLI sign-in, on the computer in
+     * front of the person. Never the tab's bound machine: a call for another
      * computer (a remote pin or a remote binding) is refused here, since the
-     * prompt would show on that computer's screen.
+     * keyring and its prompt belong to that computer.
      */
     allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
       if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
-        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that Mac.");
+        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that computer.");
       }
       return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
     },

@@ -2787,6 +2787,7 @@ export type SyncCliLaunchProvider =
   | "grok"
   | "copilot"
   | "devin"
+  | "antigravity"
   | "shell";
 
 export type SyncStartCliSessionArgs = {

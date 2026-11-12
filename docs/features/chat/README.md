@@ -2093,7 +2093,7 @@ still-live button invites a second spend.
   flows Settings uses: `providerInstances.login*` for Claude and Codex
   (Codex device code when the screen is not that machine),
   `ai.cliLogin*` for Copilot, Grok, Kimi (region tabs), Droid, Muse and
-  Devin, `ai.antigravitySignIn*` (paste back the address when remote) and
+  Devin, `ai.antigravitySignIn*` (paste back the code Google shows) and
   Cursor's own login. Qwen, OpenCode and Pi open their Settings page on that
   machine. The card shows the device code, link or paste field the machine's
   sign-in printed, opens only http(s) links, and closes once the machine
