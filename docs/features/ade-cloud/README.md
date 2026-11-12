@@ -691,13 +691,51 @@ ADE's server, and the new computer runs its own launch
   deletes the computer the row holds after the cancel lands, and a cancel
   again retries a delete that failed. The minute cron deletes a record a
   week after its start (a draft after a day), with all its files.
-- **Not yet:** the server can't check for a git credential before it makes
-  the computer (no vault access here); a private repository with none fails
-  at the clone with the usual sentence.
-- **Not yet:** an automation's launch (`madeBy: automation`) is checked for
-  hours, computers and disk only. The agent limits live in the desktop's
-  vault, which the server can't read, so the automation checks them itself
-  before it calls.
+- **Git credential.** Before it makes the computer, `POST /cloud/launches`
+  reads the account vault through the `ACTIVITY_RELAY` binding with the
+  caller's own token (`GET /attention/account/vault?scope=all`, the
+  `integration/github` and `integration/github-cli` items the desktop's
+  `cloudGitCredential.ts` reads; `accountVault.ts`). With none, it asks
+  GitHub's API without a token whether the repository is public; a private
+  one is refused (`git_credential_missing`) with the "Connect GitHub"
+  sentence. A vault or GitHub that doesn't answer goes on, with a log line.
+  An automation's run (no token) uses what its rule's registration read.
+
+### Automations whose home is ADE Cloud (C9)
+
+A rule's home can be ADE Cloud itself (`automations/README.md`, "Runs on
+ADE Cloud"). The server keeps the rule (`cloud_automations`, migration 0029,
+`apps/account-directory/src/cloud/automations.ts`) and watches its trigger:
+
+- **Registration.** `PUT /cloud/automations/:ruleId` from a brain (the one
+  that saved the home, or any that sees a version the server lacks; the same
+  version writes nothing). `DELETE` when the home leaves ADE Cloud or the rule
+  is deleted. The registration reads the agent limits and the git credential
+  from the vault with the brain's token and keeps them for the rule's runs.
+- **Schedules.** The rule's cron in its own IANA zone (`automationSchedule.ts`);
+  the next fire is kept in UTC and the minute cron reads due rules and open
+  runs in one indexed statement. A time the clocks skip doesn't fire that
+  day; a time they pass twice fires once. A run missed by an hour or more is
+  recorded as skipped, not run late.
+- **Webhooks.** The webhook relay forwards a cloud rule's deliveries to
+  `POST /cloud/automations/:ruleId/deliveries` (no account token), signed
+  with HMAC-SHA256 over `<timestamp>.<body>` with the hook's key. The key is
+  derived from the directory's own `CLOUD_CHAT_MASTER_KEY` and a per-hook salt,
+  so D1 holds no key. A repeat of a delivery is the same run; 410 tells the
+  relay the hook no longer forwards here.
+- **Runs.** Each run is a server launch (launch id = run id, `madeBy:
+  automation`): the agent limits first (unattended spend, largest size, new
+  computers a day), then the launcher's own checks. One run at a time per
+  rule, one waiting, the rest recorded as skipped; past the rule's runs an
+  hour (default 6) the rule pauses. The computer reports the `run` stage when
+  the chat ends, and the cron then saves its chats, pushes its work and
+  deletes it, keeping the lane as a lane without a computer (unless the rule
+  keeps its computer). A run that can't start fails before anything is made;
+  the person hears through a push (the push relay's
+  `POST /directory/accounts/<id>/notify`, directory secret) and, at most once a
+  day per rule, an email. `GET /cloud/automations?origin=` answers each rule
+  with its last runs; a brain reads it when rules are listed, at most once a
+  minute.
 
 Provider sign-ins on a cloud computer from the phone or the web:
 `POST /cloud/instances/:id/sign-ins { provider }` runs
