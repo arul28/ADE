@@ -26,7 +26,7 @@ const GUTTER_WIDTH = 52;
  * actually opened.
  */
 export function SpreadsheetViewer(props: ViewerProps) {
-  const { files, workspaceId, tab, rootPath, content } = props;
+  const { files, workspaceId, tab, rootPath, pathPin, content } = props;
   const declaredSize = content.totalSize ?? content.size;
 
   return (
@@ -37,7 +37,7 @@ export function SpreadsheetViewer(props: ViewerProps) {
       byteCap={MAX_SPREADSHEET_STREAM_BYTES}
       declaredSize={declaredSize}
       loadingLabel={`Loading ${tab.title}…`}
-      fallback={{ rootPath, title: tab.title, mimeType: content.mimeType ?? null, size: content.size }}
+      fallback={{ rootPath, pathPin, title: tab.title, mimeType: content.mimeType ?? null, size: content.size }}
       load={async (bytes) => {
         // Imported here, not at module scope: opening the Files tab must not
         // download a spreadsheet reader nobody asked for.
@@ -49,6 +49,7 @@ export function SpreadsheetViewer(props: ViewerProps) {
         <WorkbookGrid
           workbook={workbook}
           rootPath={rootPath}
+          pathPin={pathPin}
           relativePath={tab.path}
           title={tab.title}
           mimeType={content.mimeType ?? null}
@@ -67,6 +68,7 @@ type SheetState =
 function WorkbookGrid({
   workbook,
   rootPath,
+  pathPin,
   relativePath,
   title,
   mimeType,
@@ -74,6 +76,7 @@ function WorkbookGrid({
 }: {
   workbook: SpreadsheetWorkbook;
   rootPath: string;
+  pathPin: ViewerProps["pathPin"];
   relativePath: string;
   title: string;
   mimeType: string | null;
@@ -122,6 +125,7 @@ function WorkbookGrid({
           // tabs still under it — not a second hand-rolled failure state.
           <DocumentSurface
             rootPath={rootPath}
+            pathPin={pathPin}
             relativePath={relativePath}
             title={title}
             mimeType={mimeType}
