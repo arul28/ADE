@@ -1716,6 +1716,7 @@ import {
   externalStopSignal,
   isSandboxUnsupportedFailureText,
   presentChatFailure,
+  presentDiskFullRefusal,
   presentExternalProcessStop,
   sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
@@ -13235,6 +13236,21 @@ export function createAgentChatService(args: {
     const turnId = randomUUID();
     // The text stays in the chat so it can be copied and sent again once the
     // provider is fixed; the provider itself never saw it.
+    emitRefusedUserMessage(managed, args, turnId);
+    emitRefusedTurnEnd(managed, turnId, message);
+  };
+
+  /**
+   * The person's message of a turn ADE refused to start, recorded in that
+   * turn. Without it the message existed only as the sending window's pending
+   * bubble: drawn after the refusal (out of order), replaced by the next
+   * send, and missing for Retry and for every other client.
+   */
+  const emitRefusedUserMessage = (
+    managed: ManagedChatSession,
+    args: Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata">,
+    turnId: string,
+  ): void => {
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
@@ -13242,10 +13258,11 @@ export function createAgentChatService(args: {
         ? { displayText: args.displayText.trim() }
         : {}),
       attachments: args.attachments ?? [],
+      ...(args.contextAttachments?.length ? { contextAttachments: args.contextAttachments } : {}),
+      ...(args.metadata ? { metadata: args.metadata } : {}),
       turnId,
       messageId: randomUUID(),
     });
-    emitRefusedTurnEnd(managed, turnId, message);
   };
 
   /** Preserve a blocked follow-up without ending the live turn it tried to steer. */
@@ -57292,22 +57309,21 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * A turn the storage guard refused: the person's message (when the refusal
+   * is a send's), then one failure that says why. No notice beside it: the
+   * failure line is the turn's one state.
+   */
   const emitDiskPressureSendFailure = (
     managed: ManagedChatSession,
     state: DiskPressureState,
     message: string,
+    sent?: Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata"> | null,
   ): void => {
     const turnId = randomUUID();
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "error",
-      severity: "error",
-      status: "failed",
-      message,
-      detail: { kind: "disk_pressure", state },
-      turnId,
-    });
-    emitRefusedTurnEnd(managed, turnId, message, "disk_full");
+    if (sent) emitRefusedUserMessage(managed, sent, turnId);
+    logger.info("agent_chat.disk_pressure_refused_turn", { sessionId: managed.session.id, state, turnId, recordedMessage: Boolean(sent) });
+    emitRefusedTurnEnd(managed, turnId, message, "disk_full", presentDiskFullRefusal(message));
   };
 
   /** The error, failed status and done that end a turn ADE refused to start. */
@@ -57316,6 +57332,7 @@ export function createAgentChatService(args: {
     turnId: string,
     message: string,
     code?: AdeRecoveryErrorCode,
+    presentation?: ChatErrorPresentation,
   ): void => {
     emitChatEvent(managed, {
       type: "error",
@@ -57325,6 +57342,7 @@ export function createAgentChatService(args: {
         ...(code ? { code } : {}),
         provider: managed.session.provider,
         model: managed.session.model,
+        ...(presentation ? { presentation } : {}),
       },
       turnId,
     });
@@ -64367,7 +64385,7 @@ export function createAgentChatService(args: {
         // A scheduled wake retries once the disk clears; posting the refusal
         // first would leave a failed turn for work that is still pending.
         throwForScheduledWakeRefusal(diskDecision.message, true);
-        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message);
+        emitDiskPressureSendFailure(managed, diskDecision.state, diskDecision.message, args);
         return;
       }
       if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
