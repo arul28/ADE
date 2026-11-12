@@ -1,4 +1,6 @@
-import { ipcMain } from "electron";
+import path from "node:path";
+import { app, ipcMain } from "electron";
+import { configureGoneTargets } from "./goneTargets";
 import { IPC } from "../../../shared/ipc";
 import type { MachineAddress, MachineConnectResult } from "../../../shared/machineAddress";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
@@ -12,6 +14,7 @@ import { createMachineConnector, type MachineConnector, type MachineConnectorDep
  */
 export function registerMachineConnectIpc(args: Omit<MachineConnectorDeps, "logger"> & { logger: Logger }): MachineConnector {
   const { logger } = args;
+  configureGoneTargets({ filePath: path.join(app.getPath("userData"), "gone-machine-connections.json") });
   const connector = createMachineConnector({
     ...args,
     logger: { info: (event, meta) => logger.info(event, meta), warn: (event, meta) => logger.warn(event, meta) },

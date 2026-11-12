@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { followSessionToMachine } from "../../lib/otherMachineNavigation";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { sameMachineKey } from "../../../shared/machineAddress";
 
 /**
  * Contract C3 for an open chat: when its cloud lane's computer changes (a
@@ -21,13 +23,16 @@ export function useFollowLaneMoves(args: {
   pin: OpenProjectBinding | null;
 }): void {
   const { sessionId, laneId } = args;
-  const pinHost = args.pin?.kind === "remote" ? args.pin.hostname?.trim().toLowerCase() ?? null : null;
   const pinTarget = args.pin?.kind === "remote" ? args.pin.targetId : null;
   const { computers } = useAdeCloudLaneComputers();
-  // The lane's computer now, only when this chat's pin names another one.
+  // The lane's computer now. Only a cloud lane's chat follows anything.
   const current = laneId ? computers.find((computer) => computer.laneId === laneId) ?? null : null;
-  const pinOnLaneComputer = pinHost != null && computers.some((computer) => computer.instanceId.toLowerCase() === pinHost);
-  const movedTo = current && pinOnLaneComputer && pinHost !== current.instanceId.toLowerCase() && current.machineKey
+  const { snapshot } = useRemoteConnectionSnapshot(Boolean(current && pinTarget));
+  // The machine the chat's pin reaches, by its saved connection.
+  const pinMachineKey = pinTarget
+    ? snapshot?.connections.find((connection) => connection.target.id === pinTarget)?.target.pairedMachine?.machineKey ?? null
+    : null;
+  const movedTo = current?.machineKey && pinMachineKey && !sameMachineKey(current.machineKey, pinMachineKey)
     ? current.machineKey
     : null;
 

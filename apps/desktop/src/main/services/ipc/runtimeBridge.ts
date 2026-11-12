@@ -96,6 +96,7 @@ import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { shouldSendAppControlFrameToWebContents } from "../appControl/appControlFrameSubscriptions";
+import { goneTargetMachineKey, noteGoneTarget, reachGoneTarget } from "../machines/goneTargets";
 import { appControlFrameEventLaneId } from "../../../shared/appControlFrameDemand";
 import { forgetRemoteTunnelOrigins, recordRemoteTunnelOrigin } from "../builtInBrowser/remoteTunnelOrigins";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
@@ -678,7 +679,9 @@ export function registerRuntimeBridge({
     typeof value === "string" ? value.trim() || null : null;
   /** A saved remote target by id. One that is gone (removed, or never saved here) is the caller's to fix. */
   const requireRemoteTarget = (id: string | null | undefined) => {
-    const target = id ? remoteConnectionService.getTarget(id) : null;
+    // A pin to a connection that is gone reaches its machine's connection now (goneTargets.ts).
+    const goneKey = id && !remoteConnectionService.getTarget(id) ? goneTargetMachineKey(id) : null;
+    const target = id ? remoteConnectionService.getTarget(id) ?? (goneKey ? targetForMachineKey(goneKey) : null) : null;
     if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
     return target;
   };
@@ -811,7 +814,10 @@ export function registerRuntimeBridge({
         .filter((target) => (key && target.pairedMachine?.machineKey?.trim() === key)
           || (host && target.hostname?.trim().toLowerCase() === host))
         .map((target) => target.id);
-      for (const id of ids) remoteConnectionService.removeTarget(id);
+      for (const id of ids) {
+        noteGoneTarget(id, remoteConnectionService.getTarget(id)?.pairedMachine?.machineKey);
+        remoteConnectionService.removeTarget(id);
+      }
       return ids;
     },
     readRemoteArtifactRange,
@@ -1316,6 +1322,7 @@ export function registerRuntimeBridge({
     async (_event, arg: { id: string }): Promise<{ removed: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       if (!id) return { removed: false };
+      noteGoneTarget(id, remoteConnectionService.getTarget(id)?.pairedMachine?.machineKey);
       return { removed: remoteConnectionService.removeTarget(id) };
     },
   );
@@ -1650,6 +1657,12 @@ export function registerRuntimeBridge({
         !Array.isArray(arg.request)
           ? arg.request
           : null;
+      // A pin to a gone connection whose machine has no connection saved here
+      // now: reach it through the account first (contract C2).
+      if (id && !remoteConnectionService.getTarget(id)) {
+        const goneKey = goneTargetMachineKey(id);
+        if (goneKey && !targetForMachineKey(goneKey)) await reachGoneTarget(id);
+      }
       const target = requireRemoteTarget(id);
       const domain =
         typeof request?.domain === "string" ? request.domain.trim() : "";

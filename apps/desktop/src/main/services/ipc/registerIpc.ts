@@ -961,6 +961,7 @@ import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
 import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
+import { setGoneTargetReach } from "../machines/goneTargets";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
@@ -12786,6 +12787,13 @@ export function registerIpc({
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
   cloudWakeForPair = cloudWakeForPairFn;
+  // Pins to a connection that is gone reach their machine again (machines/goneTargets.ts).
+  // A call through a pin to a saved connection wakes its cloud computer; one
+  // through a gone connection does the same, so both behave alike.
+  setGoneTargetReach(async (machineKey) => {
+    const result = await machineConnector.connect(machineKey);
+    return result.ok && result.address.kind === "remote" ? result.address.targetId : null;
+  });
 
   // "ADE Cloud" picked for a new lane: this app makes the computer, then
   // hands the launch to that computer's brain. Machine-wide, so its log is

@@ -29,6 +29,7 @@ import {
   type LaneMovedEvent,
 } from "../../../shared/laneComputer";
 import type { MachineConnector } from "../machines/machineConnector";
+import { redirectGoneTargets } from "../machines/goneTargets";
 import { getErrorMessage, safeJsonParse, writeTextAtomic } from "../shared/utils";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import type { CloudInstance } from "./cloudProvider";
@@ -122,6 +123,8 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
       } catch (error) {
         deps.logger?.warn?.("cloud.lane_follow_forget_failed", { error: getErrorMessage(error) });
       }
+      // Pins that reached the old computer (a chat, its tools) now reach the new one.
+      redirectGoneTargets(move.from.machineKey, move.to.machineKey);
     }
     deps.emit(move);
     const key = move.to.machineKey;
