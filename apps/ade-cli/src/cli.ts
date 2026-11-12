@@ -26354,10 +26354,11 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
   if (sub === "retry") {
     // Forget a `project_folder_too_slow` refusal and its strikes, so the
     // next open really tries (see `projectOpenStrikes.ts`).
+    // Flags first: `firstPositional` takes the first bare word, which may be a flag's value.
     const explicitPath = readValue(args, ["--path"]);
-    const positional = explicitPath ? null : firstPositional(args);
-    const projectId = readValue(args, ["--project-id", "--id"])
-      ?? (positional && /^project_[A-Za-z0-9]+$/.test(positional) ? positional : null);
+    const explicitId = readValue(args, ["--project-id", "--id"]);
+    const positional = explicitPath || explicitId ? null : firstPositional(args);
+    const projectId = explicitId ?? (positional && /^project_[A-Za-z0-9]+$/.test(positional) ? positional : null);
     let params: Record<string, unknown>;
     if (projectId) {
       params = { projectId };

@@ -28,10 +28,15 @@ const MAX_REFUSAL_MS = 24 * 60 * 60_000;
 /** A stamp this far past now is a clock that moved back, not a real kill. */
 const FUTURE_SLACK_MS = 60_000;
 /**
- * Steps of an open that do synchronous database work on the main thread.
- * When several projects were opening at a kill, only these can have frozen it.
+ * An open that started this long before the kill is not the open that froze
+ * the brain: no open of a project takes it, even on the slowest drive seen
+ * (16–60 s), so it is one stuck on something that never answered. Measured
+ * from the open's start, not its step: a step can wait a long time (a
+ * snapshot) and then freeze in its synchronous part.
  */
-const SYNC_DATABASE_PHASES: ReadonlySet<string> = new Set(["db_open", "services"]);
+const STALE_OPEN_MS = 10 * 60_000;
+/** The step of an open waiting its turn behind another: it runs no code. */
+export const QUEUED_OPEN_PHASE = "queued";
 
 type ProjectEntry = {
   /** Epoch ms of each freeze kill not yet consumed by a refusal, oldest first. */
@@ -194,20 +199,18 @@ export class ProjectOpenStrikes {
   /**
    * Count a freeze kill against the project that froze it. Only the freeze
    * guard writes a breadcrumb, so a stop, an update or an out-of-memory kill
-   * never reaches here. An open whose step has not moved for far longer than
-   * the freeze was waiting, not freezing. With several projects opening, only
-   * those doing synchronous database work are struck.
+   * never reaches here. Every step of an open reads the project's folder or
+   * database synchronously somewhere, so every open running at the kill is
+   * struck, except one waiting its turn or one far older than any open. An
+   * innocent open struck alongside the real one is not refused for it: with
+   * a strike it next opens alone, so a second strike is its own.
    */
   recordFreezeKill(
-    breadcrumb: Pick<BrainLoopWatchdogBreadcrumb, "ts" | "openingProjects" | "blockedMs" | "thresholdMs">,
+    breadcrumb: Pick<BrainLoopWatchdogBreadcrumb, "ts" | "openingProjects">,
   ): StruckProject[] {
     const now = Date.now();
-    const staleAfterMs = breadcrumb.blockedMs + 2 * (breadcrumb.thresholdMs ?? breadcrumb.blockedMs);
-    // A breadcrumb from before steps were timed cannot tell a stuck step, so
-    // its entries are all kept.
-    let opening = (breadcrumb.openingProjects ?? [])
-      .filter((open) => open.phaseElapsedMs === undefined || open.phaseElapsedMs <= staleAfterMs);
-    if (opening.length > 1) opening = opening.filter((open) => SYNC_DATABASE_PHASES.has(open.phase));
+    const opening = (breadcrumb.openingProjects ?? [])
+      .filter((open) => open.phase !== QUEUED_OPEN_PHASE && open.elapsedMs <= STALE_OPEN_MS);
     if (opening.length === 0) return [];
     const parsedAt = Date.parse(breadcrumb.ts);
     // A clock that jumped, or a garbled stamp, counts the kill as now.

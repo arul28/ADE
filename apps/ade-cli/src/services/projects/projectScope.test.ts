@@ -1688,20 +1688,27 @@ describe("ProjectScopeRegistry refuses a project whose open keeps freezing the b
     ["a freeze kill while nothing was opening is no strike", [
       { kill: "none" }, { kill: "none" }, { open: "first", expect: "opened" },
     ]],
-    ["an open stuck in one step far longer than the freeze is no strike", [
-      { kill: [{ project: "first", phase: "base_ref", phaseElapsedMs: 10 * MINUTE }] },
-      { kill: [{ project: "first", phase: "base_ref", phaseElapsedMs: 10 * MINUTE }] },
+    ["an open that started far longer ago than any open takes is no strike", [
+      { kill: [{ project: "first", phase: "base_ref", elapsedMs: 20 * MINUTE }] },
+      { kill: [{ project: "first", phase: "base_ref", elapsedMs: 20 * MINUTE }] },
       { open: "first", expect: "opened" },
     ]],
-    ["a breadcrumb from before steps were timed still strikes, however long the open ran", [
-      { kill: [{ project: "first", phase: "db_open", phaseElapsedMs: null, elapsedMs: 10 * MINUTE }] },
-      { kill: [{ project: "first", phase: "db_open", phaseElapsedMs: null, elapsedMs: 10 * MINUTE }] },
+    ["a long wait inside a step does not hide the freeze that follows it", [
+      { kill: [{ project: "first", phase: "db_open", phaseElapsedMs: 5 * MINUTE, elapsedMs: 5 * MINUTE + 2_000 }] },
+      { kill: [{ project: "first", phase: "db_open", phaseElapsedMs: 5 * MINUTE, elapsedMs: 5 * MINUTE + 2_000 }] },
       { open: "first", expect: "refused", level: 0, minutesLeft: 15 },
     ]],
-    ["with several projects opening, only the one doing database work is struck", [
-      { kill: [{ project: "first", phase: "db_open" }, { project: "second", phase: "base_ref" }] },
-      { kill: [{ project: "first", phase: "services" }, { project: "second", phase: "prepare" }] },
-      { open: "first", expect: "refused" }, { open: "second", expect: "opened" },
+    ["a breadcrumb from before steps were timed still strikes", [
+      { kill: [{ project: "first", phase: "db_open", phaseElapsedMs: null }] },
+      { kill: [{ project: "first", phase: "db_open", phaseElapsedMs: null }] },
+      { open: "first", expect: "refused", level: 0, minutesLeft: 15 },
+    ]],
+    ["a freeze in a step that reads the folder is struck while another project opens; the other, struck once, is not refused", [
+      // Both were opening; both get a strike, so both next open alone.
+      { kill: [{ project: "first", phase: "prepare" }, { project: "second", phase: "db_open" }] },
+      // Next time the first opens alone while the second waits its turn.
+      { kill: [{ project: "first", phase: "root_check" }, { project: "second", phase: "queued" }] },
+      { open: "first", expect: "refused", level: 0, minutesLeft: 15 }, { open: "second", expect: "opened" },
     ]],
     ["a brain that ends any other way is no strike", [
       { kill: "first" }, { stop: true }, { stop: true }, { open: "first", expect: "opened" },

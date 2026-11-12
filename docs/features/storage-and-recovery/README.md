@@ -586,12 +586,14 @@ database stays in the project folder; this breaks the loop instead.
 - **Strikes.** The next start counts a strike in
   `$ADE_HOME/runtime/project-open-strikes.json` (`projectOpenStrikes.ts`; read
   once, atomic writes, a torn or missing file is no strikes, a stamp in the
-  future is ignored). Only the project that froze it is struck: an open whose
-  step has not moved for far longer than the freeze was waiting, and when
-  several projects were opening only those in a step that does synchronous
-  database work (`db_open`, `services`) count (a breadcrumb from before steps
-  were timed keeps every entry). A project with a strike opens alone: other
-  cold opens wait for it, and it waits for those already running, each for at
+  future is ignored). Every step of an open reads the folder or the database
+  synchronously somewhere, so every open running at the kill is struck except
+  one waiting its turn (`queued`) and one that started more than 10 minutes
+  before the kill (stuck on something that never answered). A project with a
+  strike opens alone, so an innocent open struck alongside the real one is
+  not refused for that one coincidence: its second strike can only come from
+  an open of its own. Other cold opens wait for it, and it waits for those
+  already running, each for at
   most the freeze guard's threshold (as the brain resolved it) plus 15 seconds, after
   which the queued open goes ahead.
 - **Refusal.** Two strikes in 15 minutes and `ProjectScopeRegistry.get` refuses

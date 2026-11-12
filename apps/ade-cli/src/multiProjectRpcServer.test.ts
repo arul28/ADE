@@ -2665,6 +2665,7 @@ describe("multi-project RPC server", () => {
         return loaded;
       }),
       getIfBooted: vi.fn((projectId: string) => (projectId === current.projectId ? Promise.resolve(loaded) : null)),
+      isOpenBlocked: vi.fn(() => false),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;

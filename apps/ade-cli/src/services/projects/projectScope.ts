@@ -13,7 +13,7 @@ import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } fro
 import { createPhaseClock, type PhaseClock } from "../../../../desktop/src/shared/phaseClock";
 import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
 import { logSlowProjectOpen } from "./projectFilesystemKind";
-import type { ProjectOpenStrikes } from "./projectOpenStrikes";
+import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
 
 type ScopeLogger = { warn: (event: string, meta?: Record<string, unknown>) => void };
 
@@ -556,7 +556,7 @@ export class ProjectScopeRegistry {
     }
     const pending = (async () => {
       if (waitFor.length > 0) {
-        openClock.enter("queued");
+        openClock.enter(QUEUED_OPEN_PHASE);
         await waitForOpenTurn(
           waitFor,
           (this.options.freezeThresholdMs ?? resolveBrainLoopWatchdogThresholdMs(undefined)) + OPEN_TURN_MARGIN_MS,
