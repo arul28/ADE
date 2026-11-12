@@ -41,9 +41,10 @@ import {
   type DashLane,
 } from "./cloudDashboardModel";
 import { clearCloudLaneCaches, cloudLaneLifeAvailable, freeCloudLane } from "../../cloudLane/cloudLaneActions";
-import { deleteCloudLaneWithCheck } from "../../cloudLane/deleteCloudLane";
+import { deleteCloudLaneWithCheck, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
-import { CloudLaneJobCard } from "../../cloudLane/CloudLaneJobCard";
+import { CloudLaneJobCard, cloudLaneJobStepLine } from "../../cloudLane/CloudLaneJobCard";
+import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
 
@@ -115,8 +116,21 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     refreshCloudLanesWithoutComputer();
   }, [listKey]);
   const jobs = useCloudLaneJobs(cloudLaneLifeAvailable());
+  const deletes = useCloudLaneDeletes();
 
-  const lanes = useMemo(() => dashLanes({ machines: list, account, without, now }), [list, account, without, now]);
+  // A lane whose delete went through leaves at once (its building sinks), before the next read of the list.
+  const lanes = useMemo(
+    () => dashLanes({ machines: list, account, without, now }).filter((lane) => !lane.instanceId || deletes.get(lane.instanceId) !== "deleted"),
+    [list, account, without, now, deletes],
+  );
+  /** A lane's row says where its size change or its delete is, in place. */
+  const rowStatus = useCallback((lane: DashLane): RowStatus | null => {
+    const deleting = lane.instanceId ? deletes.get(lane.instanceId) : undefined;
+    if (deleting) return deleteRowStatus(deleting);
+    if (!lane.instanceId) return null;
+    const job = cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.machine?.lane?.laneId ?? null });
+    return job ? jobRowStatus(job) : null;
+  }, [deletes, jobs]);
   const selected = lanes.find((lane) => lane.key === selectedKey) ?? null;
   const selectedJob = selected?.instanceId ? cloudLaneJobFor(jobs, { instanceId: selected.instanceId, laneId: selected.machine?.lane?.laneId ?? null }) : null;
   const otherJobs = useMemo(() => [...jobs.values()].filter((job) => cloudLaneJobVisible(job) && job.phase !== "online"
@@ -258,6 +272,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
               selectedKey={selected?.key ?? null}
               onSelect={(key) => setSelectedKey((current) => (current === key ? null : key))}
               onOpen={openInside}
+              rowStatus={rowStatus}
               renderActions={(lane) => (
                 <LaneActions
                   lane={lane}
@@ -443,6 +458,7 @@ function LaneTable({
   selectedKey,
   onSelect,
   onOpen,
+  rowStatus,
   renderActions,
 }: {
   lanes: readonly DashLane[];
@@ -450,6 +466,8 @@ function LaneTable({
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
+  /** A size change or delete under way, shown in the row's State cell in place of the computer's state. */
+  rowStatus: (lane: DashLane) => RowStatus | null;
   renderActions: (lane: DashLane) => ReactNode;
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -485,6 +503,7 @@ function LaneTable({
       </div>
       {lanes.map((lane) => {
         const open = lane.key === selectedKey;
+        const status = rowStatus(lane);
         return (
           <div key={lane.key} className="adecd-row-wrap" data-open={open || undefined} data-key={cssId(lane.key)}>
             <div
@@ -506,7 +525,11 @@ function LaneTable({
               </span>
               <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
               <span className="kit-num">{lane.state === "none" ? "—" : formatCloudGb(lane.diskGb)}</span>
-              <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+              {status ? (
+                <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
+              ) : (
+                <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+              )}
               <span className="adecd-when">{lastRunText(lane, now)}</span>
             </div>
             {open ? <div className="adecd-row-actions">{renderActions(lane)}</div> : null}
@@ -564,6 +587,31 @@ function LaneActions({
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/** What a row's State cell says while its lane changes size or is deleted. */
+type RowStatus = { state: "starting" | "failed" | "awake"; label: string; title: string | null };
+
+function deleteRowStatus(phase: CloudLaneDeletePhase): RowStatus {
+  return phase === "checking"
+    ? { state: "starting", label: "Checking work", title: "ADE checks that its work is on GitHub before it deletes the lane." }
+    : { state: "starting", label: "Deleting", title: null };
+}
+
+function jobRowStatus(job: CloudLaneJobSnapshot): RowStatus | null {
+  const step = cloudLaneJobStepLine(job);
+  switch (job.phase) {
+    case "waiting":
+      return { state: "starting", label: "Changes when idle", title: step };
+    case "running":
+      return { state: "starting", label: job.kind === "move" ? "Moving" : "Changing size", title: step };
+    case "failed":
+      return { state: "failed", label: job.kind === "move" ? "Move stopped" : "Size change stopped", title: step };
+    case "online":
+      return { state: "awake", label: job.kind === "move" ? "Moved" : "Resized", title: step };
+    default:
+      return null;
+  }
+}
 
 /** What uses a lane's disk, as its computer last measured itself while awake. */
 function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now: number; busy: boolean; onBack: () => void; onClear: () => void }) {
