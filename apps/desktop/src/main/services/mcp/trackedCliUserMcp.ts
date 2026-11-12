@@ -91,7 +91,9 @@ function codexEntryCarriesSecret(entry: Record<string, unknown>): boolean {
   if (url) {
     try {
       const parsed = new URL(url);
-      if (parsed.username || parsed.password || parsed.search) return true;
+      // A fragment can carry a token too (`#access_token=…`), and the whole
+      // URL lands on Codex's command line.
+      if (parsed.username || parsed.password || parsed.search || parsed.hash) return true;
     } catch {
       return true;
     }
@@ -148,11 +150,12 @@ export function setTrackedCliRegistrySecretReader(reader: ((vaultKey: string) =>
   registrySecretReader = reader;
 }
 
-/** The tracked CLIs ADE hands MCP servers to, and how. */
-const TRACKED_CLI_MCP_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "copilot"]);
+/** The tracked CLIs ADE hands MCP servers to. */
+type TrackedCliMcpProvider = "claude" | "codex" | "copilot";
+const TRACKED_CLI_MCP_PROVIDERS: ReadonlySet<string> = new Set<TrackedCliMcpProvider>(["claude", "codex", "copilot"]);
 
 /** Whether a tracked CLI of this provider can be handed MCP servers at launch. */
-export function trackedCliTakesMcpServers(provider: string): boolean {
+export function trackedCliTakesMcpServers(provider: string): provider is TrackedCliMcpProvider {
   return TRACKED_CLI_MCP_PROVIDERS.has(provider);
 }
 
@@ -165,7 +168,7 @@ export function trackedCliTakesMcpServers(provider: string): boolean {
  * per-tool filter the CLI's config cannot carry.
  */
 function trackedCliRegistryServers(args: {
-  provider: string;
+  provider: TrackedCliMcpProvider;
   cwd: string;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
@@ -173,7 +176,7 @@ function trackedCliRegistryServers(args: {
   const registry = resolveMcpRegistryForLaunch({
     adeHome: resolveMachineAdeLayout().adeDir,
     projectRoot: args.projectRoot,
-    provider: args.provider as Parameters<typeof resolveMcpRegistryForLaunch>[0]["provider"],
+    provider: args.provider,
     readSecret: (vaultKey) => registrySecretReader?.(vaultKey) ?? null,
   });
   if (!registry.servers) return {};
@@ -223,17 +226,18 @@ export async function resolveTrackedCliUserMcp(args: {
   presetEnv?: Record<string, string> | null;
 }): Promise<TrackedCliUserMcp | null> {
   const cwd = args.cwd?.trim();
-  if (!cwd || !trackedCliTakesMcpServers(args.provider)) return null;
+  const provider = args.provider;
+  if (!cwd || !trackedCliTakesMcpServers(provider)) return null;
   const launcher = sharedNpxDirectLauncher();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ...providerInstanceLaunchEnv(args.provider as LaunchProfile, args.instance),
+    ...providerInstanceLaunchEnv(provider, args.instance),
     ...(args.presetEnv ?? {}),
   };
   const projectRoot = args.projectRoot ?? mainCheckoutOf(cwd);
   const registryFor = (): CallerMcpServers => {
     try {
-      return trackedCliRegistryServers({ provider: args.provider, cwd, projectRoot: projectRoot ?? cwd, env });
+      return trackedCliRegistryServers({ provider, cwd, projectRoot: projectRoot ?? cwd, env });
     } catch (error) {
       captureError(error, {
         fingerprint: ["mcp", "tracked_cli_registry_servers", args.provider],

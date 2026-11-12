@@ -29,7 +29,7 @@ import type {
   AgentChatCrossMachineForkTransport,
   AgentChatPermissionMode,
 } from "../../../shared/types/chat";
-import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../shared/types/chat";
+import { readAgentChatPermissionMode } from "../../../shared/types/chat";
 import type { TerminalResumeMetadata, TerminalSessionSummary } from "../../../shared/types/sessions";
 import { isLaunchProfile } from "../../../shared/cliLaunch";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
@@ -70,11 +70,6 @@ export function cliMoveProvider(row: TerminalSessionSummary): AgentChatCliLaunch
   return provider && isLaunchProfile(provider) && (provider as string) !== "shell" ? provider as AgentChatCliLaunchProvider : null;
 }
 
-function asPermissionMode(value: unknown): AgentChatPermissionMode | null {
-  return typeof value === "string" && (AGENT_CHAT_PERMISSION_MODE_VALUES as readonly string[]).includes(value)
-    ? value as AgentChatPermissionMode
-    : null;
-}
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -82,7 +77,7 @@ function text(value: unknown): string | null {
 
 /** The CLI's launch permission mode, the word its launch and resume use. */
 export function cliMovePermissionMode(metadata: TerminalResumeMetadata | null | undefined): AgentChatPermissionMode {
-  return asPermissionMode(metadata?.launch?.permissionMode) ?? asPermissionMode(metadata?.permissionMode) ?? "default";
+  return readAgentChatPermissionMode(metadata?.launch?.permissionMode) ?? readAgentChatPermissionMode(metadata?.permissionMode) ?? "default";
 }
 
 /** The CLI's permission mode on the unified ladder (an unknown word reads as ask). */
@@ -228,10 +223,6 @@ async function writeFileReplacing(targetPath: string, content: Buffer): Promise<
   }
 }
 
-/** The default Codex home on this machine (`CODEX_HOME`, else `~/.codex`). */
-export function defaultCodexHome(): string {
-  return path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"));
-}
 
 /**
  * Writes a moved CLI's conversation where its agent looks on this machine,

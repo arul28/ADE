@@ -12,7 +12,7 @@ import {
   type TerminalSessionSummary,
   type TerminalToolType,
 } from "../../../shared/types/sessions";
-import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../shared/types/chat";
+import { readAgentChatPermissionMode } from "../../../shared/types/chat";
 import { LAUNCH_PROFILE_TITLE } from "../../../shared/cliLaunch";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { lastMeaningfulTerminalLines } from "./cliChildSessions";
@@ -143,11 +143,6 @@ function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {
   });
 }
 
-function asPermissionMode(value: unknown): AgentChatPermissionMode | null {
-  return typeof value === "string" && (AGENT_CHAT_PERMISSION_MODE_VALUES as readonly string[]).includes(value)
-    ? value as AgentChatPermissionMode
-    : null;
-}
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -274,6 +269,23 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
     return { stopped };
   };
 
+  /**
+   * The turn an archive let finish has ended: stop the CLI now, as archiving
+   * it at its prompt would have. A no-op for a CLI that is not archived.
+   */
+  const stopArchivedAfterTurn = (sessionId: string): void => {
+    const row = sessionService.get(sessionId);
+    if (!row?.archivedAt || !livePtyId(row) || peerOwned(row)) return;
+    try {
+      stopProcess(row, "archive");
+    } catch (error) {
+      logger.warn("agent_cli.archive_stop_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const unarchiveCli = (row: TerminalSessionSummary): void => {
     sessionService.unarchiveSession(row.id);
   };
@@ -296,7 +308,7 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
     if (!provider) throw new Error("ADE doesn't know which agent this CLI ran, so it can't start it again.");
     const metadata = args.snapshot.resumeMetadata;
     const launch = metadata?.launch ?? {};
-    const permissionMode = asPermissionMode(launch.permissionMode) ?? asPermissionMode(metadata?.permissionMode) ?? "default";
+    const permissionMode = readAgentChatPermissionMode(launch.permissionMode) ?? readAgentChatPermissionMode(metadata?.permissionMode) ?? "default";
     const instanceId = text(metadata?.instanceId) ?? text(launch.instanceId);
     const presetId = text(metadata?.presetId) ?? text(launch.presetId);
     const credentialId = text(metadata?.credentialId) ?? text(launch.credentialId);
@@ -330,6 +342,32 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
   };
 
   /**
+   * Puts a closed row under `id` and resumes the CLI's own conversation in
+   * it. When the resume fails the row is removed and `fresh` starts a new CLI
+   * under the same id; the reason comes back for the caller's notice.
+   */
+  const resumeOrStartFresh = async (args: {
+    row: Omit<Parameters<typeof sessionService.create>[0], "ptyId" | "tracked" | "startedAt">;
+    provider: string;
+    failureEvent: string;
+    fresh: () => Promise<void>;
+  }): Promise<{ resumed: true } | { resumed: false; reason: string }> => {
+    const now = new Date().toISOString();
+    sessionService.create({ ...args.row, ptyId: null, tracked: true, startedAt: now });
+    sessionService.end({ sessionId: args.row.sessionId, endedAt: now, exitCode: null, status: "disposed" });
+    try {
+      await deps.ptyService!.resumeSession!({ sessionId: args.row.sessionId, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+      return { resumed: true };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn(args.failureEvent, { sessionId: args.row.sessionId, provider: args.provider, error: reason });
+      sessionService.deleteSession(args.row.sessionId);
+      await args.fresh();
+      return { resumed: false, reason };
+    }
+  };
+
+  /**
    * Recently deleted › Reopen for a CLI. Same lane with a known conversation:
    * the row comes back under its id and the CLI resumes its own conversation.
    * Otherwise (or when that resume fails) a fresh CLI starts under the same id.
@@ -348,39 +386,28 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
     const title = agentCliRowTitle(args.snapshot.title ?? args.title, args.snapshot.toolType) ?? args.title ?? "CLI session";
     const toolType = args.snapshot.toolType as TerminalToolType;
     if (args.resumeTargetId && deps.ptyService.resumeSession) {
-      const now = new Date().toISOString();
       const metadata: TerminalResumeMetadata | null = args.snapshot.resumeMetadata
         ? { ...args.snapshot.resumeMetadata, targetId: args.resumeTargetId }
         : null;
-      sessionService.create({
-        sessionId: args.id,
-        laneId: args.laneId,
-        ptyId: null,
-        tracked: true,
-        title,
-        startedAt: now,
-        // Empty lets the terminal pick its usual recording path for this id.
-        transcriptPath: args.sameLane ? args.snapshot.transcriptPath ?? "" : "",
-        toolType,
-        resumeCommand: args.snapshot.resumeCommand,
-        resumeMetadata: metadata,
-        goal: args.snapshot.goal,
-      });
-      sessionService.end({ sessionId: args.id, endedAt: now, exitCode: null, status: "disposed" });
-      try {
-        await deps.ptyService.resumeSession({ sessionId: args.id, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
-        return { sessionId: args.id, mode: "continue", notice: null };
-      } catch (error) {
-        logger.warn("agent_cli.reopen_resume_failed", {
+      const result = await resumeOrStartFresh({
+        row: {
           sessionId: args.id,
-          provider: args.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        sessionService.deleteSession(args.id);
-        await freshLaunch({ id: args.id, laneId: args.laneId, title, snapshot: args.snapshot });
-        const reason = error instanceof Error ? error.message : String(error);
-        return { sessionId: args.id, mode: "fresh", notice: `Started a new CLI: resuming its conversation failed (${reason}).` };
-      }
+          laneId: args.laneId,
+          title,
+          // Empty lets the terminal pick its usual recording path for this id.
+          transcriptPath: args.sameLane ? args.snapshot.transcriptPath ?? "" : "",
+          toolType,
+          resumeCommand: args.snapshot.resumeCommand,
+          resumeMetadata: metadata,
+          goal: args.snapshot.goal,
+        },
+        provider: args.provider,
+        failureEvent: "agent_cli.reopen_resume_failed",
+        fresh: () => freshLaunch({ id: args.id, laneId: args.laneId, title, snapshot: args.snapshot }),
+      });
+      return result.resumed
+        ? { sessionId: args.id, mode: "continue", notice: null }
+        : { sessionId: args.id, mode: "fresh", notice: `Started a new CLI: resuming its conversation failed (${result.reason}).` };
     }
     await freshLaunch({ id: args.id, laneId: args.laneId, title, snapshot: args.snapshot });
     return { sessionId: args.id, mode: "fresh", notice: null };
@@ -529,37 +556,30 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
       });
     };
     if (args.resumeTargetId && deps.ptyService.resumeSession) {
-      const now = new Date().toISOString();
-      sessionService.create({
-        sessionId: args.id,
-        laneId: args.laneId,
-        ptyId: null,
-        tracked: true,
-        title: args.title,
-        startedAt: now,
-        transcriptPath: "",
-        toolType: args.toolType,
-        resumeCommand: null,
-        resumeMetadata: metadata,
-        goal: args.goal,
+      const result = await resumeOrStartFresh({
+        row: {
+          sessionId: args.id,
+          laneId: args.laneId,
+          title: args.title,
+          transcriptPath: "",
+          toolType: args.toolType,
+          resumeCommand: null,
+          resumeMetadata: metadata,
+          goal: args.goal,
+        },
+        provider: args.provider,
+        failureEvent: "agent_cli.moved_resume_failed",
+        fresh,
       });
-      sessionService.end({ sessionId: args.id, endedAt: now, exitCode: null, status: "disposed" });
-      try {
-        await deps.ptyService.resumeSession({ sessionId: args.id, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
-        return { mode: "resume", notice: null };
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        logger.warn("agent_cli.moved_resume_failed", { sessionId: args.id, provider: args.provider, error: reason });
-        sessionService.deleteSession(args.id);
-        await fresh();
-        return { mode: "fresh", notice: `Started a new CLI with a brief: resuming its conversation here failed (${reason}).` };
-      }
+      return result.resumed
+        ? { mode: "resume", notice: null }
+        : { mode: "fresh", notice: `Started a new CLI with a brief: resuming its conversation here failed (${result.reason}).` };
     }
     await fresh();
     return { mode: "fresh", notice: null };
   };
 
-  return { deleteCli, archiveCli, unarchiveCli, reopenCli, readTerminalTail, handoffContext, stopForMove, launchMovedCli };
+  return { deleteCli, archiveCli, stopArchivedAfterTurn, unarchiveCli, reopenCli, readTerminalTail, handoffContext, stopForMove, launchMovedCli };
 }
 
 export type CliSessionLifecycle = ReturnType<typeof createCliSessionLifecycle>;

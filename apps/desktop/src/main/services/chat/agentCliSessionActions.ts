@@ -74,7 +74,7 @@ export type AgentCliSessionActionDeps = {
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "updateMeta">;
   ptyService:
     | (Pick<PtyService, "canAcceptScheduledTurn" | "sendToSession">
-      & Partial<Pick<PtyService, "hasLivePty" | "getRuntimeState" | "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle" | "writeBySessionId">>)
+      & Partial<Pick<PtyService, "hasLivePty" | "getRuntimeState" | "getCliPromptKind" | "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle" | "writeBySessionId">>)
     | null;
   isTrackedAgentCliSession: (sessionId: string) => boolean;
   agentCliOwnedByAnotherRuntime: (sessionId: string) => boolean;
@@ -89,6 +89,17 @@ export type AgentCliSessionActionDeps = {
   notifyParentOfCliChildSpawn: (terminalSessionId: string, options: { resumed: true }) => void;
   /** The provider account an id or email names, or null when there is none. */
   resolveAccount: (provider: string, requested: string) => { id: string; signedIn: boolean; label: string } | null;
+  /**
+   * Copies the CLI's own conversation from one account's config home into
+   * another's, as a chat's account switch does, so the relaunch on the new
+   * account can resume it. `fromInstanceId` null is the provider's default.
+   */
+  copyConversationToAccount: (args: {
+    provider: "claude" | "codex";
+    conversationId: string;
+    fromInstanceId: string | null;
+    toInstanceId: string;
+  }) => Promise<{ ok: true } | { ok: false; message: string }>;
   isDisposed: () => boolean;
 };
 
@@ -269,10 +280,11 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
   const restartNow = async (
     row: TerminalSessionSummary,
     launch: Omit<Parameters<NonNullable<PtyService["restartAgentCli"]>>[0], "sessionId"> = {},
+    options: Parameters<NonNullable<PtyService["restartAgentCli"]>>[1] = {},
   ) => {
     const pty = requirePty();
     if (!pty.restartAgentCli) throw new Error("This ADE runtime cannot restart a CLI session.");
-    const restarted = await pty.restartAgentCli({ sessionId: row.id, ...launch });
+    const restarted = await pty.restartAgentCli({ sessionId: row.id, ...launch }, options);
     notifyResumed(restarted.sessionId, true);
     return restarted;
   };
@@ -396,8 +408,23 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     if (!account.signedIn) return { ok: false, reason: "signed_out", message: "That account is signed out." };
     const current = launch?.instanceId?.trim() || row.resumeMetadata?.instanceId?.trim() || null;
     if (current === account.id) return { ok: true, instanceId: account.id };
+    // The new account reads only its own config home: bring the conversation
+    // there once the old process has stopped (nothing writes it mid-copy) and
+    // before the relaunch; a failed copy relaunches on the old account.
+    const conversationId = row.resumeMetadata?.targetId?.trim();
+    const beforeResume = conversationId
+      ? async () => {
+        const copied = await deps.copyConversationToAccount({
+          provider,
+          conversationId,
+          fromInstanceId: current,
+          toInstanceId: account.id,
+        });
+        if (!copied.ok) throw new Error(`Couldn't bring this conversation to that account: ${copied.message}`);
+      }
+      : undefined;
     try {
-      await restartNow(row, { instanceId: account.id, requireIdle: true });
+      await restartNow(row, { instanceId: account.id, requireIdle: true }, beforeResume ? { beforeResume } : {});
     } catch (error) {
       return { ok: false, reason: "failed", message: error instanceof Error ? error.message : String(error) };
     }
@@ -432,20 +459,34 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
    * prompt (a permission question). ADE reads the screen, not the provider's
    * protocol, so the item carries the prompt line it saw, not its options.
    */
+  /**
+   * The approve/deny keys for the CLI's prompt, or null when ADE does not
+   * know them, or the CLI said it waits on a question rather than a
+   * permission (a key there would pick an answer blindly).
+   */
+  const promptKeys = (row: TerminalSessionSummary) => {
+    if (deps.ptyService?.getCliPromptKind?.(row.id) === "question") return undefined;
+    const provider = providerOf(row);
+    return provider ? CLI_APPROVAL_KEYS[provider] : undefined;
+  };
+
   const listPendingInputs = (row: TerminalSessionSummary): { requests: PendingInputRequest[] } => {
     if (!awaitingPrompt(row)) return { requests: [] };
     const provider = providerOf(row);
-    const keys = provider ? CLI_APPROVAL_KEYS[provider] : undefined;
+    const keys = promptKeys(row);
+    const question = deps.ptyService?.getCliPromptKind?.(row.id) === "question";
     return {
       requests: [{
         requestId: CLI_PROMPT_ITEM_ID,
         itemId: CLI_PROMPT_ITEM_ID,
         source: (provider && PENDING_INPUT_SOURCES.has(provider) ? provider : "ade") as PendingInputSource,
-        kind: "approval",
+        kind: question ? "question" : "approval",
         title: row.attentionMessage?.trim() || "The CLI is waiting at a prompt in its terminal.",
         description: keys
           ? `Answer with --approve${keys.acceptForSession ? ", --approve-session" : ""} or --deny; ADE presses ${providerName(row)}'s own key.`
-          : `ADE does not know ${providerName(row)}'s approval keys; answer it in the terminal (\`ade terminal write ${row.id} --data …\`).`,
+          : question
+            ? `${providerName(row)} is asking a question; answer it in the terminal (\`ade terminal write ${row.id} --data …\`).`
+            : `ADE does not know ${providerName(row)}'s approval keys; answer it in the terminal (\`ade terminal write ${row.id} --data …\`).`,
         questions: [],
         allowsFreeform: false,
         blocking: true,
@@ -466,9 +507,11 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
       throw new Error(`The CLI in '${sessionId}' is not waiting on a prompt ADE can see. Look at its terminal, or read it with \`ade terminal read ${sessionId}\`.`);
     }
     const provider = providerOf(row);
-    const keys = provider ? CLI_APPROVAL_KEYS[provider] : undefined;
+    const keys = promptKeys(row);
     if (!keys) {
-      throw new Error(`ADE does not know ${providerName(row)}'s approval keys. Answer the prompt in the terminal (\`ade terminal write ${sessionId} --data …\`).`);
+      throw new Error(deps.ptyService?.getCliPromptKind?.(sessionId) === "question"
+        ? `${providerName(row)} is asking a question, not for a permission. Answer it in the terminal (\`ade terminal write ${sessionId} --data …\`).`
+        : `ADE does not know ${providerName(row)}'s approval keys. Answer the prompt in the terminal (\`ade terminal write ${sessionId} --data …\`).`);
     }
     const decision = args.decision ?? (args.responseText?.trim() ? "decline" : "accept");
     const key = decision === "accept"

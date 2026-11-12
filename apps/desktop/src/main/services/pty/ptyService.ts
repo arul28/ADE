@@ -191,6 +191,7 @@ import {
   CLI_TURN_HOOK_SOCKET_ENV,
   codexOscTurnSignal,
   createCliTurnState,
+  CLI_TURN_HOOK_TOKEN_ENV,
   isExactCliTurnSource,
   mergeClaudeHookSettings,
   noteCliTurnSubmit,
@@ -855,6 +856,8 @@ type PtyEntry = {
    * CLI's own signals when it has them (cliTurnSignals.ts). Null for shells.
    */
   cliTurn: CliTurnState | null;
+  /** The secret this launch's Claude hooks send back (`CLI_TURN_HOOK_TOKEN_ENV`); null without hooks. */
+  cliTurnHookToken: string | null;
   /** After an Esc / Ctrl-C in a Claude turn: end it once the screen goes quiet. */
   cliTurnInterruptTimer: ReturnType<typeof setTimeout> | null;
   /**
@@ -6605,6 +6608,7 @@ export function createPtyService({
     session: TerminalSessionSummary,
     resumeLaunch: TrackedCliLaunchCommand,
     args: Pick<PtySendToSessionArgs, "cols" | "rows">,
+    promptAtLaunch = false,
   ): { flight: Promise<PtyCreateResult>; created: boolean } => {
     let flight = resumeRuntimeFlights.get(session.id);
     if (flight) return { flight, created: false };
@@ -6625,6 +6629,7 @@ export function createPtyService({
       ...(resumeLaunch.command ? { command: resumeLaunch.command } : {}),
       args: resumeLaunch.args,
       ...(resumeLaunch.env ? { env: resumeLaunch.env } : {}),
+      ...(promptAtLaunch ? { promptSubmittedAtLaunch: true } : {}),
       // `resumeLaunch.initialInput` is deliberately NOT forwarded. On a fresh
       // launch it means "deliver this after the TUI starts", and `create()`
       // does exactly that. On a resume it only records that the builder kept
@@ -6873,6 +6878,7 @@ export function createPtyService({
             ...(materializedRuntimeLaunch.initialInputDelayMs !== undefined
               ? { initialInputDelayMs: materializedRuntimeLaunch.initialInputDelayMs }
               : {}),
+            ...(materializedRuntimeLaunch.promptInArgs ? { promptSubmittedAtLaunch: true } : {}),
             env: {
               ...(args.env ?? {}),
               ...(materializedRuntimeLaunch.env ?? {}),
@@ -7383,11 +7389,14 @@ export function createPtyService({
           directArgs = hookLaunch.args;
           startupCommand = hookLaunch.startupCommand;
           launchEnv[CLI_TURN_HOOK_SOCKET_ENV] = hookSocketPath;
+          launchEnv[CLI_TURN_HOOK_TOKEN_ENV] = randomUUID();
         } else {
           delete launchEnv[CLI_TURN_HOOK_SOCKET_ENV];
+          delete launchEnv[CLI_TURN_HOOK_TOKEN_ENV];
         }
       } else {
         delete launchEnv[CLI_TURN_HOOK_SOCKET_ENV];
+        delete launchEnv[CLI_TURN_HOOK_TOKEN_ENV];
       }
       // Stamp a per-launch ownership nonce Codex echoes into its rollout, so
       // thread capture never has to infer ownership from prompt text alone. An
@@ -7915,9 +7924,13 @@ export function createPtyService({
         agentCliState: null,
         agentCliStateCarry: "",
         cliTurn: tracked && isTrackedAgentCliToolType(toolTypeHint)
-          ? createCliTurnState(launchEnv[CLI_TURN_HOOK_SOCKET_ENV] ? "claude-hooks" : "heuristic")
+          ? createCliTurnState(
+            launchEnv[CLI_TURN_HOOK_SOCKET_ENV] ? "claude-hooks" : "heuristic",
+            { promptSubmitted: effectiveArgs.promptSubmittedAtLaunch === true },
+          )
           : null,
         cliTurnInterruptTimer: null,
+        cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
         priorEndState,
         piSessionLease,
         openCodeLease,
@@ -8074,10 +8087,13 @@ export function createPtyService({
           entry.agentCliStateCarry = reported.carry;
           if (reported.state) {
             entry.agentCliState = reported.state;
-            const signal = entry.cliTurn && (entry.toolTypeHint === "codex" || entry.toolTypeHint === "codex-orchestrated")
-              ? codexOscTurnSignal(reported.state)
-              : null;
-            if (signal) applyCliTurnSignal(entry, signal, "codex-osc");
+            if (entry.cliTurn && (entry.toolTypeHint === "codex" || entry.toolTypeHint === "codex-orchestrated")) {
+              // In order: one chunk can carry a whole turn.
+              for (const state of reported.states) {
+                const signal = codexOscTurnSignal(state);
+                if (signal) applyCliTurnSignal(entry, signal, "codex-osc");
+              }
+            }
           }
         }
         adoptCliRuntimeWindowTitle(entry, data);
@@ -8763,6 +8779,7 @@ export function createPtyService({
         resumableSession,
         resumeLaunch,
         args,
+        promptAtLaunch,
       );
       const created = await flight;
       // The message itself may be embedded in the provider's launch command,
@@ -8874,7 +8891,18 @@ export function createPtyService({
      * before anything is stopped when the CLI has nothing to resume, or when
      * its resume command cannot carry a requested setting.
      */
-    async restartAgentCli(args: PtyRestartAgentCliArgs): Promise<PtyRestartAgentCliResult> {
+    async restartAgentCli(
+      args: PtyRestartAgentCliArgs,
+      options: {
+        /**
+         * Runs once the old process has let go of its conversation and before
+         * the relaunch (an account switch copies the conversation here). When
+         * it throws, the CLI relaunches with its previous settings and the
+         * error is rethrown.
+         */
+        beforeResume?: () => Promise<void>;
+      } = {},
+    ): Promise<PtyRestartAgentCliResult> {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
       const session = sessionService.get(sessionId);
@@ -8955,6 +8983,25 @@ export function createPtyService({
         // The old process must let go of the conversation before the resumed
         // one opens it; two writers on one provider session corrupt it.
         if (pid != null) await waitForProcessExit(pid, AGENT_CLI_RESTART_EXIT_WAIT_MS);
+      }
+      if (options.beforeResume) {
+        try {
+          await options.beforeResume();
+        } catch (error) {
+          // Back as it was: the saved settings and a CLI on them.
+          if (metadata) sessionService.updateMeta({ sessionId, resumeMetadata: metadata });
+          await service.resumeSession({
+            sessionId,
+            ...(args.cols != null ? { cols: args.cols } : {}),
+            ...(args.rows != null ? { rows: args.rows } : {}),
+          }).catch((resumeError: unknown) => {
+            logger.warn("pty.agent_cli_restart_rollback_failed", {
+              sessionId,
+              error: resumeError instanceof Error ? resumeError.message : String(resumeError),
+            });
+          });
+          throw error;
+        }
       }
       const resumed = await service.resumeSession({
         sessionId,
@@ -9649,6 +9696,26 @@ export function createPtyService({
       }
     },
 
+    /**
+     * What a tracked agent CLI waiting on the person waits on, when its own
+     * signals said: a permission prompt or a question. Null otherwise.
+     */
+    getCliPromptKind(sessionId: string): "approval" | "question" | null {
+      const entry = liveEntryBySessionId(sessionId)?.[1];
+      const turn = entry?.cliTurn;
+      if (turn?.phase === "needs-input" && turn.needsInputPrompt) return turn.needsInputPrompt;
+      // Claude without its hooks (a Windows `.cmd` launch) never says. Its
+      // permission menu asks "Do you want to …" with a "Yes"; anything else
+      // (an AskUserQuestion list) is a question, so a key is never pressed blind.
+      if (entry && isClaudeTrackedCliToolType(entry.toolTypeHint)) {
+        const screen = entry.terminalSnapshot
+          ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal).map((row) => row.text).join("\n")
+          : stripAnsi(readRecentOutputTail(entry));
+        return /Do you want to\b/i.test(screen) && /\bYes\b/.test(screen) ? "approval" : "question";
+      }
+      return null;
+    },
+
     getRuntimeState(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState {
       return computeRuntimeState(sessionId, fallbackStatus);
     },
@@ -10285,10 +10352,17 @@ export function createPtyService({
      * has that id here; an unknown or uninteresting event is accepted and
      * ignored, so a newer Claude's extra events never error.
      */
-    reportCliTurnHookEvent(args: { sessionId: string; provider: string; payload: Record<string, unknown> }): boolean {
+    reportCliTurnHookEvent(args: {
+      sessionId: string;
+      provider: string;
+      payload: Record<string, unknown>;
+      token?: string | null;
+    }): boolean {
       const live = liveEntryBySessionId(args.sessionId);
       const entry = live?.[1];
       if (!entry?.cliTurn) return false;
+      // Only this launch's own hooks know its token.
+      if (!entry.cliTurnHookToken || args.token !== entry.cliTurnHookToken) return false;
       if (args.provider !== "claude" || !isClaudeTrackedCliToolType(entry.toolTypeHint)) return true;
       const signal = claudeHookTurnSignal(args.payload);
       if (signal) applyCliTurnSignal(entry, signal, "claude-hooks");

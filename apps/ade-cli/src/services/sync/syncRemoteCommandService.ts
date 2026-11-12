@@ -5714,6 +5714,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       sessionId,
       text,
       holdUntilFree: payload.holdUntilFree !== false,
+      ...(typeof payload.clientMessageId === "string" && payload.clientMessageId.trim()
+        ? { clientMessageId: payload.clientMessageId.trim().slice(0, 128) }
+        : {}),
     });
     return { ok: true, outcome: result.outcome };
   });

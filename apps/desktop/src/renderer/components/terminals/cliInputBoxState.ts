@@ -31,12 +31,15 @@ function readStorage(key: string): string | null {
   }
 }
 
-function writeStorage(key: string, value: string | null): void {
+/** False when storage is full or unavailable, so the value is not kept. */
+function writeStorage(key: string, value: string | null): boolean {
   try {
     if (value == null) window.localStorage.removeItem(key);
     else window.localStorage.setItem(key, value);
-  } catch {
-    // Storage full or unavailable: the value just is not kept.
+    return true;
+  } catch (error) {
+    console.warn("[cliInputBox] storage write failed", { key, error: error instanceof Error ? error.message : String(error) });
+    return false;
   }
 }
 
@@ -231,11 +234,13 @@ function getQueue(sessionId: string): readonly CliInputQueueItem[] {
   return queue;
 }
 
-function setQueue(sessionId: string, items: readonly CliInputQueueItem[]): void {
+/** False when the queue could not be saved: it lives in this window only. */
+function setQueue(sessionId: string, items: readonly CliInputQueueItem[]): boolean {
   const next = items.length > 0 ? Object.freeze([...items]) : EMPTY_QUEUE;
   queues.set(sessionId, next);
-  writeStorage(`${QUEUE_KEY_PREFIX}${sessionId}`, next.length > 0 ? JSON.stringify(next) : null);
+  const saved = writeStorage(`${QUEUE_KEY_PREFIX}${sessionId}`, next.length > 0 ? JSON.stringify(next) : null);
   for (const listener of queueListeners.get(sessionId) ?? []) listener();
+  return saved;
 }
 
 function updateItem(sessionId: string, itemId: string, patch: Partial<CliInputQueueItem>): void {
@@ -279,7 +284,11 @@ export function useCliInputQueue(sessionId: string): readonly CliInputQueueItem[
   );
 }
 
-export function enqueueCliInput(sessionId: string, text: string): void {
+/**
+ * Queue a text. False when it could not be saved (storage full): it still
+ * sends from this window, but a reload before then loses it.
+ */
+export function enqueueCliInput(sessionId: string, text: string): boolean {
   const item: CliInputQueueItem = {
     id: randomId(),
     text,
@@ -289,8 +298,9 @@ export function enqueueCliInput(sessionId: string, text: string): void {
     claimedBy: null,
     claimedAt: null,
   };
-  setQueue(sessionId, [...getQueue(sessionId), item]);
+  const saved = setQueue(sessionId, [...getQueue(sessionId), item]);
   kickCliInputQueue(sessionId);
+  return saved;
 }
 
 /** Take a waiting text out of the queue (cancel or edit). A text being typed stays. */
@@ -431,8 +441,12 @@ async function step(sessionId: string): Promise<void> {
     return;
   }
   if (runner.route.offline) {
-    // Nothing to ask while the machine is gone; the reconnect kicks the queue.
+    // Nothing to ask while the machine is gone. A shown input box kicks the
+    // queue when it reconnects; with the box hidden nothing follows the
+    // connection, so look again on a timer too.
     if (head.state !== "offline") updateItem(sessionId, head.id, { state: "offline", error: null });
+    runner.route = { ...runner.route, offline: false };
+    schedule(sessionId, runner, OFFLINE_RETRY_MS);
     return;
   }
   const api = typeof window !== "undefined" ? window.ade?.agentChat?.typeIntoCli : undefined;
@@ -441,10 +455,18 @@ async function step(sessionId: string): Promise<void> {
     return;
   }
   runner.inFlight = true;
-  updateItem(sessionId, head.id, { state: "sending", error: null, claimedBy: WINDOW_ID, claimedAt: Date.now() });
+  // A retry while the machine looked offline stays shown as waiting for it.
+  updateItem(sessionId, head.id, {
+    state: head.state === "offline" ? "offline" : "sending",
+    error: null,
+    claimedBy: WINDOW_ID,
+    claimedAt: Date.now(),
+  });
   try {
     const { pin } = runner.route;
-    const args = { sessionId, text: head.text };
+    // The item's id makes the send idempotent on the host: another window
+    // that claimed the same item at the same moment gets this one's answer.
+    const args = { sessionId, text: head.text, clientMessageId: head.id };
     const result = await (pin ? api(args, pin) : api(args));
     if (result.outcome === "delivered" || result.outcome === "held") {
       setQueue(sessionId, getQueue(sessionId).filter((item) => item.id !== head.id));

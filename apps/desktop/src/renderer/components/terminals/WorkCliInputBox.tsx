@@ -33,6 +33,7 @@ import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isImeComposing } from "../../lib/imeComposition";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { showToast } from "../app/toast/toastStore";
 import {
   cliInputHistoryVersion,
   cliInputQueueSummary,
@@ -371,7 +372,13 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
   const send = useCallback(() => {
     const text = draft.trim();
     if (!text) return;
-    enqueueCliInput(sessionId, text);
+    if (!enqueueCliInput(sessionId, text)) {
+      showToast({
+        title: "This message isn't saved yet",
+        message: "ADE couldn't save it (storage is full). It still sends from this window, but reloading ADE before then loses it.",
+        tone: "warning",
+      });
+    }
     setDraft("");
     writeCliInputDraft(sessionId, "");
     setCommandMenuTrigger(null);

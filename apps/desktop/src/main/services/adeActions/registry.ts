@@ -1309,6 +1309,9 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         sessionId,
         text,
         holdUntilFree: record.holdUntilFree === true,
+        ...(typeof record.clientMessageId === "string" && record.clientMessageId.trim()
+          ? { clientMessageId: record.clientMessageId.trim().slice(0, 128) }
+          : {}),
       });
     },
     steer: async (args?: unknown) => {
@@ -2111,7 +2114,8 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
         ? record.payload as Record<string, unknown>
         : {};
-      const accepted = runtime.ptyService?.reportCliTurnHookEvent?.({ sessionId, provider, payload }) ?? false;
+      const token = optionalNonEmptyString(record.token) ?? null;
+      const accepted = runtime.ptyService?.reportCliTurnHookEvent?.({ sessionId, provider, payload, token }) ?? false;
       return { ok: accepted, sessionId };
     },
     // -----------------------------------------------------------------------

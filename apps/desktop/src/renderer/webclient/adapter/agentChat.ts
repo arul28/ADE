@@ -420,6 +420,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         sessionId: args.sessionId,
         text: args.text,
         holdUntilFree: args.holdUntilFree === true,
+        ...(args.clientMessageId ? { clientMessageId: args.clientMessageId } : {}),
       });
       const outcome = result?.outcome;
       if (outcome !== "delivered" && outcome !== "deferred" && outcome !== "held" && outcome !== "ended") {

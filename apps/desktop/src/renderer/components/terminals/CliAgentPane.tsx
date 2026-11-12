@@ -26,6 +26,7 @@ import { useChatMachineSessions, useCliParentChildRows } from "../chat/chatSubag
 import type { ChatSubagentSnapshot } from "../chat/chatExecutionSummary";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
 
 /**
  * A tracked agent CLI gets a chat's actions pane: the same header button, the
@@ -59,8 +60,12 @@ type CliActionsState = {
     decision: "accept" | "decline",
     answers?: Record<string, string | string[]>,
   ) => Promise<void>;
-  error: string | null;
+  /** A read or an action that failed, with a retry for a read. */
+  problem: CliActionsProblem | null;
+  clearProblem: () => void;
 };
+
+type CliActionsProblem = { key: "cards" | "proof" | "action"; title: string; message: string; retry?: () => void };
 
 const CliActionsContext = createContext<CliActionsState | null>(null);
 
@@ -139,7 +144,12 @@ function CliActionsStateProvider({
   const pinKey = runtimePin?.key ?? null;
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
-  const [error, setError] = useState<string | null>(null);
+  const [problem, setProblem] = useState<CliActionsProblem | null>(null);
+  const clearProblem = useCallback(() => setProblem(null), []);
+  // A read that works again clears its own failure, never another's.
+  const settleRead = useCallback((key: CliActionsProblem["key"]) => {
+    setProblem((current) => (current?.key === key ? null : current));
+  }, []);
 
   // ── Open state: kept per session, like a chat's ──────────────────────
   const [open, setOpenState] = useState(() => readFlag(`${OPEN_KEY_PREFIX}${sessionId}`) === true);
@@ -158,11 +168,21 @@ function CliActionsStateProvider({
       .then((result) => {
         if (seq !== cardReadSeq.current) return;
         setCards((result?.requests ?? []).filter(isAdeCard));
+        settleRead("cards");
       })
-      .catch(() => {
-        if (seq === cardReadSeq.current) setCards([]);
+      .catch((readError: unknown) => {
+        if (seq !== cardReadSeq.current) return;
+        // Keep the cards already shown: an answer still reaches the CLI.
+        setProblem({
+          key: "cards",
+          title: "Couldn't check this CLI for cards waiting on you.",
+          message: readError instanceof Error ? readError.message : String(readError),
+          retry: () => readCardsRef.current(),
+        });
       });
-  }, [sessionId]);
+  }, [sessionId, settleRead]);
+  const readCardsRef = useRef(readCards);
+  readCardsRef.current = readCards;
   // A card raises the row's hand and lowers it when it closes; those row
   // fields are the change signal. Keyed on the pin's key, not the pin object.
   useEffect(() => {
@@ -180,7 +200,7 @@ function CliActionsStateProvider({
   ) => {
     const itemId = cardId(request);
     setRespondingIds((current) => new Set(current).add(itemId));
-    setError(null);
+    setProblem((current) => (current?.key === "action" ? null : current));
     try {
       await window.ade.agentChat.respondToInput({
         sessionId,
@@ -190,7 +210,11 @@ function CliActionsStateProvider({
       }, pinRef.current);
       setCards((current) => current.filter((card) => cardId(card) !== itemId));
     } catch (answerError) {
-      setError(answerError instanceof Error ? answerError.message : String(answerError));
+      setProblem({
+        key: "action",
+        title: "That answer didn't reach the CLI.",
+        message: answerError instanceof Error ? answerError.message : String(answerError),
+      });
     } finally {
       setRespondingIds((current) => {
         const next = new Set(current);
@@ -213,7 +237,11 @@ function CliActionsStateProvider({
         ? window.ade.pty.dispose({ ptyId: child.ptyId, sessionId: childSessionId }, pin)
         : Promise.reject(new Error("That session is not running here."));
     void stop.catch((stopError: unknown) => {
-      setError(stopError instanceof Error ? stopError.message : String(stopError));
+      setProblem({
+        key: "action",
+        title: "Couldn't stop that agent.",
+        message: stopError instanceof Error ? stopError.message : String(stopError),
+      });
     });
   }, [machineSessions]);
   const runningChildren = useMemo(
@@ -228,12 +256,22 @@ function CliActionsStateProvider({
     const seq = ++proofReadSeq.current;
     void window.ade.computerUse.getOwnerSnapshot({ owner: { kind: "chat_session", id: sessionId } }, pinRef.current)
       .then((snapshot) => {
-        if (seq === proofReadSeq.current) setProof(snapshot ?? null);
+        if (seq !== proofReadSeq.current) return;
+        setProof(snapshot ?? null);
+        settleRead("proof");
       })
-      .catch(() => {
-        if (seq === proofReadSeq.current) setProof(null);
+      .catch((readError: unknown) => {
+        if (seq !== proofReadSeq.current) return;
+        setProblem({
+          key: "proof",
+          title: "Couldn't load this CLI's proof.",
+          message: readError instanceof Error ? readError.message : String(readError),
+          retry: () => readProofRef.current(),
+        });
       });
-  }, [sessionId]);
+  }, [sessionId, settleRead]);
+  const readProofRef = useRef(readProof);
+  readProofRef.current = readProof;
   useEffect(() => {
     setProof(null);
     readProof();
@@ -271,9 +309,10 @@ function CliActionsStateProvider({
     cards,
     respondingIds,
     answer,
-    error,
+    problem,
+    clearProblem,
   }), [
-    answer, cards, childRows, error, open, proof, proofCount, readProof, respondingIds, runningChildren,
+    answer, cards, childRows, clearProblem, problem, open, proof, proofCount, readProof, respondingIds, runningChildren,
     runtimePin, session.resumeMetadata?.provider, sessionId, setOpen, stopChild,
   ]);
   return <CliActionsContext.Provider value={value}>{children}</CliActionsContext.Provider>;
@@ -318,18 +357,13 @@ const EMPTY_EVENTS: never[] = [];
 export function CliActionsSidePane() {
   const state = useContext(CliActionsContext);
   if (!state?.open) return null;
-  const { sessionId, childRows, stopChild, proof, proofCount, readProof, runtimePin, error } = state;
+  const { sessionId, childRows, stopChild, proof, proofCount, readProof, runtimePin } = state;
   return (
     <div
       className="pointer-events-none absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))] flex-col"
       data-testid="cli-actions-pane"
     >
       <div className="pointer-events-auto flex max-h-full min-h-0 w-full flex-col overflow-hidden rounded-xl border border-fg/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]">
-        {error ? (
-          <div className="m-2 shrink-0 rounded-md border border-red-500/20 bg-red-500/5 px-2 py-1 text-[11px] text-red-300">
-            {error}
-          </div>
-        ) : null}
         <ChatActionsDrawerPanel
           emptyCopy="Nothing here yet. Agents this CLI starts and proof it files show up here."
           sections={[
@@ -371,9 +405,29 @@ export function CliActionsSidePane() {
  */
 export function CliPromptSlot({ children }: { children?: ReactNode }) {
   const state = useContext(CliActionsContext);
-  if (!state || state.cards.length === 0) return <>{children}</>;
+  const problem = state?.problem ?? null;
+  const banner = problem ? (
+    <div className="shrink-0 px-3 pt-2">
+      <div className="mx-auto w-full max-w-[var(--chat-column,46rem)]">
+        <Banner
+          layout="inline"
+          model={{
+            id: `cli-actions-${problem.key}`,
+            tone: "error",
+            title: problem.title,
+            error: problem.message,
+            ...(problem.retry ? { actions: [{ label: "Try again", onClick: problem.retry }] } : {}),
+            dismiss: { onDismiss: state!.clearProblem },
+          }}
+        />
+      </div>
+    </div>
+  ) : null;
+  if (!state || state.cards.length === 0) return <>{banner}{children}</>;
   const { cards, provider, respondingIds, answer } = state;
   return (
+    <>
+    {banner}
     <div className="shrink-0 bg-[color:var(--chat-canvas-bg)] px-3 pb-3 pt-2" data-testid="cli-cards-dock">
       <div className="mx-auto w-full max-w-[var(--chat-column,46rem)] space-y-2">
         {cards.map((request) => (
@@ -387,6 +441,7 @@ export function CliPromptSlot({ children }: { children?: ReactNode }) {
         ))}
       </div>
     </div>
+    </>
   );
 }
 

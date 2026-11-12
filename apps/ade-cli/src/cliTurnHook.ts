@@ -1,5 +1,6 @@
 import {
   CLI_TURN_HOOK_SOCKET_ENV,
+  CLI_TURN_HOOK_TOKEN_ENV,
   claudeHookPayloadSummary,
 } from "../../desktop/src/main/services/pty/cliTurnSignals";
 
@@ -96,7 +97,7 @@ export async function runCliTurnHook(argv: string[], runCli: RunCli): Promise<vo
         "run",
         "session.reportCliTurnSignal",
         "--input-json",
-        JSON.stringify({ sessionId, provider, payload: summary }),
+        JSON.stringify({ sessionId, provider, payload: summary, token: process.env[CLI_TURN_HOOK_TOKEN_ENV]?.trim() ?? "" }),
       ]).catch(() => null),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, REPORT_DEADLINE_MS);

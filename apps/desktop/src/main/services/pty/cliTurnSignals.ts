@@ -27,7 +27,17 @@ export type CliTurnSource = CliTurnExactSource | "heuristic";
 
 export type CliTurnSignal =
   | { kind: "working"; promptId?: string | null }
-  | { kind: "needs-input"; message: string; promptId?: string | null }
+  | {
+    kind: "needs-input";
+    message: string;
+    promptId?: string | null;
+    /**
+     * `approval`: a permission prompt that the CLI's own approve/deny keys
+     * answer. `question`: it asks for an answer in words (Claude's
+     * AskUserQuestion or an MCP elicitation); pressing a key would pick blindly.
+     */
+    prompt?: "approval" | "question";
+  }
   | {
     kind: "ended";
     promptId?: string | null;
@@ -46,6 +56,8 @@ export type CliTurnState = {
   turnStartedAt: number | null;
   /** What the CLI waits on, while `phase` is `needs-input`. */
   needsInputMessage: string | null;
+  /** Whether that wait is a permission prompt or a question; null when the signal did not say. */
+  needsInputPrompt: "approval" | "question" | null;
   /** A line was submitted since the last turn ended. */
   submittedSinceEnd: boolean;
   /**
@@ -112,13 +124,20 @@ const ENDED_PROMPT_IDS_LIMIT = 16;
  * not read as a turn before its first hook. A hook that never arrives drops
  * it back to the heuristics (`cliTurnHooksOverdue`).
  */
-export function createCliTurnState(source: CliTurnSource = "heuristic"): CliTurnState {
+export function createCliTurnState(
+  source: CliTurnSource = "heuristic",
+  options: {
+    /** The launch command carried the first prompt: its turn is a real one. */
+    promptSubmitted?: boolean;
+  } = {},
+): CliTurnState {
   return {
     source,
     phase: "idle",
     turnStartedAt: null,
     needsInputMessage: null,
-    submittedSinceEnd: false,
+    needsInputPrompt: null,
+    submittedSinceEnd: options.promptSubmitted === true,
     submittedWhileWorking: false,
     turnAnnounced: false,
     awaitingHookSince: null,
@@ -207,6 +226,7 @@ export function reduceCliTurn(
     const announce = state.turnAnnounced;
     state.phase = "idle";
     state.needsInputMessage = null;
+    state.needsInputPrompt = null;
     state.submittedSinceEnd = false;
     state.submittedWhileWorking = false;
     state.turnAnnounced = false;
@@ -228,6 +248,7 @@ export function reduceCliTurn(
     }
     state.phase = "working";
     state.needsInputMessage = null;
+    state.needsInputPrompt = null;
     return transition("working", state.turnAnnounced);
   }
 
@@ -240,6 +261,7 @@ export function reduceCliTurn(
   }
   state.phase = "needs-input";
   state.needsInputMessage = signal.message.trim() || "Waiting for input in the terminal";
+  state.needsInputPrompt = signal.prompt ?? null;
   return transition("needs-input", state.turnAnnounced);
 }
 
@@ -251,6 +273,12 @@ export function reduceCliTurn(
 export const CLI_TURN_HOOK_COMMAND = "__ade-cli-turn-hook";
 /** Env var carrying the runtime endpoint the hook reports to. */
 export const CLI_TURN_HOOK_SOCKET_ENV = "ADE_CLI_TURN_HOOK_SOCKET";
+/**
+ * Env var carrying a secret ADE makes for each Claude launch. Its hook sends
+ * it back with every report, so a report is taken only from that terminal's
+ * own Claude: another CLI under the same chat cannot report for it.
+ */
+export const CLI_TURN_HOOK_TOKEN_ENV = "ADE_CLI_TURN_HOOK_TOKEN";
 
 /** The hook events ADE listens to, and nothing else: each one costs a process. */
 export const CLAUDE_TURN_HOOK_EVENTS = [
@@ -376,15 +404,20 @@ export function claudeHookTurnSignal(payload: Record<string, unknown>): CliTurnS
           : tool
             ? `Claude wants permission to use ${tool}`
             : "Claude wants your permission";
-      return { kind: "needs-input", message, promptId };
+      return { kind: "needs-input", message, promptId, prompt: tool === "AskUserQuestion" ? "question" : "approval" };
     }
     case "Elicitation":
-      return { kind: "needs-input", message: "Claude is asking for input", promptId };
+      return { kind: "needs-input", message: "Claude is asking for input", promptId, prompt: "question" };
     case "Notification": {
       const type = stringField(payload, "notification_type");
       if (type !== "permission_prompt" && type !== "elicitation_dialog") return null;
       const message = stringField(payload, "message");
-      return { kind: "needs-input", message: message ? clip(message) : "Claude is waiting for you", promptId };
+      return {
+        kind: "needs-input",
+        message: message ? clip(message) : "Claude is waiting for you",
+        promptId,
+        prompt: type === "permission_prompt" ? "approval" : "question",
+      };
     }
     default:
       return null;
@@ -419,7 +452,7 @@ export function codexOscTurnSignal(state: string): CliTurnSignal | null {
     case "idle":
       return { kind: "ended", reason: "interrupted" };
     case "blocked":
-      return { kind: "needs-input", message: "Codex is waiting for your approval" };
+      return { kind: "needs-input", message: "Codex is waiting for your approval", prompt: "approval" };
     default:
       return null;
   }

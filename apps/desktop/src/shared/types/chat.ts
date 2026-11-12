@@ -2880,6 +2880,13 @@ export const AGENT_CHAT_PERMISSION_MODE_VALUES = [
   "config-toml",
 ] as const satisfies readonly AgentChatPermissionMode[];
 
+/** `value` as a permission mode, or null when it is not one. */
+export function readAgentChatPermissionMode(value: unknown): AgentChatPermissionMode | null {
+  return typeof value === "string" && (AGENT_CHAT_PERMISSION_MODE_VALUES as readonly string[]).includes(value)
+    ? value as AgentChatPermissionMode
+    : null;
+}
+
 /** Convert ADE's generic permission ladder to Droid's native autonomy tier. */
 export function droidPermissionModeFromLegacyPermissionMode(
   mode: AgentChatPermissionMode | null | undefined,

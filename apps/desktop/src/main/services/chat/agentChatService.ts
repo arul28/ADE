@@ -47,7 +47,6 @@ import {
   cliMovePermissionMode,
   cliMoveProvider,
   cliProviderName,
-  defaultCodexHome,
   packageCliConversation,
   placeCliConversation,
 } from "./cliCrossMachineMove";
@@ -1846,7 +1845,9 @@ import {
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
-import { extractClaudeCliScheduleEvents, lastClaudeCliRecordMs, readClaudeCliSessionTail } from "./claudeCliScheduledWork";
+import { createClaudeCliScheduleMirror } from "./claudeCliScheduledWork";
+import type { TrackedCliTurnEndedEvent, TrackedCliTurnStartedEvent } from "../pty/cliTurnSignals";
+import { createCliChildReports, type ChildCompletionDelivery } from "./cliChildReports";
 import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
   createStaleRunSweep,
@@ -11997,25 +11998,13 @@ function awaitingUserQuietNotice(childTitle: string, summary: string): Extract<A
   };
 }
 
-/** One finished turn of a tracked agent CLI, as the pty service reports it. */
-type TrackedCliTurnEndedEvent = {
-  sessionId: string;
-  laneId?: string;
-  turnStartedAt?: string | null;
-  endedAt?: string;
-  /** `needs-input`: the turn stopped on a question for the person. */
-  outcome?: string;
-  /** How the end was read: a provider signal, or `heuristic` (quiet output). */
-  source?: string;
-};
-
 /**
  * The turn-boundary subscriptions of the pty service. Optional: a host whose
  * pty surface has none keeps the exit-only reports it had.
  */
 type TrackedCliTurnSignals = {
   onTrackedCliTurnEnded?: (listener: (event: TrackedCliTurnEndedEvent) => void) => () => void;
-  onTrackedCliTurnStarted?: (listener: (event: { sessionId: string; startedAt?: string }) => void) => () => void;
+  onTrackedCliTurnStarted?: (listener: (event: TrackedCliTurnStartedEvent) => void) => () => void;
 };
 
 export function createAgentChatService(args: {
@@ -50495,33 +50484,6 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  type ChildCompletionDelivery = {
-    parentSessionId: string;
-    childSessionId: string;
-    childTitle: string;
-    /** Provider id the parent's card and CTO line name the child by. */
-    childProvider: string;
-    spawnKind: "subagent" | "peer";
-    resultStatus: AgentChatSpawnCompletion["status"];
-    summary: string;
-    /** Carries `childTurnId`, the durable dedupe anchor in the parent transcript. */
-    spawnCompletion: AgentChatSpawnCompletion;
-    ctoPrNumber: number | null;
-    /** CLI children need their existing inline spawn card closed in CTO threads. */
-    emitCtoSubagentResult?: boolean;
-    /** What the woken parent agent reads (subagents only). */
-    wakeText: string;
-    /**
-     * Close the card and leave a quiet note instead of waking the parent. A
-     * restart reconcile uses it: like the stale-run sweep, recovering a
-     * child's end after the fact never starts a parent turn by itself.
-     */
-    routeQuietly?: boolean;
-    onParentGone: (reason: string) => void;
-    onDeliveryFailed: (lastError: unknown) => void;
-    /** The parent has the completion (now, or already from an earlier try). */
-    onDelivered?: () => void;
-  };
 
   // Wakes for tracked agent CLIs: typed at the CLI's prompt at a turn
   // boundary (`agentCliWakes.ts`). The later helpers are read at call time.
@@ -50574,7 +50536,37 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Answers to `typeIntoAgentCliWhenFree` by the caller's message id, so one
+   * queued text sent by two windows (or retried) is typed once. A call in
+   * flight is shared; a typed or queued answer is kept for a while.
+   */
+  const agentCliTypeAnswers = new Map<string, { at: number; answer: Promise<AgentCliTypeResult> }>();
+  const AGENT_CLI_TYPE_ANSWER_TTL_MS = 10 * 60_000;
   const typeIntoAgentCliWhenFree = async (args: AgentCliTypeArgs): Promise<AgentCliTypeResult> => {
+    const clientMessageId = typeof args?.clientMessageId === "string" ? args.clientMessageId.trim() : "";
+    if (!clientMessageId) return await typeIntoAgentCliNow(args);
+    const key = `${typeof args?.sessionId === "string" ? args.sessionId.trim() : ""}:${clientMessageId}`;
+    const now = Date.now();
+    for (const [entryKey, entry] of agentCliTypeAnswers) {
+      if (now - entry.at > AGENT_CLI_TYPE_ANSWER_TTL_MS) agentCliTypeAnswers.delete(entryKey);
+    }
+    const known = agentCliTypeAnswers.get(key);
+    if (known) return await known.answer;
+    const answer = typeIntoAgentCliNow(args);
+    agentCliTypeAnswers.set(key, { at: now, answer });
+    try {
+      const result = await answer;
+      // Only a typed or queued text is final; busy, ended or a failure may be sent again.
+      if (result.outcome !== "delivered" && result.outcome !== "held") agentCliTypeAnswers.delete(key);
+      return result;
+    } catch (error) {
+      agentCliTypeAnswers.delete(key);
+      throw error;
+    }
+  };
+
+  const typeIntoAgentCliNow = async (args: AgentCliTypeArgs): Promise<AgentCliTypeResult> => {
     const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
     const text = typeof args?.text === "string" ? args.text : "";
     if (!sessionId) throw new AdeExpectedError("A session id is required.", "user");
@@ -50631,6 +50623,21 @@ export function createAgentChatService(args: {
       }
       if (!instance || instance.provider !== provider) return null;
       return { id: instance.id, signedIn: instance.signedIn, label: instance.account?.email?.trim() || instance.label || instance.id };
+    },
+    copyConversationToAccount: async ({ provider, conversationId, fromInstanceId, toInstanceId }) => {
+      const store = getMachineProviderInstanceStore();
+      let fromHome: string | null = null;
+      let toHome: string | null = null;
+      try {
+        fromHome = store.resolve(provider, fromInstanceId ?? undefined).instance.configHome || null;
+        toHome = store.get(toInstanceId)?.configHome || null;
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!fromHome || !toHome) return { ok: false, message: "ADE could not find that account's folder." };
+      if (pathsEqual(fromHome, toHome)) return { ok: true };
+      const moved = await moveProviderThread({ provider, threadId: conversationId, fromConfigHome: fromHome, toConfigHome: toHome });
+      return moved.ok ? { ok: true } : { ok: false, message: moved.message };
     },
     isDisposed: () => serviceDisposed,
   });
@@ -51446,332 +51453,43 @@ export function createAgentChatService(args: {
     return true;
   };
 
-  /**
-   * Close the parent's card for a CLI child whose PTY has ended, with the CLI's
-   * own closing message (or its last terminal lines) as the report. A no-op
-   * while the child still runs, for a CLI without a parent, and for a run the
-   * parent already has — the run key is the persisted end time, so the live
-   * exit and a post-restart reconcile of the same exit resolve to one delivery.
-   */
-  /**
-   * The last finished-turn report each running CLI child gave its parent
-   * (`reportCliChildTurnEnded`), and the children whose parent card that report
-   * closed. In memory: a restart drops them, and the exit report then simply
-   * speaks once more.
-   */
-  const cliChildTurnReports = new Map<string, { providerMessage: string | null; at: number }>();
-  const cliChildCardsClosedByTurn = new Set<string>();
-  /**
-   * When each CLI child last sent its parent a report itself (`ade chat
-   * message`, which the RPC stamps with `agentRelay`). Its guidance asks it to;
-   * a turn it reported on is then closed quietly instead of waking the parent
-   * a second time with ADE's copy.
-   */
-  const cliChildSelfReportedAt = new Map<string, number>();
-  const noteCliChildSelfReport = (messageArgs: AgentChatMessageSessionArgs): void => {
-    const relay = (messageArgs?.metadata as { agentRelay?: { fromSessionId?: unknown } } | undefined)?.agentRelay;
-    const from = typeof relay?.fromSessionId === "string" ? relay.fromSessionId.trim() : "";
-    const target = typeof messageArgs?.sessionId === "string" ? messageArgs.sessionId.trim() : "";
-    if (!from || !target) return;
-    if (readTrackedCliRow(from)?.lineage?.parentSessionId === target) cliChildSelfReportedAt.set(from, Date.now());
-  };
+  const {
+    noteCliChildSelfReport,
+    reportCliChildEnded,
+    reportCliChildTurnEnded,
+    reopenCliChildCardOnTurnStart,
+  } = createCliChildReports({
+    logger,
+    isClosed: () => cliChildReportsClosed,
+    readTrackedCliRow,
+    parentSessionReachableHere,
+    waitForResumeTargetBackfill: (sessionId) => ptyService?.waitForResumeTargetBackfill?.(sessionId),
+    readProviderMessage: readCliProviderMessage,
+    readTerminalTail: readCliTerminalTail,
+    childLabel: cliChildLabel,
+    notifyParentOfSpawn: (sessionId, options) => notifyParentOfCliChildSpawn(sessionId, options),
+    deliverChildCompletionToParent: (delivery) => deliverChildCompletionToParent(delivery),
+  });
 
-  const reportCliChildEnded = async (terminalSessionId: string, trigger: "exit" | "reconcile"): Promise<void> => {
-    if (cliChildReportsClosed) return;
-    const tracked = readTrackedCliRow(terminalSessionId);
-    const lineage = tracked?.lineage;
-    if (!tracked || !lineage) return;
-    const { row } = tracked;
-    const endStatus = cliChildResultStatus(row);
-    if (!endStatus) return;
-    if (!parentSessionReachableHere(lineage.parentSessionId)) {
-      logger.info("agent_chat.cli_child_completion_parent_gone", {
-        childSessionId: row.id,
-        parentSessionId: lineage.parentSessionId,
-        trigger,
-      });
-      return;
-    }
-    await ptyService?.waitForResumeTargetBackfill?.(row.id);
-    const refreshed = readTrackedCliRow(row.id);
-    const latestRow = refreshed?.lineage ? refreshed.row : row;
-    const providerMessage = await readCliProviderMessage(latestRow, lineage.provider);
-    const terminalTail = await readCliTerminalTail(row.id);
-    // The host may have started tearing down while the tail was read (a
-    // project close disposes its PTYs first); that is not the child's end.
-    if (cliChildReportsClosed) return;
-    // A terminal closed by hand (or cut off by a restart) after the CLI already
-    // wrote its answer is a finished delegate, not a casualty — the same rule
-    // the stale-run sweep applies to an ended chat that left a report. Without
-    // a closing message it stays stopped. A non-zero exit is always failed.
-    const resultStatus = endStatus === "stopped" && providerMessage ? "completed" : endStatus;
-    const summary = composeCliChildReport({
-      status: resultStatus,
-      exitCode: row.exitCode ?? null,
-      providerMessage,
-      terminalTail,
-    });
-    // A CLI that finished its last turn (and already reported it) and then
-    // exited has nothing new to say: the exit closes the card quietly instead
-    // of waking the parent a second time with the same report.
-    const lastTurnReport = cliChildTurnReports.get(row.id);
-    cliChildTurnReports.delete(row.id);
-    cliChildCardsClosedByTurn.delete(row.id);
-    const repeatsTurnReport = resultStatus === "completed"
-      && Boolean(providerMessage)
-      && lastTurnReport?.providerMessage === providerMessage;
-    const childTitle = cliChildLabel(row, lineage.provider);
-    const spawnCompletion: AgentChatSpawnCompletion = {
-      childSessionId: row.id,
-      childTitle,
-      spawnKind: lineage.spawnKind,
-      childTurnId: cliChildRunKey(row),
-      status: resultStatus,
-      summary,
-    };
-    const outcome = resultStatus === "completed" ? "finished" : resultStatus === "failed" ? "failed" : "was stopped";
-    deliverChildCompletionToParent({
-      parentSessionId: lineage.parentSessionId,
-      childSessionId: row.id,
-      childTitle,
-      childProvider: lineage.provider,
-      spawnKind: lineage.spawnKind,
-      resultStatus,
-      summary,
-      spawnCompletion,
-      ctoPrNumber: readChildPullRequestNumber(null, summary),
-      emitCtoSubagentResult: true,
-      routeQuietly: trigger === "reconcile" || repeatsTurnReport,
-      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
-      onParentGone: (reason) => {
-        logger.info("agent_chat.cli_child_completion_parent_gone", {
-          childSessionId: row.id,
-          parentSessionId: lineage.parentSessionId,
-          reason,
-        });
-      },
-      onDeliveryFailed: (lastError) => {
-        logger.warn("agent_chat.cli_child_completion_delivery_failed", {
-          childSessionId: row.id,
-          parentSessionId: lineage.parentSessionId,
-          error: lastError instanceof Error ? lastError.message : String(lastError),
-        });
-      },
-    });
-  };
-
-  /**
-   * A tracked CLI child finished a turn and is back at its prompt. An agent CLI
-   * is interactive and rarely exits on its own, so waiting for the PTY exit
-   * meant a parent never heard back. Each finished turn is reported the way a
-   * chat child's is: the parent's card closes with the CLI's own closing
-   * message, and a subagent's parent is woken (a CLI parent at its next turn
-   * boundary, never mid-turn). A turn that ended on a question for the person
-   * (`needs-input`) is not finished work and reports nothing. The run key is
-   * the turn's start, so a repeated signal for one turn delivers once.
-   */
-  const reportCliChildTurnEnded = async (event: TrackedCliTurnEndedEvent): Promise<void> => {
-    if (cliChildReportsClosed) return;
-    if (event.outcome && event.outcome !== "done") return;
-    const tracked = readTrackedCliRow(event.sessionId);
-    const lineage = tracked?.lineage;
-    if (!tracked || !lineage) return;
-    const { row } = tracked;
-    // An ended CLI reports through its exit.
-    if (row.status !== "running") return;
-    if (!parentSessionReachableHere(lineage.parentSessionId)) return;
-    await ptyService?.waitForResumeTargetBackfill?.(row.id);
-    const latestRow = readTrackedCliRow(row.id)?.row ?? row;
-    const providerMessage = await readCliProviderMessage(latestRow, lineage.provider);
-    const terminalTail = await readCliTerminalTail(row.id);
-    if (cliChildReportsClosed) return;
-    const summary = composeCliChildReport({ status: "completed", exitCode: null, providerMessage, terminalTail });
-    const childTitle = cliChildLabel(row, lineage.provider);
-    // No turn-start signal reopened the card a previous report closed (an
-    // older pty surface): reopen it now so this report closes a live card.
-    if (cliChildCardsClosedByTurn.delete(row.id)) {
-      notifyParentOfCliChildSpawn(row.id, { resumed: true });
-    }
-    const turnKey = event.turnStartedAt?.trim() || event.endedAt?.trim() || new Date().toISOString();
-    // The child already reported this turn itself: close the card with ADE's
-    // copy, but do not wake the parent twice.
-    const turnStartMs = Date.parse(event.turnStartedAt ?? "")
-      || cliChildTurnReports.get(row.id)?.at
-      || Date.parse(row.startedAt)
-      || 0;
-    const selfReported = (cliChildSelfReportedAt.get(row.id) ?? -1) >= turnStartMs;
-    cliChildSelfReportedAt.delete(row.id);
-    const spawnCompletion: AgentChatSpawnCompletion = {
-      childSessionId: row.id,
-      childTitle,
-      spawnKind: lineage.spawnKind,
-      childTurnId: `cli-turn:${turnKey}`,
-      status: "completed",
-      summary,
-    };
-    cliChildTurnReports.set(row.id, { providerMessage, at: Date.now() });
-    cliChildCardsClosedByTurn.add(row.id);
-    deliverChildCompletionToParent({
-      parentSessionId: lineage.parentSessionId,
-      childSessionId: row.id,
-      childTitle,
-      childProvider: lineage.provider,
-      spawnKind: lineage.spawnKind,
-      resultStatus: "completed",
-      summary,
-      spawnCompletion,
-      ctoPrNumber: readChildPullRequestNumber(null, summary),
-      emitCtoSubagentResult: true,
-      routeQuietly: selfReported,
-      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" finished a turn — ${summary}\n`
-        + `(It is still open at its prompt. Full terminal output: \`ade terminal read ${row.id}\`.)`,
-      onParentGone: (reason) => {
-        logger.info("agent_chat.cli_child_turn_report_parent_gone", {
-          childSessionId: row.id,
-          parentSessionId: lineage.parentSessionId,
-          reason,
-        });
-      },
-      onDeliveryFailed: (lastError) => {
-        logger.warn("agent_chat.cli_child_turn_report_failed", {
-          childSessionId: row.id,
-          parentSessionId: lineage.parentSessionId,
-          error: lastError instanceof Error ? lastError.message : String(lastError),
-        });
-      },
-    });
-  };
-
-  /** A CLI child started its next turn: reopen the parent card its last report closed. */
-  const reopenCliChildCardOnTurnStart = (sessionId: string): void => {
-    if (cliChildReportsClosed || !cliChildCardsClosedByTurn.delete(sessionId)) return;
-    try {
-      notifyParentOfCliChildSpawn(sessionId, { resumed: true });
-    } catch (error) {
-      logger.warn("agent_chat.cli_child_turn_reopen_failed", {
-        childSessionId: sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-
-  // --- Native scheduled work from a tracked Claude Code CLI ---------------
-  //
-  // A chat mirrors ScheduleWakeup / CronCreate / CronDelete (and `/loop`)
-  // into the durable scheduler from the SDK's PostToolUse hook. A CLI has no
-  // hook ADE owns, so its session JSONL is read at each turn end and at exit
-  // (`claudeCliScheduledWork.ts`). The row id names the CLI process that made
-  // it (`cli-claude:<ptyId>:…`): while that process lives, Claude's own
-  // scheduler runs the wake and ADE's row only settles; once it is gone (it
-  // exited, ADE restarted, the CLI was resumed into a new process) ADE
-  // delivers, reopening the CLI when it has to.
-  const CLAUDE_CLI_SCHEDULE_ID_PREFIX = "cli-claude:";
-  const claudeCliScheduleMarkKey = (sessionId: string) => `claude-cli-schedule-mark:${sessionId}`;
-  const claudeCliScheduleFlights = new Map<string, Promise<void>>();
-
-  /** The CLI process (pty id) whose own scheduler delivers this row, or null for any other row. */
-  const claudeCliScheduleOwnerPtyId = (scheduleId: string): string | null => {
-    if (!scheduleId.startsWith(CLAUDE_CLI_SCHEDULE_ID_PREFIX)) return null;
-    const ptyId = scheduleId.slice(CLAUDE_CLI_SCHEDULE_ID_PREFIX.length).split(":")[0] ?? "";
-    return ptyId || null;
-  };
-
-  const mirrorClaudeCliScheduledWorkNow = async (sessionId: string): Promise<void> => {
-    const scheduler = scheduledWorkScheduler;
-    if (!scheduler) return;
-    const row = sessionService.get(sessionId);
-    if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return;
-    if ((row.resumeMetadata?.provider ?? providerFromTool(row.toolType)) !== "claude") return;
-    let cwd: string | null = null;
-    try {
-      cwd = laneService.getLaneBaseAndBranch(row.laneId).worktreePath ?? null;
-    } catch {
-      cwd = null;
-    }
-    // A CLI started under an ADE account writes its JSONL in that account's
-    // config home, not ~/.claude.
-    const lines = await readClaudeCliSessionTail({
-      targetId: row.resumeMetadata?.targetId ?? null,
-      cwd,
-      configDir: trackedCliConfigHome(row),
-    });
-    if (!lines.length) return;
-    await scheduledWorkReady;
-    const markKey = claudeCliScheduleMarkKey(sessionId);
-    const mark = db?.getJson<{ at?: string }>(markKey)?.at ?? null;
-    const events = extractClaudeCliScheduleEvents(lines, mark);
-    if (!events.length) return;
-    const ptyId = row.ptyId?.trim() || "none";
-    // The CLI wrote to its log after a wakeup's fire time, so it was still
-    // running then and its own scheduler fired it. Only a first read (or one
-    // after a missed turn end) meets such a call; mirroring it would wake the
-    // CLI a second time.
-    const lastRecordMs = lastClaudeCliRecordMs(lines);
-    const ours = (schedule: { id: string; sessionId: string }) =>
-      schedule.sessionId === sessionId && schedule.id.startsWith(CLAUDE_CLI_SCHEDULE_ID_PREFIX);
-    const active = (schedule: { status: string }) => schedule.status !== "done" && schedule.status !== "cancelled";
-    let newestAt = mark ?? "";
-    for (const event of events) {
-      if (event.at > newestAt) newestAt = event.at;
-      if (event.kind === "wakeup") {
-        if (lastRecordMs != null && lastRecordMs >= event.fireAt) continue;
-        await scheduler.upsert(buildClaudeScheduleUpsert({
-          id: `${CLAUDE_CLI_SCHEDULE_ID_PREFIX}${ptyId}:wakeup:${event.toolUseId}`,
-          sessionId,
-          kind: isClaudeLoopPrompt(event.prompt) ? "loop" : "wakeup",
-          prompt: event.prompt,
-          ...(event.reason ? { reason: event.reason } : {}),
-          fireAt: event.fireAt,
-          recurring: false,
-        }));
-      } else if (event.kind === "wakeup_stop") {
-        await Promise.all(scheduler.list(sessionId)
-          .filter((schedule) => ours(schedule) && active(schedule) && (schedule.kind === "wakeup" || schedule.kind === "loop"))
-          .map((schedule) => scheduler.cancel(schedule.id)));
-      } else if (event.kind === "cron") {
-        const createdAt = Date.now();
-        const kind: "cron" | "wakeup" | "loop" = event.recurring
-          ? "cron"
-          : isClaudeLoopPrompt(event.prompt) ? "loop" : "wakeup";
-        await scheduler.upsert(buildClaudeScheduleUpsert({
-          id: `${CLAUDE_CLI_SCHEDULE_ID_PREFIX}${ptyId}:cron:${event.cronId}`,
-          sessionId,
-          kind,
-          prompt: event.prompt,
-          cron: event.cron,
-          fireAt: event.nextFireAt ?? nextChatScheduledCronFireAt(event.cron, createdAt) ?? undefined,
-          createdAt,
-          recurring: event.recurring,
-          expiresAtBase: createdAt,
-          providerScheduleId: event.cronId,
-        }));
-      } else {
-        await Promise.all(scheduler.list(sessionId)
-          .filter((schedule) => ours(schedule) && active(schedule) && schedule.id.endsWith(`:cron:${event.cronId}`))
-          .map((schedule) => scheduler.cancel(schedule.id)));
+  // Native scheduled work from a tracked Claude Code CLI (`claudeCliScheduledWork.ts`).
+  const { claudeCliScheduleOwnerPtyId, mirrorClaudeCliScheduledWork } = createClaudeCliScheduleMirror({
+    logger,
+    scheduler: () => scheduledWorkScheduler,
+    whenReady: () => scheduledWorkReady,
+    readRow: (sessionId) => sessionService.get(sessionId),
+    laneWorktreePath: (laneId) => {
+      try {
+        return laneService.getLaneBaseAndBranch(laneId).worktreePath ?? null;
+      } catch {
+        return null;
       }
-    }
-    if (newestAt) db?.setJson(markKey, { at: newestAt });
-    logger.info("agent_chat.claude_cli_scheduled_work_mirrored", { sessionId, events: events.length });
-  };
-
-  /** One mirror read per CLI at a time; a read asked for meanwhile runs after it. */
-  const mirrorClaudeCliScheduledWork = (sessionId: string): void => {
-    const previous = claudeCliScheduleFlights.get(sessionId) ?? Promise.resolve();
-    const flight = previous
-      .catch(() => {})
-      .then(() => mirrorClaudeCliScheduledWorkNow(sessionId))
-      .catch((error: unknown) => {
-        logger.warn("agent_chat.claude_cli_scheduled_work_mirror_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        if (claudeCliScheduleFlights.get(sessionId) === flight) claudeCliScheduleFlights.delete(sessionId);
-      });
-    claudeCliScheduleFlights.set(sessionId, flight);
-  };
+    },
+    configHome: trackedCliConfigHome,
+    readMark: (key) => db?.getJson<{ at?: string }>(key)?.at ?? null,
+    writeMark: (key, at) => db?.setJson(key, { at }),
+    buildUpsert: buildClaudeScheduleUpsert,
+    isLoopPrompt: isClaudeLoopPrompt,
+  });
 
   /**
    * Stale-run sweep hook: a `chat:<id>` card whose id is a tracked CLI child is
@@ -55763,7 +55481,7 @@ export function createAgentChatService(args: {
     let resumeTargetId: string | null = null;
     if (cli.continuation === "resume" && cli.conversation) {
       const configHome = cliMoveConfigHome(cli.provider, instanceId)
-        ?? (cli.provider === "codex" ? defaultCodexHome() : claudeConfigDir());
+        ?? (cli.provider === "codex" ? codexConfigHome() : claudeConfigDir());
       try {
         const mainContent = decodeCrossMachineForkFile(cli.conversation.mainFile, CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED, "CLI conversation");
         const sideFiles = (cli.conversation.sideFiles ?? []).map((sideFile) => ({
@@ -73553,8 +73271,14 @@ export function createAgentChatService(args: {
    */
   const isUserOnlyPendingInput = ({ sessionId, itemId }: { sessionId: string; itemId: string }): boolean => {
     const managed = managedSessions.get(sessionId.trim());
-    if (!managed) return false;
     const trimmedItemId = itemId.trim();
+    if (!managed) {
+      // A tracked CLI's cards live in `cliCardInputs`, not in a chat; the
+      // same consent rule holds for them, so an agent cannot answer its own.
+      const card = cliCardInputs.list(sessionId.trim())
+        .find((request) => (request.itemId ?? request.requestId) === trimmedItemId);
+      return isUserOnlyConsentCard(card?.providerMetadata ?? null);
+    }
     const request = managed.asyncQuestions.get(trimmedItemId)?.request
       ?? managed.localPendingInputs.get(trimmedItemId)?.request
       ?? (managed.runtime?.kind === "codex" || managed.runtime?.kind === "claude"
@@ -75605,6 +75329,8 @@ export function createAgentChatService(args: {
       crossMachineHandoff?.onTurnSettled(event.sessionId);
     }
     mirrorClaudeCliScheduledWork(event.sessionId);
+    // Archived mid-turn: the turn it was let finish is over, so it stops now.
+    if (!event.outcome || event.outcome === "done") cliLifecycle.stopArchivedAfterTurn(event.sessionId);
   }) ?? null;
   const unsubscribeCliChildTurnStarted = ptyService?.onTrackedCliTurnStarted?.((event) => {
     reopenCliChildCardOnTurnStart(event.sessionId);

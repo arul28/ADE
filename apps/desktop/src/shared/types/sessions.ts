@@ -726,6 +726,12 @@ export type PtyCreateArgs = {
    * can read/update its issue through `ade linear` (no Linear MCP/creds needed).
    */
   linearIssues?: LaneLinearIssue[];
+  /**
+   * Main-process only: the launch command already carries the first prompt
+   * (Codex's trailing argument, a resume with the message), so the turn it
+   * starts counts as submitted even though no Enter is typed.
+   */
+  promptSubmittedAtLaunch?: boolean;
 };
 
 export type PtyCreateResult = {
@@ -748,12 +754,17 @@ export type AgentCliTypeArgs = {
   sessionId: string;
   text: string;
   /**
-   * When the CLI is mid-turn, the host keeps the text and types it once the
-   * prompt is free, instead of answering `deferred`. For callers that keep no
-   * queue of their own (the phone, the web). Not durable: a brain restart
-   * drops a held text.
+   * When the CLI is mid-turn, the host keeps the text in its saved send queue
+   * and types it once the prompt is free, instead of answering `deferred`.
+   * For callers that keep no queue of their own (the phone, the web).
    */
   holdUntilFree?: boolean;
+  /**
+   * The caller's id for this text. A second call with the same id (another
+   * window sending the same queued item, a retry) gets the first call's
+   * answer instead of typing the text again.
+   */
+  clientMessageId?: string;
 };
 
 /**

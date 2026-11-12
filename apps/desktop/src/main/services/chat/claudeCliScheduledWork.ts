@@ -1,5 +1,14 @@
 import fs from "node:fs";
 import { claudeSessionPath } from "../externalSessions/discoverClaude";
+import type { Logger } from "../logging/logger";
+import type { TerminalSessionSummary } from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
+import { providerFromTool } from "../../utils/terminalSessionSignals";
+import {
+  nextChatScheduledCronFireAt,
+  type ChatScheduledWorkScheduler,
+  type ChatScheduledWorkUpsert,
+} from "./chatScheduledWorkScheduler";
 
 /**
  * Native scheduled work (`ScheduleWakeup`, `CronCreate`, `CronDelete`, and the
@@ -177,4 +186,148 @@ export function lastClaudeCliRecordMs(lines: readonly string[]): number | null {
     if (Number.isFinite(ms)) return ms;
   }
   return null;
+}
+
+
+/**
+ *
+ * A chat mirrors ScheduleWakeup / CronCreate / CronDelete (and `/loop`)
+ * into the durable scheduler from the SDK's PostToolUse hook. A CLI has no
+ * hook ADE owns, so its session JSONL is read at each turn end and at exit
+ * (`claudeCliScheduledWork.ts`). The row id names the CLI process that made
+ * it (`cli-claude:<ptyId>:…`): while that process lives, Claude's own
+ * scheduler runs the wake and ADE's row only settles; once it is gone (it
+ * exited, ADE restarted, the CLI was resumed into a new process) ADE
+ * delivers, reopening the CLI when it has to.
+ */
+export function createClaudeCliScheduleMirror(deps: {
+  logger: Pick<Logger, "info" | "warn">;
+  /** Null until ADE's scheduler is up. */
+  scheduler: () => ChatScheduledWorkScheduler | null;
+  whenReady: () => Promise<void>;
+  readRow: (sessionId: string) => TerminalSessionSummary | null;
+  laneWorktreePath: (laneId: string) => string | null;
+  /** The account config home the CLI runs under, where its JSONL lives. */
+  configHome: (row: TerminalSessionSummary) => string | null;
+  readMark: (key: string) => string | null;
+  writeMark: (key: string, at: string) => void;
+  buildUpsert: (input: {
+    id: string;
+    sessionId: string;
+    kind: "wakeup" | "cron" | "loop";
+    prompt: string;
+    reason?: string;
+    cron?: string;
+    fireAt?: number;
+    createdAt?: number;
+    recurring: boolean;
+    expiresAtBase?: number;
+    providerScheduleId?: string;
+  }) => ChatScheduledWorkUpsert;
+  isLoopPrompt: (prompt: string | undefined) => boolean;
+}) {
+  const CLAUDE_CLI_SCHEDULE_ID_PREFIX = "cli-claude:";
+  const claudeCliScheduleMarkKey = (sessionId: string) => `claude-cli-schedule-mark:${sessionId}`;
+  const claudeCliScheduleFlights = new Map<string, Promise<void>>();
+
+  /** The CLI process (pty id) whose own scheduler delivers this row, or null for any other row. */
+  const claudeCliScheduleOwnerPtyId = (scheduleId: string): string | null => {
+    if (!scheduleId.startsWith(CLAUDE_CLI_SCHEDULE_ID_PREFIX)) return null;
+    const ptyId = scheduleId.slice(CLAUDE_CLI_SCHEDULE_ID_PREFIX.length).split(":")[0] ?? "";
+    return ptyId || null;
+  };
+
+  const mirrorClaudeCliScheduledWorkNow = async (sessionId: string): Promise<void> => {
+    const scheduler = deps.scheduler();
+    if (!scheduler) return;
+    const row = deps.readRow(sessionId);
+    if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return;
+    if ((row.resumeMetadata?.provider ?? providerFromTool(row.toolType)) !== "claude") return;
+    const cwd = deps.laneWorktreePath(row.laneId);
+    // A CLI started under an ADE account writes its JSONL in that account's
+    // config home, not ~/.claude.
+    const lines = await readClaudeCliSessionTail({
+      targetId: row.resumeMetadata?.targetId ?? null,
+      cwd,
+      configDir: deps.configHome(row),
+    });
+    if (!lines.length) return;
+    await deps.whenReady();
+    const markKey = claudeCliScheduleMarkKey(sessionId);
+    const mark = deps.readMark(markKey);
+    const events = extractClaudeCliScheduleEvents(lines, mark);
+    if (!events.length) return;
+    const ptyId = row.ptyId?.trim() || "none";
+    // The CLI wrote to its log after a wakeup's fire time, so it was still
+    // running then and its own scheduler fired it. Only a first read (or one
+    // after a missed turn end) meets such a call; mirroring it would wake the
+    // CLI a second time.
+    const lastRecordMs = lastClaudeCliRecordMs(lines);
+    const ours = (schedule: { id: string; sessionId: string }) =>
+      schedule.sessionId === sessionId && schedule.id.startsWith(CLAUDE_CLI_SCHEDULE_ID_PREFIX);
+    const active = (schedule: { status: string }) => schedule.status !== "done" && schedule.status !== "cancelled";
+    let newestAt = mark ?? "";
+    for (const event of events) {
+      if (event.at > newestAt) newestAt = event.at;
+      if (event.kind === "wakeup") {
+        if (lastRecordMs != null && lastRecordMs >= event.fireAt) continue;
+        await scheduler.upsert(deps.buildUpsert({
+          id: `${CLAUDE_CLI_SCHEDULE_ID_PREFIX}${ptyId}:wakeup:${event.toolUseId}`,
+          sessionId,
+          kind: deps.isLoopPrompt(event.prompt) ? "loop" : "wakeup",
+          prompt: event.prompt,
+          ...(event.reason ? { reason: event.reason } : {}),
+          fireAt: event.fireAt,
+          recurring: false,
+        }));
+      } else if (event.kind === "wakeup_stop") {
+        await Promise.all(scheduler.list(sessionId)
+          .filter((schedule) => ours(schedule) && active(schedule) && (schedule.kind === "wakeup" || schedule.kind === "loop"))
+          .map((schedule) => scheduler.cancel(schedule.id)));
+      } else if (event.kind === "cron") {
+        const createdAt = Date.now();
+        const kind: "cron" | "wakeup" | "loop" = event.recurring
+          ? "cron"
+          : deps.isLoopPrompt(event.prompt) ? "loop" : "wakeup";
+        await scheduler.upsert(deps.buildUpsert({
+          id: `${CLAUDE_CLI_SCHEDULE_ID_PREFIX}${ptyId}:cron:${event.cronId}`,
+          sessionId,
+          kind,
+          prompt: event.prompt,
+          cron: event.cron,
+          fireAt: event.nextFireAt ?? nextChatScheduledCronFireAt(event.cron, createdAt) ?? undefined,
+          createdAt,
+          recurring: event.recurring,
+          expiresAtBase: createdAt,
+          providerScheduleId: event.cronId,
+        }));
+      } else {
+        await Promise.all(scheduler.list(sessionId)
+          .filter((schedule) => ours(schedule) && active(schedule) && schedule.id.endsWith(`:cron:${event.cronId}`))
+          .map((schedule) => scheduler.cancel(schedule.id)));
+      }
+    }
+    if (newestAt) deps.writeMark(markKey, newestAt);
+    deps.logger.info("agent_chat.claude_cli_scheduled_work_mirrored", { sessionId, events: events.length });
+  };
+
+  /** One mirror read per CLI at a time; a read asked for meanwhile runs after it. */
+  const mirrorClaudeCliScheduledWork = (sessionId: string): void => {
+    const previous = claudeCliScheduleFlights.get(sessionId) ?? Promise.resolve();
+    const flight = previous
+      .catch(() => {})
+      .then(() => mirrorClaudeCliScheduledWorkNow(sessionId))
+      .catch((error: unknown) => {
+        deps.logger.warn("agent_chat.claude_cli_scheduled_work_mirror_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (claudeCliScheduleFlights.get(sessionId) === flight) claudeCliScheduleFlights.delete(sessionId);
+      });
+    claudeCliScheduleFlights.set(sessionId, flight);
+  };
+
+  return { claudeCliScheduleOwnerPtyId, mirrorClaudeCliScheduledWork };
 }

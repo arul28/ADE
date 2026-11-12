@@ -35287,9 +35287,12 @@ function formatCliProcessEndRow(value: unknown): string | null {
   const status = asString(value.status);
   if (!status || status === "running") return null;
   const exitCode = typeof value.exitCode === "number" ? value.exitCode : null;
-  const label = status === "failed" || (exitCode != null && exitCode !== 0)
-    ? "exited with an error"
-    : status === "disposed" ? "stopped" : status === "detached" ? "detached from this ADE" : "exited";
+  // Stopped first: a CLI someone stopped often ends non-zero (Ctrl-C is 130).
+  const label = status === "disposed"
+    ? "stopped"
+    : status === "failed" || (exitCode != null && exitCode !== 0)
+      ? "exited with an error"
+      : status === "detached" ? "detached from this ADE" : "exited";
   return chatTurnStatusRow("process", `${label}${exitCode != null ? ` (exit ${exitCode})` : ""}`);
 }
 
@@ -41712,7 +41715,10 @@ async function main(): Promise<void> {
     // A tracked Claude CLI's turn hook (cliTurnHook.ts): silent, always exit 0.
     if (process.argv[2] === CLI_TURN_HOOK_COMMAND) {
       await runCliTurnHook(process.argv.slice(3), (argv) => runCli(argv));
-      return;
+      // The hook gives up after its deadline, but a report still in flight
+      // (a hung socket) or an unclosed stdin would keep the process alive.
+      // Claude waits on nothing from it, so end it here.
+      process.exit(0);
     }
     // The proxy supervisor's synchronous health probe on the standalone runtime.
     if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {

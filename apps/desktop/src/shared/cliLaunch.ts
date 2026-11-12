@@ -74,6 +74,11 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
   /** Provider-native session id ADE assigned at launch, when the CLI accepts one. */
   assignedSessionId?: string;
+  /**
+   * The prompt rides on the command line instead of being typed in, so the
+   * launch itself starts a turn that no Enter keystroke will mark.
+   */
+  promptInArgs?: boolean;
 };
 
 export type CodexComputerUseCliConfig = {
@@ -1368,7 +1373,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "codex",
       args: commandArgs,
       startupCommand: commandArrayToLine(["codex", ...commandArgs], { platform: "linux" }),
-      ...(usePromptArg ? {} : { initialInput, initialInputDelayMs: 750 }),
+      ...(usePromptArg ? { promptInArgs: true } : { initialInput, initialInputDelayMs: 750 }),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
