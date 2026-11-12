@@ -2538,17 +2538,31 @@ export type ProjectConfigTrust = {
 };
 
 /**
- * A setting that now follows the ADE account, where this computer had a
- * different value when it moved (account project plan, slice Y2). The
- * account's value is in use; the person can apply this computer's instead.
+ * A setting that follows the ADE account (account project plan, slices
+ * Y2 to Y4) and needs the person: this computer had a different value when
+ * it moved (the account's is in use), or a value stays on this computer.
  */
-export type ProjectConfigAccountNotice = {
-  kind: "account_setting";
-  /** The account row, such as `prs.pollIntervalSeconds`. */
-  key: string;
-  /** The setting's name in Settings. */
-  label: string;
-};
+export type ProjectConfigAccountNotice =
+  | {
+    kind: "account_setting";
+    /** The account row, such as `prs.pollIntervalSeconds`. */
+    key: string;
+    /** The setting's name in Settings. */
+    label: string;
+  }
+  | {
+    /**
+     * A value that stays on this computer instead of the account: it holds
+     * a credential-shaped key (`names`), names a folder on this computer, or
+     * is over the size cap.
+     */
+    kind: "kept_here";
+    key: string;
+    label: string;
+    reason: "secret" | "machine_path" | "too_large";
+    /** For `secret`: the key names, never their values. */
+    names?: string[];
+  };
 
 export type ProjectConfigSnapshot = {
   shared: ProjectConfigFile;

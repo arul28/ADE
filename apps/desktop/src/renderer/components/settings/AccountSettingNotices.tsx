@@ -4,10 +4,11 @@ import { captureError } from "../../../shared/sentry/capture";
 import type { OpenProjectBinding, ProjectConfigAccountNotice } from "../../../shared/types";
 
 /**
- * Settings that now follow the ADE account, where the computer `pin` names
- * had a different value when they moved (`projectConfigAccountLayer.ts`).
- * One inline notice per setting, shown where that setting is edited. The
- * account's value is in use; the person can apply the computer's instead.
+ * Settings that follow the ADE account and need the person, on the computer
+ * `pin` names (`projectConfigAccountLayer.ts`): a different value that
+ * computer had when they moved (the account's is in use; the person can
+ * apply the computer's instead), or a value that stays on that computer.
+ * One inline notice per setting, shown where that setting is edited.
  */
 export function AccountSettingNotices({
   pin,
@@ -69,7 +70,18 @@ export function AccountSettingNotices({
   if (notices.length === 0) return null;
   return (
     <div className="ade-modern-stack" style={{ gap: 8 }}>
-      {notices.map((notice) => (
+      {notices.map((notice) => (notice.kind === "kept_here" ? (
+        <Banner
+          key={notice.key}
+          layout="inline"
+          model={{
+            id: `account-setting-${notice.key}`,
+            tone: "info",
+            title: keptHereTitle(notice),
+            detail: "Until then it stays on this computer, and your other computers do not get it.",
+          }}
+        />
+      ) : (
         <Banner
           key={notice.key}
           layout="inline"
@@ -95,7 +107,18 @@ export function AccountSettingNotices({
             ],
           }}
         />
-      ))}
+      )))}
     </div>
   );
+}
+
+function keptHereTitle(notice: Extract<ProjectConfigAccountNotice, { kind: "kept_here" }>): string {
+  if (notice.reason === "secret") {
+    const names = (notice.names ?? []).join(", ") || "its secret values";
+    return `Move ${names} to Project secrets so ${notice.label} follows your account.`;
+  }
+  if (notice.reason === "machine_path") {
+    return `${notice.label} names a folder on this computer, so it can't follow your account.`;
+  }
+  return `${notice.label} is too large to follow your ADE account.`;
 }

@@ -3453,15 +3453,17 @@ export function createProjectConfigService({
       cachedLocalFile = { key, config: localFile.config, raw: localFile.raw };
     }
     const fileConfig = structuredClone(cachedLocalFile.config);
+    // The layer compares paths as the file means them (project-relative).
+    const layerFile = accountLayer ? normalizeConfigFilePaths(fileConfig, projectRoot) : null;
     const snapshot = buildSnapshotFromFiles(
       emptySharedConfig(),
-      withAccountRules(accountLayer ? accountLayer.overlay(fileConfig) : fileConfig),
+      withAccountRules(accountLayer && layerFile ? accountLayer.overlay(layerFile) : fileConfig),
       { sharedHash: hashContent(""), localHash: localHashOf(cachedLocalFile.raw) },
       { persistSnapshots: persistedKey !== key },
     );
     if (snapshot.validation.ok) persistedKey = key;
     stampRunsHere(snapshot);
-    const notices = accountLayer?.notices() ?? [];
+    const notices = accountLayer && layerFile ? accountLayer.notices(layerFile) : [];
     if (notices.length > 0) snapshot.accountNotices = notices;
     return snapshot;
   };
@@ -3477,6 +3479,21 @@ export function createProjectConfigService({
 
   let automationRuleSync: AutomationRuleAccountSync | null = null;
   let automationNotes = new Map<string, { needsNewerAde?: true; localReason?: AutomationRuleLocalReason }>();
+
+  /**
+   * A part of the config judged alone, for values from the account: one bad
+   * value from another computer must not make this computer's config invalid.
+   */
+  const configValidAlone = (partial: ProjectConfigFile): boolean => {
+    const local = normalizeConfigFilePaths(
+      { version: VERSION, testSuites: [], laneOverlayPolicies: [], ...partial },
+      projectRoot,
+    );
+    const shared = emptySharedConfig();
+    const parts = Object.keys(partial);
+    return !validateEffectiveConfig(resolveEffectiveConfig(shared, local), projectRoot, shared, local).issues
+      .some((issue) => parts.some((part) => issue.path.includes(part)));
+  };
 
   /** A rule's own problems, judged alone: one bad rule from another computer must not break this config. */
   const automationRuleProblems = (rule: ConfigAutomationRule): string[] => {
@@ -3641,7 +3658,9 @@ export function createProjectConfigService({
       readOriginUrl: () => string | null;
       statePath: string;
     } | null): void {
-      accountLayer = args ? createProjectConfigAccountLayer({ ...args, coerceFile: coerceConfigFile, logger }) : null;
+      accountLayer = args
+        ? createProjectConfigAccountLayer({ ...args, rules: { coerceFile: coerceConfigFile, validAlone: configValidAlone }, logger })
+        : null;
     },
 
     /**
