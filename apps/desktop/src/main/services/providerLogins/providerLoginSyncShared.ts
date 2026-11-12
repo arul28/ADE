@@ -126,6 +126,14 @@ export function savedKeyVaultKey(id: string): string {
   return `cloud-key-${id}`;
 }
 
+/** The account a copy is for: its email (any case), else the provider's id; null when the login names neither. */
+export function accountIdentityOf(account: { email: string | null; id: string | null } | null | undefined): string | null {
+  const email = account?.email?.trim().toLowerCase();
+  if (email) return `email:${email}`;
+  const id = account?.id?.trim();
+  return id ? `id:${id}` : null;
+}
+
 /** One carried sign-in that is on for ADE Cloud, as the pick rule sees it. */
 export type CloudPlaceCandidate<R> = { row: R; meta: NonNullable<LoginMeta>; provider: ProviderLoginProvider; slot: string };
 /** A place's pick: the saved key, or one of its sign-ins. */
@@ -140,8 +148,10 @@ export type CloudPlacePick<R> = { provider: ProviderLoginProvider } & ({ savedKe
  * usable, not deleted, not switched off and have readable meta; none while
  * ADE Cloud's sign-ins are off. The saved key wins when the person picked it,
  * or for Copilot with no pick (a saved key goes before a carried GitHub CLI
- * login, G1 Q2), if one is saved. Otherwise the picked sign-in, else the
- * newest (`renewedAt`, else `capturedAt`).
+ * login, G1 Q2), if one is saved. Otherwise the picked sign-in (the
+ * freshest usable copy of the picked account, when the same account came
+ * from several computers), else the newest (`renewedAt`, else `capturedAt`).
+ * A copy that stops being usable drops out, so the next copy takes over.
  */
 export function cloudPlacePicks<R extends { kind: string; key: string; deleted?: boolean }>(
   rows: Iterable<R>,
@@ -171,8 +181,16 @@ export function cloudPlacePicks<R extends { kind: string; key: string; deleted?:
       picks.set(place, { provider, savedKey: { id: saved.id, token } });
       continue;
     }
-    const signIn = list.find((entry) => entry.row.key === chosen)
-      ?? [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt))[0]!;
+    const newestFirst = [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt));
+    const picked = list.find((entry) => entry.row.key === chosen) ?? null;
+    // A pick names one copy of an account; the same account copied from
+    // another computer is the same choice (one card per account, B14-5), so
+    // the freshest usable copy of it wins. A copy that names no account is
+    // only itself.
+    const pickedAccount = picked ? accountIdentityOf(picked.meta.account) : null;
+    const signIn = (pickedAccount ? newestFirst.find((entry) => accountIdentityOf(entry.meta.account) === pickedAccount) : null)
+      ?? picked
+      ?? newestFirst[0]!;
     picks.set(place, { provider, signIn });
   }
   return picks;
@@ -564,7 +582,12 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
         provider: parsedKey.provider,
         slot: parsedKey.slot,
         class: meta.class,
-        origin: { label: meta.origin.label, platform: meta.origin.platform, thisComputer: parsedKey.origin12 === origin12 },
+        origin: {
+          label: meta.origin.label,
+          ...(meta.origin.machineKey ? { machineKey: meta.origin.machineKey } : {}),
+          platform: meta.origin.platform,
+          thisComputer: parsedKey.origin12 === origin12,
+        },
         account: meta.account,
         capturedAt: iso(meta.capturedAt),
         renewedAt: iso(meta.renewedAt),
@@ -589,8 +612,13 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
       if (chosen === "key") continue;
       if (place === "copilot" && chosen === undefined && savedCopilotKey) continue;
       const on = list.filter((signIn) => signIn.onForCloud);
-      const pick = on.find((signIn) => signIn.key === chosen)
-        ?? [...on].sort((left, right) => (right.renewedAt ?? right.capturedAt ?? "").localeCompare(left.renewedAt ?? left.capturedAt ?? ""))[0];
+      const newestFirst = [...on].sort((left, right) => (right.renewedAt ?? right.capturedAt ?? "").localeCompare(left.renewedAt ?? left.capturedAt ?? ""));
+      const picked = on.find((signIn) => signIn.key === chosen) ?? null;
+      // The same rule as `cloudPlacePicks`: the picked account's freshest copy.
+      const pickedAccount = picked ? accountIdentityOf(picked.account) : null;
+      const pick = (pickedAccount ? newestFirst.find((signIn) => accountIdentityOf(signIn.account) === pickedAccount) : null)
+        ?? picked
+        ?? newestFirst[0];
       if (pick && setting.enabled) pick.inUseOnCloud = true;
     }
     return signIns.sort((left, right) => left.key.localeCompare(right.key));

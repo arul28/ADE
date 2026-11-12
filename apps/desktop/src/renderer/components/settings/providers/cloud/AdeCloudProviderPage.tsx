@@ -90,7 +90,8 @@ export function AdeCloudProviderPage({
   const switchCard = useCallback(async (card: SignInCardModel, next: boolean) => {
     setSwitching((current) => new Map(current).set(card.key, next));
     try {
-      await setSwitch(card.key, next, provider === "copilot");
+      // Every copy of the account (one per computer) switches with it; Copilot asks once.
+      for (const [index, key] of card.keys.entries()) await setSwitch(key, next, provider === "copilot" && index === 0);
     } finally {
       setSwitching((current) => {
         const rest = new Map(current);
@@ -117,6 +118,8 @@ export function AdeCloudProviderPage({
   const removeCard = useCallback((card: SignInCardModel) => {
     void confirmRemoveSignIn({
       key: card.key,
+      keys: card.keys,
+      name: card.name,
       providerLabel: descriptor.label,
       origin: card.origin,
       originIsThisComputer: card.originIsThisComputer,

@@ -16,7 +16,7 @@ import { COPILOT_REPO_LINE } from "./adeCloudSignInModel";
 import type { HeldWrites } from "./useHeldWrites";
 
 /** One write: a busy id (a second press waits), the call, and the error toast's words. True when it went through. */
-export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus> | undefined, failure: string) => Promise<boolean>;
+export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus | undefined> | undefined, failure: string) => Promise<boolean>;
 
 /**
  * The writes of one page: `runWrite` and the busy ids. A second press of a
@@ -121,9 +121,14 @@ export async function confirmUseOnCloud(args: {
 /**
  * Remove one sign-in from the account: the confirm, then the held write (the
  * card hides, the toast offers Undo, the write runs when the toast ends).
+ * An account copied from several computers goes whole: every copy in `keys`.
  */
 export async function confirmRemoveSignIn(args: {
   key: string;
+  /** Every copy of the account the card stands for; just `key` when left out. */
+  keys?: readonly string[];
+  /** The account's name on the card (its email), for a card of several copies. */
+  name?: string;
   providerLabel: string;
   /** The computer it came from, and whether that is this one. */
   origin: string;
@@ -133,22 +138,36 @@ export async function confirmRemoveSignIn(args: {
   runWrite: RunWrite;
 }): Promise<void> {
   const { key, providerLabel, pin, runWrite } = args;
-  const from = args.originIsThisComputer ? "this computer" : args.origin;
-  const keeps = args.originIsThisComputer ? "This computer keeps its own sign-in." : `${args.origin} keeps its own sign-in.`;
+  const keys = args.keys && args.keys.length > 0 ? [...args.keys] : [key];
+  const several = keys.length > 1;
+  const from = several
+    ? `${keys.length} computers`
+    : args.originIsThisComputer ? "this computer" : args.origin;
+  const keeps = several
+    ? "Each computer keeps its own sign-in."
+    : args.originIsThisComputer ? "This computer keeps its own sign-in." : `${args.origin} keeps its own sign-in.`;
+  const what = several && args.name ? `${providerLabel} sign-in for ${args.name}` : `${providerLabel} sign-in`;
   const ok = await confirmDialog({
-    title: `Remove the ${providerLabel} sign-in from ${from}?`,
-    message: `ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`,
+    title: `Remove the ${what} from ${several ? "your ADE account" : from}?`,
+    message: several
+      ? `ADE removes its copies from all ${keys.length} computers. ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`
+      : `ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`,
     confirmLabel: "Remove",
     destructive: true,
   });
   if (!ok) return;
   args.hold({
     id: key,
-    title: `Removed the ${providerLabel} sign-in from ${from}.`,
+    title: `Removed the ${what} from ${several ? "your ADE account" : from}.`,
     write: () => {
       void runWrite(
         `remove:${key}`,
-        () => window.ade?.providerLogins?.remove?.({ key }, pin),
+        async () => {
+          // One at a time: each write saves the account setting, and the last answer is the page's.
+          let status: ProviderLoginStatus | undefined;
+          for (const each of keys) status = await window.ade?.providerLogins?.remove?.({ key: each }, pin);
+          return status;
+        },
         `ADE couldn't remove the ${providerLabel} sign-in. It is back on the page.`,
       );
     },

@@ -120,6 +120,12 @@ export type ProviderLoginLocalState =
 export type ProviderLoginOrigin = {
   /** The computer's name, as it was when the sign-in was captured. */
   label: string;
+  /**
+   * The computer's account machine key, so a page names it as the account's
+   * machine list does today (its display name), not as it was named at
+   * capture (a hostname). Absent from an older brain.
+   */
+  machineKey?: string;
   platform: string;
   /** True when this computer made the sign-in. */
   thisComputer: boolean;

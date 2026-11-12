@@ -35,6 +35,7 @@ import { GitHubCliLoginRow } from "./GitHubCliLoginRow";
 import { useHeldWrites } from "./useHeldWrites";
 import { useThisComputerPin } from "./useAdeCloudSignIns";
 import { useAdeCloudEnabled } from "../../../../state/cloudAccess";
+import { useAccountMachineNames, withMachineNames } from "./useAccountMachineNames";
 
 const noteStyle: React.CSSProperties = { fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 };
 
@@ -67,7 +68,12 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
   const { allowing, allow } = useAllowAntigravityKeychain(runWrite, accountPin);
   // A GitHub CLI write answers from the page's own machine: `applyPageStatus` keeps it while the page still shows that machine.
 
-  const account = useMemo(() => (status ? { state: "ok" as const, status } : { state: "loading" as const }), [status]);
+  // Each sign-in's computer by the name the account's machine list gives it now.
+  const machineNames = useAccountMachineNames();
+  const account = useMemo(
+    () => (status ? { state: "ok" as const, status: withMachineNames(status, machineNames) } : { state: "loading" as const }),
+    [machineNames, status],
+  );
   const now = Date.now();
   const groups = useMemo(
     () => signInCardGroups(provider, account, held, now),
@@ -95,9 +101,9 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
 
   const machineWords = signInMachineWords(isThisMachine, machineName);
   const inUseHere = (card: SignInCardModel): boolean => {
-    if (!cloudComputer) return row.local.key === card.key;
+    if (!cloudComputer) return row.local.key != null && card.keys.includes(row.local.key);
     const applied = (status.applied ?? []).find((entry) => entry.place === card.place);
-    return applied?.state === "applied" && applied.key === card.key;
+    return applied?.state === "applied" && applied.key != null && card.keys.includes(applied.key);
   };
 
   const pickOnCloud = (card: SignInCardModel) => {
@@ -171,6 +177,8 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
                     onRemove={() => {
                       void confirmRemoveSignIn({
                         key: card.key,
+                        keys: card.keys,
+                        name: card.name,
                         providerLabel,
                         origin: card.origin,
                         originIsThisComputer: card.originIsThisComputer,
