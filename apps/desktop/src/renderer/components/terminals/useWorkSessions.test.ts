@@ -1525,7 +1525,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
   });
 
-  it("collapses a remembered pin to null after the tab rebinds to that machine", async () => {
+  it("resolves a remembered pin to the tab's copy after the tab rebinds to that machine", async () => {
     const activeBinding = {
       kind: "remote",
       key: "remote:target-b:project-b",
@@ -1551,7 +1551,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       result.current.machineRouter.rememberSessionPin(session, activeBinding);
     });
 
-    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(activeBinding.key);
     act(() => {
       result.current.machineRouter.forgetSessionPin(session);
     });
@@ -1591,7 +1591,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     const { result, rerender } = renderHook(() => useWorkSessions());
     await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
-    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(studioBinding.key);
     act(() => {
       result.current.machineRouter.rememberSessionPin(session, null);
     });
@@ -1648,7 +1648,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     const { result, rerender } = renderHook(() => useWorkSessions());
     await waitFor(() => expect(result.current.sessionsById.get(session.id)).toBe(session));
-    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(session)?.key).toBe(studioBinding.key);
 
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2095,39 +2095,10 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
 
     expect(result.current.resolveSessionRuntimePin(foreignSession)).toBe(foreignBinding);
-    expect(result.current.resolveSessionRuntimePin(localSession)).toBeNull();
+    expect(result.current.resolveSessionRuntimePin(localSession)?.key).toBe("local:/fake/project");
   });
 
-  it("keeps an active-binding session stop on the unpinned fast path", async () => {
-    const localSession = makeSession("active-local", "lane-1", {
-      ptyId: "pty-active-local",
-      toolType: "codex",
-    });
-    fakeAppStoreState = {
-      ...fakeAppStoreState,
-      projectBinding: {
-        kind: "local",
-        key: "local:/fake/project",
-        rootPath: "/fake/project",
-        displayName: "Fake",
-      },
-    };
-    listSessionsCachedMock.mockResolvedValue([localSession]);
-
-    const { result } = renderHook(() => useWorkSessions());
-    await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
-
-    await act(async () => {
-      await result.current.stopRuntime("pty-active-local", "active-local");
-    });
-
-    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
-      ptyId: "pty-active-local",
-      sessionId: "active-local",
-    });
-  });
-
-  it("stopAllRuntimes stops local and foreign PTYs, pinning only the foreign row", async () => {
+  it("stopAllRuntimes stops each PTY on its own copy", async () => {
     const foreignBinding = {
       kind: "remote",
       key: "remote:target-b:project-b",
@@ -2175,7 +2146,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-stop-all-local",
       sessionId: "stop-all-local",
-    });
+    }, expect.objectContaining({ key: "local:/fake/project" }));
     expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-stop-all-foreign",
       sessionId: "stop-all-foreign",

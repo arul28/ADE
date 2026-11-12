@@ -8542,6 +8542,64 @@ describe("per-chat runtime routing", () => {
     }
   });
 
+  it("keeps a terminal on its own copy after the window binds to another copy", async () => {
+    // A terminal opened on the tab's copy subscribes with that copy's pin, which
+    // shares the active stream. The active stream follows the window, so after a
+    // rebind the terminal must still hear its own copy, and not the new one.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      const base = invoke.getMockImplementation();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.ptyDataSubscriptions) return undefined;
+        if (channel === IPC.localRuntimeStreamEvents || channel === IPC.remoteRuntimeStreamEvents) {
+          return { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch" };
+        }
+        return base?.(channel, arg);
+      });
+
+      // The renderer always follows the binding, as the app store does.
+      const unsubscribeBinding = bridge.app.onProjectBindingChanged(vi.fn());
+      const onData = vi.fn();
+      const removeData = bridge.pty.onData(onData, machineA);
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] }, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const bindingListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.appProjectBindingChanged,
+      )?.[1];
+      expect(bindingListener).toBeTypeOf("function");
+      bindingListener({}, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      const emitData = (bindingKey: string, id: number, data: string) => runtimeListener({}, {
+        bindingKey,
+        eventEpoch: "epoch",
+        event: {
+          id,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: { type: "pty_data", event: { ptyId: "pty-a", sessionId: "session-a", data } },
+        },
+      });
+      emitData(machineB.key, 1, "the new copy's pty-a");
+      emitData(machineA.key, 2, "its own copy");
+
+      expect(onData).toHaveBeenCalledTimes(1);
+      expect(onData).toHaveBeenCalledWith(expect.objectContaining({ data: "its own copy" }));
+      expect(onData).not.toHaveBeenCalledWith(expect.objectContaining({ data: "the new copy's pty-a" }));
+      removeData();
+      unsubscribeBinding();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("isolates PTY data filters per pin and updates the sender filter before polling", async () => {
     vi.useFakeTimers();
     try {

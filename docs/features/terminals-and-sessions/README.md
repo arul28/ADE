@@ -1695,8 +1695,9 @@ Renderer surfaces:
   cross-machine machine slice, then adds `pinForSession` / `rememberSessionPin` /
   `forgetSessionPin` on top. `pinForSession` resolves lane ownership first and
   falls back to the remembered launch pin from `cliLaunch.ts`; a pin that equals
-  the active binding collapses to `null` so every local session keeps the
-  unpinned fast path and its local IPC fallback. The remembered foreign pin is
+  the active binding resolves to the tab's binding object, so a session on the
+  tab's copy carries that copy's address (preload gives it the bound caches and
+  event stream). The remembered foreign pin is
   deliberately **not** liveness-gated: the cross-machine lane scope is replaced
   wholesale while it reloads, so a healthy binding briefly vanishes from the open
   set, and dropping the pin in that window would query the tab's machine, discard

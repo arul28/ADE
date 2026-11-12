@@ -91,7 +91,7 @@ function readThisMachineKey(): Promise<string | null> {
     .catch((error: unknown) => {
       // Without the key, this computer's account copies read as another
       // computer's until the next read; say so instead of hiding it.
-      captureError(error, { tags: { surface: "repository_copies", read: "machine_identity" } });
+      captureError(error, { fingerprint: ["repository-copies", "machine-identity-read"], level: "warning", handled: true });
       return null;
     })
     .finally(() => { thisMachineKeyRead = null; });
@@ -121,7 +121,7 @@ function useThisComputer(active: boolean): ThisComputer | null {
         (rows) => { if (!cancelled) setLocalProjects(rows); },
         // The last list stays; the next focus reads again.
         (error: unknown) => {
-          captureError(error, { tags: { surface: "repository_copies", read: "recent_projects" } });
+          captureError(error, { fingerprint: ["repository-copies", "recent-projects-read"], level: "warning", handled: true });
         },
       );
     };
