@@ -10621,6 +10621,7 @@ app.whenReady().then(async () => {
       secretsDir: machineAdeLayout.secretsDir,
     }), options),
     getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    analytics: productAnalyticsService,
     logger: getMachineMainLogger(),
   });
   // `gh` and `git` in this window's agent shells and chats ask for the current

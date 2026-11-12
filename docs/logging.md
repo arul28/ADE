@@ -803,6 +803,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `ade_mcp` | `server_toggled` | `enabled`, `disabled` | omitted; never the machine, its server URL, or a connection |
 | `ade_mcp` | `app_connected`, `token_created`, `connection_removed` | `completed` | omitted; never the app's name, its redirect host, the access level, a token, or a command it ran |
 | `connections` | `github_cli_shared`, `github_cli_removed` (the person shares this computer's gh sign-in with the account, or takes it off, from Settings › GitHub; the background sync records nothing) | `completed` (the vault accepted it) | omitted; never the login, the account, or an error. Per action, at most one an hour |
+| `connections` | `github_app_connected` (how a connect of the account's ADE GitHub App sign-in ended, read in Settings once the server settles it), `github_app_disconnected` | `completed` (connected, or disconnected), `cancelled` (declined on GitHub or on ADE's confirm page, or the link ran out), `failed` | omitted; never the login, the account, the sign-in id, or an error. Per action and outcome, at most one an hour |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |

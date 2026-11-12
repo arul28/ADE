@@ -24486,7 +24486,9 @@ function readStoredApiKeyProviders(secretsDir: string): string[] {
     return Array.isArray(parsed)
       ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       : [];
-  } catch {
+  } catch (error) {
+    // Readiness still answers from local.yaml.
+    captureError(error, { fingerprint: ["doctor-api-key-index-unreadable", error instanceof Error ? error.name : "unknown"] });
     return [];
   }
 }

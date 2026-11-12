@@ -268,6 +268,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the login, the account, or an error.
   "github_cli_shared",
   "github_cli_removed",
+  // How a connect of the account's ADE GitHub App sign-in ended (feature
+  // "connections"): completed | cancelled (declined, or the link ran out) |
+  // failed; and a disconnect (completed). Read in Settings once the server
+  // settles it. Never the login, the account, or an error.
+  "github_app_connected",
+  "github_app_disconnected",
   // "New cloud machine" (feature "connections"): whether installations make
   // cloud boxes from ADE at all, and how often a create fails. completed (it
   // joined) | partial (signed in, still starting) | cancelled | failed. Never

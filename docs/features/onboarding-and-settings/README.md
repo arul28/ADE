@@ -423,7 +423,11 @@ Main process:
   [pull requests](../pull-requests/README.md#telling-a-github-outage-apart-from-a-broken-credential).
 - `apps/desktop/src/shared/githubOperationCredential.ts` — the capability-aware
   read/write credential order, App read-only rule, and duplicate-token removal
-  used by desktop and runtime-side GitHub services. A `service_unavailable`
+  used by desktop and runtime-side GitHub services. The order is env > app >
+  gh > pat > account_app > account_gh: the account's ADE GitHub App sign-in
+  (`account_app`, from the account directory) writes only where the owner's
+  installation grants the right, and an adopted `gh` copy from the account
+  (`account_gh`) comes last. A `service_unavailable`
   probe stops the credential walk instead of retrying every candidate against a
   service that is already failing.
 - `apps/ade-cli/src/headlessLinearServices.ts` — runtime-owned mirror of the

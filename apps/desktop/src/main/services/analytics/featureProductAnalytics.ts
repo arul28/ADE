@@ -71,7 +71,9 @@ export type FeatureAnalyticsAction =
   | "token_created"
   | "connection_removed"
   | "github_cli_shared"
-  | "github_cli_removed";
+  | "github_cli_removed"
+  | "github_app_connected"
+  | "github_app_disconnected";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -308,6 +310,22 @@ export function captureGhAccountSharingAnalytics(args: {
     action: args.enabled ? "github_cli_shared" : "github_cli_removed",
     outcome: "completed",
   });
+}
+
+/**
+ * How a connect of the account's ADE GitHub App sign-in ended, read in
+ * Settings once the server settles it: completed (connected), cancelled (the
+ * person declined on GitHub or on ADE's confirm page, or let the link run
+ * out), failed. Or the person disconnected it. Never the login, the account,
+ * or an error.
+ */
+export function captureGithubAppConnectionAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "github_app_connected" | "github_app_disconnected";
+  outcome: "completed" | "cancelled" | "failed";
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "connections" });
 }
 
 /** A private webhook URL was made (with or without its automation). */

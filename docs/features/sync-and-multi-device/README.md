@@ -1269,6 +1269,22 @@ Runtime support files outside `services/sync/`:
   adopted from the account lives only in the machine credential store
   (`github.ghAccountToken.v1`), never in `gh`'s own files, and is the last
   credential ADE tries (see `shared/githubOperationCredential.ts`).
+  The ADE GitHub App sign-in of the account is not a vault item. The account
+  directory holds it (`apps/account-directory/src/githubApp/`, D1 table
+  `github_app_grants`): it runs the web flow, keeps the refresh token sealed
+  with `GITHUB_APP_TOKEN_KEY`, renews the access token, and gives each
+  machine only a short-lived access token (`POST /github/app/token`). No
+  refresh token and no client secret leave the Worker. GitHub's callback
+  does not save the grant: it shows a confirm page that names the ADE account
+  and the GitHub login, and only a POST from that page with its one-time
+  value saves it (a forwarded link cannot connect someone else's GitHub).
+  Machines cache the access token in `github.accountAppToken.v1`
+  (`shared/github/accountAppTokenClient.ts`, one request per renewal across
+  processes) and use it as the `account_app` credential, after their own
+  sign-ins and before an adopted `gh` copy. A legacy device-flow sign-in on a
+  machine is handed to the account (`POST /github/app/adopt`). Without
+  `GITHUB_APP_CLIENT_SECRET` the routes answer 503 and machines behave as
+  before.
   `credentialRenewalLock.ts` lets one process on a computer renew a rotating
   credential at a time: an exclusive-create lock file with a heartbeat, which
   its holder removes only while the file still names it.
@@ -4396,10 +4412,12 @@ feature is merged or because a deliberately isolated-port host is running.
   vault-ready sync tick pulls repository account secrets back down, so a secret
   added on one machine reaches the other. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
-  access tokens, the GitHub App sign-in, environment GitHub tokens and vendor
-  CLI refresh credentials stay on the machine that owns them. A pasted GitHub
-  token and a github.com `gh` login follow the account (scope `all`, kind
-  `integration`, keys `github` and `github-cli`).
+  access tokens, a machine's own GitHub App device-flow sign-in, environment
+  GitHub tokens and vendor CLI refresh credentials stay on the machine that
+  owns them. A pasted GitHub token and a github.com `gh` login follow the
+  account (scope `all`, kind `integration`, keys `github` and `github-cli`).
+  The account's GitHub App sign-in lives in the account directory, which
+  gives machines short-lived access tokens only.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.

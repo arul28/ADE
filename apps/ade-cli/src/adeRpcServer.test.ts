@@ -109,6 +109,7 @@ function createRuntime() {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     productAnalyticsService: {
       capture: vi.fn(() => ({ accepted: true, reason: "accepted" })),
+      captureInternal: vi.fn(() => ({ accepted: true, reason: "accepted" })),
       identifyAccount: vi.fn(() => ({ accepted: true, reason: "accepted" })),
       resetAccountIdentity: vi.fn(() => true),
       getStatus: vi.fn(() => ({ configured: true, enabled: true, effective: true })),
@@ -4594,8 +4595,8 @@ describe("adeRpcServer", () => {
         readable: true,
       }]),
       get: vi.fn(() => "sk-test"),
-      set: vi.fn(() => true),
-      remove: vi.fn(() => true),
+      trySet: vi.fn(() => "queued" as const),
+      tryRemove: vi.fn(() => "queued" as const),
       sync: vi.fn(async () => undefined),
     };
     (fixture.runtime as any).accountSettingsStore = accountSettingsStore;
@@ -4669,7 +4670,7 @@ describe("adeRpcServer", () => {
     });
     expect(vaultSet?.isError).toBeUndefined();
     expect(vaultSet.structuredContent.result).toBe(true);
-    expect(accountVaultStore.set).toHaveBeenCalledWith(
+    expect(accountVaultStore.trySet).toHaveBeenCalledWith(
       "all",
       "provider_api_key",
       "openai",

@@ -12,6 +12,13 @@ import { GITHUB_ACCOUNT_APP_TOKEN_KEY } from "../../../shared/github/accountAppT
 import { updateCredentialKeySync, type UpdatableCredentialStore } from "../../../../../ade-cli/src/services/credentials/updateCredentialKey";
 import { isTrustedAdeRendererSender } from "../ipc/trustedRendererSender";
 import { openExternalUrl } from "../shared/externalLinks";
+import { captureGithubAppConnectionAnalytics, type FeatureAnalytics } from "../analytics/featureProductAnalytics";
+
+function connectOutcome(signIn: { status: string; resultCode: string | null }): "completed" | "cancelled" | "failed" {
+  if (signIn.status === "done" && signIn.resultCode === "ok") return "completed";
+  if (signIn.status === "expired" || signIn.resultCode === "denied") return "cancelled";
+  return "failed";
+}
 
 /**
  * Settings' controls for the ADE account's GitHub App sign-in: connect (the
@@ -33,6 +40,7 @@ export function registerGithubAccountAppIpc(args: {
   getDirectoryBaseUrl: () => string | null;
   getAccountAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
   getAccountUserId: () => string | null;
+  analytics: FeatureAnalytics | null;
   logger: {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
@@ -123,6 +131,13 @@ export function registerGithubAccountAppIpc(args: {
     if (!answer.ok) return { ok: false, error: answer.error };
     if (answer.signIn.status !== "pending") {
       args.logger.info("github.account_app_sign_in_finished", { status: answer.signIn.status, resultCode: answer.signIn.resultCode });
+      // Settings stops reading once a connect settles; the hourly de-duplication covers a re-read.
+      captureGithubAppConnectionAnalytics({
+        analytics: args.analytics,
+        surface: "desktop",
+        action: "github_app_connected",
+        outcome: connectOutcome(answer.signIn),
+      });
     }
     return { ok: true, ...answer.signIn };
   });
@@ -131,6 +146,12 @@ export function registerGithubAccountAppIpc(args: {
     const answer = await client.signOut();
     if (!answer.ok) return { ok: false, error: answer.error };
     args.logger.info("github.account_app_signed_out", { deletedAtGitHub: answer.result.deletedAtGitHub });
+    captureGithubAppConnectionAnalytics({
+      analytics: args.analytics,
+      surface: "desktop",
+      action: "github_app_disconnected",
+      outcome: "completed",
+    });
     return { ok: true, deletedAtGitHub: answer.result.deletedAtGitHub, revokeAtGitHubUrl: answer.result.revokeAtGitHubUrl };
   });
 
