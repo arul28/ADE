@@ -712,6 +712,12 @@ export type AutomationActiveHours = {
 export type AutomationTrigger = {
   type: AutomationTriggerType;
   cron?: string;
+  /**
+   * For `schedule` on ADE Cloud: the IANA zone `cron` is read in. Set from
+   * the zone of the computer that moved the rule to ADE Cloud. A computer
+   * reads a schedule on its own clock.
+   */
+  timezone?: string;
   branch?: string;
   targetBranch?: string;
   event?: string;
@@ -898,6 +904,10 @@ export type AutomationLaneNamePreset =
 export type AutomationCloudTarget = {
   /** The computer's size; null or absent = the size the person saved for new lanes. */
   sizeId?: CloudTierId | null;
+  /** With ADE Cloud as the home (C9): most runs an hour before the rule pauses (default 6). */
+  maxRunsPerHour?: number;
+  /** With ADE Cloud as the home: keep a run's computer after it (default: freed, its lane kept). */
+  keepComputer?: boolean;
 };
 
 export type AutomationExecution = {
@@ -1012,6 +1022,12 @@ export type AutomationRuleScope = {
  * a computer (the same id the CTO home machine uses).
  */
 export type AutomationRuleHome = {
+  /**
+   * `cloud`: ADE Cloud is the home (C9); `deviceId` is then
+   * `ADE_CLOUD_HOME_DEVICE_ID`, which no computer has, so an ADE that doesn't
+   * know this field still reads it as another computer's home.
+   */
+  kind?: "cloud";
   deviceId: string;
   /** The computer's own name, for showing on computers that cannot reach it. */
   name: string;
@@ -2521,6 +2537,33 @@ export type ProjectConfigTrust = {
   localHash: string;
 };
 
+/**
+ * A setting that follows the ADE account (account project plan, slices
+ * Y2 to Y4) and needs the person: this computer had a different value when
+ * it moved (the account's is in use), or a value stays on this computer.
+ */
+export type ProjectConfigAccountNotice =
+  | {
+    kind: "account_setting";
+    /** The account row, such as `prs.pollIntervalSeconds`. */
+    key: string;
+    /** The setting's name in Settings. */
+    label: string;
+  }
+  | {
+    /**
+     * A value that stays on this computer instead of the account: it holds
+     * a credential-shaped key (`names`), names a folder on this computer, or
+     * is over the size cap.
+     */
+    kind: "kept_here";
+    key: string;
+    label: string;
+    reason: "secret" | "machine_path" | "too_large";
+    /** For `secret`: the key names, never their values. */
+    names?: string[];
+  };
+
 export type ProjectConfigSnapshot = {
   shared: ProjectConfigFile;
   local: ProjectConfigFile;
@@ -2531,6 +2574,8 @@ export type ProjectConfigSnapshot = {
     sharedPath: string;
     localPath: string;
   };
+  /** Settings that follow the account and need the person (a different value here, or a value kept here). Absent from older brains. */
+  accountNotices?: ProjectConfigAccountNotice[];
 };
 
 export type ProjectConfigDiff = {

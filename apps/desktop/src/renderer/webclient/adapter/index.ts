@@ -34,7 +34,10 @@ import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import { createWebCloudNamespace } from "./cloud";
 import { createWebProviderLoginsNamespace } from "./providerLogins";
+import { createGithubAccountAppWebMethods } from "./githubStub";
+import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
+import { guardPreloadPassPinnedMembers } from "./preloadPassPins";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
@@ -133,6 +136,7 @@ export function createAdeWebAdapter(
   const misc = createMiscNamespaces(infra);
   const accountClient = providedAccountClient ?? new BrowserAccountClient();
   const analytics = createAnalyticsNamespace(infra);
+  const githubDirect = createWebGithubDirectNamespace(accountClient);
 
   const surface = {
     app: createAppNamespace(infra),
@@ -170,7 +174,18 @@ export function createAdeWebAdapter(
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,
-    github: misc.github,
+    // The account's GitHub App sign-in asks the account directory with this
+    // browser's own account session; no machine and no GitHub token.
+    github: {
+      ...misc.github,
+      ...createGithubAccountAppWebMethods(
+        (request) => accountClient.githubAppRequest(request),
+        githubDirect.onGrantChanged,
+      ),
+    } as typeof misc.github,
+    // Direct GitHub reads with the account's GitHub App sign-in, from this
+    // browser to api.github.com; the token stays in memory (C10).
+    githubDirect: githubDirect.namespace,
     jira: createJiraNamespace(infra),
     rebase: misc.rebase,
     history: misc.history,
@@ -264,6 +279,10 @@ export function createAdeWebAdapter(
       finalize: async () => ({ ok: true }),
     },
   };
+
+  // A member that took a pin in the desktop preload pass refuses a pin this
+  // adapter cannot serve, as the members built with a pin already do.
+  guardPreloadPassPinnedMembers(surface as unknown as Record<string, unknown>, infra);
 
   return {
     ade: withFallbackProxy(surface as unknown as Window["ade"]),

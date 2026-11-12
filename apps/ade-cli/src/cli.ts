@@ -273,6 +273,8 @@ import type {
   PendingInputRequest,
 } from "../../desktop/src/shared/types/chat";
 import { buildChatInboxPlan } from "./cliChatInbox";
+import { runCliTurnHook } from "./cliTurnHook";
+import { CLI_TURN_HOOK_COMMAND } from "../../desktop/src/main/services/pty/cliTurnSignals";
 import {
   describePendingInputForAgent,
   resolvePendingInputResponse,
@@ -437,6 +439,11 @@ import {
 } from "./services/projects/projectRoots";
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
+import { createAccountProjectSync, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
+import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeaderCleanup";
+import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
+import { isDevTestMachineHome, isDevTestMachineProcess } from "./services/sync/devTestMachine";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
 import {
@@ -475,6 +482,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
+import { publicAccountProjectFields } from "./services/projects/publicProjectRecord";
 import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
   isUnsupportedRecoveryActionError,
@@ -661,7 +669,9 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
+import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -689,12 +699,15 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
+  resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
@@ -814,6 +827,8 @@ export type CloudLaneLaunchDraft = {
   launchId: string | null;
   /** `--from-linear-issue`: bound to the new lane on the computer, when it is the whole issue. */
   linearIssue: JsonObject | null;
+  /** `--lane-name`: the new lane's name (and its computer's); null names it from the prompt. */
+  laneName: string | null;
   /** A choice a new ADE Cloud lane can't take yet; refused with its own line. */
   notify: boolean;
 };
@@ -1700,7 +1715,9 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). Asks you first. Ctrl-C stops only the waiting; the
+                                                    (default: the size you saved for new lanes). --lane-name <name>
+                                                    names the lane and its computer (default: from the prompt).
+                                                    Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
                                                     failed step. ade chat launch-status|launch-cancel <id>
                                                     --machine cloud checks it or stops it.
@@ -2416,6 +2433,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
     $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
     $ ade projects touch <project-id>
+    $ ade projects retry <project-id|path>          Open a project again that ADE refused because its folder is too slow
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
@@ -2489,6 +2507,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   From an agent, the new session is a subagent of that agent's chat and
   reports back to it. --type peer: no report. --no-parent: a separate chat,
   only when the user asks. --parent <sessionId> names a different parent.
+  Without --permissions, both modes start where a chat would: a full-auto
+  parent's subagent runs full-auto, otherwise the project's default (full
+  access unless configured), never above the agent that started it.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -2933,8 +2954,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     row stops saying "Needs you" about a question nobody is on.
     $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
     $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
-    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
-                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    A deleted CLI session (AGENT "claude CLI") relaunches in its lane,
+                                                    resuming its own conversation when ADE knows it, else fresh
+    $ ade chat inbox --text                         Every chat and CLI session in the project that waits on you, each
+                                                    with its question or approval inline and the exact command that
+                                                    answers it
                                                     (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
@@ -3029,10 +3053,18 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     A person's batch needs no approval. Chats that already
                                                     continue on another machine are skipped (named: refused).
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
+                                                    A CLI session (Claude Code, Codex, …) moves as a CLI: it stops
+                                                    here and resumes its own conversation there (Claude Code,
+                                                    Codex), else starts fresh there with a brief (other agents, or
+                                                    --brief). --all includes CLIs.
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
+                                                    own conversation file; without --model it keeps the CLI's model.
+                                                    handoff <cli-session> sends a brief instead (its terminal output when
+                                                    ADE can't read the conversation).
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
     $ ade chat side <session> "Why did we pick Redis?"
@@ -3072,7 +3104,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat restart [<session>] [--stop | --after-turn]
                                                     Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
                                                     With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
+    $ ade chat update <session> --pin | --unpin      Pin or unpin a chat or CLI session in the Work list
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
+                                                    Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
+                                                    ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
@@ -3214,7 +3249,24 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   CLI sessions:
     Use ade new chat --mode cli ... when you want a tracked provider CLI terminal
-    instead of a persistent Work chat.
+    instead of a persistent Work chat. These chat commands also take a tracked
+    CLI session id (they run on the machine that owns the terminal):
+      send / message   Typed at the CLI's prompt. Busy: queued as a durable wait
+                       that types it at the next free prompt (its id cancels it:
+                       ade chat wait --cancel <id>); --interrupt presses the
+                       CLI's cancel key first. Text only: no images.
+      steer            Typed now, even mid-turn; the CLI decides what to do with it.
+      interrupt        Presses the provider's cancel key (Esc; Esc twice for
+                       OpenCode; Ctrl-C for Cursor). The process keeps running.
+      restart          Relaunches the CLI in its row, resuming its conversation.
+      update           --title, --pin/--unpin; --model, --effort, --fast and
+                       --permission-mode relaunch it with resume (refused mid-turn,
+                       or when that CLI's resume cannot carry the setting).
+      switch-account   Claude and Codex: relaunch under the other account, resumed.
+      generate-names   The title, from its first prompt and output.
+      pending/respond  While the CLI waits at its own permission prompt: --approve,
+                       --approve-session or --deny press Claude Code's, Codex's or
+                       Cursor's own key; other CLIs are answered in the terminal.
 `,
   "chat recover": `${ADE_BANNER}
   Chat recovery
@@ -4981,9 +5033,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -11567,6 +11621,15 @@ async function runChatLaunchCommand(
         const session = phase === "completed"
           ? await callChat("getSessionSummary", { sessionId: asString(launch.sessionId) ?? launchId }).catch(() => null)
           : null;
+        const create = isRecord(launchArgs.chat) && isRecord(launchArgs.chat.create) ? launchArgs.chat.create : null;
+        const lowered = isRecord(session) && create
+          ? permissionLoweredNotice(
+            asString(create.permissionMode) ?? null,
+            create.droidPermissionMode != null || create.copilotPermissionMode != null,
+            session,
+          )
+          : null;
+        if (lowered) process.stderr.write(`${lowered}\n`);
         const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
@@ -11954,8 +12017,9 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity"
-    || sub === "generate-names" || sub === "generate_names" || sub === "names";
+  // `generate-names` takes no text, so a bare id names the session to rename
+  // (otherwise it renamed the caller's own chat and lane by surprise).
+  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity";
   // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
   // `launch-cancel`), never a session positional; they read their own.
   const launchSub = sub === "launch" || sub === "launches"
@@ -12411,8 +12475,10 @@ function buildChatPlan(args: string[]): CliPlan {
     const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
-    // Only `--machine cloud` takes it: the same id again follows that launch.
+    // Only `--machine cloud` takes these: the same id again follows that
+    // launch, and the new lane (and its computer) gets the name.
     const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
+    const cloudLaneName = readValue(args, ["--lane-name"])?.trim() || null;
     const actionArgs = collectLaunchArgs(args, {
       laneId: explicitLane,
       ...lineageArgs,
@@ -12495,6 +12561,7 @@ function buildChatPlan(args: string[]): CliPlan {
       prompt: kickoffText,
       launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
       linearIssue,
+      laneName: cloudLaneName,
       notify: notify != null,
     };
     if (printConfig) {
@@ -13140,7 +13207,9 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "handoff" || sub === "fork") {
     // Free text first: a note of "--fork" is text, not a flag.
     const handoffNote = readValue(args, ["--note"]);
-    const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
+    // A model is optional here only for a CLI session, which continues on the
+    // model it ran; a chat without one is refused by the runtime.
+    const { mode, targetModelId, settings } = readHandoffTarget(args, sub, { modelOptional: true });
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
@@ -13159,7 +13228,7 @@ function buildChatPlan(args: string[]): CliPlan {
           "handoffSession",
           collectGenericObjectArgs(args, {
             sourceSessionId: requireSession(),
-            targetModelId,
+            targetModelId: targetModelId ?? "",
             mode,
             ...(targetLaneId !== null ? { targetLaneId } : {}),
             ...settings,
@@ -13492,6 +13561,11 @@ function buildChatPlan(args: string[]): CliPlan {
     // and `chat updateSession` with no session sent the runtime no arguments.
     // The session can come from the positional, --session, --input-json, or
     // the caller's own chat, so it is required only after they are merged.
+    // Pinning is the row's own setting, for a chat and a CLI session alike
+    // (`session.updateMeta`, as the Work list pins it).
+    const pinFlag = readFlag(args, ["--pin"]);
+    const unpinFlag = readFlag(args, ["--unpin"]);
+    if (pinFlag && unpinFlag) throw new CliUsageError("Use only one of --pin or --unpin.");
     const update = withSession(readChatUpdateFields(args));
     // Only an omitted session falls back to the caller's own chat; an empty
     // one given on purpose is refused rather than updating the wrong chat.
@@ -13499,10 +13573,19 @@ function buildChatPlan(args: string[]): CliPlan {
       update.sessionId === undefined ? asString(process.env.ADE_CHAT_SESSION_ID) : asString(update.sessionId),
       "sessionId",
     );
+    const pinned = pinFlag ? true : unpinFlag ? false : undefined;
+    const steps: InvocationStep[] = [];
+    if (pinned !== undefined) {
+      steps.push(actionStep("pin", "session", "updateMeta", { sessionId: update.sessionId, pinned }));
+    }
+    if (pinned === undefined || Object.keys(update).some((key) => key !== "sessionId")) {
+      steps.push(actionStep("result", "chat", "updateSession", update));
+    }
     return {
       kind: "execute",
       label: "chat update",
-      steps: [actionStep("result", "chat", "updateSession", update)],
+      ...(steps.some((step) => step.key === "result") ? {} : { shapeResult: () => ({ ok: true, sessionId: update.sessionId, pinned }) }),
+      steps,
     };
   }
   return refuseUnknownSubcommand("chat", "chat", sub);
@@ -21531,12 +21614,55 @@ function buildProxyPlan(args: string[]): CliPlan {
  * login to land in the new directory, and `remove` signs the account out, then
  * forgets the entry; the directory itself is never deleted.
  */
+/**
+ * `ade providers sign-in <provider> --remote --json`: starts the provider's
+ * own sign-in in this machine's brain for a person on another screen (ADE's
+ * server runs it over exec for the phone and the web) and answers with the
+ * link and code. `sign-in-code <job> --stdin` passes a code pasted from the
+ * provider's page (on stdin only, so it is not in this process's arguments);
+ * `sign-in-status <job>` reads where it stands. Only `--remote` exists: a
+ * sign-in on this screen is Settings › Providers.
+ */
+function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-status", args: string[]): CliPlan {
+  if (group === "sign-in") {
+    if (!readFlag(args, ["--remote"])) {
+      throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
+    }
+    const provider = requireValue(firstPositional(args), "provider").trim().toLowerCase();
+    return {
+      kind: "execute",
+      label: "providers sign-in",
+      steps: [{ key: "result", method: "providers.remoteSignInStart", params: { provider } }],
+      machineOnly: true,
+      minTimeoutMs: 30_000,
+    };
+  }
+  const jobId = requireValue(firstPositional(args), "sign-in job id").trim();
+  if (group === "sign-in-status") {
+    return {
+      kind: "execute",
+      label: "providers sign-in-status",
+      steps: [{ key: "result", method: "providers.remoteSignInStatus", params: { jobId } }],
+      machineOnly: true,
+    };
+  }
+  const code = readFlag(args, ["--stdin"]) ? readAllStdinSync().trim() : "";
+  if (!code) throw new CliUsageError("ade providers sign-in-code <job> --stdin (the code on stdin)");
+  return {
+    kind: "execute",
+    label: "providers sign-in-code",
+    steps: [{ key: "result", method: "providers.remoteSignInCode", params: { jobId, code } }],
+    machineOnly: true,
+  };
+}
+
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
   if (group === "opencode") return buildOpenCodeProvidersPlan(args);
+  if (group === "sign-in" || group === "sign-in-code" || group === "sign-in-status") return buildRemoteSignInPlan(group, args);
   if (group === "actions") {
     return {
       kind: "execute",
@@ -22324,6 +22450,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     // Flags first, so their values are not taken for the rule id.
     const deviceId = readValue(args, ["--device", "--device-id"]);
     const name = readValue(args, ["--name"]);
+    const cloud = readFlag(args, ["--cloud"]);
     const id = requireValue(
       readValue(args, ["--id"]) ?? firstPositional(args),
       "rule id",
@@ -22331,13 +22458,16 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     if (deviceId && !name) {
       throw new CliUsageError("automations run-on --device needs --name <computer name> too.");
     }
+    if (cloud && deviceId) {
+      throw new CliUsageError("automations run-on takes --cloud or --device, not both.");
+    }
     return {
       kind: "execute",
       label: `automations run-on ${id}`,
       steps: [
         actionStep("result", "automations", "setRunOn", {
           id,
-          ...(deviceId ? { deviceId, name } : {}),
+          ...(cloud ? { cloud: true } : deviceId ? { deviceId, name } : {}),
         }),
       ],
     };
@@ -24464,6 +24594,29 @@ function hasProjectCredentialStoreValue(
   }
 }
 
+/**
+ * Providers with a default key in this machine's API key store (the file the
+ * runtime and the CLI share), by name. Keys that moved out of
+ * `.ade/local.yaml` live here now, so readiness counts them too. Reads only the
+ * provider index, never a key.
+ */
+function readStoredApiKeyProviders(secretsDir: string): string[] {
+  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
+  const machineKeyPath = path.join(secretsDir, ".machine-key");
+  if (!fs.existsSync(credentialsPath) || !fs.existsSync(machineKeyPath)) return [];
+  try {
+    const raw = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath }).getSync("ai.api_key.index.v1");
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [];
+  } catch (error) {
+    // Readiness still answers from local.yaml.
+    captureError(error, { fingerprint: ["doctor-api-key-index-unreadable", error instanceof Error ? error.name : "unknown"] });
+    return [];
+  }
+}
+
 function checkProviderReadiness(value: unknown): ReadinessCheck {
   const configResult =
     isRecord(value) && isRecord(value.result) ? value.result : value;
@@ -24483,9 +24636,10 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     cursor: resolvePinnedCursorAgentCli() != null,
     droid: resolveDroidExecutable().source !== "fallback-command",
   };
-  const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
-    Boolean(asString(apiKeys[key])),
-  );
+  const apiKeyProviders = [...new Set([
+    ...Object.keys(apiKeys).filter((key) => Boolean(asString(apiKeys[key]))),
+    ...readStoredApiKeyProviders(resolveMachineAdeLayout().secretsDir),
+  ])];
   const ready = Boolean(
     defaultProvider ||
     apiKeyProviders.length ||
@@ -24578,6 +24732,8 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   try {
     const monitor = createDiskPressureMonitor({
       roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+      // The brain's own guard on an ADE Cloud computer (`cloudDiskGuard.ts`).
+      ...(isAdeCloudComputer() ? cloudDiskGuardOptions(resolveMachineAdeLayout().adeDir) : {}),
     });
     const snap = monitor.getSnapshot({ maxAgeMs: 0 });
     const urgent = isUrgentDiskPressure(snap.state);
@@ -25807,6 +25963,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "cloud.prepareStop" ||
     method === "cloud.pushWork" ||
     method === "cloud.workState" ||
+    method.startsWith("providers.remoteSignIn") ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -26347,6 +26504,35 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
       steps: [
         { key: "result", method: "projects.touch", params: { projectId } },
       ],
+    };
+  }
+  if (sub === "retry") {
+    // Forget a `project_folder_too_slow` refusal and its strikes, so the
+    // next open really tries (see `projectOpenStrikes.ts`).
+    // Flags first: `firstPositional` takes the first bare word, which may be a flag's value.
+    const explicitPath = readValue(args, ["--path"]);
+    const explicitId = readValue(args, ["--project-id", "--id"]);
+    const positional = explicitPath || explicitId ? null : firstPositional(args);
+    const projectId = explicitId ?? (positional && /^project_[A-Za-z0-9]+$/.test(positional) ? positional : null);
+    let params: Record<string, unknown>;
+    if (projectId) {
+      params = { projectId };
+    } else {
+      const rootPath = requireValue(explicitPath ?? positional, "project id or path");
+      // Another computer's path is sent as typed, as `clone --path` is.
+      params = { rootPath: target.remote ? rootPath : resolveCliPathArg(rootPath) };
+    }
+    return {
+      ...base,
+      label: "projects retry",
+      steps: [{ key: "result", method: "projects.retryOpen", params }],
+      formatText: (result) => {
+        if (!isRecord(result)) return "Done.";
+        const name = String(result.displayName ?? result.projectId ?? "The project");
+        if (result.wasBlocked === true) return `${name} can be opened again. Open it to try.`;
+        if (result.strikesCleared === true) return `${name} was not refused yet; its earlier freezes are forgotten.`;
+        return `${name} was not refused. Nothing to clear.`;
+      },
     };
   }
   if (sub === "inspect") {
@@ -29163,8 +29349,19 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
+  // Freeze kills counted against the project that was opening, read once from
+  // this machine's runtime folder; the scope registry refuses a project with
+  // enough of them (`projectOpenStrikes.ts`).
+  const { ProjectOpenStrikes } = await import("./services/projects/projectOpenStrikes");
+  const projectOpenStrikes = new ProjectOpenStrikes({
+    runtimeDir: layout.runtimeDir,
+    logger: headlessProjectLogger,
+  });
+  // Read once: the watchdog kills at it, and the scope registry's open queue waits no longer.
+  const freezeThresholdMs = resolveBrainLoopWatchdogThresholdMs(process.env.ADE_LOOP_WATCHDOG_MS);
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
+    thresholdMs: freezeThresholdMs,
     socketPath,
     onSampleTick: () => {
       void resourcePressureMonitor?.tick();
@@ -29173,6 +29370,21 @@ async function runServe(
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
     onRecovered: (breadcrumb) => {
+      // The kill landed while projects were opening: count it against them.
+      const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
+      if (struck.length > 0) {
+        headlessProjectLogger.warn("project.open_freeze_killed", {
+          projects: struck.map(({ projectId, phase, strikes, blocked }) => ({
+            projectId,
+            phase,
+            strikes,
+            blockedUntil: blocked ? new Date(blocked.blockedUntilMs).toISOString() : null,
+            level: blocked?.level ?? null,
+          })),
+          blockedMs: breadcrumb.blockedMs,
+          killedAt: breadcrumb.ts,
+        });
+      }
       // A wedge the watchdog ended by restarting: devices that reconnect in
       // the next few minutes learn this machine froze, not that their network did.
       recordHostStall({
@@ -29229,6 +29441,12 @@ async function runServe(
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);
+  // `gh` and `git` in this brain's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  {
+    const { configureGithubShellShim } = await import("../../desktop/src/main/services/github/githubShellShim");
+    configureGithubShellShim({ env: process.env, logger: headlessProjectLogger });
+  }
   // Only the machine brain publishes the machine heartbeat; see the helper.
   const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, machineRuntimeNames);
   if (servesMachineEndpoint) {
@@ -29284,15 +29502,29 @@ async function runServe(
     accountStore: () => (syncEnabled ? machineAccountStoresForRecords().settings : null),
     isSignedIn: () => machineAccountStoresForRecords().accountUserId() !== null,
     logger: headlessProjectLogger,
+    folderRefused: (project) => Boolean(project.projectId && projectOpenStrikes.blocked(project.projectId)),
   });
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
+  projectRegistry.setFolderReadSkip((projectId) => projectOpenStrikes.blocked(projectId) !== null);
+  // A refused project's folder is not read for account settings, nor counted
+  // for this cloud computer's disk report.
+  const refusedRoot = (rootPath: string): boolean => {
+    const resolved = path.resolve(rootPath);
+    const record = projectRegistry.list().find((entry) => entry.rootPath === resolved);
+    return Boolean(record && projectOpenStrikes.blocked(record.projectId));
+  };
+  setAccountConfigRootSkip(refusedRoot, layout.secretsDir);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
     logger: headlessProjectLogger,
   });
+  // The account signed in on this machine, for the account project link the
+  // phone's catalog and roster carry (`publicProjectRecord`). The same reader
+  // as the RPC server's project list.
+  const brainAccountUserId = (): string | null => machineAccountStoresForRecords().accountUserId();
   syncAccountAnalyticsIdentity(
     brainAccountAuthService.getStatus(),
     brainProductAnalytics,
@@ -29350,8 +29582,11 @@ async function runServe(
   }
   // The phone's icon follows the shared record like the desktop's tab does.
   const mobileProjectIconDataUrl = (record: ProjectRecord): string | null => {
+    // For a refused project the records answer from the account only
+    // (`folderRefused` above), and detecting an icon in its folder is skipped.
     const decision = projectRecords.iconDecision(record);
     if (decision.use === "record") return decision.icon.dataUrl;
+    if (scopeRegistry.isOpenBlocked(record.projectId)) return null;
     if (decision.use === "detected") {
       const detected = resolveProjectIconPath(record.rootPath, { iconPathOverride: undefined });
       return detected ? resolveMobileProjectIconDataUrl(record.rootPath, { resolvedSourcePath: detected }) : null;
@@ -29366,7 +29601,8 @@ async function runServe(
     return headlessMobileProjectSummary(
       sharedName ? { ...record, displayName: sharedName } : record,
       mobileProjectIconDataUrl(record),
-      overrides,
+      // The phone joins the card to its account project by this id first.
+      { ...publicAccountProjectFields(record, brainAccountUserId), ...overrides },
     );
   };
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
@@ -29419,16 +29655,21 @@ async function runServe(
   };
   // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
   const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
-  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
-    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
+  const cloudDiskGrowModule = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? await import("./services/power/cloudDiskGrow")
+    : null;
+  const cloudDiskGrower = cloudDiskGrowModule
+    ? cloudDiskGrowModule.createCloudDiskGrower({
         instanceId: cloudInstanceId,
         client: async () => (await getCloudBrainAccess()).client(),
         path: os.homedir(),
+        // The storage guard's refusal reads what it writes there (`cloudDiskGuardOptions` in bootstrap).
+        adeHome: layout.adeDir,
         logger: headlessProjectLogger,
       })
     : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
-  const cloudComputerReports = cloudKeepAwakeModule?.isCloudMachine()
+  const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
         instanceId: cloudInstanceId,
         projectRegistry,
@@ -29441,14 +29682,28 @@ async function runServe(
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
+        adeHome: layout.adeDir,
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
-        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
+  if (isAdeCloudComputer()) {
+    // C4: older clones saved the GitHub sign-in header in their .git/config.
+    // Take it out once a boot, off the start path.
+    const cleanup = setTimeout(() => {
+      void import("./services/github/savedGithubHeaderCleanup")
+        .then(({ removeSavedGithubHeaders }) => removeSavedGithubHeaders(
+          projectRegistry.list().map((project) => project.rootPath),
+          { logger: headlessProjectLogger },
+        ))
+        .catch((error: unknown) => headlessProjectLogger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.message : String(error) }));
+    }, 60_000);
+    cleanup.unref?.();
+  }
+  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: async () => {
@@ -29457,14 +29712,14 @@ async function runServe(
             readMachineBusyFacts({ ...sources, personalChatScope }),
             readMachineNextScheduledWakeAt(sources),
           ]);
-          const { busy, reasons } = cloudKeepAwakeModule.decideCloudBusy({
+          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
             ...facts,
             setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
             holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
           }, Date.now());
           // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
           // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt };
+          return { busy, reasons, nextWakeAt, waitingOnPerson };
         },
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
@@ -29472,6 +29727,7 @@ async function runServe(
           await client.requestIdleSleep(instanceId);
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
+        diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
@@ -29694,6 +29950,11 @@ async function runServe(
         rootPath: requestedRootPath || null,
       };
     }
+    // A refused project's folder is not touched to set its icon.
+    const refusal = scopeRegistry.openRefusal(record.projectId);
+    if (refusal) {
+      return { ok: false, message: refusal.message, projectId: record.projectId, rootPath: record.rootPath };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return {
         ok: false,
@@ -29737,14 +29998,20 @@ async function runServe(
           : null,
       )
         .map((record) => {
-          const isAvailable = fs.existsSync(record.rootPath);
+          // A refused project is there (it froze while opening): not stat'd again.
+          const refused = scopeRegistry.isOpenBlocked(record.projectId);
+          const isAvailable = refused || fs.existsSync(record.rootPath);
           return toMobileProjectSummary(record, {
             isAvailable,
             // Registry rows carry no lane data; read the count off disk so the
             // catalog does not advertise "0 lanes" for every project. A root
             // that isn't on this machine has nothing to read — skip the disk
             // work and leave the summary's default count.
-            ...(isAvailable ? { laneCount: headlessProjectLaneCount(record.rootPath) } : {}),
+            // Nor for a project refused for being too slow to open: the count
+            // opens its database, on the drive that froze the brain.
+            ...(isAvailable && !refused
+              ? { laneCount: headlessProjectLaneCount(record.rootPath) }
+              : {}),
           });
         });
       return {
@@ -30162,7 +30429,10 @@ async function runServe(
       rosterProvider: {
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
       // Terminals of open projects only: a terminal never boots a project.
       terminalProjects: async ({ projectId, projectRootPath }) => {
@@ -30227,6 +30497,7 @@ async function runServe(
         projectRegistry,
         scopeRegistry,
         hostProjectId: preferredSyncProjectId,
+        accountUserId: brainAccountUserId,
         logger: headlessProjectLogger,
       }),
   };
@@ -30235,8 +30506,14 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    openStrikes: projectOpenStrikes,
+    freezeThresholdMs,
+    logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    // Older clones saved the GitHub sign-in header in .git/config: take it out
+    // once per project, off the open path (one file read when there is none).
+    onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
     // A project removed during a repair's teardown: that teardown already
     // handed its emulators off, and nothing will re-adopt them.
     onUnregisterAfterHandOff: async (projectRoot) => {
@@ -30273,7 +30550,10 @@ async function runServe(
       // project's chat transcript read-only without a project switch. Reads
       // straight off that project's `.ade` transcripts dir (registry-validated,
       // no runtime boot) — the counterpart to the roster feed above.
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       personalChatScope,
       // A save from the web or the phone is work, and keeps a cloud machine awake.
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
@@ -30515,6 +30795,7 @@ async function runServe(
       scopeRegistry: {
         get: (projectId) => scopeRegistry.get(projectId),
         getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
       },
       personalChatScope,
       deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
@@ -30631,6 +30912,92 @@ async function runServe(
     });
   }
 
+  // A provider sign-in a person finishes on another screen (`ade providers
+  // sign-in --remote`): the login runners live here, in the brain, so they
+  // outlive the short command ADE's server runs over exec.
+  const remoteProviderSignIn = embedded ? null : createRemoteProviderSignIn({
+    providerAccounts: async () => (await import("../../desktop/src/main/services/providerAccounts/machineProviderLoginRunner")).getMachineProviderLoginRunner(),
+    defaultInstanceId: async (provider) => {
+      const { getMachineProviderInstanceStore } = await import("./services/providerInstances/providerInstanceStore");
+      return getMachineProviderInstanceStore().getDefault(provider).id;
+    },
+    agentClis: async () => {
+      const runner = (await import("../../desktop/src/main/services/ai/machineAgentCliLoginRunner")).getMachineAgentCliLoginRunner();
+      return {
+        start: (args) => runner.start(args),
+        status: (loginId) => runner.status(loginId),
+        submitCode: (loginId, code) => runner.submitCode(loginId, code),
+      };
+    },
+  });
+
+  // A server launch (C6): ADE's server made this computer for a caller with
+  // no computer and named the launch in its env. The computer signs itself
+  // in with its join code and runs the launch here. The code leaves this
+  // process's env now, so nothing the brain starts inherits it.
+  const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunchEnv(process.env) : null;
+  if (bootLaunchEnv) {
+    startCloudBootLaunch(bootLaunchEnv, {
+      cloudInstanceId,
+      adeDir: layout.adeDir,
+      secretsDir: layout.secretsDir,
+      logger: headlessProjectLogger,
+      account: brainAccountAuthService,
+      directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      projectRegistry,
+      chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
+      cloudClient: async () => await (await getCloudBrainAccess()).client(),
+      holdCloudWork: holdCloudWork ?? null,
+      // An automation's run (C9): its chat's turn ending is the run's end. Nobody
+      // watches that chat, so one that stops to ask for input ends the run as
+      // failed rather than holding its computer until the server's stop limit.
+      waitForChatEnd: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) return { ok: false, error: "This ADE runtime has no chats." };
+        const ASKED_FOR_INPUT = { ok: false, error: "The agent asked for input." } as const;
+        return await new Promise((resolve) => {
+          let settled = false;
+          const timers = new Set<ReturnType<typeof setTimeout>>();
+          const finish = (result: { ok: boolean; error?: string | null }) => {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            for (const timer of timers) clearTimeout(timer);
+            resolve(result);
+          };
+          // Reads the chat once, `delayMs` from now: gone, still waiting on a card, or over.
+          const checkLater = (delayMs: number) => {
+            const timer = setTimeout(() => {
+              timers.delete(timer);
+              void chat.getSessionSummary(sessionId).then((summary) => {
+                if (!summary) finish({ ok: false, error: "The run's chat is gone." });
+                else if (summary.awaitingInput) finish(ASKED_FOR_INPUT);
+                else if (summary.status !== "active") finish({ ok: true });
+              }).catch((error: unknown) => {
+                headlessProjectLogger.warn("cloud_boot_launch.automation_chat_read_failed", { error: error instanceof Error ? error.message : String(error) });
+              });
+            }, delayMs);
+            timer.unref?.();
+            timers.add(timer);
+          };
+          const unsubscribe = chat.subscribeToEvents((envelope) => {
+            if (envelope.sessionId !== sessionId) return;
+            const event = envelope.event;
+            if (event.type === "done") {
+              finish(event.status === "completed" ? { ok: true } : { ok: false, error: `The run's chat ${event.status === "interrupted" ? "was stopped" : "failed"}.` });
+            } else if (event.type === "approval_request" || event.type === "structured_question") {
+              // A card that settles itself (an auto-approved tool) is gone by then; one that waits for a person ends the run.
+              checkLater(30_000);
+            }
+          });
+          // Already over or already waiting (a restart after the hand-off): read once,
+          // after the hand-off's first turn has surely started.
+          checkLater(20_000);
+        });
+      },
+    });
+  }
+
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
@@ -30656,6 +31023,7 @@ async function runServe(
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
+      remoteProviderSignIn,
       pushCloudWork: holdCloudWork
         ? async ({ check }: { check: boolean }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
@@ -30949,6 +31317,8 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   startSyncHostOnDemand = () => startSyncHost();
+  // Stops the account project sync of the brain (set where that sync is built).
+  let stopAccountProjectSync: (() => void) | null = null;
   const disposeServeResources = async () => {
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
@@ -30960,6 +31330,10 @@ async function runServe(
     stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
     machinePairingAutoRecovery = null;
+    // The account project sync stops before the publisher releases the lease,
+    // so no copy is sent or written once shutdown has begun.
+    stopAccountProjectSync?.();
+    stopAccountProjectSync = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -31428,6 +31802,40 @@ async function runServe(
       if (!activeProjectId) return null;
       return await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null;
     };
+    // The account's project list (`accountProjectSync.ts`). One instance for
+    // the brain, fed by whichever publisher holds the lease: it runs after an
+    // accepted heartbeat and owns no timer. The GitHub service it asks for
+    // repository ids is built on first use, with this machine's own
+    // credentials (gh, an environment token, a stored token, the App).
+    let accountProjectSync: AccountProjectSync | null = null;
+    let accountProjectGithubRequest: GithubApiRequest | null = null;
+    const getAccountProjectSync = (): AccountProjectSync => {
+      accountProjectSync ??= createAccountProjectSync({
+        adeDir: layout.adeDir,
+        registry: projectRegistry,
+        getAccountUserId: () => {
+          const status = brainAccountAuthService.getStatus();
+          return status.signedIn ? status.userId?.trim() || null : null;
+        },
+        lookupRepo: createGithubRepoLookup({
+          getApiRequest: async () => {
+            accountProjectGithubRequest ??= (() => {
+              const service = createHeadlessGitHubService(process.cwd(), headlessProjectLogger);
+              return (args) => service.apiRequest(args);
+            })();
+            return accountProjectGithubRequest;
+          },
+        }),
+        readFolderStates: (records) => readProjectFolderStates(records),
+        isDevTestMachine: () => isDevTestMachineProcess() || isDevTestMachineHome(layout.adeDir),
+        logger: headlessProjectLogger,
+      });
+      return accountProjectSync;
+    };
+    stopAccountProjectSync = () => {
+      accountProjectSync?.stop();
+      accountProjectSync = null;
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -31488,6 +31896,11 @@ async function runServe(
           }
         },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+        // Only with sync on: a brain started with --no-sync keeps the account
+        // list out of it, like every other account store.
+        onPublished: (event) => {
+          if (syncEnabled) getAccountProjectSync().afterHeartbeat(event);
+        },
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
         },
@@ -31561,6 +31974,10 @@ async function runServe(
         // acquisition rebuilds it above.
         accountMachinePublisher?.dispose();
         accountMachinePublisher = null;
+        // The account project sync it fed stops with it (nothing more sent or
+        // written from here); the next lease builds a new one on first use.
+        accountProjectSync?.stop();
+        accountProjectSync = null;
       }, SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS);
       accountPublisherReleaseTimer.unref?.();
     });
@@ -33920,7 +34337,8 @@ function formatDeletedChats(value: unknown): string {
     chats.map((chat) => [
       asString(chat.id) ?? "?",
       cell(chat.title ?? "Untitled chat", 40),
-      cell(chat.provider, 10),
+      // A deleted agent CLI says so: Reopen relaunches it in its lane.
+      chat.kind === "cli" ? cell(`${asString(chat.provider) ?? "agent"} CLI`, 14) : cell(chat.provider, 10),
       chat.laneExists === true ? cell(chat.laneName, 20) : `${cell(chat.laneName ?? "lane", 14)} (deleted)`,
       cell(chat.deletedAt, 24),
     ]),
@@ -33964,7 +34382,7 @@ function formatArchiveList(value: unknown): string {
       typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "-",
       item.kind === "lane"
         ? `${item.worktreePresent === true ? "worktree on disk" : "no worktree"}${item.branchRef ? `, branch ${String(item.branchRef)}` : ""}`
-        : cell(item.toolType, 20),
+        : cell(item.toolLabel ?? item.toolType, 20),
     ]),
     "Nothing is archived.",
     // A ref is pasted back into `ade archive restore`; a shortened one matches nothing.
@@ -34893,12 +35311,30 @@ export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
     nowMs,
     asString(record.timeZone),
   );
+  // A tracked CLI session whose process is gone reads `idle` like a quiet one,
+  // so say how it ended: a crash and a clean finish are not the same answer.
+  const processRow = formatCliProcessEndRow(record.cliSession);
+  const extraRows = [resumeRow, processRow].filter((row): row is string => Boolean(row));
   // The resume row belongs in the key/value header block: `formatChatTurnStatus`
   // separates that block from the subagent tree with a blank line, and a row
   // hanging off the end of the tree reads as a subagent.
   return formatChatTurnStatus(record as ChatTurnStatusSnapshot, {
-    ...(resumeRow ? { extraRows: [resumeRow] } : {}),
+    ...(extraRows.length ? { extraRows } : {}),
   });
+}
+
+function formatCliProcessEndRow(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const status = asString(value.status);
+  if (!status || status === "running") return null;
+  const exitCode = typeof value.exitCode === "number" ? value.exitCode : null;
+  // Stopped first: a CLI someone stopped often ends non-zero (Ctrl-C is 130).
+  const label = status === "disposed"
+    ? "stopped"
+    : status === "failed" || (exitCode != null && exitCode !== 0)
+      ? "exited with an error"
+      : status === "detached" ? "detached from this ADE" : "exited";
+  return chatTurnStatusRow("process", `${label}${exitCode != null ? ` (exit ${exitCode})` : ""}`);
 }
 
 export function formatChatContinueOnAccount(value: unknown): string {
@@ -39224,6 +39660,9 @@ async function recoverAccountMachineReconnect(
   return true;
 }
 
+/** How long `ade login`'s device sign-in keeps trying an account directory it can't reach yet. */
+const DEVICE_SIGN_IN_START_RETRY_MS = 45_000;
+
 /**
  * Interactive machine-account authorization. The daemon owns either the
  * loopback listener or the device-code secret, token exchange, and credential
@@ -39360,6 +39799,10 @@ async function runAccountLogin(
       const answer = await runAccountAction("startDeviceLogin", {
         projectRoot,
         ignoreEnvCredential: plan.explicitHeadless || options.headless,
+        // Nobody can click Retry here (a fresh ADE Cloud computer signs in this
+        // way seconds after boot, before its network is up): the brain keeps
+        // trying an unreachable account directory for a while first.
+        retryUnreachableForMs: DEVICE_SIGN_IN_START_RETRY_MS,
       });
       const device = readDeviceSignInStart(answer);
       if (!device) {
@@ -39847,6 +40290,26 @@ const GENERIC_PERMISSION_WORD_BY_LEVEL: Readonly<Record<PermissionLevel, string>
 };
 
 /**
+ * The note for a chat the host started below the asked-for mode (see
+ * `chatCreateNotices`). Shared by `chat create` and `chat launch --wait`.
+ */
+function permissionLoweredNotice(
+  requestedMode: string | null,
+  nativePermissionFlag: boolean,
+  session: JsonObject,
+): string | null {
+  const requestedLevel = requestedMode && !nativePermissionFlag
+    ? UNIFORM_GENERIC_PERMISSION_LEVELS[requestedMode] ?? null
+    : null;
+  if (!requestedLevel) return null;
+  // An unreadable posture counts as the top rung, so it never reads as lowered.
+  const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
+  if (permissionLevelRank(applied) >= permissionLevelRank(requestedLevel)) return null;
+  return `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${requestedMode}': `
+    + "an agent cannot start a chat with more access than its own chat or parent has.";
+}
+
+/**
  * What `chat create` says on stderr once the chat exists (stdout may be JSON).
  * Notes only: the chat is already made.
  *
@@ -39866,19 +40329,8 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
   const session = isRecord(created) && isRecord(created.session) ? created.session : created;
   if (!isRecord(session)) return [];
   const notices: string[] = [];
-  const requestedLevel = check.permissionMode && !check.nativePermissionFlag
-    ? UNIFORM_GENERIC_PERMISSION_LEVELS[check.permissionMode] ?? null
-    : null;
-  if (requestedLevel) {
-    // An unreadable posture counts as the top rung, so it never reads as lowered.
-    const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
-    if (permissionLevelRank(applied) < permissionLevelRank(requestedLevel)) {
-      notices.push(
-        `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${check.permissionMode}': `
-        + "an agent cannot start a chat with more access than its own chat or parent has.",
-      );
-    }
-  }
+  const lowered = permissionLoweredNotice(check.permissionMode ?? null, check.nativePermissionFlag, session);
+  if (lowered) notices.push(lowered);
   const laneChats = check.laneId ? unwrapActionEnvelope(values.laneChats) : null;
   if (Array.isArray(laneChats)) {
     const newId = asString(session.id) ?? asString(session.sessionId);
@@ -40708,8 +41160,7 @@ async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTa
   const isCloud = primary === "cloud";
   // What the server runs on a cloud computer never depends on the answer.
   if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
-    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
-    if (isCloudMachine()) {
+    if (isAdeCloudComputer()) {
       cliCloudEnabled = true;
       setAdeCloudSkillVisible(true);
       return;
@@ -41287,6 +41738,28 @@ async function main(): Promise<void> {
     if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
       await runCursorHookScript(process.argv[3]);
       return;
+    }
+    // Git's credential helper for clones made on an ADE Cloud computer
+    // (services/github/gitCredentialHelper.ts): answered here, with no brain
+    // and no argument parsing, because git calls it on every push. A missing
+    // or unreadable sign-in is one line on stderr, which git shows.
+    if (process.argv[2] === "git" && process.argv[3] === "credential") {
+      const { runGitCredentialHelper } = await import("./services/github/gitCredentialHelper");
+      process.exitCode = await runGitCredentialHelper(process.argv[4], {
+        readToken: async () => {
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync();
+        },
+      });
+      return;
+    }
+    // A tracked Claude CLI's turn hook (cliTurnHook.ts): silent, always exit 0.
+    if (process.argv[2] === CLI_TURN_HOOK_COMMAND) {
+      await runCliTurnHook(process.argv.slice(3), (argv) => runCli(argv));
+      // The hook gives up after its deadline, but a report still in flight
+      // (a hung socket) or an unclosed stdin would keep the process alive.
+      // Claude waits on nothing from it, so end it here.
+      process.exit(0);
     }
     // The proxy supervisor's synchronous health probe on the standalone runtime.
     if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {

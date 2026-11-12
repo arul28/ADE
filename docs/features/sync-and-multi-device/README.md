@@ -1258,8 +1258,33 @@ Runtime support files outside `services/sync/`:
   `rotatingCredentialOwner.ts`, `credentialRenewalLock.ts` and
   `integrationCredentialStorage.ts` — the parts the integration credential
   syncs share. `readAccountVaultItem` finds one vault item and decodes it; each
-  sync (`github/githubPatAccountSync.ts`, `cto/linearAccountSync.ts`,
-  `jira/jiraCredentialService.ts`) then compares it with its own machine copy.
+  sync (`github/githubPatAccountSync.ts`, `github/githubGhAccountSync.ts`,
+  `cto/linearAccountSync.ts`, `jira/jiraCredentialService.ts`) then compares it
+  with its own machine copy. `githubGhAccountSync.ts` carries a github.com `gh`
+  CLI login as its own item (`all` / `integration` / `github-cli`), so it never
+  overwrites the pasted token (key `github`). The machine that most recently
+  published a new `gh` login owns the account copy, and only that machine
+  releases it at a `gh` logout. "Remove from my account" writes a `removed`
+  value that stops every machine from sharing until one shares again. A copy
+  adopted from the account lives only in the machine credential store
+  (`github.ghAccountToken.v1`), never in `gh`'s own files, and is the last
+  credential ADE tries (see `shared/githubOperationCredential.ts`).
+  The ADE GitHub App sign-in of the account is not a vault item. The account
+  directory holds it (`apps/account-directory/src/githubApp/`, D1 table
+  `github_app_grants`): it runs the web flow, keeps the refresh token sealed
+  with `GITHUB_APP_TOKEN_KEY`, renews the access token, and gives each
+  machine only a short-lived access token (`POST /github/app/token`). No
+  refresh token and no client secret leave the Worker. GitHub's callback
+  does not save the grant: it shows a confirm page that names the ADE account
+  and the GitHub login, and only a POST from that page with its one-time
+  value saves it (a forwarded link cannot connect someone else's GitHub).
+  Machines cache the access token in `github.accountAppToken.v1`
+  (`shared/github/accountAppTokenClient.ts`, one request per renewal across
+  processes) and use it as the `account_app` credential, after their own
+  sign-ins and before an adopted `gh` copy. A legacy device-flow sign-in on a
+  machine is handed to the account (`POST /github/app/adopt`). Without
+  `GITHUB_APP_CLIENT_SECRET` the routes answer 503 and machines behave as
+  before.
   `credentialRenewalLock.ts` lets one process on a computer renew a rotating
   credential at a time: an exclusive-create lock file with a heartbeat, which
   its holder removes only while the file still names it.
@@ -1362,8 +1387,10 @@ Runtime support files outside `services/sync/`:
   optional finer `reason` (`no_proof` versus `grant_rejected`, or the relay's
   own failure text), and the request's correlation id. Every refusal is a user
   who cannot get their computer back onto their account, and by the time they
-  ask for help the request is gone; Workers observability runs at
-  `head_sampling_rate: 1` so the line is always there. Identifiers appear as
+  ask for help the request is gone. Workers observability keeps 10% of
+  requests (`head_sampling_rate: 0.1` since 2026-11-12, for the Workers Logs
+  bill), so each refusal is also a Sentry warning (one issue per event and
+  code, tagged with the correlation id, no account id). Identifiers appear as
   **8-character prefixes only** — a machine key is capability-shaped and a grant
   is a live credential. There is deliberately no admin restore route: it would
   be a new authentication boundary guarding exactly the tables
@@ -2244,9 +2271,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   status is overlaid only for scopes already booted on the runtime; a booted
   scope also overlays **PTY liveness** for CLI rows (they never appear in
   `agentChatService`, so `ptyService.hasLivePty` is what flips them to
-  `running`). `attentionCount` (which drives hub badges and attention-first
-  project sorting) counts only chat rows and shells attached to a chat — a
-  standalone CLI session that exited non-zero must not pin its project to
+  `running`). A CLI that reports its own turn (Claude hooks, Codex OSC 7501;
+  `ptyService.getTrackedCliTurn`) reads `idle` between turns and `awaiting`
+  while it waits on the person, instead of `running` for as long as the
+  terminal lives. `attentionCount` (which drives hub badges and
+  attention-first project sorting) counts chat rows, shells attached to a
+  chat, and live agent CLI sessions that wait on the person. A standalone CLI
+  session that exited non-zero never counts: it must not pin its project to
   the top forever, since mobile has no way to clear it. `runningCount` counts
   chats whose status is `running` and that are **not snoozed**; a snoozed
   running chat is idle on Activity, so including it would disagree with the
@@ -4385,8 +4416,12 @@ feature is merged or because a deliberately isolated-port host is running.
   vault-ready sync tick pulls repository account secrets back down, so a secret
   added on one machine reaches the other. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
-  access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the
-  machine that owns them.
+  access tokens, a machine's own GitHub App device-flow sign-in, environment
+  GitHub tokens and vendor CLI refresh credentials stay on the machine that
+  owns them. A pasted GitHub token and a github.com `gh` login follow the
+  account (scope `all`, kind `integration`, keys `github` and `github-cli`).
+  The account's GitHub App sign-in lives in the account directory, which
+  gives machines short-lived access tokens only.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.

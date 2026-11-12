@@ -28,6 +28,7 @@ import type {
 import type { ExternalSessionDetail, ExternalSessionDetailArgs } from "./externalSessionDetail";
 import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
+import type { LaneLinearIssue } from "./lanes";
 import type {
   MacDesktopClickArgs,
   MacDesktopDragArgs,
@@ -1214,6 +1215,15 @@ export type SyncMobileProjectSummary = {
   isAvailable: boolean;
   isCached: boolean;
   isOpen: boolean;
+  /**
+   * The account project this folder is a copy of (`ap_` + 32 hex). Sent only
+   * when the link belongs to the account signed in on the host
+   * (`publicProjectRecord`). Additive: older hosts omit it and older phones
+   * ignore it.
+   */
+  accountProjectId?: string;
+  /** The GitHub repository id, when the host knows it. Additive. */
+  githubRepoId?: number;
 };
 
 export type SyncProjectCatalogPayload = {
@@ -1348,6 +1358,10 @@ export type SyncRosterProject = {
    * machines by it. Optional: older hosts omit it and older phones ignore it.
    */
   repoOriginUrl?: string | null;
+  /** As `SyncMobileProjectSummary.accountProjectId`. Additive. */
+  accountProjectId?: string;
+  /** As `SyncMobileProjectSummary.githubRepoId`. Additive. */
+  githubRepoId?: number;
   iconDataUrl?: string | null;
   lastOpenedAt?: string | null;
   /** true ⇒ live running/awaiting fidelity; false ⇒ disk-derived status only. */
@@ -2807,6 +2821,19 @@ export type SyncStartCliSessionArgs = {
   presetId?: string | null;
   /** A stored API credential, when the model came from a key rather than a preset. */
   credentialId?: string | null;
+  /**
+   * Linear issues to attach to the session before the CLI spawns, so the agent
+   * inherits `ADE_LINEAR_*` and can drive its issue through `ade linear`. Same
+   * attach path as a desktop CLI launch (`pty.create` `linearIssues`).
+   */
+  linearIssues?: LaneLinearIssue[];
+  /** Delay before the launch line is typed into the shell (the host caps it). */
+  startupDelayMs?: number;
+  /**
+   * Delay before `initialInput` is sent, for a launch that types its prompt.
+   * A provider launch that sets its own delay keeps it.
+   */
+  initialInputDelayMs?: number;
 };
 
 export type SyncStartCliSessionResult = {
@@ -3090,6 +3117,7 @@ export type SyncRemoteCommandAction =
   | "chat.getTranscript"
   | "chat.getChatEventHistory"
   | "chat.listSubagents"
+  | "chat.listPendingInputs"
   | "chat.getSubagentTranscript"
   | "chat.getMainTranscript"
   | "chat.create"
@@ -3101,6 +3129,7 @@ export type SyncRemoteCommandAction =
   | "chat.recoverTurn"
   | "chat.resolveUnprocessedMessage"
   | "chat.steer"
+  | "chat.typeIntoCli"
   | "chat.cancelSteer"
   | "chat.editSteer"
   | "chat.moveSteer"
@@ -3248,6 +3277,7 @@ export type SyncRemoteCommandAction =
   | "jira.createIssue"
   | "projectConfig.get"
   | "projectConfig.save"
+  | "projectConfig.resolveAccountSettingNotice"
   | "ai.getStatus"
   | "ai.jevDecide"
   | "ai.jevStatus"

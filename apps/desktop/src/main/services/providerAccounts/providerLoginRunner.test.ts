@@ -6,6 +6,7 @@ import {
   createProviderLoginRunner,
   type ProviderLoginRunnerDeps,
 } from "./providerLoginRunner";
+import { LOGIN_CODE_ENTER_DELAY_MS } from "../shared/cliLoginPty";
 
 /**
  * node-pty is native and loaded through `createRequire` inside the runner, so
@@ -233,6 +234,7 @@ describe("providerLoginRunner", () => {
   });
 
   it("redacts a pasted code from the sign-in output the sheet shows", () => {
+    vi.useFakeTimers();
     const { runner, ptys } = makeRunner();
     const login = runner.start("work");
 
@@ -240,7 +242,11 @@ describe("providerLoginRunner", () => {
     expect(runner.status(login.loginId).awaitingCode).toBe(true);
 
     runner.submitCode(login.loginId, "abc12345");
-    expect(ptys[0]?.writes.at(-1)).toBe("abc12345\r");
+    // The code, then Enter on its own: in one write a TUI takes both as a paste.
+    expect(ptys[0]?.writes.at(-1)).toBe("abc12345");
+    expect(runner.status(login.loginId).checkingCode).toBe(true);
+    vi.advanceTimersByTime(LOGIN_CODE_ENTER_DELAY_MS);
+    expect(ptys[0]?.writes.at(-1)).toBe("\r");
 
     ptys[0]?.emitData("abc12345\r\n");
     // The answered prompt is still on screen; it does not ask again.

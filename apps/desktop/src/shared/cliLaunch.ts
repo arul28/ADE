@@ -75,6 +75,11 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
   /** Provider-native session id ADE assigned at launch, when the CLI accepts one. */
   assignedSessionId?: string;
+  /**
+   * The prompt rides on the command line instead of being typed in, so the
+   * launch itself starts a turn that no Enter keystroke will mark.
+   */
+  promptInArgs?: boolean;
 };
 
 export type CodexComputerUseCliConfig = {
@@ -96,6 +101,8 @@ export type TrackedCliUserMcp = {
   codex?: Record<string, Record<string, unknown>> | null;
   /** A private ADE-owned file holding Claude's servers, for `--mcp-config <path>`. */
   claudeConfigPath?: string | null;
+  /** A private ADE-owned file holding Copilot's servers, for `--additional-mcp-config @<path>`. */
+  copilotConfigPath?: string | null;
 };
 
 const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
@@ -130,6 +137,9 @@ export function trackedCliUserMcpFlags(provider: string, userMcp: TrackedCliUser
   }
   if (provider === "claude" && userMcp?.claudeConfigPath) {
     return ["--mcp-config", userMcp.claudeConfigPath];
+  }
+  if (provider === "copilot" && userMcp?.copilotConfigPath) {
+    return [`--additional-mcp-config=@${userMcp.copilotConfigPath}`];
   }
   return [];
 }
@@ -773,6 +783,37 @@ function claudeArgsCarrySessionId(args: readonly string[]): boolean {
 }
 
 /**
+ * Rewrite the `--settings` value of the `claude` invocation in a shell command
+ * line, or add one right after the `claude` token. Claude reads only the last
+ * `--settings`, so a value it already passes is merged, not shadowed. `merge`
+ * gets the current value (null when there is none) and returns the new one, or
+ * null to leave the line as it is. Only that one word is rewritten; the rest of
+ * the line keeps its own quoting.
+ */
+export function withClaudeSettingsInCommandLine(
+  commandLine: string,
+  merge: (existing: string | null) => string | null,
+): string {
+  const invocation = claudeInvocationInCommandLine(commandLine);
+  if (!invocation) return commandLine;
+  const settingsIndex = invocation.claudeArgs.findIndex((arg) => arg === "--settings" || arg.startsWith("--settings="));
+  if (settingsIndex < 0) {
+    const value = merge(null);
+    return value == null ? commandLine : withArgsAfterClaudeToken(commandLine, invocation.claudeIndex, ["--settings", value]);
+  }
+  const flag = invocation.claudeArgs[settingsIndex]!;
+  const inline = flag.startsWith("--settings=");
+  const existing = inline ? flag.slice("--settings=".length) : invocation.claudeArgs[settingsIndex + 1] ?? null;
+  const value = merge(existing);
+  if (value == null) return commandLine;
+  const wordIndex = invocation.claudeIndex + 1 + settingsIndex + (inline ? 0 : 1);
+  const span = shellWordSpans(commandLine)[wordIndex];
+  if (!span) return commandLine;
+  const word = commandArrayToLine([inline ? `--settings=${value}` : value]);
+  return `${commandLine.slice(0, span.start)}${word}${commandLine.slice(span.end)}`;
+}
+
+/**
  * `claude --session-id <uuid>` starts a NEW conversation with that id, so it
  * is mutually exclusive with a plain `--resume`/`--continue`: assigning one to
  * a continuation launch would either be rejected by the CLI or silently start a
@@ -1347,7 +1388,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "codex",
       args: commandArgs,
       startupCommand: commandArrayToLine(["codex", ...commandArgs], { platform: "linux" }),
-      ...(usePromptArg ? {} : { initialInput, initialInputDelayMs: 750 }),
+      ...(usePromptArg ? { promptInArgs: true } : { initialInput, initialInputDelayMs: 750 }),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -1585,6 +1626,7 @@ export function buildTrackedCliLaunchCommand(args: {
     commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
     commandArgs.push(...permissionModeToCopilotFlags(permissionMode));
+    commandArgs.push(...trackedCliUserMcpFlags("copilot", args.userMcp));
     // Copilot has no flag for system text, so ADE's guidance rides in front of
     // the first message. An empty launch stays idle, as Cursor's does.
     const copilotFirstMessage = initialPrompt
@@ -2978,6 +3020,7 @@ function buildProviderResumeLaunchCommand(
       ...copilotModelFlags(modelForLaunch),
       ...copilotReasoningEffortFlags(reasoningEffort),
       ...permissionModeToCopilotFlags(permissionMode),
+      ...trackedCliUserMcpFlags("copilot", overrides.userMcp),
     ];
     if (targetId) parts.push(`--resume=${targetId}`);
     else parts.push("--continue");

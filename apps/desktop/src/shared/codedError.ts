@@ -17,6 +17,14 @@ const ROOT_PATH_DELIMITER = String.fromCharCode(0);
  */
 export const GIT_UNTRUSTED_FOLDER_CODE = "git_untrusted_folder";
 
+/**
+ * The brain refused to open a project because opening it froze ADE until its
+ * freeze guard restarted it, more than once: the folder's drive is too slow
+ * for ADE (`apps/ade-cli/src/services/projects/projectOpenStrikes.ts`). The
+ * message names the project and the wait; Try again clears the refusal.
+ */
+export const PROJECT_FOLDER_TOO_SLOW_CODE = "project_folder_too_slow";
+
 export function codedError<TCode extends string>(message: string, code: TCode): Error & { code: TCode } {
   return Object.assign(new Error(message), { code });
 }

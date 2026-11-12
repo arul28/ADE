@@ -107,7 +107,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
 | `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
 | `apps/desktop/src/main/services/storage/deletedLaneChats.ts` | Lists chats whose session row and lane are both gone (lane delete removes rows, not files), idle for 7 days, with every file they left. Backs the review-first "Chats from deleted lanes" row and its `deleted_lane_chats` cleanup target. `providerSessionsOfDeletedLaneChats` reads each chat's record for the Claude/Codex session ADE started. Imported chats are skipped, and so are sessions a live chat also names. |
-| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx` | Settings › Storage & cleanup › Recently deleted: the `deleted_chats` rows a chat delete or lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
+| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx` | Settings › Storage & cleanup › Recently deleted: the `deleted_chats` rows a chat delete, an agent CLI delete (`kind = 'cli'`), or a lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
 | `apps/desktop/src/main/services/storage/providerHistory.ts` | `measureProviderHistory` sizes each provider's own session folders on this machine: Claude and Codex across every config home, plus OpenCode, Droid, Cursor, Copilot, Pi and Grok. `listProviderCopiesOfChats` finds the Claude `projects/<cwd>/<id>.jsonl` (plus its `<id>/` side folder) and the Codex rollout for given session ids. |
 | `apps/desktop/src/renderer/components/app/useDeletedChatsReminderBanner.tsx` | The docked reminder shown when chats from deleted lanes pile up: 25 or more chats, or at least 100 MB. It checks 45 s after open and every 6 h through `storage.deletedLaneChatsSummary`. Every answer snoozes it for two weeks per project, in localStorage. |
 | `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
@@ -570,6 +570,61 @@ surfaced on `LocalRuntimeStatus.lastWedge`), and the desktop app shell shows it
 once per distinct `ts` in `BrainRecoveryNotice` ("ADE recovered from a
 background issue … a stuck task was restarted"). `ade doctor` reports the same
 `last-wedge.json` as its Wedge-history row.
+
+#### A project whose folder is too slow to open
+
+A project on a drive too slow for its database (a network mount) can freeze the
+event loop while it opens, for longer than the freeze guard allows; the guard
+kills the brain, the supervisor restarts it, a client asks for the same project
+and it freezes again, with every other project on the machine down too. The
+database stays in the project folder; this breaks the loop instead.
+
+- **Which project froze it.** The scope registry tells the watchdog which
+  projects are opening and in which step (`trackBrainLoopWatchdogProjectOpen`),
+  from before the first read of the folder, so the kill's breadcrumb names them
+  (`openingProjects`, with the time in the open and in the step).
+- **Strikes.** The next start counts a strike in
+  `$ADE_HOME/runtime/project-open-strikes.json` (`projectOpenStrikes.ts`; read
+  once, atomic writes, a torn or missing file is no strikes, a stamp in the
+  future is ignored). Every step of an open reads the folder or the database
+  synchronously somewhere, so every open running at the kill is struck except
+  one waiting its turn (`queued`) and one that started more than 10 minutes
+  before the kill (stuck on something that never answered). A project with a
+  strike opens alone, so an innocent open struck alongside the real one is
+  not refused for that one coincidence: its second strike can only come from
+  an open of its own. Other cold opens wait for it, and it waits for those
+  already running, each for at
+  most the freeze guard's threshold (as the brain resolved it) plus 15 seconds, after
+  which the queued open goes ahead.
+- **Refusal.** Two strikes in 15 minutes and `ProjectScopeRegistry.get` refuses
+  that project at once with the expected `project_folder_too_slow` error, whose
+  message names the project and the real wait. The refusal lasts 15 minutes the
+  first time and doubles each time the project is refused again after one
+  lifted (30 minutes, 1 hour, 2 hours … capped at 24 hours). Every caller hits
+  it (windows, phones, automations, timers, restart recovery), and the brain's
+  readers that would read the folder without opening it skip a refused project:
+  the sync host choice, the phone roster, the catalog's lane count and icon,
+  the chat owner lookup and cross-project search. The desktop asks the brain
+  (`projects.checkOpen`, by path) before it opens a project's database itself,
+  and again, asking only a brain it is already connected to and waiting at
+  most 1.5 seconds, when it switches to a project it already has open; a
+  timeout or any other failure of that check lets the switch go ahead. A
+  project that is refused while it is the one open in the window shows the
+  same banner when its lane read (made on every reconnect) is refused, once,
+  and the banner goes when a lane read succeeds again. Its Try again clears
+  the refusal and reads the lanes again; for a project on another machine the
+  banner shows the message only.
+- **Way back.** A successful open forgets everything and the next refusal
+  starts at 15 minutes again; so does `ade projects retry <id|path>`
+  (`projects.retryOpen`, `--machine` for another computer), and the desktop
+  banner's Try again for a project on this computer.
+- **What clients cannot do.** A phone, the web app and a desktop showing a
+  project on another machine have no retry control: they show the brain's
+  message, which says how long until ADE tries again, and the refusal lifts on
+  its own then. The phone and web roster list a refused project with no lanes
+  or chats (its database is not read), indistinguishable from an empty
+  project until it is opened, which shows the message. Retrying sooner is `ade projects retry --machine <name>`, or Try
+  again in the desktop on the computer that owns the project.
 
 #### A folder waiting on a permission prompt
 
@@ -1075,8 +1130,16 @@ never deleted: reopening or removing it hides it, so the Claude backfill for
 chats deleted before the list existed cannot bring it back. The table is
 machine-local and excluded from CRR sync, because the copy it names is on this
 machine only. Neither Reopen nor Remove from list deletes the agent's files; a
-cleanup of those is the separate "Chats from deleted lanes" row above. See
-[Recently deleted chats](../chat/README.md#recently-deleted-chats).
+cleanup of those is the separate "Chats from deleted lanes" row above. A
+deleted agent CLI terminal (Claude Code, Codex, …) gets a row too (`kind =
+'cli'`, the terminal row in `cli_json`), even without a conversation id, and
+Reopen relaunches it in its lane: resumed when the agent still has its
+conversation, otherwise fresh, saying why. A CLI deleted with its whole lane is
+not recorded. A CLI moved to another machine leaves its conversation file and
+terminal recording here; the destination writes its own copy of the
+conversation under its lane's path, in the account's config home there. See
+[Recently deleted chats](../chat/README.md#recently-deleted-chats) and its
+[Agent CLI sessions](../chat/README.md#agent-cli-sessions) part.
 
 **Recently deleted lanes.** The same tab lists deleted lanes whose unsaved
 work the delete kept (uncommitted files, commits only that lane held) as git

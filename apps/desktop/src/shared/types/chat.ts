@@ -2880,6 +2880,13 @@ export const AGENT_CHAT_PERMISSION_MODE_VALUES = [
   "config-toml",
 ] as const satisfies readonly AgentChatPermissionMode[];
 
+/** `value` as a permission mode, or null when it is not one. */
+export function readAgentChatPermissionMode(value: unknown): AgentChatPermissionMode | null {
+  return typeof value === "string" && (AGENT_CHAT_PERMISSION_MODE_VALUES as readonly string[]).includes(value)
+    ? value as AgentChatPermissionMode
+    : null;
+}
+
 /** Convert ADE's generic permission ladder to Droid's native autonomy tier. */
 export function droidPermissionModeFromLegacyPermissionMode(
   mode: AgentChatPermissionMode | null | undefined,
@@ -4815,6 +4822,13 @@ export type AgentChatHandoffResult = {
    * input limit.
    */
   replayFork?: AgentChatReplayForkDisclosure;
+  /**
+   * A handoff from an agent CLI terminal: where the new chat's context came
+   * from. `provider_transcript`: the CLI's own conversation file (a fork
+   * copies it whole). `terminal_output`: ADE never learned the conversation
+   * id, so the brief carries the terminal's last output instead.
+   */
+  cliContextSource?: "provider_transcript" | "terminal_output";
 };
 
 /**
@@ -4979,6 +4993,62 @@ export type AgentChatCrossMachineHandoffCapsule = {
    * See `handoffGitBundle.ts`.
    */
   gitBundle?: AgentChatCrossMachineGitBundle;
+  /**
+   * Set when the moved session is a tracked agent CLI (Claude Code, Codex, …)
+   * rather than a chat. The destination starts a CLI in the moved lane instead
+   * of a chat; `target` then only names a model for the checks, and `brief`
+   * is what a fresh CLI is given as its first prompt. Only sent to
+   * destinations whose preflight answered `cliMoveSupport: 1`.
+   */
+  cli?: AgentChatCrossMachineCliMove;
+};
+
+/**
+ * A tracked agent CLI session moving to another machine. Its launch settings
+ * travel as they are (an agent's move never changes them, so it can't widen
+ * what the CLI may do), and its own conversation file travels when the agent
+ * keeps it in a file ADE can carry (Claude Code, Codex).
+ */
+export type AgentChatCrossMachineCliMove = {
+  /** The source row's tool type ("claude", "codex", "cursor-cli", …). */
+  toolType: string;
+  /** The CLI's agent, as its launch names it. */
+  provider: AgentChatCliLaunchProvider;
+  /**
+   * `resume`: `conversation` is written where the agent looks on the
+   * destination (under the destination lane's path) and the CLI resumes it.
+   * `fresh`: a new CLI with the same launch settings, given `brief` as its
+   * first prompt; `freshReason` says why.
+   */
+  continuation: "resume" | "fresh";
+  freshReason?: string | null;
+  /** The CLI's own conversation file(s), for `resume`. */
+  conversation?: AgentChatCrossMachineForkTransport;
+  launch: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
+    fastTier?: "ultrafast" | null;
+    permissionMode: AgentChatPermissionMode;
+    claudePermissionMode?: AgentChatClaudePermissionMode | null;
+    codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+    codexSandbox?: AgentChatCodexSandbox | null;
+    droidPermissionMode?: AgentChatDroidPermissionMode | null;
+    musePermissionMode?: AgentChatMusePermissionMode | null;
+    /** A saved harness preset (synced with the account; a missing one falls back to the CLI's own sign-in). */
+    presetId?: string | null;
+  };
+  /** The CLI's account, by its signed-in email (account ids are per machine). */
+  accountEmail?: string | null;
+  /** The source row's goal (its first prompt), kept on the destination row. */
+  goal?: string | null;
+};
+
+/** How a moved CLI started on the destination, as the destination reports it. */
+export type AgentChatCrossMachineCliArrival = {
+  continuation: "resume" | "fresh";
+  /** Why it started fresh, or what else the person should know; null when nothing. */
+  notice: string | null;
 };
 
 /**
@@ -5269,6 +5339,12 @@ export type AgentChatCrossMachineDestinationPreflightArgs = {
   batchLaneImportId?: string;
   /** Original lane bound to a return; the accept action performs the final safety check. */
   returnToLaneId?: string;
+  /**
+   * The moved session is a tracked agent CLI of this tool type: the
+   * destination checks it can start that CLI instead of a chat model, and
+   * answers `cliMoveSupport`.
+   */
+  cliToolType?: string;
 };
 
 export type AgentChatCrossMachineDestinationPreflightResult = {
@@ -5304,6 +5380,12 @@ export type AgentChatCrossMachineDestinationPreflightResult = {
   gitBundleSupport?: boolean;
   /** Explicit schema/action capability; absent on older ADE destinations. */
   batchMoveSupport?: 1;
+  /**
+   * This destination starts a moved agent CLI as a CLI (`capsule.cli`).
+   * Absent on older destinations, which would open it as a chat, so the
+   * source refuses a CLI move unless this is 1.
+   */
+  cliMoveSupport?: 1;
 };
 
 export type AgentChatAcceptCrossMachineHandoffArgs = {
@@ -5324,6 +5406,8 @@ export type AgentChatAcceptCrossMachineHandoffResult = {
    * destinations, which recreate none.
    */
   scheduledWorkIds?: string[];
+  /** A moved agent CLI: how it started there. `session` then names the CLI row. */
+  cli?: AgentChatCrossMachineCliArrival;
 };
 
 export type AgentChatMarkCrossMachineHandoffArgs = {
@@ -5412,6 +5496,8 @@ export type AgentChatCrossMachineHandoffRecord = {
    * Until then, the source composer sends to the destination chat.
    */
   resumedHere: boolean;
+  /** A moved agent CLI: whether it resumed its conversation there or started fresh, and why. */
+  cliArrival?: AgentChatCrossMachineCliArrival | null;
   /**
    * The origin machine definitively refused to continue the original chat
    * (nothing was committed there). Later moves to that machine go as a new

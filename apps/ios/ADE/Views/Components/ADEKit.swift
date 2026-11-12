@@ -459,7 +459,7 @@ struct ADEKitButtonStyle: ButtonStyle {
 
 /// Custom button styles do not dim when disabled; this does, from the
 /// environment the button sets.
-private struct ADEKitDisabledDim: ViewModifier {
+struct ADEKitDisabledDim: ViewModifier {
   var enabled = true
   @Environment(\.isEnabled) private var isEnabled
 

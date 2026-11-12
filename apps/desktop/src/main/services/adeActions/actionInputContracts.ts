@@ -845,7 +845,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     handoffSession: {
       description:
         "Hand a chat to a different model. \"brief\" writes a summary and starts a fresh thread (any lane in the project); "
-        + "\"fork\" carries the full transcript and must stay in the source lane.",
+        + "\"fork\" carries the full transcript and must stay in the source lane. "
+        + "The source may be an agent CLI session too: it hands off into a new chat, and an empty targetModelId keeps the CLI's model.",
       input: "object { sourceSessionId: string, targetModelId: string, mode?: \"brief\" | \"fork\", targetLaneId?: string | null, handoffNote?: string | null, reasoningEffort?: string | null }",
       example: "ade actions run chat.handoffSession --input-json '{\"sourceSessionId\":\"chat-123\",\"targetModelId\":\"openai/gpt-5.6-sol\",\"mode\":\"brief\"}' --json",
     },
@@ -894,6 +895,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         + "not a board-state change; ADE stamps the source and update time, and null clears the report.",
       input: `object { sessionId: string, value: ${sessionActivityValueInput} | null }`,
       example: "ade actions run session.setSessionActivity --input-json '{\"sessionId\":\"chat-123\",\"value\":\"testing\"}' --text",
+    },
+    reportCliTurnSignal: {
+      description:
+        "Internal: a tracked agent CLI's own hook reports its turn (Claude's UserPromptSubmit, Stop, PermissionRequest, "
+        + "Notification). Run by `ade __ade-cli-turn-hook` from the hook ADE adds to the launch; agents do not call it. "
+        + "The runtime reads it as working, done or needs you. Unknown sessions answer ok: false.",
+      input: "object { sessionId: string, provider: \"claude\", payload: { hook_event_name: string, prompt_id?: string, notification_type?: string, tool_name?: string, message?: string } }",
+      example: "ade actions run session.reportCliTurnSignal --input-json '{\"sessionId\":\"term-123\",\"provider\":\"claude\",\"payload\":{\"hook_event_name\":\"Stop\"}}'",
     },
     moveOnBoard: {
       description:
@@ -1001,8 +1010,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     setRunOn: {
       description:
         "Choose which computer runs a rule that follows the ADE account (\"Run on\"). Every computer with the repository shows the rule; "
-        + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name.",
-      input: "object { id: string, deviceId?: string, name?: string (required with deviceId) }",
+        + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name. "
+        + "cloud: true makes ADE Cloud the home: ADE's server watches its schedule or webhook and starts each run on a new cloud computer.",
+      input: "object { id: string, deviceId?: string, name?: string (required with deviceId), cloud?: boolean }",
       example: "ade automations run-on nightly-review --text",
     },
     triggerManually: {

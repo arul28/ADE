@@ -323,8 +323,9 @@ let workImportSessionProviders = [
 
 /// The providers a host learned together with `work.getExternalSessionDetail`.
 /// Copilot is here for its CLI history import, which the SDK provider change
-/// leaves alone; its chat provider is no longer ACP.
-let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot"]
+/// leaves alone; its chat provider is no longer ACP. Antigravity came later, so
+/// a host without that call cannot know it either.
+let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot", "antigravity"]
 
 /// Providers worth asking this host about. An older host (no
 /// `work.getExternalSessionDetail`) refuses these providers by name, so the

@@ -19,7 +19,10 @@
   },
   // Persistent, queryable logs in the dashboard (Workers → ade-tunnel-relay →
   // Logs): host_registered / connect_rejected / auth_failed lifecycle events.
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // 1% of requests are logged: Workers Logs cost $0.60 per million events above
+  // 20 million a month, and at 100% the three Workers made about 53 million a
+  // month (measured 2026-11-12). Errors still reach Sentry in full.
+  "observability": { "enabled": true, "head_sampling_rate": 0.01 },
   "durable_objects": {
     "bindings": [
       {

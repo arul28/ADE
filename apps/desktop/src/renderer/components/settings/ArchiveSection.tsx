@@ -46,7 +46,7 @@ const FILTERS: Array<{ value: KindFilter; label: string }> = [
   { value: "all", label: "All" },
   { value: "lane", label: "Lanes" },
   { value: "chat", label: "Chats" },
-  { value: "shell", label: "Shells" },
+  { value: "shell", label: "Shells & CLIs" },
 ];
 
 function refKey(ref: ArchiveItemRef): string {
@@ -175,6 +175,8 @@ function ArchiveRow({
 }) {
   const { bytes: storageBytes } = useStorageBytes();
   const meta: string[] = [relativeWhen(item.archivedAt)];
+  // An agent CLI says which CLI it was (Claude Code, Codex, …), unless its title already does.
+  if (item.toolLabel && item.toolLabel !== item.title) meta.unshift(item.toolLabel);
   if (item.sizeBytes != null && item.sizeBytes > 0) meta.push(storageBytes(item.sizeBytes));
   const freed = item.kind === "lane" && item.worktreePresent === false;
   if (freed) meta.push("space freed, Restore recreates its folder");

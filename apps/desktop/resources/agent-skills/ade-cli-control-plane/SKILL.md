@@ -101,9 +101,9 @@ ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex
 ```
 
 Always use `--mode chat`. `--mode cli` starts the provider's own CLI in a
-terminal instead. ADE cannot tell reliably when a terminal finishes a task, so
-it is told it is your subagent and messages you its reports itself. Use it
-only when the user asks for a terminal.
+terminal instead (a "CLI session"); use it only when the user asks for a
+terminal. It is still your subagent and reports back, but it can do less than
+a chat: see **Chats and CLI sessions** below.
 
 ### Spawning agents
 
@@ -140,12 +140,56 @@ still exists retries and then becomes one visible warning in the child. Every
 child receives `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance while
 that parent is reachable.
 
-A `--mode cli` child sends its own report with `ade chat message` when it
-finishes a task, and ADE adds one more when its process exits. Check any child
-with `ade chat status <id>` (running / blocked / waiting / idle; `waiting`
-means its turn ended but work it started still runs, so it is not done yet) and read it with `ade chat read <id>` (`ade terminal
-read <id>` for the full output). To give it a new instruction, type into it:
-`ade terminal write --terminal <id> --data "<text>\n"`.
+A `--mode cli` child reports after every turn it finishes, like a chat child
+(ADE reads the CLI's closing message), and it is also told to send its own
+report with `ade chat message`; a turn it reported on wakes you once. Check
+any child with `ade chat status <id>` (running / blocked / waiting / idle;
+`waiting` means its turn ended but work it started still runs, so it is not
+done yet) and read it with `ade chat read <id>` (`ade terminal read <id>` for
+the full output). Give a CLI child a new instruction with `ade chat send <id>
+--text "…"`, as you would a chat: ADE types it at the CLI's prompt, or queues
+it until the running turn ends.
+
+### Chats and CLI sessions
+
+Every `ade chat` command takes either kind of session id. A chat is ADE's own
+agent runtime; a CLI session is a provider's CLI (Claude Code, Codex, Cursor,
+...) running in an ADE terminal, which ADE drives by typing into it. You can
+be either: `$ADE_CHAT_SESSION_ID` names yours.
+
+The same for both: send, steer, interrupt, restart, `update` (pin, title,
+model, effort, permissions), `generate-names`, delete and Reopen from Recently
+deleted, archive, hand off or fork into a chat, move to another machine,
+subagents in either direction (a CLI parent gets each child report typed at
+its prompt), `ade chat wait --async`, cards (`ade secrets request`, `ade
+integrations connect`, `ade mcp servers add`), proof, and `ade chat
+scheduled-work`.
+
+What differs for a CLI session:
+
+- **Turn status is exact only for Claude Code and Codex.** For other CLIs ADE
+  reads the screen, so `status`, the turn-end report and when a queued message
+  is typed can lag by several seconds.
+- **Text only.** No images or attachments; put a file's path in the message.
+- **Model, effort, permissions and account change by relaunch.** `ade chat
+  update` restarts the CLI and resumes its conversation. A change made inside
+  the CLI (its own `/model`) is not seen by ADE, so `ade chat show` keeps
+  what ADE last launched.
+- **Its own permission prompts stay in the terminal.** `ade chat respond
+  --approve|--deny` presses the CLI's key for Claude Code, Codex and Cursor;
+  for other CLIs answer with `ade terminal write`.
+- **No ADE transcript.** `ade chat read` gives its last message;
+  `ade terminal read` the full output. `ade chat subagents` lists the CLI's
+  own built-in agents; the ADE sessions it started are the ones whose parent
+  it is.
+- **Wake-ups:** Claude Code's own `ScheduleWakeup` and `/loop` are saved in
+  ADE and survive a restart; other CLIs have none, so use `ade chat
+  scheduled-work create`.
+- **MCP servers:** your ADE MCP servers reach Claude Code and Copilot; Codex
+  gets only those with no secret in them; other CLIs get none.
+- **Moving machines:** Claude Code and Codex take their conversation along;
+  other CLIs start fresh there with a brief. The other machine must run an ADE
+  that accepts CLI moves.
 
 **Which lane a child goes in.** An ADE child chat is a subagent that can run
 another provider, so it works where a native subagent would: in your lane,

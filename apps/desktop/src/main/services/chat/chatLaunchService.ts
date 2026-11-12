@@ -1172,6 +1172,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     // so the minutes the failed card sat waiting read as setup time (a 29 s
     // retry showed as 7m 32s). Finished stages keep their own durations.
     record.snapshot.startedAt = nowIso();
+    // The steps an earlier host ran (an ADE Cloud launch's) are not this attempt's either.
+    record.snapshot.setupStartedAt = null;
     record.snapshot.endedAt = null;
     publish(record);
     void runPipeline(record);

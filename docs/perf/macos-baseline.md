@@ -1530,6 +1530,44 @@ Mac Studio against a private test repo, 2026-11-09:
 | `#` references for a repo: GraphQL requests | 1 per repo per 2 minutes, however many writers type | not set yet; needs approval |
 | Opening a PR with task boxes when the viewer is not its author | 1 permission read, shared with the mention cache; 0 otherwise | not set yet; needs approval |
 
+Account PR list read straight from GitHub (`useAccountGithubPulls`, the
+direct client with the account's GitHub App sign-in), 2026-11-11. No screen
+draws it yet, so this is the request budget only: the store driven by a
+virtual clock for one hour against a local fake GitHub that answers ETags
+like GitHub (scratch harness, not committed). Not the baseline machine.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| Visible, list unchanged, one page (40 PRs), two components on it | 61 requests per hour, 1 counts (60 are `304`) | not set yet; needs approval |
+| Visible, list unchanged, three pages (120 PRs) | 180 requests per hour, 0 count | not set yet; needs approval |
+| Visible, three pages, a change every 10 minutes | 180 requests per hour, 18 count | not set yet; needs approval |
+| Window hidden | 0 requests and no timer; one read when it shows again | 0 |
+| App not installed on the owner, visible | 14 requests per hour (a retry every 5 minutes, diagnosis cached 5 minutes) | not set yet; needs approval |
+| Requests in flight | at most 6 (the desktop shares the main-process gate) | 6 |
+
+Account issue reads through the same store (`useAccountGithubIssues`,
+`useAccountGithubIssue`), 2026-11-12, measured the same way: the store on a
+virtual clock for one hour, with a fake client that answers `304` after the
+first read (scratch harness, not committed). No screen draws them yet.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| Issue list, unchanged, one page, two components on it | 61 requests per hour, 1 counts | not set yet; needs approval |
+| One issue open (the issue and its comments), unchanged | 122 requests per hour, 2 count | not set yet; needs approval |
+| Issue list, window hidden for 40 of the 60 minutes | 21 requests, 0 while hidden | 0 while hidden |
+| Issue list, App not installed on the owner | 13 requests per hour (a retry every 5 minutes) | not set yet; needs approval |
+
+Project config snapshot read (`projectConfigService.get()`) with the account
+settings layer on, 2026-11-12, Mac Studio with other agents running: a
+`local.yaml` with 6 test suites and the AI keys, an in-memory account store
+holding the same rows, 200 reads in one process (scratch harness, not
+committed). Coercion and validation answers are kept for 5 seconds.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| One snapshot read, no account layer (signed out, no remote) | 0.31 ms | not set yet; needs approval |
+| One snapshot read, account layer on | 0.64 ms (3.4 ms before the 5-second cache) | not set yet; needs approval |
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio
@@ -2864,3 +2902,64 @@ branch alike: a dev build with Vite modules after page visits, not this
 change. One earlier branch run read 5.8 ms/s on Providers after a longer
 session with Work visits; the same-steps pair above is the comparison.
 The sync pass runs on the brain's existing 30 s tick; it adds no timer.
+
+### Events for many machines (S3, 2026-11-12)
+
+Dev app on `ade/account-projects-08-desktop-s3` (the S3 preload) against the
+S2 tip `ec1781a66` (the old preload, checked out over the same tree). Same Mac
+(Mac Studio M4 Max), same steps for both: a fresh launch with
+`--first-run --keep`, the account brain on its own socket, the dev test
+machine "tabs" connected, one local project tab, nothing streaming. The Work
+scene has the test machine's chat "PONG-R2 reply test" open. The Lanes scene
+has the test machine's lane `r-scratch` selected. IPC comes from a perf run
+(`ADE_PERF_RUN_ID`), 60 s per scene, counted from `events.jsonl`. CPU and RSS
+come from `process-cpu.mjs 15`, 3 runs per scene, with no perf run. The load
+average of the Mac was 7–17 in all runs, so read CPU as a range.
+
+| Row | Before (S2) | After (S3) | Ceiling |
+| --- | --- | --- | --- |
+| Idle, 2 machines, Work + Lanes open: runtime event IPC per minute, Work scene | 361 (local 79, remote 282) | 111 (local 79, remote 32) | 150 |
+| Same, Lanes scene | 127 (local 80, remote 47) | 109 (local 79, remote 30) | 150 |
+| Processes, Work scene, CPU main / renderer | 0.7–0.8% / 1.3–2.0% | 0.5–1.3% / 1.0–1.9% | the Processes table |
+| Same, RSS main / renderer | 187–241 / 224–362 MB | 188–269 / 241–464 MB | the Processes table |
+| Processes, Lanes scene, CPU main / renderer | 0.5–1.2% / 2.9–3.2% | 0.4–1.5% / 2.6–4.3% | the Processes table |
+| Same, RSS main / renderer | 238–250 / 358–406 MB | 178–279 / 252–460 MB | the Processes table |
+| Renderer JS heap after a forced GC, Lanes scene | 119.4 MB | 120.4 MB | the Processes table |
+
+The new row counts every `streamEvents` call (local and remote) in a
+60 s idle window. The local share stays at about 80 per minute: that is the
+active-binding pump at its 750 ms idle rate, which S3 does not change. The
+remote share was one pump for each listener (about 18 to 25 on the Work page).
+S3 runs one pump for each machine, so about 2 remote pumps poll at the 5 s
+idle rate. The owner approved the ceiling of 150 on 2026-11-12.
+
+CPU and RSS show no change outside the noise of the busy Mac. Two S3 samples
+on the same steps read renderer RSS 241–275 MB and 436–464 MB; the S2 samples
+read 224–362 MB. The renderer RSS is over the Processes table's 300 MB on S2
+and on S3 alike: a dev build after page visits. The JS heap after a forced
+GC moves by 1 MB.
+
+A stopped or disconnected test machine parks its pumps. After a stop, the log
+showed no remote `streamEvents` call from +15 s to +120 s. After a manual
+Disconnect, it showed none for 38 s. After Connect, the parked pumps polled
+again within 0.3 s and caught up on a reply that the test machine made while
+it was disconnected.
+
+### Pins on every preload member (B2, 2026-11-12)
+
+Dev app on `ade/account-desktop-b2-preload-pass` against the B1 head
+`ad5d1ffa4` (the old preload, checked out over the same tree). Same Mac
+(Mac Studio M4 Max), same steps for both: `--first-run --keep`, the account
+brain on its own socket, the dev test machine "tabs" connected, one local
+project tab, nothing streaming. The Lanes row is the IPC in the 4 s after a
+move from Work to Lanes, from a perf run, 3 runs. The chat row is
+`interaction.mjs chats 4` on the same tab.
+
+| Row | Before (B1) | After (B2) | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 2 machines connected | 41, 44, 44 calls; 0.8–1.8 s total | 40, 39, 44 calls; 0.8–0.9 s total | 70 calls (Lanes row) |
+| Work chat switch, warm, 2 machines: first changed frame median / settled median / worst long frame | 34 / 143 ms / 0 ms | 32 / 144 ms / 0 ms | 60 ms first frame |
+
+B2 adds an optional `pin` to each member. A call with no pin takes the same
+route as before, so the counts do not move. The total time of the Lanes calls
+follows the GitHub PR calls, which vary from run to run.

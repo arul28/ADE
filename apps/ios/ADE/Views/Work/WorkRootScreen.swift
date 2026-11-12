@@ -274,7 +274,8 @@ struct WorkRootSyncInputs: Equatable {
       remoteMachineRepos = workRemoteMachineRepos(
         machines: connected,
         identity: identity,
-        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
+        account: sync.accountCopiesOfActiveProject()
       )
       // The Work list shows every chat of this repository on the other
       // machines, and its search and filters cover them all: a paged roster
@@ -1704,8 +1705,24 @@ struct WorkRootListScreen: View, Equatable {
         }
       },
       onCliStarted: { session in
-        optimisticSessions[session.id] = session
         selectedSessionTransitionId = nil
+        // Started on another machine: its terminal streams from that machine,
+        // exactly like tapping its row. When that machine's link cannot stream
+        // terminals, the row's own fallback focuses the machine and opens it.
+        if workIsRemoteMachineTerminalRow(session) {
+          if let remote = startedRemoteTerminalContext(for: session) {
+            await showNewChatRoute(WorkSessionRoute(sessionId: session.id, remoteTerminal: remote))
+          } else {
+            // Leave the compose page; the open lands once that machine is focused.
+            if duoLayout.isWide { duoComposeRoute = nil } else { path = NavigationPath() }
+            openRemoteMachineTerminal(sessionId: session.id, laneId: session.laneId)
+          }
+          Task { @MainActor in
+            await reload(refreshRemote: true)
+          }
+          return
+        }
+        optimisticSessions[session.id] = session
         await showNewChatRoute(WorkSessionRoute(sessionId: session.id))
         Task { @MainActor in
           await reload(refreshRemote: true)
@@ -1754,7 +1771,11 @@ struct WorkRootListScreen: View, Equatable {
       fresh.append(route)
       path = fresh
     }
-    syncService.persistOpenWorkSessionRoute(sessionId: route.sessionId)
+    // Another machine's terminal is not restored at launch: the restore path
+    // opens focused-machine sessions.
+    if route.remoteTerminal == nil {
+      syncService.persistOpenWorkSessionRoute(sessionId: route.sessionId)
+    }
   }
 
   private func workList(proxy: ScrollViewProxy, duoColumn: Bool = false) -> some View {

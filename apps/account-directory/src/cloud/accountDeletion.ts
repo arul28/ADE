@@ -1,6 +1,8 @@
 import { purgeRelayAccountData, type RelayAccountPurgeEnv } from "../activityRelay";
 import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
+import { deleteAccountLaunches } from "./launches";
+import { deleteAccountAutomations } from "./automations";
 import { createCloudProvider } from "./provider";
 import { CLOUD_DELETED_ACCOUNT_PREFIX, CLOUD_REFERRAL_FRIEND_REASON, CLOUD_REFERRAL_REFERRER_REASON } from "./contract";
 import { sha256Hex } from "../sinkUtils";
@@ -46,6 +48,11 @@ export async function deleteCloudAccount(
   // Lane names, repository origins and branches of lanes whose computer is gone.
   await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ?").bind(userId).run();
   await deleteAllAccountChats(env, userId);
+  // Launch facts (first messages, lane names) and their files; project delete jobs.
+  await deleteAccountLaunches(env, userId);
+  await env.DB.prepare("delete from cloud_project_deletes where user_id = ?").bind(userId).run();
+  // Automations on ADE Cloud (their prompts and names) and their run history.
+  await deleteAccountAutomations(env, userId);
   // The invite link stops working and the computers it was seen on go. The free-plan
   // claim stays (re-making the account must not give the computer's free hours again),
   // and so do referral rows and earned-hour grants (the referral cap and the friends'

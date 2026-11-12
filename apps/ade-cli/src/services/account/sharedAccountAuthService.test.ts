@@ -20,7 +20,9 @@ import {
   registerAccountConfigProjectRoot,
   resolveAccountOAuthConfig,
   resolveOfficialAccountDirectoryBaseUrl,
+  setAccountConfigRootSkip,
 } from "./sharedAccountAuthService";
+import { expectedErrorKind } from "../../../../desktop/src/shared/expectedError";
 
 const tempPaths: string[] = [];
 const activeServices: AccountAuthService[] = [];
@@ -264,6 +266,56 @@ describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic p
       issuer: DEFAULT_ADE_CLERK_ISSUER,
       clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
     });
+  });
+});
+
+describe("account settings of a project refused as too slow to open", () => {
+  // The defaults must never stand in for a refused project's own settings: a
+  // session refreshed against the wrong issuer is marked signed out.
+  it("are answered from their last read, or unavailable, never from the defaults", () => {
+    const custom = { CLERK_ISSUER: "https://issuer-a.example.test", CLERK_OAUTH_CLIENT_ID: "client-a" };
+    const readBefore = makeProjectRoot(custom);
+    const neverRead = makeProjectRoot(custom);
+    const refused = new Set<string>();
+    setAccountConfigRootSkip((root) => refused.has(root), uniqueSecretsDir());
+    try {
+      const env = {} as NodeJS.ProcessEnv;
+      expect(resolveAccountOAuthConfig({ env, projectRoots: [readBefore] }))
+        .toEqual({ issuer: custom.CLERK_ISSUER, clientId: custom.CLERK_OAUTH_CLIENT_ID });
+
+      // A read that fails (the drive hiccups just before the refusal) is not
+      // an answer: it must not replace what was read with "none".
+      const readFileSync = fs.readFileSync;
+      const failing = vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+        if (typeof file === "string" && file.startsWith(readBefore)) {
+          throw Object.assign(new Error(`EIO: i/o error, read '${file}'`), { code: "EIO" });
+        }
+        return (readFileSync as (...args: unknown[]) => unknown)(file, options);
+      }) as typeof fs.readFileSync);
+      try {
+        resolveAccountOAuthConfig({ env, projectRoots: [readBefore] });
+      } finally {
+        failing.mockRestore();
+      }
+
+      refused.add(readBefore);
+      refused.add(neverRead);
+      // Its folder is not read again: the settings are the ones last read.
+      fs.rmSync(readBefore, { recursive: true, force: true });
+      expect(resolveAccountOAuthConfig({ env, projectRoots: [readBefore] }))
+        .toEqual({ issuer: custom.CLERK_ISSUER, clientId: custom.CLERK_OAUTH_CLIENT_ID });
+
+      // Never read before: unavailable, not ADE's defaults.
+      let thrown: unknown = null;
+      try {
+        resolveAccountOAuthConfig({ env, projectRoots: [neverRead] });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(expectedErrorKind(thrown)).toBe("environment");
+    } finally {
+      setAccountConfigRootSkip(() => false, uniqueSecretsDir());
+    }
   });
 });
 

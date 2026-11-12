@@ -111,7 +111,7 @@ export function createGithubStackStore(args: {
   onReconciled: () => void;
 }) {
   const { db, githubService, logger, projectId } = args;
-  const reconcileInFlight = new Map<string, Promise<GitHubPrStack>>();
+  const reconcileInFlight = new Map<string, Promise<{ stack: GitHubPrStack; changed: boolean }>>();
   const reconcileDirty = new Set<string>();
   const repositoryReconcileInFlight = new Map<string, Promise<GitHubPrStack[]>>();
   const repoMutationTails = new Map<string, Promise<void>>();
@@ -367,27 +367,116 @@ export function createGithubStackStore(args: {
     return stackFromRows(decoded.row, decoded.entries);
   };
 
-  const reconcile = async (
+  /**
+   * What a reader of the stack sees, without the sync time. `created_at` is
+   * left out too: `decode` uses the sync time when GitHub omits it.
+   */
+  const stackSignature = (stack: GitHubPrStack): string => JSON.stringify([
+    stack.id,
+    stack.number,
+    stack.nodeId,
+    stack.baseBranch,
+    stack.open,
+    stack.lastError,
+    stack.entries,
+  ]);
+
+  /**
+   * True when writing `decoded` would change what readers see: the stack
+   * itself, or one of its PRs still filed under another stack.
+   */
+  /** One stored stack and its entries, without reading the rest of the repository. */
+  const readStoredStack = (repo: GitHubRepoRef, stackNumber: number): GitHubPrStack | null => {
+    const params = [projectId, repo.owner, repo.name, stackNumber];
+    const where = `where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_stack_number = ?`;
+    const row = db.get<GitHubPrStackRow>(`select * from github_pr_stacks ${where} limit 1`, params);
+    if (!row) return null;
+    const entries = db.all<GitHubPrStackEntryRow>(
+      `select * from github_pr_stack_entries ${where} order by position asc`,
+      params,
+    );
+    return stackFromRows(row, entries);
+  };
+
+  const decodedStackChanges = (repo: GitHubRepoRef, decoded: DecodedGithubStack): boolean => {
+    const stackNumber = Number(decoded.row.github_stack_number);
+    const stored = readStoredStack(repo, stackNumber);
+    if (!stored) return true;
+    if (stackSignature(stored) !== stackSignature(stackFromRows(decoded.row, decoded.entries))) return true;
+    if (decoded.entries.length === 0) return false;
+    const elsewhere = db.get<{ github_pr_number: number }>(
+      `select github_pr_number
+         from github_pr_stack_entries
+        where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_stack_number <> ?
+          and github_pr_number in (${decoded.entries.map(() => "?").join(", ")})
+        limit 1`,
+      [
+        projectId,
+        repo.owner,
+        repo.name,
+        stackNumber,
+        ...decoded.entries.map((entry) => Number(entry.github_pr_number)),
+      ],
+    );
+    return elsewhere != null;
+  };
+
+  /**
+   * Writes GitHub's answer for one stack. An answer equal to the stored stack
+   * only moves its sync time: it does not drop the PR snapshot or tell anyone.
+   * Each snapshot read reconciles every stack it sees, and a "changed" signal
+   * for an unchanged stack made the snapshot read again, in a loop.
+   */
+  const replaceIfChanged = (
+    repo: GitHubRepoRef,
+    rawStack: unknown,
+  ): { stack: GitHubPrStack; changed: boolean } => {
+    const decoded = decode(repo, rawStack);
+    if (decodedStackChanges(repo, decoded)) {
+      return { stack: replace(repo, rawStack), changed: true };
+    }
+    db.run(
+      `update github_pr_stacks
+          set synced_at = ?
+        where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_stack_number = ?`,
+      [decoded.row.synced_at, projectId, repo.owner, repo.name, decoded.row.github_stack_number],
+    );
+    return { stack: stackFromRows(decoded.row, decoded.entries), changed: false };
+  };
+
+  type ReconcileOutcome = { stack: GitHubPrStack; changed: boolean };
+
+  const reconcileWithOutcome = async (
     repo: GitHubRepoRef,
     stackNumber: number,
-  ): Promise<GitHubPrStack> => {
+  ): Promise<ReconcileOutcome> => {
     const key = `${repoKey(repo)}#${stackNumber}`;
     const existing = reconcileInFlight.get(key);
     if (existing) {
       reconcileDirty.add(key);
-      return existing.then(async (stack) => {
-        if (!reconcileDirty.delete(key)) return stack;
-        return await reconcile(repo, stackNumber);
+      return existing.then(async (first) => {
+        if (!reconcileDirty.delete(key)) return first;
+        const second = await reconcileWithOutcome(repo, stackNumber);
+        return { stack: second.stack, changed: first.changed || second.changed };
       });
     }
-    let request!: Promise<GitHubPrStack>;
+    let request!: Promise<ReconcileOutcome>;
     request = withRepoMutationLock(repo, async () => {
       try {
         const { data } = await githubService.apiRequest<unknown>({
           method: "GET",
           path: `/repos/${repo.owner}/${repo.name}/stacks/${stackNumber}`,
         });
-        return replace(repo, data);
+        return replaceIfChanged(repo, data);
       } catch (error) {
         db.run(
           `update github_pr_stacks
@@ -407,6 +496,11 @@ export function createGithubStackStore(args: {
     reconcileInFlight.set(key, request);
     return request;
   };
+
+  const reconcile = async (
+    repo: GitHubRepoRef,
+    stackNumber: number,
+  ): Promise<GitHubPrStack> => (await reconcileWithOutcome(repo, stackNumber)).stack;
 
   const reconcileRepository = async (
     repo: GitHubRepoRef,
@@ -474,8 +568,8 @@ export function createGithubStackStore(args: {
   };
 
   const scheduleReconcile = (repo: GitHubRepoRef, stackNumber: number): void => {
-    void reconcile(repo, stackNumber).then(() => {
-      args.onReconciled();
+    void reconcileWithOutcome(repo, stackNumber).then(({ changed }) => {
+      if (changed) args.onReconciled();
     }).catch((error) => {
       logger.warn("prs.github_stack_reconcile_failed", {
         repo: `${repo.owner}/${repo.name}`,

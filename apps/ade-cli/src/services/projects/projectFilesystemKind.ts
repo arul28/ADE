@@ -86,3 +86,34 @@ export async function projectFilesystemKind(projectRoot: string): Promise<Projec
     return { kind: "unknown", fsType: null };
   }
 }
+
+/** A project open slower than this logs which of its steps took the time. */
+const PROJECT_OPEN_SLOW_MS = 5_000;
+
+/**
+ * The one producer of `project.open_slow`: when the open took 5 s or more, log
+ * its steps (`clock.summary()`), with the file system the folder is on. The
+ * lookup is asynchronous, so the line follows the open. Never throws.
+ */
+export function logSlowProjectOpen(args: {
+  logger: { warn: (event: string, meta?: Record<string, unknown>) => void } | null | undefined;
+  clock: { totalMs(): number; summary(): string };
+  projectRoot: string;
+  fields: Record<string, unknown>;
+}): void {
+  const totalMs = args.clock.totalMs();
+  if (totalMs < PROJECT_OPEN_SLOW_MS || !args.logger) return;
+  const slowOpen = { ...args.fields, totalMs, phases: args.clock.summary() };
+  void projectFilesystemKind(args.projectRoot).then((filesystem) => {
+    try {
+      // No folder path: the id or the profile is enough to find it.
+      args.logger?.warn("project.open_slow", {
+        ...slowOpen,
+        filesystemKind: filesystem.kind,
+        filesystemType: filesystem.fsType,
+      });
+    } catch {
+      // A log line must not fail an open.
+    }
+  });
+}

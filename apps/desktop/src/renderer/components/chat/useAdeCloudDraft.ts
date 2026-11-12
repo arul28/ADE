@@ -7,9 +7,10 @@ import {
   type CloudMachine,
 } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
-import { cloudTierHoursLeftLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -29,8 +30,8 @@ const NO_MACHINES: readonly CloudMachine[] = [];
 /** The Run on menu's ADE Cloud entry. One entry for every ADE Cloud lane. */
 export const ADE_CLOUD_MACHINE_ID = "__ade_cloud__";
 
-/** What can open from the label above the box: the plan row, the Free up space flow, or the ADE Cloud page. */
-export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings";
+/** What can open from the label above the box: the plan row, the Free up space flow, the ADE Cloud page, or GitHub's settings. */
+export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github";
 
 /**
  * The label above the prompt box while ADE Cloud is picked and Send can't go:
@@ -127,7 +128,7 @@ export function useAdeCloudDraft({
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
-    return `${tier.label} · ${cloudTierHoursLeftLabel(tier, hoursLeftMilli ?? 0)} left at this size`;
+    return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
   }, [account, hoursLeftMilli, tierId, tiers]);
 
   return {
@@ -194,6 +195,8 @@ export function useAdeCloudComposer(input: {
   connections: readonly RemoteRuntimeConnectionStatus[];
   sendRef: MutableRefObject<AdeCloudSend | null>;
   navigate: (to: string) => void;
+  /** Whether the composer is on screen (the Work tab shown and its tile visible); coming back re-reads a refusal. */
+  visible: boolean;
 }) {
   const { draft, mode, laneId, setLaneId, navigate } = input;
   /**
@@ -218,6 +221,60 @@ export function useAdeCloudComposer(input: {
   }, [draft.lanesKnown, laneId, selectedLane, setLaneId]);
   const newLane = mode && !selectedLane;
   const originUrl = originUrlForBinding(input.tabBinding);
+  // Can a new computer clone this repository with the account's credentials?
+  // Asked before Send (account-level, no pin), once per repository, so a
+  // private repository with no git credential that follows the account is a
+  // label here, never a failed "Clone repository" step after the computer was
+  // made (C4, beta.12 #15). Asked again when GitHub's connection changes
+  // (main tells again once the account's copy is written), and while it
+  // refuses, when the composer comes back into view (back from Settings, the
+  // tile shown again), on window focus and on a blocked Send: the Work tab
+  // stays mounted while the person connects GitHub in Settings.
+  const [gitPreflight, setGitPreflight] = useState<{ originUrl: string; result: CloudGitPreflight | null } | null>(null);
+  const [gitPreflightRead, setGitPreflightRead] = useState(0);
+  const preflightWanted = mode && newLane && input.showControls && Boolean(originUrl);
+  useEffect(() => {
+    if (!preflightWanted || !originUrl) return undefined;
+    const read = window.ade?.cloud?.gitPreflight;
+    if (typeof read !== "function") return undefined;
+    let cancelled = false;
+    void read({ originUrl }).then(
+      (result) => {
+        if (!cancelled) setGitPreflight({ originUrl, result });
+      },
+      (error: unknown) => {
+        // Unknown is never a block: the launch's own check still says why.
+        console.warn("[chat] ADE Cloud git preflight failed", error);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [gitPreflightRead, originUrl, preflightWanted]);
+  const gitRefusal = gitPreflight && gitPreflight.originUrl === originUrl && gitPreflight.result && !gitPreflight.result.ok
+    ? gitPreflight.result
+    : null;
+  const recheckGitPreflight = useCallback(() => setGitPreflightRead((count) => count + 1), []);
+  useEffect(() => {
+    if (!preflightWanted) return undefined;
+    return window.ade?.github?.onStatusChanged?.(() => recheckGitPreflight()) ?? undefined;
+  }, [preflightWanted, recheckGitPreflight]);
+  const refusedNow = gitRefusal != null;
+  useEffect(() => {
+    if (!preflightWanted || !refusedNow) return undefined;
+    window.addEventListener("focus", recheckGitPreflight);
+    return () => window.removeEventListener("focus", recheckGitPreflight);
+  }, [preflightWanted, recheckGitPreflight, refusedNow]);
+  // Back from Settings is a route change (no window focus): the parked Work
+  // surface's tile turns visible again, and that re-reads while a refusal
+  // holds Send. So does a hidden tile shown again.
+  const visible = input.visible;
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    const cameBack = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (cameBack && preflightWanted && refusedNow) recheckGitPreflight();
+  }, [preflightWanted, recheckGitPreflight, refusedNow, visible]);
   /**
    * Why Send can't go to ADE Cloud now, shown above the box before Send:
    * a fact of the account (out of hours, all computers in use, disk full) or
@@ -256,9 +313,19 @@ export function useAdeCloudComposer(input: {
       },
       originUrl,
     });
-    return problem ? { tone: "notice", message: problem.message, short: problem.short, actions: [] } : null;
+    if (problem) return { tone: "notice", message: problem.message, short: problem.short, actions: [] };
+    if (gitRefusal) {
+      return {
+        tone: "blocked",
+        message: gitRefusal.message,
+        short: "Connect GitHub to clone this repository.",
+        actions: ["github"],
+      };
+    }
+    return null;
   }, [
     draft.account,
+    gitRefusal,
     draft.tierId,
     mode,
     newLane,
@@ -287,8 +354,15 @@ export function useAdeCloudComposer(input: {
       ? adeCloudSettingsRoute(ADE_CLOUD_PLAN_ANCHOR)
       : action === "free-space"
         ? adeCloudSettingsRoute(ADE_CLOUD_FREE_SPACE_ANCHOR)
-        : settingsRouteFor("integrations.ade-cloud"));
+        : action === "github"
+          ? settingsRouteFor("integrations.github")
+          : settingsRouteFor("integrations.ade-cloud"));
   }, [navigate]);
 
-  return { shelfLanes, selectedLane, newLane, notice, openSettings };
+  /** A blocked Send: ask GitHub again when its refusal is what holds Send. */
+  const recheckSendBlock = useCallback(() => {
+    if (refusedNow) recheckGitPreflight();
+  }, [recheckGitPreflight, refusedNow]);
+
+  return { shelfLanes, selectedLane, newLane, notice, openSettings, recheckSendBlock };
 }

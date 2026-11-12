@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GitHubAppUserAuthStatus, OpenProjectBinding } from "../../shared/types";
+import { cacheScopeKey } from "./tabBindingKey";
 
 /**
  * The ADE GitHub App account status, shared by every surface that renders it.
@@ -34,13 +35,13 @@ type MachineAuthState = {
 /**
  * One state per machine: each machine has its own credential, and Settings
  * shows a page per machine, so one machine's status never shows on another's
- * page. Unpinned callers (the tab's own machine, onboarding) share one key.
+ * page. Unpinned callers share the key of the copy the tab is bound to now.
  */
 const UNPINNED_KEY = "\u0000unpinned";
 const machines = new Map<string, MachineAuthState>();
 
 function machineKey(pin: OpenProjectBinding | null | undefined): string {
-  return pin ? pin.key : UNPINNED_KEY;
+  return cacheScopeKey(pin) ?? UNPINNED_KEY;
 }
 
 function machineState(key: string): MachineAuthState {

@@ -729,6 +729,12 @@ export type PtyCreateArgs = {
    * can read/update its issue through `ade linear` (no Linear MCP/creds needed).
    */
   linearIssues?: LaneLinearIssue[];
+  /**
+   * Main-process only: the launch command already carries the first prompt
+   * (Codex's trailing argument, a resume with the message), so the turn it
+   * starts counts as submitted even though no Enter is typed.
+   */
+  promptSubmittedAtLaunch?: boolean;
 };
 
 export type PtyCreateResult = {
@@ -741,6 +747,38 @@ export type PtyDisposeResult = {
   disposed: boolean;
   reason: "disposed" | "orphaned" | "missing" | "not-running" | "session-mismatch" | "owned-by-peer" | "already-disposed";
 };
+
+/**
+ * Text for a running tracked agent CLI (the Work input box, a phone, the web),
+ * typed at its prompt only while the prompt is free: never over a turn that is
+ * still running, and never into a CLI whose process has ended.
+ */
+export type AgentCliTypeArgs = {
+  sessionId: string;
+  text: string;
+  /**
+   * When the CLI is mid-turn, the host keeps the text in its saved send queue
+   * and types it once the prompt is free, instead of answering `deferred`.
+   * For callers that keep no queue of their own (the phone, the web).
+   */
+  holdUntilFree?: boolean;
+  /**
+   * The caller's id for this text. A second call with the same id (another
+   * window sending the same queued item, a retry) gets the first call's
+   * answer instead of typing the text again.
+   */
+  clientMessageId?: string;
+};
+
+/**
+ * `delivered`: typed and submitted. `deferred`: nothing typed, the CLI is
+ * mid-turn (or run by another ADE runtime); try again later. `held`: nothing
+ * typed yet, the host types it when the prompt is free. `ended`: the CLI's
+ * process is gone, so nothing was typed (continue the session instead).
+ */
+export type AgentCliTypeOutcome = "delivered" | "deferred" | "held" | "ended";
+
+export type AgentCliTypeResult = { outcome: AgentCliTypeOutcome };
 
 export type PtySendToSessionArgs = {
   sessionId: string;
@@ -765,6 +803,28 @@ export type PtySendToSessionResult = PtyCreateResult & {
 };
 
 export type PtyResumeSessionResult = PtySendToSessionResult;
+
+/** Relaunch a tracked agent CLI in its own row, resuming its conversation, with new launch settings or account. */
+export type PtyRestartAgentCliArgs = PtyResumeSessionArgs & {
+  /** Provider account to relaunch under (Claude and Codex). Saved on the row. */
+  instanceId?: string | null;
+  /** Refuse, after the settings are checked, while the CLI is mid-turn instead of stopping it. */
+  requireIdle?: boolean;
+};
+
+export type PtyRestartAgentCliResult = PtyResumeSessionResult & {
+  /** True when a running CLI process was stopped first. */
+  stoppedProcess: boolean;
+};
+
+export type AgentCliInterruptResult = {
+  /** Whether a CLI process is running in the terminal. */
+  live: boolean;
+  /** False when the CLI sat at a free prompt, so nothing was pressed. */
+  interrupted: boolean;
+  /** The provider's cancel key that was pressed, e.g. "esc". */
+  key: string | null;
+};
 
 export type PtyDataEvent = {
   ptyId: string;

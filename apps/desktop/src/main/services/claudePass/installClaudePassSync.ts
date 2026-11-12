@@ -26,7 +26,7 @@ export async function installClaudePassSync(args: {
     { createClaudePassSync },
     { getMachineAccountStores },
     { getMachineProviderInstanceStore },
-    { isCloudMachine },
+    { isAdeCloudComputer },
     { noteProviderLoginChanged },
     { configureClaudePassUse },
     { setClaudePassEndHandler },
@@ -35,7 +35,7 @@ export async function installClaudePassSync(args: {
     import("./claudePassSync"),
     import("../../../../../ade-cli/src/services/account/machineAccountStores"),
     import("../../../../../ade-cli/src/services/providerInstances/providerInstanceStore"),
-    import("../../../../../ade-cli/src/services/power/cloudKeepAwake"),
+    import("../adeCloud/cloudComputerRules"),
     import("../ai/providerLoginChanged"),
     import("./claudePassUse"),
     import("./claudePassEnd"),
@@ -44,7 +44,7 @@ export async function installClaudePassSync(args: {
   configureClaudePassUse({ adeDir: args.adeDir });
   const stores = getMachineAccountStores(args.logger);
   const sync = createClaudePassSync({
-    cloudComputer: isCloudMachine(),
+    cloudComputer: isAdeCloudComputer(),
     adeDir: args.adeDir,
     vault: () => stores.vault,
     settings: () => stores.settings,

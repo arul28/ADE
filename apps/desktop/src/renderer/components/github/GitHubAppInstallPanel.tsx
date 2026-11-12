@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
+  GitHubAccountAppStatus,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
@@ -10,6 +11,7 @@ import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle
 import { openExternalUrl } from "../../lib/openExternal";
 import { IntegrationCard } from "../settings/integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
+import { confirmDialog } from "../ui/dialog";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
 import {
   deriveGithubAccountAuthState,
@@ -25,6 +27,13 @@ import {
   type GithubAccountAxisTone,
 } from "../../lib/githubIntegrationStatus";
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
+import {
+  cancelGithubAccountAppSignIn,
+  signOutGithubAccountApp,
+  startGithubAccountAppSignIn,
+  useGithubAccountApp,
+  type GithubAccountAppSignInPhase,
+} from "../../lib/useGithubAccountApp";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 
 const ADE_GITHUB_APP_NAME = "ADE";
@@ -41,9 +50,22 @@ type GitHubAppInstallPanelProps = {
    * so a pending device code cannot carry over to another machine.
    */
   pin?: OpenProjectBinding | null;
+  /**
+   * The ADE account's GitHub App sign-in as this machine sees it (from the
+   * machine's GitHub status): the login mismatch with this machine's own
+   * sign-in lives here. Absent on onboarding and from older runtimes.
+   */
+  accountApp?: GitHubAccountAppStatus | null;
+  /** The account's sign-in changed: re-read the machine's GitHub status. */
+  onAccountAppChanged?: () => void;
 };
 
-export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitHubAppInstallPanelProps) {
+export function GitHubAppInstallPanel({
+  variant = "settings",
+  pin = null,
+  accountApp = null,
+  onAccountAppChanged,
+}: GitHubAppInstallPanelProps) {
   const compact = variant === "onboarding";
   const [status, setStatus] = useState<GitHubAppInstallationStatus | null>(null);
   // Shared with the Settings connection ladder, so disconnecting here updates
@@ -176,6 +198,9 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
     }
   }, [pin, setAppAuth]);
 
+  const disconnectAppAuthorizationRef = useRef<(() => Promise<void>) | null>(null);
+  disconnectAppAuthorizationRef.current = disconnectAppAuthorization;
+
   const copyDeviceCode = useCallback(async () => {
     if (!deviceSession) return;
     try {
@@ -275,18 +300,75 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
     void loadStatus(false);
   }, [loadStatus]);
 
-  // Two independent axes, derived by the shared helper so Settings and the
-  // banner can never disagree.
-  const accountState = deriveGithubAccountAuthState(appAuth);
-  const repoState = deriveGithubRepoConnectionState(status, accountState);
-  const appAuthorized = accountState === "valid";
-  const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
   // The account axis is "checking" until the account read lands, and nothing
   // else decides that. `loading` belongs to the REPO status beside it, and
   // gating on it reported an unread account as `missing` — an offer to
   // authorize a machine that may already be authorized — whenever the repo
   // status settled first.
   const accountChecking = !appAuthLoaded;
+  // This machine's own (device-code) App sign-in.
+  const ownAccountState = deriveGithubAccountAuthState(appAuth);
+  // The ADE account's App sign-in replaces the device code once this machine
+  // has no sign-in of its own and the account directory offers it. With an
+  // own sign-in, the device-code rows stay as they were (it moves to the
+  // account in the background).
+  const accountAppUi = useGithubAccountApp();
+  const useAccountFlow = accountAppUi.supported && ownAccountState === "missing" && !accountChecking;
+  // Two independent axes, derived by the shared helper so Settings and the
+  // banner can never disagree.
+  const accountState: GithubAccountAuthState = useAccountFlow && accountAppUi.connected ? "valid" : ownAccountState;
+  const repoState = deriveGithubRepoConnectionState(status, accountState);
+  const appAuthorized = accountState === "valid";
+  const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
+
+  const accountSignInDone = useCallback(() => {
+    setDeviceError(null);
+    setDeviceMessage("GitHub is connected to your ADE account. Checking repository access...");
+    onAccountAppChanged?.();
+    void loadStatus(true, { retryAfterAuthorization: true });
+    void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
+  }, [loadStatus, onAccountAppChanged, pin]);
+
+  const startAccountSignIn = useCallback(() => {
+    setDeviceMessage(null);
+    setDeviceError(null);
+    void startGithubAccountAppSignIn(accountSignInDone);
+  }, [accountSignInDone]);
+
+  const disconnectAccountApp = useCallback(async () => {
+    const confirmed = await confirmDialog({
+      title: "Disconnect GitHub from your ADE account?",
+      message: "Every computer on your ADE account stops using this sign-in. Live pull request updates stop until you connect again.",
+      confirmLabel: "Disconnect",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setDisconnecting(true);
+    try {
+      const result = await signOutGithubAccountApp();
+      if (!result.ok) {
+        setDeviceError("ADE couldn't disconnect GitHub. Check your connection and try again.");
+        return;
+      }
+      setDeviceError(null);
+      setDeviceMessage(result.deletedAtGitHub
+        ? "GitHub is disconnected from your ADE account."
+        : "GitHub is disconnected from your ADE account. GitHub didn't answer, so also remove ADE from your authorized GitHub apps.");
+      onAccountAppChanged?.();
+      void loadStatus(true);
+    } finally {
+      setDisconnecting(false);
+    }
+  }, [loadStatus, onAccountAppChanged]);
+
+  // "Use @y here": drop this machine's own sign-in (ADE deletes it at GitHub)
+  // so the machine uses the account's.
+  const switchToAccountSignIn = useCallback(async () => {
+    await disconnectAppAuthorizationRef.current?.();
+    setDeviceMessage(null);
+    onAccountAppChanged?.();
+    void loadStatus(true, { retryAfterAuthorization: true });
+  }, [loadStatus, onAccountAppChanged]);
 
   // Settings draws its buttons with the modern settings classes; onboarding
   // keeps the compact inline styles it was designed with.
@@ -295,8 +377,12 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
   const secondaryBtnProps = compact ? {} : { className: "ade-modern-btn" };
   const primaryBtnProps = compact ? {} : { className: "ade-modern-btn", "data-tone": "primary" };
 
-  const authBusy = authLoading || Boolean(deviceSession);
-  const account = describeGithubAccountAxis(accountChecking ? "checking" : accountState, appAuth);
+  const accountPhase = accountAppUi.phase;
+  const accountFlowBusy = accountPhase.kind === "starting" || accountPhase.kind === "waiting";
+  const authBusy = authLoading || Boolean(deviceSession) || (useAccountFlow && accountFlowBusy);
+  const account = useAccountFlow
+    ? accountFlowAxis(accountAppUi.connected, accountAppUi.needsReauth, accountAppUi.status?.githubLogin ?? null)
+    : describeGithubAccountAxis(accountChecking ? "checking" : accountState, appAuth);
   // No button in the states ADE recovers from on its own. Offering one while
   // GitHub has the account paused is what sent users back through the device
   // flow against the very endpoint that was refusing them.
@@ -305,18 +391,20 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       type="button"
       style={account.cta === "authorize" ? primaryBtnStyle : secondaryBtnStyle}
       {...(account.cta === "authorize" ? primaryBtnProps : secondaryBtnProps)}
-      onClick={() => void startAppAuthorization()}
+      onClick={() => (useAccountFlow ? startAccountSignIn() : void startAppAuthorization())}
       disabled={authBusy}
     >
       <ArrowSquareOut size={12} weight="bold" />
-      {authBusy ? "Authorizing" : account.cta === "authorize" ? "Authorize ADE" : "Re-authorize"}
+      {useAccountFlow
+        ? (accountFlowBusy ? "Waiting for GitHub" : account.cta === "authorize" ? "Connect GitHub" : "Connect again")
+        : authBusy ? "Authorizing" : account.cta === "authorize" ? "Authorize ADE" : "Re-authorize"}
     </button>
   ) : null;
 
   // Unobtrusive by design: a plain muted control, and only where there is
   // something to disconnect. Two clicks, because clearing the credential stops
   // real-time updates until the user goes through the device flow again.
-  const showDisconnect = accountState !== "missing"
+  const showDisconnect = ownAccountState !== "missing"
     && !accountChecking
     && !deviceSession
     // Hosts without the clear action (older brains) must not show a control
@@ -325,7 +413,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
     // one mechanism, so a new stub cannot pass half of the check.
     && typeof window.ade?.github?.clearAppUserAuth === "function"
     && isGithubAppUserAuthSupported(appAuth);
-  const disconnectControl = showDisconnect ? (
+  const legacyDisconnectControl = showDisconnect ? (
     disconnectArmed ? (
       <>
         <button
@@ -363,6 +451,34 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
         Disconnect
       </button>
     )
+  ) : null;
+  // The account's sign-in: one control, behind a confirm (it stops every computer of the account).
+  const accountDisconnectControl = useAccountFlow && accountAppUi.connected ? (
+    <button
+      type="button"
+      style={compact ? quietButtonStyle : undefined}
+      {...(compact ? {} : { className: "ade-modern-btn", "data-variant": "link" })}
+      onClick={() => void disconnectAccountApp()}
+      disabled={disconnecting}
+    >
+      {disconnecting ? "Disconnecting" : "Disconnect"}
+    </button>
+  ) : null;
+  const disconnectControl = useAccountFlow ? accountDisconnectControl : legacyDisconnectControl;
+  const accountFlowNotes = useAccountFlow ? accountFlowPhaseNote(accountPhase, compact) : null;
+  // This machine's own sign-in is a different GitHub user than the account's:
+  // ADE keeps this machine's and asks (decision C4).
+  const loginMismatchNotice = !compact && accountApp?.loginMismatch && ownAccountState !== "missing" && accountApp.githubLogin ? (
+    <Banner
+      layout="inline"
+      model={{
+        id: "github-account-app-login-mismatch",
+        tone: "info",
+        title: `This computer uses GitHub @${accountApp.localLogin ?? appAuth?.userLogin ?? "unknown"}. Your ADE account uses @${accountApp.githubLogin}.`,
+        detail: "ADE keeps using this computer's sign-in until you choose.",
+        actions: [{ label: `Use @${accountApp.githubLogin} here`, onClick: () => void switchToAccountSignIn() }],
+      }}
+    />
   ) : null;
 
   const recheckButton = (primaryStyle: boolean) => (
@@ -465,7 +581,8 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       ) : null}
       {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
       {deviceError ? <p style={{ ...authMessageStyle, color: COLORS.danger }}>{deviceError}</p> : null}
-      {accountState === "missing" && !deviceSession && !accountChecking ? (
+      {accountFlowNotes}
+      {!useAccountFlow && accountState === "missing" && !deviceSession && !accountChecking ? (
         <p style={authMessageStyle}>Authorize once so ADE can check which repositories the app is installed on.</p>
       ) : null}
     </section>
@@ -565,11 +682,11 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
             <span className="ade-ig-step-num" aria-hidden>{authorizedDone ? <Check size={11} weight="bold" /> : 1}</span>
             <div className="ade-ig-step-main">
               <div className="ade-ig-step-head">
-                <b>Authorize ADE</b>
+                <b>{useAccountFlow ? "Connect GitHub" : "Authorize ADE"}</b>
                 {accountChecking ? null : renderPill(accountPill(account.tone, account.label), true)}
               </div>
               <p className="ade-ig-note">
-                {accountState === "missing" && !accountChecking
+                {!useAccountFlow && accountState === "missing" && !accountChecking
                   ? "Sign in once on GitHub so ADE can see where the app is installed."
                   : account.subtext}
               </p>
@@ -577,7 +694,9 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
               {disconnectArmed ? (
                 <p className="ade-ig-note">Live updates stop on this machine until you authorize again.</p>
               ) : null}
+              {loginMismatchNotice}
               {deviceBlock}
+              {accountFlowNotes}
               {deviceMessage ? <p className="ade-ig-note">{deviceMessage}</p> : null}
               {deviceError ? (
                 <Banner layout="inline" model={{ id: "github-app-auth-error", tone: "error", title: "GitHub authorization didn't finish", detail: deviceError }} />
@@ -636,6 +755,72 @@ function sleepMs(ms: number): Promise<void> {
 
 type PillTone = "ok" | "warn" | "pending" | "neutral";
 type PillSpec = { tone: PillTone; color: string; label: string };
+
+/** The account row when the ADE account's sign-in is the one this machine uses. */
+function accountFlowAxis(connected: boolean, needsReauth: boolean, login: string | null) {
+  if (connected) {
+    return {
+      tone: "ok" as const,
+      label: "Connected",
+      subtext: login
+        ? `Connected to your ADE account as @${login}. Your other computers use it too.`
+        : "Connected to your ADE account. Your other computers use it too.",
+      cta: null,
+      note: null,
+    };
+  }
+  if (needsReauth) {
+    return {
+      tone: "warn" as const,
+      label: "Connect again",
+      subtext: "Your GitHub connection ended. Connect GitHub again to keep live updates.",
+      cta: "reauthorize" as const,
+      note: null,
+    };
+  }
+  return {
+    tone: "neutral" as const,
+    label: "Not connected",
+    subtext: "Sign in once on GitHub. Every computer on your ADE account uses this sign-in.",
+    cta: "authorize" as const,
+    note: null,
+  };
+}
+
+/** Where a connect through the browser stands, under the account row. */
+function accountFlowPhaseNote(phase: GithubAccountAppSignInPhase, compact: boolean): ReactNode {
+  if (phase.kind === "waiting") {
+    return (
+      <p className={compact ? undefined : "ade-ig-note"} style={compact ? authMessageStyle : undefined}>
+        {compact ? null : <span className="ade-ig-dot" data-tone="checking" />} Finish signing in on GitHub in your browser.{" "}
+        <button
+          type="button"
+          className={compact ? undefined : "ade-ig-link"}
+          style={compact ? deviceLinkButtonStyle : undefined}
+          onClick={() => cancelGithubAccountAppSignIn()}
+        >
+          Cancel
+        </button>
+      </p>
+    );
+  }
+  if (phase.kind !== "failed") return null;
+  const detail = phase.reason === "denied"
+    ? "The sign-in was cancelled on GitHub, so nothing changed. Connect again to try once more."
+    : phase.reason === "refused"
+      ? "GitHub didn't finish the sign-in, so nothing changed. Connect again to try once more."
+    : phase.reason === "expired"
+      ? "The sign-in link ran out before it was finished. Connect again to start a new one."
+      : phase.reason === "rate_limited"
+        ? "Too many sign-ins in a short time. Wait a few minutes, then connect again."
+        : phase.reason === "signed_out"
+          ? "Sign in to your ADE account first."
+          : phase.reason === "unsupported"
+            ? "Your ADE account can't hold a GitHub sign-in yet."
+            : phase.message ?? "ADE couldn't start the GitHub sign-in. Check your connection and try again.";
+  if (compact) return <p style={{ ...authMessageStyle, color: COLORS.danger }}>{detail}</p>;
+  return <Banner layout="inline" model={{ id: "github-account-app-sign-in-error", tone: "error", title: "GitHub sign-in didn't finish", detail }} />;
+}
 
 function renderPill({ tone, color, label }: PillSpec, modern = false): ReactNode {
   // Settings: a status tag in the shared surface kit, coloured only when the

@@ -154,16 +154,18 @@ export function AdeCloudProvidersView({
     warning: "[providers] ADE Cloud sign-in change failed",
   });
 
-  const setSwitch = useCallback(async (key: string, on: boolean, confirmOn: boolean) => {
+  // False when the person said no to the confirm, so a card of several copies stops there.
+  const setSwitch = useCallback(async (key: string, on: boolean, confirmOn: boolean): Promise<boolean> => {
     if (on && confirmOn) {
       const ok = await confirmDialog({
         title: "Use this GitHub login on ADE Cloud?",
         message: `Copilot works on each cloud computer with no new sign-in. ${COPILOT_REPO_LINE}`,
         confirmLabel: "Turn on",
       });
-      if (!ok) return;
+      if (!ok) return false;
     }
     await runWrite(`switch:${key}`, () => window.ade?.providerLogins?.setCloud?.({ key, on }, accountPin), "ADE couldn't change that sign-in. Try again.");
+    return true;
   }, [accountPin, runWrite]);
 
   const turnOnAll = useCallback(() => {

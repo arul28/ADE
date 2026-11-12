@@ -234,6 +234,38 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it.each<[string, string, (projectId: string) => Record<string, string>]>([
+    ["projects.list", "projects.list", () => ({})],
+    ["projects.touch", "projects.touch", (projectId) => ({ projectId })],
+  ])("answers %s without another account's project link when no account is signed in here", async (_label, method, paramsFor) => {
+    const { registry, projectRoot } = createRegistry();
+    const project = registry.add(projectRoot);
+    registry.setAccountLinks([{
+      projectId: project.projectId,
+      githubRepoId: null,
+      accountProjectId: "ap_0123456789abcdef0123456789abcdef",
+      accountProjectUserId: "account-a",
+    }]);
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => null),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
+      getIfReady: vi.fn(() => null),
+      resolveActiveSyncHost: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const answer = await handler({ jsonrpc: "2.0", id: 2, method, params: paramsFor(project.projectId) });
+    const text = JSON.stringify(answer);
+
+    expect(text).toContain(project.projectId);
+    expect(text).not.toContain("ap_0123456789abcdef0123456789abcdef");
+    expect(text).not.toContain("account-a");
+    handler.dispose();
+  });
+
   it("keeps healthy sync status on the active-host resolver", async () => {
     const { registry, projectRoot } = createRegistry();
     const record = registry.add(projectRoot);
@@ -708,11 +740,11 @@ describe("multi-project RPC server", () => {
       ]);
       const store = {
         get: vi.fn((scope: string, kind: string, key: string) => rows.get(`${scope}|${kind}|${key}`) ?? null),
-        set: vi.fn((scope: string, kind: string, key: string, value: string) => {
+        trySet: vi.fn((scope: string, kind: string, key: string, value: string) => {
           rows.set(`${scope}|${kind}|${key}`, value);
-          return true;
+          return "queued" as const;
         }),
-        remove: vi.fn((scope: string, kind: string, key: string) => rows.delete(`${scope}|${kind}|${key}`)),
+        tryRemove: vi.fn((scope: string, kind: string, key: string) => (rows.delete(`${scope}|${kind}|${key}`) ? "queued" as const : "refused" as const)),
         list: vi.fn(() => []),
         sync: vi.fn(),
         pendingKeys: vi.fn(() => []),
@@ -728,7 +760,7 @@ describe("multi-project RPC server", () => {
         expect(rows).toEqual(before);
       } else {
         const answer = await call as { result: unknown };
-        expect(store[action as "get" | "set"]).toHaveBeenCalledTimes(1);
+        expect(action === "get" ? store.get : store.trySet).toHaveBeenCalledTimes(1);
         expect(answer.result).toBe(action === "get" ? before.get(argsList.slice(0, 3).join("|")) : true);
         if (action === "set") expect(rows.get("all|integration|cloud-budget")).toBe("{\"capUsd\":5}");
       }
@@ -2665,6 +2697,7 @@ describe("multi-project RPC server", () => {
         return loaded;
       }),
       getIfBooted: vi.fn((projectId: string) => (projectId === current.projectId ? Promise.resolve(loaded) : null)),
+      isOpenBlocked: vi.fn(() => false),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -4588,7 +4621,7 @@ describe("calls from another machine's agents", () => {
       initialize: { identity: { role: "agent", chatSessionId: "caller-chat" } },
       crossScopeChats: createCrossScopeChats({
         projectRegistry: { list: () => [] },
-        scopeRegistry: { get: vi.fn(), getIfBooted: () => null },
+        scopeRegistry: { get: vi.fn(), getIfBooted: () => null, isOpenBlocked: () => false },
         personalChatScope: { runtimeForDelivery: async () => callerRuntime, peekRuntime: () => Promise.resolve(callerRuntime) },
         deliverRemote: null,
         stateDir,

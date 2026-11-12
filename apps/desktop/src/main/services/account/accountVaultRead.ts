@@ -3,7 +3,7 @@
  * Linear): find one item in the account vault and decode its value. Each sync
  * then reconciles that with its own machine copy by its own rules.
  */
-import type { AccountVaultItem, AccountVaultResult } from "../../../shared/types/accountVault";
+import { ACCOUNT_VAULT_NO_REVISION, type AccountVaultItem, type AccountVaultResult } from "../../../shared/types/accountVault";
 
 export type AccountVaultRef = { scope: string; kind: string; key: string };
 
@@ -19,6 +19,11 @@ export type AccountVaultRead<T> = {
   raw: string | null;
   /** The value decoded; null when it is absent or ADE cannot read it (a newer format). */
   value: T | null;
+  /**
+   * Pass as `expectedRevision` to write only while the item is still what was
+   * read here. Undefined from an older brain, which then writes as before.
+   */
+  revision: string | undefined;
 };
 
 /** The vault, or null when the account has none here; a getter that throws is reported. */
@@ -49,13 +54,17 @@ export async function readAccountVaultItem<T>(
     }
     const item = listed.value.find((entry) =>
       entry.scope === ref.scope && entry.kind === ref.kind && entry.key === ref.key) ?? null;
-    if (!item || item.deleted === true) return { item, raw: null, value: null };
+    // Listed first and read second: a change that lands between the two makes
+    // the value newer than the revision, so a write naming it is refused and
+    // never replaces a value this caller did not see.
+    const revision = item ? item.revision : ACCOUNT_VAULT_NO_REVISION;
+    if (!item || item.deleted === true) return { item, raw: null, value: null, revision };
     const got = await vault.get(ref.scope, ref.kind, ref.key);
     if (!got.ok) {
       onFailure("get", got);
       return null;
     }
-    return { item, raw: got.value, value: decode(got.value) };
+    return { item, raw: got.value, value: decode(got.value), revision };
   } catch (error) {
     onFailure("read", error);
     return null;

@@ -7,8 +7,9 @@
  * Three places draw it (`where`):
  *  - the ADE Cloud page: "In use on ADE Cloud" or "Use on ADE Cloud", and the switch;
  *  - an own computer's page: "In use here" for the sign-in that computer
- *    uses. Until own computers can take a sign-in from the account, the
- *    others say how to use them there, with no button that would fail;
+ *    uses (its own, or the account's that came down to it where it had
+ *    none). The others say how to use them there, with no button that
+ *    would fail;
  *  - a cloud computer's page: "In use here" for the one it applied, and "Use
  *    on ADE Cloud" on the others (the choice is account-wide).
  */
@@ -85,7 +86,7 @@ export function SignInAccountCard({
         <span style={line}>{card.sourceLine}</span>
         {card.renewedLine ? <span style={line}>{card.renewedLine}</span> : null}
         {card.renewsNowLine ? <span style={{ ...line, color: COLORS.textSecondary }}>{card.renewsNowLine}</span> : null}
-        {/* K8: an own computer takes a sign-in from the account later; until then, how to use it there. */}
+        {/* K8: only the account's sign-in in use comes down, and only where none is; for the others, how to use them there. */}
         {where.kind === "own-computer" && !inUseHere ? (
           <span style={{ ...line, color: COLORS.textSecondary }}>To use it here, sign in on {where.machineWords}.</span>
         ) : null}

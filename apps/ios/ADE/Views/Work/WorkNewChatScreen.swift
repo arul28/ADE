@@ -696,6 +696,14 @@ struct WorkNewChatScreen: View {
   /// The Custom harness the next launch runs under, when the user picked one
   /// from the Custom section. Cleared by any manual model choice.
   @State private var selectedPreset: SyncMachineInventoryPreset?
+  /// The connected machine's provider accounts, from the same inventory read.
+  /// A CLI start can run on one of them (`instanceId`).
+  @State private var cliProviderAccounts: [SyncMachineInventoryProvider] = []
+  /// The account the next CLI start runs on; nil = the provider's default.
+  @State private var selectedCliAccountId: String?
+  /// Linear issues the next CLI start attaches, so the CLI starts with them.
+  @State private var cliLinearIssues: [NormalizedLinearIssue] = []
+  @State private var cliLinearPickerPresented = false
   /// The preset id the persisted composer preference last sent with. Resolved
   /// against the connected machine's list once it arrives, then dropped, so a
   /// relaunch keeps the harness the user chose instead of silently falling back
@@ -955,6 +963,8 @@ struct WorkNewChatScreen: View {
         laneSelector
           .padding(.horizontal, 10)
 
+        cliLaunchOptionsRow
+
         if let autoCreateStatus, busy {
           HStack(spacing: 8) {
             ProgressView().controlSize(.mini)
@@ -1064,6 +1074,14 @@ struct WorkNewChatScreen: View {
       WorkComposerPreferences.save(newValue)
     }
     .task { await applyHostLaunchDefaults() }
+    .sheet(isPresented: $cliLinearPickerPresented) {
+      WorkCliLinearIssuePickerSheet(syncService: syncService) { issue in
+        if !cliLinearIssues.contains(where: { $0.id == issue.id }) {
+          cliLinearIssues.append(issue)
+        }
+        cliLinearPickerPresented = false
+      }
+    }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
         currentModelId: modelId,
@@ -1235,13 +1253,119 @@ struct WorkNewChatScreen: View {
     do {
       let detail = try await syncService.fetchMachineInventory(machineKey: machineKey)
       harnessPresets = detail.presets
+      cliProviderAccounts = detail.providers ?? []
       resolveRestoredPreset()
       if let selectedPreset, !detail.presets.contains(where: { $0.id == selectedPreset.id }) {
         self.selectedPreset = nil
       }
     } catch {
       harnessPresets = []
+      cliProviderAccounts = []
     }
+  }
+
+  /// The accounts the CLI start can pick between: the selected CLI provider's,
+  /// on the connected machine only (another machine's ids would not resolve
+  /// there, the same reason its presets are hidden), and only when there is a
+  /// real choice. A preset names its own sign-in, so it hides the menu too.
+  private var cliAccountChoices: [SyncMachineInventoryAccount] {
+    guard sessionMode == .cli, selectedMachineKey == nil, selectedPreset == nil else { return [] }
+    let cliProvider = workResolveCliProvider(for: modelId, provider: provider).lowercased()
+    let accounts = cliProviderAccounts.first { $0.provider.lowercased() == cliProvider }?.accounts ?? []
+    return accounts.count > 1 ? accounts : []
+  }
+
+  private var selectedCliAccount: SyncMachineInventoryAccount? {
+    guard let selectedCliAccountId else { return nil }
+    return cliAccountChoices.first { $0.instanceId == selectedCliAccountId }
+  }
+
+  private func cliAccountLabel(_ account: SyncMachineInventoryAccount) -> String {
+    let label = account.label.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !label.isEmpty { return label }
+    return account.email ?? account.instanceId
+  }
+
+  /// CLI-only launch options: which account the CLI runs on, and the Linear
+  /// issues it starts with.
+  @ViewBuilder
+  private var cliLaunchOptionsRow: some View {
+    let accounts = cliAccountChoices
+    let linearAvailable = syncService.linearConnected
+    if sessionMode == .cli && (!accounts.isEmpty || linearAvailable || !cliLinearIssues.isEmpty) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          if !accounts.isEmpty {
+            Menu {
+              Button {
+                selectedCliAccountId = nil
+              } label: {
+                cliMenuRow("Default account", checked: selectedCliAccount == nil)
+              }
+              ForEach(accounts) { account in
+                Button {
+                  selectedCliAccountId = account.instanceId
+                } label: {
+                  cliMenuRow(
+                    cliAccountLabel(account) + (account.isDefault ? " (default)" : ""),
+                    checked: selectedCliAccount?.instanceId == account.instanceId
+                  )
+                }
+              }
+            } label: {
+              cliOptionPill(
+                systemImage: "person.crop.circle",
+                title: selectedCliAccount.map(cliAccountLabel) ?? "Default account"
+              )
+            }
+            .accessibilityLabel("Account")
+            .accessibilityIdentifier("Work.NewChat.CliAccount")
+          }
+          ForEach(cliLinearIssues) { issue in
+            Button {
+              cliLinearIssues.removeAll { $0.id == issue.id }
+            } label: {
+              cliOptionPill(systemImage: "xmark.circle.fill", title: issue.identifier)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(issue.identifier)")
+          }
+          if linearAvailable {
+            Button {
+              cliLinearPickerPresented = true
+            } label: {
+              cliOptionPill(systemImage: "circle.dashed", title: cliLinearIssues.isEmpty ? "Linear issue" : "Add issue")
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("Work.NewChat.CliLinearIssue")
+          }
+        }
+        .padding(.horizontal, 10)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func cliMenuRow(_ title: String, checked: Bool) -> some View {
+    if checked {
+      Label(title, systemImage: "checkmark")
+    } else {
+      Text(title)
+    }
+  }
+
+  private func cliOptionPill(systemImage: String, title: String) -> some View {
+    HStack(spacing: 5) {
+      Image(systemName: systemImage)
+        .font(.system(size: 11, weight: .semibold))
+      Text(title)
+        .font(.system(size: 12, weight: .semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 11)
+    .frame(minHeight: 30)
+    .adeKitPill()
   }
 
   /// Re-adopt the harness the last send ran under, once the machine's list
@@ -1546,16 +1670,13 @@ struct WorkNewChatScreen: View {
       errorMessage = "Reconnect to attach images."
       return false
     }
-    // Another machine: its checkout of this project. CLI sessions stream from
-    // the primary machine only for now.
+    // Another machine: its checkout of this project. Chats and CLI sessions
+    // both start there, scoped to that checkout and sent over that machine's
+    // own connection.
     let remoteRepo = selectedRemoteRepo
     if selectedMachineKey != nil {
       guard remoteRepo != nil else {
         errorMessage = "That machine has no checkout of this project."
-        return false
-      }
-      guard sessionMode == .chat else {
-        errorMessage = "Start CLI sessions on the primary machine for now."
         return false
       }
     }
@@ -1696,8 +1817,14 @@ struct WorkNewChatScreen: View {
           reasoningEffort: cliReasoningEffort,
           fastMode: fastModeSupported ? codexFastMode : nil,
           presetId: selectedPreset?.id,
+          instanceId: selectedCliAccount?.instanceId,
+          linearIssues: cliLinearIssues,
           cols: 48,
-          rows: 24
+          rows: 24,
+          // Same scope as a chat: another machine's checkout routes the start
+          // (and the reply's lane ids) through that machine.
+          targetProjectId: targetScope.projectId,
+          targetProjectRootPath: targetScope.projectRootPath
         )
         if let session = result.session {
           await onCliStarted(session)
@@ -2403,4 +2530,35 @@ func workNewChatPrimaryLane(_ lanes: [LaneSummary]) -> LaneSummary? {
   lanes.first { $0.laneType == "primary" }
     ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
     ?? lanes.first
+}
+
+
+/// The Linear issue list in pick mode, for a CLI start: tapping an issue adds
+/// it to the launch instead of attaching it to an existing chat.
+private struct WorkCliLinearIssuePickerSheet: View {
+  @StateObject private var store: LinearPaneStore
+  @State private var started = false
+  @Environment(\.dismiss) private var dismiss
+  let onPick: (NormalizedLinearIssue) -> Void
+
+  init(syncService: SyncService, onPick: @escaping (NormalizedLinearIssue) -> Void) {
+    _store = StateObject(wrappedValue: LinearPaneStore(sync: syncService))
+    self.onPick = onPick
+  }
+
+  var body: some View {
+    NavigationStack {
+      LinearIssueListScreen(
+        store: store,
+        onClose: { dismiss() },
+        showsClose: true,
+        onAttachIssue: { issue in onPick(issue) }
+      )
+    }
+    .task {
+      guard !started else { return }
+      started = true
+      await store.start()
+    }
+  }
 }

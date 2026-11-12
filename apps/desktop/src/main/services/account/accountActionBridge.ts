@@ -108,6 +108,8 @@ type CallOptions = AccountStoreWriteOptions & {
   rejectFalse?: boolean;
   /** Device id allowed to rotate a vaulted refresh grant. */
   refreshOwner?: string | null;
+  /** The vault revision a write replaces; see `AccountVaultWriteOptions`. */
+  expectedRevision?: string;
 };
 
 function writeOptionsArg(callOptions: CallOptions): Record<string, unknown> | undefined {
@@ -117,6 +119,9 @@ function writeOptionsArg(callOptions: CallOptions): Record<string, unknown> | un
   }
   if (callOptions.refreshOwner !== undefined) {
     extra.refreshOwner = callOptions.refreshOwner;
+  }
+  if (callOptions.expectedRevision !== undefined) {
+    extra.expectedRevision = callOptions.expectedRevision;
   }
   return Object.keys(extra).length > 0 ? extra : undefined;
 }

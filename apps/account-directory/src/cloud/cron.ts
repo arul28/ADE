@@ -8,7 +8,8 @@ import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanCleanups } from "./planCleanup";
-import { runCloudAutoUpdates } from "./updates";
+import { computersJoiningLaunches } from "./launches";
+import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
   DELETION_WARNING_LATE_MS,
   PENDING_TIMEOUT_MS,
@@ -132,7 +133,7 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       gone.push(computer);
       continue;
     }
-    statements.push(...statusChangeStatements(env, computer, instance.status, now, "seen_by_tick"));
+    statements.push(...(updateBootStatements(env, computer, instance.status, now) ?? statusChangeStatements(env, computer, instance.status, now, "seen_by_tick")));
     if (instance.metadata.ade_machine_key && instance.metadata.ade_machine_key !== computer.machine_key) {
       computer.machine_key = instance.metadata.ade_machine_key;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
@@ -343,14 +344,27 @@ async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: T
   }
 }
 
-/** Awake with no check-in for 10 minutes, or never checked in at all: sleep it. */
+/**
+ * Awake with no check-in for 10 minutes, or never checked in at all: sleep it.
+ * A server launch's new computer has no machine row to check in with until it
+ * signed in, and a person may take a while to tap Approve: it stays awake
+ * while its launch is joining, up to the join window's end.
+ */
 async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
-  await Promise.all(computers.filter((computer) => {
+  const unseen = computers.filter((computer) => {
     if (computer.status !== "running" || computer.awake_since == null) return false;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return false;
     const lastSign = Math.max(computer.last_seen_at ?? 0, computer.awake_since);
     return now - lastSign > NO_CHECK_IN_MS;
-  }).map(async (computer) => {
+  });
+  if (unseen.length === 0) return;
+  // Unread, any computer that never checked in may be a launch's still joining: those wait for a tick that reads.
+  const joining = await computersJoiningLaunches(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.launch_joining_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  });
+  const sleeps = (computer: TickComputer) => (joining ? !joining.has(computer.instance_id) : computer.last_seen_at != null);
+  await Promise.all(unseen.filter(sleeps).map(async (computer) => {
     try {
       const status = await provider.sleepInstance(computer.instance_id);
       const statements = statusChangeStatements(env, computer, status, now, "no_check_in");

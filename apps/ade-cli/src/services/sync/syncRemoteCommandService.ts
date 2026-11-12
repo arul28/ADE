@@ -5,11 +5,13 @@ import { readGithubContributionCalendar } from "../../../../desktop/src/main/ser
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
 import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { parseLaneLinearIssueValue } from "../../../../desktop/src/shared/laneLinearIssue";
 import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
 import type {
+  LaneLinearIssue,
   LinearIssueCreateInput,
   SessionAttentionSource,
   TerminalRuntimeState,
@@ -410,7 +412,7 @@ import type { JevService } from "../../../../desktop/src/main/services/jev/jevSe
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
 import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
@@ -1507,7 +1509,9 @@ function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHan
   return {
     ...(withoutClientRuntimeActor(value) as AgentChatHandoffArgs),
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
-    targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
+    // Empty only means something for a CLI session, which continues on its own
+    // model; a chat without one is refused by the chat service.
+    targetModelId: (typeof value.targetModelId === "string" ? value.targetModelId.trim() : "") as AgentChatHandoffArgs["targetModelId"],
     ...(handoffNote ? { handoffNote } : {}),
   };
 }
@@ -2301,6 +2305,9 @@ const DEFAULT_CLI_COLS = 120;
 const DEFAULT_CLI_ROWS = 36;
 const MAX_CLI_COLS = 400;
 const MAX_CLI_ROWS = 200;
+const MAX_CLI_LINEAR_ISSUES = 50;
+// pty.create caps the startup delay at 1s and the initial-input delay at 10s.
+const MAX_CLI_INITIAL_INPUT_DELAY_MS = 10_000;
 
 function clampCliDimension(value: number | undefined, fallback: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value ?? fallback)));
@@ -2358,6 +2365,9 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
   const initialInput = typeof value.initialInput === "string" && value.initialInput.trim().length > 0
     ? value.initialInput.slice(0, 20_000)
     : null;
+  const linearIssues = parseCliLinearIssues(value.linearIssues);
+  const startupDelayMs = parseCliDelayMs(value.startupDelayMs);
+  const initialInputDelayMs = parseCliDelayMs(value.initialInputDelayMs);
   return {
     laneId,
     provider,
@@ -2375,7 +2385,29 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     instanceId: asTrimmedString(value.instanceId),
     presetId: asTrimmedString(value.presetId),
     credentialId: asTrimmedString(value.credentialId),
+    ...(linearIssues.length ? { linearIssues } : {}),
+    ...(startupDelayMs !== undefined ? { startupDelayMs } : {}),
+    ...(initialInputDelayMs !== undefined ? { initialInputDelayMs } : {}),
   };
+}
+
+/**
+ * The Linear issues a CLI start attaches. Each entry is parsed into a
+ * `LaneLinearIssue` (the shape the desktop's `pty.create` attaches); entries
+ * that are not one are dropped rather than written to the session.
+ */
+function parseCliLinearIssues(value: unknown): LaneLinearIssue[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error("work.startCliSession linearIssues must be an array.");
+  return value
+    .slice(0, MAX_CLI_LINEAR_ISSUES)
+    .map((entry) => parseLaneLinearIssueValue(entry))
+    .filter((issue): issue is LaneLinearIssue => issue != null);
+}
+
+function parseCliDelayMs(value: unknown): number | undefined {
+  const delay = asOptionalNumber(value);
+  return delay === undefined ? undefined : Math.max(0, Math.min(MAX_CLI_INITIAL_INPUT_DELAY_MS, Math.floor(delay)));
 }
 
 function parseExternalSessionProvider(value: unknown, action: string): ExternalSessionProvider {
@@ -4552,10 +4584,11 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("work.deleteSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const sessionId = requireString(payload.sessionId, "Session id is required.");
-    await deleteTerminalSessionWithRuntimeCleanup({
+    await deleteSessionRowWithRuntimeCleanup({
       sessionId,
       sessionService: args.sessionService,
       ptyService: args.ptyService,
+      agentChatService: args.agentChatService ?? null,
     });
   });
   register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
@@ -4877,7 +4910,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       toolType,
       cols,
       rows,
+      ...(parsed.startupDelayMs !== undefined ? { startupDelayMs: parsed.startupDelayMs } : {}),
+      // The caller's delay applies only when the provider launch sets none.
+      ...(parsed.initialInputDelayMs !== undefined ? { initialInputDelayMs: parsed.initialInputDelayMs } : {}),
       ...launch,
+      // Attached before the spawn, the same way a desktop CLI launch does it,
+      // so the CLI inherits ADE_LINEAR_* on the machine that owns the lane.
+      ...(parsed.linearIssues?.length ? { linearIssues: parsed.linearIssues } : {}),
       ...(resumeMetadata ? { resumeMetadata } : {}),
     });
 
@@ -5541,6 +5580,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").getMainTranscript(
       parseAgentChatMainTranscriptArgs(payload),
     ));
+  // A chat's or a tracked agent CLI's open cards (`cliCardInputs.ts`): the web
+  // client's CLI surface lists them to answer them.
+  register("chat.listPendingInputs", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listPendingInputs({
+      sessionId: requireString(payload.sessionId, "chat.listPendingInputs requires sessionId."),
+    }));
   register("chat.listSubagents", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatSubagentListArgs(payload);
@@ -5656,6 +5701,24 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       ? await agentChatService.steerUserMessage(steerArgs, { author: context.author })
       : await agentChatService.steerUserMessage(steerArgs);
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
+  });
+  // Text for a running agent CLI from a phone or the web: typed now when its
+  // prompt is free, else held on this host and typed when it is (neither
+  // client keeps a queue of its own). Queueable, so an offline phone's send
+  // goes out on reconnect. Lane share guests are not offered it.
+  register("chat.typeIntoCli", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const sessionId = requireString(payload.sessionId, "chat.typeIntoCli requires sessionId.");
+    const text = requireString(payload.text, "chat.typeIntoCli requires text.");
+    const result = await agentChatService.typeIntoAgentCliWhenFree({
+      sessionId,
+      text,
+      holdUntilFree: payload.holdUntilFree !== false,
+      ...(typeof payload.clientMessageId === "string" && payload.clientMessageId.trim()
+        ? { clientMessageId: payload.clientMessageId.trim().slice(0, 128) }
+        : {}),
+    });
+    return { ok: true, outcome: result.outcome };
   });
   register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").cancelSteer(parseAgentChatCancelSteerArgs(payload));
@@ -7549,6 +7612,15 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       projectConfigService.get(),
     );
     return redactProjectConfigSnapshotForRemote(projectConfigService.save(candidate));
+  });
+  // The answer to a setting that moved to the account with a different value
+  // on this computer (the hosted web client's Settings).
+  register("projectConfig.resolveAccountSettingNotice", { viewerAllowed: true }, async (payload) => {
+    const key = requireString(payload.key, "projectConfig.resolveAccountSettingNotice requires key.");
+    const choice = payload.choice === "use_local" ? "use_local" : "keep";
+    return redactProjectConfigSnapshotForRemote(
+      requireService(args.projectConfigService, "Project config service not available.").resolveAccountSettingNotice({ key, choice }),
+    );
   });
   register("ai.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload, context) => {
     try {

@@ -78,6 +78,9 @@ describe("createAgentChatService", () => {
       expect(child.codexSandbox).toBe(expectedSandbox);
       expect(child.codexApprovalPolicy).toBe(expectedApproval);
       expect(sessionService.get).toHaveBeenCalledWith("cli-tracked-1");
+      // The level this brain hands another machine for a child the CLI starts
+      // there (`machines.call` caller) is the same one, not unknown (`ask`).
+      expect(service.permissionLevelOf("cli-tracked-1")).toBe(_level);
     });
 
     it("caps what an agent can start or raise at its own level, and leaves a person free", async () => {

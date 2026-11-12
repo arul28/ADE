@@ -61,6 +61,8 @@ export type AgentCliLoginStatus = {
   deviceCode?: string;
   /** The CLI is asking for a code pasted from the browser (Devin). */
   awaitingCode: boolean;
+  /** A pasted code was sent and the CLI has not answered yet ("Checking the code…"). */
+  checkingCode?: boolean;
   /**
    * The CLI opens the sign-in page in a browser on its own machine (Grok,
    * Muse, Droid try to). A sheet on that machine does not open it again.

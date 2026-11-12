@@ -120,6 +120,12 @@ export type ProviderLoginLocalState =
 export type ProviderLoginOrigin = {
   /** The computer's name, as it was when the sign-in was captured. */
   label: string;
+  /**
+   * The computer's account machine key, so a page names it as the account's
+   * machine list does today (its display name), not as it was named at
+   * capture (a hostname). Absent from an older brain.
+   */
+  machineKey?: string;
   platform: string;
   /** True when this computer made the sign-in. */
   thisComputer: boolean;
@@ -153,6 +159,26 @@ export type ProviderLoginSignIn = {
   /** True when ADE Cloud uses this sign-in for its provider. */
   inUseOnCloud: boolean;
 };
+
+/**
+ * The account a sign-in copy is for, the one rule for "same account": the
+ * apply's pick of the freshest copy (main) and one card per account (the
+ * page) both read it. The email (any case), else the provider's account id.
+ * Codex is the exception: its id is the ChatGPT workspace, and one email can
+ * have several (personal, Team) with different plans, so a Codex copy is
+ * email and id together when it names both. Null when the login names
+ * neither: such a copy is only itself.
+ */
+export function accountIdentityOf(
+  provider: ProviderLoginProvider,
+  account: { email: string | null; id: string | null } | null | undefined,
+): string | null {
+  const email = account?.email?.trim().toLowerCase() || null;
+  const id = account?.id?.trim() || null;
+  if (provider === "codex" && email && id) return `email:${email}\u0000id:${id}`;
+  if (email) return `email:${email}`;
+  return id ? `id:${id}` : null;
+}
 
 export type ProviderLoginProviderStatus = {
   provider: ProviderLoginProvider;

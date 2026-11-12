@@ -278,8 +278,37 @@ The root is resolved by `resolveMachineToolsRoot` in `paths.ts`:
 | Condition | Root |
 |---|---|
 | `ADE_TOOLS_ROOT` set | that path, resolved absolute |
+| `ADE_SYSTEM_CACHE_ROOT` set (absolute, writable) | `<that>/tools`, with the per-user root below as the fallback |
 | `win32` | `%LOCALAPPDATA%\ADE\tools` |
 | otherwise | `~/.ade/tools` |
+
+`resolveToolsRootLayout` (`paths.ts`) gives the whole layout, all of it from
+the machine's environment, so a machine image decides where rebuildable caches
+go and ADE has no code path per provider or OS:
+
+- **Baked roots** (`ADE_TOOLS_BAKED_ROOTS`, separated like PATH): read-only
+  caches in the same layout that an image ships (ADE Cloud's `/opt/ade-tools`).
+  The current pin is taken from a baked root first, so it is used only while
+  its version is the pin; a newer pin downloads. Never collected.
+- **System cache** (`ADE_SYSTEM_CACHE_ROOT`, budget
+  `ADE_SYSTEM_CACHE_BUDGET_BYTES`, default 7 GB): a folder that is not the
+  person's disk (ADE Cloud's system layer, `/var/cache/ade`). Installs go to
+  `<root>/tools` when the whole folder (package caches included) fits the new
+  tool within the budget and the folder's filesystem has the room; before
+  that, entries are removed (`systemCache.ts`): tool versions first, by their
+  last use, then the package caches, by the newest time among what they hold.
+  A tool that ran in the last 24 hours keeps its current copy, and an install
+  a process of this ADE runs from (`holdToolInstallsWhileRunning`) is never
+  removed, here or by collection. What still does not fit, or a full disk
+  under the budget, installs into the per-user root instead. This runs only
+  right before an install, one at a time (`toolRoots.ts`); nothing checks the
+  folder between installs. Collection removes a per-user copy of a version a
+  baked root or the system cache also holds.
+- **Use record** (`.last-used.json`, `usage.ts`): when each tool last ran,
+  written only by `pinnedToolDownload` (every spawn site calls it right before
+  it runs a tool), at most once per tool per 10 minutes per process. It lives
+  in the per-user root, which survives what a system cache does not (an image
+  update resets it).
 
 The root is **deliberately not derived from `ADE_HOME`**. `ADE_HOME` is
 channel-scoped (`~/.ade`, `~/.ade-alpha`), and the entire point of
@@ -677,9 +706,16 @@ picks the tools this machine shows signs of using, and only those are fetched at
 startup. A CLI on the PATH counts only as a sign of use (so a machine that ran
 the user's own CLI before migrates to ADE's copy); ADE never runs it.
 
+Being in the cache is not a sign of use: one wrong download used to keep
+itself current forever. `ADE_TOOLS_PREFETCH` (from the machine's environment)
+narrows the rule: `signals` (default) is the table below; `used` counts only a
+recent use, for a machine whose sign-ins were copied onto it for every
+provider at once (an ADE Cloud computer), where a login file says nothing
+about which agent runs; `off` fetches nothing at startup.
+
 | Tool | Fetched at startup when |
 |---|---|
-| any | it is already in the cache, current or previous version, so an ADE update keeps it current |
+| any | it ran on this machine in the last 30 days (the use record), so an ADE update keeps it current |
 | `claude-code` | `claude` on the PATH or a known install dir, `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, `~/.claude/.credentials.json`, or `~/.claude.json` |
 | `codex` | `codex` on the PATH, or `~/.codex/auth.json` (`CODEX_HOME`) |
 | `copilot`, `copilot-cli` | `copilot` on the PATH, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, `~/.copilot/config.json`, or gh's `hosts.yml` (`gh auth login`) |
@@ -717,22 +753,31 @@ where it was (ADE's previous copy, or missing), never a PATH CLI.
 
 | Who waits for it | Tool |
 |---|---|
-| Chat runtime start: Claude (`startClaudeQuery`, the warm start, `runClaudeBackgroundCliCommand`), Codex, Copilot, Droid, Pi and every ACP provider. The chat shows "Downloading … for this machine" while it waits, then throws `PinnedToolNotReadyError` if the download fails. | every provider's tool |
-| One-shot tasks (`providerTaskRunner.ts`), auth probes (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), usage reads, automation planning, sign-out, the orchestrated worker PTY | the provider's tool |
+| Chat runtime start: Claude (`startClaudeQuery`, the warm start, `runClaudeBackgroundCliCommand`), Codex, Copilot, Droid, Pi and every ACP provider. The chat shows "Getting <Agent> ready" while it waits (nothing is spawned until the install is complete), then throws `PinnedToolNotReadyError` if the download fails. | every provider's tool |
+| One-shot tasks (`providerTaskRunner.ts`), automation planning, sign-out, the orchestrated worker PTY | the provider's tool |
 | `startOpenCodeChatSession`, `runOpenCodeTextPrompt`, and `acquireOpenCodeServer` (terminals, sign-in) | `opencode` |
 | Provider terminals and login terminals (`pty/pinnedProviderCli.ts`): the terminal prints "ADE is downloading <Tool> for this machine. It starts here when the download finishes." and types the launch once it lands | the CLI tool (`copilot-cli`, `cursor-cli`, `pi` + `node`, …) |
 | `ade harness env` | the harness's tool |
 | Muse keeps its own `ensureMuseBinary` | `muse` |
 
-A provider the user signs in to after launch would otherwise read "not
-detected" (Copilot's status needs its runtime) or list no models (API-key models
-come from OpenCode's inventory), leaving no chat to start the download. So each
-AI status refresh calls `startDemandedAgentToolFetches`: for every pinned tool
-that is missing, its provider switched on in Settings, and the machine now shows
-the signals above (or, for `opencode`, the refresh found an API key, OpenRouter
-key or local model, including keys in ADE's own store), it starts the download
-without waiting. The provider's blocker reads "ADE is downloading <Tool> for
-this machine" meanwhile. The launch and `ade serve` passes run their own fetches
+**A status read never downloads.** Not the AI status refresh, not a model
+list, not a sign-in check (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), not a
+usage or limits read (`requireInstalledPinnedProviderExecutable`). Those
+report the state instead ("ADE has not downloaded <Tool> for this machine
+yet. It downloads the first time this machine uses it."). So that a chat can
+still start, a provider whose copy is missing but downloadable
+(`CliAuthStatus.pinnedDownloadPending`) and whose sign-in is on disk keeps its
+models (`detectAllAuth`; Claude and Codex read their saved login with
+`savedSignInPresent`), its connection carries `runtimeDownloadPending`, the AI
+status lists it as available with its models (`runtimeAvailable` stays false,
+so health and banners still read "not here yet"), and its first turn
+downloads it. The ACP model-list warm (`warmAcpModelCatalog`) skips a provider
+whose copy is not here yet, without counting a failure.
+Saving an API key in ADE (other than Cursor's) starts OpenCode's download,
+since that key's models run on OpenCode. The status refresh used to start
+these downloads itself (`startDemandedAgentToolFetches`, removed): on an ADE
+Cloud computer, where every sign-in is copied over, that fetched every agent
+(about 2 GB) on every wake. The launch and `ade serve` passes run their own fetches
 through the same tracker (`trackPinnedToolFetch`), so an on-demand caller joins
 a download already running in that process instead of queueing a second
 install, and the blocker reads "downloading" during the launch fetch too.
@@ -743,7 +788,11 @@ A download that lands bumps `pinnedToolInstallGeneration()`, which voids the
 cached status (including `authDetector`'s), so the next refresh sees the tool.
 
 Model-list requests never start a download: the picker can ask every provider
-at once. Neither do Droid/Copilot model reads, ACP warm-up or Devin cloud reads.
+at once. Neither do Codex's `model/list` (ADE's own list until Codex is here),
+Droid/Copilot model reads, ACP warm-up (only from a copy already on disk) or
+Devin cloud reads. A chat whose copy is still on its way shows no runtime
+banner (`runtimeDownloadPending`): the turn's "Getting <Agent> ready" line is
+the one place that wait shows.
 
 Remote machines: every download runs in the process that owns the chat, lane or
 status (the brain on that machine), against that machine's tools root. A remote
@@ -828,7 +877,8 @@ on it rather than parsing prose.
 ### Garbage collection
 
 `gcTools` (`install.ts`) runs after a fully clean startup pass and on
-`ade tools gc`.
+`ade tools gc`, over every root ADE writes (a system cache and the per-user
+fallback, each with its own previous version and ledger), never a baked root.
 
 - **Versions of a pinned package:** it keeps the current pin and the newest
   superseded version (`keepPrevious`), preferring a finished install over a

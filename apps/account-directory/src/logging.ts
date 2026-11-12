@@ -6,6 +6,8 @@
  * ever carries a full machine key, a token, or a pairing grant.
  */
 
+import * as Sentry from "@sentry/cloudflare";
+
 const SERVICE = "ade-account-directory";
 
 export function logActivityRelayFailure(args: {
@@ -43,6 +45,12 @@ export function logActivityRelayFailure(args: {
  * grant is a live credential; eight characters identify a row for a human
  * reading logs and are useless to anyone who reads them. Nothing here ever
  * carries a full key, a token, or a grant in any form.
+ *
+ * Workers observability keeps only a sample of requests, so the line alone
+ * can be gone. Each refusal is also a Sentry warning, one issue per event and
+ * code, with the correlation id and the prefixes but no account id (the
+ * client's own log holds the same correlation id). The Worker's Sentry budget
+ * (`admitEvent`) bounds a burst.
  */
 export function logDirectoryRefusal(args: {
   event: "directory.register_refused" | "directory.remove_refused" | "directory.supersede_refused";
@@ -65,6 +73,16 @@ export function logDirectoryRefusal(args: {
     correlationId: args.correlationId,
     ...(args.reason ? { reason: args.reason.slice(0, 300) } : {}),
   }));
+  Sentry.captureMessage(`${args.event}: ${args.code}`, {
+    level: "warning",
+    fingerprint: [args.event, args.code],
+    tags: { area: "directory", "refusal.code": args.code, correlation_id: args.correlationId.slice(0, 64) },
+    extra: {
+      machinePrefix: args.machineKey.slice(0, 8),
+      devicePrefix: args.deviceId ? args.deviceId.slice(0, 8) : null,
+      ...(args.reason ? { reason: args.reason.slice(0, 200) } : {}),
+    },
+  });
 }
 
 /**
@@ -311,4 +329,69 @@ export function logLaneShare(args: {
     ...(args.code ? { code: args.code } : {}),
     ...(args.emailSent === undefined ? {} : { emailSent: args.emailSent }),
   }));
+}
+
+/**
+ * One line per change to the account's project list, or a refusal
+ * (src/accountProjects). Never a folder path, a repository name or a token:
+ * the project id is random and names nothing.
+ */
+export function logAccountProject(args: {
+  event:
+    | "account_project.added"
+    | "account_project.revived"
+    | "account_project.removed"
+    | "account_project.refused";
+  userId: string;
+  projectId?: string;
+  code?: string;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    event: args.event,
+    userId: args.userId,
+    ...(args.projectId ? { project: args.projectId } : {}),
+    ...(args.code ? { code: args.code } : {}),
+  }));
+}
+
+/**
+ * One line per GitHub App sign-in event (src/githubApp). Events and numbers
+ * only: never a token, a code, a state, a verifier, or the client secret.
+ * `oauthError` is GitHub's short error code (`bad_verification_code`), never
+ * its description.
+ */
+export function logGithubApp(args: {
+  event:
+    | "github_app.sign_in_started"
+    | "github_app.sign_in_completed"
+    | "github_app.sign_in_failed"
+    | "github_app.sign_in_refused"
+    | "github_app.token_served"
+    | "github_app.refreshed"
+    | "github_app.refresh_failed"
+    | "github_app.refresh_unpersisted"
+    | "github_app.refresh_unpersisted_dropped"
+    | "github_app.refresh_replaced"
+    | "github_app.needs_reauth"
+    | "github_app.rejected_checked"
+    | "github_app.adopted"
+    | "github_app.retired"
+    | "github_app.disconnected"
+    | "github_app.keepalive"
+    | "github_app.abandoned_confirms_dropped";
+  userId: string;
+  [field: string]: string | number | boolean | undefined;
+}): void {
+  const { event, userId, ...fields } = args;
+  const line: Record<string, unknown> = { ts: new Date().toISOString(), svc: SERVICE, event, userId };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    line[key] = typeof value === "string" ? value.slice(0, 64) : value;
+  }
+  const failed = event === "github_app.refresh_failed"
+    || event === "github_app.refresh_unpersisted"
+    || event === "github_app.refresh_unpersisted_dropped";
+  (failed ? console.error : console.log)(JSON.stringify(line));
 }

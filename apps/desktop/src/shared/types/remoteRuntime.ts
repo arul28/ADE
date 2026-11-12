@@ -107,12 +107,26 @@ export type RemoteRuntimeProjectRecord = {
    */
   exists?: boolean;
   /**
+   * The account project (`ap_…`) this folder is a copy of, for the account
+   * signed in on the host. Absent from older hosts, signed-out hosts, and
+   * folders that are not on the account. `projectId` stays the copy's id.
+   */
+  accountProjectId?: string;
+  /** GitHub's numeric id of the folder's repository, once the host could read it. */
+  githubRepoId?: number;
+  /**
    * The project's icon as resolved on the host machine, inlined as a base64
    * data URL so a connected desktop can render the real project logo in its
    * tab instead of a blank folder. Null/absent when the host can't resolve an
    * icon (older host, no icon file, or an oversized icon dropped from the wire).
    */
   icon?: ProjectIcon | null;
+  /**
+   * Only on the answer of a clone (`projects.clone`): the machine cloned with
+   * this computer's one-shot GitHub header and has no GitHub sign-in of its
+   * own, so its fetch and push won't sign in until GitHub is connected there.
+   */
+  githubSignInMissing?: boolean;
 };
 
 export type RemoteRuntimeUpdateInstallMode = "in_place" | "manual_download" | "runtime_only";
@@ -369,6 +383,9 @@ export type RemoteRuntimeConnectionStatus = {
 
 export type RemoteRuntimeConnectionRecovery = "reconnecting" | "waiting_for_user" | "held_elsewhere";
 
+/** A call named a saved connection this computer doesn't have. Matched by clients that fall back to a saved chat copy. */
+export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
+
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
   "Remote machine was manually disconnected. Connect again to use this remote project.";
@@ -443,7 +460,9 @@ export type RemoteRuntimeMachineProjectCapability =
   /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
   | "setIcon"
   /** `projects.inspectRemoval` + `projects.removeCopy`: remove a project, and its folder, on the host. */
-  | "removeCopy";
+  | "removeCopy"
+  /** `projects.accountList`: the account's projects as the host last read them; `accountProjectId` on `projects.list` rows. */
+  | "accountList";
 
 /** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
 export type RemoteRuntimeProjectIconUpload = {

@@ -257,6 +257,11 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
   var isAvailable: Bool
   var isCached: Bool
   var isOpen: Bool?
+  /// The account project this folder is a copy of, when the host's link
+  /// belongs to the signed-in account. Older hosts omit it.
+  var accountProjectId: String? = nil
+  /// The GitHub repository id, when the host knows it.
+  var githubRepoId: Int? = nil
 
   init(
     id: String,
@@ -5518,6 +5523,26 @@ struct SyncMachineInventoryPreset: Codable, Equatable, Identifiable {
 struct SyncMachineInventoryDetail: Codable, Equatable {
   var machineKey: String
   var presets: [SyncMachineInventoryPreset]
+  /// The machine's provider accounts. Absent against an older host.
+  var providers: [SyncMachineInventoryProvider]? = nil
+}
+
+/// One provider's accounts on a machine (`MachineInventoryProviderDetail`).
+struct SyncMachineInventoryProvider: Codable, Equatable {
+  var provider: String
+  var accounts: [SyncMachineInventoryAccount]
+}
+
+/// One provider account (`MachineInventoryAccount`). `instanceId` is what a
+/// launch names to run on it; the sign-in itself never leaves the machine.
+struct SyncMachineInventoryAccount: Codable, Equatable, Identifiable {
+  var instanceId: String
+  var label: String
+  var email: String?
+  var plan: String?
+  var isDefault: Bool
+
+  var id: String { instanceId }
 }
 
 /// Response envelopes for the cross-surface ModelPicker favorites/recents
@@ -8920,4 +8945,36 @@ struct RestoreDeletedLaneResult: Decodable, Equatable {
   var warning: String?
   /// Other branches made for commits the lane's branch does not hold.
   var extraBranches: [String]?
+}
+
+// MARK: - Typing into a running agent CLI
+
+/// What became of a message sent to a running agent CLI (`chat.typeIntoCli`).
+enum WorkCliTypeOutcome: Equatable {
+  /// Typed at the CLI's prompt.
+  case delivered
+  /// The CLI is mid-turn; its computer types it when the prompt is free.
+  case heldUntilFree
+  /// The phone is offline; the message goes out when it reconnects.
+  case queuedOffline
+  /// The CLI has ended, so nothing was typed. Resume it to continue.
+  case ended
+}
+
+/// Reads the host's `{ outcome }` answer, or the offline queue's `{ queued }`.
+func workCliTypeOutcome(from response: Any) throws -> WorkCliTypeOutcome {
+  guard let payload = response as? [String: Any] else {
+    throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The computer sent an unreadable answer."])
+  }
+  if payload["queued"] as? Bool == true { return .queuedOffline }
+  switch payload["outcome"] as? String {
+  case "delivered": return .delivered
+  case "held": return .heldUntilFree
+  case "deferred":
+    // Only an answer to a send that did not ask the host to hold it.
+    throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The CLI is busy. Send it again when its turn ends."])
+  case "ended": return .ended
+  default:
+    throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "The computer sent an unreadable answer."])
+  }
 }

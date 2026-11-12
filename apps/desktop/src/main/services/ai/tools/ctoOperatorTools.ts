@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { isCredentialKey, normalizeConfigKey } from "../../../../shared/credentialKeys";
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
 import type { CtoCrossMachineDeps } from "./ctoCrossMachine";
@@ -593,15 +594,6 @@ export function applyCtoToolPackVisibility(
 }
 
 /**
- * Config keys whose VALUE is a credential regardless of where it appears.
- *
- * Word-bounded on purpose: `secretRef` NAMES a secret rather than carrying one,
- * so it stays readable — the CTO needs to know which secret a webhook trigger
- * depends on, and hiding the name protects nothing.
- */
-const CREDENTIAL_KEY_PATTERN = /(^|_)(token|secret|password|passphrase|apikey|api_key|credential|privatekey|private_key)($|_)/i;
-
-/**
  * Config keys whose value is a bag of env vars: keys are useful, values are not.
  * Compared against `normalizeConfigKey`, so `envVars` arrives as `env_vars`.
  */
@@ -616,30 +608,6 @@ const ENV_BAG_KEYS = new Set(["env", "env_vars", "envvars", "environment"]);
 const CREDENTIAL_MAP_KEYS = new Set([
   "apikeys", "api_keys", "keys", "credentials", "secrets", "tokens", "passwords",
 ]);
-
-/**
- * `githubToken` and `accessToken` carry a credential but contain no separator,
- * so an anchored pattern never matched them. Split camelCase into `_` words
- * first, then match, so `githubToken` -> `github_token` -> hit. Matching a bare
- * substring instead would redact innocent keys such as `tokenizer`.
- */
-function normalizeConfigKey(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[.-]/g, "_").toLowerCase();
-}
-
-/**
- * Keys that look credential-shaped but only NAME a credential. `secretRef`
- * points at a secret in the store; hiding the pointer protects nothing and
- * costs the CTO the ability to say which secret a trigger depends on.
- */
-const CREDENTIAL_NAME_KEYS = new Set(["secret_ref", "secret_name", "api_key_ref", "credential_ref"]);
-
-function isCredentialKey(key: string | undefined): boolean {
-  if (!key) return false;
-  const normalized = normalizeConfigKey(key);
-  if (CREDENTIAL_NAME_KEYS.has(normalized)) return false;
-  return CREDENTIAL_KEY_PATTERN.test(normalized);
-}
 
 /**
  * Strips VALUES out of an ADE project config while keeping its SHAPE.

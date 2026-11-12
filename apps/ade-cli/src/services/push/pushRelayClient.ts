@@ -1198,19 +1198,26 @@ export function createPushRelayClient(args: {
 
     /**
      * Revoking has to work from any machine, including one you no longer have.
-     * With `writtenAt`, a relay that has a newer row answers `stale` with it.
+     * With `writtenAt`, a relay that has a newer row answers `stale` with it;
+     * with `ifRevision`, one whose row moved past that revision does.
      */
     async deleteAccountVaultItem(
       scope: string,
       kind: string,
       key: string,
-      options?: { writtenAt?: string | null; deviceId?: string | null },
+      options?: { writtenAt?: string | null; deviceId?: string | null; ifRevision?: string | null },
     ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null> {
+      const ifRevision = options?.ifRevision?.trim() || null;
+      const query = {
+        ...staleCheckQuery(options?.writtenAt, options?.deviceId),
+        // The relay lets this device's own last write through, so it needs the id.
+        ...(ifRevision ? { ifRevision, ...(options?.deviceId ? { deviceId: options.deviceId } : {}) } : {}),
+      };
       const result = await accountRequest(
         "deleteAccountVaultItem",
         "DELETE",
         `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
-        { couldNotAsk: [503], allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt, options?.deviceId) },
+        { couldNotAsk: [503], allowStatuses: [404, 409], query: Object.keys(query).length ? query : undefined },
       );
       if (!result.asked) return null;
       if (result.status === 404) return false;

@@ -15,7 +15,6 @@ import {
   defaultKickoffPrompt,
   defaultIssueKickoffPrompt,
   findIssueConflicts,
-  issueChatLaunchArgs,
   launchIssueIdentity,
   type BatchLaunchIssueConfig,
   type LaunchIssue,
@@ -39,6 +38,7 @@ import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchT
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { showToast } from "./toast/toastStore";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { AccountSettingNotices } from "../settings/AccountSettingNotices";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -88,6 +88,9 @@ function safeSaveDefaultPrompt(projectRoot: string | null | undefined, prompt: s
     // Best effort only; failing to persist a prompt should never block launch.
   }
 }
+
+/** The account row behind the saved default prompt (`projectConfigAccountLayer.ts`). */
+const LINEAR_PROMPT_ACCOUNT_KEYS = ["linear.batchLaunchPrompt"] as const;
 
 async function loadProjectDefaultPrompt(projectRoot: string | null | undefined): Promise<string | null> {
   const localFallback = safeLoadDefaultPrompt(projectRoot);
@@ -273,6 +276,12 @@ export function BatchLaunchModal({
   const multiIssue = issues.length > 1;
   const allLinear = issues.every((issue) => issue.tracker === "linear");
   const issueSeedKey = useMemo(() => issues.map((issue) => `${issue.tracker}:${issue.id}`).join("\0"), [issues]);
+  // The project and issues a prompt read was for: an answer that comes back
+  // after the modal moved on is dropped.
+  const promptScopeRef = useRef("");
+  useEffect(() => {
+    promptScopeRef.current = `${open ? 1 : 0}\0${projectRoot ?? ""}\0${issueSeedKey}`;
+  }, [open, projectRoot, issueSeedKey]);
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
   // On ADE Cloud each issue gets a new lane on a new computer: no existing lane.
   const selectableLanes = useMemo(
@@ -557,6 +566,35 @@ export function BatchLaunchModal({
             />
           </div>
         </section>
+      ) : null}
+
+      {allLinear ? (
+        // Same machine as the prompt's own read and save (the tab's).
+        <div className="mt-3">
+          <AccountSettingNotices
+            pin={null}
+            keys={LINEAR_PROMPT_ACCOUNT_KEYS}
+            onResolved={() => {
+              const previous = projectDefaultPrompt;
+              const scope = promptScopeRef.current;
+              void loadProjectDefaultPrompt(projectRoot).then((saved) => {
+                if (promptScopeRef.current !== scope) return;
+                setProjectDefaultPrompt(saved);
+                if (!saved || previous == null || saved === previous) return;
+                // Rows still on the old default take the applied one; an edited prompt stays.
+                setPerIssue((current) => {
+                  let changed = false;
+                  const next: Record<string, PerIssueState> = {};
+                  for (const [id, state] of Object.entries(current)) {
+                    next[id] = state.kickoffPrompt === previous ? { ...state, kickoffPrompt: saved } : state;
+                    if (next[id] !== state) changed = true;
+                  }
+                  return changed ? next : current;
+                });
+              });
+            }}
+          />
+        </div>
       ) : null}
 
       <div className="mt-3 max-h-[58vh] space-y-2 overflow-y-auto pr-0.5">

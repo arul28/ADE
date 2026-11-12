@@ -70,7 +70,9 @@ const USER_SETTING_WRITES = {
   // user-only below: outside apps and agents read the status, never change it.
   provider_logins: { actions: [...PROVIDER_LOGIN_PERSON_ACTIONS], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
-  project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
+  // Answering a moved setting's notice can turn on PR chat transcripts
+  // (`use_local`), and the notices show on that card.
+  project_config: { actions: ["setPrTranscriptGists", "resolveAccountSettingNotice"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
   pty: { actions: ["setDefaultShell"], entryId: "behaviour.terminal-shell" },
   budget: { actions: ["updateConfig"], entryId: "agents.budget" },
@@ -163,7 +165,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Installing or removing the ADE agent, or changing who runs unrouted
   // delegations, changes a Linear workspace for everyone in it.
   linear_agent: { only: ["startInstall", "uninstall", "updateSettings"] },
-  github: { only: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
+  github: { only: ["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
   // Jira credentials are machine-wide and never belong in an agent's hands.
   jira: { only: ["connect", "disconnect"] },
   update: { only: ["quitAndInstall"] },
@@ -395,6 +397,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // Sharing a gh sign-in with the account hands it to every computer the
+  // person signs in to; only the person decides, from Settings › GitHub.
+  github: ["setGhAccountSharing"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
   // Entering an invite code sets the account's referrer once, forever: the
   // person enters it in Settings › Account (desktop, or the phone's own
@@ -947,6 +952,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     ...THREAD_COMMENT_ACTION_NAMES,
     ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
+    // The Work input box's text for a running agent CLI, typed only at a free prompt.
+    "typeIntoCli",
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
@@ -1145,6 +1152,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "moveOnBoard",
     "readTranscriptTail",
+    "reportCliTurnSignal",
     "requestSessionAttention",
     "setSessionActivity",
     "setSessionStatusNote",
@@ -1163,7 +1171,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
-  project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
+  project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
@@ -1294,6 +1302,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
+    "setGhAccountSharing",
     "setToken",
     "startAppUserDeviceAuth",
   ],

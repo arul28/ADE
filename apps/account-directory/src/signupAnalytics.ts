@@ -29,15 +29,17 @@
 import type { RelayAccountPurgeEnv } from "./activityRelay";
 import { deleteCloudAccount } from "./cloud/accountDeletion";
 import { closeLaneSharesForAccount } from "./laneShares/routes";
+import { deleteAccountProjects } from "./accountProjects/store";
+import { deleteGithubAppAccount, type GithubAppEnv } from "./githubApp/grants";
 import { reportCloudFailure } from "./cloud/store";
 import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
 
 /** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
-export type SignupAnalyticsEnv = RelayAccountPurgeEnv & {
+export type SignupAnalyticsEnv = RelayAccountPurgeEnv & Partial<Omit<GithubAppEnv, "DB">> & {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
-  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it, and its lane shares close. */
+  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it, its lane shares close, and its project list goes. */
   DB?: D1Database;
   CLOUD_CHATS?: R2Bucket;
   AGENT37_API_KEY?: string;
@@ -234,6 +236,21 @@ export async function handleSignupAnalyticsRequest(
     } catch (error) {
       reportCloudFailure("lane_share.account_close_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return json(502, { error: "lane_share_close_failed" });
+    }
+    // The project list (folder paths included): D1 only, safe to repeat.
+    try {
+      await deleteAccountProjects(env.DB, userId);
+    } catch (error) {
+      reportCloudFailure("account_project.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "account_projects");
+      return json(502, { error: "account_project_delete_failed" });
+    }
+    // The GitHub App grant: its token is deleted at GitHub where the secrets
+    // allow (best effort), then the rows go. D1 only decides the answer.
+    try {
+      await deleteGithubAppAccount({ ...env, DB: env.DB } as GithubAppEnv, userId);
+    } catch (error) {
+      reportCloudFailure("github_app.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "github_app");
+      return json(502, { error: "github_app_delete_failed" });
     }
     try {
       await deleteCloudAccount({ ...env, DB: env.DB }, userId);
