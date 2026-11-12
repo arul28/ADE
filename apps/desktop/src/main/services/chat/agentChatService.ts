@@ -39,6 +39,18 @@ import {
   readPersistedChatRecord,
   type DeletedChatReopenSource,
 } from "./deletedChats";
+import { agentCliDisplayName, agentCliRowTitle, createCliSessionLifecycle, isTrackedAgentCliRow, type CliSessionLifecycle } from "./cliSessionLifecycle";
+import {
+  cliFreshReason,
+  cliMoveLaunch,
+  cliMovePermissionLevel,
+  cliMovePermissionMode,
+  cliMoveProvider,
+  cliProviderName,
+  defaultCodexHome,
+  packageCliConversation,
+  placeCliConversation,
+} from "./cliCrossMachineMove";
 import { chatImportedRefsProvider } from "../externalSessions/liveChatProviderRefs";
 import {
   EXTERNAL_SESSION_PROVIDER_LABELS,
@@ -600,6 +612,7 @@ import type {
   AgentChatCrossMachineDestinationPreflightResult,
   AgentChatCrossMachineBatchMoveApproval,
   AgentChatCrossMachineArrival,
+  AgentChatCrossMachineCliArrival,
   AgentChatCrossMachineGitBundle,
   AgentChatCrossMachineHandoffOrigin,
   AgentChatCrossMachineBatchMoveArgs,
@@ -800,6 +813,8 @@ import type {
   ComputerUseBackendStatus,
   TerminalSessionStatus,
   TerminalToolType,
+  TerminalResumeMetadata,
+  LaneSummary,
   CtoAttentionState,
   CtoCapabilityMode,
   LaneLinearIssue,
@@ -813,6 +828,8 @@ import type {
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
   TerminalSessionSummary,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
@@ -993,6 +1010,7 @@ import {
   requireMovable,
   type CrossMachineHandoffOrchestrator,
   type CrossMachineHandoffPersisted,
+  type CrossMachineHandoffSource,
   type CrossMachineHandoffTransport,
   type CrossMachineMoveCaller,
   type CrossMachineMoveOutcome,
@@ -1007,6 +1025,7 @@ import {
   requireGitOutput,
   requireHandoffId,
   selectCrossMachineReturnSuffix,
+  type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
 import {
   CrossMachineHandoffReturnRefusedError,
@@ -1080,7 +1099,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
-import { piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
+import { isLaunchProfile, isTrackedCliPermissionMode, piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
 import { codexAppServerApprovalPolicy } from "../../../shared/codexApprovalPolicy";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
@@ -1320,6 +1339,7 @@ import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChip
 import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
 import { createChatWebhookRegistry, type ChatWebhookRegistry } from "./chatWebhookRegistry";
 import { createAgentCliWakes } from "./agentCliWakes";
+import { createAgentCliSessionActions } from "./agentCliSessionActions";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
@@ -1824,6 +1844,9 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { providerFromTool } from "../../utils/terminalSessionSignals";
+import { createCliCardInputs } from "./cliCardInputs";
+import { extractClaudeCliScheduleEvents, lastClaudeCliRecordMs, readClaudeCliSessionTail } from "./claudeCliScheduledWork";
 import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
   createStaleRunSweep,
@@ -5976,7 +5999,9 @@ type MovedAwayPath =
   | "turn_recovery"
   | "recover_turn"
   | "codex_recovery"
-  | "respond_to_input";
+  | "respond_to_input"
+  /** A tracked agent CLI that moved to another machine, started here again. */
+  | "cli_resume";
 
 const FORK_SAME_PROVIDER_MESSAGE =
   "Full-history fork requires the same provider on both sides. Use a brief handoff to switch providers.";
@@ -7633,6 +7658,24 @@ const CHAT_SESSION_TOOL_TYPES = [
   "copilot-chat",
   "devin-chat",
   "antigravity-chat",
+] satisfies TerminalToolType[];
+/** The tool types of tracked agent CLIs, which a batch move lists beside chats. */
+const TRACKED_AGENT_CLI_MOVE_TOOL_TYPES = [
+  "claude",
+  "codex",
+  "cursor-cli",
+  "droid",
+  "opencode",
+  "pi",
+  "muse",
+  "qwen",
+  "kimi",
+  "grok",
+  "copilot",
+  "devin",
+  "claude-orchestrated",
+  "codex-orchestrated",
+  "opencode-orchestrated",
 ] satisfies TerminalToolType[];
 type ChatSessionToolType = (typeof CHAT_SESSION_TOOL_TYPES)[number];
 
@@ -11954,6 +11997,27 @@ function awaitingUserQuietNotice(childTitle: string, summary: string): Extract<A
   };
 }
 
+/** One finished turn of a tracked agent CLI, as the pty service reports it. */
+type TrackedCliTurnEndedEvent = {
+  sessionId: string;
+  laneId?: string;
+  turnStartedAt?: string | null;
+  endedAt?: string;
+  /** `needs-input`: the turn stopped on a question for the person. */
+  outcome?: string;
+  /** How the end was read: a provider signal, or `heuristic` (quiet output). */
+  source?: string;
+};
+
+/**
+ * The turn-boundary subscriptions of the pty service. Optional: a host whose
+ * pty surface has none keeps the exit-only reports it had.
+ */
+type TrackedCliTurnSignals = {
+  onTrackedCliTurnEnded?: (listener: (event: TrackedCliTurnEndedEvent) => void) => () => void;
+  onTrackedCliTurnStarted?: (listener: (event: { sessionId: string; startedAt?: string }) => void) => () => void;
+};
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -12075,7 +12139,12 @@ export function createAgentChatService(args: {
     // rows are still archived, only the processes are left alone.
     // `resumeSession` + `hasLivePty` reopen the agent CLIs a stopped runtime
     // left open (`reopenCliSessionsAfterRestart`).
-    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty">>
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "ensureResumeTargets" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty">>
+    // The `ade chat` commands a tracked agent CLI answers (`agentCliSessionActions.ts`).
+    & Partial<Pick<ReturnType<typeof createPtyService>, "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle">>
+    // A tracked CLI's turn boundaries: its finished turns report to its parent
+    // and settle a waiting automation step.
+    & TrackedCliTurnSignals
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
   /**
@@ -20580,6 +20649,29 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * A tracked CLI session (an agent running `ade` from a Claude or Codex
+   * terminal) is not a chat, so it has no chat record to read. Its level is
+   * the permission it was launched (or last relaunched by ADE) with, which ADE
+   * records for its resume. Null when the row is not a tracked CLI with one.
+   */
+  const trackedCliPermissionLevel = (sessionId: string): PermissionLevel | null => {
+    let row: ReturnType<typeof sessionService.get> = null;
+    try {
+      row = sessionService.get(sessionId);
+    } catch (error) {
+      // The cap falls back to "ask", the safe level.
+      logger.warn("agent_chat.tracked_cli_level_read_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    const resume = row?.tracked ? row.resumeMetadata : null;
+    if (!resume?.launch) return null;
+    return sessionPermissionLevel({ provider: resume.provider, ...resume.launch }, "ask");
+  };
+
+  /**
    * The highest permission level a chat may be given by this call: the lower
    * of its parent's level (a spawned chat) and the calling agent's own chat
    * level (an agent can never hand out more than it has). Null when neither
@@ -20625,26 +20717,7 @@ export function createAgentChatService(args: {
     parentSessionId?: string | null;
     actor?: AgentChatRuntimeActor | null;
   }): PermissionLevel | null => {
-    // A tracked CLI session (an agent running `ade` from a Claude or Codex
-    // terminal) is not a chat, so it has no chat record to read. Its level is
-    // the permission it was launched with, which ADE recorded for its resume.
-    const trackedCliLevel = (sessionId: string): PermissionLevel | null => {
-      let row: ReturnType<typeof sessionService.get> = null;
-      try {
-        row = sessionService.get(sessionId);
-      } catch (error) {
-        // The cap falls back to "ask", the safe level.
-        logger.warn("agent_chat.tracked_cli_level_read_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      }
-      const resume = row?.tracked ? row.resumeMetadata : null;
-      if (!resume?.launch) return null;
-      return sessionPermissionLevel({ provider: resume.provider, ...resume.launch }, "ask");
-    };
-    const levelOf = (sessionId: string): PermissionLevel => readChatPermissionLevel(sessionId, trackedCliLevel).level;
+    const levelOf = (sessionId: string): PermissionLevel => readChatPermissionLevel(sessionId, trackedCliPermissionLevel).level;
     const parentId = args.parentSessionId?.trim();
     const callerId = args.actor?.kind === "agent" ? args.actor.chatSessionId?.trim() : null;
     return lowerPermissionCeiling(parentId ? levelOf(parentId) : null, callerId ? levelOf(callerId) : null);
@@ -50130,6 +50203,29 @@ export function createAgentChatService(args: {
     return Boolean(row?.tracked && isTrackedAgentCliToolType(row.toolType));
   };
 
+  /** ADE's own cards raised by a tracked agent CLI (`cliCardInputs.ts`). */
+  const cliCardInputs = createCliCardInputs({
+    raiseAttention: (sessionId, message) => {
+      sessionService.requestAttention(sessionId, message, "provider_structured");
+    },
+    clearAttention: (sessionId) => {
+      sessionService.clearAttentionRequest(sessionId, "provider_structured");
+    },
+    notifyChanged: (sessionId) => emitTransientChatEnvelope(sessionId, { type: "session_meta_updated" }),
+  });
+
+  /** The CLI session a card is raised for, or null when the target is a chat. */
+  const cliCardTargetSessionId = (sessionId: string): string | null => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!id || managedSessions.has(id)) return null;
+    const row = sessionService.get(id);
+    if (!row || isChatToolType(row.toolType) || !isTrackedAgentCliSession(id)) return null;
+    if (row.status !== "running") {
+      throw new Error(`Terminal session '${id}' is not running, so it cannot show a card.`);
+    }
+    return id;
+  };
+
   /**
    * A parent this service can report to: a chat here, or a tracked agent CLI
    * here that is not archived (an archived CLI refuses every wake, so its
@@ -50442,6 +50538,99 @@ export function createAgentChatService(args: {
     messageSession: (wakeArgs, options) => messageSession(wakeArgs, options),
     notifyParentOfCliChildSpawn: (terminalSessionId, options) => {
       notifyParentOfCliChildSpawn(terminalSessionId, options);
+    },
+    isDisposed: () => serviceDisposed,
+  });
+
+  // Text a person sends to a running agent CLI from an ADE box (Work, phone,
+  // web). Typed through the wake path above, so it never lands mid-turn and
+  // never shares a turn with a wake. A text that has to wait (`holdUntilFree`
+  // from a phone or the web) joins the same durable queue `ade chat send` uses
+  // for a busy CLI (a send wait on the CLI itself), so every queued text for a
+  // CLI is typed in the order it was sent and survives a brain restart.
+  const agentCliProcessEnded = (sessionId: string): boolean =>
+    typeof ptyService?.hasLivePty === "function" && !ptyService.hasLivePty(sessionId);
+
+  const queuedAgentCliSendWaits = async (sessionId: string) => {
+    if (!chatWaits) return [];
+    return (await chatWaits.list({ sessionId })).filter((waiter) =>
+      waiter.action.kind === "send"
+      && waiter.action.sessionId === sessionId
+      && waiter.targetSessionIds.length === 1
+      && waiter.targetSessionIds[0] === sessionId);
+  };
+
+  const armQueuedAgentCliSend = async (args: { sessionId: string; text: string; metadata?: Record<string, unknown> | null }) => {
+    if (!chatWaits) throw new Error("Queued sends are not available yet; try again in a moment.");
+    // A wait on the CLI itself: it types the text at the CLI's next free
+    // prompt, survives a brain restart, and gives up after a day.
+    return await chatWaits.arm({
+      targetSessionIds: [args.sessionId],
+      mode: "all",
+      waitFor: "idle",
+      sendToSessionId: args.sessionId,
+      text: args.text,
+      ...(args.metadata ? { sendMetadata: args.metadata } : {}),
+    });
+  };
+
+  const typeIntoAgentCliWhenFree = async (args: AgentCliTypeArgs): Promise<AgentCliTypeResult> => {
+    const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+    const text = typeof args?.text === "string" ? args.text : "";
+    if (!sessionId) throw new AdeExpectedError("A session id is required.", "user");
+    if (!text.trim()) throw new AdeExpectedError("There is no text to send.", "user");
+    if (!isTrackedAgentCliSession(sessionId)) {
+      throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
+    }
+    if (sessionService.get(sessionId)?.archivedAt) {
+      throw new AdeExpectedError("This CLI session is archived.", "user");
+    }
+    if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
+    // Queued texts go first: a later send must not jump the line.
+    if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
+      const outcome = await deliverWakeToSession({ sessionId, text, kind: "auto" });
+      if (outcome === "delivered") return { outcome };
+    }
+    if (args.holdUntilFree === true) {
+      await armQueuedAgentCliSend({ sessionId, text });
+      return { outcome: "held" };
+    }
+    return { outcome: "deferred" };
+  };
+
+  // The `ade chat` commands a tracked agent CLI answers: each public chat
+  // action below routes a CLI row here before `ensureManagedSession`, which
+  // refuses anything that is not a chat (`agentCliSessionActions.ts`).
+  const agentCliActions = createAgentCliSessionActions({
+    logger,
+    sessionService,
+    ptyService: ptyService ?? null,
+    isTrackedAgentCliSession,
+    agentCliOwnedByAnotherRuntime,
+    deliverWakeToSession: (wakeArgs) => deliverWakeToSession(wakeArgs),
+    armQueuedSend: ({ sessionId, text, metadata }) => armQueuedAgentCliSend({ sessionId, text, metadata }),
+    hasQueuedSends: async (sessionId) => (await queuedAgentCliSendWaits(sessionId)).length > 0,
+    cancelQueuedSends: async (sessionId) => {
+      if (!chatWaits) return 0;
+      let cancelled = 0;
+      for (const waiter of await queuedAgentCliSendWaits(sessionId)) {
+        if ((await chatWaits.cancel({ waiterId: waiter.id })).cancelled) cancelled += 1;
+      }
+      return cancelled;
+    },
+    notifyParentOfCliChildSpawn: (terminalSessionId, options) => {
+      notifyParentOfCliChildSpawn(terminalSessionId, options);
+    },
+    resolveAccount: (provider, requested) => {
+      const id = requestedAccountId(provider, requested) ?? requested;
+      let instance: ProviderInstance | null = null;
+      try {
+        instance = getMachineProviderInstanceStore().get(id);
+      } catch {
+        instance = null;
+      }
+      if (!instance || instance.provider !== provider) return null;
+      return { id: instance.id, signedIn: instance.signedIn, label: instance.account?.email?.trim() || instance.label || instance.id };
     },
     isDisposed: () => serviceDisposed,
   });
@@ -51058,7 +51247,25 @@ export function createAgentChatService(args: {
   const deliverExternalChildCompletion = (
     wake: Omit<ExternalParentWake, "childProjectRoot">,
   ): Promise<ExternalWakeDeliveryResult> => {
-    if (!parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    // A tracked agent CLI on this machine can be a parent too: it started the
+    // child on another machine with `ade chat create --machine …`.
+    const cliParent = !parentChatStillExists(wake.parentSessionId) && isTrackedAgentCliSession(wake.parentSessionId);
+    if (!cliParent && !parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
+    if (cliParent && wake.notice === "awaiting_user") {
+      // A CLI has no transcript for the quiet line a peer's parent gets, so a
+      // peer's notice is dropped; a subagent's is typed at its prompt.
+      if (wake.spawnKind === "peer") return Promise.resolve("delivered");
+      return wakeAgentCliParent(wake.parentSessionId, wake.wakeText)
+        .then((): ExternalWakeDeliveryResult => "delivered")
+        .catch((error): ExternalWakeDeliveryResult => {
+          logger.warn("agent_chat.external_awaiting_user_delivery_failed", {
+            parentSessionId: wake.parentSessionId,
+            childSessionId: wake.childSessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return "failed";
+        });
+    }
     // Not a finished turn: a child elsewhere waits on its user. A message, no
     // completion, so the parent's card for the child stays open. A peer's
     // parent gets the quiet line and is not woken.
@@ -51120,6 +51327,22 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * The account config home (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) a tracked CLI
+   * runs under, where its own conversation file lives; null for the default.
+   */
+  const trackedCliConfigHome = (row: Pick<TerminalSessionSummary, "toolType" | "resumeMetadata">): string | null => {
+    const metadata = row.resumeMetadata ?? null;
+    const provider = metadata?.provider ?? providerFromTool(row.toolType);
+    if (!provider || !isProviderInstanceProvider(provider)) return null;
+    const instanceId = metadata?.instanceId?.trim() || metadata?.launch?.instanceId?.trim() || undefined;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, instanceId).instance.configHome || null;
+    } catch {
+      return null;
+    }
+  };
+
   // --- Tracked CLI children -------------------------------------------------
   //
   // `ade new chat --mode cli --parent … --type …` starts a tracked PTY session,
@@ -51147,7 +51370,12 @@ export function createAgentChatService(args: {
     } catch {
       cwd = null;
     }
-    return await readCliProviderFinalMessage({ provider, targetId: row.resumeMetadata?.targetId ?? null, cwd });
+    return await readCliProviderFinalMessage({
+      provider,
+      targetId: row.resumeMetadata?.targetId ?? null,
+      cwd,
+      configHome: trackedCliConfigHome(row),
+    });
   };
 
   const {
@@ -51225,6 +51453,29 @@ export function createAgentChatService(args: {
    * parent already has — the run key is the persisted end time, so the live
    * exit and a post-restart reconcile of the same exit resolve to one delivery.
    */
+  /**
+   * The last finished-turn report each running CLI child gave its parent
+   * (`reportCliChildTurnEnded`), and the children whose parent card that report
+   * closed. In memory: a restart drops them, and the exit report then simply
+   * speaks once more.
+   */
+  const cliChildTurnReports = new Map<string, { providerMessage: string | null; at: number }>();
+  const cliChildCardsClosedByTurn = new Set<string>();
+  /**
+   * When each CLI child last sent its parent a report itself (`ade chat
+   * message`, which the RPC stamps with `agentRelay`). Its guidance asks it to;
+   * a turn it reported on is then closed quietly instead of waking the parent
+   * a second time with ADE's copy.
+   */
+  const cliChildSelfReportedAt = new Map<string, number>();
+  const noteCliChildSelfReport = (messageArgs: AgentChatMessageSessionArgs): void => {
+    const relay = (messageArgs?.metadata as { agentRelay?: { fromSessionId?: unknown } } | undefined)?.agentRelay;
+    const from = typeof relay?.fromSessionId === "string" ? relay.fromSessionId.trim() : "";
+    const target = typeof messageArgs?.sessionId === "string" ? messageArgs.sessionId.trim() : "";
+    if (!from || !target) return;
+    if (readTrackedCliRow(from)?.lineage?.parentSessionId === target) cliChildSelfReportedAt.set(from, Date.now());
+  };
+
   const reportCliChildEnded = async (terminalSessionId: string, trigger: "exit" | "reconcile"): Promise<void> => {
     if (cliChildReportsClosed) return;
     const tracked = readTrackedCliRow(terminalSessionId);
@@ -51260,6 +51511,15 @@ export function createAgentChatService(args: {
       providerMessage,
       terminalTail,
     });
+    // A CLI that finished its last turn (and already reported it) and then
+    // exited has nothing new to say: the exit closes the card quietly instead
+    // of waking the parent a second time with the same report.
+    const lastTurnReport = cliChildTurnReports.get(row.id);
+    cliChildTurnReports.delete(row.id);
+    cliChildCardsClosedByTurn.delete(row.id);
+    const repeatsTurnReport = resultStatus === "completed"
+      && Boolean(providerMessage)
+      && lastTurnReport?.providerMessage === providerMessage;
     const childTitle = cliChildLabel(row, lineage.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
       childSessionId: row.id,
@@ -51281,7 +51541,7 @@ export function createAgentChatService(args: {
       spawnCompletion,
       ctoPrNumber: readChildPullRequestNumber(null, summary),
       emitCtoSubagentResult: true,
-      routeQuietly: trigger === "reconcile",
+      routeQuietly: trigger === "reconcile" || repeatsTurnReport,
       wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
         logger.info("agent_chat.cli_child_completion_parent_gone", {
@@ -51298,6 +51558,219 @@ export function createAgentChatService(args: {
         });
       },
     });
+  };
+
+  /**
+   * A tracked CLI child finished a turn and is back at its prompt. An agent CLI
+   * is interactive and rarely exits on its own, so waiting for the PTY exit
+   * meant a parent never heard back. Each finished turn is reported the way a
+   * chat child's is: the parent's card closes with the CLI's own closing
+   * message, and a subagent's parent is woken (a CLI parent at its next turn
+   * boundary, never mid-turn). A turn that ended on a question for the person
+   * (`needs-input`) is not finished work and reports nothing. The run key is
+   * the turn's start, so a repeated signal for one turn delivers once.
+   */
+  const reportCliChildTurnEnded = async (event: TrackedCliTurnEndedEvent): Promise<void> => {
+    if (cliChildReportsClosed) return;
+    if (event.outcome && event.outcome !== "done") return;
+    const tracked = readTrackedCliRow(event.sessionId);
+    const lineage = tracked?.lineage;
+    if (!tracked || !lineage) return;
+    const { row } = tracked;
+    // An ended CLI reports through its exit.
+    if (row.status !== "running") return;
+    if (!parentSessionReachableHere(lineage.parentSessionId)) return;
+    await ptyService?.waitForResumeTargetBackfill?.(row.id);
+    const latestRow = readTrackedCliRow(row.id)?.row ?? row;
+    const providerMessage = await readCliProviderMessage(latestRow, lineage.provider);
+    const terminalTail = await readCliTerminalTail(row.id);
+    if (cliChildReportsClosed) return;
+    const summary = composeCliChildReport({ status: "completed", exitCode: null, providerMessage, terminalTail });
+    const childTitle = cliChildLabel(row, lineage.provider);
+    // No turn-start signal reopened the card a previous report closed (an
+    // older pty surface): reopen it now so this report closes a live card.
+    if (cliChildCardsClosedByTurn.delete(row.id)) {
+      notifyParentOfCliChildSpawn(row.id, { resumed: true });
+    }
+    const turnKey = event.turnStartedAt?.trim() || event.endedAt?.trim() || new Date().toISOString();
+    // The child already reported this turn itself: close the card with ADE's
+    // copy, but do not wake the parent twice.
+    const turnStartMs = Date.parse(event.turnStartedAt ?? "")
+      || cliChildTurnReports.get(row.id)?.at
+      || Date.parse(row.startedAt)
+      || 0;
+    const selfReported = (cliChildSelfReportedAt.get(row.id) ?? -1) >= turnStartMs;
+    cliChildSelfReportedAt.delete(row.id);
+    const spawnCompletion: AgentChatSpawnCompletion = {
+      childSessionId: row.id,
+      childTitle,
+      spawnKind: lineage.spawnKind,
+      childTurnId: `cli-turn:${turnKey}`,
+      status: "completed",
+      summary,
+    };
+    cliChildTurnReports.set(row.id, { providerMessage, at: Date.now() });
+    cliChildCardsClosedByTurn.add(row.id);
+    deliverChildCompletionToParent({
+      parentSessionId: lineage.parentSessionId,
+      childSessionId: row.id,
+      childTitle,
+      childProvider: lineage.provider,
+      spawnKind: lineage.spawnKind,
+      resultStatus: "completed",
+      summary,
+      spawnCompletion,
+      ctoPrNumber: readChildPullRequestNumber(null, summary),
+      emitCtoSubagentResult: true,
+      routeQuietly: selfReported,
+      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" finished a turn — ${summary}\n`
+        + `(It is still open at its prompt. Full terminal output: \`ade terminal read ${row.id}\`.)`,
+      onParentGone: (reason) => {
+        logger.info("agent_chat.cli_child_turn_report_parent_gone", {
+          childSessionId: row.id,
+          parentSessionId: lineage.parentSessionId,
+          reason,
+        });
+      },
+      onDeliveryFailed: (lastError) => {
+        logger.warn("agent_chat.cli_child_turn_report_failed", {
+          childSessionId: row.id,
+          parentSessionId: lineage.parentSessionId,
+          error: lastError instanceof Error ? lastError.message : String(lastError),
+        });
+      },
+    });
+  };
+
+  /** A CLI child started its next turn: reopen the parent card its last report closed. */
+  const reopenCliChildCardOnTurnStart = (sessionId: string): void => {
+    if (cliChildReportsClosed || !cliChildCardsClosedByTurn.delete(sessionId)) return;
+    try {
+      notifyParentOfCliChildSpawn(sessionId, { resumed: true });
+    } catch (error) {
+      logger.warn("agent_chat.cli_child_turn_reopen_failed", {
+        childSessionId: sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  // --- Native scheduled work from a tracked Claude Code CLI ---------------
+  //
+  // A chat mirrors ScheduleWakeup / CronCreate / CronDelete (and `/loop`)
+  // into the durable scheduler from the SDK's PostToolUse hook. A CLI has no
+  // hook ADE owns, so its session JSONL is read at each turn end and at exit
+  // (`claudeCliScheduledWork.ts`). The row id names the CLI process that made
+  // it (`cli-claude:<ptyId>:…`): while that process lives, Claude's own
+  // scheduler runs the wake and ADE's row only settles; once it is gone (it
+  // exited, ADE restarted, the CLI was resumed into a new process) ADE
+  // delivers, reopening the CLI when it has to.
+  const CLAUDE_CLI_SCHEDULE_ID_PREFIX = "cli-claude:";
+  const claudeCliScheduleMarkKey = (sessionId: string) => `claude-cli-schedule-mark:${sessionId}`;
+  const claudeCliScheduleFlights = new Map<string, Promise<void>>();
+
+  /** The CLI process (pty id) whose own scheduler delivers this row, or null for any other row. */
+  const claudeCliScheduleOwnerPtyId = (scheduleId: string): string | null => {
+    if (!scheduleId.startsWith(CLAUDE_CLI_SCHEDULE_ID_PREFIX)) return null;
+    const ptyId = scheduleId.slice(CLAUDE_CLI_SCHEDULE_ID_PREFIX.length).split(":")[0] ?? "";
+    return ptyId || null;
+  };
+
+  const mirrorClaudeCliScheduledWorkNow = async (sessionId: string): Promise<void> => {
+    const scheduler = scheduledWorkScheduler;
+    if (!scheduler) return;
+    const row = sessionService.get(sessionId);
+    if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return;
+    if ((row.resumeMetadata?.provider ?? providerFromTool(row.toolType)) !== "claude") return;
+    let cwd: string | null = null;
+    try {
+      cwd = laneService.getLaneBaseAndBranch(row.laneId).worktreePath ?? null;
+    } catch {
+      cwd = null;
+    }
+    // A CLI started under an ADE account writes its JSONL in that account's
+    // config home, not ~/.claude.
+    const lines = await readClaudeCliSessionTail({
+      targetId: row.resumeMetadata?.targetId ?? null,
+      cwd,
+      configDir: trackedCliConfigHome(row),
+    });
+    if (!lines.length) return;
+    await scheduledWorkReady;
+    const markKey = claudeCliScheduleMarkKey(sessionId);
+    const mark = db?.getJson<{ at?: string }>(markKey)?.at ?? null;
+    const events = extractClaudeCliScheduleEvents(lines, mark);
+    if (!events.length) return;
+    const ptyId = row.ptyId?.trim() || "none";
+    // The CLI wrote to its log after a wakeup's fire time, so it was still
+    // running then and its own scheduler fired it. Only a first read (or one
+    // after a missed turn end) meets such a call; mirroring it would wake the
+    // CLI a second time.
+    const lastRecordMs = lastClaudeCliRecordMs(lines);
+    const ours = (schedule: { id: string; sessionId: string }) =>
+      schedule.sessionId === sessionId && schedule.id.startsWith(CLAUDE_CLI_SCHEDULE_ID_PREFIX);
+    const active = (schedule: { status: string }) => schedule.status !== "done" && schedule.status !== "cancelled";
+    let newestAt = mark ?? "";
+    for (const event of events) {
+      if (event.at > newestAt) newestAt = event.at;
+      if (event.kind === "wakeup") {
+        if (lastRecordMs != null && lastRecordMs >= event.fireAt) continue;
+        await scheduler.upsert(buildClaudeScheduleUpsert({
+          id: `${CLAUDE_CLI_SCHEDULE_ID_PREFIX}${ptyId}:wakeup:${event.toolUseId}`,
+          sessionId,
+          kind: isClaudeLoopPrompt(event.prompt) ? "loop" : "wakeup",
+          prompt: event.prompt,
+          ...(event.reason ? { reason: event.reason } : {}),
+          fireAt: event.fireAt,
+          recurring: false,
+        }));
+      } else if (event.kind === "wakeup_stop") {
+        await Promise.all(scheduler.list(sessionId)
+          .filter((schedule) => ours(schedule) && active(schedule) && (schedule.kind === "wakeup" || schedule.kind === "loop"))
+          .map((schedule) => scheduler.cancel(schedule.id)));
+      } else if (event.kind === "cron") {
+        const createdAt = Date.now();
+        const kind: "cron" | "wakeup" | "loop" = event.recurring
+          ? "cron"
+          : isClaudeLoopPrompt(event.prompt) ? "loop" : "wakeup";
+        await scheduler.upsert(buildClaudeScheduleUpsert({
+          id: `${CLAUDE_CLI_SCHEDULE_ID_PREFIX}${ptyId}:cron:${event.cronId}`,
+          sessionId,
+          kind,
+          prompt: event.prompt,
+          cron: event.cron,
+          fireAt: event.nextFireAt ?? nextChatScheduledCronFireAt(event.cron, createdAt) ?? undefined,
+          createdAt,
+          recurring: event.recurring,
+          expiresAtBase: createdAt,
+          providerScheduleId: event.cronId,
+        }));
+      } else {
+        await Promise.all(scheduler.list(sessionId)
+          .filter((schedule) => ours(schedule) && active(schedule) && schedule.id.endsWith(`:cron:${event.cronId}`))
+          .map((schedule) => scheduler.cancel(schedule.id)));
+      }
+    }
+    if (newestAt) db?.setJson(markKey, { at: newestAt });
+    logger.info("agent_chat.claude_cli_scheduled_work_mirrored", { sessionId, events: events.length });
+  };
+
+  /** One mirror read per CLI at a time; a read asked for meanwhile runs after it. */
+  const mirrorClaudeCliScheduledWork = (sessionId: string): void => {
+    const previous = claudeCliScheduleFlights.get(sessionId) ?? Promise.resolve();
+    const flight = previous
+      .catch(() => {})
+      .then(() => mirrorClaudeCliScheduledWorkNow(sessionId))
+      .catch((error: unknown) => {
+        logger.warn("agent_chat.claude_cli_scheduled_work_mirror_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (claudeCliScheduleFlights.get(sessionId) === flight) claudeCliScheduleFlights.delete(sessionId);
+      });
+    claudeCliScheduleFlights.set(sessionId, flight);
   };
 
   /**
@@ -52513,7 +52986,136 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Handoff and fork from a tracked agent CLI terminal (Claude Code, Codex, …)
+   * into a new chat. A fork whose CLI conversation ADE knows copies it whole
+   * through the import (native for the same agent, a replay for another); a
+   * brief, or a fork without that conversation, is the chat handoff brief built
+   * from the CLI's conversation file, else from its last terminal output. The
+   * CLI itself is left as it is.
+   */
+  const handoffCliSession = async (
+    args: AgentChatHandoffArgs,
+    row: TerminalSessionSummary,
+  ): Promise<AgentChatHandoffResult> => {
+    const sourceId = row.id;
+    const handoffNote = normalizeHandoffNote(args.handoffNote);
+    const handoffMode = args.mode ?? "brief";
+    if (args.throughTurnId?.trim()) {
+      throw new Error("A CLI session can only be forked whole; choosing a turn applies to chats.");
+    }
+    if (ptyService && agentCliWakeDeferred(sourceId)) {
+      throw new Error("This CLI is mid-turn (or another ADE runtime holds its terminal). Hand it off when its prompt is free.");
+    }
+    const context = await cliLifecycle.handoffContext(row);
+    const requestedModelId = typeof args.targetModelId === "string" ? args.targetModelId.trim() : "";
+    // No model named: the chat continues on the model the CLI ran, else its agent's default.
+    const targetDescriptor = requestedModelId
+      ? getModelById(requestedModelId) ?? resolveModelAlias(requestedModelId)
+      : (context.provider ? resolveImportFamilyModel(context.provider, context.model) : null)
+        ?? (context.provider ? getDefaultModelDescriptor(context.provider) : null)
+        ?? getAppDefaultModelDescriptor();
+    if (!targetDescriptor || targetDescriptor.deprecated) {
+      throw new Error(requestedModelId ? `Unknown model '${requestedModelId}'.` : "Select a target model before handing off this CLI session.");
+    }
+    const requestedTargetLaneId = typeof args.targetLaneId === "string" ? args.targetLaneId.trim() : "";
+    const targetLaneId = requestedTargetLaneId || row.laneId;
+    if (targetLaneId !== row.laneId) {
+      if (handoffMode === "fork") {
+        throw new Error("Fork handoff keeps the new chat in the source lane; use a brief handoff to move lanes.");
+      }
+      const targetLaneSummary = await laneService.getSummary(targetLaneId, { includeStatus: false }).catch(() => null);
+      if (!targetLaneSummary) throw new Error(`Unknown or unavailable lane '${targetLaneId}' for this handoff.`);
+      if (targetLaneSummary.archivedAt) throw new Error(`Lane '${targetLaneId}' is archived; pick an active lane for this handoff.`);
+    }
+    const cliName = agentCliDisplayName(row.toolType) ?? "CLI";
+    const sourceTitle = row.goal?.trim() || row.title?.trim() || cliName;
+
+    if (handoffMode === "fork" && context.provider && context.conversationId) {
+      let laneCwd: string | null = null;
+      try {
+        laneCwd = laneService.getLaneBaseAndBranch(row.laneId).worktreePath ?? null;
+      } catch {
+        laneCwd = null;
+      }
+      const imported = await importExternalChatSession({
+        provider: context.provider,
+        externalSessionId: context.conversationId,
+        laneId: row.laneId,
+        cwd: laneCwd,
+        fork: true,
+        model: targetDescriptor.id,
+        title: sourceTitle,
+        ...(context.model ? { sourceModel: context.model } : {}),
+      });
+      if (handoffNote) {
+        await sendMessage({ sessionId: imported.chatSessionId, text: handoffNote, displayText: handoffNote }, { awaitDispatch: true });
+      }
+      return {
+        session: ensureManagedSession(imported.chatSessionId).session,
+        usedFallbackSummary: false,
+        ...(imported.replayFork ? { replayFork: imported.replayFork } : {}),
+        cliContextSource: "provider_transcript",
+      };
+    }
+
+    const targetProvider = resolveProviderGroupForModel(targetDescriptor);
+    const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
+    const targetReasoningEffort = pickHandoffReasoningEffort(targetDescriptor, args.reasoningEffort ?? null);
+    // The chat handoff brief, fed from the CLI (the same brief a moved CLI carries).
+    const brief = cliHandoffBrief(row, context, targetDescriptor);
+    const created = await createSessionInternal({
+      laneId: targetLaneId,
+      ...(args.runtimeActor ? { runtimeActor: args.runtimeActor } : {}),
+      provider: targetProvider,
+      model: targetModel,
+      modelId: targetDescriptor.id,
+      reasoningEffort: targetReasoningEffort,
+      fastMode: args.fastMode ?? args.codexFastMode ?? false,
+      ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
+      ...(args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
+      ...(args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
+      ...(args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
+      ...(args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
+      surface: "work",
+    });
+    const goal = row.goal?.trim() || null;
+    if (goal) sessionService.updateMeta({ sessionId: created.id, goal });
+    await sendMessage({
+      sessionId: created.id,
+      text: buildHandoffPrompt(brief, handoffNote),
+      displayText: buildHandoffDisplayText(handoffNote),
+      metadata: { kind: "handoff", hideFullPrompt: true },
+      reasoningEffort: targetReasoningEffort,
+    }, { awaitDispatch: true });
+    return {
+      session: ensureManagedSession(created.id).session,
+      usedFallbackSummary: true,
+      cliContextSource: context.source,
+    };
+  };
+
+  /**
+   * An agent may move a CLI it started (or one under a chat it started)
+   * without asking, like a chat. Any other CLI needs the person, and a CLI has
+   * no composer to show the approval card above, so the request is refused
+   * with who can move it. A batch asks once on the requesting chat instead.
+   */
+  const refuseAgentMoveOfUnrelatedCli = (
+    sessionId: string,
+    caller: { requestedBy?: string; requestedFor?: string },
+  ): void => {
+    if (caller.requestedBy === "user" || !cliMoveRow(sessionId)) return;
+    if (caller.requestedFor === "self" || caller.requestedFor === "descendant") return;
+    throw new Error(
+      `Session '${sessionId}' is a CLI session your chat didn't start, so only the person can move it (Work menu › Hand off › Another machine). `
+      + "To ask once for several, use `ade chat move`, which asks for approval on your chat.",
+    );
+  };
+
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
+    const cliSource = sessionService.get(typeof args.sourceSessionId === "string" ? args.sourceSessionId.trim() : "");
+    if (cliSource && isTrackedAgentCliRow(cliSource)) return handoffCliSession(args, cliSource);
     const sourceId = args.sourceSessionId.trim();
     const targetId = args.targetModelId.trim();
     const handoffNote = normalizeHandoffNote(args.handoffNote);
@@ -52967,6 +53569,40 @@ export function createAgentChatService(args: {
     return githubExtraHeaderGitEnv(token);
   };
 
+  /** A moved CLI's part of the capsule (`capsule.cli`): well formed, portable, and within its limits. */
+  const validateCrossMachineCliMove = (capsule: AgentChatCrossMachineHandoffCapsule): void => {
+    const cli = capsule.cli;
+    if (!cli || typeof cli !== "object" || Array.isArray(cli)) throw new Error("The handoff capsule has a malformed CLI session.");
+    const portable = (value: unknown, max: number, label: string): void => {
+      if (typeof value !== "string" || !value.trim() || value.length > max || value.includes("\0") || redactSecrets(value) !== value) {
+        throw new Error(`The handoff capsule has an invalid CLI ${label}.`);
+      }
+    };
+    if (!isTrackedAgentCliToolType(cli.toolType as TerminalToolType)) throw new Error("The handoff capsule has an invalid CLI tool type.");
+    if (!isLaunchProfile(cli.provider) || (cli.provider as string) === "shell" || cli.provider !== capsule.source.provider) {
+      throw new Error("The handoff capsule has an invalid CLI agent.");
+    }
+    if (cli.continuation !== "resume" && cli.continuation !== "fresh") throw new Error("The handoff capsule has an invalid CLI continuation.");
+    if (cli.continuation === "resume" && !cli.conversation) throw new Error("The handoff capsule is missing the CLI's conversation.");
+    if (cli.freshReason != null) portable(cli.freshReason, 1_000, "fresh reason");
+    if (cli.goal != null) portable(cli.goal, 2_000, "goal");
+    if (cli.accountEmail != null) portable(cli.accountEmail, 320, "account");
+    const launch = cli.launch;
+    if (!launch || typeof launch !== "object" || !isTrackedCliPermissionMode(launch.permissionMode)) {
+      throw new Error("The handoff capsule has invalid CLI launch settings.");
+    }
+    if (launch.model != null) portable(launch.model, 300, "model");
+    if (launch.reasoningEffort != null) portable(launch.reasoningEffort, 100, "reasoning effort");
+    if (launch.presetId != null) portable(launch.presetId, 300, "preset");
+    if (cli.conversation !== undefined) {
+      if (cli.conversation.kind !== "claude-jsonl" && cli.conversation.kind !== "codex-rollout") {
+        throw new Error("The handoff capsule has a CLI conversation ADE can't place.");
+      }
+      // The same limits a fork's provider history has.
+      validateForkTransport({ ...capsule, mode: "fork", forkTransport: cli.conversation });
+    }
+  };
+
   const validateCrossMachineHandoffCapsule: (
     value: unknown,
   ) => asserts value is AgentChatCrossMachineHandoffCapsule = (value) => {
@@ -53099,7 +53735,9 @@ export function createAgentChatService(args: {
     if (!/^[0-9a-f]{40,64}$/i.test(capsule.source.headSha)) {
       throw new Error("The handoff capsule has an invalid source commit.");
     }
-    if (!new Set<string>(["claude", "codex", "opencode", "cursor", "droid"]).has(capsule.source.provider)) {
+    if (capsule.cli !== undefined) {
+      validateCrossMachineCliMove(capsule);
+    } else if (!new Set<string>(["claude", "codex", "opencode", "cursor", "droid"]).has(capsule.source.provider)) {
       throw new Error("The handoff capsule has an invalid source provider.");
     }
     if (
@@ -53294,8 +53932,8 @@ export function createAgentChatService(args: {
     store: crossMachineSource,
     runGit,
     laneService,
-    listChatSessions: () => sessionService
-      .list({ limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES })
+    listChatSessions: (): CrossMachineBatchChatState[] => (sessionService
+      .list({ limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES }) as TerminalSessionSummary[])
       .filter((row) => isChatToolType(row.toolType))
       .map((row) => {
         const managed = managedSessions.get(row.id) ?? null;
@@ -53305,7 +53943,32 @@ export function createAgentChatService(args: {
           blockedKind: managed ? resolveHandoffBlockedReason(managed)?.kind ?? null : null,
           permissionLevel: managed ? sessionPermissionLevel(managed.session, "ask") : null,
         };
-      }),
+      })
+      // Tracked agent CLIs move in a batch too, as CLIs (cliCrossMachineMove.ts).
+      .map((state): CrossMachineBatchChatState => state)
+      .concat(sessionService
+        .list({ limit: null, toolTypes: TRACKED_AGENT_CLI_MOVE_TOOL_TYPES })
+        .filter((row) => isTrackedAgentCliRow(row))
+        .map((row) => {
+          const source = cliMoveSource(row);
+          const provider = cliMoveProvider(row) ?? "";
+          const parentId = row.resumeMetadata?.orchestrationParentSessionId?.trim() || null;
+          return {
+            row: { ...row, model: row.resumeMetadata?.launch?.model ?? null },
+            lineage: {
+              laneId: row.laneId,
+              orchestrationParentSessionId: parentId,
+              spawnKind: row.resumeMetadata?.spawnKind ?? null,
+              surface: "work",
+              provider,
+              model: row.resumeMetadata?.launch?.model?.trim() || provider,
+              modelId: source.modelId ?? null,
+            },
+            blockedKind: source.awaitingInput ? "awaiting_input" : source.turnActive ? "turn_active" : null,
+            permissionLevel: source.permissionLevel,
+            cliToolType: source.cliToolType ?? provider,
+          };
+        })),
     readLaneOrigin: (laneId) => crossMachineDestination.readLaneOrigin(laneId),
     localMachineKey: localCrossMachineKey,
     localMachineName: localCrossMachineName,
@@ -53322,17 +53985,25 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     options: { includeChanges?: boolean } = {},
   ) => {
-    const includeChanges = options.includeChanges === true;
     // Same wedge settlement as the local handoff: a quota-wedged source must
     // not refuse the cross-machine send either.
     await recoverWedgedClaudeSessionForHandoff(managed);
     ensureSessionIdleForHandoff(managed);
-    const lane = await laneService.getSummary(managed.session.laneId, { includeStatus: true });
+    return await requireCrossMachineLaneReady(managed.session.laneId, { ...options, label: "This chat" });
+  };
+
+  /** The lane half of `requireCrossMachineSourceReady`, shared with a moved agent CLI. */
+  const requireCrossMachineLaneReady = async (
+    laneId: string,
+    options: { includeChanges?: boolean; label: string },
+  ) => {
+    const includeChanges = options.includeChanges === true;
+    const lane = await laneService.getSummary(laneId, { includeStatus: true });
     if (!lane) throw new Error("The source lane could not be loaded.");
     // Not counting this chat's own move: it is the one being sent.
     const inspection = await crossMachineSource.inspectLane(lane);
     // The inspection already read the branch, commit and origin.
-    const movable = requireMovable(inspection, { includeChanges, label: "This chat" });
+    const movable = requireMovable(inspection, { includeChanges, label: options.label });
     const branchRef = await requireGitBranch(runGit, movable.branchRef, lane.worktreePath);
     const headSha = movable.headSha;
     const rawOriginUrl = inspection.rawOriginUrl ?? "";
@@ -53944,6 +54615,12 @@ export function createAgentChatService(args: {
     if (args.capsuleFingerprint?.trim() !== expectedFingerprint) {
       throw new Error("The prepared handoff changed before final confirmation. Review it again.");
     }
+    const cliRow = cliMoveRow(sourceSessionId);
+    if (cliRow || args.capsule.cli) {
+      if (!cliRow || !args.capsule.cli) throw new Error("The prepared move no longer matches the source session.");
+      await validateCliCrossMachineSource(args, cliRow);
+      return;
+    }
     const managed = ensureManagedSession(sourceSessionId);
     if ((managed.session.surface ?? "work") !== "work") {
       throw new Error("Only Work chats can be sent to another machine.");
@@ -53954,18 +54631,46 @@ export function createAgentChatService(args: {
     ) {
       throw new CrossMachineSourceStaleError("The source chat model changed after the handoff was prepared. Review the handoff again.");
     }
-    const gitBundle = args.capsule.gitBundle;
-    const batchMove = args.capsule.batchMove;
     // The move's own choice: one that asked for changes but had none to carry
     // was prepared under the relaxed rules, so it is checked under them too.
-    const includeChanges = args.includeChanges ?? Boolean(gitBundle);
+    const includeChanges = args.includeChanges ?? Boolean(args.capsule.gitBundle);
     const current = await requireCrossMachineSourceReady(managed, { includeChanges });
+    await requireCrossMachineLaneMatchesCapsule(current, args.capsule, includeChanges);
+    const preparedAt = Date.parse(args.capsule.createdAt);
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`));
+    const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
+      const timestamp = Date.parse(entry.timestamp);
+      if (!Number.isFinite(timestamp) || timestamp <= preparedAt) return false;
+      // The move's own durable notes (a failed attempt's notice, its approval
+      // card settling) are not chat activity, or every retry would read stale.
+      const event = entry.event;
+      if (event.type === "system_notice" && event.status?.startsWith("cross_machine_handoff_")) return false;
+      if (event.type === "ade_card" && event.cardId.startsWith(CROSS_MACHINE_MOVE_APPROVAL_CARD_PREFIX)) return false;
+      return true;
+    });
+    if (hasNewChatActivity) {
+      throw new CrossMachineSourceStaleError("The source chat changed after the handoff brief was prepared. Go back and prepare a fresh handoff.");
+    }
+  };
+
+  /**
+   * The lane checks of `validateCrossMachineSource`, shared with a moved agent
+   * CLI: the branch, commit and origin still match the capsule, and with
+   * changes the working tree is still what travels.
+   */
+  const requireCrossMachineLaneMatchesCapsule = async (
+    current: Awaited<ReturnType<typeof requireCrossMachineLaneReady>>,
+    capsule: AgentChatCrossMachineHandoffCapsule,
+    includeChanges: boolean,
+  ): Promise<void> => {
+    const gitBundle = capsule.gitBundle;
+    const batchMove = capsule.batchMove;
     if (
-      current.branchRef !== args.capsule.source.branchRef
-      || current.headSha !== args.capsule.source.headSha
+      current.branchRef !== capsule.source.branchRef
+      || current.headSha !== capsule.source.headSha
       // Both origins are this machine's (the capsule was built here), so both
       // resolve aliases locally.
-      || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(args.capsule.source.originUrl)
+      || gitRemoteIdentity(current.originUrl) !== gitRemoteIdentity(capsule.source.originUrl)
     ) {
       throw new CrossMachineSourceStaleError("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
@@ -53985,7 +54690,7 @@ export function createAgentChatService(args: {
         const preparedCommit = gitBundle
           ? gitBundle.snapshotSha ?? gitBundle.branchHeadSha
           : batchMove?.carriedChanges
-            ? batchMove.snapshotSha ?? args.capsule.source.headSha
+            ? batchMove.snapshotSha ?? capsule.source.headSha
             : current.headSha;
         preparedTree = await requireGitOutput(
           runGit,
@@ -54012,21 +54717,323 @@ export function createAgentChatService(args: {
         }
       }
     }
-    const preparedAt = Date.parse(args.capsule.createdAt);
-    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`));
-    const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
-      const timestamp = Date.parse(entry.timestamp);
-      if (!Number.isFinite(timestamp) || timestamp <= preparedAt) return false;
-      // The move's own durable notes (a failed attempt's notice, its approval
-      // card settling) are not chat activity, or every retry would read stale.
-      const event = entry.event;
-      if (event.type === "system_notice" && event.status?.startsWith("cross_machine_handoff_")) return false;
-      if (event.type === "ade_card" && event.cardId.startsWith(CROSS_MACHINE_MOVE_APPROVAL_CARD_PREFIX)) return false;
-      return true;
-    });
-    if (hasNewChatActivity) {
-      throw new CrossMachineSourceStaleError("The source chat changed after the handoff brief was prepared. Go back and prepare a fresh handoff.");
+  };
+
+
+  // ── Moving a tracked agent CLI to another machine (cliCrossMachineMove.ts) ──
+  // The chat move's orchestrator drives it; these are the source steps it
+  // calls for a CLI row instead of a chat's.
+
+  /** The tracked agent CLI row behind `sessionId`, or null for a chat (or nothing). */
+  const cliMoveRow = (sessionId: unknown): TerminalSessionSummary | null => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!id) return null;
+    const row = sessionService.get(id);
+    return row && isTrackedAgentCliRow(row) ? row : null;
+  };
+
+  /** CLIs a move stopped, by handoff id: a move that ends before anything was sent starts them again. */
+  const cliStoppedByMove = new Map<string, string>();
+
+  /** The account config home a CLI ran under here, or null for the default. */
+  const cliMoveConfigHome = (provider: string, instanceId: string | null): string | null => {
+    if (!isProviderInstanceProvider(provider)) return null;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, instanceId ?? undefined).instance.configHome || null;
+    } catch {
+      return null;
     }
+  };
+
+  /** A registry model for a CLI move's record and checks; the CLI's own model travels in `cli.launch`. */
+  const cliMoveModelId = (provider: string, model: string | null): string => {
+    const descriptor = (isExternalSessionProvider(provider) ? resolveImportFamilyModel(provider, model) : null)
+      ?? getDefaultModelDescriptor(provider as Parameters<typeof getDefaultModelDescriptor>[0])
+      ?? getAppDefaultModelDescriptor();
+    // Only a label for the record and the checks; a registry with no model at all names the agent.
+    return descriptor?.id ?? `${provider}/cli`;
+  };
+
+  /** A CLI row as the orchestrator's move source. */
+  const cliMoveSource = (row: TerminalSessionSummary): CrossMachineHandoffSource => {
+    const provider = cliMoveProvider(row) ?? "";
+    const live = typeof ptyService?.hasLivePty === "function" ? ptyService.hasLivePty(row.id) : row.status === "running";
+    const runtimeState = live && ptyService ? ptyService.getRuntimeState(row.id, row.status) : null;
+    return {
+      sessionId: row.id,
+      isWorkChat: !row.archivedAt,
+      turnActive: live && agentCliWakeDeferred(row.id) && runtimeState !== "waiting-input",
+      awaitingInput: runtimeState === "waiting-input",
+      permissionLevel: cliMovePermissionLevel(cliMovePermissionMode(row.resumeMetadata)),
+      provider,
+      modelId: cliMoveModelId(provider, row.resumeMetadata?.launch?.model?.trim() || null),
+      title: agentCliRowTitle(row.goal ?? row.title, row.toolType),
+      cliToolType: row.toolType ?? provider,
+    };
+  };
+
+  /**
+   * The CLI handoff brief: the chat handoff brief builder, fed from the CLI's
+   * own conversation file, else its last terminal output.
+   */
+  const cliHandoffBrief = (
+    row: TerminalSessionSummary,
+    context: Awaited<ReturnType<CliSessionLifecycle["handoffContext"]>>,
+    targetDescriptor: NonNullable<ReturnType<typeof getModelById>>,
+  ): string => {
+    const cliName = agentCliDisplayName(row.toolType) ?? "CLI";
+    // The builder reads only the title, goal, summary, completion and output preview of its source.
+    const sourceSummary = {
+      sessionId: row.id,
+      title: row.goal?.trim() || row.title?.trim() || cliName,
+      goal: row.goal ?? null,
+      summary: row.summary ?? null,
+      lastOutputPreview: row.lastOutputPreview ?? null,
+      completion: null,
+    } as unknown as AgentChatSessionSummary;
+    return [
+      `Source: a ${cliName} CLI terminal session in ADE (${context.source === "provider_transcript" ? "from its own conversation file" : "from its last terminal output; ADE could not read its conversation"}).`,
+      "",
+      buildDeterministicHandoffBrief({
+        sourceSession: sourceSummary,
+        targetDescriptor,
+        transcript: { sessionId: row.id, entries: context.entries, truncated: context.truncated, totalEntries: context.entries.length },
+        artifacts: { fileChanges: [], commands: [], errors: [] },
+      }),
+    ].join("\n");
+  };
+
+  /**
+   * The source half of a CLI move: checks the lane, stops the CLI (refused
+   * mid-turn; the orchestrator queues `--when-turn-ends` and a batch's
+   * `--interrupt` presses the cancel key first), then packs its conversation
+   * file, launch settings and identity. A `brief` move, or an agent whose
+   * conversation can't travel, packs a brief for a fresh CLI instead.
+   */
+  const prepareCliCrossMachineMove = async (
+    args: AgentChatPrepareCrossMachineHandoffArgs,
+    row: TerminalSessionSummary,
+  ): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
+    const handoffId = requireHandoffId(args.handoffId);
+    const provider = cliMoveProvider(row);
+    if (!provider) throw new Error("ADE doesn't know which agent this CLI runs, so it can't move it.");
+    if (row.archivedAt) throw new Error("This CLI session is archived. Unarchive it before moving it.");
+    const source = cliMoveSource(row);
+    if (source.awaitingInput) throw new Error("This CLI is waiting at its own prompt for an answer. Answer it, then move it.");
+    if (source.turnActive) {
+      throw new Error("This CLI is still working on a turn. Wait for it to finish, or queue the move for when it does (--when-turn-ends).");
+    }
+    const includeChanges = args.includeChanges === true;
+    const cliName = cliProviderName(provider);
+    const { lane, branchRef, headSha, originUrl, remoteHeadSha } = await requireCrossMachineLaneReady(row.laneId, {
+      includeChanges,
+      label: "This CLI session",
+    });
+    const gitBundle = includeChanges && !args.batchMove
+      ? await packHandoffGitBundle({
+          worktreePath: lane.worktreePath,
+          branchRef,
+          handoffId,
+          remoteBranchSha: remoteHeadSha,
+          maxEncodedBytes: CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES - 1024 * 1024,
+        })
+      : null;
+    if (includeChanges && !gitBundle && !args.batchMove && remoteHeadSha !== headSha) {
+      throw new Error("Publish this branch so origin has the current commit, then move the CLI again.");
+    }
+
+    // Stopped before anything is read: the conversation file must be whole,
+    // and two copies of one CLI must never run on two machines.
+    const stopped = await cliLifecycle.stopForMove(row);
+    if (stopped.stopped) cliStoppedByMove.set(row.id, handoffId);
+    const current = stopped.row;
+    const metadata = current.resumeMetadata ?? null;
+    const conversationId = metadata?.provider === provider ? metadata.targetId?.trim() || null : null;
+    const instanceId = metadata?.instanceId?.trim() || metadata?.launch?.instanceId?.trim() || null;
+    const configHome = cliMoveConfigHome(provider, instanceId);
+    let freshReason: string | null = args.mode === "brief"
+      ? `A brief move: the ${cliName} CLI starts fresh there with a brief of this conversation.`
+      : cliFreshReason(provider, conversationId);
+    let conversation: AgentChatCrossMachineForkTransport | undefined;
+    if (!freshReason && conversationId) {
+      const packed = packageCliConversation({
+        provider,
+        conversationId,
+        laneWorktreePath: lane.worktreePath,
+        configHome,
+        findClaudeTranscript: (id, cwd, root) => findClaudeSessionTranscript(id, cwd, root),
+        collectClaudeSideFiles: (id, transcriptPath) => collectClaudeForkSideFiles(id, transcriptPath),
+        findCodexRollout: (id, home) => findCodexRolloutPathBySessionId(id, {
+          logger,
+          ...(home ? { env: { CODEX_HOME: home } } : {}),
+        }) ?? (home ? findCodexRolloutPathBySessionId(id, { logger }) : null),
+      });
+      if (packed.conversation) {
+        conversation = packed.conversation;
+        try {
+          enforceCrossMachineForkEncodedBudget(
+            conversation,
+            undefined,
+            CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES - (gitBundle?.contentBase64.length ?? 0),
+          );
+        } catch (error) {
+          if (gitBundle) throw new Error(HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE);
+          logger.warn("agent_chat.cross_machine_cli_conversation_too_large", { sessionId: row.id, error: getErrorMessage(error) });
+          conversation = undefined;
+          freshReason = `This ${cliName} conversation is too large to carry, so the CLI starts fresh there with a brief.`;
+        }
+      } else {
+        freshReason = packed.reason;
+      }
+    }
+
+    const portableText = (value: string): string => {
+      let next = redactSecrets(value);
+      for (const [needle, replacement] of [
+        [lane.worktreePath, "<repo>"],
+        [projectRoot, "<repo>"],
+        [os.homedir(), "~"],
+      ] as const) {
+        if (needle) next = next.split(needle).join(replacement);
+      }
+      return next;
+    };
+    const rawContinuationPrompt = typeof args.continuationPrompt === "string" ? args.continuationPrompt.trim() : "";
+    if (rawContinuationPrompt.length > 4_000) throw new Error("Keep the continuation note under 4,000 characters.");
+    const continuationPrompt = portableText(rawContinuationPrompt);
+    const launch = cliMoveLaunch(metadata);
+    const targetModelId = cliMoveModelId(provider, launch.model ?? null);
+    const targetDescriptor = getModelById(targetModelId) ?? getAppDefaultModelDescriptor();
+    const context = await cliLifecycle.handoffContext(current);
+    const brief = targetDescriptor
+      ? cutTextAtCodePoint(portableText(cliHandoffBrief(current, context, targetDescriptor).trim()), 16_000)
+      : "";
+    const rawSourceMachineName = await localCrossMachineName();
+    const sourceMachineName = portableText(rawSourceMachineName).slice(0, 200) || "source machine";
+    const rawSourceLaneName = lane.laneType === "primary" ? branchRef : lane.name;
+    const sourceLaneName = portableText(rawSourceLaneName).slice(0, 200) || "handoff lane";
+    const title = agentCliRowTitle(current.goal ?? current.title, current.toolType) ?? cliName;
+    const sourceTitle = cutTextAtCodePoint(portableText(title), 300);
+    const goal = current.goal?.trim() ? cutTextAtCodePoint(portableText(current.goal.trim()), 2_000) : null;
+    const accountEmail = providerAccountEmail(provider, instanceId);
+    const localMachineKey = localCrossMachineKey();
+    const parentId = metadata?.orchestrationParentSessionId?.trim() || null;
+    const batchMove = args.batchMove;
+    const capsule: AgentChatCrossMachineHandoffCapsule = {
+      version: 1,
+      handoffId,
+      createdAt: nowIso(),
+      source: {
+        machineName: sourceMachineName,
+        ...(localMachineKey ? { machineKey: localMachineKey } : {}),
+        sessionId: row.id,
+        provider: provider as AgentChatProvider,
+        model: portableText(launch.model?.trim() || cliName).slice(0, 300),
+        title: sourceTitle,
+        laneName: sourceLaneName,
+        branchRef,
+        headSha,
+        originUrl,
+        ...(parentId ? { orchestrationParentSessionId: parentId, spawnKind: metadata?.spawnKind ?? "subagent" } : {}),
+      },
+      sourceLane: batchMove?.sourceLane ?? { laneId: lane.id, parentLaneId: null, name: sourceLaneName },
+      ...(batchMove?.parentLink ? { parentLink: batchMove.parentLink } : {}),
+      ...(batchMove
+        ? {
+            batchMove: {
+              batchId: batchMove.batchId,
+              laneImportId: batchMove.laneImportId,
+              destinationLaneId: batchMove.destinationLaneId,
+              carriedChanges: batchMove.carriedChanges,
+              snapshotSha: batchMove.snapshotSha,
+              ...(batchMove.note != null ? { note: batchMove.note } : {}),
+              ...(batchMove.modeFallbackReason != null ? { modeFallbackReason: batchMove.modeFallbackReason } : {}),
+            },
+          }
+        : {}),
+      target: { targetModelId },
+      brief,
+      artifacts: { fileChanges: [], commands: [], errors: [] },
+      linearIssues: [],
+      continuationPrompt: continuationPrompt || CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
+      ...(gitBundle ? { gitBundle } : {}),
+      cli: {
+        toolType: current.toolType ?? provider,
+        provider,
+        continuation: conversation ? "resume" : "fresh",
+        ...(conversation ? {} : { freshReason }),
+        ...(conversation ? { conversation } : {}),
+        launch,
+        ...(accountEmail ? { accountEmail } : {}),
+        ...(goal ? { goal } : {}),
+      },
+    };
+    return {
+      capsule,
+      capsuleFingerprint: stableFingerprint(capsule),
+      usedFallbackSummary: !conversation,
+      sanitizedSensitiveContext: sourceMachineName !== rawSourceMachineName || sourceTitle !== title || sourceLaneName !== rawSourceLaneName,
+    };
+  };
+
+  /**
+   * The last check before a CLI's capsule is sent (and before a stored one is
+   * resent): the lane still matches, the CLI has not been started again, and
+   * its conversation file is still what the capsule carries.
+   */
+  const validateCliCrossMachineSource = async (
+    args: AgentChatValidateCrossMachineSourceArgs,
+    row: TerminalSessionSummary,
+  ): Promise<void> => {
+    const cli = args.capsule.cli;
+    if (!cli) throw new Error("The prepared move no longer matches the source CLI session.");
+    if (row.archivedAt) throw new Error("This CLI session was archived after the move was prepared.");
+    if (cliMoveProvider(row) !== cli.provider) {
+      throw new CrossMachineSourceStaleError("The CLI session changed after the move was prepared. Move it again.");
+    }
+    const includeChanges = args.includeChanges ?? Boolean(args.capsule.gitBundle);
+    const current = await requireCrossMachineLaneReady(row.laneId, { includeChanges, label: "This CLI session" });
+    await requireCrossMachineLaneMatchesCapsule(current, args.capsule, includeChanges);
+    const live = typeof ptyService?.hasLivePty === "function" ? ptyService.hasLivePty(row.id) : row.status === "running";
+    if (live) {
+      throw new CrossMachineSourceStaleError("The CLI was started again after the move was prepared. Move it again.");
+    }
+    const conversation = cli.conversation;
+    if (!conversation) return;
+    const instanceId = row.resumeMetadata?.instanceId?.trim() || row.resumeMetadata?.launch?.instanceId?.trim() || null;
+    const configHome = cliMoveConfigHome(cli.provider, instanceId);
+    const sourcePath = conversation.kind === "claude-jsonl"
+      ? findClaudeSessionTranscript(conversation.nativeSessionId, current.lane.worktreePath, configHome)?.transcriptPath ?? null
+      : findCodexRolloutPathBySessionId(conversation.nativeSessionId, { logger, ...(configHome ? { env: { CODEX_HOME: configHome } } : {}) })
+        ?? findCodexRolloutPathBySessionId(conversation.nativeSessionId, { logger });
+    let unchanged = false;
+    try {
+      const packed = decodeCrossMachineForkFile(conversation.mainFile, CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED, "CLI conversation");
+      unchanged = Boolean(sourcePath) && fs.readFileSync(sourcePath!).equals(packed);
+    } catch {
+      unchanged = false;
+    }
+    if (!unchanged) {
+      throw new CrossMachineSourceStaleError("The CLI's conversation changed after the move was prepared. Move it again.");
+    }
+  };
+
+  /**
+   * A moved CLI's move ended without anything reaching the destination: the
+   * CLI this move stopped starts again, resuming its conversation.
+   */
+  const restartCliAfterUnsentMove = (sessionId: string, record: AgentChatCrossMachineHandoffRecord): void => {
+    if (cliStoppedByMove.get(sessionId) !== record.handoffId) return;
+    cliStoppedByMove.delete(sessionId);
+    if (record.state !== "failed" && record.state !== "cancelled") return;
+    // The destination may hold it (its capsule is kept for a reconciling retry).
+    if (crossMachineSource.outbox.read(record.handoffId)) return;
+    if (!ptyService?.resumeSession) return;
+    void ptyService.resumeSession({ sessionId }).then(() => {
+      logger.info("agent_chat.cross_machine_cli_restarted_after_failed_move", { sessionId, handoffId: record.handoffId });
+    }).catch((error) => {
+      logger.warn("agent_chat.cross_machine_cli_restart_failed", { sessionId, error: getErrorMessage(error) });
+    });
   };
 
   const preflightCrossMachineDestination = async (
@@ -54047,13 +55054,20 @@ export function createAgentChatService(args: {
     const warnings: string[] = [];
     const targetId = args.targetModelId?.trim();
     const targetDescriptor = targetId ? getModelById(targetId) ?? resolveModelAlias(targetId) : undefined;
-    if (!targetDescriptor || targetDescriptor.deprecated) {
+    // A moved agent CLI runs its own CLI here with its own model and sign-in,
+    // so the chat model checks don't apply; the CLI says what it needs when
+    // it starts (cliCrossMachineMove.ts).
+    const cliToolType = args.cliToolType?.trim() || null;
+    if (cliToolType && !isTrackedAgentCliToolType(cliToolType as TerminalToolType)) {
+      blockingErrors.push(`ADE here doesn't know the '${cliToolType}' CLI. Update ADE on this machine.`);
+    }
+    if (!cliToolType && (!targetDescriptor || targetDescriptor.deprecated)) {
       blockingErrors.push(`Model '${targetId || "unknown"}' is not supported by this ADE runtime.`);
     }
 
-    let providerAuthorized = false;
-    let modelAvailable = false;
-    if (targetDescriptor) {
+    let providerAuthorized = Boolean(cliToolType);
+    let modelAvailable = Boolean(cliToolType);
+    if (targetDescriptor && !cliToolType) {
       const targetProvider = resolveProviderGroupForModel(targetDescriptor);
       try {
         const availableModels = await getAvailableModels({
@@ -54252,7 +55266,11 @@ export function createAgentChatService(args: {
 
     const sourceProvider = typeof args.sourceProvider === "string" ? args.sourceProvider.trim() : "";
     let forkHandoffSupport: AgentChatCrossMachineDestinationPreflightResult["forkHandoffSupport"];
-    if (sourceProvider) {
+    if (cliToolType) {
+      // A CLI's conversation is placed as a file and resumed by the CLI, or it
+      // starts fresh with a brief: either way this machine can take it.
+      forkHandoffSupport = { supported: true };
+    } else if (sourceProvider) {
       if (!providerSupportsCrossMachineHandoffFork(sourceProvider)) {
         forkHandoffSupport = {
           supported: false,
@@ -54303,6 +55321,7 @@ export function createAgentChatService(args: {
       ...(laneFastForward ? { laneFastForward } : {}),
       gitBundleSupport: true,
       batchMoveSupport: 1,
+      cliMoveSupport: 1,
     };
   };
 
@@ -54665,6 +55684,164 @@ export function createAgentChatService(args: {
     }
   };
 
+  /** What a moved CLI's accept answers: its row stands in for the chat a chat move returns. */
+  const cliArrivalResult = (args: {
+    handoffId: string;
+    laneId: string;
+    sessionId: string;
+    capsule: AgentChatCrossMachineHandoffCapsule;
+    reusedLane: boolean;
+    reusedSession: boolean;
+    arrival: AgentChatCrossMachineCliArrival;
+  }): AgentChatAcceptCrossMachineHandoffResult => ({
+    handoffId: args.handoffId,
+    laneId: args.laneId,
+    session: {
+      id: args.sessionId,
+      laneId: args.laneId,
+      provider: args.capsule.source.provider,
+      model: args.capsule.cli?.launch.model?.trim() || args.capsule.source.model,
+      modelId: args.capsule.target.targetModelId,
+      status: "idle",
+      surface: "work",
+      createdAt: nowIso(),
+      lastActivityAt: nowIso(),
+    } as unknown as AgentChatSession,
+    reusedLane: args.reusedLane,
+    reusedSession: args.reusedSession,
+    // A CLI's scheduled work stays on the source machine.
+    scheduledWorkIds: [],
+    cli: args.arrival,
+  });
+
+  /**
+   * The destination half of a CLI move, once its lane is ready here: the
+   * conversation file goes where the CLI looks for it under this lane's path,
+   * the CLI row is made in the lane, and the CLI resumes it; without a
+   * conversation (or when the resume fails) a fresh CLI starts with the brief.
+   * The row id is derived from the handoff id, so a retry finds the row the
+   * first attempt made instead of starting a second CLI.
+   */
+  const acceptCliArrival = async (args: {
+    capsule: AgentChatCrossMachineHandoffCapsule;
+    handoffId: string;
+    destinationLane: LaneSummary;
+    reusedLane: boolean;
+    record: CrossMachineHandoffRecord;
+  }): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
+    const { capsule, handoffId, destinationLane } = args;
+    const cli = capsule.cli!;
+    const sessionId = crossMachineDestinationSessionId(handoffId);
+    const existing = sessionService.get(sessionId);
+    if (existing) {
+      // A retry after the CLI started: the row is the answer.
+      crossMachineDestination.persistHandoffRecord({
+        ...args.record,
+        state: "complete",
+        sessionId,
+        updatedAt: nowIso(),
+        lastError: null,
+      });
+      return cliArrivalResult({
+        handoffId,
+        laneId: existing.laneId,
+        sessionId,
+        capsule,
+        reusedLane: args.reusedLane,
+        reusedSession: true,
+        arrival: { continuation: existing.resumeMetadata?.targetId ? "resume" : "fresh", notice: cli.freshReason ?? null },
+      });
+    }
+    const notices: string[] = [];
+    // The account travels as its email; this machine's account with that
+    // email, else this machine's default account for the agent.
+    const keptInstanceId = cli.accountEmail ? localProviderAccountByEmail(cli.provider, cli.accountEmail) : null;
+    if (cli.accountEmail && !keptInstanceId && isProviderInstanceProvider(cli.provider)) {
+      notices.push(`${cli.accountEmail} isn't signed in here, so the CLI uses this machine's default ${cliProviderName(cli.provider)} account.`);
+    }
+    const instanceId = keptInstanceId ?? currentDefaultInstanceId(cli.provider) ?? null;
+    let resumeTargetId: string | null = null;
+    if (cli.continuation === "resume" && cli.conversation) {
+      const configHome = cliMoveConfigHome(cli.provider, instanceId)
+        ?? (cli.provider === "codex" ? defaultCodexHome() : claudeConfigDir());
+      try {
+        const mainContent = decodeCrossMachineForkFile(cli.conversation.mainFile, CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED, "CLI conversation");
+        const sideFiles = (cli.conversation.sideFiles ?? []).map((sideFile) => ({
+          relPath: sideFile.relPath,
+          content: decodeCrossMachineForkFile(sideFile, CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED, `CLI side file '${sideFile.relPath}'`),
+        }));
+        const placed = await placeCliConversation({
+          conversation: cli.conversation,
+          mainContent,
+          sideFiles,
+          targetCwd: destinationLane.worktreePath,
+          configHome,
+        });
+        resumeTargetId = placed.conversationId;
+      } catch (error) {
+        logger.warn("agent_chat.cross_machine_cli_conversation_place_failed", { handoffId, error: getErrorMessage(error) });
+        notices.push(`Started a new CLI with a brief: ADE couldn't write its conversation here (${getErrorMessage(error)}).`);
+      }
+    } else if (cli.freshReason) {
+      notices.push(cli.freshReason);
+    }
+    const toolType = cli.toolType as TerminalToolType;
+    const title = capsule.source.title?.trim() || cliProviderName(cli.provider);
+    const parent = capsule.parentLink
+      ? { sessionId: capsule.parentLink.destinationParentSessionId, spawnKind: capsule.parentLink.spawnKind }
+      : null;
+    const launched = await cliLifecycle.launchMovedCli({
+      id: sessionId,
+      laneId: destinationLane.id,
+      title,
+      toolType,
+      provider: cli.provider,
+      resumeMetadata: {
+        provider: cli.provider as TerminalResumeMetadata["provider"],
+        targetKind: cli.provider === "codex" ? "thread" : "session",
+        targetId: resumeTargetId,
+        launch: {
+          ...cli.launch,
+          ...(instanceId ? { instanceId } : {}),
+        },
+        ...(instanceId ? { instanceId } : {}),
+        ...(cli.launch.presetId ? { presetId: cli.launch.presetId } : {}),
+      },
+      resumeTargetId,
+      brief: [
+        `This CLI session moved here from ${capsule.source.machineName}; continue its work in this folder.`,
+        "",
+        capsule.brief,
+        ...(capsule.continuationPrompt !== CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT ? ["", `Note: ${capsule.continuationPrompt}`] : []),
+      ].join("\n"),
+      goal: cli.goal ?? null,
+      parent,
+    });
+    if (launched.notice) notices.push(launched.notice);
+    crossMachineDestination.persistHandoffRecord({
+      ...args.record,
+      state: "complete",
+      laneId: destinationLane.id,
+      sessionId,
+      updatedAt: nowIso(),
+      lastError: null,
+    });
+    logger.info("agent_chat.cross_machine_cli_arrived", {
+      handoffId,
+      provider: cli.provider,
+      continuation: launched.mode,
+    });
+    return cliArrivalResult({
+      handoffId,
+      laneId: destinationLane.id,
+      sessionId,
+      capsule,
+      reusedLane: args.reusedLane,
+      reusedSession: false,
+      arrival: { continuation: launched.mode, notice: notices.join(" ") || null },
+    });
+  };
+
   const acceptCrossMachineHandoffCore = async (
     args: AgentChatAcceptCrossMachineHandoffArgs,
   ): Promise<AgentChatAcceptCrossMachineHandoffResult> => {
@@ -54715,7 +55892,26 @@ export function createAgentChatService(args: {
       throw new Error("The destination lane import has not completed for this batch chat.");
     }
     if (
-      (priorRecord?.state === "complete" || priorRecord?.state === "dispatched")
+      capsule.cli
+      && priorRecord?.state === "complete"
+      && priorRecord.laneId
+      && priorRecord.sessionId
+      && sessionService.get(priorRecord.sessionId)
+    ) {
+      const row = sessionService.get(priorRecord.sessionId)!;
+      return cliArrivalResult({
+        handoffId,
+        laneId: priorRecord.laneId,
+        sessionId: priorRecord.sessionId,
+        capsule,
+        reusedLane: true,
+        reusedSession: true,
+        arrival: { continuation: row.resumeMetadata?.targetId ? "resume" : "fresh", notice: capsule.cli.freshReason ?? null },
+      });
+    }
+    if (
+      !capsule.cli
+      && (priorRecord?.state === "complete" || priorRecord?.state === "dispatched")
       && priorRecord.laneId
       && priorRecord.sessionId
     ) {
@@ -54764,6 +55960,7 @@ export function createAgentChatService(args: {
       ...(capsule.batchMove
         ? { requireBatchMoveSupport: true, batchLaneImportId: capsule.batchMove.laneImportId }
         : {}),
+      ...(capsule.cli ? { cliToolType: capsule.cli.toolType } : {}),
     }, { ownedLaneId: priorRecord?.laneId ?? batchLaneRecord?.laneId ?? null });
     if (capsule.batchMove && destinationPreflight.batchMoveSupport !== 1) {
       throw new Error("This ADE destination needs an update to accept batch moves safely.");
@@ -54878,6 +56075,16 @@ export function createAgentChatService(args: {
       }
       record = { ...record, state: "lane_ready", laneId: destinationLane.id, updatedAt: nowIso(), lastError: null };
       crossMachineDestination.persistHandoffRecord(record);
+
+      if (capsule.cli) {
+        return await acceptCliArrival({
+          capsule,
+          handoffId,
+          destinationLane,
+          reusedLane: capsule.batchMove ? batchLaneRecord?.reusedLane ?? false : reusedLane,
+          record,
+        });
+      }
 
       const targetDescriptor = getModelById(capsule.target.targetModelId) ?? resolveModelAlias(capsule.target.targetModelId);
       if (!targetDescriptor || targetDescriptor.deprecated) {
@@ -55426,7 +56633,11 @@ export function createAgentChatService(args: {
   const writeCrossMachineMove = (sessionId: string, value: CrossMachineHandoffPersisted | null): void => {
     crossMachineSource.writeMove(sessionId, value);
     const managed = managedSessions.get(sessionId);
-    if (!managed) return;
+    if (!managed) {
+      // A moved CLI's Work row re-reads its move (`crossMachineHandoff` on the row).
+      if (cliMoveRow(sessionId)) sessionService.notifyChanged(sessionId);
+      return;
+    }
     // Live clients (the banner) follow this; cold ones read the summary.
     emitLiveOnlyChatEvent(managed, {
       type: "system_notice",
@@ -55454,6 +56665,9 @@ export function createAgentChatService(args: {
   crossMachineHandoff = createCrossMachineHandoffOrchestrator({
     transport: () => crossMachineHandoffTransport?.() ?? null,
     getSource: (sessionId) => {
+      // A tracked agent CLI moves too (cliCrossMachineMove.ts).
+      const cliRow = cliMoveRow(sessionId);
+      if (cliRow) return cliMoveSource(cliRow);
       const managed = tryManagedSession(sessionId);
       if (!managed) return null;
       const blocked = resolveHandoffBlockedReason(managed);
@@ -55474,11 +56688,16 @@ export function createAgentChatService(args: {
     },
     readPersisted: readCrossMachineMove,
     writePersisted: writeCrossMachineMove,
-    chatExists: (sessionId) => tryManagedSession(sessionId) !== null,
+    chatExists: (sessionId) => cliMoveRow(sessionId) !== null || tryManagedSession(sessionId) !== null,
     listPersisted: crossMachineSource.listMoves,
     batch: {
       ...crossMachineBatchSource,
       interruptBatchChat: async (sessionId) => {
+        if (cliMoveRow(sessionId)) {
+          // The CLI's own cancel key; the process stays up until the move stops it.
+          await ptyService?.interruptAgentCli?.(sessionId);
+          return;
+        }
         await interruptProviderTurn({ sessionId, mode: "stop_and_clear" });
       },
       // A record of the request; the person answers it above the composer
@@ -55504,6 +56723,8 @@ export function createAgentChatService(args: {
       },
     },
     inspectSource: async (sessionId) => {
+      const cliRow = cliMoveRow(sessionId);
+      if (cliRow) return crossMachineSource.inspect(sessionId, cliRow.laneId);
       // Deleted between getSource and here: the same answer getSource gives.
       const managed = tryManagedSession(sessionId);
       if (!managed) throw new Error("The source chat could not be loaded.");
@@ -55520,9 +56741,21 @@ export function createAgentChatService(args: {
       }
       return ids;
     },
-    prepare: (prepareArgs) => prepareCrossMachineHandoff(prepareArgs),
+    prepare: (prepareArgs) => {
+      const cliRow = cliMoveRow(prepareArgs.sourceSessionId);
+      return cliRow ? prepareCliCrossMachineMove(prepareArgs, cliRow) : prepareCrossMachineHandoff(prepareArgs);
+    },
     validateSource: (validateArgs) => validateCrossMachineSource(validateArgs),
-    markSource: (markArgs) => markCrossMachineHandoff(markArgs),
+    markSource: async (markArgs) => {
+      // A CLI has no transcript to mark: its move record is the marker, and it
+      // was stopped when the move was prepared.
+      if (cliMoveRow(markArgs.sourceSessionId)) {
+        cliStoppedByMove.delete(markArgs.sourceSessionId);
+        sessionService.notifyChanged(markArgs.sourceSessionId);
+        return;
+      }
+      await markCrossMachineHandoff(markArgs);
+    },
     outbox: crossMachineSource.outbox,
     showApprovalCard: (sessionId, card) => {
       void emitAdeCard({
@@ -55543,6 +56776,10 @@ export function createAgentChatService(args: {
       });
     },
     noticeEnded: (sessionId, notice) => {
+      if (cliMoveRow(sessionId)) {
+        restartCliAfterUnsentMove(sessionId, notice.record);
+        return;
+      }
       // A deleted chat has no transcript to note it in.
       const managed = tryManagedSession(sessionId);
       if (!managed) return;
@@ -67301,6 +68538,15 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatInterruptResult> =>
     interruptTree(args, { ...internalOptions, cancelAutoResume: true }, new Set());
 
+  /** The public Stop: a tracked agent CLI gets its provider's cancel key (`agentCliSessionActions.ts`). */
+  const stopRequestedOrCliInterrupt = async (
+    args: AgentChatInterruptArgs,
+    internalOptions: { requireClaudeProviderInterrupt?: boolean; keepProviderQueue?: boolean } = {},
+  ): Promise<AgentChatInterruptResult> => {
+    const cli = agentCliActions.target(args?.sessionId, "stop");
+    return cli ? await agentCliActions.interrupt(cli, args) : await stopRequested(args, internalOptions);
+  };
+
   /** `interrupt`, carrying the chats already stopped so a cycle cannot loop. */
   const interruptTree = async (
     args: AgentChatInterruptArgs,
@@ -69750,7 +70996,13 @@ export function createAgentChatService(args: {
       const summary = await getSessionSummary(sessionId).catch(() => null);
       const row = sessionService.get(sessionId);
       const title = summary?.title?.trim() || row?.title?.trim() || sessionId;
-      const status = summary?.status ?? "gone";
+      // A tracked agent CLI has no chat summary: say where its turn is.
+      const cliStatus = !summary && row?.tracked && isTrackedAgentCliToolType(row.toolType)
+        ? (row.status !== "running" ? "ended"
+          : row.runtimeState === "running" ? "working"
+            : row.runtimeState === "waiting-input" ? "waiting on input" : "idle at its prompt")
+        : null;
+      const status = summary?.status ?? cliStatus ?? "gone";
       const tail = row?.statusNote?.trim() || summary?.summary?.trim() || "";
       return `- "${title}" (${sessionId}): ${status}${tail ? ` — ${cutTextAtCodePoint(tail.replace(/\s+/g, " "), 240)}` : ""}`;
     },
@@ -73470,7 +74722,37 @@ export function createAgentChatService(args: {
       : null),
     importSession: (importArgs, reopen) => importExternalChatSession(importArgs, reopen),
     loadDetail: (detailArgs, options) => loadExternalSessionDetail(detailArgs, options),
+    reopenCli: (reopenArgs) => cliLifecycle.reopenCli(reopenArgs),
+    readCliTerminalTail: (transcriptPath) => cliLifecycle.readTerminalTail(transcriptPath),
   });
+
+  // Delete, archive and Recently deleted for tracked agent CLI terminals, so
+  // they behave like chats. See cliSessionLifecycle.ts.
+  const cliLifecycle = createCliSessionLifecycle({
+    sessionService,
+    ptyService: ptyService ?? null,
+    getLane: (laneId) => db?.get?.<{ name: string | null; worktreePath: string | null }>(
+      "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
+      [laneId],
+    ) ?? null,
+    rememberCli: (input) => deletedChats.rememberCli(input),
+    // Without terminals here there is no process to stop or wait on.
+    midTurn: (sessionId) => Boolean(ptyService) && agentCliWakeDeferred(sessionId),
+    loadProviderDetail: (detailArgs, options) => loadExternalSessionDetail(detailArgs, options),
+    readCliTranscript: (sessionId) => readCliTranscript(sessionId),
+    logger,
+  });
+
+  /** Scheduled work aimed at a session that is going away goes with it. */
+  const cancelScheduledWorkFor = async (sessionId: string): Promise<void> => {
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) return;
+    await Promise.all(
+      scheduledWorkScheduler.list(sessionId).map((schedule) => scheduledWorkScheduler!.cancel(schedule.id)),
+    ).catch((error: unknown) => {
+      logger.warn("agent_chat.scheduled_work_cancel_failed", { sessionId, error: getErrorMessage(error) });
+    });
+  };
 
   /**
    * Records a deleted chat; `remember` false keeps it hidden (ADE's own
@@ -73552,6 +74834,11 @@ export function createAgentChatService(args: {
       // below already is: a chat this runtime does not have is a delete that
       // has nothing left to do, not a failure the user has to act on.
       return { recoverable: false };
+    }
+    if (isTrackedAgentCliRow(existing)) {
+      // An agent CLI terminal deletes like a chat: stopped, kept in Recently deleted.
+      await cancelScheduledWorkFor(trimmedSessionId);
+      return await cliLifecycle.deleteCli(existing, { remember: deleteOptions.remember === true });
     }
     if (!isChatToolType(existing.toolType)) {
       throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
@@ -73744,6 +75031,11 @@ export function createAgentChatService(args: {
     warmIdleCompaction.clear(trimmedSessionId);
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    if (isTrackedAgentCliRow(existing)) {
+      await cancelScheduledWorkFor(trimmedSessionId);
+      cliLifecycle.archiveCli(existing);
+      return;
+    }
     if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
     // Archiving a main chat ends its side chat: a side chat has no life of its own.
     await deleteSideChatOf(trimmedSessionId);
@@ -73793,6 +75085,10 @@ export function createAgentChatService(args: {
     if (!trimmedSessionId.length) throw new Error("Chat session id is required.");
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+    if (isTrackedAgentCliRow(existing)) {
+      cliLifecycle.unarchiveCli(existing);
+      return;
+    }
     if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
     sessionService.unarchiveSession(trimmedSessionId);
   };
@@ -73833,6 +75129,10 @@ export function createAgentChatService(args: {
     // its own terminal disposal as every CLI child stopping.
     cliChildReportsClosed = true;
     unsubscribeCliChildExit?.();
+    unsubscribeCliChildTurnEnded?.();
+    unsubscribeCliChildTurnStarted?.();
+    settleAllCliTurnWaiters();
+    cliCardInputs.cancelAll();
     clearCursorCloudMirrorWatches();
     clearAllCursorCloudHydrationState();
     clearAllDevinCloudAttentionState();
@@ -74176,13 +75476,138 @@ export function createAgentChatService(args: {
   // (natural exit, close, orphan dispose) reaches this listener after the row
   // is ended; unparented terminals are a single row read and a no-op.
   let cliChildReportsClosed = false;
+
+  // Callers waiting for a tracked CLI's turn to end (`waitForCliTurn`): an
+  // automation step that started a CLI, which used to count as done the moment
+  // the terminal opened.
+  type CliTurnWaitReason = "turn_ended" | "needs_input" | "exited" | "closed" | "timeout";
+  const cliTurnWaiters = new Map<string, Set<(reason: CliTurnWaitReason) => void>>();
+  const settleCliTurnWaiters = (sessionId: string, reason: CliTurnWaitReason): void => {
+    const waiters = cliTurnWaiters.get(sessionId);
+    if (!waiters) return;
+    cliTurnWaiters.delete(sessionId);
+    for (const settle of waiters) settle(reason);
+  };
+  const settleAllCliTurnWaiters = (): void => {
+    for (const sessionId of [...cliTurnWaiters.keys()]) settleCliTurnWaiters(sessionId, "closed");
+  };
+  /** How often a pty surface without turn signals is asked whether the turn is over. */
+  const CLI_TURN_WAIT_FALLBACK_POLL_MS = 5_000;
+
+  /**
+   * Wait for the current (or next) turn of a tracked agent CLI to end, then
+   * answer what it left: its closing message, else its last terminal lines.
+   * Settles on the turn-end signal, the CLI exiting, the service closing, or
+   * the timeout. Only where the pty surface has no turn signal does it poll,
+   * and only while someone waits.
+   */
+  const waitForCliTurn = async (args: { sessionId: string; timeoutMs?: number | null }): Promise<{
+    sessionId: string;
+    status: "completed" | "failed" | "stopped" | "timed_out" | "needs_input";
+    output: string;
+  }> => {
+    const sessionId = args.sessionId.trim();
+    const tracked = readTrackedCliRow(sessionId);
+    if (!tracked) throw new Error(`Session '${sessionId}' is not a tracked agent CLI session.`);
+    const timeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
+      ? Math.floor(args.timeoutMs)
+      : 2 * 60 * 60_000;
+    const reason = tracked.row.status !== "running"
+      ? "exited" as const
+      : cliChildReportsClosed
+        ? "closed" as const
+        : await new Promise<CliTurnWaitReason>((resolve) => {
+          let pollTimer: ReturnType<typeof setTimeout> | null = null;
+          let sawTurn = false;
+          const settle = (value: CliTurnWaitReason) => {
+            clearTimeout(timer);
+            if (pollTimer) clearTimeout(pollTimer);
+            const waiters = cliTurnWaiters.get(sessionId);
+            waiters?.delete(settle);
+            if (waiters && waiters.size === 0) cliTurnWaiters.delete(sessionId);
+            resolve(value);
+          };
+          const timer = setTimeout(() => settle("timeout"), timeoutMs);
+          timer.unref?.();
+          const waiters = cliTurnWaiters.get(sessionId) ?? new Set();
+          waiters.add(settle);
+          cliTurnWaiters.set(sessionId, waiters);
+          if (ptyService?.onTrackedCliTurnEnded) return;
+          const poll = () => {
+            const status = getCliTurnStatus(sessionId);
+            if (!status || status.cliSession?.status !== "running") return settle("exited");
+            const busy = ptyService?.canAcceptScheduledTurn(sessionId) !== true;
+            if (busy) sawTurn = true;
+            else if (sawTurn) return settle("turn_ended");
+            pollTimer = setTimeout(poll, CLI_TURN_WAIT_FALLBACK_POLL_MS);
+            pollTimer.unref?.();
+          };
+          pollTimer = setTimeout(poll, CLI_TURN_WAIT_FALLBACK_POLL_MS);
+          pollTimer.unref?.();
+        });
+    const row = readTrackedCliRow(sessionId)?.row ?? tracked.row;
+    const provider = tracked.lineage?.provider ?? row.resumeMetadata?.provider ?? providerFromTool(row.toolType ?? null) ?? "";
+    await ptyService?.waitForResumeTargetBackfill?.(row.id);
+    const providerMessage = provider ? await readCliProviderMessage(readTrackedCliRow(sessionId)?.row ?? row, provider) : null;
+    const terminalTail = await readCliTerminalTail(row.id);
+    if (reason === "timeout" || reason === "closed" || reason === "needs_input") {
+      const lead = reason === "timeout"
+        ? "The CLI was still working when the wait ran out."
+        : reason === "needs_input"
+          ? "The CLI stopped at a prompt that needs an answer in its terminal."
+          : "ADE stopped before the CLI's turn ended.";
+      const body = providerMessage?.trim() || terminalTail?.trim() || "";
+      return {
+        sessionId,
+        status: reason === "needs_input" ? "needs_input" : "timed_out",
+        output: body ? `${lead}\n${body}` : lead,
+      };
+    }
+    const endStatus = reason === "exited" ? cliChildResultStatus(row) ?? "completed" : "completed";
+    const status = endStatus === "stopped" && providerMessage ? "completed" : endStatus;
+    return {
+      sessionId,
+      status,
+      output: composeCliChildReport({ status, exitCode: row.exitCode ?? null, providerMessage, terminalTail }),
+    };
+  };
+
   const unsubscribeCliChildExit = ptyService?.onExit?.((event) => {
+    settleCliTurnWaiters(event.sessionId, "exited");
+    // Nobody is left in the terminal to read a card's answer.
+    cliCardInputs.cancelAll(event.sessionId);
+    mirrorClaudeCliScheduledWork(event.sessionId);
     void reportCliChildEnded(event.sessionId, "exit").catch((error) => {
       logger.warn("agent_chat.cli_child_exit_report_failed", {
         childSessionId: event.sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  }) ?? null;
+  // Its finished turns too: an agent CLI waits at its prompt rather than
+  // exiting, so the exit alone left a parent waiting forever.
+  const unsubscribeCliChildTurnEnded = ptyService?.onTrackedCliTurnEnded?.((event) => {
+    // A turn end guessed from quiet output is taken only when the CLI's
+    // composer is visibly back (the check scheduled work uses), so a CLI that
+    // thinks quietly is not reported, or its automation step settled, mid-turn.
+    if (event.source === "heuristic" && ptyService?.canAcceptScheduledTurn(event.sessionId) !== true) return;
+    void reportCliChildTurnEnded(event).catch((error) => {
+      logger.warn("agent_chat.cli_child_turn_report_failed", {
+        childSessionId: event.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    // A turn that stops on a prompt is not over: the person may answer it, and
+    // the same turn then ends again with `done`. The waiter keeps waiting.
+    if (!event.outcome || event.outcome === "done") {
+      settleCliTurnWaiters(event.sessionId, "turn_ended");
+      // A move queued for this CLI's turn end (`--when-turn-ends`, a batch) runs now.
+      crossMachineHandoff?.onTurnSettled(event.sessionId);
+    }
+    mirrorClaudeCliScheduledWork(event.sessionId);
+  }) ?? null;
+  const unsubscribeCliChildTurnStarted = ptyService?.onTrackedCliTurnStarted?.((event) => {
+    reopenCliChildCardOnTurnStart(event.sessionId);
   }) ?? null;
 
   // --- Warm-runtime budget participation ---
@@ -77977,7 +79402,11 @@ export function createAgentChatService(args: {
       return buildStructuredQuestion(prompt, options);
     };
 
-    const managed = ensureManagedSession(args.chatSessionId);
+    // A tracked agent CLI (an `ade secrets request`, `ade mcp servers add` or
+    // ask from its terminal) has no transcript to put the card in: the card is
+    // held for its session and shown on its Work surface (`cliCardInputs`).
+    const cliCardSessionId = cliCardTargetSessionId(args.chatSessionId);
+    const managed = cliCardSessionId ? null : ensureManagedSession(args.chatSessionId);
     const itemId = randomUUID();
     const fallbackQuestions = inferQuestionsFromBody(args.body) ?? [{ id: "answer", header: "Question 1", question: args.body, allowsFreeform: true }];
     const requestedQuestions = args.questions?.length ? args.questions : fallbackQuestions;
@@ -78025,9 +79454,19 @@ export function createAgentChatService(args: {
       blocking: true,
       canProceedWithoutAnswer: false,
       ...(args.providerMetadata ? { providerMetadata: args.providerMetadata } : {}),
-      turnId: managed.runtime?.activeTurnId ?? null,
+      turnId: managed?.runtime?.activeTurnId ?? null,
       ...(args.subagent ? { subagent: args.subagent } : {}),
     };
+
+    if (!managed) {
+      const answered = await cliCardInputs.ask(cliCardSessionId!, request, {
+        timeoutMs: args.timeoutMs,
+        signal: args.signal,
+        beforeAccept: args.beforeAccept,
+        normalizeAnswers: (answers, responseText) => normalizePendingInputAnswers(request, answers, responseText),
+      });
+      return answered;
+    }
 
     let timedOut = false;
     let expiry: ReturnType<typeof setTimeout> | null = null;
@@ -78535,6 +79974,12 @@ export function createAgentChatService(args: {
         if (!ptyService) {
           return { retry: true };
         }
+        // A wake the Claude CLI scheduled itself: the process that made it
+        // runs it while it lives. ADE delivers only once that process is gone.
+        const nativeOwnerPtyId = claudeCliScheduleOwnerPtyId(schedule.id);
+        if (nativeOwnerPtyId && row.ptyId === nativeOwnerPtyId && ptyService.hasLivePty?.(schedule.sessionId)) {
+          return { complete: true, outcomeSummary: "Run by the Claude CLI's own scheduler." };
+        }
         try {
           const sent = await ptyService.sendToSession({
             sessionId: schedule.sessionId,
@@ -78737,6 +80182,43 @@ export function createAgentChatService(args: {
       // A guest's draft keeps its author, which makes it a plain prompt
       // (`isPlainPromptMessage`) even when the owner sends it.
       const guestAuthor = author?.kind === "guest" ? author : null;
+      const row = sessionService.get(sessionId);
+      if (row && !isChatToolType(row.toolType)) {
+        // A terminal row has no chat to message, and `messageSession` would
+        // refuse it on every retry. A tracked agent CLI takes the text typed at
+        // its prompt, the way scheduled work and wakes reach it; anything else
+        // is a plain shell with nobody to read it. Both refusals are permanent
+        // (`blocked`), so the row says why instead of retrying forever.
+        if (!isTrackedAgentCliSession(sessionId)) {
+          throw new DraftDeliveryUnsupportedError(
+            "This send is aimed at a terminal with no agent in it. Pick a chat or an agent CLI session.",
+          );
+        }
+        if (attachments.length > 0) {
+          throw new DraftDeliveryUnsupportedError(
+            "A CLI session cannot take attached images. Remove them or pick a chat.",
+          );
+        }
+        let delivered: "delivered" | "deferred";
+        try {
+          delivered = await deliverWakeToSession({ sessionId, text, kind: "auto" });
+        } catch (error) {
+          // `deliverWakeToSession` already turns "not now" (mid-turn, run by
+          // another runtime) into "deferred", so a pre-delivery refusal that
+          // still reaches here is one no retry fixes: nothing to resume, no
+          // resume command.
+          if (isPtySendPreDeliveryError(error)) {
+            throw new DraftDeliveryUnsupportedError(error.message);
+          }
+          throw error;
+        }
+        if (delivered === "deferred") {
+          // Nothing was typed. A transient throw keeps the row armed and the
+          // scheduler comes back once the CLI's turn has ended.
+          throw new Error("The CLI session is mid-turn. This send goes out when its prompt is free.");
+        }
+        return;
+      }
       await messageSession({
         sessionId,
         text,
@@ -79365,7 +80847,12 @@ export function createAgentChatService(args: {
     handoffSession,
     startSideChat,
     endSideChat,
-    prepareCrossMachineHandoff: (prepareArgs: AgentChatPrepareCrossMachineHandoffArgs) => prepareCrossMachineHandoff(prepareArgs),
+    prepareCrossMachineHandoff: async (prepareArgs: AgentChatPrepareCrossMachineHandoffArgs) => {
+      const cliRow = cliMoveRow(prepareArgs.sourceSessionId);
+      return cliRow
+        ? await prepareCliCrossMachineMove(prepareArgs, cliRow)
+        : await prepareCrossMachineHandoff(prepareArgs);
+    },
     prepareLaneShareMove,
     checkLaneShareMoveDestination,
     acceptLaneShareMove,
@@ -79381,6 +80868,25 @@ export function createAgentChatService(args: {
     getCrossMachineHandoffOptions: (options: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().getOptions(options.sourceSessionId),
     getCrossMachineMoveLock,
+    /** Where a tracked agent CLI that moved away continues, for the terminal's resume guard. */
+    getCliMoveLock: (sessionId: string): CrossMachineMoveLock | null =>
+      cliMoveRow(sessionId) ? getCrossMachineMoveLock(sessionId.trim(), "cli_resume") : null,
+    /**
+     * The latest move of each tracked agent CLI row asked for, for the Work
+     * list (a chat's comes with its summary). One kv read per CLI row.
+     */
+    getCliCrossMachineMoves: (sessionIds: readonly string[]): Map<string, AgentChatCrossMachineHandoffRecord> => {
+      const moves = new Map<string, AgentChatCrossMachineHandoffRecord>();
+      // One key-range query names the sessions with a move (another runtime
+      // on this database may have written one); only those rows are read.
+      const withMoves = crossMachineSource.listMoveSessionIds();
+      for (const id of sessionIds) {
+        if (withMoves && !withMoves.has(id)) continue;
+        const record = readCrossMachineMove(id)?.record;
+        if (record) moves.set(id, record);
+      }
+      return moves;
+    },
     /** A PR watch on this chat started or stopped: its row and summary must re-read. */
     notifyPrWatchChanged: (sessionId: string): void => {
       // The list channel for the Work row, the chat channel for its open pane.
@@ -79439,11 +80945,12 @@ export function createAgentChatService(args: {
      * (the desktop IPC, the phone's remote command, the RPC server for the
      * desktop or CTO) stamps it, so a path that forgets errs toward approval.
      */
-    startCrossMachineHandoff: (
+    startCrossMachineHandoff: async (
       startArgs: AgentChatStartCrossMachineHandoffArgs & Partial<CrossMachineMoveCaller>,
     ) => {
       const { requestedBy, requestedFor, requestedBySessionId, requestedByTitle, ...rest } = startArgs;
-      return requireCrossMachineHandoff().start(rest, {
+      refuseAgentMoveOfUnrelatedCli(rest.sourceSessionId, { requestedBy, requestedFor });
+      return await requireCrossMachineHandoff().start(rest, {
         requestedBy: requestedBy === "user" ? "user" : "agent",
         ...(requestedFor ? { requestedFor } : {}),
         ...(requestedBySessionId !== undefined ? { requestedBySessionId } : {}),
@@ -79451,11 +80958,11 @@ export function createAgentChatService(args: {
       });
     },
     /** Same contract as `startCrossMachineHandoff`: only a trusted host stamps who asked. */
-    startCrossMachineBatchMove: (
+    startCrossMachineBatchMove: async (
       startArgs: AgentChatCrossMachineBatchMoveArgs & Partial<CrossMachineBatchMoveCaller>,
     ) => {
       const { requestedBy, requestingSessionId, ...rest } = startArgs;
-      return requireCrossMachineHandoff().startBatch(rest, {
+      return await requireCrossMachineHandoff().startBatch(rest, {
         requestedBy: requestedBy === "user" ? "user" : "agent",
         ...(requestingSessionId !== undefined ? { requestingSessionId } : {}),
       });
@@ -79502,8 +81009,31 @@ export function createAgentChatService(args: {
     updateThreadComment,
     deleteThreadComment,
     listMentionSuggestions,
-    messageSession: (messageArgs: AgentChatMessageSessionArgs, options?: { trustedSpawnCompletion?: boolean }) =>
-      withLaneShareMoveFirstSend(withHostMessageAuthor(messageArgs), (next) => messageSession(next, options)),
+    messageSession: (messageArgs: AgentChatMessageSessionArgs, options?: { trustedSpawnCompletion?: boolean }) => {
+      noteCliChildSelfReport(messageArgs);
+      // A tracked agent CLI takes the text in its terminal (`agentCliSessionActions.ts`).
+      return ((cli) => cli
+        ? agentCliActions.messageSession(cli, withHostMessageAuthor(messageArgs))
+        : withLaneShareMoveFirstSend(withHostMessageAuthor(messageArgs), (next) => messageSession(next, options)))(
+        agentCliActions.target(messageArgs?.sessionId, "message"),
+      );
+    },
+    /**
+     * For a Work board move on a tracked agent CLI row, which has no chat to
+     * message: whether the CLI can take text at its prompt right now, and the
+     * typing itself. "deferred" means nothing was typed (a turn started, or
+     * another runtime took the terminal). Same path as scheduled work and wakes.
+     */
+    agentCliCanTakeText: (sessionId: string) =>
+      isTrackedAgentCliSession(sessionId) && !agentCliWakeDeferred(sessionId),
+    typeIntoAgentCli: async ({ sessionId, text }: { sessionId: string; text: string }) => {
+      if (!isTrackedAgentCliSession(sessionId)) {
+        throw new Error(`Session '${sessionId}' is not an agent CLI session.`);
+      }
+      return await deliverWakeToSession({ sessionId, text, kind: "auto" });
+    },
+    /** A person's text for a running agent CLI (Work input box, phone, web); see `AgentCliTypeArgs`. */
+    typeIntoAgentCliWhenFree,
     createScheduledWork,
     listInterruptedChats,
     armUpdateResume,
@@ -79512,7 +81042,12 @@ export function createAgentChatService(args: {
     cancelScheduledWork,
     resumeUsageLimitNow,
     continueUsageLimitOnAlternate,
-    switchAccount,
+    switchAccount: async (switchArgs: AgentChatSwitchAccountArgs) => {
+      const cli = agentCliActions.target(switchArgs?.sessionId, "switch the account of");
+      if (!cli) return await switchAccount(switchArgs);
+      if (!switchArgs.instanceId?.trim()) throw new Error("Account id is required.");
+      return await agentCliActions.switchAccount(cli, switchArgs.instanceId);
+    },
     setScheduledWorkPaused,
     /** The lane share host installs its check of queued guest messages. Returns its removal. */
     installQueuedGuestSteerGate: (gate: NonNullable<typeof queuedGuestSteerGate>): (() => void) => {
@@ -79533,7 +81068,12 @@ export function createAgentChatService(args: {
     resetCodexMemory,
     terminateCodexBackgroundTerminal,
     runSessionTurn,
-    steer: (steerArgs: AgentChatSteerArgs) => withLaneShareMoveFirstSend(withHostMessageAuthor(steerArgs), steer),
+    steer: (steerArgs: AgentChatSteerArgs) => {
+      const cli = agentCliActions.target(steerArgs?.sessionId, "steer");
+      return cli
+        ? agentCliActions.steer(cli, withHostMessageAuthor(steerArgs))
+        : withLaneShareMoveFirstSend(withHostMessageAuthor(steerArgs), steer);
+    },
     steerUserMessage: (steerArgs: AgentChatSteerArgs, options?: { author?: AdeMessageAuthor | null }) =>
       withLaneShareMoveFirstSend(withHostMessageAuthor(steerArgs, options?.author), steerUserMessage),
     cancelSteer,
@@ -79541,13 +81081,16 @@ export function createAgentChatService(args: {
     moveSteer,
     dispatchSteer,
     cancelDispatchedSteer,
-    interrupt: stopRequested,
-    interruptWithQueueMode: stopRequested,
+    interrupt: stopRequestedOrCliInterrupt,
+    interruptWithQueueMode: stopRequestedOrCliInterrupt,
     noteUsageSnapshot,
     stopTask,
     messageSubagent,
     controlSubagent,
-    restartSession,
+    restartSession: async (restartArgs: AgentChatRestartSessionArgs) => {
+      const cli = agentCliActions.target(restartArgs?.sessionId, "restart");
+      return cli ? await agentCliActions.restartSession(cli, restartArgs) : await restartSession(restartArgs);
+    },
     restartProviderRuntimesWhenIdle,
     mcpRegistryChatStatus,
     waitFor: chatWaitRegistry.waitFor,
@@ -79599,6 +81142,7 @@ export function createAgentChatService(args: {
     listSubagentLinks,
     listCliChildSessions,
     notifyParentOfCliChildSpawn,
+    waitForCliTurn,
     getSessionSummary,
     /**
      * Leave the "Notified you" line in a chat whose agent sent the user a
@@ -79668,11 +81212,24 @@ export function createAgentChatService(args: {
     getSessionTurnHealth,
     getCtoThreadHealth,
     getCtoAttention,
-    approveToolUse,
+    approveToolUse: async (approveArgs: Parameters<typeof approveToolUse>[0]) => {
+      const cli = agentCliActions.target(approveArgs?.sessionId, "answer");
+      if (cli && await cliCardInputs.respond(approveArgs)) return;
+      return cli ? await agentCliActions.respondToInput(cli, approveArgs) : await approveToolUse(approveArgs);
+    },
     approveToolUseAsAgent,
     isUserOnlyPendingInput,
-    listPendingInputs,
-    respondToInput,
+    listPendingInputs: (listArgs: { sessionId: string }) => {
+      const cli = agentCliActions.target(listArgs?.sessionId, "read the pending inputs of");
+      return cli
+        ? { requests: [...cliCardInputs.list(cli.id), ...agentCliActions.listPendingInputs(cli).requests] }
+        : listPendingInputs(listArgs);
+    },
+    respondToInput: async (respondArgs: AgentChatRespondToInputArgs) => {
+      const cli = agentCliActions.target(respondArgs?.sessionId, "answer");
+      if (cli && await cliCardInputs.respond(respondArgs)) return;
+      return cli ? await agentCliActions.respondToInput(cli, respondArgs) : await respondToInput(respondArgs);
+    },
     clearAsk,
     getMcpApp: mcpApps.get,
     mcpAppRequest: mcpApps.request,
@@ -79712,11 +81269,22 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession: updateSessionAndRememberDefaults,
+    /**
+     * `chat.updateSession` on a tracked agent CLI (`agentCliSessionActions.ts`):
+     * the updated row, or null when the id is a chat and `updateSession` answers.
+     */
+    updateAgentCliSession: async (updateArgs: AgentChatUpdateSessionArgs): Promise<TerminalSessionSummary | null> => {
+      const cli = agentCliActions.target(updateArgs?.sessionId, "update");
+      return cli ? await agentCliActions.updateSession(cli, updateArgs) : null;
+    },
     getLaunchDefaults,
     applyFastModePolicy,
     getPermissionCeiling: resolvePermissionCeiling,
     // A caller's request, never `automatic`: only this service starts those.
-    regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => regenerateSessionMetadata(args),
+    regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => {
+      const cli = agentCliActions.target(args?.sessionId, "name");
+      return cli ? agentCliActions.regenerateSessionMetadata(cli, args) : regenerateSessionMetadata(args);
+    },
     setSpawnKind,
     setParent,
     dismissSubagentTakeoverPrompt,
@@ -79770,7 +81338,9 @@ export function createAgentChatService(args: {
      * starts elsewhere (`rememberExternalChat`).
      */
     permissionLevelOf: (sessionId: string): PermissionLevel | null => {
-      if (!parentChatStillExists(sessionId)) return null;
+      // A tracked CLI caller has a level too: the one it was launched with.
+      // Without it a child it starts on another machine is capped at `ask`.
+      if (!parentChatStillExists(sessionId)) return trackedCliPermissionLevel(sessionId);
       try {
         return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
       } catch {

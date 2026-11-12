@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import {
   ArrowClockwise,
+  ArrowCounterClockwise,
   ArrowSquareOut,
   Desktop,
   Prohibit,
@@ -16,6 +17,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
+import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import {
   crossMachineContinuation,
   isCrossMachineHandoffActive,
@@ -35,6 +37,11 @@ import { cn } from "../ui/cn";
  * which the row says travels); its trailing button opens the full setup with
  * that machine picked. A machine without the repository always opens the full
  * setup, which asks before cloning.
+ *
+ * A tracked agent CLI row (`cli`) moves as a CLI: a click stops it, carries
+ * its conversation file (Claude Code, Codex) or a brief (every other agent)
+ * and starts it in the moved lane there, with its own launch settings. It has
+ * no full setup, so a machine without the repository is not offered.
  */
 
 type OptionsState =
@@ -75,14 +82,17 @@ export function CrossMachineMoveSubmenu({
   busy,
   onClose,
   onOpenFullSetup,
+  cli = false,
 }: {
   session: TerminalSessionSummary;
   binding: OpenProjectBinding | null;
   /** The chat has a turn running: a quick move waits for it to end. */
   busy: boolean;
   onClose: () => void;
-  /** Full setup modal, optionally with a machine preselected (name or key). */
+  /** Full setup modal, optionally with a machine preselected (name or key). Unused for a CLI. */
   onOpenFullSetup: (machine: string | null) => void;
+  /** The row is a tracked agent CLI session, which moves as a CLI. */
+  cli?: boolean;
 }) {
   const [options, setOptions] = useState<OptionsState>({ status: "idle" });
   const requestRef = useRef(0);
@@ -135,7 +145,54 @@ export function CrossMachineMoveSubmenu({
     }
   };
 
+  /** A CLI keeps its own model and launch settings; its conversation travels when its agent allows. */
+  const moveCli = async (machineKey: string, machineName: string) => {
+    onClose();
+    try {
+      const started = await window.ade.agentChat.startCrossMachineHandoff({
+        targetModelId: "",
+        sourceSessionId: session.id,
+        machine: machineKey,
+        mode: "fork",
+        ...(changeCount > 0 ? { includeChanges: true } : {}),
+        ...(busy ? { whenTurnEnds: true } : {}),
+      }, binding);
+      showToast({
+        tone: "info",
+        title: started.state === "pending"
+          ? `Moving this CLI to ${started.targetMachineName} when this turn ends`
+          : `Moving this CLI to ${started.targetMachineName}`,
+        message: [
+          "It stops here and starts there in the moved lane",
+          started.includeChanges && changesLabel ? `brings ${changesLabel}` : null,
+        ].filter(Boolean).join(" · "),
+      });
+    } catch (error) {
+      showToast({
+        tone: "warning",
+        title: `Couldn't move to ${machineName}`,
+        message: errorText(error),
+        durationMs: 18_000,
+      });
+    }
+  };
+
+  /** A moved CLI comes back here: the move lock lifts and Resume starts it here again. */
+  const workHereInstead = async (handoffId: string) => {
+    onClose();
+    try {
+      await window.ade.agentChat.acknowledgeCrossMachineHandoff({ sourceSessionId: session.id, handoffId }, binding);
+      showToast({ tone: "info", title: "Working here again", message: "Resume starts this CLI here." });
+    } catch (error) {
+      showToast({ tone: "warning", title: "Couldn't keep it here", message: errorText(error) });
+    }
+  };
+
   const quickBrief = async (machineKey: string, machineName: string) => {
+    if (cli) {
+      await moveCli(machineKey, machineName);
+      return;
+    }
     onClose();
     try {
       const summary = await window.ade.agentChat.getSummary({ sessionId: session.id }, binding);
@@ -182,7 +239,7 @@ export function CrossMachineMoveSubmenu({
   );
   const quickBriefHint = anyQuickBrief
     ? [
-      "Quick brief",
+      cli ? "Moves the CLI" : "Quick brief",
       changeCount > 0 && changesLabel ? `brings ${changesLabel}` : null,
       busy ? "after this turn" : null,
     ].filter(Boolean).join(" · ")
@@ -194,6 +251,8 @@ export function CrossMachineMoveSubmenu({
   const unknownTargetSessionId = record?.state === "unknown"
     ? record.targetSessionId ?? continuation?.targetSessionId ?? null
     : null;
+  // A CLI has no chat banner to offer "Work here instead"; the menu does.
+  const cliMoveLock = cli ? crossMachineMoveLock(record) : null;
   return (
     <MenuSubmenu
       label="Another machine"
@@ -274,6 +333,17 @@ export function CrossMachineMoveSubmenu({
                 <MenuRowIcon icon={ArrowSquareOut} />
                 Open on {continuation.targetMachineName}
               </button>
+              {cliMoveLock ? (
+                <button
+                  type="button"
+                  data-testid="session-menu-move-work-here"
+                  className={MENU_ITEM_CLASS}
+                  onClick={() => void workHereInstead(cliMoveLock.handoffId)}
+                >
+                  <MenuRowIcon icon={ArrowCounterClockwise} />
+                  Work here instead
+                </button>
+              ) : null}
               <MenuSeparator />
             </>
           ) : null}
@@ -298,13 +368,16 @@ export function CrossMachineMoveSubmenu({
             </div>
           ) : null}
           {result?.machines.map((machine) => {
-            const available = machine.online && !machine.unavailableReason;
-            // No repository there: the full setup asks before cloning.
+            // No repository there: the full setup asks before cloning. A CLI
+            // has no full setup, so it waits until the project is open there.
             const needsClone = machine.hasRepository === false;
+            const available = machine.online && !machine.unavailableReason && !(cli && needsClone);
             // "Offline since yesterday 6:12 PM" reads as "Offline" in the row;
             // the full reason stays in the tooltip.
-            const reason = machine.unavailableReason ?? "Offline";
-            const state = !available ? compactUnavailableReason(reason)
+            const reason = machine.unavailableReason
+              ?? (machine.online && cli && needsClone ? `Open this project on ${machine.name} first` : "Offline");
+            const state = !available
+              ? (machine.online && !machine.unavailableReason && cli && needsClone ? "no project there" : compactUnavailableReason(reason))
               : needsClone
                 ? "clones the repo"
                 : null;
@@ -313,8 +386,8 @@ export function CrossMachineMoveSubmenu({
                 <button
                   type="button"
                   disabled={!available}
-                  title={available ? (needsClone ? `Set up ${machine.name} first` : `Quick brief to ${machine.name}`) : reason}
-                  aria-label={available ? (needsClone ? `Set up ${machine.name}…` : `Quick brief to ${machine.name}`) : `${machine.name}, ${state}`}
+                  title={available ? (needsClone ? `Set up ${machine.name} first` : `${cli ? "Move to" : "Quick brief to"} ${machine.name}`) : reason}
+                  aria-label={available ? (needsClone ? `Set up ${machine.name}…` : `${cli ? "Move to" : "Quick brief to"} ${machine.name}`) : `${machine.name}, ${state}`}
                   className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent")}
                   onClick={() => {
                     if (needsClone) {
@@ -339,7 +412,7 @@ export function CrossMachineMoveSubmenu({
                 </button>
                 {/* Fixed trailing slot, filled or not, so every row's right
                     edge lines up. */}
-                {available ? (
+                {available && !cli ? (
                   <button
                     type="button"
                     className="kit-icon-btn shrink-0"
@@ -358,19 +431,23 @@ export function CrossMachineMoveSubmenu({
               </div>
             );
           })}
-          <MenuSeparator />
-          <button
-            type="button"
-            data-testid="session-menu-move-full-setup"
-            className={MENU_ITEM_CLASS}
-            onClick={() => {
-              onClose();
-              onOpenFullSetup(null);
-            }}
-          >
-            <MenuRowIcon icon={SlidersHorizontal} />
-            More handoff options…
-          </button>
+          {cli ? null : (
+            <>
+              <MenuSeparator />
+              <button
+                type="button"
+                data-testid="session-menu-move-full-setup"
+                className={MENU_ITEM_CLASS}
+                onClick={() => {
+                  onClose();
+                  onOpenFullSetup(null);
+                }}
+              >
+                <MenuRowIcon icon={SlidersHorizontal} />
+                More handoff options…
+              </button>
+            </>
+          )}
         </>
       )}
     </MenuSubmenu>

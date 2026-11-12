@@ -140,7 +140,7 @@ import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { inspectProjectPathCached } from "../projects/projectPathInspector";
-import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { deleteSessionRowWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   parseSettleOverrideArg,
   parseSnoozeDeadline,
@@ -563,6 +563,8 @@ import type {
   DraftDeleteArgs,
   DraftEntry,
   DraftUpdateArgs,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatRegenerateSessionMetadataArgs,
@@ -8859,10 +8861,11 @@ export function registerIpc({
     if (!sessionId) {
       throw new Error("Session id is required.");
     }
-    deleteTerminalSessionWithRuntimeCleanup({
+    await deleteSessionRowWithRuntimeCleanup({
       sessionId,
       sessionService: ctx.sessionService,
       ptyService: requirePtyService(),
+      agentChatService: ctx.agentChatService ?? null,
     });
   });
 
@@ -9373,6 +9376,17 @@ export function registerIpc({
     arg: DraftDeleteArgs,
   ): Promise<{ ok: boolean; error?: string }> => {
     return await ensureAgentChatContext().agentChatService.sendDraftNow(arg?.id ?? "");
+  });
+
+  handle(IPC.agentChatTypeIntoCli, async (
+    _event,
+    arg: AgentCliTypeArgs,
+  ): Promise<AgentCliTypeResult> => {
+    return await ensureAgentChatContext().agentChatService.typeIntoAgentCliWhenFree({
+      sessionId: arg?.sessionId ?? "",
+      text: arg?.text ?? "",
+      holdUntilFree: arg?.holdUntilFree === true,
+    });
   });
 
   handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
@@ -10042,6 +10056,11 @@ export function registerIpc({
   handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listSubagents(arg);
+  });
+
+  handle(IPC.agentChatListPendingInputs, async (_event, arg: { sessionId: string }): Promise<{ requests: import("../../../shared/types").PendingInputRequest[] }> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.listPendingInputs(arg);
   });
 
   handle(IPC.agentChatKillDroidWorker, async (_event, arg: AgentChatKillDroidWorkerArgs): Promise<void> => {

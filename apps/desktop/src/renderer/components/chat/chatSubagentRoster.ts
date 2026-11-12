@@ -46,7 +46,7 @@ const EMPTY_ROSTER: ChatChildRoster = { filed: [], byId: new Map() };
  * cross-machine union when pinned, else the tab's own session cache. Store
  * reads only; nothing is fetched or polled for this.
  */
-function useChatMachineSessions(): TerminalSessionSummary[] | null {
+export function useChatMachineSessions(): TerminalSessionSummary[] | null {
   const scope = useChatRuntimeScope();
   const pinned = useSessionsForPin(scope.binding);
   const bound = useAppStore((state) => {
@@ -202,4 +202,48 @@ export function useChatChildRoster(
     return merged ?? runtimeChildStatuses;
   }, [roster, runtimeChildStatuses]);
   return { snapshots: withFiled, childById: roster.byId, childStatuses };
+}
+
+function sameChildRows(left: readonly ChatSubagentSnapshot[], right: readonly ChatSubagentSnapshot[]): boolean {
+  return left.length === right.length && left.every((row, index) => {
+    const other = right[index];
+    return other != null
+      && row.childSessionId === other.childSessionId
+      && row.status === other.status
+      && row.description === other.description
+      && row.updatedAt === other.updatedAt
+      && row.spawnKind === other.spawnKind;
+  });
+}
+
+const EMPTY_CHILD_ROWS: ChatSubagentSnapshot[] = [];
+
+/**
+ * The actions-pane rows of a tracked agent CLI's children: every session on
+ * the CLI's machine that names it as its parent, chats and CLIs alike, oldest
+ * first. A CLI has no transcript to name them, and the Work list keeps them as
+ * top-level rows (only a chat files its subagents), so this is the list the
+ * CLI's own pane shows. Store reads only, under the surrounding
+ * `ChatRuntimeScopeProvider`; nothing is fetched or polled.
+ */
+export function useCliParentChildRows(parentId: string | null | undefined): ChatSubagentSnapshot[] {
+  const sessions = useChatMachineSessions();
+  const rows = useMemo(() => {
+    const id = parentId?.trim();
+    if (!id || !sessions?.length) return EMPTY_CHILD_ROWS;
+    const nowMs = Date.now();
+    const children = sessions
+      .filter((session) => session.id !== id
+        && session.orchestrationParentSessionId?.trim() === id
+        && (session.spawnKind === "subagent" || session.spawnKind === "peer")
+        && !session.archivedAt)
+      .sort((left, right) => (left.startedAt < right.startedAt ? -1 : left.startedAt > right.startedAt ? 1 : 0));
+    if (children.length === 0) return EMPTY_CHILD_ROWS;
+    return children.map((session) => ({
+      ...filedSubagentRow({ session, phase: spawnNestingPhase(session, nowMs) }),
+      agentType: chatToolProvider(session.toolType) ?? session.toolType ?? undefined,
+      spawnKind: session.spawnKind ?? "subagent",
+    }));
+  }, [parentId, sessions]);
+  return useStableIdentity(rows, sameChildRows);
 }

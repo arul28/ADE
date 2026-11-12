@@ -1,5 +1,5 @@
 import type { DeletedChatListResult, DeletedChatRemoveResult, DeletedChatReopenResult } from "../../../shared/types/deletedChats";
-import type { ExternalSessionDetail } from "../../../shared/types";
+import type { AgentCliTypeArgs, AgentCliTypeResult, ExternalSessionDetail } from "../../../shared/types";
 import type { ChatMentionSuggestResult } from "../../../shared/types/chatMentions";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
@@ -411,6 +411,22 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       await call("chat.send", args, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
+    // The Work input box on the web: same contract as the desktop's runtime
+    // action. The box keeps its own queue, so a busy CLI answers `deferred`
+    // unless the caller asked the host to hold the text.
+    typeIntoCli: async (args: AgentCliTypeArgs, pin?: RuntimePinArg): Promise<AgentCliTypeResult> => {
+      guardPin("typeIntoCli", pin);
+      const result = await callRequiredMutation<{ outcome?: AgentCliTypeResult["outcome"] }>("chat.typeIntoCli", {
+        sessionId: args.sessionId,
+        text: args.text,
+        holdUntilFree: args.holdUntilFree === true,
+      });
+      const outcome = result?.outcome;
+      if (outcome !== "delivered" && outcome !== "deferred" && outcome !== "held" && outcome !== "ended") {
+        throw new Error("This ADE host cannot type into a CLI session yet. Update ADE on that computer.");
+      }
+      return { outcome };
+    },
     steer: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("steer", pin);
       // Do NOT fabricate a queued success when chat.steer can't execute
@@ -686,6 +702,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     listSubagents: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("listSubagents", pin);
       return await call("chat.listSubagents", args, []);
+    },
+    listPendingInputs: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("listPendingInputs", pin);
+      return await call("chat.listPendingInputs", args, { requests: [] });
     },
     getSessionCapabilities: async (args, pin) => {
       guardPin("getSessionCapabilities", pin);

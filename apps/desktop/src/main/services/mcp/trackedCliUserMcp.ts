@@ -1,15 +1,24 @@
 /**
- * The user's own MCP servers for one tracked Claude or Codex CLI (a Work
- * terminal ADE launches or resumes): the same set a chat on that account
- * gets (`mcpUserServersForLaunch.ts`). A terminal's launch command is a
- * command line, can be typed into the shell as text, and is kept for resume,
- * so no server definition may put a secret there:
+ * The MCP servers for one tracked agent CLI (a Work terminal ADE launches or
+ * resumes): the user's own servers a chat on that account gets
+ * (`mcpUserServersForLaunch.ts`), and the servers of ADE's MCP registry
+ * (Settings > Integrations > MCP servers, "every agent ADE launches gets"),
+ * the same set a chat gets (`mcpRegistryLaunch.ts`). A terminal's launch
+ * command is a command line, can be typed into the shell as text, and is kept
+ * for resume, so no server definition may put a secret there:
  *
  * - Claude reads its servers from a private ADE-owned file
  *   (`--mcp-config <path>`), so every server can go, env values included.
+ * - Copilot reads them the same way (`--additional-mcp-config @<path>`).
  * - Codex has no file form for this, so a server whose env, headers,
  *   arguments or URL look like they carry a secret is left to start as the
- *   user configured it (or, on an ADE account, not at all).
+ *   user configured it (or, on an ADE account, not at all), and a registry
+ *   server with a secret value is left out.
+ *
+ * The other tracked CLIs have no per-launch MCP flag or file ADE can hand a
+ * server through without writing the user's own config: Cursor, Droid, Pi,
+ * Kimi, Qwen, Grok, Devin and Muse keep the servers their own config names,
+ * and an OpenCode terminal shares ADE's OpenCode server and its config.
  */
 
 import { createHash } from "node:crypto";
@@ -18,8 +27,11 @@ import path from "node:path";
 
 import { ensurePrivateDirectory, writePrivateFile } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { providerInstanceLaunchEnv, type ProviderInstanceLaunchTarget, type TrackedCliUserMcp } from "../../../shared/cliLaunch";
+import { providerInstanceLaunchEnv, type LaunchProfile, type ProviderInstanceLaunchTarget, type TrackedCliUserMcp } from "../../../shared/cliLaunch";
 import { mcpPlainTextSecretFindings } from "../../../shared/mcpServerImport";
+import type { CallerMcpServers } from "../../../shared/callerMcpServers";
+import { resolveMcpRegistryForLaunch } from "../chat/mcpRegistryLaunch";
+import { createChatUserMcp } from "./chatUserMcp";
 import { captureError } from "../../../shared/sentry/capture";
 import { isRecord } from "./mcpProviderConfigScan";
 import { resolveClaudeUserServers, resolveCodexUserServers } from "./mcpUserServersForLaunch";
@@ -97,10 +109,10 @@ const CLAUDE_MCP_CONFIG_KEEP_MS = 24 * 60 * 60 * 1000;
  * resume writes it again, so copies older than a day are removed: a value
  * the user rotated does not stay on disk.
  */
-function writeClaudeMcpConfigFile(servers: Record<string, unknown>): string {
+function writeClaudeMcpConfigFile(servers: Record<string, unknown>, prefix: "claude" | "copilot" = "claude"): string {
   const contents = `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
   const dir = path.join(resolveMachineAdeLayout().adeDir, "mcp-launch");
-  const file = path.join(dir, `claude-${createHash("sha256").update(contents).digest("hex").slice(0, 24)}.json`);
+  const file = path.join(dir, `${prefix}-${createHash("sha256").update(contents).digest("hex").slice(0, 24)}.json`);
   ensurePrivateDirectory(dir);
   writePrivateFile(file, contents);
   const cutoff = Date.now() - CLAUDE_MCP_CONFIG_KEEP_MS;
@@ -109,19 +121,97 @@ function writeClaudeMcpConfigFile(servers: Record<string, unknown>): string {
     names = fs.readdirSync(dir);
   } catch (error) {
     // Pruning is best-effort; the config this launch needs is written.
-    captureError(error, { fingerprint: ["mcp", "tracked_cli_config_prune"], tags: { provider: "claude" } });
+    captureError(error, { fingerprint: ["mcp", "tracked_cli_config_prune"], tags: { provider: prefix } });
   }
   for (const name of names) {
-    if (!/^claude-[0-9a-f]+\.json$/.test(name)) continue;
+    if (!/^(claude|copilot)-[0-9a-f]+\.json$/.test(name)) continue;
     const other = path.join(dir, name);
     if (other === file) continue;
     try {
       if (fs.statSync(other).mtimeMs < cutoff) fs.rmSync(other, { force: true });
     } catch (error) {
-      captureError(error, { fingerprint: ["mcp", "tracked_cli_config_prune"], tags: { provider: "claude" } });
+      captureError(error, { fingerprint: ["mcp", "tracked_cli_config_prune"], tags: { provider: prefix } });
     }
   }
   return file;
+}
+
+/**
+ * Reads one MCP secret value from the account vault, for registry servers
+ * whose env or header values live there. Set once by the process that holds
+ * the vault (the brain); with none set, a registry server that needs a value
+ * is left out of a terminal launch rather than started without it.
+ */
+let registrySecretReader: ((vaultKey: string) => string | null) | null = null;
+
+export function setTrackedCliRegistrySecretReader(reader: ((vaultKey: string) => string | null) | null): void {
+  registrySecretReader = reader;
+}
+
+/** The tracked CLIs ADE hands MCP servers to, and how. */
+const TRACKED_CLI_MCP_PROVIDERS: ReadonlySet<string> = new Set(["claude", "codex", "copilot"]);
+
+/** Whether a tracked CLI of this provider can be handed MCP servers at launch. */
+export function trackedCliTakesMcpServers(provider: string): boolean {
+  return TRACKED_CLI_MCP_PROVIDERS.has(provider);
+}
+
+/**
+ * The registry servers a terminal launch of this provider gets: on for this
+ * project and computer, not already started by the provider's own config
+ * (`chatUserMcp.registryServers`), with every value they name in hand. A
+ * terminal has no line to say a server started without its key, so such a
+ * server (or one whose sign-in ran out) is left out, and so is one with a
+ * per-tool filter the CLI's config cannot carry.
+ */
+function trackedCliRegistryServers(args: {
+  provider: string;
+  cwd: string;
+  projectRoot: string;
+  env: NodeJS.ProcessEnv;
+}): CallerMcpServers {
+  const registry = resolveMcpRegistryForLaunch({
+    adeHome: resolveMachineAdeLayout().adeDir,
+    projectRoot: args.projectRoot,
+    provider: args.provider as Parameters<typeof resolveMcpRegistryForLaunch>[0]["provider"],
+    readSecret: (vaultKey) => registrySecretReader?.(vaultKey) ?? null,
+  });
+  if (!registry.servers) return {};
+  const incomplete = new Set([
+    ...registry.missing.map((entry) => entry.split(":")[0]!.trim()),
+    ...registry.signInExpired,
+  ]);
+  const complete: CallerMcpServers = {};
+  for (const [name, server] of Object.entries(registry.servers)) {
+    if (incomplete.has(name)) continue;
+    if (server.disallowedTools?.length || (args.provider !== "copilot" && server.allowedTools?.length)) continue;
+    complete[name] = server;
+  }
+  if (!Object.keys(complete).length) return {};
+  return createChatUserMcp({ projectRoot: args.projectRoot })
+    .registryServers({ provider: args.provider, cwd: args.cwd, env: args.env }, complete) ?? {};
+}
+
+/** A registry server as Claude's `--mcp-config` file names it. */
+function claudeFileServer(server: CallerMcpServers[string]): Record<string, unknown> {
+  return server.type === "stdio"
+    ? { type: "stdio", command: server.command, args: server.args ?? [], ...(server.env ? { env: server.env } : {}) }
+    : { type: server.type, url: server.url, ...(server.headers ? { headers: server.headers } : {}) };
+}
+
+/** A registry server as Copilot's `--additional-mcp-config` file names it. */
+function copilotFileServer(server: CallerMcpServers[string]): Record<string, unknown> {
+  const tools = server.allowedTools?.length ? server.allowedTools : ["*"];
+  return server.type === "stdio"
+    ? { type: "local", command: server.command, args: server.args ?? [], ...(server.env ? { env: server.env } : {}), tools }
+    : { type: server.type, url: server.url, ...(server.headers ? { headers: server.headers } : {}), tools };
+}
+
+/** A registry server as a Codex `mcp_servers.<name>` overlay, before the secret check. */
+function codexOverlayServer(server: CallerMcpServers[string]): Record<string, unknown> {
+  return server.type === "stdio"
+    ? { command: server.command, args: server.args ?? [], ...(server.env ? { env: server.env } : {}) }
+    : { url: server.url, ...(server.headers ? { http_headers: server.headers } : {}) };
 }
 
 export async function resolveTrackedCliUserMcp(args: {
@@ -133,26 +223,48 @@ export async function resolveTrackedCliUserMcp(args: {
   presetEnv?: Record<string, string> | null;
 }): Promise<TrackedCliUserMcp | null> {
   const cwd = args.cwd?.trim();
-  if (!cwd || (args.provider !== "claude" && args.provider !== "codex")) return null;
+  if (!cwd || !trackedCliTakesMcpServers(args.provider)) return null;
   const launcher = sharedNpxDirectLauncher();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ...providerInstanceLaunchEnv(args.provider, args.instance),
+    ...providerInstanceLaunchEnv(args.provider as LaunchProfile, args.instance),
     ...(args.presetEnv ?? {}),
   };
+  const projectRoot = args.projectRoot ?? mainCheckoutOf(cwd);
+  const registryFor = (): CallerMcpServers => {
+    try {
+      return trackedCliRegistryServers({ provider: args.provider, cwd, projectRoot: projectRoot ?? cwd, env });
+    } catch (error) {
+      captureError(error, {
+        fingerprint: ["mcp", "tracked_cli_registry_servers", args.provider],
+        tags: { provider: args.provider },
+      });
+      return {};
+    }
+  };
   try {
+    if (args.provider === "copilot") {
+      const registry = registryFor();
+      const servers = Object.fromEntries(Object.entries(registry).map(([name, server]) => [name, copilotFileServer(server)]));
+      return Object.keys(servers).length ? { copilotConfigPath: writeClaudeMcpConfigFile(servers, "copilot") } : null;
+    }
     if (args.provider === "codex") {
       const overlay = await resolveCodexUserServers(launcher, { env, cwd, skipNames: new Set(["computer_use"]) });
-      const safe = Object.fromEntries(Object.entries(overlay).filter(([, entry]) => !codexEntryCarriesSecret(entry)));
+      const registry = Object.fromEntries(Object.entries(registryFor())
+        .filter(([name]) => name !== "computer_use")
+        .map(([name, server]) => [name, codexOverlayServer(server)]));
+      const merged = { ...overlay, ...registry };
+      const safe = Object.fromEntries(Object.entries(merged).filter(([, entry]) => !codexEntryCarriesSecret(entry)));
       return Object.keys(safe).length ? { codex: safe } : null;
     }
-    const projectRoot = args.projectRoot ?? mainCheckoutOf(cwd);
-    const servers = await resolveClaudeUserServers(launcher, {
+    const userServers = await resolveClaudeUserServers(launcher, {
       env,
       cwd,
       projectRoots: projectRoot ? [projectRoot] : [],
       settingSources: ["user", "local"],
     });
+    const registry = Object.fromEntries(Object.entries(registryFor()).map(([name, server]) => [name, claudeFileServer(server)]));
+    const servers = { ...userServers, ...registry };
     return Object.keys(servers).length ? { claudeConfigPath: writeClaudeMcpConfigFile(servers) } : null;
   } catch (error) {
     // The CLI still starts with the servers its own config gives it.

@@ -215,7 +215,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume",
       "createDraft", "updateDraft", "deleteDraft", "claimDraft", "sendDraftNow",
       "createThreadComment", "updateThreadComment", "deleteThreadComment", "messageSession",
-      "actOnClaudePluginUi",
+      "typeIntoCli", "actOnClaudePluginUi",
       "approveToolUse", "handoffSession", "startSideChat", "endSideChat", "prepareCrossMachineHandoff",
       "validateCrossMachineSource", "fastForwardCrossMachineHandoffLane",
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
@@ -307,7 +307,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "backfillDeltas", "clearWokeMarker", "deleteSession", "moveOnBoard",
-      "requestSessionAttention", "setSessionActivity", "setSessionStatusNote",
+      "reportCliTurnSignal", "requestSessionAttention", "setSessionActivity", "setSessionStatusNote",
       "setSettleOverride", "undoBoardMove", "snoozeSession", "snoozeSessions", "settleSession",
       "settleSessions", "updateLifecycleSettings", "unsettleSession", "unsettleSessions",
       "updateMeta", "wakeSession", "wakeSessions",

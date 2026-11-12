@@ -647,6 +647,19 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
  * else: with neither set it runs until it finishes or someone stops it, the
  * same as a chat started by hand.
  */
+/** ADE actions that start an agent CLI's turn: an automation step running one waits for it to end. */
+const CLI_TURN_ADE_ACTIONS: ReadonlySet<string> = new Set(["chat.launchCli", "pty.create", "pty.sendToSession"]);
+
+/** The terminal session an action started or prompted, from its result or its arguments. */
+function cliSessionIdOfActionResult(result: unknown, args: unknown): string | null {
+  const fromRecord = (value: unknown): string | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const sessionId = (value as Record<string, unknown>).sessionId;
+    return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
+  };
+  return fromRecord(result) ?? fromRecord(args);
+}
+
 function agentTurnLimits(limits: AutomationAgentLimits | null | undefined): { timeoutMs: number | null; idleTimeoutMs: number | null } {
   const { stopAfterMin, stopWhenIdleMin } = normalizeAutomationAgentLimits(limits);
   return {
@@ -3457,6 +3470,8 @@ export function createAutomationService({
     /** The rule is the only stable identity an unattended action has; it is
      * what `scopeAutomationAdeActionArgs` hands the domain in place of a chat. */
     ruleId: string,
+    /** The step's stop-after limit, for a step that waits on a CLI's turn. */
+    limits?: AutomationAgentLimits | null,
   ): Promise<Pick<AutomationActionOutcome, "status" | "output" | "heldForMovedChat">> => {
     if (!adeActionRegistryRef) {
       return { status: "failed", output: "ADE action registry is not available in this process." };
@@ -3497,12 +3512,42 @@ export function createAutomationService({
       }
     }
 
+    // A step that starts or prompts an agent CLI is done when the CLI's turn
+    // is, not when its terminal opens. `waitForTurn: false` keeps the old
+    // fire-and-forget step (a CLI meant to keep running on its own).
+    // A terminal created with no first message starts no turn to wait for.
+    const startsCliTurn = CLI_TURN_ADE_ACTIONS.has(`${domain}.${actionName}`)
+      && !(domain === "pty" && actionName === "create"
+        && !(isRecord(resolvedArgs) && typeof resolvedArgs.initialInput === "string" && resolvedArgs.initialInput.trim()));
+    let waitForCliTurn = startsCliTurn;
+    if (startsCliTurn && isRecord(resolvedArgs) && "waitForTurn" in resolvedArgs) {
+      waitForCliTurn = resolvedArgs.waitForTurn !== false;
+      delete resolvedArgs.waitForTurn;
+    }
+
     try {
       scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId, actionName);
       const callable = fn as (...a: unknown[]) => unknown;
       const result = Array.isArray(resolvedArgs)
         ? await callable(...resolvedArgs)
         : await callable(resolvedArgs);
+      const cliSessionId = waitForCliTurn ? cliSessionIdOfActionResult(result, resolvedArgs) : null;
+      if (cliSessionId && agentChatServiceRef?.waitForCliTurn) {
+        const turn = await agentChatServiceRef.waitForCliTurn({
+          sessionId: cliSessionId,
+          timeoutMs: agentTurnLimits(limits).timeoutMs,
+        }).catch((error: unknown) => {
+          // Not an agent CLI (a plain shell): the step stays what it was.
+          if (error instanceof Error && /not a tracked agent CLI/.test(error.message)) return null;
+          throw error;
+        });
+        if (turn) {
+          const header = `CLI session ${cliSessionId}`;
+          return turn.status === "completed"
+            ? { status: "succeeded", output: `${header} finished its turn.\n${turn.output}` }
+            : { status: "failed", output: `${header}: ${turn.output}` };
+        }
+      }
       let output: string;
       try {
         output = result === undefined ? "" : typeof result === "string" ? result : JSON.stringify(result);
@@ -3639,7 +3684,7 @@ export function createAutomationService({
       if (!config) {
         return { status: "failed", output: "ade-action action is missing adeAction config." };
       }
-      return await dispatchAdeAction(config, trigger, rule.id);
+      return await dispatchAdeAction(config, trigger, rule.id, action);
     }
     if (action.type === "handoff") {
       // Same call the ADE action registry allowlists as `chat.handoffSession`;

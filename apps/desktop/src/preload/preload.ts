@@ -817,6 +817,8 @@ import type {
   CodexThreadGoal,
   AgentChatSteerArgs,
   AgentChatSteerResult,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatMoveSteerArgs,
@@ -8061,23 +8063,32 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId }),
       );
     },
-    settleMany: async (sessionIds: string[]): Promise<string[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+    // `pin` sends the batch to the machine its rows live on, like the
+    // single-row `settle`; every id in one call must belong to that machine.
+    settleMany: async (
+      sessionIds: string[],
+      pin?: OpenProjectBinding | null,
+    ): Promise<string[]> => {
+      const settled = await callPinnedOrBoundRuntimeActionOr<string[] | null | undefined>(
+        pin,
         "session",
         "settleSessions",
         { args: { sessionIds } },
+        () => ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds }),
       );
-      return runtime.handled
-        ? runtime.result ?? []
-        : ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds });
+      return settled ?? [];
     },
-    unsettleMany: async (sessionIds: string[]): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+    unsettleMany: async (
+      sessionIds: string[],
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      await callPinnedOrBoundRuntimeActionOr<unknown>(
+        pin,
         "session",
         "unsettleSessions",
         { args: { sessionIds } },
+        () => ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds }),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
     },
     snoozeSession: async (
       sessionId: string,
@@ -8693,6 +8704,17 @@ const adeBridge = {
         if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatSend, args);
       }
       agentChatSummaryCache.clear();
+    },
+    // The Work input box's text for a running agent CLI, on the CLI's own
+    // machine. Typed only at a free prompt; `deferred` means nothing was typed.
+    typeIntoCli: async (
+      args: AgentCliTypeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentCliTypeResult> => {
+      const stamped = { ...args, inputOrigin: await sessionInputOriginFor(pin) };
+      return callPinnedOrBoundRuntimeActionOr<AgentCliTypeResult>(pin, "chat", "typeIntoCli", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.agentChatTypeIntoCli, args),
+      );
     },
     steer: async (
       args: AgentChatSteerArgs,
@@ -9483,6 +9505,14 @@ const adeBridge = {
     ): Promise<AgentChatSubagentSnapshot[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "listSubagents", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+      ),
+    // The open cards of a chat or a tracked agent CLI (`cliCardInputs.ts`).
+    listPendingInputs: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ requests: import("../shared/types").PendingInputRequest[] }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "listPendingInputs", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListPendingInputs, args),
       ),
     killDroidWorker: async (
       args: AgentChatKillDroidWorkerArgs,

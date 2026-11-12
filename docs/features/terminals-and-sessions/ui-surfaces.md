@@ -111,8 +111,13 @@ It also owns the sidebar's multi-select state:
   list.
 - Bulk settle is owned by `SessionListPane`: it sends only visible selected
   at-rest, non-settled, non-`Needs you` ids through
-  `ade.sessions.settleMany`, retains only the ids the service actually changed,
-  and offers an eight-second Unsettle undo. Bulk settle does not dismiss
+  `ade.sessions.settleMany`, one call per machine (each with that machine's
+  pin; the tab's own rows unpinned), retains only the ids each machine actually
+  changed, and offers an eight-second Unsettle undo that goes back to the same
+  machines. A machine that fails does not stop the others, and the toast names
+  it. The web client runs the same pane: the federated adapter hands each pinned
+  batch to that machine's adapter, whose `settleMany`/`unsettleMany` refuse a pin
+  that names another machine. Bulk settle does not dismiss
   pending input, stop a runtime, delete a transcript, or archive a chat.
 - `handleBulkStopAndDeleteSelected` stops selected running runtimes, then
   permanently deletes every selected session once the user confirms.
@@ -716,6 +721,58 @@ also expose two relaunch paths: **Resume** calls
 prompt, while the continuation composer calls `ade.pty.sendToSession`
 and sends the follow-up as part of the first resume launch when
 structured resume metadata is present.
+
+### Input box for a running agent CLI: `WorkCliInputBox.tsx`
+
+A running tracked agent CLI (Claude Code, Codex, OpenCode, Cursor, Droid, Pi,
+...) can take its text from an ADE box docked below the terminal instead of
+being typed into key by key. The header's keyboard button
+(`CliInputModeToggle`) switches between **type in the terminal** (the default,
+so nobody's habits change) and **use the box**; the choice is one per person
+for every CLI session (`ade.work.cliInputMode` in local storage). A dot on the
+button says texts are still waiting while the box is hidden. Plain shells and
+CLIs ADE does not track get no box: only a tracked CLI has a prompt ADE can
+tell is free. The terminal stays fully usable in both modes.
+
+The box:
+
+- Enter sends, Shift+Enter starts a new line. A multi-line message goes through
+  the host's CLI typing path (`writeAgentCliInput`: clear the line, paste,
+  submit), the same path scheduled work and wakes use.
+- `@` searches the lane's files (`files.quickOpen` on the CLI's machine) and
+  inserts `@path` as text the CLI reads; `/` lists the provider's commands.
+- Up arrow on the first line recalls earlier sends (per session, last 50);
+  down arrow walks back to the draft.
+- The draft is kept per session (`ade.work.cliInputDraft.<id>`), saved 400 ms
+  after typing stops.
+
+Every send goes through a queue (`cliInputBoxState.ts`) that lives outside the
+box, so it keeps going after you switch sessions or tabs, and is kept in local
+storage so a reload or a dropped connection does not lose it. Its runner exists
+only while something is waiting. Each send calls `agentChat.typeIntoCli`
+(runtime action `chat.typeIntoCli`) on the CLI's own machine (the surface's
+`runtimePin`). The host types the text only at a free prompt
+(`agentChatService.typeIntoAgentCliWhenFree`, through `deliverWakeToSession`,
+so a box send never shares a turn with a wake); a busy CLI answers `deferred`
+and nothing is typed. The queue shows each waiting text with its state and
+**Edit** (back into the draft) and **Remove**:
+
+| State | What it means | What happens next |
+|---|---|---|
+| Queued | The CLI is mid-turn. | Asked again every 1.5 s, slowing to 4 s after 30 s and 10 s after 5 min, and at once when the CLI's runtime state changes. |
+| Typing it now | Being typed. | Removed when the host confirms. |
+| Sends when *computer* reconnects | The CLI's machine is disconnected (connection snapshot), or the call was refused before it was sent. | Sent when the machine reconnects; nothing is asked while it is gone. |
+| Unconfirmed | The connection dropped mid-send, so it may already have been typed. | Never retried by itself. **Send again** or **Remove**. |
+| Failed | The host refused it (archived, not an agent CLI). | **Send again**, **Edit** or **Remove**. |
+
+When the CLI has ended (`ended`, nothing typed and nothing relaunched), the
+waiting texts move into the ended session's continue box
+(`ade.work.cliContinueDraft.<id>`), where sending continues the session.
+Two windows on one session share the queue through local storage; a window
+claims a text before typing it, so the other does not send it too.
+
+Typing into a CLI clears its prompt line first (the same as scheduled work), so
+a half-typed line in the terminal itself is replaced by the box's text.
 
 Claude CLI surfaces whose recent preview/transcript reports `Please run
 /login` or a 401 invalid-credentials error show the same dismissible
@@ -2019,6 +2076,9 @@ and every disabled entry names its reason:
 - **Needs you** is always offered: the write is a person parking the row for
   themselves. On a running chat it steers the live turn with "The user set this
   chat's status to Needs you. Ask them what they need before you continue."
+  A tracked agent CLI gets the same message typed at its prompt, worded for a
+  session ("The user set this session's status to Needs you on the ADE
+  board..."), and only when its prompt is free.
 - **Done** clears the attention hand and settles in one write. It is refused
   over a live provider card, and on a tracked CLI in Needs you with no recorded
   hand, where the terminal owns the question.

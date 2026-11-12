@@ -419,6 +419,72 @@ Planning. For tracked CLIs, an explicit ADE request such as `ade chat ask`
 sets waiting-input; structured provider input is handled by the provider
 adapter, with its own provenance.
 
+#### Exact turn status for agent CLIs
+
+A tracked agent CLI that reports its own turn is not guessed at. Each tracked
+agent CLI entry holds a turn tracker (`PtyEntry.cliTurn`,
+`pty/cliTurnSignals.ts`) with phase `working`, `idle` or `needs-input`. The
+runtime state, the Work row, `ade chat status` (`getCliTurnStatus`), settle and
+the roster all read that phase.
+
+| CLI | working | done | needs you |
+| --- | --- | --- | --- |
+| Claude Code | `UserPromptSubmit` hook | `Stop` / `StopFailure` hook | `PermissionRequest` hook (tool permission, `AskUserQuestion`, `ExitPlanMode`), `Notification` `permission_prompt` / `elicitation_dialog`, `Elicitation` |
+| Codex 0.167+ | OSC `7501;state=working` | `state=done`, or `idle` after working (an interrupt) | `state=blocked` (`kind=permission`) |
+| Others | output (heuristic) | 12.5 s of quiet (heuristic) | the Jev screen check, `ade chat ask` |
+
+- **Claude hooks.** A tracked Claude launch gets `--settings` with ADE's hooks.
+  When the launch already passes inline `--settings` JSON (fast mode,
+  ultracode), the hooks are merged into it, because Claude reads only the last
+  `--settings` flag. A `--settings` file is left alone, and that launch keeps
+  the heuristics. Each hook is exec form (`command` = `ADE_CLI_PATH`,
+  `args: ["__ade-cli-turn-hook", "claude", <session id>]`, `async: true`), so no
+  shell parses it, it runs the same on Windows, and Claude never waits for it.
+  On Windows a `.cmd` shim cannot be started this way, so that launch gets no
+  hooks. The hook command (`apps/ade-cli/src/cliTurnHook.ts`) reads the hook
+  JSON and sends only the event name, prompt id, notification type, tool name
+  and message (never the transcript path or the last message). It sends them
+  with `--socket $ADE_CLI_TURN_HOOK_SOCKET`, the runtime that owns the
+  terminal, to `session.reportCliTurnSignal`. It never starts a brain, prints
+  nothing, gives up after 5 s and always exits 0. The action is scoped to the
+  caller's own session (or a terminal its chat owns).
+- **Ordering.** Async hooks can land out of order. A `UserPromptSubmit` for a
+  prompt id whose `Stop` already arrived is dropped.
+- **Gaps Claude leaves, and their fallbacks.** Claude fires no hook for an
+  interrupt (Esc / Ctrl-C), and a line queued during a turn can run as the next
+  turn with no `UserPromptSubmit`. So:
+  - after Esc or Ctrl-C, 2.5 s of quiet ends the turn;
+  - a `Stop` that follows a line submitted mid-turn keeps the row working;
+  - 12.5 s of quiet while working ends the turn. Claude's spinner redraws while
+    it works, so this fires only after a missed end.
+
+  A key that picks in a Claude menu (Enter, a letter or digit, Esc) answers a
+  `needs-input` and returns the turn to working. Arrow keys do not.
+- **Exact signals win.** Once a session reports through a hook or OSC 7501,
+  output no longer flips it to running, the 12.5 s quiet rule no longer ends a
+  Codex turn, and the Jev screen check only runs after a Claude turn ends on
+  the quiet fallback. Before the first report (CLI startup, or a Claude whose
+  hooks never arrive) the heuristics stay in charge.
+- **Needs you.** Entering `needs-input` raises the row's hand with the CLI's
+  own words (`cli_prompt` source, "Claude wants permission to use Bash"). It
+  goes through `onSessionAttentionRequested`, which is the same path, push
+  alert and badge as `ade chat ask`. Leaving `needs-input` lowers it. An
+  agent's own ask is never overwritten or lowered.
+- **Turn end.** An exact `idle` is published to the push publisher as
+  `exactTurnState`, and the CLI's run settles `completed` (the Done column),
+  the same as a chat's `done` event. A turn that starts on its own (a queued
+  line) clears settle markers, as a submitted line does.
+- **Listeners.** `onTrackedCliTurnStarted` fires on a move to working.
+  `onTrackedCliTurnEnded` fires on a move to `idle` (`done`) or `needs-input`.
+  A CLI that is busy before anything was submitted (Codex's startup blip) is
+  not a turn, and fires neither. `getTrackedCliTurn(sessionId)` returns the
+  phase and its source.
+- **Cost.** The OSC 7501 parse runs only on chunks that contain or may start
+  the sequence. The tracker is a few field writes per transition, and
+  `sessionService.notifyChanged` runs on transitions only, never per chunk.
+  Each Claude turn starts two short `ade` processes (submit, stop), plus one or
+  two per permission prompt. No per-tool hook is installed.
+
 Activity detail is a separate typed value (`planning`, `exploring`,
 `implementing`, `testing`, `debugging`, `reviewing`, `shipping`, or
 `monitoring`) with a source. For ADE chats the host **detects** it from the
@@ -699,6 +765,25 @@ resume command with the optional model / reasoning / permission
 overrides, launches a new PTY in the existing row, and returns
 `resumed: true`. No prompt is appended and no agent CLI input write is
 performed.
+
+Three siblings serve the `ade chat` commands on a tracked agent CLI
+(`chat/agentCliSessionActions.ts`; see
+[Talking to an agent CLI session](../chat/README.md#talking-to-an-agent-cli-session)):
+
+- `interruptAgentCli(sessionId)` presses the provider's cancel key without
+  ending the process: Esc, Esc twice for OpenCode, Ctrl-C for Cursor. It
+  writes to the PTY directly, so the press is not counted as user input. It
+  presses nothing while the CLI sits at a free prompt.
+- `restartAgentCli({ sessionId, model?, reasoningEffort?, fastMode?,
+  permissionMode?, codex*?, instanceId?, requireIdle? })` relaunches the CLI in
+  its row, resuming its conversation. It checks the resume target first. It
+  refuses a setting the provider's resume command cannot carry: the command is
+  built with and without the setting and compared. It saves the new launch
+  settings and account on `resumeMetadata.launch`, disposes the live PTY,
+  waits up to 5 s for the old process to exit, then calls `resumeSession`.
+- `regenerateAgentCliTitle(sessionId)` is the AI title pass on request. It
+  reads the row's `goal` and the live (or recorded) output, and saves the
+  title as the user's (`manuallyNamed`).
 
 The renderer's Work continuation composer, the iOS Work tab's
 "continue" path (`work.sendToSession` remote command), and the

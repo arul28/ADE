@@ -947,6 +947,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     ...THREAD_COMMENT_ACTION_NAMES,
     ...CLAUDE_PLUGIN_UI_ACTION_NAMES,
     "messageSession",
+    // The Work input box's text for a running agent CLI, typed only at a free prompt.
+    "typeIntoCli",
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
@@ -1145,6 +1147,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "list",
     "moveOnBoard",
     "readTranscriptTail",
+    "reportCliTurnSignal",
     "requestSessionAttention",
     "setSessionActivity",
     "setSessionStatusNote",

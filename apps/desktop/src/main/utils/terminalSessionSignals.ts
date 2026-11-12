@@ -715,6 +715,39 @@ export function extractResumeCommandFromOutput(
   return null;
 }
 
+// The agent-state OSC that agent CLIs emit on every change, e.g. Codex 0.167:
+// `ESC ] 7501 ; state=idle:app=codex ST`. Values seen: working, idle, done.
+const OSC_7501_STATE_REGEX = /\x1b\]7501;state=([A-Za-z_-]+)[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const OSC_7501_PREFIX = "\x1b]7501;";
+const OSC_7501_CARRY_CHARS = 160;
+
+/**
+ * The newest agent-state report in `carry + chunk`, and what to carry into the
+ * next chunk: only an unfinished report (or the start of one) at the end, so a
+ * report split across two chunks is still read and a finished one is not.
+ */
+export function agentCliStateFromChunk(
+  carry: string,
+  chunk: string,
+): { state: string | null; carry: string } {
+  const text = carry + chunk;
+  let state: string | null = null;
+  let consumedTo = 0;
+  for (const match of text.matchAll(OSC_7501_STATE_REGEX)) {
+    state = (match[1] ?? "").toLowerCase() || state;
+    consumedTo = (match.index ?? 0) + match[0].length;
+  }
+  const open = text.lastIndexOf(OSC_7501_PREFIX);
+  if (open >= consumedTo && open >= 0) {
+    const rest = text.slice(open);
+    return { state, carry: rest.length <= OSC_7501_CARRY_CHARS && !/[\x07]|\x1b\\/.test(rest) ? rest : "" };
+  }
+  for (let len = Math.min(OSC_7501_PREFIX.length - 1, text.length); len > 0; len -= 1) {
+    if (text.endsWith(OSC_7501_PREFIX.slice(0, len))) return { state, carry: text.slice(-len) };
+  }
+  return { state, carry: "" };
+}
+
 export function runtimeStateFromOsc133Chunk(
   chunk: string,
   previous: TerminalRuntimeState,

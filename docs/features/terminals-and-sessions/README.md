@@ -298,7 +298,16 @@ and in tests.
   (`chatSessionId`) and the parent it reports to must be the caller's own. A
   plain `shell` launch is raw terminal access and stays in the caller's own lane
   (`ensurePtyCreateAuthorized`). A denial names the caller's chat session
-  (`callerChatSessionId`). A parent may read and stop the CLI children it
+  (`callerChatSessionId`). A launch that names no permission starts where a
+  chat launched the same way would (`configuredCliLaunchPermissionMode`): a
+  full-auto parent's subagent runs full-auto, otherwise the project's
+  per-provider setting, then `ai.permissions.cli.mode`, and full access when
+  nothing is configured, always clamped under the calling agent's own level.
+  An explicit `--permissions` (or Droid/Muse mode) is kept as given. Every
+  tracked agent CLI carries its own session id as `ADE_CHAT_SESSION_ID`, so an
+  `ade new chat` from inside it parents to the CLI by default, and an
+  `ade chat message` from it reaches the target stamped `agentRelay` with the
+  CLI as sender. A parent may read and stop the CLI children it
   launched in other lanes (`orchestrationParentSessionId` / `launchedBySessionId`
   in `isPtySessionAuthorized`). `--text-file -` reads stdin once per CLI run
   (`readAllStdinSync` caches it), so the text survives when the CLI forwards the
@@ -311,6 +320,45 @@ and in tests.
   meaningful terminal lines). `agentChatService` subscribes to `ptyService.onExit`
   and closes the parent's card through the same delivery path chat children use;
   `ade chat status` / `ade chat read` / `ade chat list` answer for these ids.
+  An agent CLI waits at its prompt rather than exiting, so each **finished
+  turn** reports too (`reportCliChildTurnEnded`, on
+  `ptyService.onTrackedCliTurnEnded`): the parent's card closes with the CLI's
+  closing message and a subagent's parent is woken, keyed `cli-turn:<turn
+  start>` so one turn delivers once. A CLI parent gets it typed at its prompt
+  at its next turn boundary (`wakeAgentCliParent`), never into a running turn.
+  A turn end read from quiet output (`source: "heuristic"`) counts only when
+  `canAcceptScheduledTurn` sees the composer again; a turn that stopped on a
+  question (`needs-input`) reports nothing. When the child started its next
+  turn (`onTrackedCliTurnStarted`) the parent's card reopens. A turn the CLI
+  already reported itself (`ade chat message`, stamped `agentRelay`) closes the
+  card quietly, and an exit whose closing message repeats the last turn report
+  does too, so the parent is never woken twice for one result.
+- `apps/desktop/src/main/services/chat/cliCardInputs.ts` — ADE's own cards
+  (`ask_user`, `ade secrets request`, `ade integrations connect`,
+  `ade mcp servers add`) raised from a tracked agent CLI. A CLI has no
+  transcript, so `requestChatInput` holds the card here, keyed by the CLI's
+  session, raises the row's hand (`provider_structured`) while it is open, and
+  lowers it when the last one closes. `chat.listPendingInputs` on the CLI lists
+  these before the CLI's own prompt item (`agentCliSessionActions.ts`), and
+  `chat.respondToInput` / `approveToolUse` answer them first; the `ade`
+  command waiting in the terminal gets the answer as its result. The CLI's exit
+  or a brain shutdown cancels them; they are in memory, like a chat's local
+  cards.
+- `apps/desktop/src/renderer/components/terminals/CliAgentPane.tsx` — the
+  pane under a tracked agent CLI's terminal (live and ended), shown only when
+  it has something: the CLI's open cards (rendered with the chat's own
+  composers: secret, connect, MCP server, question), the agents it started
+  (`useCliParentChildRows`: every session on the CLI's machine whose
+  `orchestrationParentSessionId` is the CLI, in the chat's `ChatSubagentsPanel`
+  with open, status and a Stop that interrupts a child chat or closes a child
+  CLI's PTY), and the proof it filed (`ChatComputerUsePanel` on the
+  `chat_session` owner). Every read and answer carries the CLI's `runtimePin`;
+  cards are re-read when the row's attention fields change, proof follows
+  `computerUse.onEvent` for this owner, and children come from the store's
+  session list, so nothing polls. The Work list keeps a CLI's children as
+  top-level rows (only a chat files its subagents), so they stay reachable
+  there too. The web client lists cards through `chat.listPendingInputs`;
+  iOS does not show this pane yet.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.

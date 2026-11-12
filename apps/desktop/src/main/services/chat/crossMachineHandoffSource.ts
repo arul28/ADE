@@ -559,6 +559,12 @@ export type CrossMachineBatchChatState = {
   blockedKind: string | null;
   /** The unified permission level of a loaded chat. */
   permissionLevel: string | null;
+  /**
+   * Set for a tracked agent CLI row (its tool type). Its row is `running`
+   * while the process is up, which says nothing about a turn, so only
+   * `blockedKind` says it is busy.
+   */
+  cliToolType?: string | null;
 };
 
 /**
@@ -583,7 +589,7 @@ export function createCrossMachineBatchSource(deps: {
   const { store, laneService } = deps;
 
   const listBatchChats = async (): Promise<CrossMachineBatchChat[]> => deps.listChatSessions()
-    .map(({ row, lineage, blockedKind, permissionLevel }) => {
+    .map(({ row, lineage, blockedKind, permissionLevel, cliToolType }) => {
       const activeWork = row.archivedAt == null
         && row.settledAt == null
         && (lineage?.surface ?? row.surface ?? "work") === "work";
@@ -593,7 +599,8 @@ export function createCrossMachineBatchSource(deps: {
         parentSessionId: lineage?.orchestrationParentSessionId ?? null,
         spawnKind: lineage?.spawnKind ?? "subagent",
         isWorkChat: activeWork,
-        turnActive: blockedKind === "turn_active" || row.status === "running" || row.status === "detached",
+        turnActive: blockedKind === "turn_active"
+          || (!cliToolType && (row.status === "running" || row.status === "detached")),
         awaitingInput: blockedKind === "awaiting_input",
         permissionLevel,
         provider: lineage?.provider ?? "",
@@ -602,6 +609,7 @@ export function createCrossMachineBatchSource(deps: {
         title: row.title ?? null,
         crossMachineOrigin: lineage?.crossMachineOrigin ?? null,
         crossMachineArrival: lineage?.crossMachineArrival ?? null,
+        ...(cliToolType ? { cliToolType } : {}),
       };
     });
 
