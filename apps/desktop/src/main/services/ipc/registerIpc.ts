@@ -12137,11 +12137,18 @@ export function registerIpc({
 
   handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
     const ctx = getCtx();
-    ctx.githubService.setToken(arg.token);
+    const { accountCopy } = ctx.githubService.setToken(arg.token);
     const status = await ctx.githubService.getStatus();
     const credentialVerification = await ctx.githubService.verifyStoredPat(status);
     const verifiedStatus = { ...status, credentialVerification };
     broadcastGithubStatus(verifiedStatus);
+    // Told again once the account's copy is written: a reader of that copy
+    // (the ADE Cloud git preflight) can race the first broadcast.
+    void accountCopy
+      .then(() => broadcastGithubStatus(verifiedStatus))
+      .catch((error: unknown) => {
+        ctx.logger.warn("github.status_rebroadcast_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
     return verifiedStatus;
   });
 

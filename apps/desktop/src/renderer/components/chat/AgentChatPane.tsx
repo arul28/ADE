@@ -10373,7 +10373,7 @@ export function AgentChatPane({
       // the launch itself carries what was picked at Send.
       const settings = launch.chatSettings;
       if (!settings || !launch.modelId) return false;
-      const config = buildLastLaunchConfig({ ...settings, modelId: launch.modelId as LaunchConfigSessionSource["modelId"] }, initialNativeControls);
+      const config = buildLastLaunchConfig({ ...settings, modelId: launch.modelId }, initialNativeControls);
       if (!config) return false;
       applyLaunchConfigToComposer({
         ...config,
@@ -17049,6 +17049,7 @@ export function AgentChatPane({
     connections: draftConnections,
     sendRef: adeCloudSendRef,
     navigate,
+    visible: isTileVisible,
   });
 
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {

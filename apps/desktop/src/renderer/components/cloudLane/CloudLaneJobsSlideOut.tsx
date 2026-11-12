@@ -117,55 +117,43 @@ function nextExpiryOf(shown: readonly CloudLaneJobSnapshot[]): number | null {
 
 const panelJobsNow = (now: number) => selectPanelJobs(cloudLaneJobsNow(), { marks: cloudLaneJobMarks(), hidden: hiddenHere, now });
 
-/** The jobs the corner panel shows now, re-read when a finished row's beat ends. */
-function usePanelJobs(): CloudLaneJobSnapshot[] {
-  const jobs = useCloudLaneJobs(cloudLaneLifeAvailable());
-  const hidden = useHiddenVersion();
-  const [now, setNow] = useState(() => Date.now());
-  const shown = useMemo(
-    () => selectPanelJobs(jobs, { marks: cloudLaneJobMarks(), hidden: hiddenHere, now: Math.max(now, Date.now()) }),
-    // `hidden` stands in for the module map it versions; the marks change only with `jobs`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [jobs, hidden, now],
-  );
-  // One timer for the first finished row to leave; nothing while every row runs.
-  const nextExpiry = useMemo(() => nextExpiryOf(shown), [shown]);
-  useEffect(() => {
-    if (nextExpiry == null) return undefined;
-    const timer = window.setTimeout(() => setNow(Date.now()), Math.max(0, nextExpiry - Date.now()) + 50);
-    return () => window.clearTimeout(timer);
-  }, [nextExpiry]);
-  return shown;
-}
-
 /*
- * The app shell's boolean, kept apart from the job map: a move publishes every
- * progress line, and the shell renders only when "anything to show" flips.
+ * One module store for the shell and the panel, kept apart from the job map:
+ * a move publishes every progress line, and the shell renders only when
+ * "anything to show" flips. One timer waits for the first finished row to
+ * leave; when it fires it bumps `panelNow`, which the open panel re-selects
+ * with, so the two never keep their own clocks.
  */
+const subscribeNothing = () => () => undefined;
 let shellVisible = false;
+let panelNow = 0;
 let shellTimer: number | null = null;
 let stopShell: (() => void) | null = null;
 const shellListeners = new Set<() => void>();
 
-function recomputeShellVisible(): void {
+function recomputeShell(beatEnded: boolean): void {
   if (shellTimer != null) {
     window.clearTimeout(shellTimer);
     shellTimer = null;
   }
-  const shown = panelJobsNow(Date.now());
+  const now = Date.now();
+  if (beatEnded) panelNow = now;
+  const shown = panelJobsNow(now);
   const expiry = nextExpiryOf(shown);
-  if (expiry != null) shellTimer = window.setTimeout(recomputeShellVisible, Math.max(0, expiry - Date.now()) + 50);
+  if (expiry != null) shellTimer = window.setTimeout(() => recomputeShell(true), Math.max(0, expiry - Date.now()) + 50);
   const next = shown.length > 0;
-  if (next === shellVisible) return;
+  if (next === shellVisible && !beatEnded) return;
   shellVisible = next;
   for (const listener of shellListeners) listener();
 }
 
-function subscribeShellVisible(listener: () => void): () => void {
+const recomputeOnChange = () => recomputeShell(false);
+
+function subscribeShell(listener: () => void): () => void {
   shellListeners.add(listener);
   if (!stopShell) {
-    const offJobs = subscribeCloudLaneJobs(recomputeShellVisible);
-    const offHidden = subscribeHidden(recomputeShellVisible);
+    const offJobs = subscribeCloudLaneJobs(recomputeOnChange);
+    const offHidden = subscribeHidden(recomputeOnChange);
     stopShell = () => {
       offJobs();
       offHidden();
@@ -173,7 +161,7 @@ function subscribeShellVisible(listener: () => void): () => void {
       shellTimer = null;
       stopShell = null;
     };
-    recomputeShellVisible();
+    recomputeShell(false);
   }
   return () => {
     shellListeners.delete(listener);
@@ -181,15 +169,31 @@ function subscribeShellVisible(listener: () => void): () => void {
   };
 }
 
+const readPanelNow = () => panelNow;
+const readNoBeat = () => 0;
+
+/** The jobs the corner panel shows now, re-read when a finished row's beat ends (the shell's one timer). */
+function usePanelJobs(): CloudLaneJobSnapshot[] {
+  const available = cloudLaneLifeAvailable();
+  const jobs = useCloudLaneJobs(available);
+  const hidden = useHiddenVersion();
+  const beat = useSyncExternalStore(available ? subscribeShell : subscribeNothing, available ? readPanelNow : readNoBeat, readNoBeat);
+  return useMemo(
+    () => selectPanelJobs(jobs, { marks: cloudLaneJobMarks(), hidden: hiddenHere, now: Date.now() }),
+    // `hidden` stands in for the module map it versions, `beat` for the clock; the marks change only with `jobs`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [jobs, hidden, beat],
+  );
+}
+
 const readShellVisible = () => shellVisible;
 const readNotVisible = () => false;
-const subscribeNothing = () => () => undefined;
 
 /** Cheap boolean for the app shell: is there anything for the panel to show? */
 export function useCloudLaneJobsSlideOutVisible(): boolean {
   const available = cloudLaneLifeAvailable();
   return useSyncExternalStore(
-    available ? subscribeShellVisible : subscribeNothing,
+    available ? subscribeShell : subscribeNothing,
     available ? readShellVisible : readNotVisible,
     readNotVisible,
   );

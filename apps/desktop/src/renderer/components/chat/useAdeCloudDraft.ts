@@ -195,6 +195,8 @@ export function useAdeCloudComposer(input: {
   connections: readonly RemoteRuntimeConnectionStatus[];
   sendRef: MutableRefObject<AdeCloudSend | null>;
   navigate: (to: string) => void;
+  /** Whether the composer is on screen (the Work tab shown and its tile visible); coming back re-reads a refusal. */
+  visible: boolean;
 }) {
   const { draft, mode, laneId, setLaneId, navigate } = input;
   /**
@@ -223,8 +225,10 @@ export function useAdeCloudComposer(input: {
   // Asked before Send (account-level, no pin), once per repository, so a
   // private repository with no git credential that follows the account is a
   // label here, never a failed "Clone repository" step after the computer was
-  // made (C4, beta.12 #15). Asked again when GitHub's connection changes,
-  // and while it refuses, on window focus and on a blocked Send: the Work tab
+  // made (C4, beta.12 #15). Asked again when GitHub's connection changes
+  // (main tells again once the account's copy is written), and while it
+  // refuses, when the composer comes back into view (back from Settings, the
+  // tile shown again), on window focus and on a blocked Send: the Work tab
   // stays mounted while the person connects GitHub in Settings.
   const [gitPreflight, setGitPreflight] = useState<{ originUrl: string; result: CloudGitPreflight | null } | null>(null);
   const [gitPreflightRead, setGitPreflightRead] = useState(0);
@@ -261,6 +265,16 @@ export function useAdeCloudComposer(input: {
     window.addEventListener("focus", recheckGitPreflight);
     return () => window.removeEventListener("focus", recheckGitPreflight);
   }, [preflightWanted, recheckGitPreflight, refusedNow]);
+  // Back from Settings is a route change (no window focus): the parked Work
+  // surface's tile turns visible again, and that re-reads while a refusal
+  // holds Send. So does a hidden tile shown again.
+  const visible = input.visible;
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    const cameBack = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (cameBack && preflightWanted && refusedNow) recheckGitPreflight();
+  }, [preflightWanted, recheckGitPreflight, refusedNow, visible]);
   /**
    * Why Send can't go to ADE Cloud now, shown above the box before Send:
    * a fact of the account (out of hours, all computers in use, disk full) or

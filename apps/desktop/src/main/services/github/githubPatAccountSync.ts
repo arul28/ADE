@@ -79,12 +79,16 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
 
   const vaultRef = { scope: ACCOUNT_SCOPE_ALL, kind: ACCOUNT_GITHUB_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY };
 
-  /** Share a token pasted here with the account's other machines. */
-  const publish = (token: string): void => {
+  /**
+   * Share a token pasted here with the account's other machines. Resolves
+   * once the account's copy settled (written, or every attempt failed), for a
+   * caller that tells others to read it again; never rejects.
+   */
+  const publish = async (token: string): Promise<void> => {
     if (!accountUserId()) return;
     const clean = token.trim();
     if (!clean) return;
-    fireAndForgetVaultWrite(vaultOptions, "set", (vault) => vault.set(
+    await fireAndForgetVaultWrite(vaultOptions, "set", (vault) => vault.set(
       ACCOUNT_SCOPE_ALL,
       ACCOUNT_GITHUB_VAULT_KIND,
       GITHUB_PAT_VAULT_KEY,
@@ -162,7 +166,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
         }
         if (!remote) {
           if (present && remoteRaw !== null) return;
-          if (local && !fromAccount) publish(local);
+          if (local && !fromAccount) void publish(local);
           return;
         }
         if (!local) {
