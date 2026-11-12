@@ -1,12 +1,23 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { useAppStore } from "../../../state/appStore";
 
-// Authoritative storage lives in the ade-cli main process so recents sync
-// across desktop and iOS surfaces. localStorage is a hot cache that
-// keeps the picker responsive while the RPC roundtrip completes.
+// Recents belong to this client (`localStorage`), not to a machine: the same
+// list on every project tab. A client that has never saved a list reads it
+// once from the tab's copy, where older versions kept it, and then keeps it
+// here. Nothing writes back to a machine.
 const STORAGE_KEY = "ade.modelPicker.recents.v1";
 const MAX_RECENTS = 10;
+
+function hasPersisted(): boolean {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) != null;
+  } catch {
+    return false;
+  }
+}
 
 function readPersisted(): string[] {
   try {
@@ -30,25 +41,10 @@ function persistCache(values: string[]): void {
   }
 }
 
-function getRpcApi():
-  | {
-      getRecents: () => Promise<{ recents: string[] }>;
-      pushRecent: (id: string) => Promise<{ recents: string[] }>;
-    }
-  | null {
+function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ recents: string[] }>) | null {
   if (typeof window === "undefined") return null;
-  const ade = (window as unknown as { ade?: { modelPicker?: unknown } }).ade;
-  const picker = ade?.modelPicker as
-    | {
-        getRecents?: () => Promise<{ recents: string[] }>;
-        pushRecent?: (id: string) => Promise<{ recents: string[] }>;
-      }
-    | undefined;
-  if (!picker?.getRecents || !picker.pushRecent) return null;
-  return picker as {
-    getRecents: () => Promise<{ recents: string[] }>;
-    pushRecent: (id: string) => Promise<{ recents: string[] }>;
-  };
+  const getRecents = window.ade?.modelPicker?.getRecents;
+  return typeof getRecents === "function" ? getRecents : null;
 }
 
 type RecentsState = {
@@ -67,34 +63,29 @@ const useRecentsStore = create<RecentsState>((set, get) => ({
     const current = get().recents;
     const filtered = current.filter((entry) => entry !== id);
     const next = [id, ...filtered].slice(0, MAX_RECENTS);
-    set({ recents: next });
+    set({ recents: next, hydrated: true });
     persistCache(next);
-    const api = getRpcApi();
-    if (!api) return;
-    void api
-      .pushRecent(id)
-      .then((result) => {
-        const authoritative = Array.isArray(result?.recents) ? result.recents : null;
-        if (!authoritative) return;
-        set({ recents: authoritative });
-        persistCache(authoritative);
-      })
-      .catch(() => {
-        // Optimistic update is preserved; we'll reconcile on next hydrate.
-      });
   },
   hydrateFromRemote: async () => {
-    const api = getRpcApi();
-    if (!api) {
-      // RPC surface not yet bound — leave hydrated:false so we retry once it
-      // becomes available, instead of permanently locking on stale local cache.
+    if (hasPersisted()) {
+      set({ hydrated: true });
       return;
     }
+    // The one-time import reads the old list from the tab's copy.
+    const pin = useAppStore.getState().projectBinding;
+    const getRecents = getImportApi();
+    // No tab open or no bridge yet: stay unhydrated so a later mount imports.
+    if (!pin || !getRecents) return;
     try {
-      const result = await api.getRecents();
-      const authoritative = Array.isArray(result?.recents) ? result.recents : [];
-      set({ recents: authoritative, hydrated: true });
-      persistCache(authoritative);
+      const result = await getRecents(pin);
+      const imported = Array.isArray(result?.recents) ? result.recents.slice(0, MAX_RECENTS) : [];
+      // A pick made while the import was in flight wins.
+      if (hasPersisted()) {
+        set({ hydrated: true });
+        return;
+      }
+      set({ recents: imported, hydrated: true });
+      persistCache(imported);
     } catch {
       set({ hydrated: true });
     }

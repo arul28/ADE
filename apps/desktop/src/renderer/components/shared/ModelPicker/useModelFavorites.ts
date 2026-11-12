@@ -1,12 +1,22 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { useAppStore } from "../../../state/appStore";
 
-// Authoritative storage lives in the ade-cli main process so favorites sync
-// across desktop and iOS surfaces. We keep a localStorage cache so the
-// initial render is instant while the RPC roundtrip completes in the
-// background, and so the picker still works when the runtime isn't bound.
+// Favorites belong to this client (`localStorage`), not to a machine: the
+// same list on every project tab. A client that has never saved a list reads
+// it once from the tab's copy, where older versions kept it, and then keeps it
+// here. Nothing writes back to a machine.
 const STORAGE_KEY = "ade.modelPicker.favorites.v1";
+
+function hasPersisted(): boolean {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) != null;
+  } catch {
+    return false;
+  }
+}
 
 function readPersisted(): string[] {
   try {
@@ -28,25 +38,10 @@ function persist(values: string[]): void {
   }
 }
 
-function getRpcApi():
-  | {
-      getFavorites: () => Promise<{ favorites: string[] }>;
-      toggleFavorite: (id: string) => Promise<{ favorites: string[]; isFavorite: boolean }>;
-    }
-  | null {
+function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: string[] }>) | null {
   if (typeof window === "undefined") return null;
-  const ade = (window as unknown as { ade?: { modelPicker?: unknown } }).ade;
-  const picker = ade?.modelPicker as
-    | {
-        getFavorites?: () => Promise<{ favorites: string[] }>;
-        toggleFavorite?: (id: string) => Promise<{ favorites: string[]; isFavorite: boolean }>;
-      }
-    | undefined;
-  if (!picker?.getFavorites || !picker.toggleFavorite) return null;
-  return picker as {
-    getFavorites: () => Promise<{ favorites: string[] }>;
-    toggleFavorite: (id: string) => Promise<{ favorites: string[]; isFavorite: boolean }>;
-  };
+  const getFavorites = window.ade?.modelPicker?.getFavorites;
+  return typeof getFavorites === "function" ? getFavorites : null;
 }
 
 type FavoritesState = {
@@ -65,35 +60,30 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
     if (!id) return;
     const current = get().favorites;
     const next = current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id];
-    set({ favorites: next });
+    set({ favorites: next, hydrated: true });
     persist(next);
-    const api = getRpcApi();
-    if (!api) return;
-    void api
-      .toggleFavorite(id)
-      .then((result) => {
-        const authoritative = Array.isArray(result?.favorites) ? result.favorites : null;
-        if (!authoritative) return;
-        set({ favorites: authoritative });
-        persist(authoritative);
-      })
-      .catch(() => {
-        // Keep the optimistic update on RPC failure — we'll reconcile on next hydrate.
-      });
   },
   isFavorite: (modelId: string) => get().favorites.includes(modelId),
   hydrateFromRemote: async () => {
-    const api = getRpcApi();
-    if (!api) {
-      // RPC surface not yet bound — leave hydrated:false so we retry once it
-      // becomes available, instead of permanently locking on stale local cache.
+    if (hasPersisted()) {
+      set({ hydrated: true });
       return;
     }
+    // The one-time import reads the old list from the tab's copy.
+    const pin = useAppStore.getState().projectBinding;
+    const getFavorites = getImportApi();
+    // No tab open or no bridge yet: stay unhydrated so a later mount imports.
+    if (!pin || !getFavorites) return;
     try {
-      const result = await api.getFavorites();
-      const authoritative = Array.isArray(result?.favorites) ? result.favorites : [];
-      set({ favorites: authoritative, hydrated: true });
-      persist(authoritative);
+      const result = await getFavorites(pin);
+      const imported = Array.isArray(result?.favorites) ? result.favorites : [];
+      // A toggle made while the import was in flight wins.
+      if (hasPersisted()) {
+        set({ hydrated: true });
+        return;
+      }
+      set({ favorites: imported, hydrated: true });
+      persist(imported);
     } catch {
       set({ hydrated: true });
     }
