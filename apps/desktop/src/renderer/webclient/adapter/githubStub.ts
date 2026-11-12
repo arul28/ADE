@@ -1,4 +1,11 @@
-import type { GitHubAppUserAuthStatus, GitHubStatus } from "../../../shared/types";
+import type {
+  GitHubAccountAppAccountStatus,
+  GitHubAccountAppSignInReadResult,
+  GitHubAccountAppSignInStartResult,
+  GitHubAccountAppSignOutResult,
+  GitHubAppUserAuthStatus,
+  GitHubStatus,
+} from "../../../shared/types";
 
 /**
  * What the standalone web client answers for GitHub.
@@ -101,5 +108,128 @@ export function createGithubNamespace(deps: {
     // mutation and ineligible for adapter read caching.
     publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }, false),
     onStatusChanged: deps.onStatusChanged,
+  };
+}
+
+type GithubAppDirectorySend = (request: {
+  method: "GET" | "POST" | "DELETE";
+  path: string;
+  body?: Record<string, unknown>;
+}) => Promise<{ status: number; body: unknown }>;
+
+function errorCode(body: unknown, status: number): string {
+  const error = body && typeof body === "object" ? (body as { error?: { code?: unknown } }).error : null;
+  return typeof error?.code === "string" ? error.code : `http_${status}`;
+}
+
+function sendErrorCode(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const match = /^([a-z_]+):/.exec(message);
+  return match?.[1] ?? "unavailable";
+}
+
+/**
+ * The ADE account's GitHub App sign-in on the web client. Account-scoped like
+ * the desktop's: this browser's own account session asks the account
+ * directory, and no GitHub token ever reaches the browser. A sign-in leaves
+ * this page for GitHub and comes back to it (`returnTo`); the server checks
+ * that the address is a page of the ADE web app.
+ */
+export function createGithubAccountAppWebMethods(send: GithubAppDirectorySend) {
+  const record = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  return {
+    getAccountAppStatus: async (): Promise<GitHubAccountAppAccountStatus> => {
+      const empty: GitHubAccountAppAccountStatus = {
+        available: false,
+        error: "unavailable",
+        connected: false,
+        state: null,
+        stateReason: null,
+        githubLogin: null,
+        connectedAt: null,
+        origin: null,
+      };
+      try {
+        const answer = await send({ method: "GET", path: "/github/app/status" });
+        if (answer.status !== 200) {
+          const code = errorCode(answer.body, answer.status);
+          return { ...empty, error: answer.status === 404 || code === "github_app_not_configured" ? "unsupported" : "unavailable" };
+        }
+        const body = record(answer.body);
+        return {
+          available: true,
+          error: null,
+          connected: body.connected === true,
+          state: body.state === "active" || body.state === "needs_reauth" ? body.state : null,
+          stateReason: text(body.stateReason),
+          githubLogin: text(body.githubLogin),
+          connectedAt: num(body.connectedAt),
+          origin: body.origin === "web_flow" || body.origin === "adopted_device_flow" ? body.origin : null,
+        };
+      } catch (cause) {
+        const code = sendErrorCode(cause);
+        return { ...empty, error: code === "signed_out" ? "signed_out" : code === "no_directory" ? "unsupported" : "unavailable" };
+      }
+    },
+    startAccountAppSignIn: async (): Promise<GitHubAccountAppSignInStartResult> => {
+      try {
+        const returnTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+        const answer = await send({ method: "POST", path: "/github/app/sign-in", body: { client: "web", returnTo } });
+        const body = record(answer.body);
+        const signInId = text(body.signInId);
+        const authorizeUrl = text(body.authorizeUrl);
+        const expiresAt = num(body.expiresAt);
+        if ((answer.status === 201 || answer.status === 200) && signInId && authorizeUrl && expiresAt != null) {
+          let host = "";
+          try {
+            host = new URL(authorizeUrl).hostname.toLowerCase();
+          } catch {
+            host = "";
+          }
+          if (host !== "github.com") return { ok: false, error: "unavailable", message: null };
+          window.location.assign(authorizeUrl);
+          return { ok: true, signInId, expiresAt };
+        }
+        const code = errorCode(answer.body, answer.status);
+        return {
+          ok: false,
+          error: answer.status === 404 || code === "github_app_not_configured" ? "unsupported" : code,
+          message: text(record(record(answer.body).error).message),
+        };
+      } catch (cause) {
+        return { ok: false, error: sendErrorCode(cause), message: null };
+      }
+    },
+    readAccountAppSignIn: async (args: { signInId: string }): Promise<GitHubAccountAppSignInReadResult> => {
+      const signInId = typeof args?.signInId === "string" ? args.signInId : "";
+      if (!/^gs_[0-9a-f]{32}$/.test(signInId)) return { ok: false, error: "invalid_args" };
+      try {
+        const answer = await send({ method: "GET", path: `/github/app/sign-in/${signInId}` });
+        const body = record(answer.body);
+        const status = body.status === "pending" || body.status === "done" || body.status === "failed" || body.status === "expired" ? body.status : null;
+        if (answer.status !== 200 || !status) return { ok: false, error: errorCode(answer.body, answer.status) };
+        const resultCode = body.resultCode === "ok" || body.resultCode === "denied" || body.resultCode === "error" ? body.resultCode : null;
+        return { ok: true, status, resultCode, githubLogin: text(body.githubLogin) };
+      } catch (cause) {
+        return { ok: false, error: sendErrorCode(cause) };
+      }
+    },
+    signOutAccountApp: async (): Promise<GitHubAccountAppSignOutResult> => {
+      try {
+        const answer = await send({ method: "DELETE", path: "/github/app/grant" });
+        const body = record(answer.body);
+        if (answer.status !== 200) return { ok: false, error: errorCode(answer.body, answer.status) };
+        return {
+          ok: true,
+          deletedAtGitHub: body.deletedAtGitHub === true,
+          revokeAtGitHubUrl: text(body.revokeAtGitHubUrl) ?? "https://github.com/settings/apps/authorizations",
+        };
+      } catch (cause) {
+        return { ok: false, error: sendErrorCode(cause) };
+      }
+    },
   };
 }

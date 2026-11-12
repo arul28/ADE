@@ -804,11 +804,39 @@ export class BrowserAccountClient {
     path: string;
     body?: Record<string, unknown>;
   }): Promise<{ status: number; body: unknown }> {
-    const config = this.config;
-    if (!config) throw new Error(encodeCodedErrorMessage("no_directory", "Account sign-in isn't configured for this web client."));
     if (!/^\/lane-shares(\/|$)/.test(request.path) || request.path.startsWith("/lane-shares/host")) {
       throw new Error(encodeCodedErrorMessage("invalid_args", "That account call is not allowed here."));
     }
+    return await this.allowedDirectoryRequest(request);
+  }
+
+  /**
+   * One call for the ADE account's GitHub App sign-in, with this browser's
+   * own account token: start a sign-in, read how it ended, the status, and
+   * disconnect. Only those paths: the token routes (`/token`, `/adopt`,
+   * `/retire`) belong to machines, and a browser never holds a GitHub token.
+   */
+  async githubAppRequest(request: {
+    method: "GET" | "POST" | "DELETE";
+    path: string;
+    body?: Record<string, unknown>;
+  }): Promise<{ status: number; body: unknown }> {
+    const allowed = (request.method === "POST" && request.path === "/github/app/sign-in")
+      || (request.method === "GET" && /^\/github\/app\/sign-in\/gs_[0-9a-f]{32}$/.test(request.path))
+      || (request.method === "GET" && request.path === "/github/app/status")
+      || (request.method === "DELETE" && request.path === "/github/app/grant");
+    if (!allowed) throw new Error(encodeCodedErrorMessage("invalid_args", "That account call is not allowed here."));
+    return await this.allowedDirectoryRequest(request);
+  }
+
+  /** A directory call whose path the caller already checked; one retry after a 401. */
+  private async allowedDirectoryRequest(request: {
+    method: "GET" | "POST" | "DELETE";
+    path: string;
+    body?: Record<string, unknown>;
+  }): Promise<{ status: number; body: unknown }> {
+    const config = this.config;
+    if (!config) throw new Error(encodeCodedErrorMessage("no_directory", "Account sign-in isn't configured for this web client."));
     const signedOut = () => new Error(encodeCodedErrorMessage("signed_out", "Sign in to your ADE account."));
     let token: string;
     try {

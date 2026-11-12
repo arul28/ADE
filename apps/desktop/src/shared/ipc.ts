@@ -1103,6 +1103,11 @@ export const IPC = {
   githubStartAppUserDeviceAuth: "ade.github.startAppUserDeviceAuth",
   githubPollAppUserDeviceAuth: "ade.github.pollAppUserDeviceAuth",
   githubClearAppUserAuth: "ade.github.clearAppUserAuth",
+  // The ADE account's GitHub App sign-in. Account-scoped: no machine pin.
+  githubGetAccountAppStatus: "ade.github.getAccountAppStatus",
+  githubStartAccountAppSignIn: "ade.github.startAccountAppSignIn",
+  githubReadAccountAppSignIn: "ade.github.readAccountAppSignIn",
+  githubSignOutAccountApp: "ade.github.signOutAccountApp",
   githubGetAppInstallationStatus: "ade.github.getAppInstallationStatus",
   githubListRepoAutolinks: "ade.github.listRepoAutolinks",
   githubCreateRepoAutolink: "ade.github.createRepoAutolink",

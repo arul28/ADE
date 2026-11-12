@@ -65,9 +65,10 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
       return {
         tone: "ok",
         label: status.userLogin ? `Connected as ${status.userLogin}` : "Connected",
-        // A pasted token and a gh login follow the account; an env token and the app sign-in are this computer's.
+        // A pasted token, a gh login and the account's App sign-in follow the account; an env token and this computer's own App sign-in stay here.
         savedIn: status.authSource === "pat"
           || status.authSource === "account_gh"
+          || status.authSource === "account_app"
           || (status.authSource === "gh" && status.accountCredentials?.ghSharedFromHere)
           ? "Your account"
           : "This computer",

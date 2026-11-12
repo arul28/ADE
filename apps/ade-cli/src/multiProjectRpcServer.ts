@@ -123,6 +123,7 @@ import {
 } from "../../desktop/src/shared/types";
 import {
   callAccountAction,
+  getSignedInAccountAccessToken,
   type AccountAnalyticsIdentity,
   type AccountAuthService,
 } from "./services/account/accountAuthService";
@@ -856,6 +857,19 @@ function readListMyReposInput(
  * never copied the account's GitHub token, so it is read from the account
  * vault here first; without it a private repository does not clone.
  */
+/**
+ * The account getters a machine-level GitHub service needs for the account's
+ * GitHub App sign-in, so a clone on a new cloud computer can use it.
+ */
+function machineAccountAppGithubOptions(accountUserId: () => string | null) {
+  return {
+    getAccountAccessToken: (options?: { forceRefresh?: boolean }) =>
+      getSignedInAccountAccessToken(getSharedAccountAuthService({ logger: machineProjectLogger }), options),
+    getAccountUserId: accountUserId,
+    getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl() || null,
+  };
+}
+
 async function createMachineProjectScaffoldService() {
   const account = getMachineAccountStores(machineProjectLogger);
   const githubService = createHeadlessGitHubService(
@@ -863,7 +877,7 @@ async function createMachineProjectScaffoldService() {
     machineProjectLogger,
     {
       getAccountVault: () => createHeadlessAccountVaultBridge(() => account.vault),
-      getAccountUserId: account.accountUserId,
+      ...machineAccountAppGithubOptions(account.accountUserId),
     },
   );
   const userId = account.accountUserId();
@@ -1369,11 +1383,16 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
     ) {
       blockingErrors.push("Destination Git authentication preflight received invalid repository details.");
     } else if (fs.existsSync(normalizedParent) && fs.statSync(normalizedParent).isDirectory()) {
-      const githubService = createHeadlessGitHubService(normalizedParent, machineProjectLogger);
+      const githubService = createHeadlessGitHubService(
+        normalizedParent,
+        machineProjectLogger,
+        machineAccountAppGithubOptions(getMachineAccountStores(machineProjectLogger).accountUserId),
+      );
       let destinationToken = "";
-      if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
+      const destinationRepo = githubService.parseGitHubRepoFromRemoteUrl(originUrl);
+      if (destinationRepo && /^https:\/\//i.test(originUrl)) {
         try {
-          destinationToken = await githubService.getGitTransportTokenOrThrowAsync();
+          destinationToken = await githubService.getGitTransportTokenOrThrowAsync({ owner: destinationRepo.owner });
         } catch {
           // The destination may still have a system credential helper. Let
           // Git try it with terminal prompting disabled below.

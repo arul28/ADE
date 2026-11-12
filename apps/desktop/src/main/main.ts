@@ -95,6 +95,7 @@ import { registerDatabaseCopiesIpc } from "./services/startupRecovery/registerDa
 import type { StartupRecovery } from "./services/startupRecovery/startupRecovery";
 import { isStartupRecoveryWindow } from "./services/startupRecovery/startupRecoveryWindow";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
+import { registerGithubAccountAppIpc } from "./services/github/registerGithubAccountAppIpc";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
@@ -4123,7 +4124,9 @@ app.whenReady().then(async () => {
       logger,
       analytics: productAnalyticsService,
     });
-    const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
+    const getAccountAccessToken = (
+      options?: Parameters<typeof getSignedInAccountAccessToken>[1],
+    ) => getSignedInAccountAccessToken(accountAuthService, options);
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
       logger,
@@ -4633,6 +4636,8 @@ app.whenReady().then(async () => {
       // A pasted token follows the owner's ADE account to their other machines.
       getAccountVault: () => accountVaultBridge,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      // The account's GitHub App sign-in (`account_app`), served by the account directory.
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
       // A repaired or removed App credential ends the relay's auth-pending
       // cooldown at once. Wired here rather than inside either service: the
       // ingress loop must stay free of GitHub internals, and only this owner
@@ -7129,11 +7134,18 @@ app.whenReady().then(async () => {
     // github services even before a project is opened. Build minimal versions
     // here that share the user-data token store. detectRepo / publishCurrent
     // require an active project and will throw clearly when called dormant.
+    // The account's GitHub App sign-in, so a welcome-screen clone works on a
+    // machine with no GitHub sign-in of its own.
+    const dormantAccountAuthService = getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir, logger });
     const dormantGithubService = createGithubService({
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      getAccountAccessToken: (options?: Parameters<typeof getSignedInAccountAccessToken>[1]) =>
+        getSignedInAccountAccessToken(dormantAccountAuthService, options),
+      getAccountUserId: () => dormantAccountAuthService.getStatus().userId,
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
     });
     const dormantProjectScaffoldService = createProjectScaffoldService({
       logger,
@@ -10592,6 +10604,18 @@ app.whenReady().then(async () => {
       const found = builtInBrowserService.locateWebContents(wc);
       return found?.collection === "personal" ? found.tabId : null;
     },
+  });
+
+  // Settings' controls for the ADE account's GitHub App sign-in. Account-scoped:
+  // no machine pin (see registerGithubAccountAppIpc).
+  registerGithubAccountAppIpc({
+    credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
+    getAccountAccessToken: (options) => getSignedInAccountAccessToken(getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    }), options),
+    getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    logger: getMachineMainLogger(),
   });
 
   // The Music tab: Apple Music through an on-demand player host, or Spotify as
