@@ -4,7 +4,7 @@ import type { RecentProjectSummary, RemoteOpenProjectBinding, RemoteRuntimeConne
 import { projectRecordScope } from "../../../shared/projectRecord";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { activeMachineForGroup, type ProjectTabGroup } from "../app/projectTabGrouping";
-import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
+import { rememberLastUsedMachine } from "../app/useRepositoryTabs";
 import type { CloneLocallyTarget } from "./CloneLocallyDialog";
 import type { CopiesMenuRow } from "./ProjectCopiesMenu";
 import type { RemovalCopy, RemoveProjectTarget } from "./RemoveProjectDialog";
@@ -200,6 +200,9 @@ export function useProjectCopiesMenu(args: {
     (row: CopiesMenuRow) => {
       const group = copiesMenuModel?.group;
       const own = group?.machines.find((entry) => entry.bindingKey === row.copy?.bindingKey);
+      // The machine picked here is also the one "Start on" offers first for
+      // new work in this repository, on this client.
+      if (group && row.copy) rememberLastUsedMachine(group.id, row.machine.machineId);
       if (row.machine.isLocal) {
         if (row.copy) handleSwitchProject(row.copy.rootPath);
         return;
@@ -208,9 +211,6 @@ export function useProjectCopiesMenu(args: {
         ? own.binding
         : knownRemoteProjectTabs.find((entry) => entry.key === row.copy?.bindingKey) ?? null;
       if (!binding) return;
-      // Picking another machine's copy is a choice: this computer's copy does
-      // not take the tab back.
-      rememberExplicitRemotePick(binding.key);
       handleSwitchRemoteProject(binding);
     },
     [copiesMenuModel?.group, handleSwitchProject, handleSwitchRemoteProject, knownRemoteProjectTabs],

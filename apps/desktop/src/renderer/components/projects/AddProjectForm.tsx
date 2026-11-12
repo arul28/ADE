@@ -16,13 +16,11 @@ import type {
   RecentProjectSummary,
 } from "../../../shared/types";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { extractError, relativeWhen } from "../../lib/format";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
-import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
 import {
   COLORS,
   LABEL_STYLE,
@@ -58,13 +56,12 @@ import {
 } from "./projectCopyJobs";
 
 /**
- * Opens a copy in this window. A copy on another machine is a choice made on
- * purpose, so this computer's own copy (if any) does not take the tab back.
+ * Opens a copy in this window. Its repository tab shows that copy; nothing
+ * moves the tab back to this computer's copy (S4).
  */
 export async function openProjectCopy(target: CopyOpenTarget): Promise<void> {
   const store = useAppStore.getState();
   if (target.kind === "remote") {
-    rememberExplicitRemotePick(remoteProjectBindingKey(target.targetId, target.projectId));
     await store.switchRemoteProject(target.targetId, target.projectId);
     return;
   }

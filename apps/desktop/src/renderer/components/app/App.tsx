@@ -48,6 +48,7 @@ import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar
 // Home loads when a window has no project, not with every launch (its tool
 // logos alone are a few hundred KB).
 const ProjectWelcomePage = React.lazy(() => import("../projects/ProjectWelcomePage").then((module) => ({ default: module.ProjectWelcomePage })));
+const ProjectWelcomeNoMachine = React.lazy(() => import("../projects/ProjectWelcomeNoMachine").then((module) => ({ default: module.ProjectWelcomeNoMachine })));
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
@@ -822,6 +823,8 @@ function ProjectTabHost() {
   }), []);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
+  // A repository tab with no computer online (S4) takes the page while it is in front.
+  const noMachineTab = useAppStore((s) => (s.activeNoMachineTabId ? s.noMachineTabs.find((tab) => tab.id === s.activeNoMachineTabId) ?? null : null));
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
   const rootPrefs = useAppStore(useShallow((s) => ({
     theme: s.theme,
@@ -1121,6 +1124,16 @@ function ProjectTabHost() {
   }
 
   const standaloneSettingsRoute = isSettingsRoute && !activeProject?.rootPath && standaloneSettingsOpen;
+  const noMachinePage = noMachineTab && !isMachineRoute && !isAccountRoute && !standaloneSettingsRoute ? (
+    <PageErrorBoundary>
+      <React.Suspense fallback={GuardLoadingFallback}>
+        <ProjectWelcomeNoMachine tab={noMachineTab} />
+      </React.Suspense>
+    </PageErrorBoundary>
+  ) : null;
+  if (noMachinePage && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+    return <div className="relative h-full min-h-0 w-full">{noMachinePage}</div>;
+  }
   if (!isMachineRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride
@@ -1172,7 +1185,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isMachineRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!noMachinePage && !isMachineRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -1180,6 +1193,7 @@ function ProjectTabHost() {
           />
         );
       })}
+      {noMachinePage ? <div className="absolute inset-0">{noMachinePage}</div> : null}
       {isPersonalChatsRoute ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
