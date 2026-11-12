@@ -22,6 +22,9 @@ struct HubAccountJoinCard: Equatable {
   /// `owner/name`, lowercased, only for a github.com origin.
   let gitHubIdentity: String?
   let copies: [HubAccountCopyRef]
+  /// The account project a machine says the card's folder is a copy of
+  /// (newer brains), or the one `HubAccountResolver` found for it.
+  var accountProjectId: String? = nil
 }
 
 struct HubAccountJoin: Equatable {
@@ -36,6 +39,10 @@ struct HubAccountJoin: Equatable {
 }
 
 /// Pure: match Hub cards to account projects. For each card, in order:
+/// 0. the account project id a machine sent (or the resolver found): a live
+///    project claims the card, a merged one claims it as the project it
+///    became, a removed one hides it; an id the list does not hold yet asks
+///    for a list read and falls through;
 /// 1. one of its folders is a copy on the account (machine key + registry id);
 /// 2. its GitHub `owner/name` is the project's address or an old address.
 /// The first card that claims a project keeps it; a later card stays a card
@@ -45,9 +52,12 @@ struct HubAccountJoin: Equatable {
 func hubJoinAccountProjects(
   cards: [HubAccountJoinCard],
   live: [AccountProject],
-  removed: [AccountProject]
+  removed: [AccountProject],
+  merged: [String: String] = [:]
 ) -> HubAccountJoin {
   var join = HubAccountJoin()
+  let liveIds = Set(live.map(\.id))
+  let removedIds = Set(removed.map(\.id))
   var projectByCopy: [HubAccountCopyRef: String] = [:]
   var projectByIdentity: [String: String] = [:]
   for project in live {
@@ -68,6 +78,18 @@ func hubJoinAccountProjects(
 
   var claimed = Set<String>()
   for card in cards {
+    if let sent = card.accountProjectId {
+      let id = merged[sent] ?? sent
+      if liveIds.contains(id) {
+        if claimed.insert(id).inserted { join.accountIdByCardId[card.cardId] = id }
+        continue
+      }
+      if removedIds.contains(id) {
+        join.hiddenCardIds.insert(card.cardId)
+        continue
+      }
+      join.unknownIdentities.insert("id:\(id)")
+    }
     let byCopy = card.copies.lazy.compactMap { projectByCopy[$0] }.first
     let byName = card.gitHubIdentity.flatMap { projectByIdentity[$0] }
     if let projectId = byCopy ?? byName {
@@ -122,11 +144,73 @@ func hubGitHubRepoIdentity(originUrl: String?) -> String? {
   } else if let colon = raw.firstIndex(of: ":") {
     let beforeColon = raw[..<colon]
     host = beforeColon.split(separator: "@").last.map { String($0).lowercased() }
+  } else if raw.contains("/") {
+    // A roster's normalized origin: `github.com/owner/name`, no scheme.
+    host = raw.split(separator: "/").first.map { String($0).lowercased() }
   } else {
     host = nil
   }
   guard host == "github.com" || host == "www.github.com" || host == "ssh.github.com" else { return nil }
   return workRepoIdentity(originUrl: raw)
+}
+
+// MARK: - Resolver
+
+/// Finds the account project of one machine folder, for the fleet merge (so
+/// one project on several computers is one card) and the join.
+struct HubAccountResolver {
+  var liveIds: Set<String> = []
+  var removedIds: Set<String> = []
+  var mergedTargets: [String: String] = [:]
+  var projectByCopy: [HubAccountCopyRef: String] = [:]
+  var projectByIdentity: [String: String] = [:]
+  var removedByIdentity: [String: String] = [:]
+  /// Fleet key -> account machine key.
+  var accountMachineKey: (String) -> String? = { _ in nil }
+
+  /// In order: the id the machine sent (a merged id becomes the project it
+  /// became); the copy table; the GitHub `owner/name` of a live project, then
+  /// of a removed one (so the join hides it). Nil when nothing names it.
+  func accountProjectId(fleetKey: String?, checkoutId: String, gitHubIdentity: String?, sentId: String?) -> String? {
+    if let sentId, !sentId.isEmpty { return mergedTargets[sentId] ?? sentId }
+    if let accountKey = fleetKey.flatMap(accountMachineKey),
+       let id = projectByCopy[HubAccountCopyRef(accountMachineKey: accountKey, checkoutId: checkoutId)] {
+      return id
+    }
+    guard let gitHubIdentity else { return nil }
+    return projectByIdentity[gitHubIdentity] ?? removedByIdentity[gitHubIdentity]
+  }
+}
+
+/// Pure: the resolver for an account list.
+func hubAccountResolver(
+  live: [AccountProject],
+  removed: [AccountProject],
+  merged: [String: String],
+  accountMachineKey: @escaping (String) -> String?
+) -> HubAccountResolver {
+  var resolver = HubAccountResolver(
+    liveIds: Set(live.map(\.id)),
+    removedIds: Set(removed.map(\.id)),
+    mergedTargets: merged,
+    accountMachineKey: accountMachineKey
+  )
+  for project in live {
+    for copy in project.copies {
+      let ref = HubAccountCopyRef(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
+      if resolver.projectByCopy[ref] == nil { resolver.projectByCopy[ref] = project.id }
+    }
+    for identity in accountProjectGitHubIdentities(project) where resolver.projectByIdentity[identity] == nil {
+      resolver.projectByIdentity[identity] = project.id
+    }
+  }
+  for project in removed {
+    for identity in accountProjectGitHubIdentities(project)
+    where resolver.projectByIdentity[identity] == nil && resolver.removedByIdentity[identity] == nil {
+      resolver.removedByIdentity[identity] = project.id
+    }
+  }
+  return resolver
 }
 
 // MARK: - Account-only cards

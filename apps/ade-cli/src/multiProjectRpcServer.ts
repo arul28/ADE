@@ -99,6 +99,7 @@ import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createHeadlessAccountVaultBridge } from "./services/account/accountRuntimeLifecycle";
 import { getMachineAccountStores } from "./services/account/machineAccountStores";
+import { publicProjectRecord as publicProjectRecordFor } from "./services/projects/publicProjectRecord";
 import {
   isMachineAccountMethod,
   runMachineAccountAction,
@@ -1543,21 +1544,18 @@ function omitProjectId(
  * clone service's rollback on failure. An already registered checkout wins.
  */
 /**
- * A registry record as an RPC answer. The account project link goes only to
- * the account it was made for, and the account id itself never leaves this
- * machine. The signed-in account is read only for a linked record, unless the
- * caller passes it (a list reads it once).
+ * A registry record as an RPC answer (`services/projects/publicProjectRecord`).
+ * The signed-in account is read only for a linked record, unless the caller
+ * passes it (a list reads it once).
  */
 function publicProjectRecord<T extends { accountProjectId?: string; accountProjectUserId?: string }>(
   record: T,
   accountUserId?: string | null,
 ): Omit<T, "accountProjectId" | "accountProjectUserId"> & { accountProjectId?: string } {
-  const { accountProjectUserId, accountProjectId, ...rest } = record;
-  if (!accountProjectId) return rest;
-  const signedIn = accountUserId !== undefined
-    ? accountUserId
-    : getMachineAccountStores(machineProjectLogger).accountUserId();
-  return signedIn && accountProjectUserId === signedIn ? { ...rest, accountProjectId } : rest;
+  return publicProjectRecordFor(
+    record,
+    accountUserId !== undefined ? accountUserId : () => getMachineAccountStores(machineProjectLogger).accountUserId(),
+  );
 }
 
 async function cloneRepositoryForRemoteAgent(

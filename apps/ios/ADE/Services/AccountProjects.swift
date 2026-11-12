@@ -85,6 +85,23 @@ struct AccountProjectListState: Codable, Equatable {
     rows.values.filter { $0.removedAt != nil && $0.mergedInto == nil }.sorted { $0.id < $1.id }
   }
 
+  /// Merged project id -> the live project it now is. A chain of merges is
+  /// followed to its end; a merge into a project the phone does not hold, or
+  /// into a removed one, is left out.
+  var mergedTargets: [String: String] {
+    var targets: [String: String] = [:]
+    for row in rows.values where row.mergedInto != nil {
+      var target = row.mergedInto
+      var hops = 0
+      while let id = target, let next = rows[id]?.mergedInto, hops < 8 {
+        target = next
+        hops += 1
+      }
+      if let id = target, rows[id]?.isLive == true { targets[row.id] = id }
+    }
+    return targets
+  }
+
   /// A list answer: `reset` replaces everything, otherwise each row replaces
   /// the row with its id.
   func applying(_ response: AccountProjectListResponse) -> AccountProjectListState {
@@ -210,6 +227,8 @@ final class AccountProjectStore: ObservableObject {
   @Published private(set) var phase: Phase = .inactive
   @Published private(set) var liveProjects: [AccountProject] = []
   @Published private(set) var removedProjects: [AccountProject] = []
+  /// Merged project id -> the live project it now is (`AccountProjectListState.mergedTargets`).
+  @Published private(set) var mergedTargets: [String: String] = [:]
   @Published private(set) var display: [String: AccountProjectDisplay] = [:]
   /// When a read last succeeded (from the cache on launch). Nil = never.
   @Published private(set) var lastSuccessAt: Date?
@@ -421,6 +440,7 @@ final class AccountProjectStore: ObservableObject {
     if rowsChanged || liveProjects.isEmpty != next.liveProjects.isEmpty {
       liveProjects = next.liveProjects
       removedProjects = next.removedProjects
+      mergedTargets = next.mergedTargets
     }
     if nextDisplay != display { display = nextDisplay }
     if nextSuccess != lastSuccessAt { lastSuccessAt = nextSuccess }

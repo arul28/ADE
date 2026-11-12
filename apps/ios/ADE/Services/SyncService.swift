@@ -28194,7 +28194,7 @@ extension RemoteRosterProject {
   /// A project summary for a roster project on another machine. That machine's
   /// catalog is not on this phone; the roster carries what the Hub needs.
   var asRemoteMachineProjectSummary: MobileProjectSummary {
-    MobileProjectSummary(
+    var summary = MobileProjectSummary(
       id: projectId,
       displayName: displayName,
       rootPath: rootPath,
@@ -28205,6 +28205,9 @@ extension RemoteRosterProject {
       isCached: false,
       isOpen: booted
     )
+    summary.accountProjectId = accountProjectId
+    summary.githubRepoId = githubRepoId
+    return summary
   }
 }
 

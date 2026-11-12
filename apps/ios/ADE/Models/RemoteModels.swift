@@ -257,6 +257,11 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
   var isAvailable: Bool
   var isCached: Bool
   var isOpen: Bool?
+  /// The account project this folder is a copy of, when the host's link
+  /// belongs to the signed-in account. Older hosts omit it.
+  var accountProjectId: String? = nil
+  /// The GitHub repository id, when the host knows it.
+  var githubRepoId: Int? = nil
 
   init(
     id: String,

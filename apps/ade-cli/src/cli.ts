@@ -479,6 +479,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
+import { publicAccountProjectFields } from "./services/projects/publicProjectRecord";
 import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
   isUnsupportedRecoveryActionError,
@@ -29364,6 +29365,10 @@ async function runServe(
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
     logger: headlessProjectLogger,
   });
+  // The account signed in on this machine, for the account project link the
+  // phone's catalog and roster carry (`publicProjectRecord`). The same reader
+  // as the RPC server's project list.
+  const brainAccountUserId = (): string | null => machineAccountStoresForRecords().accountUserId();
   syncAccountAnalyticsIdentity(
     brainAccountAuthService.getStatus(),
     brainProductAnalytics,
@@ -29440,7 +29445,8 @@ async function runServe(
     return headlessMobileProjectSummary(
       sharedName ? { ...record, displayName: sharedName } : record,
       mobileProjectIconDataUrl(record),
-      overrides,
+      // The phone joins the card to its account project by this id first.
+      { ...publicAccountProjectFields(record, brainAccountUserId), ...overrides },
     );
   };
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
@@ -30315,6 +30321,7 @@ async function runServe(
         projectRegistry,
         scopeRegistry,
         hostProjectId: preferredSyncProjectId,
+        accountUserId: brainAccountUserId,
         logger: headlessProjectLogger,
       }),
   };

@@ -35,6 +35,9 @@ struct HubFleetMerge: Equatable {
   /// card's machine chip counts them, and a change to the project (its icon)
   /// is sent to each.
   var projectLocations: [String: [HubRemoteOwner]] = [:]
+  /// Card id -> the account project its folders are copies of, when the
+  /// resolver knew one (`hubMergeFleetRosters(resolver:)`).
+  var accountIdByCardId: [String: String] = [:]
 
   static func == (lhs: HubFleetMerge, rhs: HubFleetMerge) -> Bool {
     lhs.mergedRosters == rhs.mergedRosters
@@ -44,6 +47,7 @@ struct HubFleetMerge: Equatable {
       && lhs.laneOwners == rhs.laneOwners
       && lhs.projectOwners == rhs.projectOwners
       && lhs.projectLocations == rhs.projectLocations
+      && lhs.accountIdByCardId == rhs.accountIdByCardId
   }
 }
 
@@ -53,18 +57,35 @@ func hubRemoteProjectCardId(machineKey: String, projectId: String) -> String {
 }
 
 /// Pure: fold the other machines' rosters into the focused machine's project
-/// list. Checkouts on different machines match by `fleetProjectsMatch`.
+/// list. With a `resolver` (a signed-in account), folders that are copies of
+/// one account project are one card, whatever their origin or folder name,
+/// and two different account projects never merge. Otherwise, and for
+/// folders the account does not know, checkouts on different machines match
+/// by `fleetProjectsMatch`.
 func hubMergeFleetRosters(
   focused: [(project: MobileProjectSummary, roster: RemoteRosterProject?)],
-  machines: [MachineFleet.Machine]
+  machines: [MachineFleet.Machine],
+  resolver: HubAccountResolver? = nil,
+  focusedMachineKey: String? = nil
 ) -> HubFleetMerge {
   var merge = HubFleetMerge()
   var focusedByIdentity: [String: String] = [:]
   var focusedByFolder: [String: String] = [:]
   var focusedIdentityById: [String: String] = [:]
+  var focusedByAccount: [String: String] = [:]
   for entry in focused {
     let identity = workRepoIdentity(owner: entry.project.repoOwner, name: entry.project.repoName)
       ?? workRepoIdentity(originUrl: entry.roster?.repoOriginUrl)
+    if let accountId = resolver?.accountProjectId(
+      fleetKey: focusedMachineKey,
+      checkoutId: entry.project.id,
+      gitHubIdentity: workRepoIdentity(owner: entry.project.repoOwner, name: entry.project.repoName)
+        ?? hubGitHubRepoIdentity(originUrl: entry.roster?.repoOriginUrl),
+      sentId: entry.project.accountProjectId ?? entry.roster?.accountProjectId
+    ) {
+      merge.accountIdByCardId[entry.project.id] = accountId
+      if focusedByAccount[accountId] == nil { focusedByAccount[accountId] = entry.project.id }
+    }
     if let identity {
       focusedIdentityById[entry.project.id] = identity
       if focusedByIdentity[identity] == nil { focusedByIdentity[identity] = entry.project.id }
@@ -80,6 +101,7 @@ func hubMergeFleetRosters(
   )
   var seenChatIds = Set(focused.flatMap { $0.roster?.chats.map(\.id) ?? [] })
   var extraIndexByKey: [String: Int] = [:]
+  var extraAccountId: [Int: String] = [:]
 
   for machine in machines {
     for remote in machine.projects {
@@ -109,14 +131,28 @@ func hubMergeFleetRosters(
 
       // One card per project, not one per machine.
       let folder = hubProjectFolderKey(remote.rootPath, displayName: remote.displayName)
-      let matchedFocusedId = identity.flatMap { focusedByIdentity[$0] }
+      let accountId = resolver?.accountProjectId(
+        fleetKey: machine.machineKey,
+        checkoutId: remote.projectId,
+        gitHubIdentity: hubGitHubRepoIdentity(originUrl: remote.repoOriginUrl),
+        sentId: remote.accountProjectId
+      )
+      // Two folders the account knows as different projects never merge.
+      func sameAccountProject(_ other: String?) -> Bool {
+        guard let accountId, let other else { return true }
+        return accountId == other
+      }
+      let matchedFocusedId = accountId.flatMap { focusedByAccount[$0] }
+        ?? identity.flatMap { focusedByIdentity[$0] }.flatMap { focusedId in
+          sameAccountProject(merge.accountIdByCardId[focusedId]) ? focusedId : nil
+        }
         ?? folder.flatMap { focusedByFolder[$0] }.flatMap { focusedId in
           fleetProjectsMatch(
             identity: identity,
             folder: folder,
             otherIdentity: focusedIdentityById[focusedId],
             otherFolder: folder
-          ) ? focusedId : nil
+          ) && sameAccountProject(merge.accountIdByCardId[focusedId]) ? focusedId : nil
         }
       let location = HubRemoteOwner(machineKey: machine.machineKey, project: ownerProject, lane: nil)
       if let focusedId = matchedFocusedId {
@@ -147,7 +183,16 @@ func hubMergeFleetRosters(
       let key = identity.map { "repo:\($0)" }
         ?? folder.map { "folder:\($0)" }
         ?? hubRemoteProjectCardId(machineKey: machine.machineKey, projectId: remote.projectId)
-      if let index = extraIndexByKey[key] {
+      let accountKey = accountId.map { "account:\($0)" }
+      let existingIndex = accountKey.flatMap { extraIndexByKey[$0] }
+        ?? extraIndexByKey[key].flatMap { sameAccountProject(extraAccountId[$0]) ? $0 : nil }
+      if let index = existingIndex {
+        if let accountId, let accountKey, extraAccountId[index] == nil {
+          extraAccountId[index] = accountId
+          extraIndexByKey[accountKey] = index
+          merge.accountIdByCardId[merge.extraProjects[index].summary.id] = accountId
+        }
+        if extraIndexByKey[key] == nil { extraIndexByKey[key] = index }
         merge.projectLocations[merge.extraProjects[index].summary.id, default: []].append(location)
         var roster = merge.extraProjects[index].roster
         let unloaded = roster.unloadedChatCount + remote.unloadedChatCount
@@ -165,7 +210,13 @@ func hubMergeFleetRosters(
       roster.lanes = lanes
       roster.chats = chats
       roster.chatTotal = remote.unloadedChatCount > 0 ? chats.count + remote.unloadedChatCount : nil
-      extraIndexByKey[key] = merge.extraProjects.count
+      let newIndex = merge.extraProjects.count
+      if extraIndexByKey[key] == nil { extraIndexByKey[key] = newIndex }
+      if let accountId, let accountKey {
+        extraIndexByKey[accountKey] = newIndex
+        extraAccountId[newIndex] = accountId
+        merge.accountIdByCardId[cardId] = accountId
+      }
       merge.extraProjects.append((summary: summary, roster: hubRecountedRoster(roster)))
       merge.projectOwners[cardId] = location
       merge.projectLocations[cardId, default: []].append(location)

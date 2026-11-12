@@ -40,6 +40,19 @@ final class AccountProjectsJoinTests: XCTestCase {
     XCTAssertTrue(state.removedProjects.isEmpty)
   }
 
+  func testMergedTargetsFollowChainsToALiveProjectOnly() {
+    // a -> b -> c (live); d -> e (removed); f -> a project the phone lacks.
+    let state = AccountProjectListState().applying(response(cursor: 1, reset: true, [
+      project("a", name: "ade", removedAt: 1, mergedInto: projectId("b")),
+      project("b", name: "ade", removedAt: 2, mergedInto: projectId("c")),
+      project("c", name: "ade"),
+      project("d", name: "web", removedAt: 1, mergedInto: projectId("e")),
+      project("e", name: "web", removedAt: 3),
+      project("f", name: "docs", removedAt: 1, mergedInto: projectId("z")),
+    ]))
+    XCTAssertEqual(state.mergedTargets, [projectId("a"): projectId("c"), projectId("b"): projectId("c")])
+  }
+
   // MARK: - Join
 
   func testJoinMatchesByCopyBeforeName() {
@@ -110,8 +123,114 @@ final class AccountProjectsJoinTests: XCTestCase {
     XCTAssertEqual(byCopy.accountIdByCardId["copy"], enterprise.id)
   }
 
+  func testJoinUsesTheIdAMachineSentFirst() {
+    let ade = project("a", name: "ade")
+    let fork = project("b", name: "fork", copies: [copy("b", machine: "mk-1", checkout: "project_1")])
+    let gone = project("c", name: "old", removedAt: 5)
+    let merged = project("d", name: "ade-old", removedAt: 4, mergedInto: ade.id)
+    let unknown = projectId("e")
+    let join = hubJoinAccountProjects(
+      cards: [
+        // The sent id beats a copy and a name that point at `fork`.
+        card("sent", identity: "owner/fork", copies: [("mk-1", "project_1")], sentId: ade.id),
+        // A merged id claims the project it became; `ade` is taken, so this
+        // card stays a card of its own and claims nothing else.
+        card("merged", identity: "owner/fork", sentId: merged.id),
+        card("removed", identity: "owner/ade", sentId: gone.id),
+        // An id the list does not hold yet: ask for a read, then match by name.
+        card("unknown", identity: "owner/fork", sentId: unknown),
+      ],
+      live: [ade, fork],
+      removed: [gone],
+      merged: [merged.id: ade.id]
+    )
+    XCTAssertEqual(join.accountIdByCardId, ["sent": ade.id, "unknown": fork.id])
+    XCTAssertEqual(join.hiddenCardIds, ["removed"])
+    XCTAssertEqual(join.unknownIdentities, ["id:\(unknown)"])
+    XCTAssertTrue(join.unmatchedProjects.isEmpty)
+  }
+
+  func testResolverOrder() {
+    let ade = project("a", name: "ade", copies: [copy("a", machine: "mk-1", checkout: "project_1")])
+    let web = project("b", name: "web")
+    let gone = project("c", name: "old", removedAt: 5)
+    let resolver = hubAccountResolver(
+      live: [ade, web],
+      removed: [gone],
+      merged: [projectId("m"): ade.id],
+      accountMachineKey: { $0 == "machine:dev-1" ? "mk-1" : nil }
+    )
+    let cases: [(String?, String, String?, String?, String?)] = [
+      // fleet key, checkout, identity, sent id -> expected
+      (nil, "x", "owner/old", projectId("q"), projectId("q")),
+      (nil, "x", nil, projectId("m"), ade.id),
+      // The copy table beats a GitHub address that names another project.
+      ("machine:dev-1", "project_1", "owner/web", nil, ade.id),
+      ("machine:dev-2", "project_1", nil, nil, nil),
+      (nil, "x", "owner/ade", nil, ade.id),
+      (nil, "x", "owner/old", nil, gone.id),
+      (nil, "x", "owner/none", nil, nil),
+    ]
+    for (fleetKey, checkout, identity, sent, expected) in cases {
+      XCTAssertEqual(
+        resolver.accountProjectId(fleetKey: fleetKey, checkoutId: checkout, gitHubIdentity: identity, sentId: sent),
+        expected,
+        "\(fleetKey ?? "-") \(checkout) \(identity ?? "-") \(sent ?? "-")"
+      )
+    }
+  }
+
+  func testFleetMergeKeysOnTheAccountProject() {
+    let ade = project("a", name: "ade")
+    let web = project("b", name: "web")
+    let resolver = hubAccountResolver(live: [ade, web], removed: [], merged: [:], accountMachineKey: { _ in nil })
+    // The focused machine has `ade` in a folder named `work`, with no origin.
+    var focused = MobileProjectSummary(id: "project_f", displayName: "work", rootPath: "/f/work",
+                                       laneCount: 0, isAvailable: true, isCached: false)
+    focused.accountProjectId = ade.id
+    let machines = [
+      fleetMachine("machine:one", [
+        // `ade` again, under another folder name: joins the focused card.
+        rosterProject("project_1", folder: "ade-checkout", origin: nil, sentId: ade.id),
+        // Same folder name as the focused card, but the account says `web`.
+        rosterProject("project_2", folder: "work", origin: nil, sentId: web.id),
+      ]),
+      fleetMachine("machine:two", [
+        // `web` on a second computer, found by its GitHub address.
+        rosterProject("project_3", folder: "website", origin: "github.com/owner/web", sentId: nil),
+      ]),
+    ]
+    let merge = hubMergeFleetRosters(focused: [(project: focused, roster: nil)], machines: machines, resolver: resolver)
+    XCTAssertEqual(merge.projectLocations["project_f"]?.map(\.project.id), ["project_1"])
+    XCTAssertEqual(merge.extraProjects.count, 1)
+    let webCard = merge.extraProjects[0].summary.id
+    XCTAssertEqual(merge.projectLocations[webCard]?.map(\.project.id), ["project_2", "project_3"])
+    XCTAssertEqual(merge.accountIdByCardId, ["project_f": ade.id, webCard: web.id])
+
+    // Without an account the same folder name merges, and `ade-checkout` does not.
+    let plain = hubMergeFleetRosters(focused: [(project: focused, roster: nil)], machines: machines)
+    XCTAssertEqual(plain.projectLocations["project_f"]?.map(\.project.id), ["project_2"])
+  }
+
+  func testOldAndNewBrainRowsDecode() throws {
+    let old = #"{"projectId":"p","displayName":"ade","booted":false,"runningCount":0,"attentionCount":0,"lanes":[],"chats":[]}"#
+    let new = #"{"projectId":"p","displayName":"ade","booted":false,"runningCount":0,"attentionCount":0,"lanes":[],"chats":[],"accountProjectId":"ap_1","githubRepoId":42}"#
+    let decoder = JSONDecoder()
+    let oldRow = try decoder.decode(RemoteRosterProject.self, from: Data(old.utf8))
+    let newRow = try decoder.decode(RemoteRosterProject.self, from: Data(new.utf8))
+    XCTAssertNil(oldRow.accountProjectId)
+    XCTAssertEqual(newRow.accountProjectId, "ap_1")
+    XCTAssertEqual(newRow.githubRepoId, 42)
+    // A roster delta's head carries the link too.
+    var patched = oldRow
+    patched.apply(head: try decoder.decode(RemoteRosterProjectHead.self, from: Data(new.utf8)))
+    XCTAssertEqual(patched.asRemoteMachineProjectSummary.accountProjectId, "ap_1")
+  }
+
   func testOnlyGitHubOriginsGiveANameToMatch() {
     let cases: [(String?, String?)] = [
+      ("github.com/Owner/Repo", "owner/repo"),
+      ("gitlab.com/owner/repo", nil),
       ("https://github.com/Owner/Repo.git", "owner/repo"),
       ("git@github.com:Owner/Repo.git", "owner/repo"),
       ("ssh://git@github.com/owner/repo", "owner/repo"),
@@ -160,12 +279,31 @@ final class AccountProjectsJoinTests: XCTestCase {
                        rootPath: "/code/\(checkout)", isMain: true, lastSeenAt: 1)
   }
 
-  private func card(_ id: String, identity: String?, copies: [(String, String)] = []) -> HubAccountJoinCard {
+  private func card(
+    _ id: String,
+    identity: String?,
+    copies: [(String, String)] = [],
+    sentId: String? = nil
+  ) -> HubAccountJoinCard {
     HubAccountJoinCard(
       cardId: id,
       gitHubIdentity: identity,
-      copies: copies.map { HubAccountCopyRef(accountMachineKey: $0.0, checkoutId: $0.1) }
+      copies: copies.map { HubAccountCopyRef(accountMachineKey: $0.0, checkoutId: $0.1) },
+      accountProjectId: sentId
     )
+  }
+
+  private func rosterProject(_ id: String, folder: String, origin: String?, sentId: String?) -> RemoteRosterProject {
+    RemoteRosterProject(
+      projectId: id, rootPath: "/code/\(folder)", displayName: folder, iconDataUrl: nil, lastOpenedAt: nil,
+      booted: false, runningCount: 0, attentionCount: 0, lanes: [], chats: [],
+      repoOriginUrl: origin, accountProjectId: sentId
+    )
+  }
+
+  private func fleetMachine(_ key: String, _ projects: [RemoteRosterProject]) -> MachineFleet.Machine {
+    MachineFleet.Machine(machineKey: key, name: key, state: .live, projects: projects,
+                         rosterRevision: 1, lastUpdateAt: nil, isPinned: true)
   }
 
   private func response(cursor: Int, reset: Bool, _ projects: [AccountProject]) -> AccountProjectListResponse {

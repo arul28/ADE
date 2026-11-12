@@ -1111,6 +1111,9 @@ struct HubProjectTile: View, Equatable {
   /// How many machines the project is on; the chip shows the count, which
   /// never truncates in a narrow tile. 0 hides it.
   var machineCount = 0
+  /// How many of those computers are connected now, for an account project
+  /// (the chip then reads "1/2"). Nil: the chip shows the count alone.
+  var machineLive: Int? = nil
   /// The project's machines can store a new icon (`projectIcon` feature).
   var canChangeIcon = false
   var canMoveToTop = true
@@ -1150,7 +1153,7 @@ struct HubProjectTile: View, Equatable {
               .lineLimit(1)
               .frame(maxWidth: .infinity, alignment: .leading)
             if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount)
+              HubProjectMachineChip(count: machineCount, live: machineLive)
             }
           }
         } else {
@@ -1158,7 +1161,7 @@ struct HubProjectTile: View, Equatable {
             HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
             Spacer(minLength: 4)
             if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount)
+              HubProjectMachineChip(count: machineCount, live: machineLive)
             }
           }
           // The name right under the icon and the counts pinned to the
@@ -1262,6 +1265,7 @@ struct HubProjectTile: View, Equatable {
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
     if let machineLabel { parts.append("on \(machineLabel)") }
+    if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) connected") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)
     return parts.joined(separator: ", ")
@@ -1271,6 +1275,7 @@ struct HubProjectTile: View, Equatable {
     lhs.presentation == rhs.presentation
       && lhs.machineLabel == rhs.machineLabel
       && lhs.machineCount == rhs.machineCount
+      && lhs.machineLive == rhs.machineLive
       && lhs.canChangeIcon == rhs.canChangeIcon
       && lhs.canMoveToTop == rhs.canMoveToTop
       && lhs.canForget == rhs.canForget
@@ -1281,14 +1286,29 @@ struct HubProjectTile: View, Equatable {
 /// the count. The names are in the long-press menu and the spoken label.
 struct HubProjectMachineChip: View {
   let count: Int
+  /// Connected computers, for an account project: "1/2" with the connected
+  /// count first; a green dot while at least one is connected.
+  var live: Int? = nil
 
   var body: some View {
     HStack(spacing: 3) {
+      if let live, live > 0 {
+        Circle()
+          .fill(ADEColor.success)
+          .frame(width: 5, height: 5)
+      }
       Image(systemName: count > 1 ? "macbook.and.iphone" : "desktopcomputer")
         .font(.system(size: 10, weight: .semibold))
-      Text("\(count)")
-        .font(.caption2.weight(.semibold))
-        .monospacedDigit()
+      if let live, count > 1 || live < count {
+        (Text("\(live)").foregroundStyle(live > 0 ? ADEColor.textPrimary : ADEColor.textSecondary)
+          + Text("/\(count)").foregroundStyle(ADEColor.textMuted))
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+      } else {
+        Text("\(count)")
+          .font(.caption2.weight(.semibold))
+          .monospacedDigit()
+      }
     }
     .foregroundStyle(ADEColor.textSecondary)
     .padding(.horizontal, 7)

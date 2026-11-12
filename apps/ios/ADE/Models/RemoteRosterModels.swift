@@ -290,6 +290,10 @@ struct RemoteRosterProject: Codable, Equatable, Identifiable {
   /// Normalized git origin of the project's repository (newer hosts). The
   /// Work tab matches the same repository across machines on it.
   var repoOriginUrl: String? = nil
+  /// The account project this folder is a copy of (newer hosts, signed in to
+  /// the same account). The Hub joins on it first.
+  var accountProjectId: String? = nil
+  var githubRepoId: Int? = nil
   /// How many chats the host has for this project (`rosterChatPagesV1`):
   /// `chats` then holds only the head rows, and `roster_chats_request` returns
   /// the rest. Nil from hosts that send every chat.
@@ -603,6 +607,8 @@ struct RemoteRosterProjectHead: Codable, Equatable {
   var attentionCount: Int
   var lanes: [RemoteRosterLane]
   var repoOriginUrl: String? = nil
+  var accountProjectId: String? = nil
+  var githubRepoId: Int? = nil
   var chatTotal: Int? = nil
 }
 
@@ -628,6 +634,8 @@ extension RemoteRosterProject {
     attentionCount = head.attentionCount
     lanes = head.lanes
     repoOriginUrl = head.repoOriginUrl
+    accountProjectId = head.accountProjectId
+    githubRepoId = head.githubRepoId
     chatTotal = head.chatTotal
   }
 

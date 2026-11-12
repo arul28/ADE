@@ -66,6 +66,8 @@ struct HubScreen: View {
   @State private var accountJoin = HubAccountJoin()
   /// Account projects no reachable machine shows, by card id (the project id).
   @State private var accountOnlyProjects: [String: AccountProject] = [:]
+  /// The live account projects by id, for each card's computer chip.
+  @State private var accountProjectById: [String: AccountProject] = [:]
   @State private var accountHomeTarget: HubAccountHomeTarget?
   /// The saved order came from the per-machine layout and still names that
   /// machine's ids; the next rebuild maps them to account project ids.
@@ -481,10 +483,12 @@ struct HubScreen: View {
         let project = presentation.project
         let orderKey = hubOrderKey(project.id)
         let accountOnly = accountOnlyProjects[project.id]
+        let chip = hubComputerChip(for: project, accountOnly: accountOnly)
         HubProjectTile(
           presentation: presentation,
-          machineLabel: accountOnly.map(hubAccountOnlyMachineLabel) ?? hubMachineLabel(for: project),
-          machineCount: accountOnly.map(hubAccountOnlyMachineCount) ?? hubMachineCount(for: project),
+          machineLabel: chip.label,
+          machineCount: chip.total,
+          machineLive: chip.live,
           canChangeIcon: accountOnly == nil && hubCanChangeIcon(for: project),
           canMoveToTop: projectOrder.first != orderKey,
           canForget: accountJoin.accountIdByCardId[project.id] == nil && accountOnly == nil,
@@ -580,7 +584,51 @@ struct HubScreen: View {
     hubProjectLocations(project).count + (fleetMerge.projectOwners[project.id] == nil ? 1 : 0)
   }
 
-  /// An account-only card's chip: the computers that hold a folder of it.
+  /// A card's computer chip. A card of an account project counts every
+  /// computer with a copy of it (the account's copies and the connected
+  /// machines' folders), and how many of them are connected now. Any other
+  /// card keeps the machine count.
+  private func hubComputerChip(
+    for project: MobileProjectSummary,
+    accountOnly: AccountProject?
+  ) -> (label: String?, total: Int, live: Int?) {
+    if let accountOnly {
+      return (hubAccountOnlyMachineLabel(accountOnly), hubAccountOnlyMachineCount(accountOnly), nil)
+    }
+    guard let accountId = accountJoin.accountIdByCardId[project.id],
+          let accountProject = accountProjectById[accountId] else {
+      return (hubMachineLabel(for: project), hubMachineCount(for: project), nil)
+    }
+    func accountKey(_ fleetKey: String) -> String {
+      account.machine(forFleetKey: fleetKey)?.machineKey ?? fleetKey
+    }
+    var all = Set(accountProject.copies.map(\.machineKey))
+    var live = Set<String>()
+    var names: [String: String] = [:]
+    if fleetMerge.projectOwners[project.id] == nil, let focusedKey = syncService.focusedMachineKey {
+      let key = accountKey(focusedKey)
+      all.insert(key)
+      names[key] = syncService.focusedMachineDisplayName
+      if syncService.connectionState == .connected { live.insert(key) }
+    }
+    for location in hubProjectLocations(project) {
+      let key = accountKey(location.machineKey)
+      all.insert(key)
+      let machine = machineFleet.machine(for: location.machineKey)
+      if let name = machine?.name { names[key] = name }
+      if machine?.state == .live { live.insert(key) }
+    }
+    let label: String?
+    if all.count > 1 {
+      label = "\(all.count) computers"
+    } else if let key = all.first {
+      label = names[key] ?? account.machines.first { $0.machineKey == key }?.displayName
+    } else {
+      label = nil
+    }
+    return (label, all.count, live.intersection(all).count)
+  }
+
   /// Reads the account's projects and computers again (pull to refresh and
   /// Try again): a failed read lost both, so a retry needs both.
   private func reloadAccount() async {
@@ -589,6 +637,7 @@ struct HubScreen: View {
     _ = await (list, machines)
   }
 
+  /// An account-only card's chip: the computers that hold a folder of it.
   private func hubAccountOnlyMachineLabel(_ project: AccountProject) -> String? {
     let held = accountProjectCopyMachines(project, machines: account.machines)
     if held.count > 1 { return "\(held.count) computers" }
@@ -868,7 +917,21 @@ struct HubScreen: View {
     let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
     // Only machines the user keeps connected: a disconnected machine's last
     // roster would keep its projects on the hub (and hide the no-machine state).
-    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines.filter(\.isPinned))
+    // Signed in, the account decides which folders are one project.
+    let resolver: HubAccountResolver? = accountProjects.governsHub
+      ? hubAccountResolver(
+          live: accountProjects.liveProjects,
+          removed: accountProjects.removedProjects,
+          merged: accountProjects.mergedTargets,
+          accountMachineKey: { [account] fleetKey in account.machine(forFleetKey: fleetKey)?.machineKey }
+        )
+      : nil
+    let merge = hubMergeFleetRosters(
+      focused: focusedRosters,
+      machines: machineFleet.machines.filter(\.isPinned),
+      resolver: resolver,
+      focusedMachineKey: syncService.focusedMachineKey
+    )
     if merge != fleetMerge { fleetMerge = merge }
     var nextPresentations = focusedRosters.map { entry in
       buildHubProjectPresentation(
@@ -895,7 +958,8 @@ struct HubScreen: View {
       join = hubJoinAccountProjects(
         cards: hubAccountJoinCards(focused: focusedRosters, merge: merge),
         live: accountProjects.liveProjects,
-        removed: accountProjects.removedProjects
+        removed: accountProjects.removedProjects,
+        merged: accountProjects.mergedTargets
       )
       nextPresentations.removeAll { join.hiddenCardIds.contains($0.project.id) }
       for project in join.unmatchedProjects {
@@ -928,7 +992,19 @@ struct HubScreen: View {
       }
     }
     if join != accountJoin { accountJoin = join }
+    let byId = accountProjects.governsHub
+      ? Dictionary(accountProjects.liveProjects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      : [:]
+    if byId != accountProjectById { accountProjectById = byId }
     if accountOnly != accountOnlyProjects { accountOnlyProjects = accountOnly }
+    // A project merged into another on the account keeps its place as the
+    // project it became.
+    let merged = accountProjects.mergedTargets
+    if !merged.isEmpty, projectOrder.contains(where: { merged[$0] != nil }) {
+      var seen = Set<String>()
+      projectOrder = projectOrder.map { merged[$0] ?? $0 }.filter { seen.insert($0).inserted }
+      persistHubLayout()
+    }
     if legacyOrderPending, !join.accountIdByCardId.isEmpty {
       // The order saved per machine names that machine's ids: move it to the
       // account project ids once, keeping every other id where it was.
@@ -975,14 +1051,16 @@ struct HubScreen: View {
         gitHubIdentity: workRepoIdentity(owner: entry.project.repoOwner, name: entry.project.repoName)
           ?? hubGitHubRepoIdentity(originUrl: entry.roster?.repoOriginUrl),
         copies: (focusedKey.map { [HubAccountCopyRef(accountMachineKey: $0, checkoutId: entry.project.id)] } ?? [])
-          + locationRefs(entry.project.id)
+          + locationRefs(entry.project.id),
+        accountProjectId: merge.accountIdByCardId[entry.project.id]
       )
     }
     cards += merge.extraProjects.map { extra in
       HubAccountJoinCard(
         cardId: extra.summary.id,
         gitHubIdentity: hubGitHubRepoIdentity(originUrl: extra.roster.repoOriginUrl),
-        copies: locationRefs(extra.summary.id)
+        copies: locationRefs(extra.summary.id),
+        accountProjectId: merge.accountIdByCardId[extra.summary.id]
       )
     }
     return cards

@@ -3,6 +3,7 @@ import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { fileIdentity } from "../projects/fileIdentity";
+import { publicAccountProjectFields } from "../projects/publicProjectRecord";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
@@ -59,6 +60,10 @@ export type RosterProjectRecord = {
   gitOriginUrl?: string | null;
   lastOpenedAt: number;
   catalogVisibility: "recent" | "system";
+  /** The account project link (`publicProjectRecord` decides who sees it). */
+  accountProjectId?: string;
+  accountProjectUserId?: string;
+  githubRepoId?: number;
 };
 
 export type RosterProjectRegistry = {
@@ -130,6 +135,12 @@ export type BuildRosterSnapshotArgs = {
   scopeRegistry: RosterScopeRegistry;
   /** The host's own project is always booted — included with live fidelity. */
   hostProjectId?: string | null;
+  /**
+   * The account signed in on this machine. A project's account project id
+   * goes on its roster row only for that account (`publicProjectRecord`).
+   * Absent: no row carries one.
+   */
+  accountUserId?: () => string | null;
   logger?: Pick<Logger, "warn"> | null;
 };
 
@@ -616,9 +627,18 @@ const unbootedProjectMemo = new Map<string, {
   project: SyncRosterProject;
 }>();
 
-function rosterRecordKey(record: RosterProjectRecord): string {
-  return JSON.stringify([record.rootPath, record.displayName, record.lastOpenedAt, rosterRepoOriginUrl(record)]);
+function rosterRecordKey(record: RosterProjectRecord, account: RosterAccountFields): string {
+  return JSON.stringify([
+    record.rootPath,
+    record.displayName,
+    record.lastOpenedAt,
+    rosterRepoOriginUrl(record),
+    account.accountProjectId ?? null,
+    account.githubRepoId ?? null,
+  ]);
 }
+
+type RosterAccountFields = { accountProjectId?: string; githubRepoId?: number };
 
 function memoValidUntilMs(disk: DiskProjectData, nowMs: number): number {
   let validUntilMs = nowMs + DISK_PROJECT_CACHE_MAX_AGE_MS;
@@ -739,13 +759,15 @@ async function buildRosterProject(
   record: RosterProjectRecord,
   scopeRegistry: RosterScopeRegistry,
   logger?: Pick<Logger, "warn"> | null,
+  account: RosterAccountFields = {},
 ): Promise<SyncRosterProject> {
   // A refused project is listed without rows: reading its database and chat
   // folder here, on the brain's thread, is the freeze it was refused for.
   const refused = scopeRegistry.isOpenBlocked(record.projectId);
   const disk = refused ? emptyDiskProject() : readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
-  const recordKey = rosterRecordKey(record);
+  // The link is part of the key: a sign-out must drop it from a memoized row.
+  const recordKey = rosterRecordKey(record, account);
   const sidecarFolderIdentity = refused ? null : fileIdentity(chatSessionsDir);
   const memo = unbootedProjectMemo.get(record.projectId);
   if (
@@ -975,6 +997,7 @@ async function buildRosterProject(
     rootPath: record.rootPath,
     displayName: record.displayName,
     repoOriginUrl: rosterRepoOriginUrl(record),
+    ...account,
     lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
     booted,
     runningCount,
@@ -1079,9 +1102,16 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
     .slice()
     .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt);
 
+  // Read the signed-in account once, and only when a record is linked.
+  let accountUserId: string | null | undefined;
+  const readAccountUserId = (): string | null => {
+    if (accountUserId === undefined) accountUserId = args.accountUserId?.() ?? null;
+    return accountUserId;
+  };
   const projects = await Promise.all(
-    records.map((record) =>
-      buildRosterProject(record, args.scopeRegistry, args.logger).catch((error) => {
+    records.map((record) => {
+      const account = publicAccountProjectFields(record, readAccountUserId);
+      return buildRosterProject(record, args.scopeRegistry, args.logger, account).catch((error) => {
         args.logger?.warn?.("sync_host.roster_project_build_failed", {
           projectId: record.projectId,
           error: error instanceof Error ? error.message : String(error),
@@ -1091,6 +1121,7 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           rootPath: record.rootPath,
           displayName: record.displayName,
           repoOriginUrl: rosterRepoOriginUrl(record),
+          ...account,
           lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
           booted: false,
           runningCount: 0,
@@ -1099,8 +1130,8 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           chats: [],
         };
         return fallback;
-      }),
-    ),
+      });
+    }),
   );
   return projects;
 }
