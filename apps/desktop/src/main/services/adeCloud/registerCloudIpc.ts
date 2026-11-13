@@ -47,7 +47,7 @@ import {
   type CloudAccessDeps,
 } from "./cloudAccess";
 import { cloudGitPreflight } from "./cloudGitCredential";
-import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
+import { createCloudMachine, requestCloudApprovalTicket, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
@@ -634,12 +634,23 @@ export function registerCloudIpc(args: {
     },
     // A lane launch an agent or the CLI started in the brain: its new
     // computer signs in through this app's window, as the app's own do.
-    approveWindow: async ({ id, url, mode, title }) => {
+    approveWindow: async ({ id, userCode, title }) => {
       approvalWindows.get(id)?.abort();
       const controller = new AbortController();
       approvalWindows.set(id, controller);
       try {
-        return await openCloudApprovalWindow({ url, mode, title, signal: controller.signal, onNeedsPerson: () => undefined }, logger);
+        const directory = machineCreatorDeps.directoryBaseUrl();
+        const token = await machineCreatorDeps.getAccountToken();
+        if (!directory || !token) throw new Error("Sign in to ADE in this app first. The machine joins your account.");
+        // This app's own account service mints the ticket, so the window opens only what it gave.
+        const ticket = await requestCloudApprovalTicket({ directory, token, userCode, signal: controller.signal });
+        // The approval page always needs the person, who may not be at this screen: the brain sends the link.
+        if (ticket.mode === "browser") return { result: "needs_person" as const, codeStillPending: true };
+        const result = await openCloudApprovalWindow(
+          { url: ticket.url, mode: "ticket", title, signal: controller.signal, onNeedsPerson: () => undefined, endWhenPersonNeeded: true },
+          logger,
+        );
+        return { result, codeStillPending: false };
       } finally {
         if (approvalWindows.get(id) === controller) approvalWindows.delete(id);
       }

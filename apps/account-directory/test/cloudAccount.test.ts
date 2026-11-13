@@ -1030,22 +1030,31 @@ describe("ADE Cloud account", () => {
     expect(harness.row("select extra_enabled from cloud_accounts where user_id = ?", OWNER).extra_enabled).toBe(1);
   });
 
-  it.each<[string, Row, Row[], RegExp | null, number, string | null]>([
+  const ITEM_CREATE = /POST .*\/subscription_items$/;
+  it.each<[string, Row, Row[], { status: number; landed?: boolean } | null, number, string | null]>([
     // A subscription bought before Cloud 8 already bills extra hours (on the first price until its renewal moves it).
     ["a subscription that already has an hours item gets no second one", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }, { id: "si_extra", price: { id: "price_extra" } }], null, 200, null],
     // Pro with a move to Plus waiting still pays Pro's hour until the renewal.
     ["a downgrade waiting adds the hour of the plan in force", { ...proAccount, paid_plan_next: "plus" }, [{ id: "si_plan", price: { id: "price_plan" } }], null, 200, "price_extra_pro"],
-    ["Stripe refusing the item leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], /POST .*\/subscription_items$/, 503, "price_extra_plus"],
+    ["Stripe refusing the item leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 500 }, 503, "price_extra_plus"],
+    // A second turn-on raced this one and its item landed: that item is all that's needed.
+    ["a 409 while another turn-on's item landed still turns extra hours on", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 409, landed: true }, 200, "price_extra_plus"],
+    ["a 409 with no item held leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 409 }, 503, "price_extra_plus"],
   ])("extra hours on: %s", async (_label, account, items, refuse, status, triedPrice) => {
     Object.assign(harness.env, MONEY_ENV, EXTRA_PRICES);
     seedAccount(harness, OWNER, account);
     harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: items } });
-    if (refuse) harness.net.once.push({ match: refuse, reply: harness.net.reply({ error: { message: "no" } }, 500) });
+    if (refuse) harness.net.once.push({ match: ITEM_CREATE, reply: harness.net.reply({ error: { message: "no" } }, refuse.status) });
+    if (refuse?.landed) {
+      harness.net.after.push({ match: ITEM_CREATE, run: () => {
+        harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [...items, { id: "si_raced", price: { id: "price_extra_plus" } }] } });
+      } });
+    }
 
     const response = await harness.send(OWNER, "POST", "/cloud/billing/extra-hours", { enabled: true });
 
     expect(response.status).toBe(status);
-    expect(providerCalls(harness, /POST .*\/subscription_items$/).map((call) => call.body?.price)).toEqual(triedPrice ? [triedPrice] : []);
+    expect(providerCalls(harness, ITEM_CREATE).map((call) => call.body?.price)).toEqual(triedPrice ? [triedPrice] : []);
     // Never on without an item to bill it: an extra hour would be free.
     expect(harness.row("select extra_enabled from cloud_accounts where user_id = ?", OWNER).extra_enabled).toBe(status === 200 ? 1 : 0);
   });
@@ -1508,16 +1517,18 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect({ state: state.freePlan?.github?.state, included: included() }).toEqual(expected);
   });
 
-  it.each<[string, Row, { included: number; warnedZero: number | null }]>([
-    ["a free period that began on the old 50 hours gets today's free hours at once, and its out-of-hours warning clears", { included_milli: 50_000, used_milli: 50_000, warned_zero_at: NOW - HOUR }, { included: 100_000, warnedZero: null }],
-    ["an account refused the free plan keeps 0", { included_milli: 0, free_refused_at: NOW - DAY }, { included: 0, warnedZero: null }],
-    ["a paid period keeps its own hours", { plan: "paid", paid_plan: "plus", included_milli: 50_000 }, { included: 50_000, warnedZero: null }],
+  const WARNED = { warned_80_at: NOW - 2 * HOUR, warned_95_at: NOW - HOUR, warned_zero_at: NOW - HOUR };
+  it.each<[string, Row, { included: number; warnings: Array<number | null> }]>([
+    ["a free period that began on the old 50 hours gets today's free hours at once, and its hour warnings clear", { included_milli: 50_000, used_milli: 50_000, ...WARNED }, { included: 100_000, warnings: [null, null, null] }],
+    ["an account refused the free plan keeps 0", { included_milli: 0, free_refused_at: NOW - DAY }, { included: 0, warnings: [null, null, null] }],
+    ["a paid period keeps its own hours and warnings", { plan: "paid", paid_plan: "plus", included_milli: 50_000, warned_80_at: NOW - HOUR }, { included: 50_000, warnings: [NOW - HOUR, null, null] }],
   ])("free hours raised by a release: %s", async (_label, overrides, expected) => {
     seedAccount(harness, OWNER, overrides);
 
     const state = await stateOf();
 
-    expect({ included: included(), warnedZero: harness.row("select warned_zero_at from cloud_accounts where user_id = ?", OWNER).warned_zero_at }).toEqual(expected);
+    const row = harness.row("select warned_80_at, warned_95_at, warned_zero_at from cloud_accounts where user_id = ?", OWNER);
+    expect({ included: included(), warnings: [row.warned_80_at, row.warned_95_at, row.warned_zero_at] }).toEqual(expected);
     expect(state.hours.includedMilli).toBe(expected.included);
   });
 

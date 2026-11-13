@@ -30,9 +30,11 @@ const LINKS = {
 
 type ReturnKind = "done" | "cancelled" | "portal" | "card" | "card_cancelled";
 
-const PLAN_LABELS: Record<CloudPaidPlanId, string> = { plus: "Plus", pro: "Pro", max: "Max" };
-
-/** The cloud outline the website's mark and sky share. */
+/**
+ * The cloud outline the website's mark and sky share. Change one, change
+ * both: the same path is the desktop's ADE Cloud logo (`CLOUD_LOGO_PATH` in
+ * apps/desktop/src/renderer/components/remoteTargets/cloudBrand.tsx).
+ */
 const CLOUD_PATH = "M9 21H24A5.5 5.5 0 0 0 24.6 10.03A7.5 7.5 0 0 0 10.4 8.2A6.5 6.5 0 0 0 9 21Z";
 
 /** The ADE Cloud mark; `id` keeps each copy's gradient its own. */
@@ -77,6 +79,11 @@ const DRIFTS: Array<[string, string, string, number, number, number, boolean]> =
   ["60%", "54%", "clamp(240px,36vw,600px)", 0.45, 125, -80, false],
 ];
 
+/*
+ * The cloud bank's widths (%), back row and front row. Change one, change
+ * both: the desktop's dashboard sky draws the same bank
+ * (apps/desktop/src/renderer/components/settings/cloudDashboard/CloudSky.tsx).
+ */
 const BANK_BACK = [16, 22, 18, 26, 20, 24, 17];
 const BANK_FRONT = [20, 15, 24, 19, 27, 16, 22];
 
@@ -142,9 +149,9 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
   switch (kind) {
     case "done":
       return {
-        title: plan ? `You're on ADE Cloud ${PLAN_LABELS[plan]}` : "Thanks for buying ADE Cloud",
+        title: plan ? `You're on ADE Cloud ${CLOUD_PLANS[plan].label}` : "Thanks for buying ADE Cloud",
         eyebrow: "Payment complete",
-        heading: plan ? `Thank you. You're on ${PLAN_LABELS[plan]}.` : "Thank you. Your plan is ready.",
+        heading: plan ? `Thank you. You're on ${CLOUD_PLANS[plan].label}.` : "Thank you. Your plan is ready.",
         lede: "It shows in ADE in a moment. Your hours start fresh today.",
         body: plan ? planFacts(plan) : "",
         tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours and disk work"), tile(LINKS.billing, "card", "Manage billing")],

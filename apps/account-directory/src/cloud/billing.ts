@@ -657,10 +657,24 @@ async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow): Promise
     logCloud("cloud.extra_hours_item_added", { userId: account.user_id, subscriptionId });
   } catch (error) {
     if (error instanceof StripeRequestError) {
+      // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
+      if (error.status === 409 && await holdsExtraHoursItem(env, subscriptionId)) return;
       reportCloudFailure("cloud.extra_hours_item_failed", { status: error.status, message: error.stripeMessage });
       throw unavailable();
     }
     throw error;
+  }
+}
+
+/** Whether the subscription now holds an extra-hours item; false when Stripe can't say. */
+async function holdsExtraHoursItem(env: CloudEnv, subscriptionId: string): Promise<boolean> {
+  try {
+    const hoursPrices = extraHoursPrices(env);
+    return (await subscriptionItems(env, subscriptionId)).some((item) => item.price != null && hoursPrices.has(item.price));
+  } catch (error) {
+    if (!(error instanceof StripeRequestError)) throw error;
+    reportCloudFailure("cloud.extra_hours_item_reread_failed", { status: error.status, message: error.stripeMessage });
+    return false;
   }
 }
 

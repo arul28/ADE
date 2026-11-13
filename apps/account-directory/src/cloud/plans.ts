@@ -65,14 +65,14 @@ export const DISK_STEP_GB = 4;
  * plan costs; null on the free plan, where work stops instead.
  */
 export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanTerms>> = {
-  free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
-  plus: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
-  pro: { includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
-  max: { includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
+  free: { label: "Free", includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
+  plus: { label: "Plus", includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+  pro: { label: "Pro", includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
+  max: { label: "Max", includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
 };
 
-/** A plan as `CLOUD_PLANS` holds it; the catalog adds what older builds read. */
-export type CloudPlanTerms = Required<Omit<CloudPlanFacts, "computerLimit">>;
+/** A plan as `CLOUD_PLANS` holds it, with its name on this server's own pages; the catalog adds what older builds read. */
+export type CloudPlanTerms = Required<Omit<CloudPlanFacts, "computerLimit">> & { label: string };
 
 /** Paid plans, cheapest first: a move to a lower rank is a downgrade (it waits for the period end). */
 export const PAID_PLAN_RANK: Readonly<Record<CloudPaidPlanId, number>> = { plus: 1, pro: 2, max: 3 };
@@ -169,7 +169,8 @@ export const EXTRA_HOUR_MICROS: Readonly<Record<CloudPaidPlanId, number>> = {
 export type CloudOffers = { pro: boolean; max: boolean; extraDisk: boolean };
 
 /** A plan as the catalog sends it: `computerLimit` is the awake cap, for builds that still show a computer count. */
-const catalogPlan = (terms: CloudPlanTerms): CloudPlanFacts => ({ ...terms, computerLimit: AWAKE_COMPUTER_CAP });
+// The label stays on this server's pages: the catalog's plans keep their shape.
+const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, computerLimit: AWAKE_COMPUTER_CAP });
 
 /**
  * What `GET /cloud/account` tells a client about sizes and plans. Pro, Max and

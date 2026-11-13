@@ -22,9 +22,26 @@ const APPROVAL_TIMEOUT_MS = 5 * 60_000;
  * confirmation they give. ADE never clicks anything on it.
  */
 export function openCloudApprovalWindow(
-  args: { url: string; mode: CloudApprovalMode; title: string; signal: AbortSignal; onNeedsPerson: () => void },
+  args: {
+    url: string;
+    mode: CloudApprovalMode;
+    title: string;
+    signal: AbortSignal;
+    onNeedsPerson: () => void;
+    /**
+     * A window a brain borrowed (its lane launch): at a step only a person
+     * can take, end with `needs_person` instead of showing and waiting, since
+     * this screen may not be where the person is. The brain sends the link.
+     */
+    endWhenPersonNeeded?: boolean;
+  },
   logger: Logger,
 ): Promise<CloudApprovalWindowResult> {
+  // The approval page always needs the person: nothing to open.
+  if (args.endWhenPersonNeeded && args.mode === "browser") {
+    logger.info("cloud.approval_window_finished", { result: "needs_person", shown: false });
+    return Promise.resolve("needs_person");
+  }
   const win = new BrowserWindow({
     show: false,
     width: 540,
@@ -64,6 +81,10 @@ export function openCloudApprovalWindow(
       if (showTimer) clearTimeout(showTimer);
       showTimer = setTimeout(() => {
         if (settled || win.isDestroyed()) return;
+        if (args.endWhenPersonNeeded) {
+          finish("needs_person");
+          return;
+        }
         shown = true;
         win.show();
         win.focus();
@@ -94,7 +115,9 @@ export function openCloudApprovalWindow(
             finish("signed_in");
           } else {
             // The callback answered with a failure page; let the person read it.
-            if (!shown && !win.isDestroyed()) {
+            if (args.endWhenPersonNeeded) {
+              finish("needs_person");
+            } else if (!shown && !win.isDestroyed()) {
               shown = true;
               win.show();
               args.onNeedsPerson();

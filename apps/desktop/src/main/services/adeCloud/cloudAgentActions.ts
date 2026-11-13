@@ -70,15 +70,14 @@ import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
 import type { CloudLogger } from "./cloudProvider";
 import type { CloudMoveResult } from "./cloudMachineCopy";
-import type { CloudApprovalWindowResult } from "./cloudMachineCreator";
-import type { CloudApprovalWindowRequest } from "./cloudDesktopActions";
+import type { CloudApprovalWindowAnswer, CloudApprovalWindowRequest } from "./cloudDesktopActions";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { buildCloudTierRequestCard } from "../../../shared/cloudLaneLife";
+import { buildCloudTierRequestCard, cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
@@ -111,7 +110,7 @@ export type CloudDesktopBridge = {
   copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
   move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudMoveResult>;
   /** The desktop's approval window for a machine this brain signs in (`CloudDesktopActions.approveWindow`). An older desktop answers "not exposed". */
-  approveWindow?(args: CloudApprovalWindowRequest): Promise<CloudApprovalWindowResult>;
+  approveWindow?(args: CloudApprovalWindowRequest): Promise<CloudApprovalWindowAnswer>;
   closeApprovalWindow?(args: { id: string }): Promise<void>;
 };
 
@@ -490,7 +489,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     }
     const approvals = deps.approvals;
     return await maker.make(input, (url, name) => {
-      approvals.notice(chatSessionId, `Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The command waits up to 10 minutes.`);
+      approvals.notice(chatSessionId, `Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The command waits up to ${cloudJoinApprovalWaitText()}.`);
     });
   };
 

@@ -272,6 +272,15 @@ export const CLOUD_JOIN_APPROVAL_CARD_VARIANT = "cloud_join_approval";
 
 const JOIN_ROW = { link: "join_approval_link", state: "join_approval_state" } as const;
 
+/** How long a new computer waits for the person's approval: as long as the account keeps a sign-in code (DEVICE_CODE_TTL_SECONDS). */
+export const CLOUD_JOIN_APPROVAL_WAIT_MS = 10 * 60_000;
+
+/** "10 minutes": the wait in the card, its text and the error when nobody approved. */
+export function cloudJoinApprovalWaitText(): string {
+  const minutes = Math.round(CLOUD_JOIN_APPROVAL_WAIT_MS / 60_000);
+  return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
 export type CloudJoinApproval = {
   launchId: string;
   computerName: string;
@@ -300,13 +309,13 @@ export function buildCloudJoinApprovalCard(input: CloudJoinApproval): AdeCardPay
     title: input.state === "joined"
       ? `${input.computerName} joined your ADE account`
       : input.state === "ended" ? `${input.computerName} no longer waits for approval` : `Approve ${input.computerName} joining your ADE account`,
-    subtitle: waiting ? "A new ADE Cloud computer for this lane. The lane waits up to 10 minutes." : null,
+    subtitle: waiting ? `A new ADE Cloud computer for this lane. The lane waits up to ${cloudJoinApprovalWaitText()}.` : null,
     rows: [
       { key: JOIN_ROW.link, icon: "info", text: input.computerName, detail: input.url },
       { key: JOIN_ROW.state, icon: waiting ? "running" : input.state === "joined" ? "pass" : "skipped", text: input.state, detail: input.state },
     ],
     fallbackText: waiting
-      ? `Approve "${input.computerName}" joining your ADE account: open ${input.url} on your phone or in a browser signed in to ADE. The lane waits up to 10 minutes.`
+      ? `Approve "${input.computerName}" joining your ADE account: open ${input.url} on your phone or in a browser signed in to ADE. The lane waits up to ${cloudJoinApprovalWaitText()}.`
       : input.state === "joined" ? `"${input.computerName}" joined your ADE account.` : `"${input.computerName}" no longer waits for approval.`,
   };
 }

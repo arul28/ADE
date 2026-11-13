@@ -805,14 +805,20 @@ a terminal in.
   new computers, the refusal reads "your agents hit today's limit of N new
   computers a day. Change it in Settings › Integrations › ADE Cloud › What
   agents may do › New computers a day." A person is never counted.
-- **The join.** When a desktop app is attached to the brain, the new
-  computer signs in through that app's approval window, as the app's own
-  creates do (`cloud.approveWindow` over the desktop bridge,
-  `desktopApprovalWindow` in `cloudLaneLaunchBrainHost.ts`; cancelling the
-  launch closes it with `cloud.closeApprovalWindow`). If that window can't
-  finish (the desktop left, closed it, or is too old to have it), the brain
-  waits the moment a landed approval needs, starts a fresh code and falls
-  back to the link. With no desktop, the brain approves itself only for an
+- **The join.** When a desktop app is attached to the brain, the brain
+  sends it the computer's sign-in code (`cloud.approveWindow` over the
+  desktop bridge, `desktopApprovalWindow` in `cloudLaneLaunchBrainHost.ts`;
+  cancelling the launch closes it with `cloud.closeApprovalWindow`). The
+  desktop asks its own account service for the one-time ticket
+  (`requestCloudApprovalTicket`), so its window opens only what that service
+  gave it, and the window signs the computer in with no click. At a step
+  only a person can take (a consent screen, or no ticket to mint) the window
+  ends at once with `needs_person` instead of waiting on a screen the person
+  may not be at, and the brain sends the link right away: the same code when
+  it was never claimed, else a fresh one. If the window can't finish for
+  another reason (the desktop left or closed it, or is too old to have it),
+  the brain waits the moment a landed approval needs, then sends a fresh
+  code's link. With no desktop, the brain approves itself only for an
   unattended yes with a headless browser here (a cloud computer); otherwise
   the agent's chat gets a `cloud_join_approval` card (`buildCloudJoinApprovalCard`
   in `shared/cloudLaneLife.ts`) whose Approve opens the account service's

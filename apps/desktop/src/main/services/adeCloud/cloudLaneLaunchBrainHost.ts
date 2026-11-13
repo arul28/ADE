@@ -172,14 +172,15 @@ export type CloudLaneLaunchBrainHost = {
 };
 
 /**
- * The attached desktop's approval window as the creator's `approveInWindow`,
- * or undefined with no desktop (or one too old to have it). Cancelling closes
- * the window there.
+ * The attached desktop's approval window as the creator's `approveOnDesktop`,
+ * or undefined with no desktop (or one too old to have it). The desktop gets
+ * the ticket from its own account service, so it opens only what that service
+ * gave it. Cancelling closes the window there.
  */
-function desktopApprovalWindow(desktop: CloudDesktopBridge | null, logger: Logger): CloudMachineCreatorDeps["approveInWindow"] {
+function desktopApprovalWindow(desktop: CloudDesktopBridge | null, logger: Logger): CloudMachineCreatorDeps["approveOnDesktop"] {
   const open = desktop?.approveWindow;
   if (!desktop || !open) return undefined;
-  return async ({ url, mode, title, signal }) => {
+  return async ({ userCode, title, signal }) => {
     const id = randomUUID();
     const close = () => {
       // The window also closes itself when its sign-in ends or after 5 minutes.
@@ -189,7 +190,7 @@ function desktopApprovalWindow(desktop: CloudDesktopBridge | null, logger: Logge
     };
     signal.addEventListener("abort", close, { once: true });
     try {
-      return await open.call(desktop, { id, url, mode, title });
+      return await open.call(desktop, { id, userCode, title });
     } finally {
       signal.removeEventListener("abort", close);
     }
@@ -289,7 +290,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
     creator: {
       ...deps.base,
       // Read at each sign-in, so a desktop that attached or left since counts.
-      get approveInWindow() {
+      get approveOnDesktop() {
         return desktopApprovalWindow(deps.desktop?.() ?? null, logger);
       },
       // The link reaches the person through `onApprovalLink`, which knows the launch.
@@ -312,7 +313,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
         caller.card(buildCloudJoinApprovalCard({ launchId, computerName: name, url, state: "waiting" }));
         return;
       }
-      caller?.notice?.(`Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The lane waits up to 10 minutes.`);
+      caller?.notice?.(buildCloudJoinApprovalCard({ launchId, computerName: name, url, state: "waiting" }).fallbackText);
     },
     // The bridge pairs with an account machine on its own and addresses it by key.
     pairMachine: async (machineKey) => ({ targetId: machineKey }),

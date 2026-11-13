@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowSquareOut, CheckCircle } from "@phosphor-icons/react";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { cloudJoinApprovalOfCard, cloudTierRequestOfCard, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
+import { cloudJoinApprovalOfCard, cloudJoinApprovalWaitText, cloudTierRequestOfCard, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -146,7 +146,7 @@ export function CloudJoinApprovalCard({ card }: { card: AdeCardPayload }) {
         <span className="adecl-nocomp-mark" aria-hidden><CloudMark size={16} brand /></span>
         <div className="adecl-nocomp-text">
           <span className="adecl-join-title">{card.title}</span>
-          <span className="adecl-muted">{card.subtitle ?? "The lane waits up to 10 minutes."} You confirm it on ADE&apos;s sign-in page; your phone works too.</span>
+          <span className="adecl-muted">{card.subtitle ?? `The lane waits up to ${cloudJoinApprovalWaitText()}.`} You confirm it on ADE&apos;s sign-in page, which opens here.</span>
         </div>
         <div className="adecl-nocomp-actions">
           <button
