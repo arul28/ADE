@@ -545,12 +545,14 @@ export function createPasswordService(args: {
         const secret = opened.get(input.itemId);
         if (secret?.kind === "login") entry = [input.itemId, secret];
       } else if (input.site) {
-        const pageUrl = /^https?:\/\//i.test(input.site) ? input.site : `https://${input.site}`;
-        const logins = [...opened.entries()]
+        // A site name ("github.com", "localhost") matches every login for that
+        // site, whatever its exact address (scheme, port, subdomain).
+        const raw = input.site.trim();
+        const wanted = normalizeLoginOrigin(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`)?.site ?? raw.toLowerCase();
+        const match = [...opened.entries()]
           .filter((candidate): candidate is [string, PasswordLoginSecret] => candidate[1].kind === "login" && Boolean(candidate[1].totpUri))
-          .map(([id, secret]) => ({ id, origins: secret.origins, secret }));
-        const matches = matchLoginsForOrigin(logins, pageUrl).filter((match) => !input.username || match.secret.username === input.username);
-        if (matches[0]) entry = [matches[0].id, matches[0].secret];
+          .find(([id, secret]) => summarize(id, secret).sites.includes(wanted) && (!input.username || secret.username === input.username));
+        if (match) entry = match;
       }
       if (!entry?.[1].totpUri) return null;
       const totp = parseTotp(entry[1].totpUri);

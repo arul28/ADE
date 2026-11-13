@@ -300,6 +300,9 @@ export function IntegrationsHome({
         </section>
       ) : null}
 
+      {/* This Mac's own Messages; a page following another machine leaves it out. */}
+      {pin === null || pin.kind !== "remote" ? <MessagesIntegrationCard /> : null}
+
       <section className="ade-ix-section" aria-label="Add">
         <div className="ade-ix-heading-row">
           <h3 className="ade-ix-heading">Add</h3>
@@ -453,8 +456,6 @@ export function IntegrationsHome({
         />
       ) : null}
 
-      {/* This Mac's own Messages; a page following another machine leaves it out. */}
-      {pin === null || pin.kind !== "remote" ? <MessagesIntegrationCard /> : null}
     </div>
   );
 }

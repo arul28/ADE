@@ -776,15 +776,15 @@ function RevealValue({ itemId, field, label }: { itemId: string; field: "passwor
     }
   };
   return (
-    <span className="ade-pw-reveal" data-testid={`passwords-reveal-${field}`}>
-      <span className={shown === null ? "ade-pw-reveal-dots" : "ade-pw-reveal-value"}>{shown ?? "••••••••••"}</span>
+    <span className="ade-pw-shown" data-testid={`passwords-reveal-${field}`}>
+      <span className={shown === null ? "ade-pw-shown-dots" : "ade-pw-shown-value"}>{shown ?? "••••••••••"}</span>
       {shown === null ? (
-        <button type="button" className="ade-pw-reveal-btn" disabled={busy} onClick={() => void run(false)}>Show</button>
+        <button type="button" className="ade-pw-shown-btn" disabled={busy} onClick={() => void run(false)}>Show</button>
       ) : (
-        <button type="button" className="ade-pw-reveal-btn" onClick={() => setShown(null)}>Hide</button>
+        <button type="button" className="ade-pw-shown-btn" onClick={() => setShown(null)}>Hide</button>
       )}
-      <button type="button" className="ade-pw-reveal-btn" disabled={busy} onClick={() => void run(true)}>Copy</button>
-      {note ? <span className="ade-pw-reveal-note" role="status">{note}</span> : null}
+      <button type="button" className="ade-pw-shown-btn" disabled={busy} onClick={() => void run(true)}>Copy</button>
+      {note ? <span className="ade-pw-shown-note" role="status">{note}</span> : null}
     </span>
   );
 }

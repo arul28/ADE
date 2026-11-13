@@ -800,7 +800,7 @@
 }
 
 /* Settings › Integrations › Messages (Mac only). */
-.ade-ig-msg { border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent); border-radius: 12px; padding: 14px 16px; margin-top: 18px; }
+.ade-ig-msg { border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent); border-radius: 12px; padding: 14px 16px; margin: 4px 0 18px; }
 .ade-ig-msg-head { display: flex; align-items: center; gap: 12px; }
 .ade-ig-msg-logo { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 9px; background: #34c759; color: #fff; flex: none; }
 .ade-ig-msg-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }

@@ -29,7 +29,10 @@ export async function signInWithPasswords(
   },
   args: Record<string, unknown>,
 ): Promise<BuiltInBrowserAgentActionResult & { signin?: Record<string, unknown> }> {
-  const { chatSessionId, reason, timeoutMs, ...browserArgs } = args;
+  // The browser call carries the caller's stamped identity (its chat and
+  // lane own the tab); `reason` and `timeoutMs` are only for the card.
+  const { reason, timeoutMs, ...browserArgs } = args;
+  const chatSessionId = args.chatSessionId;
   const chat = typeof chatSessionId === "string" && chatSessionId ? chatSessionId : null;
   const noted = async <T extends BuiltInBrowserAgentActionResult>(result: T): Promise<T> => {
     const done = result.signin;

@@ -6780,8 +6780,9 @@ async function runTool(args: {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "passwords.signin requires object arguments.");
       }
       const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, ...signinArgs } = rawObjectArgs;
-      const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
-      scopedObjectArgs = { ...signinArgs, ...(boundChat ? { chatSessionId: boundChat } : {}) };
+      // The browser half acts as this caller, exactly like `ade browser fill`
+      // (its own chat's tabs, its lane): the same scoping stamps it.
+      scopedObjectArgs = scopeBuiltInBrowserAdeActionArgs(runtime, session, "signin", signinArgs);
     }
     if (domain === "automations" && action === "webhookSendTest" && !isUserClient && !callerIsCto) {
       // `config` is the builder's unsaved draft, and it names the secret the
