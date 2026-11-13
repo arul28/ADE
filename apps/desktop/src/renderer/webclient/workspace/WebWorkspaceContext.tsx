@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useMemo } from "react";
+import React, { createContext, useContext, useEffect, useMemo } from "react";
+import { publishWebAccountMachineKeys } from "../../state/webAccountMachineKeys";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { BrowserAccountSnapshot } from "../account/client";
 import type { FederatedWebAdapter } from "../adapter/federated";
@@ -64,6 +65,21 @@ export function WebWorkspaceProvider({
   value: WebWorkspaceContextValue;
   children: React.ReactNode;
 }) {
+  // Each connection's account machine key, for the copies lists (the same
+  // computer from the account list and from a live connection is one computer).
+  const accountMachineKeys = useMemo(() => {
+    const machines = mergeWebMachines({
+      accountMachines: value.account.machines,
+      snapshot: value.snapshot,
+      relayBaseUrls: value.account.relayBaseUrls,
+    });
+    return new Map(machines.flatMap((machine) => (
+      machine.environment?.envId && machine.accountMachine?.machineKey
+        ? [[machine.environment.envId, machine.accountMachine.machineKey] as const]
+        : []
+    )));
+  }, [value.account.machines, value.account.relayBaseUrls, value.snapshot]);
+  useEffect(() => publishWebAccountMachineKeys(accountMachineKeys), [accountMachineKeys]);
   return (
     <WebWorkspaceContext.Provider value={value}>
       {children}

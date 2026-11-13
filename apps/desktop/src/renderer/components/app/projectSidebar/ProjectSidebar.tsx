@@ -16,6 +16,7 @@ import {
 import { useProjectSidebarSlotTarget } from "./ProjectSidebarSlot";
 import { StarRepoPill } from "./StarRepoPill";
 import { InviteFriendsPill } from "./InviteFriendsPill";
+import { ProjectComputersTag } from "./ProjectComputersTag";
 import { lastSettingsRoute, rememberProjectRoute, settingsReturnRoute } from "./settingsReturnRoute";
 import {
   PROJECT_SIDEBAR_FOOTER_TABS,
@@ -179,6 +180,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
             </button>
           );
         })}
+        {/* The computers with a copy (the Home row's chip); opens the copies menu. */}
+        <ProjectComputersTag />
       </nav>
 
       <div ref={setBodyRef} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />

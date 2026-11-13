@@ -226,6 +226,9 @@ describe("CommandPalette", () => {
         getDetail,
         getDroppedPath,
         resolveIcon,
+        // The add form reads this computer's recents and its default folder when it opens.
+        listRecent: vi.fn(async () => []),
+        getDefaultParentDir: vi.fn(async () => "/Users/admin/Projects"),
       },
     } as any;
   });
@@ -606,6 +609,7 @@ describe("CommandPalette", () => {
         subdirectoryCount: null,
       })),
       addProject: vi.fn(async () => remoteProject),
+      getDefaultParentDir: vi.fn(async () => "/remote"),
     };
     globalThis.window.ade = {
       ...globalThis.window.ade,
@@ -618,11 +622,10 @@ describe("CommandPalette", () => {
       </MemoryRouter>,
     );
 
-    const machineButton = await screen.findByRole("button", {
-      name: /Mac Studio/i,
-    });
-    fireEvent.click(machineButton);
-    fireEvent.click(await screen.findByRole("button", { name: /OPEN/i }));
+    // Add project opens on its form; "Open a folder…" acts on the computer picked under it.
+    const computer = await screen.findByRole("combobox", { name: "Computer for the folder or new project" });
+    fireEvent.change(computer, { target: { value: "target-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Open a folder/i }));
 
     await waitFor(() =>
       expect(remoteRuntime.browseDirectories).toHaveBeenCalledWith("target-1", {
