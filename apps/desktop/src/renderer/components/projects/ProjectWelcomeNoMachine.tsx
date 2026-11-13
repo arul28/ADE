@@ -129,12 +129,15 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   /**
    * The web machine that can open this copy on a press: held by this tab, or
    * awake in the account directory ("available" alone also covers asleep and
-   * long-gone computers), and the copy names its folder.
+   * long-gone computers), and the copy names its folder. A machine that is
+   * dialing again (it stopped) is not one to pick, unless this page is
+   * opening that copy now.
    */
   const webMachineFor = (copy: RepositoryCopy): WebMachineEntry | null => {
     const machine = copy.checkoutId ? webMachineOf(copy) : null;
     if (!machine) return null;
-    const held = machine.status === "live" || machine.status === "connecting" || machine.status === "parked";
+    const opening = openingCopyKey === `${copy.machineId}\n${copy.rootPath}`;
+    const held = machine.status === "live" || machine.status === "parked" || (machine.status === "connecting" && opening);
     const account = machine.accountMachine;
     const awake = account != null && resolveMachinePresence({
       connected: false,
