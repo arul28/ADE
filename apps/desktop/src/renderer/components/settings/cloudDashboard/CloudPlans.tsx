@@ -228,7 +228,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
                   {isCurrent ? <span className="kit-tag" data-tone="accent">Your plan</span> : nextPlanId === column.id ? <span className="kit-tag">From {formatCloudDate(billing.periodEnd)}</span> : null}
                 </span>
                 <span><b className="kit-num" data-face="ui">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b><small>{column.facts.priceUsd ? " a month" : " forever"}</small></span>
-                <span><b className="kit-num" data-face="ui">{Number(formatCloudHours(column.facts.includedMilli)).toLocaleString()}</b><small> hours</small></span>
+                <span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b><small> hours</small></span>
                 <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
                 {showPhoneMinutes ? (
                   <span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b><small> a month</small></span>
