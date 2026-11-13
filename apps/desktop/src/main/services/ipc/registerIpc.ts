@@ -11304,6 +11304,42 @@ export function registerIpc({
     return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab), win);
   });
 
+  // Passwords in the browser, for the person in front of this window. The tab
+  // is on this computer; main reads its URL itself, and no value comes back.
+  const readTabId = (arg: unknown, channel: string): string => {
+    const tabId = arg && typeof arg === "object" ? (arg as { tabId?: unknown }).tabId : null;
+    if (typeof tabId !== "string" || !tabId.trim()) throw new Error(`${channel} needs a tabId.`);
+    return tabId.trim();
+  };
+  const readOfferId = (arg: unknown, channel: string): string => {
+    const offerId = arg && typeof arg === "object" ? (arg as { offerId?: unknown }).offerId : null;
+    if (typeof offerId !== "string" || !offerId.trim()) throw new Error(`${channel} needs an offerId.`);
+    return offerId.trim();
+  };
+  handle(IPC.builtInBrowserSavedLogins, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSavedLogins, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().savedLoginsForTab({ tabId: readTabId(arg, IPC.builtInBrowserSavedLogins) }, win);
+  });
+  handle(IPC.builtInBrowserFillSavedLogin, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFillSavedLogin, { windowMs: 10_000, max: 20 });
+    const itemId = arg && typeof arg === "object" ? (arg as { itemId?: unknown }).itemId : null;
+    if (typeof itemId !== "string" || !itemId) throw new Error("fillSavedLogin needs an itemId.");
+    return ensureBuiltInBrowser().fillSavedLogin({ tabId: readTabId(arg, IPC.builtInBrowserFillSavedLogin), itemId }, win);
+  });
+  handle(IPC.builtInBrowserLoginOffer, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginOffer, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().loginOfferForTab({ tabId: readTabId(arg, IPC.builtInBrowserLoginOffer) }, win);
+  });
+  handle(IPC.builtInBrowserAcceptLoginOffer, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAcceptLoginOffer, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().acceptLoginOffer({ offerId: readOfferId(arg, IPC.builtInBrowserAcceptLoginOffer) });
+  });
+  handle(IPC.builtInBrowserDismissLoginOffer, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserDismissLoginOffer, { windowMs: 10_000, max: 20 });
+    ensureBuiltInBrowser().dismissLoginOffer({ offerId: readOfferId(arg, IPC.builtInBrowserDismissLoginOffer) });
+    return null;
+  });
+
   handle(IPC.builtInBrowserReload, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserReload, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().reload(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserReload), win);
@@ -12783,6 +12819,46 @@ export function registerIpc({
       }, {
         // The OS keyring and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
         timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action),
+      });
+      return response?.result;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      throw carryExpected(error, new Error(stripElectronErrorWrapper(error.message)));
+    }
+  });
+
+  // Passwords with no project bound: this computer's brain, through its
+  // machine route (`passwords.call`). Summaries and the person's own writes
+  // only — the value reads (`resolveForFill`, `loginsForPage`) are refused
+  // here, so a renderer can never ask for one.
+  const PASSWORDS_CALL_ACTIONS: ReadonlySet<string> = new Set([
+    "status",
+    "setEnabled",
+    "setCloudEnabled",
+    "reset",
+    "list",
+    "saveLogin",
+    "saveSecret",
+    "remove",
+    "importCsv",
+    "sync",
+  ]);
+  handle(IPC.passwordsCall, async (_event, arg: unknown): Promise<unknown> => {
+    const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
+    const action = typeof request.action === "string" ? request.action : "";
+    if (!PASSWORDS_CALL_ACTIONS.has(action)) {
+      throw new Error(`passwords has no ${action || "?"} action.`);
+    }
+    const pool = localRuntimeConnectionPool;
+    if (!pool) {
+      throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
+    }
+    try {
+      const response = await pool.callSync<{ result?: unknown }>("passwords.call", {
+        action,
+        ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
+      }, {
+        timeoutMs: localRuntimeActionTimeoutMs("passwords", action),
       });
       return response?.result;
     } catch (error) {

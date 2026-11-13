@@ -80,8 +80,9 @@ export type PasswordImportResult = {
 export type PasswordLoginSaveInput = {
   id?: string;
   title?: string;
-  origins: string[];
-  username: string;
+  /** Required for a new login; a change by id keeps its sites when omitted. */
+  origins?: string[];
+  username?: string;
   password: string;
   notes?: string;
   totpUri?: string | null;

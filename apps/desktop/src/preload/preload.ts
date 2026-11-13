@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { BuiltInBrowserSaveLoginOffer } from "../shared/types/builtInBrowserLoginCapture";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -24,6 +25,13 @@ import type {
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
+import type {
+  PasswordImportResult,
+  PasswordItemSummary,
+  PasswordLoginSaveInput,
+  PasswordSecretSaveInput,
+  PasswordsStatus,
+} from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
@@ -2600,6 +2608,18 @@ function callLaneShareAction<T>(
 function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
     ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+}
+
+/**
+ * Passwords: the account's saved logins and secrets on the pinned machine,
+ * else the tab's bound runtime, else this computer's brain with no project
+ * (`passwords.call`). Only summaries and person-only writes cross this
+ * boundary: no method here returns a saved value, and `resolveForFill` is
+ * never wired (the browser fills pages in main, not in a renderer).
+ */
+function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () =>
+    ipcRenderer.invoke(IPC.passwordsCall, { action, args: { ...args } }));
 }
 
 /**
@@ -11508,6 +11528,17 @@ const adeBridge = {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
       ),
+    // Passwords for the person: the tab is always on this computer.
+    savedLoginsForTab: (args: { tabId: string }): Promise<Array<{ id: string; username: string | null; sites: string[] }>> =>
+      ipcRenderer.invoke(IPC.builtInBrowserSavedLogins, args),
+    fillSavedLogin: (args: { tabId: string; itemId: string }): Promise<{ filled: string[] }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserFillSavedLogin, args),
+    loginOfferForTab: (args: { tabId: string }): Promise<BuiltInBrowserSaveLoginOffer | null> =>
+      ipcRenderer.invoke(IPC.builtInBrowserLoginOffer, args),
+    acceptLoginOffer: (args: { offerId: string }): Promise<{ saved: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserAcceptLoginOffer, args),
+    dismissLoginOffer: (args: { offerId: string }): Promise<null> =>
+      ipcRenderer.invoke(IPC.builtInBrowserDismissLoginOffer, args),
     reload: async (
       args: BuiltInBrowserTabTargetArgs = {},
       _pin?: OpenProjectBinding | null,
@@ -12111,6 +12142,36 @@ const adeBridge = {
     onChanged: (cb: () => void, pin?: OpenProjectBinding | null): (() => void) =>
       subscribePinnedFanoutEvents(pin, remoteProviderLoginsChangedFanout, () => cb(), "providerLogins.onChanged")
         ?? remoteProviderLoginsChangedFanout.subscribe(() => cb()),
+  },
+  /**
+   * Settings › Passwords: the account's saved logins and secrets on the
+   * machine in front of the page. Every method takes the machine's pin from
+   * `useSettingsMachineScope().pin`. Nothing here returns a saved value:
+   * `list` and `save*` answer with the same summaries agents may see, and the
+   * value-reading `resolveForFill` is deliberately absent (only a browser
+   * fill in main may read one).
+   */
+  passwords: {
+    status: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("status", args, pin),
+    setEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setEnabled", args, pin),
+    setCloudEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setCloudEnabled", args, pin),
+    reset: (args: { confirm: "reset" }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("reset", args, pin),
+    list: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary[]> =>
+      callPasswords<PasswordItemSummary[]>("list", args, pin),
+    saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveLogin", args, pin),
+    saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveSecret", args, pin),
+    remove: (args: { id: string }, pin?: OpenProjectBinding | null): Promise<boolean> =>
+      callPasswords<boolean>("remove", args, pin),
+    importCsv: (args: { text: string }, pin?: OpenProjectBinding | null): Promise<PasswordImportResult> =>
+      callPasswords<PasswordImportResult>("importCsv", args, pin),
+    sync: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<void> =>
+      callPasswords<void>("sync", args, pin),
   },
   providerInstances: {
     list: async (

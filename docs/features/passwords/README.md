@@ -24,6 +24,24 @@ sync store for ADE's own account data.
 - **Reset Passwords** starts a new, empty vault under a new key, for every
   computer (the person types `reset` to confirm).
 
+## In Settings
+
+Settings › Passwords follows one machine at a time (the machine picker in the
+title, like Providers). The two switches are the page's own: this computer's,
+and the account-wide ADE Cloud one.
+
+- **Logins** lists the saved logins with their username and sites, and shows
+  the selected login's sites, username, whether a password and an authenticator
+  code are saved, and when it last changed. **Change password…** saves a new
+  password under the same item; **Delete** confirms first.
+- **Secrets** lists the saved API keys by name and project scope, with
+  **Change value…** and **Delete**.
+- **Activity** is where recorded uses appear; until use history is written it
+  shows the empty state.
+
+Neither list ever shows a saved value: no reveal, copy or read of a password
+or secret value exists on this page.
+
 ## How it is kept
 
 - Each item is sealed on the computer with AES-256-GCM under the account's
@@ -52,7 +70,7 @@ the browser's fill use with no project open.
 
 | Command | What it does |
 | --- | --- |
-| `ade passwords list` | Sites, usernames and kinds. Never a value. |
+| `ade passwords list` / `status` / `sync` | Sites, usernames and kinds; whether Passwords is on here. Never a value. |
 | `ade browser signin [--account <username>]` | Fills a saved login into the open page: only on the tab's own https origin (localhost allowed), never in a cross-origin frame. With no saved login it raises the secure sign-in card in the agent's own chat and waits (`passwords.signin`). |
 
 When the site has no saved login, the agent's chat shows the **secure
@@ -77,12 +95,27 @@ Chrome, Firefox, 1Password or Bitwarden (up to 5 MB). Rows without an https
 site or a password, and exact duplicates, are skipped. The file never leaves
 the computer except as sealed items; delete it afterwards.
 
+## In the browser, for the person
+
+- **The key button** in the address bar shows when Passwords has logins for the
+  open page's site. Picking one fills it into the page (desktop main reads the
+  tab's own URL; the renderer never gets a value). **Manage passwords…** opens
+  Settings › Passwords.
+- **"Save to Passwords?"** After the person sends a login form by hand, the tab
+  preload (`preload/browserMedia.ts`, isolated world) hands the typed username
+  and password to desktop main (`builtInBrowserLoginOffers.ts`). Main keeps
+  them for five minutes and the key button offers **Save** or **Update
+  password**; nothing is saved unless the person says so. Offers are made only
+  for the tab's top frame on https (or localhost), only when Passwords is on,
+  never right after an agent's own click, and never for a login already saved
+  with the same password. A two-step sign-in's username page is remembered
+  until its password page is sent.
+
 ## Not yet
 
-These are planned in the same branch of work and not built yet: the browser's
-key button and "Save to Passwords?" after a manual sign-in, Activity, secrets
-injection (`ade secrets exec`) and the move of project secrets into
-Passwords, authenticator codes and `ade code wait`, the Messages
+These are planned in the same branch of work and not built yet: Activity's
+recorded use history, secrets injection (`ade secrets exec`) and the move of
+project secrets into Passwords, authenticator codes and `ade code wait`, the Messages
 integration, passkeys in ADE's browser, Apple Passwords "Export to app", and
 the iPhone's view-and-copy.
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { BrowserPasswordsButton } from "./browser/BrowserPasswordsButton";
 import {
   Check,
   WarningCircle,
@@ -3175,6 +3176,7 @@ export function ChatBuiltInBrowserPanel({
           previewControls={hostToolbarEnd
             ? toolbarEnd
             : <WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
+          passwords={<BrowserPasswordsButton tabId={hasTab ? activeTabId : null} currentUrl={currentUrl} />}
         />
 
         <BrowserFindBar

@@ -777,6 +777,12 @@ export const IPC = {
   builtInBrowserKeepTab: "ade.builtInBrowser.keepTab",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
+  // Passwords for the person in the browser: the key button and "Save to Passwords?".
+  builtInBrowserSavedLogins: "ade.builtInBrowser.savedLogins",
+  builtInBrowserFillSavedLogin: "ade.builtInBrowser.fillSavedLogin",
+  builtInBrowserLoginOffer: "ade.builtInBrowser.loginOffer",
+  builtInBrowserAcceptLoginOffer: "ade.builtInBrowser.acceptLoginOffer",
+  builtInBrowserDismissLoginOffer: "ade.builtInBrowser.dismissLoginOffer",
   builtInBrowserGoBack: "ade.builtInBrowser.goBack",
   builtInBrowserGoForward: "ade.builtInBrowser.goForward",
   builtInBrowserStop: "ade.builtInBrowser.stop",
@@ -1242,6 +1248,13 @@ export const IPC = {
    * A bound or pinned window calls the `provider_logins` action domain instead.
    */
   providerLoginsCall: "ade.providerLogins.call",
+  /**
+   * Passwords on this computer's brain, with no project bound: `{ action, args }`
+   * through the brain's `passwords.call`. A bound or pinned window calls the
+   * `passwords` action domain instead. The handler allows summaries and
+   * person-only writes; it never exposes `resolveForFill` or a value.
+   */
+  passwordsCall: "ade.passwords.call",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and

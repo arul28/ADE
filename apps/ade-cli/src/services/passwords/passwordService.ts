@@ -474,21 +474,29 @@ export function createPasswordService(args: {
       return fallback;
     },
 
-    async saveLogin(input: { id?: string; title?: string; origins: string[]; username: string; password: string; notes?: string; totpUri?: string | null }): Promise<PasswordItemSummary> {
-      const origins = [...new Set(input.origins.map((origin) => normalizeLoginOrigin(origin)?.origin).filter((origin): origin is string => Boolean(origin)))];
+    /**
+     * Add a login, or change one by id. A change keeps whatever it does not
+     * name: its exact sites, username, title, notes and code.
+     */
+    async saveLogin(input: { id?: string; title?: string; origins?: string[]; username?: string; password: string; notes?: string; totpUri?: string | null }): Promise<PasswordItemSummary> {
+      await ensureOpened();
+      const existingItem = input.id ? opened.get(input.id) : undefined;
+      if (input.id && existingItem?.kind !== "login") throw new Error("That saved login no longer exists.");
+      const existing = existingItem?.kind === "login" ? existingItem : undefined;
+      const named = input.origins?.length ? input.origins : existing?.origins ?? [];
+      const origins = [...new Set(named.map((origin) => normalizeLoginOrigin(origin)?.origin).filter((origin): origin is string => Boolean(origin)))];
       if (origins.length === 0) throw new Error("A saved login needs an https site.");
       if (!input.password) throw new Error("A saved login needs a password.");
       const id = input.id ?? newItemId();
-      const existing = input.id ? opened.get(input.id) : undefined;
       const stamp = now().toISOString();
       const secret: PasswordLoginSecret = {
         kind: "login",
-        title: input.title?.trim() || normalizeLoginOrigin(origins[0]!)?.site || "Login",
+        title: input.title?.trim() || existing?.title || normalizeLoginOrigin(origins[0]!)?.site || "Login",
         origins,
-        username: input.username,
+        username: input.username ?? existing?.username ?? "",
         password: input.password,
-        notes: input.notes ?? (existing?.kind === "login" ? existing.notes : ""),
-        totpUri: input.totpUri ?? (existing?.kind === "login" ? existing.totpUri : null),
+        notes: input.notes ?? existing?.notes ?? "",
+        totpUri: input.totpUri !== undefined ? input.totpUri : existing?.totpUri ?? null,
         createdAt: existing?.createdAt ?? stamp,
         updatedAt: stamp,
       };

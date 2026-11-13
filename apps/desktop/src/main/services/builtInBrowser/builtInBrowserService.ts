@@ -917,7 +917,7 @@ export type BuiltInBrowserPasswordsAccess = {
   /** Whether Passwords is on here: "Save to Passwords?" is offered only then. */
   enabled?(): Promise<boolean>;
   /** The person's "Save to Passwords?" answer. */
-  saveLogin?(input: { id?: string; origins: string[]; username: string; password: string }): Promise<unknown>;
+  saveLogin?(input: { id?: string; origins?: string[]; username?: string; password: string }): Promise<unknown>;
 };
 
 export function createBuiltInBrowserService(args: {

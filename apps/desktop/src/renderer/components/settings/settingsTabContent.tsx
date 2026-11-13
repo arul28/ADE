@@ -48,6 +48,7 @@ import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
 import { SecretsSection } from "./SecretsSection";
+import { PasswordsSection } from "./passwords/PasswordsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { GeneralPage } from "./general/GeneralPage";
 import { MachinesPage } from "./machines/MachinesPage";
@@ -572,6 +573,16 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // account directory); edits of a share go to the machine that holds it.
   sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
+  // Passwords follows one machine: the switch is that computer's, the vault
+  // is the account's. Every call carries the page's pin.
+  passwords: [
+    {
+      entryIds: "tab",
+      render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>,
+      machine: "routed",
+      title: "Passwords",
+    },
+  ],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 

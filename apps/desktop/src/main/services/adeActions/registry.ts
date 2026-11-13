@@ -4283,14 +4283,15 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
     loginsForPage: (args?: unknown) => passwords.loginsForPage(text(objectArg(args).pageUrl)),
     saveLogin: (args?: unknown) => {
       const input = objectArg(args);
+      // Only what the caller names: a change by id keeps the rest.
       return passwords.saveLogin({
         ...(typeof input.id === "string" ? { id: input.id } : {}),
-        title: text(input.title),
-        origins: Array.isArray(input.origins) ? input.origins.filter((origin): origin is string => typeof origin === "string") : [],
-        username: text(input.username),
+        ...(typeof input.title === "string" ? { title: input.title } : {}),
+        ...(Array.isArray(input.origins) ? { origins: input.origins.filter((origin): origin is string => typeof origin === "string") } : {}),
+        ...(typeof input.username === "string" ? { username: input.username } : {}),
         password: text(input.password),
-        notes: text(input.notes),
-        totpUri: typeof input.totpUri === "string" ? input.totpUri : null,
+        ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
+        ...(typeof input.totpUri === "string" || input.totpUri === null ? { totpUri: input.totpUri as string | null } : {}),
       });
     },
     saveSecret: (args?: unknown) => {
@@ -4300,7 +4301,7 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
         name: text(input.name),
         value: text(input.value),
         projectScope: typeof input.projectScope === "string" ? input.projectScope : null,
-        notes: text(input.notes),
+        ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
       });
     },
     remove: (args?: unknown) => passwords.remove(text(objectArg(args).id)),

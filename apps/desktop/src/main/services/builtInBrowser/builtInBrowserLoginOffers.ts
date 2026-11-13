@@ -22,7 +22,7 @@ export type LoginOfferPasswords = {
   enabled(): Promise<boolean>;
   loginsForPage(pageUrl: string): Promise<Array<{ id: string; username: string | null }>>;
   resolveForFill(input: { itemId: string; pageUrl: string }): Promise<{ username: string; password: string } | null>;
-  saveLogin(input: { id?: string; origins: string[]; username: string; password: string }): Promise<unknown>;
+  saveLogin(input: { id?: string; origins?: string[]; username?: string; password: string }): Promise<unknown>;
 };
 
 type Pending = BuiltInBrowserSaveLoginOffer & { origin: string; password: string; expiresAt: number };
@@ -130,12 +130,10 @@ export function createBuiltInBrowserLoginOffers(deps: {
     async accept(offerId: string): Promise<{ saved: boolean }> {
       const offer = find(offerId);
       if (!offer || !deps.passwords) return { saved: false };
-      await deps.passwords.saveLogin({
-        ...(offer.updatesItemId ? { id: offer.updatesItemId } : {}),
-        origins: [offer.origin],
-        username: offer.username ?? "",
-        password: offer.password,
-      });
+      // An update changes only the password; the login keeps its own sites.
+      await deps.passwords.saveLogin(offer.updatesItemId
+        ? { id: offer.updatesItemId, password: offer.password }
+        : { origins: [offer.origin], username: offer.username ?? "", password: offer.password });
       drop(offer.tabId);
       return { saved: true };
     },

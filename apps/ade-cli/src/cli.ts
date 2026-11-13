@@ -1100,7 +1100,8 @@ export type FormatterId =
   | "models-sheet"
   | "update-status"
   | "notify"
-  | "remote-mcp";
+  | "remote-mcp"
+  | "passwords";
 
 type ChatWaitTarget =
   | "idle"
@@ -1665,6 +1666,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -4866,6 +4868,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
       Your commands can read it, so never print it. Deleted when the chat is
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
+`,
+  passwords: `${ADE_BANNER}
+  ADE Passwords
+
+  Saved logins and API keys, encrypted on the person's account. Agents use
+  them and never see them: nothing here prints a password or a secret value.
+
+    $ ade passwords list --text      Sites, usernames and kinds of saved items
+    $ ade passwords status --text    Whether Passwords is on for this computer
+    $ ade passwords sync --text      Pull what other computers saved
+
+  To sign in to a site, open its sign-in page and run \`ade browser signin\`:
+  ADE types the saved login into the page. With no saved login, the person is
+  asked in your chat. Adding, changing and removing items is the person's, in
+  Settings › Passwords.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -21622,6 +21639,54 @@ function buildMcpServersPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
 }
 
+function buildPasswordsPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.passwords ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "list";
+  const action = sub === "list" || sub === "ls"
+    ? "list"
+    : sub === "status"
+      ? "status"
+      : sub === "sync" || sub === "pull"
+        ? "sync"
+        : null;
+  if (!action) {
+    throw new CliUsageError(`Unknown passwords command "${sub}". Use list, status or sync; the person adds and changes items in Settings › Passwords.`);
+  }
+  return {
+    kind: "execute",
+    label: `passwords ${action}`,
+    formatter: "passwords",
+    steps: [actionStep("result", "passwords", action, {})],
+  };
+}
+
+/** `ade passwords …` in text: summaries or the on/off status, never a value. */
+function formatPasswords(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (Array.isArray(result)) {
+    if (result.length === 0) return "No saved logins or secrets. The person adds them in Settings › Passwords.";
+    return result.filter(isRecord).map((item) => {
+      if (item.kind === "secret") {
+        return `secret  ${asString(item.title) ?? "?"}${typeof item.projectScope === "string" ? `  (project ${item.projectScope})` : "  (all projects)"}`;
+      }
+      const sites = Array.isArray(item.sites) ? item.sites.filter((site): site is string => typeof site === "string").join(", ") : "";
+      return `login   ${sites || asString(item.title) || "?"}  ${asString(item.username) ?? "(no username)"}${item.hasTotp === true ? "  +code" : ""}`;
+    }).join("\n");
+  }
+  if (isRecord(result) && typeof result.enabled === "boolean") {
+    const here = result.machineKind === "cloud" ? "ADE Cloud computers" : "this computer";
+    const lines = [
+      `Passwords: ${result.signedIn === false ? "signed out" : result.enabled ? "on" : "off"} for ${here}`,
+      `ADE Cloud computers: ${result.cloudEnabled === false ? "off" : result.cloudEnabled === true ? "on" : "not set"}`,
+    ];
+    if (typeof result.itemCount === "number") lines.push(`Saved items: ${result.itemCount}`);
+    return lines.join("\n");
+  }
+  return "Passwords is up to date.";
+}
+
 function buildSecretsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
@@ -24394,6 +24459,8 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "passwords" || primary === "password")
+    return buildPasswordsPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -39250,6 +39317,8 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "passwords":
+      return formatPasswords(value);
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":
