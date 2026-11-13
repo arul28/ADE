@@ -116,10 +116,11 @@ export function createAccountNamespace(
  * (`announcementSeenSync.ts`). They are read from, and added to, the connected
  * computer's brain, which serves only that key and only grows it (its write
  * is a union, never a replace). A lane-share guest's brain refuses both, and
- * the page keeps its local copy.
+ * the page keeps its local copy. Opening a project counts as a change, so a
+ * read that failed before any computer connected runs again.
  */
 export function createAccountSettingsNamespace(
-  infra?: Pick<AdapterInfra, "commands">,
+  infra?: Pick<AdapterInfra, "commands" | "events">,
 ): NonNullable<Window["ade"]["accountSettings"]> {
   const unavailable = {
     ok: false as const,
@@ -157,5 +158,8 @@ export function createAccountSettingsNamespace(
       }
     },
     sync: async () => unavailable,
+    // A computer can connect after the first read failed: opening a project
+    // on it is the moment to read again.
+    onChanged: (cb) => infra?.events.on("projectChanged", () => cb()) ?? (() => {}),
   };
 }

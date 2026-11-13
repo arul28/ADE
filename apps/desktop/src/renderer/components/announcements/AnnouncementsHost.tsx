@@ -128,17 +128,31 @@ export function AnnouncementsHost() {
       markShowing();
       setShownThisLaunch(true);
       cancelArrival();
-      cancelArrival = afterBootSplash(() => setShowing({
-        pages: dueAnnouncements(),
-        notes: {
-          digest: releaseNotesDigest(detail.version, detail.fromVersion),
-          resumedChats: detail.resumedChats,
-          changelogUrl: detail.changelogUrl,
-          githubReleaseUrl: detail.githubReleaseUrl,
-        },
-        onClose: detail.onClose,
-        arrival: { version: detail.version, from: bootSplashLogoBox() },
-      }));
+      // The account's copy is read while the splash plays, and the pages are
+      // picked once it is in (or given up on), like the in-project showing.
+      const accountRead = reconcileSeenAnnouncements();
+      let cancelled = false;
+      const cancelSplash = afterBootSplash(() => {
+        const from = bootSplashLogoBox();
+        void accountRead.then(() => {
+          if (cancelled) return;
+          setShowing({
+            pages: dueAnnouncements(),
+            notes: {
+              digest: releaseNotesDigest(detail.version, detail.fromVersion),
+              resumedChats: detail.resumedChats,
+              changelogUrl: detail.changelogUrl,
+              githubReleaseUrl: detail.githubReleaseUrl,
+            },
+            onClose: detail.onClose,
+            arrival: { version: detail.version, from },
+          });
+        });
+      });
+      cancelArrival = () => {
+        cancelled = true;
+        cancelSplash();
+      };
     };
     window.addEventListener(OPEN_EVENT, openAll);
     window.addEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);

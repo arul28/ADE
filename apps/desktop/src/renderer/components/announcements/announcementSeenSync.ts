@@ -5,10 +5,12 @@ import {
   normalizeSeenAnnouncements,
   seenAnnouncementsCover,
 } from "../../../shared/announcementsSeen";
-import { subscribeAccountStatus } from "../../lib/account";
+import { fetchAccountStatus, subscribeAccountStatus } from "../../lib/account";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { createLocalStore, storedRecord } from "../../onboarding/localStore";
 import {
   mergeSeenAnnouncementsFromAccount,
+  readSeenAnnouncements,
   subscribeSeenAnnouncements,
 } from "./announcementSeen";
 
@@ -24,6 +26,10 @@ import {
  * account copy; each one's next pass puts it back, and its own local copy
  * never forgets it.
  *
+ * The local copy is per computer and an account is not: pages this computer
+ * saw under another account stay seen here but are never written to this one
+ * (`accountMarkStore`).
+ *
  * The desktop reaches the setting through its brain (`window.ade.accountSettings`).
  * ADE Web reaches it through the connected computer's brain, which answers only
  * for this one key and never for a lane-share guest. Signed out, offline, or
@@ -35,30 +41,63 @@ const PASS_TIMEOUT_MS = 8_000;
 
 let running: Promise<void> | null = null;
 let rerun = false;
-/** The desktop brain merged with the account once this session. */
-let brainSynced = false;
+/** The account whose settings the desktop brain pulled fresh this session. */
+let brainSyncedFor: string | null = null;
+
+/**
+ * The account this computer last reconciled with, and the pages it already
+ * held when that account signed in in place of another: those belong to the
+ * other account, so they are not written to this one.
+ */
+type AccountMark = { userId: string; foreign: string[] };
+const accountMarkStore = createLocalStore<AccountMark | null>({
+  key: "ade.announcements.seenAccount.v1",
+  event: "ade:announcements-seen-account",
+  parse: (stored) => {
+    const record = storedRecord(stored);
+    const userId = typeof record?.userId === "string" ? record.userId : "";
+    if (!userId) return null;
+    const foreign = Array.isArray(record?.foreign) ? record.foreign.filter((id): id is string => typeof id === "string") : [];
+    return { userId, foreign };
+  },
+});
+
+/** This account's mark, written first when the account changed. */
+function accountMarkFor(userId: string): AccountMark {
+  const mark = accountMarkStore.get();
+  if (mark?.userId === userId) return mark;
+  // The first account here owns the pages seen before any sign-in; a later
+  // account owns none of the pages already here.
+  const next = { userId, foreign: mark ? Object.keys(readSeenAnnouncements()) : [] };
+  accountMarkStore.set(next);
+  return next;
+}
 
 async function onePass(): Promise<void> {
   const api = window.ade?.accountSettings;
   if (!api?.get || !api.set) return;
+  const status = await fetchAccountStatus().catch(() => null);
+  const userId = status?.signedIn ? status.userId?.trim() || null : null;
+  if (!userId) return;
+  const mark = accountMarkFor(userId);
+  // The desktop brain's copy can be older than the account (another computer
+  // saw a page while this one was closed), and an empty copy written back
+  // would drop other computers' pages: pull once per account first. ADE Web
+  // asks the connected computer, whose write is a merge, never a replace.
+  const web = isWebClientMode();
+  if (!web && brainSyncedFor !== userId) {
+    const synced = await api.sync().catch(() => null);
+    if (synced?.ok) brainSyncedFor = userId;
+  }
   const read = await api.get({ scope: ACCOUNT_SCOPE_ALL, key: ANNOUNCEMENTS_SEEN_SETTING_KEY });
   if (!read.ok) return;
   const remote = normalizeSeenAnnouncements(read.value);
   const merged = mergeSeenAnnouncementsFromAccount(remote);
-  if (seenAnnouncementsCover(remote, merged)) return;
-  // The write replaces the account's copy. On the desktop, a brain that has
-  // not pulled yet reads an empty copy, and writing over the account then
-  // would drop other computers' pages until they write again; so it writes
-  // only once the copy it read has something in it, or after one full sync.
-  // ADE Web's write is merged into the brain's copy, never replaces it.
-  if (!isWebClientMode() && Object.keys(remote).length === 0 && !brainSynced) {
-    const synced = await api.sync().catch(() => null);
-    if (!synced?.ok) return;
-    brainSynced = true;
-    rerun = true;
-    return;
-  }
-  await api.set({ scope: ACCOUNT_SCOPE_ALL, key: ANNOUNCEMENTS_SEEN_SETTING_KEY, value: merged });
+  const foreign = new Set(mark.foreign);
+  const own = Object.fromEntries(Object.entries(merged).filter(([id]) => !foreign.has(id) || id in remote));
+  if (seenAnnouncementsCover(remote, own)) return;
+  if (!web && brainSyncedFor !== userId && Object.keys(remote).length === 0) return;
+  await api.set({ scope: ACCOUNT_SCOPE_ALL, key: ANNOUNCEMENTS_SEEN_SETTING_KEY, value: own });
 }
 
 /**
