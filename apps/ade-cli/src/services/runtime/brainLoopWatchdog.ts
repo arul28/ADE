@@ -5,6 +5,7 @@ import { Worker } from "node:worker_threads";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
 import {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+  type BrainLoopFreezeCause,
   buildBrainLoopWatchdogWorkerSource,
 } from "./brainLoopWatchdogWorker";
 import { SYNC_FS_TRACKED_METHODS, syncFsCallBuffer } from "./syncFsCallTracker";
@@ -90,6 +91,11 @@ export type BrainLoopWatchdogBreadcrumb = {
   diagnosticReportPath?: string | null;
   /** The macOS `sample` of the wedged brain, taken before the kill. */
   nativeSamplePath?: string | null;
+  /**
+   * Who froze the loop: the brain itself, or the machine (memory, a drive)
+   * past the wait ceiling. Absent on breadcrumbs written before it existed.
+   */
+  freezeCause?: BrainLoopFreezeCause;
 };
 
 export type BrainLoopWatchdogEvaluation = {
@@ -463,6 +469,9 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
     }
     if (typeof parsed.nativeSamplePath === "string" || parsed.nativeSamplePath === null) {
       breadcrumb.nativeSamplePath = parsed.nativeSamplePath;
+    }
+    if (parsed.freezeCause === "self" || parsed.freezeCause === "memory" || parsed.freezeCause === "drive") {
+      breadcrumb.freezeCause = parsed.freezeCause;
     }
     const fsCall = parsed.blockedFsCall;
     if (fsCall && typeof fsCall === "object" && typeof fsCall.path === "string" && typeof fsCall.method === "string") {

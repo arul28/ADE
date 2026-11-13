@@ -317,12 +317,12 @@ import {
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import {
   brainLogPath,
+  installedAdeHomes,
   isAdoptableAdeHome,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
   resolveReachableMachineDesktopBridgeSocketPath,
 } from "./services/projects/machineLayout";
-import { installedAdeHomes } from "./services/sync/devTestMachine";
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
@@ -3170,11 +3170,14 @@ export async function createAdeRuntime(args: {
           },
           // The installed brains' sockets, this home's and every installed
           // home's: a lane brain on a scratch ADE_HOME that opened the same
-          // project still leaves the installed brain's chats to it.
+          // project still leaves the installed brain's chats to it. Each
+          // home's Windows pipe follows from the home, not from this
+          // process's channel variables.
           isMachineBrainSocket: (() => {
             const names = new Set(machineRuntimeEndpointNames);
+            const { ADE_PACKAGE_CHANNEL: _channel, ADE_RUNTIME_SERVICE_NAME: _service, ...baseEnv } = process.env;
             for (const home of installedAdeHomes()) {
-              for (const name of resolveMachineEndpointNames({ ...process.env, ADE_HOME: home }).runtime) names.add(name);
+              for (const name of resolveMachineEndpointNames({ ...baseEnv, ADE_HOME: home }).runtime) names.add(name);
             }
             const known = [...names];
             return (socketPath: string) => servesMachineRuntimeEndpoint(socketPath, known);

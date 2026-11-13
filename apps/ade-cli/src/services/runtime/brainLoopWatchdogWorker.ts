@@ -168,10 +168,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     // old) does not end the wait early. Only a file this process published is
     // touched; the ceiling below still bounds the whole wait.
     const heartbeatPath = path.join(workerData.runtimeDir, workerData.heartbeatFile);
-    let heartbeatRefreshedAtMs = 0;
     const refreshHeartbeatDuringWait = (nowWallMs, cause) => {
-      if (nowWallMs - heartbeatRefreshedAtMs < workerData.heartbeatRefreshMs) return;
-      heartbeatRefreshedAtMs = nowWallMs;
       let tempPath = null;
       try {
         const beat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
@@ -180,6 +177,10 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         beat.machineWait = cause;
         tempPath = heartbeatPath + "." + process.pid + ".wait.tmp";
         fs.writeFileSync(tempPath, JSON.stringify(beat), { encoding: "utf8", mode: 0o600 });
+        // Windows rename fails onto an existing file (see atomicJson.ts).
+        if (process.platform === "win32" && fs.existsSync(heartbeatPath)) {
+          fs.unlinkSync(heartbeatPath);
+        }
         fs.renameSync(tempPath, heartbeatPath);
       } catch {
         // No heartbeat (a lane brain), or the disk is the thing stuck: the
@@ -231,6 +232,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     /** Writes the wedge breadcrumb (and its log line); returns it. */
     const writeBreadcrumb = (blockedMs, freezeCause) => {
       const breadcrumb = {
+        pid: process.pid,
         lastCommand,
         blockedMs: Math.max(0, Math.floor(blockedMs)),
         ts: new Date().toISOString(),
@@ -281,8 +283,8 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       }
       return breadcrumb;
     };
-    const writeBreadcrumbAndKill = (blockedMs) => {
-      const breadcrumb = writeBreadcrumb(blockedMs, machineWait ? machineWait.cause : null);
+    const writeBreadcrumbAndKill = (blockedMs, freezeCause) => {
+      const breadcrumb = writeBreadcrumb(blockedMs, freezeCause);
       {
         try {
           fs.writeSync(2, "brain.event_loop_blocked " + JSON.stringify(breadcrumb) + "\n");
@@ -369,7 +371,17 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
             blockedMs: Math.max(0, Date.now() - machineWait.heartbeatWallMs),
           }) + "\n");
         } catch {}
-        try { fs.unlinkSync(path.join(workerData.runtimeDir, workerData.breadcrumbFile)); } catch {}
+        // Unless a kill already started (the loop freed up inside its grace):
+        // the next start needs that breadcrumb. Another brain sharing this
+        // home may have written the file since, so only this brain's goes.
+        if (!killStarted) {
+          const breadcrumbPath = path.join(workerData.runtimeDir, workerData.breadcrumbFile);
+          try {
+            if (JSON.parse(fs.readFileSync(breadcrumbPath, "utf8")).pid === process.pid) {
+              fs.unlinkSync(breadcrumbPath);
+            }
+          } catch {}
+        }
         machineWait = null;
       }
       usageAtHeartbeat = usageNow();
@@ -420,6 +432,8 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         } catch {}
       }
       if (evaluation.slept) {
+        // machineWait stays: the next heartbeat ends it and removes its
+        // breadcrumb, which a resume must not leave for the next start.
         lastHeartbeatWallMs = nowWallMs;
         lastHeartbeatMonotonicMs = nowMonotonicMs;
         // A suspended process resumes with a stale heartbeat. Forgive that gap so
@@ -486,7 +500,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         });
         if (cause !== "self" && evaluation.blockedMs < BRAIN_LOOP_MACHINE_WAIT_CEILING_MS) {
           if (!machineWait) {
-            machineWait = { cause, heartbeatWallMs: lastHeartbeatWallMs };
+            machineWait = { cause, heartbeatWallMs: lastHeartbeatWallMs, evidenceAtMs: null };
             try {
               fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.loop_watchdog_waiting_on_machine " + JSON.stringify({
                 pid: process.pid,
@@ -502,12 +516,20 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
           }
           machineWait.cause = cause;
           // The evidence is on disk throughout, so a kill from outside still
-          // leaves the wedged command, the stuck file call and the cause.
-          writeBreadcrumb(evaluation.blockedMs, cause);
-          refreshHeartbeatDuringWait(nowWallMs, cause);
+          // leaves the wedged command, the stuck file call and the cause. At
+          // the heartbeat's cadence, not every tick: on a stuck drive this
+          // thread's own writes may be what blocks.
+          if (
+            machineWait.evidenceAtMs === null
+            || nowWallMs - machineWait.evidenceAtMs >= workerData.heartbeatRefreshMs
+          ) {
+            machineWait.evidenceAtMs = nowWallMs;
+            writeBreadcrumb(evaluation.blockedMs, cause);
+            refreshHeartbeatDuringWait(nowWallMs, cause);
+          }
           return;
         }
-        writeBreadcrumbAndKill(evaluation.blockedMs);
+        writeBreadcrumbAndKill(evaluation.blockedMs, cause);
       }
     }, workerData.checkIntervalMs);
   `;

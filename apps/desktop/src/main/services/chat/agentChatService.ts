@@ -22579,7 +22579,10 @@ export function createAgentChatService(args: {
     } else {
       const persisted = readPersistedState(sessionId);
       if (persisted) {
-        writeJsonWithPrevious(metadataPathFor(sessionId), { ...persisted, runtimeOwner: null, updatedAt: nowIso() }, {
+        // Clears only this brain's own stamp, like persistedRuntimeOwner does
+        // for a managed chat; a live sibling's newer stamp stays.
+        const runtimeOwner = siblingBrainOwnerOnDisk(sessionId, persisted);
+        writeJsonWithPrevious(metadataPathFor(sessionId), { ...persisted, runtimeOwner, updatedAt: nowIso() }, {
           validate: isPersistedChatStateShape,
           fsync: true,
         });
@@ -22626,7 +22629,7 @@ export function createAgentChatService(args: {
           released: result.released,
           ...(result.released ? {} : { reason: result.reason }),
         });
-        if (!result.released) throw new ChatRuntimeBusyElsewhereError({ sessionId, owner });
+        if (!result.released) throw new ChatRuntimeBusyElsewhereError({ owner });
         persistedStateFiles.forget(metadataPathFor(sessionId));
       }
       assertChatRuntimeOwnedHere(sessionId, action);

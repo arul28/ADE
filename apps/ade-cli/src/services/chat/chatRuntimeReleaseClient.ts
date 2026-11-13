@@ -28,6 +28,7 @@ export async function requestChatRuntimeReleaseFromBrain(args: {
   const timeoutMs = args.timeoutMs ?? CHAT_RUNTIME_RELEASE_TIMEOUT_MS;
   let client: JsonRpcClient | null = null;
   let timer: NodeJS.Timeout | null = null;
+  let settled = false;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
       () => reject(new Error(`The other ADE did not hand the chat back within ${timeoutMs} ms.`)),
@@ -36,7 +37,14 @@ export async function requestChatRuntimeReleaseFromBrain(args: {
     timer.unref?.();
   });
   const exchange = (async (): Promise<ChatRuntimeReleaseResult> => {
-    client = await JsonRpcClient.connect(args.socketPath);
+    const connected = await JsonRpcClient.connect(args.socketPath);
+    // A connect that finished after the deadline: the send was already
+    // refused, so nothing may be released now.
+    if (settled) {
+      connected.close();
+      throw new Error("The other ADE answered after the send gave up.");
+    }
+    client = connected;
     await client.request("ade/initialize", chatRuntimeReclaimInitializeParams(args.version));
     const registered = await client.request<{ projectId?: unknown } | null>("projects.add", {
       rootPath: args.projectRoot,
@@ -55,8 +63,10 @@ export async function requestChatRuntimeReleaseFromBrain(args: {
   try {
     return await Promise.race([exchange, deadline]);
   } finally {
+    settled = true;
     if (timer) clearTimeout(timer);
-    // Also ends an exchange the deadline cut short (its connect or a request).
+    // Also ends an exchange the deadline cut short in a request; one cut
+    // short in its connect closes itself (above).
     try { (client as JsonRpcClient | null)?.close(); } catch { /* already closed */ }
     exchange.catch(() => { /* settled by the race above */ });
   }

@@ -1,6 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { installedAdeHomes } from "../projects/machineLayout";
 
 /**
  * A dev test machine: a brain built from a lane checkout that runs on this
@@ -106,14 +106,6 @@ function unreadableRegistry(registryPath: string, cause: unknown): Error {
     `This dev test machine cannot check which projects the installed ADE uses: ${registryPath} could not be read (${detail}). `
       + "Make that file readable (fix its permissions, or restore it if it is damaged), then try again.",
   );
-}
-
-/**
- * The installed ADE homes on this computer a test machine must stay out of:
- * the default home and the Alpha channel's.
- */
-export function installedAdeHomes(): string[] {
-  return [path.join(os.homedir(), ".ade"), path.join(os.homedir(), ".ade-alpha")];
 }
 
 /**

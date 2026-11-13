@@ -188,7 +188,7 @@ export class ChatRuntimeOwnedElsewhereError extends Error {
         /** What was refused, as a verb phrase: "send to", "interrupt". */
         action: string;
       }
-      | { sessionId: string; owner: ChatRuntimeOwner; message: string },
+      | { owner: ChatRuntimeOwner; message: string },
   ) {
     super("message" in args ? args.message : describeChatRuntimeOwnedElsewhere(args));
     this.name = "ChatRuntimeOwnedElsewhereError";
@@ -206,8 +206,8 @@ export function describeChatRuntimeOwner(owner: Pick<ChatRuntimeOwner, "pid" | "
  * send takes the chat back once the work ends.
  */
 export class ChatRuntimeBusyElsewhereError extends ChatRuntimeOwnedElsewhereError {
-  constructor(args: { sessionId: string; owner: ChatRuntimeOwner }) {
-    super({ ...args, message: describeChatRuntimeBusyElsewhere(args.owner) });
+  constructor(args: { owner: ChatRuntimeOwner }) {
+    super({ owner: args.owner, message: describeChatRuntimeBusyElsewhere(args.owner) });
     this.name = "ChatRuntimeBusyElsewhereError";
   }
 }
