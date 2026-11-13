@@ -270,7 +270,7 @@ const PROOF_REVIEW_FIELDS = [
   "columns", "frames", "findings", "sheetError", "pages", "page", "yFrom", "yTo", "cropError",
 ] as const;
 const INBOX_FIELDS = [
-  "sessionId", "title", "laneId", "lane", "model", "kind", "requestId", "text", "detail", "questions", "since", "link",
+  "sessionId", "title", "laneId", "lane", "model", "kind", "requestId", "text", "detail", "questions", "since", "link", "signIn",
 ] as const;
 const PR_STATES = ["open", "closed", "merged", "all"] as const;
 // `terminal` (the chat closed for good) is left out: models picked it for
@@ -873,7 +873,12 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const items = isRecord(result) && Array.isArray(result.items) ? result.items.filter(isRecord) : [];
       if (items.length === 0) return text(input, "project") ? "Nothing waits on the person in this project." : "Nothing waits on the person.";
       const asks = items.some((item) => item.kind === "ask");
-      return "Answer with chat_respond (session, request_id, and the item's project when it has one)"
+      const signIns = items.filter((item) => isRecord(item.signIn));
+      const signInNote = signIns.length
+        ? ` A \`signIn\` item is the person's to answer in ADE (open its link); never ask them for the password here.`
+        : "";
+      if (signIns.length === items.length) return `Waiting on the person to sign in, in ADE.${signInNote}`;
+      return signInNote.trim() + (signInNote ? " " : "") + "Answer with chat_respond (session, request_id, and the item's project when it has one)"
         + (asks ? "; an `ask` has no request: answer it with chat_send" : "")
         + ". Approve or deny as the person says.";
     },

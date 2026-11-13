@@ -22,6 +22,7 @@
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { PASSWORD_LOGIN_REQUEST_METADATA_KEY } from "../passwordLoginRequest";
 import { INTEGRATION_CONNECT_METADATA_KEY } from "../integrationConnect";
 import { MCP_SERVER_REMOVE_METADATA_KEY, MCP_SERVER_REQUEST_METADATA_KEY } from "../mcpServerRequest";
 import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
@@ -1993,6 +1994,7 @@ export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> 
     || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
     || providerMetadata?.[ADE_CLOUD_APPROVAL_METADATA_KEY] === true
     || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[PASSWORD_LOGIN_REQUEST_METADATA_KEY])
     || isNonNullRecord(providerMetadata?.[INTEGRATION_CONNECT_METADATA_KEY])
     || isNonNullRecord(providerMetadata?.[MCP_SERVER_REQUEST_METADATA_KEY])
     || isNonNullRecord(providerMetadata?.[MCP_SERVER_REMOVE_METADATA_KEY])
