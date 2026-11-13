@@ -971,7 +971,7 @@ export async function cloudDomainEnabled(
 /** "412" or "49.5" hours from thousandths. */
 export function formatCloudHours(milli: number): string {
   const hours = Math.max(0, milli) / 1000;
-  return hours >= 100 ? String(Math.floor(hours)) : String(Math.floor(hours * 10) / 10);
+  return hours >= 100 ? Math.floor(hours).toLocaleString("en-US") : String(Math.floor(hours * 10) / 10);
 }
 
 /** The banner for an account, or null when there is nothing to warn about. */

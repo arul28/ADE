@@ -11,7 +11,7 @@ import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
 function cloudHoursText(value: unknown): string {
-  return typeof value === "number" ? String(Math.round(value * 10) / 10) : "—";
+  return typeof value === "number" ? (Math.round(value * 10) / 10).toLocaleString("en-US") : "—";
 }
 
 /**
