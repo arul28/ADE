@@ -368,12 +368,27 @@ const LOGIN_FIELD_FINDER = `(() => {
   } else {
     username = inputs.find((el) => el.autocomplete === "username") || inputs.find((el) => el.type === "email") || inputs.find(userish) || null;
   }
-  for (const [el, role] of [[username, "username"], [password, "password"]]) {
+  // The authenticator step: a one-time-code field, or a row of one-digit boxes
+  // (typing the code into the first moves along them). Only with no password
+  // on the page, so a login form's other fields are never mistaken for it.
+  let code = null;
+  if (!password) {
+    const codeish = (el) => ["text", "tel", "number", ""].includes(el.type)
+      && (el.autocomplete === "one-time-code"
+        || /otp|one.?time|2fa|mfa|totp|verif|auth.*code|security.?code|^code$/i.test([el.name, el.id, el.placeholder, el.getAttribute("aria-label")].join(" ")));
+    code = inputs.find((el) => el.autocomplete === "one-time-code") || inputs.find(codeish) || null;
+    if (!code) {
+      const boxes = inputs.filter((el) => el.maxLength === 1 && ["text", "tel", "number", ""].includes(el.type));
+      if (boxes.length >= 6 && boxes.length <= 8) code = boxes[0];
+    }
+    if (code) username = null;
+  }
+  for (const [el, role] of [[username, "username"], [password, "password"], [code, "code"]]) {
     if (!el) continue;
     el.setAttribute("data-ade-fill-target", role);
     el.setAttribute("data-ade-vault-filled", "");
   }
-  return { username: Boolean(username), password: Boolean(password) };
+  return { username: Boolean(username), password: Boolean(password), code: Boolean(code) };
 })()`;
 const DEFAULT_DOWNLOAD_WAIT_MS = 60_000;
 const MAX_DOWNLOAD_WAIT_MS = 120_000;
@@ -911,7 +926,7 @@ export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrow
 /** What the browser needs from Passwords to fill a login: summaries to choose, then one login's values. */
 export type BuiltInBrowserPasswordsAccess = {
   loginsForPage(pageUrl: string): Promise<Array<{ id: string; username: string | null; sites: string[] }>>;
-  resolveForFill(input: { itemId: string; pageUrl: string }): Promise<{ username: string; password: string; totpUri: string | null } | null>;
+  resolveForFill(input: { itemId: string; pageUrl: string }): Promise<{ username: string; password: string; code: string | null } | null>;
   /** Pull what other computers saved (a login the sign-in card just saved elsewhere). */
   sync?(): Promise<void>;
   /** Whether Passwords is on here: "Save to Passwords?" is offered only then. */
@@ -7085,7 +7100,7 @@ function createBuiltInBrowserWindowService(args: {
         }
         if (current !== pageOrigin) throw new AdeExpectedError(`The page left ${site} before ADE could sign in. Nothing was filled.`, "user");
       };
-      const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: LOGIN_FIELD_FINDER }]) as { username: boolean; password: boolean } | null;
+      const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: LOGIN_FIELD_FINDER }]) as { username: boolean; password: boolean; code?: boolean } | null;
       const filled: string[] = [];
       if (fields?.username && values.username) {
         assertSamePage();
@@ -7099,7 +7114,17 @@ function createBuiltInBrowserWindowService(args: {
         await insertTextForAction(tab, values.password, null);
         filled.push("password");
       }
-      if (filled.length === 0) throw new AdeExpectedError(`No sign-in fields were found on ${site}.`, "user");
+      if (fields?.code && values.code) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="code"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.code, null);
+        filled.push("code");
+      }
+      if (filled.length === 0) {
+        throw new AdeExpectedError(fields?.code
+          ? `${site} asks for a code, and the saved login has no authenticator. Read the code from Messages or email (\`ade code wait\`), then type it.`
+          : `No sign-in fields were found on ${site}.`, "user");
+      }
       logger()?.info("built_in_browser.signin_filled", { tabId: tab.id, fields: filled.join(",") });
       emitStatus();
       const result = await actionResult(tab, input);

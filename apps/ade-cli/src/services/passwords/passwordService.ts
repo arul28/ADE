@@ -49,6 +49,7 @@ import {
 } from "./passwordCrypto";
 import { dedupeImportedLogins, parsePasswordCsv } from "./passwordCsvImport";
 import { matchLoginsForOrigin, normalizeLoginOrigin } from "./passwordMatching";
+import { normalizeTotpInput, parseTotp, totpCode } from "./passwordTotp";
 
 export type PasswordsRelay = {
   getPasswordItems(options?: { since?: string | null }): Promise<{ items: PasswordRelayItem[]; cursor: string | null; truncated: boolean } | null>;
@@ -78,6 +79,13 @@ export class PasswordsUnavailableError extends Error {
     super(message);
     this.name = "PasswordsUnavailableError";
   }
+}
+
+function totpOrThrow(value: string | null, label: string): string | null {
+  if (value === null || !value.trim()) return null;
+  const normalized = normalizeTotpInput(value, label);
+  if (!normalized) throw new Error("That authenticator key isn't one ADE can read. Paste the otpauth:// link or the key the site shows.");
+  return normalized;
 }
 
 function newItemId(): string {
@@ -500,13 +508,40 @@ export function createPasswordService(args: {
      * only: the page URL is the tab's own, and the item must belong to its
      * site. Returns null when it does not.
      */
-    async resolveForFill(input: { itemId: string; pageUrl: string }): Promise<{ username: string; password: string; totpUri: string | null } | null> {
+    async resolveForFill(input: { itemId: string; pageUrl: string }): Promise<{ username: string; password: string; code: string | null } | null> {
       await ensureOpened();
       const secret = opened.get(input.itemId);
       if (!secret || secret.kind !== "login") return null;
       const matches = matchLoginsForOrigin([{ origins: secret.origins }], input.pageUrl);
       if (matches.length === 0) return null;
-      return { username: secret.username, password: secret.password, totpUri: secret.totpUri };
+      // The current code, never the authenticator key itself.
+      const totp = secret.totpUri ? parseTotp(secret.totpUri) : null;
+      return { username: secret.username, password: secret.password, code: totp ? totpCode(totp, now().getTime()).code : null };
+    },
+
+    /**
+     * A saved login's current authenticator code. Agents may read codes (they
+     * last seconds), never the key. By item, or by the site's best login.
+     */
+    async currentCode(input: { itemId?: string | null; site?: string | null; username?: string | null }): Promise<{ itemId: string; site: string; username: string | null; code: string; secondsLeft: number } | null> {
+      await ensureOpened();
+      let entry: [string, PasswordLoginSecret] | null = null;
+      if (input.itemId) {
+        const secret = opened.get(input.itemId);
+        if (secret?.kind === "login") entry = [input.itemId, secret];
+      } else if (input.site) {
+        const pageUrl = /^https?:\/\//i.test(input.site) ? input.site : `https://${input.site}`;
+        const logins = [...opened.entries()]
+          .filter((candidate): candidate is [string, PasswordLoginSecret] => candidate[1].kind === "login" && Boolean(candidate[1].totpUri))
+          .map(([id, secret]) => ({ id, origins: secret.origins, secret }));
+        const matches = matchLoginsForOrigin(logins, pageUrl).filter((match) => !input.username || match.secret.username === input.username);
+        if (matches[0]) entry = [matches[0].id, matches[0].secret];
+      }
+      if (!entry?.[1].totpUri) return null;
+      const totp = parseTotp(entry[1].totpUri);
+      if (!totp) return null;
+      const { code, secondsLeft } = totpCode(totp, now().getTime());
+      return { itemId: entry[0], site: summarize(entry[0], entry[1]).sites[0] ?? entry[1].title, username: entry[1].username || null, code, secondsLeft };
     },
 
     /**
@@ -558,7 +593,9 @@ export function createPasswordService(args: {
         username: input.username ?? existing?.username ?? "",
         password: input.password,
         notes: input.notes ?? existing?.notes ?? "",
-        totpUri: input.totpUri !== undefined ? input.totpUri : existing?.totpUri ?? null,
+        // A bare key a site shows ("can't scan?") is kept as a standard URI; a
+        // value that is neither is refused rather than saved broken.
+        totpUri: input.totpUri !== undefined ? totpOrThrow(input.totpUri, input.title?.trim() || existing?.title || "") : existing?.totpUri ?? null,
         createdAt: existing?.createdAt ?? stamp,
         updatedAt: stamp,
       };

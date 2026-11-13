@@ -12843,6 +12843,7 @@ export function registerIpc({
     "importCsv",
     "sync",
     "activity",
+    "code",
   ]);
   handle(IPC.passwordsCall, async (_event, arg: unknown): Promise<unknown> => {
     const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};

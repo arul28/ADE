@@ -109,6 +109,7 @@ export function NewLoginDialog({
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [notes, setNotes] = useState("");
+  const [totp, setTotp] = useState("");
   const [siteError, setSiteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -135,8 +136,10 @@ export function NewLoginDialog({
         username,
         password,
         ...(notes.trim() ? { notes } : {}),
+        ...(totp.trim() ? { totpUri: totp.trim() } : {}),
       }, pin);
       setPassword("");
+      setTotp("");
       onSaved(saved);
     } catch (err) {
       setPassword("");
@@ -206,6 +209,10 @@ export function NewLoginDialog({
         <div className="ade-pw-field">
           <span>Password</span>
           <SecretField value={password} onChange={setPassword} placeholder="Password" />
+        </div>
+        <div className="ade-pw-field">
+          <span>Authenticator key</span>
+          <SecretField value={totp} onChange={setTotp} placeholder="otpauth:// link or the key the site shows (optional)" />
         </div>
         <label className="ade-pw-field">
           <span>Notes</span>

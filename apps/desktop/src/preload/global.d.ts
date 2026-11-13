@@ -4373,6 +4373,7 @@ declare global {
         reset: (args: { confirm: "reset" }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
         list: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary[]>;
         activity: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
+        code?: (args: { itemId: string }, pin?: OpenProjectBinding | null) => Promise<{ code: string; secondsLeft: number } | null>;
         saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
         saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
         remove: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;

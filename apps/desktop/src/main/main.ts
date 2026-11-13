@@ -2212,7 +2212,7 @@ app.whenReady().then(async () => {
       },
       resolveForFill: async (input) => {
         const value = await callLocalPasswords("resolveForFill", input);
-        return value && typeof value === "object" ? value as { username: string; password: string; totpUri: string | null } : null;
+        return value && typeof value === "object" ? value as { username: string; password: string; code: string | null } : null;
       },
       sync: async () => {
         await callLocalPasswords("sync", {});

@@ -23,6 +23,7 @@ import {
   UploadSimple,
 } from "@phosphor-icons/react";
 import type { PasswordUseRecord, PasswordItemSummary, PasswordsStatus } from "../../../../shared/types/passwords";
+import type { OpenProjectBinding } from "../../../../shared/types";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { ipcErrorMessage } from "../../../lib/format";
@@ -539,7 +540,7 @@ export function PasswordsSection() {
                             <Fact label="Sites:">{selectedLogin.sites.join(", ") || "None"}</Fact>
                             <Fact label="Username:">{selectedLogin.username || "No username"}</Fact>
                             <Fact label="Password:">saved</Fact>
-                            {selectedLogin.hasTotp ? <Fact label="Authenticator code:">saved</Fact> : null}
+                            {selectedLogin.hasTotp ? <Fact label="Authenticator code:"><LiveCode itemId={selectedLogin.id} pin={pin} /></Fact> : null}
                             <Fact label="Updated:">{formatUpdatedAt(selectedLogin.updatedAt)}</Fact>
                           </div>
                           <div className="ade-pw-detail-actions">
@@ -692,5 +693,42 @@ export function PasswordsSection() {
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The selected login's current authenticator code. Asked again when the code
+ * runs out (not every second); the countdown in between is local.
+ */
+function LiveCode({ itemId, pin }: { itemId: string; pin: OpenProjectBinding | null }) {
+  const [state, setState] = useState<{ code: string; expiresAt: number } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? "this-machine";
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const fetchCode = async () => {
+      const next = await window.ade.passwords.code?.({ itemId }, pinRef.current).catch(() => null) ?? null;
+      if (cancelled) return;
+      setState(next ? { code: next.code, expiresAt: Date.now() + next.secondsLeft * 1000 } : null);
+      timer = setTimeout(() => void fetchCode(), Math.max(1_000, (next?.secondsLeft ?? 30) * 1000));
+    };
+    void fetchCode();
+    const tick = setInterval(() => setNow(Date.now()), 1_000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      clearInterval(tick);
+    };
+  }, [itemId, pinKey]);
+  if (!state) return <span>saved</span>;
+  const left = Math.max(0, Math.ceil((state.expiresAt - now) / 1000));
+  return (
+    <span className="ade-pw-code" data-testid="passwords-live-code">
+      <span className="ade-pw-code-digits">{state.code.replace(/^(\d{3})(\d+)$/, "$1 $2")}</span>
+      <span className="ade-pw-code-left">{left}s</span>
+    </span>
   );
 }

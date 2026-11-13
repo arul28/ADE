@@ -12165,6 +12165,9 @@ const adeBridge = {
     /** The machine's recorded uses (site, who, chat, when), newest first. Never a value. */
     activity: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordUseRecord[]> =>
       callPasswords<PasswordUseRecord[]>("activity", args, pin),
+    /** A login's current authenticator code (never its key), and its seconds left. */
+    code: (args: { itemId: string }, pin?: OpenProjectBinding | null): Promise<{ code: string; secondsLeft: number } | null> =>
+      callPasswords<{ code: string; secondsLeft: number } | null>("code", args, pin),
     saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
       callPasswords<PasswordItemSummary>("saveLogin", args, pin),
     saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>

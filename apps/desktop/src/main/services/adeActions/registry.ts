@@ -4274,6 +4274,15 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
   return {
     status: () => passwords.status(),
     activity: () => passwords.activity(),
+    // An authenticator code (never the key): agents may read it, it lasts seconds.
+    code: (args?: unknown) => {
+      const input = objectArg(args);
+      return passwords.currentCode({
+        itemId: typeof input.itemId === "string" ? input.itemId : null,
+        site: typeof input.site === "string" ? input.site : null,
+        username: typeof input.username === "string" ? input.username : null,
+      });
+    },
     // The person's own fills (the key button). Agent uses are recorded by `signin` itself.
     recordUse: (args?: unknown) => {
       const input = objectArg(args);

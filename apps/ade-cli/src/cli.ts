@@ -1102,7 +1102,8 @@ export type FormatterId =
   | "notify"
   | "remote-mcp"
   | "passwords"
-  | "secrets-exec";
+  | "secrets-exec"
+  | "passwords-code";
 
 type ChatWaitTarget =
   | "idle"
@@ -1668,6 +1669,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -4891,6 +4893,17 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   ADE types the saved login into the page. With no saved login, the person is
   asked in your chat. Adding, changing and removing items is the person's, in
   Settings › Passwords.
+`,
+  code: `${ADE_BANNER}
+  ADE sign-in codes
+
+    $ ade code --site github.com --text                The current authenticator code
+    $ ade code --site github.com --account me@x.com --text
+
+  The code comes from the authenticator saved with the site's login in
+  Passwords; you get the code (it lasts seconds), never the key. \`ade browser
+  signin\` also fills it by itself on a page that asks for one. A code sent by
+  email: open the mail in the ADE browser (already signed in) and read it.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -21647,6 +21660,23 @@ function buildMcpServersPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
 }
 
+/**
+ * `ade code [wait] --site <host>`: a sign-in code for a site. Today's source is
+ * the saved login's authenticator (immediate); Messages joins when it is on.
+ */
+function buildCodePlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.code ?? topLevelHelpText() };
+  const site = readValue(args, ["--site"])?.trim() || null;
+  const account = readValue(args, ["--account"])?.trim() || null;
+  if (!site) throw new CliUsageError("ade code needs --site <host>, e.g. ade code --site github.com");
+  return {
+    kind: "execute",
+    label: "code",
+    formatter: "passwords-code",
+    steps: [actionStep("result", "passwords", "code", { site, ...(account ? { username: account } : {}) })],
+  };
+}
+
 function buildPasswordsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.passwords ?? topLevelHelpText() };
@@ -24507,6 +24537,8 @@ function buildCliPlan(
     return buildSecretsPlan(args);
   if (primary === "passwords" || primary === "password")
     return buildPasswordsPlan(args);
+  if (primary === "code" || primary === "codes")
+    return buildCodePlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -39367,6 +39399,11 @@ function formatTextOutput(
       return formatPasswords(value);
     case "secrets-exec":
       return formatSecretsExec(value);
+    case "passwords-code": {
+      const result = unwrapActionEnvelope(value);
+      if (!isRecord(result)) return "No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords, or the code comes by text or email (open the mail in the ADE browser).";
+      return `${asString(result.code) ?? ""}  (${asString(result.site) ?? ""}${asString(result.username) ? ` as ${asString(result.username)}` : ""}; valid ${String(result.secondsLeft ?? "?")} s more)`;
+    }
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":

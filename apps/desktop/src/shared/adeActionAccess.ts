@@ -350,7 +350,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   // writes and the one value read (`resolveForFill`) are the person's, and
   // `resolveForFill` only for this computer's own desktop app.
   passwords: {
-    read: ["status", "activity", "list", "loginsForPage"],
+    read: ["status", "activity", "code", "list", "loginsForPage"],
     write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse"],
   },
   integration_connect: {
