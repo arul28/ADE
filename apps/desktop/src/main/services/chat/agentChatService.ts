@@ -72057,6 +72057,14 @@ export function createAgentChatService(args: {
           continue;
         }
       }
+      // The chat already ran a turn in this brain (the user typed into it, or
+      // something else drove it) before this arm, e.g. before a retry of an
+      // arm that failed. A continue now would start work nobody asked for.
+      if (updateResumeUserCancels.has(chat.sessionId) || lastTurnStartedAtBySession.has(chat.sessionId)) {
+        logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: "driven_since_start" });
+        settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
+        continue;
+      }
       // The chat had a live turn when the update stopped ADE (the previous
       // process listed it from its running turns), so a row that reads ended
       // is wrong: something stamped it while the turn ran (a terminal write
