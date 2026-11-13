@@ -62,6 +62,7 @@ export type FeatureAnalyticsAction =
   | "connect_requested"
   | "mcp_server_requested"
   | "mcp_server_remove_requested"
+  | "machine_removal_requested"
   | "notification_sent"
   | "settled_lane_released"
   | "music_connected"
@@ -378,21 +379,29 @@ export function captureSecretRequestedAnalytics(args: {
   captureFeatureUsedAnalytics({ ...args, feature: "chat", action: "secret_requested", outcome: args.outcome });
 }
 
+const AGENT_CARD_ACTIONS = {
+  connect: "connect_requested",
+  mcp_server: "mcp_server_requested",
+  mcp_server_remove: "mcp_server_remove_requested",
+  machine_removal: "machine_removal_requested",
+} as const satisfies Record<string, FeatureAnalyticsAction>;
+
 /**
- * How a connect card or an MCP server card an agent raised ended. Never the
- * integration's account, the server's name, its command or URL, or the chat.
+ * How a connect card, an MCP server card or a computer removal card an agent
+ * raised ended. Never the integration's account, the server's name, its
+ * command or URL, the computer, or the chat.
  */
 export function captureAgentCardAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
-  card: "connect" | "mcp_server" | "mcp_server_remove";
+  card: "connect" | "mcp_server" | "mcp_server_remove" | "machine_removal";
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({
     analytics: args.analytics,
     surface: args.surface,
     feature: "chat",
-    action: args.card === "connect" ? "connect_requested" : args.card === "mcp_server" ? "mcp_server_requested" : "mcp_server_remove_requested",
+    action: AGENT_CARD_ACTIONS[args.card],
     outcome: args.outcome,
   });
 }

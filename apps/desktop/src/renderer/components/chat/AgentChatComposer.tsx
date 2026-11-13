@@ -225,6 +225,7 @@ import {
 } from "../../../shared/projectSecretRequest";
 import { IntegrationConnectComposer } from "./IntegrationConnectCard";
 import { McpServerRequestComposer } from "./McpServerCard";
+import { MachineRemovalComposer } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import {
   isAskQuestionRequest,
@@ -9598,6 +9599,23 @@ function AgentChatComposerImpl({
               chatProvider={sessionProvider}
               onAdd={(answers) => { void onApproval("accept", null, answers); }}
               onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "machine-removal") {
+          // The computer removal card. The brain on the chat's machine removes
+          // the computer while it accepts Remove; a failure comes back as
+          // `pendingInputError` and keeps the card open.
+          return (
+            <MachineRemovalComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onAnswer={(answers) => { void onApproval("accept", null, answers); }}
             />
           );
         }
