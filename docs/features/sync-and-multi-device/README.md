@@ -677,7 +677,8 @@ see your change.
 
 The iOS companion keeps a focused machine connection and a separate roster
 connection to each connected machine. `MachineFleet` owns the connected set,
-the four-machine limit, and foreground/background lifecycle; `MachineConnection`
+the open project's machines (every paired machine with a copy is kept live,
+with no pick), the eight-machine limit, and foreground/background lifecycle; `MachineConnection`
 owns each roster socket and its bounded retry state. The Lanes and PRs screens
 read each live machine's checkout on demand, while chat, file, and CTO commands
 carry that machine and project identity back to the owning runtime.

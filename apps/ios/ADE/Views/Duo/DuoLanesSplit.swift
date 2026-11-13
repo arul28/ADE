@@ -44,7 +44,6 @@ extension LanesTabView {
   var lanesListContent: some View {
     List {
       Section {
-        laneCopyChipRow
         laneNoticeRows
         if showsLaneLoadingSkeletons {
           ForEach(0..<5, id: \.self) { _ in

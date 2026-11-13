@@ -219,6 +219,14 @@ struct LaneMachineChip: Equatable {
   let isLive: Bool
   /// SF Symbol from `machineSymbol(machineKey:name:)`.
   var symbol: String = "desktopcomputer"
+  /// "parked", "offline", "connecting"; nil while live.
+  var stateWord: String? = nil
+
+  /// The badge text: the name, then the state when it is not live.
+  var label: String {
+    guard let stateWord else { return name }
+    return "\(name), \(stateWord)"
+  }
 }
 
 /// The chip of every lane in a list that spans machines, by lane id.
@@ -357,7 +365,7 @@ struct LaneStackCard: View, Equatable {
     let status = snapshot.lane.status
     var parts: [Text] = []
     if let machine, showsMachineChip {
-      parts.append(Text(machine.isLive ? machine.name : "\(machine.name), not live"))
+      parts.append(Text("\(Image(systemName: machine.symbol)) \(machine.label)"))
     }
     if snapshot.lane.archivedAt != nil {
       parts.append(Text("Archived"))
@@ -413,7 +421,7 @@ struct LaneStackCard: View, Equatable {
       pullRequest: pullRequest
     )
     guard let machine else { return label }
-    return "\(label), on \(machine.name)\(machine.isLive ? "" : ", not live")"
+    return "\(label), on \(machine.label)"
   }
 }
 
@@ -431,6 +439,8 @@ func laneStackCardRenderSignature(
   var hasher = Hasher()
   hasher.combine(machine?.name)
   hasher.combine(machine?.isLive)
+  hasher.combine(machine?.stateWord)
+  hasher.combine(machine?.symbol)
   let lane = snapshot.lane
   hasher.combine(lane.id)
   hasher.combine(lane.name)

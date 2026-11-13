@@ -150,14 +150,22 @@ extension LanesTabView {
   var laneMachineChips: LaneMachineChips {
     guard !remoteLanes.machines.isEmpty else { return .none }
     return LaneMachineChips(
+      // The focused machine's rows keep their saved data and stay open while
+      // its link is down; the badge says so.
       focused: LaneMachineChip(
         name: focusedMachineName,
         isLive: true,
-        symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName)
+        symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
+        stateWord: syncService.focusedMachineRowStateWord
       ),
       byMachineKey: Dictionary(
         remoteLanes.machines.map {
-          ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive, symbol: machineSymbol(machineKey: $0.machineKey, name: $0.name)))
+          ($0.machineKey, LaneMachineChip(
+            name: $0.name,
+            isLive: $0.isLive,
+            symbol: machineSymbol(machineKey: $0.machineKey, name: $0.name),
+            stateWord: $0.isLive ? nil : ($0.stateWord ?? "offline")
+          ))
         },
         uniquingKeysWith: { first, _ in first }
       )
@@ -383,8 +391,11 @@ extension LanesTabView {
     }
   }
 
-  /// The lane rows: the focused machine's lanes (primary first, then the
-  /// rest oldest first), then each other machine's lanes under its name.
+  /// The lane rows of every machine with a copy, in one list: the focused
+  /// machine's lanes (primary first, then the rest oldest first), then each
+  /// other machine's lanes, live machines first. Each row carries its
+  /// machine's badge and state while the list spans machines; a machine that
+  /// is not live keeps its rows, dimmed.
   @ViewBuilder
   var laneListSections: some View {
     // Built once per pass, not once per row.
@@ -413,38 +424,24 @@ extension LanesTabView {
       .padding(.top, 32)
       .adeFlatRow(separator: .hidden)
     } else {
+      let spansMachines = !remoteLanes.machines.isEmpty
       if showsFocusedMachineLanes, !orderedSnapshots.isEmpty {
-        Section {
-          ForEach(orderedSnapshots) { snapshot in
-            laneListRow(
-              snapshot,
-              pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
-              // Each machine's lanes are their own section, named in its
-              // header: a machine chip on every row only repeated it.
-              showsMachineChip: false,
-              chips: chips
-            )
-          }
-        } header: {
-          if !remoteLanes.machines.isEmpty {
-            ADEFlatSectionHeader(focusedMachineName, detail: "\(orderedSnapshots.count)")
-          }
+        ForEach(orderedSnapshots) { snapshot in
+          laneListRow(
+            snapshot,
+            pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
+            showsMachineChip: spansMachines,
+            chips: chips
+          )
         }
       }
       ForEach(remoteSections, id: \.machine.machineKey) { entry in
-        Section {
-          ForEach(entry.snapshots) { snapshot in
-            laneListRow(
-              snapshot,
-              pullRequest: nil,
-              showsMachineChip: false,
-              chips: chips
-            )
-          }
-        } header: {
-          ADEFlatSectionHeader(
-            entry.machine.isLive ? entry.machine.name : "\(entry.machine.name), not connected",
-            detail: "\(entry.snapshots.count)"
+        ForEach(entry.snapshots) { snapshot in
+          laneListRow(
+            snapshot,
+            pullRequest: nil,
+            showsMachineChip: true,
+            chips: chips
           )
         }
       }

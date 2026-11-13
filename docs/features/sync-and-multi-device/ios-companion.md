@@ -2837,15 +2837,36 @@ merge across machines when their repository origins match. If either machine
 does not report an origin, the folder name is the fallback; known, different
 origins stay separate even when their folders match.
 
-The focused machine owns the full sync connection. Up to three other paired
+The focused machine owns the full sync connection. Up to seven other paired
 machines stay available through lightweight roster connections, for a maximum
-of four live machines including the focused one. The fleet prioritizes pinned
-machines and then recently used machines, closes background connections, and
-does not connect hidden or signed-out machines. Settings > Machines lists the
-paired computers and lets the user hide one. Only machines in the user's
-connected set get a roster connection, and only their projects merge into the
-Hub and Work. Disconnecting a machine — the primary included — takes it out of
-that set until the user connects it again. With no primary attached, the next
+of eight live machines including the focused one (`MachineFleet.liveMachineLimit`).
+The fleet closes background connections and does not connect hidden or
+signed-out machines. Settings > Machines lists the paired computers and lets
+the user hide one. Only machines in the user's connected set get a roster
+connection, and only their projects merge into the Hub. Disconnecting a
+machine — the primary included — takes it out of that set until the user
+connects it again.
+
+A project shows every machine at once. Opening a project connects every
+paired machine with a copy of its repository, with no pick
+(`activeProjectCopyMachineKeys` → `MachineFleet.setProjectMachines`). These
+machines go live before the rest of the connected set, up to the limit, and
+nothing is saved to the connected set. A machine past the limit is "parked".
+An online account computer with a copy that the phone never paired is paired
+next to the primary once per app run, while the limit has room
+(`connectActiveProjectAccountCopies`). A machine the user disconnected in
+Settings stays off for the project too
+(`ade.fleet.userDisconnectedMachineKeys.v1`), until the user connects it. The
+Lanes list and the Work list show the lanes and sessions of every machine with
+a copy in one list. While the list spans machines, every lane row, Work lane
+header and Work row without a lane header carries a small machine badge with
+the machine's state when it is not live ("parked", "offline", "not
+connected", "connecting"). The rows of a machine that is not live stay listed,
+dimmed, from its last roster. There is no control in a project that switches
+the machine to see work: the Lanes and Work machine filters only narrow the
+list, and a machine is picked only where new work starts (Start on). The
+focused machine stays the phone's internal home for calls that name no lane
+or session. With no primary attached, the next
 machine the user connects becomes primary. With a primary attached, connecting
 an account machine this phone never paired adds it next to the primary, as on
 desktop (`pairAccountMachineAlongsidePrimary`): the adoption runs on its own

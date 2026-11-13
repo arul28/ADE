@@ -751,6 +751,16 @@ struct WorkSessionRow: View, Equatable {
           laneChip
           laneGitState
         }
+        // No lane header names the machine here: the row does, while the list
+        // spans machines.
+        if showsLaneIdentity, let machineName, !machineName.isEmpty {
+          Label(machineName, systemImage: "desktopcomputer")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .labelStyle(.titleAndIcon)
+            .lineLimit(1)
+            .layoutPriority(-1)
+        }
         lineageMark(font: .caption2)
         subagentMarkView
       }
@@ -1194,6 +1204,9 @@ struct WorkSessionRow: View, Equatable {
   var accessibilityLabel: String {
     let effectiveStatus = renderSignature.statusLabel ?? sessionStatusLabel(for: status)
     var parts = [chatSummary?.title ?? session.title, session.laneName, effectiveStatus]
+    if let machineName, !machineName.isEmpty {
+      parts.append("on \(machineName)")
+    }
     if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
       parts.append("has a question")
     }

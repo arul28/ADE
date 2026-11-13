@@ -18,6 +18,9 @@ final class LaneRemoteMachinesModel: ObservableObject {
     let projectId: String
     let rootPath: String?
     let isLive: Bool
+    /// The word after the machine's name on its rows ("parked", "offline"),
+    /// nil while live.
+    var stateWord: String? = nil
     let snapshots: [LaneListSnapshot]
     /// Why the last read failed, when the rows are older than the last attempt.
     let error: String?
@@ -94,6 +97,7 @@ final class LaneRemoteMachinesModel: ObservableObject {
         projectId: repo.projectId,
         rootPath: repo.rootPath,
         isLive: isLive,
+        stateWord: fleet.machine(for: repo.machineKey)?.rowStateWord,
         snapshots: snapshots,
         error: error
       ))

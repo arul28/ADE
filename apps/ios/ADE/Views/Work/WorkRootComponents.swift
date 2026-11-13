@@ -338,6 +338,9 @@ struct WorkSidebarSectionHeader: View {
   /// The Duo's sessions column: the lane's name, its branch under it and one
   /// count. Git state, focus and the PR are the Lanes tab's to show there.
   var minimal = false
+  /// The lane's machine, while the list spans machines: its badge, and its
+  /// state when it is not live.
+  var machine: WorkMachineFilterOption? = nil
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -400,7 +403,9 @@ struct WorkSidebarSectionHeader: View {
                   .truncationMode(.middle)
               }
             }
-            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
+            if let machine, !isQuietRow {
+              WorkMachineBadge(option: machine)
+            } else if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
               WorkRemoteLaneGlyph()
             }
           }
@@ -557,12 +562,13 @@ struct WorkSidebarSectionHeader: View {
     if isQuietRow {
       return "\(group.label), \(count) settled \(noun). Tap to \(action)."
     }
+    let machineText = machine.map { ", on \($0.label)" } ?? ""
     if let laneFocus = group.laneStatus, group.laneId != nil {
       let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
-      return "\(label), \(laneFocus.statusFilter.title), \(count) \(noun). Tap to \(action)."
+      return "\(label)\(machineText), \(laneFocus.statusFilter.title), \(count) \(noun). Tap to \(action)."
     }
     let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
-    return "\(label), \(count) \(noun). Tap to \(action)."
+    return "\(label)\(machineText), \(count) \(noun). Tap to \(action)."
   }
 
   @ViewBuilder
@@ -744,8 +750,11 @@ struct WorkSessionListRow: View {
   var boardCard = false
   /// A row in the Duo's sessions column (see `WorkSessionRow.duoRow`).
   var duoRow = false
-  /// The machine a row from another machine lives on, for the Duo's meta line.
+  /// The row's machine badge text while the list spans machines.
   var machineName: String? = nil
+  /// False for a machine with no live link: the row shows its last state,
+  /// dimmed.
+  var machineIsLive = true
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -983,6 +992,7 @@ struct WorkSessionListRow: View {
       }
     }
     .buttonStyle(.plain)
+    .opacity(machineIsLive ? 1 : 0.55)
     // No raw `LongPressGesture` here. A 0.45s press competed with the very same
     // long press that opens `.contextMenu`, so whichever recogniser won was a
     // coin toss and the menu felt broken. The menu's own "Select" item is the
@@ -2336,6 +2346,30 @@ struct WorkFilterMenu: View {
 
 /// Marks a lane that lives on another machine, after its name: two machines'
 /// lanes can share a name, and the machine never goes in the title.
+/// A small machine badge: the computer glyph and its name, with the state
+/// when it is not live ("Studio, offline").
+struct WorkMachineBadge: View {
+  let option: WorkMachineFilterOption
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Image(systemName: "desktopcomputer")
+        .font(.system(size: 9, weight: .medium))
+      Text(option.label)
+        .font(.caption2.weight(.medium))
+        .lineLimit(1)
+        .truncationMode(.middle)
+    }
+    .foregroundStyle(option.isLive ? ADEColor.textMuted : ADEColor.textMuted.opacity(0.7))
+    .padding(.horizontal, 6)
+    .padding(.vertical, 2)
+    .background(ADEColor.textMuted.opacity(0.1), in: Capsule())
+    .fixedSize(horizontal: false, vertical: true)
+    .layoutPriority(-1)
+    .accessibilityLabel("On \(option.label)")
+  }
+}
+
 struct WorkRemoteLaneGlyph: View {
   var body: some View {
     Image(systemName: "desktopcomputer")

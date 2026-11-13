@@ -267,12 +267,13 @@ struct WorkRootSyncInputs: Equatable {
     crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
       && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
     autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
-    // Only machines the user keeps connected; a disconnected one stays off.
-    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
+    // Every paired machine with a copy: the open project keeps them live, and
+    // a machine that is not live keeps its last rows, dimmed.
+    if let fleet, !fleet.machines.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: connected,
+        machines: fleet.machines,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
         account: sync.accountCopiesOfActiveProject()
@@ -291,8 +292,10 @@ struct WorkRootSyncInputs: Equatable {
     machineFilterOptions = workMachineFilterOptions(
       primaryName: sync.focusedMachineDisplayName,
       primaryIsLive: isLive,
+      primaryStateWord: sync.focusedMachineRowStateWord,
       remote: remoteMachineRepos,
-      isLive: { fleet?.isLive($0) ?? false }
+      isLive: { fleet?.isLive($0) ?? false },
+      stateWord: { fleet?.machine(for: $0)?.rowStateWord }
     )
     #if DEBUG
     // The fixture has no machine to probe Cursor credentials on; show the entry
@@ -2376,7 +2379,10 @@ struct WorkRootListScreen: View, Equatable {
         laneMenu: workLaneMenuActions,
         startsQuietZone: group.id == quietZoneStartGroupId,
         branch: duoLayout.isWide ? group.laneId.flatMap { laneById[$0]?.branchRef } : nil,
-        minimal: duoLayout.isWide
+        minimal: duoLayout.isWide,
+        machine: group.isOrphaned ? nil : group.laneId.flatMap {
+          workMachineBadge(laneId: $0, options: inputs.machineFilterOptions)
+        }
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -2524,7 +2530,9 @@ struct WorkRootListScreen: View, Equatable {
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
       // keeps its own full-width row, and drawer shells their compact form.
       duoRow: duoLayout.isWide && !boardCard && !compact,
-      machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
+      machineName: workMachineBadge(laneId: session.laneId, options: inputs.machineFilterOptions)?.label,
+      // Another machine with no live link: its last rows, dimmed.
+      machineIsLive: workMachineBadge(laneId: session.laneId, options: inputs.machineFilterOptions)?.isLive ?? true,
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

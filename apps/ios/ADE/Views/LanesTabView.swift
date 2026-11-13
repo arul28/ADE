@@ -22,6 +22,9 @@ struct LanesRootInputs: Equatable {
   var focusedMachineName = ""
   var hasHostProfile = false
   var liveMachineKeys: [String] = []
+  /// Each machine's row state ("parked", "offline"): a change redraws the
+  /// other machines' rows at once.
+  var machineStateKeys: [String] = []
 
   @MainActor
   init(_ sync: SyncService, fleet: MachineFleet, isActive: Bool) {
@@ -41,6 +44,7 @@ struct LanesRootInputs: Equatable {
     focusedMachineName = sync.focusedMachineDisplayName
     hasHostProfile = sync.activeHostProfile != nil
     liveMachineKeys = fleet.liveMachineKeys
+    machineStateKeys = fleet.machines.map { "\($0.machineKey)=\($0.rowStateWord ?? "live")" }
   }
 }
 
@@ -90,12 +94,6 @@ struct LanesTabView: View, Equatable {
   /// not a push: changing it replaces the detail instead of stacking.
   @State var duoSelectedLaneId: String?
   @State var addLaneSheetPresented = false
-  /// The copy chip's result ("Copied … to …").
-  @State var copyChipToast: ADEToastMessage?
-  /// Bumped when the user hides the chip's "+1" hint, so the row redraws.
-  @State var copyChipHintRevision = 0
-  /// The account project whose Location page is open, from the copy chip.
-  @State var locationTarget: HubAccountHomeTarget?
   @State var openLaneIds: [String] = []
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var primaryBranches: [GitBranchSummary] = []
@@ -150,7 +148,7 @@ struct LanesTabView: View, Equatable {
   /// project, and again when a machine's live link comes or goes.
   var remoteLanesPollKey: String? {
     guard isActive, let projectId = inputs.activeProjectId else { return nil }
-    return "\(projectId)|\(inputs.liveMachineKeys.joined(separator: ","))"
+    return "\(projectId)|\(inputs.machineStateKeys.joined(separator: ","))"
   }
 
   var laneNavigationRequestKey: String? {
@@ -262,10 +260,6 @@ struct LanesTabView: View, Equatable {
       if wasOnline && !nowOnline {
         ADEHaptics.warning()
       }
-    }
-    .adeToast($copyChipToast)
-    .sheet(item: $locationTarget) { target in
-      ProjectLocationScreen(projectId: target.id)
     }
     .sheet(isPresented: $addLaneSheetPresented) {
       StartOnAccountHost {
@@ -392,66 +386,6 @@ struct LanesTabView: View, Equatable {
         }
       }
     )
-  }
-
-  /// The copy chip under the title, for an account project on more than one
-  /// computer, or with a connected computer that has no copy.
-  @ViewBuilder
-  var laneCopyChipRow: some View {
-    let _ = copyChipHintRevision
-    if let context = laneStartOnContext {
-      let candidates = context.candidates
-      let copies = candidates.filter { $0.kind != .cloneFirst }
-      let spare = candidates.contains { $0.kind == .cloneFirst && $0.isLive }
-      let showsHint = spare && !HubCopyChipHints.isHidden(context.accountProjectId)
-      if copies.count > 1 || candidates.contains(where: { $0.kind == .cloneFirst }) {
-        let focusedKey = syncService.focusedMachineKey
-        let focusedAccountKey = candidates.first { $0.fleetKey != nil && $0.fleetKey == focusedKey }?.accountMachineKey
-        HubCopyChip(
-          focusedName: focusedMachineName,
-          focusedSymbol: machineSymbol(machineKey: focusedKey, name: focusedMachineName),
-          candidates: candidates,
-          focusedAccountKey: focusedAccountKey,
-          showsSpareHint: showsHint,
-          onOpenCopy: { openCopy($0) },
-          onPutCopy: { candidate in putCopy(on: candidate, context: context) },
-          onHideSpareHint: {
-            HubCopyChipHints.hide(context.accountProjectId)
-            copyChipHintRevision &+= 1
-          },
-          onLocation: { locationTarget = HubAccountHomeTarget(id: context.accountProjectId) }
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
-      }
-    }
-  }
-
-  /// Opens the project's copy on another computer (today's switch): over the
-  /// fleet link when that computer is live, else through the account route,
-  /// which connects it first.
-  private func openCopy(_ candidate: StartOnCandidate) {
-    if candidate.isLive, let key = candidate.fleetKey,
-       let repo = syncService.remoteLaneRepo(machineKey: key),
-       let summary = machineFleet.machine(for: key)?.projects.first(where: { $0.projectId == repo.projectId })?.asRemoteMachineProjectSummary {
-      Task { await syncService.openProject(summary, onMachine: key) }
-      return
-    }
-    guard let project = syncService.accountProjectForActiveProject(),
-          let copy = accountProjectCopyMachines(project, machines: AccountService.shared.machines)
-            .first(where: { $0.copy.machineKey == candidate.accountMachineKey })?.copy
-    else { return }
-    DeepLinkRouter.shared.openAccountProjectCopy(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
-  }
-
-  /// Copies the project onto a computer that has none, from the chip.
-  private func putCopy(on candidate: StartOnCandidate, context: LaneStartOnContext) {
-    copyChipToast = ADEToastMessage(text: "Copying \(context.projectName) to \(candidate.name)…", kind: .info)
-    Task { @MainActor in
-      let failure = await context.copy(candidate)
-      copyChipToast = failure.map { ADEToastMessage(text: $0, kind: .failure) }
-        ?? ADEToastMessage(text: "Copied \(context.projectName) to \(candidate.name).", kind: .success)
-    }
   }
 
   /// Waits (bounded) until a computer's roster lists the open repository,
