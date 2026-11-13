@@ -230,20 +230,28 @@ export function useWebTabsFollowComputers({
     }
     const resumed = resumeWebStoppedTabs(webStoppedTabsRef.current, { connected, gone });
     if (resumed.length > 0) {
-      const byKey = new Map(openRemoteProjectTabsRef.current.map((entry) => [entry.key, entry]));
-      for (const [, binding] of resumed) byKey.set(binding.key, binding);
-      const nextRemoteTabs = [...byKey.values()];
-      openRemoteProjectTabsRef.current = nextRemoteTabs;
-      setOpenRemoteProjectTabs(nextRemoteTabs);
-      // A waiting tab in front opens its copy; another project can be the one
-      // under it, and closing the waiting page alone would show that one.
+      const restore = (bindings: readonly RemoteOpenProjectBinding[]) => {
+        const byKey = new Map(openRemoteProjectTabsRef.current.map((entry) => [entry.key, entry]));
+        for (const binding of bindings) byKey.set(binding.key, binding);
+        const nextRemoteTabs = [...byKey.values()];
+        openRemoteProjectTabsRef.current = nextRemoteTabs;
+        setOpenRemoteProjectTabs(nextRemoteTabs);
+      };
+      // A waiting tab in front opens its own copy; another project can be the
+      // one under it. Its page stays until that copy is open, and only then
+      // does the copy rejoin the strip (which closes the waiting page): either
+      // one sooner shows the project under it while the open runs.
       const store = useAppStore.getState();
       const front = resumed.find(([id]) => id === store.activeNoMachineTabId)?.[1];
-      if (front && store.projectBinding?.key !== front.key) {
-        void store.switchRemoteProject(front.targetId, front.projectId).catch((error: unknown) => {
-          // The tab is back; only its page did not open. A click on the tab opens it again.
-          captureError(error, { fingerprint: ["repository-tabs", "web-resume-open"], level: "warning", handled: true });
-        });
+      const opensInFront = front != null && store.projectBinding?.key !== front.key;
+      restore(resumed.map(([, binding]) => binding).filter((binding) => !opensInFront || binding !== front));
+      if (opensInFront) {
+        void store.switchRemoteProject(front.targetId, front.projectId, { keepNoMachineTab: true })
+          .catch((error: unknown) => {
+            // The tab is back; only its page did not open. A click on the tab opens it again.
+            captureError(error, { fingerprint: ["repository-tabs", "web-resume-open"], level: "warning", handled: true });
+          })
+          .finally(() => restore([front]));
       }
     }
     if (gone.size > 0) void moveWebTabsOffGoneTargets(gone);

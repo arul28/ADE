@@ -2039,7 +2039,16 @@ export type AppState = {
   trustGitFolderAndOpen: () => Promise<ProjectInfo | null>;
   /** The user said Cancel: nothing is trusted, the folder stays closed. */
   dismissGitFolderTrustPrompt: () => void;
-  switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
+  /**
+   * Opens a remote copy in front. `keepNoMachineTab`: a waiting tab in front
+   * stays on its page until this copy is open, instead of showing the project
+   * under it while the open runs.
+   */
+  switchRemoteProject: (
+    targetId: string,
+    projectId: string,
+    options?: { keepNoMachineTab?: boolean },
+  ) => Promise<OpenProjectBinding>;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
   /// when closing because a remote *disconnected*, not because the user closed
@@ -3922,9 +3931,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }
   },
 
-  switchRemoteProject: async (targetId: string, projectId: string) => {
+  switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
-    if (get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
+    if (!options?.keepNoMachineTab && get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {
@@ -4002,6 +4011,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransitionError: null,
           isNewTabOpen: false,
           standaloneSettingsOpen: false,
+          // A no-machine tab put in front during the open superseded it, so
+          // the one still in front here is the tab this open replaces.
+          activeNoMachineTabId: null,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
