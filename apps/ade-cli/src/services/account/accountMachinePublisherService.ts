@@ -25,7 +25,6 @@ import {
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
 import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
-import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "../sync/sharedSyncListener";
 import {
   normalizeAppPackageChannel,
   packageChannelNameSuffix,
@@ -702,8 +701,6 @@ export function buildAccountMachineRegistration(args: {
     if (
       candidate.kind === "lan"
       && args.snapshot.routeHealth.listener.listenerBound
-      // A loopback-only bind (ADE_SYNC_BIND_HOST=127.0.0.1) serves no LAN peer.
-      && !SYNC_HOST_BIND_LOOPBACK_ONLY
     ) {
       add({ kind: "lan", host, port: connectInfo.port });
       continue;

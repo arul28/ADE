@@ -310,7 +310,8 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { adeLoopbackForwardPort, createTailnetHttpsServe, enqueueTailscaleServe } from "./tailnetHttpsServe";
+import { adeLoopbackForwardPort, createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { enqueueTailscaleServe } from "./tailscaleServeCommand";
 import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
@@ -553,10 +554,11 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
  * Ports still advertised through `tailscale serve` that ADE published on an
  * earlier run and never tore down.
  *
- * Only ADE's exact signature is reclaimed: a port inside ADE's own sync range
- * forwarding to 127.0.0.1 on the SAME port. A hand-rolled `tailscale serve`
- * that happens to sit in that range — anything forwarding elsewhere — is left
- * strictly alone.
+ * Only ADE's shape is reclaimed: a port inside ADE's own sync range
+ * forwarding to 127.0.0.1 on the same port, or to the side door a few ports
+ * above it (`adeLoopbackForwardPort`). A hand-rolled `tailscale serve` of any
+ * other shape is left alone; one of exactly this shape is removed only while
+ * nothing serves at either end (the caller probes both).
  */
 export function staleAdeTailnetServePorts(
   serveStatusJson: string,
@@ -4938,11 +4940,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     port: number,
     options?: { forceLan?: boolean; forceTailnet?: boolean },
   ): Promise<void> => {
+    // A publication for a port the shared listener has already left is stale:
+    // the move's own refresh publishes the live port. Checked again after the
+    // await below, which runs an external `tailscale serve`.
+    const isStale = (): boolean => sharedListener != null && sharedListener.getPort() !== port;
+    if (isStale()) return;
     const lanPortChanged = bonjourPort != null && bonjourPort !== port;
     const tailnetPortChanged = tailnetServePort != null && tailnetServePort !== port;
     if (lanPortChanged) unpublishLanDiscovery();
     if (tailnetPortChanged) await unpublishTailnetDiscovery();
-    if (disposed) return;
+    if (disposed || isStale()) return;
     // LAN peers reach the wildcard bind, not loopback, so a program holding
     // 127.0.0.1:<port> does not stop LAN. Tailscale Serve forwards to
     // 127.0.0.1:<port>, so only that route waits for loopback to answer as
@@ -4951,11 +4958,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // Read the shared listener's live verdict, not a copy: a check that
     // finished for an older port must not unpublish the current one.
     const localRouteReady = sharedListener
-      ? sharedListener.getPort() === port && sharedListener.getLoopbackPort() != null
+      ? sharedListener.getLoopbackPort() != null
       : loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated;
     if (localRouteReady) {
       publishTailnetDiscovery(port, { force: options?.forceTailnet });
-    } else if (tailnetServePort != null && (!sharedListener || sharedListener.getPort() === port)) {
+    } else if (tailnetServePort != null) {
       await unpublishTailnetDiscovery();
     }
   };

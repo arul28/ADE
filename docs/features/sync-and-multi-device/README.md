@@ -4608,8 +4608,10 @@ route needs from loopback:
 **The public port does not move for a loopback shadow.** A phone that sees its
 machine's port change redials (seen on a real iPhone: a Wi-Fi socket dropped
 110 ms after a move), so the listener keeps its port and opens a **side door**:
-a second server bound on exactly `127.0.0.1:<free port>` (24 ports up, then an
-OS-assigned one), wired like the main one (`createServerPair`) and validated
+a second server bound on exactly `127.0.0.1:<free port>` (one of the 24 ports
+above; never an OS-assigned one, so a stale Tailscale entry left by a crash is
+still recognized by its shape, `adeLoopbackForwardPort`), wired like the main
+one (`createServerPair`) and validated
 with the same identity probe. `getLoopbackPort()` returns it, the validation
 status records it as `loopbackPort` (with `shadowedBy`, program name only), and
 Tailscale Serve (`--tcp` and the HTTPS route) forwards there while the

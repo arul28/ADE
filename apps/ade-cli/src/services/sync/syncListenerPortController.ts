@@ -1,11 +1,7 @@
 import http from "node:http";
 import os from "node:os";
 import { WebSocketServer } from "ws";
-import {
-  DEFAULT_SYNC_HOST_PORT,
-  SYNC_HOST_MAX_PORT,
-  SYNC_PORT_SCAN_ABOVE,
-} from "./syncProtocol";
+import { SYNC_PORT_SCAN_ABOVE } from "./syncProtocol";
 import {
   assertAdeLoopbackListener,
   isLoopbackShadowedError,
@@ -16,15 +12,7 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
-import {
-  channelServeIdentity,
-  isStaleChannelServeCommandLine,
-  resolveAdeServeCliScriptPath,
-  resolveAdeServeCommand,
-  terminatePidGracefullyAsync,
-} from "../../serviceManager/common";
-import { getRuntimeServiceMainPid } from "../../serviceManager";
-import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { closeCandidateServer, createListenerBinder } from "./syncListenerBind";
 import {
   inspectSyncListenerPort,
   type SyncListenerPortDiagnosis,
@@ -41,6 +29,9 @@ import {
  * the relay pipe handoff and attachment uploads. It injects the server factory
  * and the probes below; everything here stays transport-shaped, never
  * protocol-shaped.
+ *
+ * Bind policy — which port may be taken, and who already holds one — lives in
+ * `syncListenerBind.ts`, next to the attempt plan it drives.
  */
 
 type SyncListenerPortControllerLogger = {
@@ -64,12 +55,6 @@ export type SharedSyncListenerPortChange = {
 export const SYNC_LISTENER_SELF_HEAL_INTERVAL_MS = 30_000;
 /** Ports above the shadowed one a self-heal move tries before an OS-assigned one. */
 const SELF_HEAL_PORT_SCAN = SYNC_PORT_SCAN_ABOVE;
-
-// Mirror of the syncService preferred-port semantics: insist on the first
-// candidate for ~3.2s before drifting, so a dying listener from a previous
-// brain process can free the port paired phones have saved.
-const PREFERRED_PORT_BIND_ATTEMPTS = 8;
-const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
 export type SyncListenerPortControllerDeps = {
   logger: SyncListenerPortControllerLogger;
@@ -159,47 +144,6 @@ export type SyncListenerPortController = {
 
 type RetiredServer = { wsServer: WebSocketServer; httpServer: http.Server };
 
-function isRetryableListenerBindError(error: unknown): boolean {
-  if (isLoopbackShadowedError(error)) return true;
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
-  return code === "EADDRINUSE" || code === "EACCES";
-}
-
-async function closeCandidateServer(
-  candidateServer: WebSocketServer,
-  candidateHttpServer: http.Server,
-): Promise<void> {
-  for (const client of candidateServer.clients) {
-    try {
-      client.terminate();
-    } catch {
-      // ignore cleanup failures on a rejected candidate
-    }
-  }
-  // Closing the WebSocketServer only detaches its listeners from the
-  // externally-supplied http server; the http server owns the port and must be
-  // closed explicitly so a rejected candidate does not leak the bind. ws's
-  // close() for an external server resolves only after every client drains, so
-  // close the http server directly (forcing lingering sockets) instead.
-  try {
-    candidateServer.close();
-  } catch {
-    // ignore
-  }
-  await new Promise<void>((resolve) => {
-    if (!candidateHttpServer.listening) {
-      resolve();
-      return;
-    }
-    try {
-      candidateHttpServer.close(() => resolve());
-      candidateHttpServer.closeAllConnections?.();
-    } catch {
-      resolve();
-    }
-  });
-}
-
 /** This machine's external IPv4 addresses, skipping link-local ones. */
 function defaultLocalAddresses(): string[] {
   const addresses = new Set<string>();
@@ -228,50 +172,19 @@ export function createSyncListenerPortController(
   const localAddresses = deps.localAddresses ?? defaultLocalAddresses;
   const addressProbe = deps.addressProbe ?? probeAdeListenerAt;
   const inspectPort = deps.inspectPort ?? inspectSyncListenerPort;
-  const activeServicePid = deps.activeServicePid ?? getRuntimeServiceMainPid;
-  const serviceCommand = resolveAdeServeCommand();
-  const staleServeMatch = {
-    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: resolveMachineAdeLayout().socketPath,
-  };
-  // A holder `findStaleHolder` matches names this channel's primary endpoint, so
-  // that endpoint is where a cooperative shutdown request goes. Windows has no
-  // catchable SIGTERM, so without this the reap was a `TerminateProcess` of a brain
-  // mid-write. The last-resort kill is a verified kill: the process is read again at
-  // kill time and must still be this channel's brain. A holder that is not proven
-  // is left running, and the caller treats the port as still occupied.
-  const terminatePid = deps.terminatePid ?? (async (pid: number) => {
-    const outcome = await terminatePidGracefullyAsync(pid, {
-      runtimeSocketPath: staleServeMatch.primarySocketPath,
-      isExpectedProcess: channelServeIdentity(staleServeMatch),
-    });
-    if (outcome !== "stopped" && outcome !== "killed") {
-      throw new Error(`stale sync holder ${pid} could not be verified and was left running`);
-    }
-  });
-  const findStaleHolder = (
-    diagnosis: SyncListenerPortDiagnosis,
-  ): SyncListenerPortDiagnosis["holders"][number] | null => {
-    // Only exclude ourselves. Launchd's tracked main pid is often the wedged
-    // predecessor still bound to 8787; excluding it is how a replacement brain
-    // ended up stuck on 8788 with two listeners on the same machine.
-    const excludedPids = new Set([process.pid]);
-    return diagnosis.holders.find((holder) =>
-      !excludedPids.has(holder.pid)
-      && holder.command != null
-      && isStaleChannelServeCommandLine(holder.command, staleServeMatch),
-    ) ?? null;
-  };
 
   let server: WebSocketServer | null = null;
   // The http.Server fronting `server`. `ws` does not own/close an
   // externally-supplied server, so we track it to free the port on close.
   let httpServer: http.Server | null = null;
   let listeningPromise: Promise<number> | null = null;
-  // Every change to which server or side door is live (a move off a shadowed
-  // port, a move back to the preferred port, opening or closing the side
-  // door) runs under this one lock, so two moves can never both bind and leave
-  // one server untracked. close() waits for it.
+  // Serializes changes to the live server (a move off a shadowed port, a move
+  // back to the preferred port, and the self-check that decides on them), so
+  // two moves can never both bind and leave one server untracked. Side-door
+  // changes also happen outside it (revalidateLoopback); they stay safe
+  // because each re-checks `closed`/the live port and assigns synchronously
+  // once its probe returns. close() does not wait for it: every move re-checks
+  // `closed` and closes what it bound.
   let moveLock: Promise<unknown> = Promise.resolve();
   let closed = false;
   const loopbackValidatedHandlers = new Set<() => void>();
@@ -379,6 +292,11 @@ export function createSyncListenerPortController(
   // sockets already upgraded on it. `ws` leaves an external server's clients
   // alone on close(); closing the http server only frees the port.
   const retireServer = (oldServer: WebSocketServer, oldHttp: http.Server): void => {
+    if (closed) {
+      // close() already swept the retired servers; end this one now.
+      void closeCandidateServer(oldServer, oldHttp);
+      return;
+    }
     const entry = { wsServer: oldServer, httpServer: oldHttp };
     let httpClosed = false;
     const forget = (): void => {
@@ -412,248 +330,49 @@ export function createSyncListenerPortController(
   const notifyPortChanged = (change: SharedSyncListenerPortChange): void =>
     emit(portChangedHandlers, change, "sync_listener.port_change_handler_failed");
 
-  const bindOnce = async (
-    portCandidates: number[],
-    bindOptions: { migrate?: boolean } = {},
-  ): Promise<number> => {
-    const candidates = portCandidates.length > 0 ? portCandidates : [DEFAULT_SYNC_HOST_PORT];
-    const recordCandidateStatus = !bindOptions.migrate;
-    // A fixed preferred port is re-attempted so a dying listener can free it.
-    // An ephemeral port (0) is ALSO re-attempted, but for a different reason:
-    // each bind(0) yields a fresh OS-assigned port, so a loopback shadow on the
-    // first resolved port is escaped simply by re-binding. Both are bounded by
-    // PREFERRED_PORT_BIND_ATTEMPTS so a persistent shadow still terminates.
-    // Runtime migrate probes one candidate; the 3.2s retry storm is for the
-    // initial bind, not a 15s heal loop against a live ADE Beta on 8787.
-    const attemptPlan = bindOptions.migrate
-      ? [...candidates]
-      : candidates.flatMap((candidatePort, candidateIndex) =>
-        (candidateIndex === 0 && candidatePort !== 0) || candidatePort === 0
-          ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
-          : [candidatePort],
-      );
-    let lastError: unknown = null;
-    let previousAttemptedPort: number | null = null;
-    // Tracks RESOLVED shadowed ports. For port 0 the literal 0 is never added
-    // (each re-bind resolves a different port), so a shadow on one ephemeral
-    // port does not short-circuit the remaining fresh-port attempts.
-    const shadowedPorts = new Set<number>();
-    const occupiedPorts = new Set<number>();
-    const loggedConflictPorts = new Set<number>();
-    const zombieReapedPorts = new Set<number>();
-    const portDiagnoses = new Map<number, SyncListenerPortDiagnosis>();
-    const diagnosePort = async (
-      port: number,
-      refresh = false,
-    ): Promise<SyncListenerPortDiagnosis> => {
-      if (!refresh) {
-        const cached = portDiagnoses.get(port);
-        if (cached) return cached;
-      }
-      const diagnosis = await inspectPort(port);
-      portDiagnoses.set(port, diagnosis);
-      return diagnosis;
-    };
-    for (let attemptIndex = 0; attemptIndex < attemptPlan.length; attemptIndex += 1) {
-      const attemptedPort = attemptPlan[attemptIndex]!;
-      if (closed) throw new Error("The shared sync listener has been closed.");
-      if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
-      if (attemptedPort !== 0 && occupiedPorts.has(attemptedPort)) continue;
-      // The retry delay lets a dying listener free a FIXED port; an ephemeral
-      // re-bind gets a fresh port immediately, so skip the delay for port 0.
-      if (previousAttemptedPort === attemptedPort && attemptedPort !== 0) {
-        await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
-      }
-      previousAttemptedPort = attemptedPort;
-      const { httpServer: candidateHttpServer, wsServer: candidateServer } = createServerPair();
-      candidateHttpServer.listen(attemptedPort, bindHost);
-      try {
-        const resolvedPort = await new Promise<number>((resolve, reject) => {
-          const onListening = async () => {
-            const address = candidateServer.address();
-            const port = typeof address === "object" && address ? address.port : attemptedPort;
-            try {
-              try {
-                // A move (back to 8787, or off a shadowed port) probes its
-                // candidate without recording the verdict: a candidate that
-                // fails must not overwrite the status of the port still in
-                // use. The winner's status is recorded once it is live.
-                if (recordCandidateStatus) {
-                  await validateLoopback(port);
-                } else {
-                  await assertAdeLoopbackListener(port, expectedLoopbackNonce, loopbackProbe);
-                }
-              } catch (error) {
-                // A wildcard startup bind whose loopback another program
-                // shadows still serves LAN and relay on this port; the
-                // self-check opens a local side door for Tailscale. Staying
-                // keeps the port phones already know. A move never does this.
-                if (!bindOptions.migrate && !bindsLoopbackOnly && isLoopbackShadowedError(error)) {
-                  cleanup();
-                  resolve(port);
-                  return;
-                }
-                throw error;
-              }
-              // LAN peers must reach this server on the port too: another
-              // program on <lan-ip>:<port> would answer them instead. Without
-              // this, a move back to a port still shadowed on the LAN would
-              // flip back and forth every check.
-              const lanShadow = await findShadowedLocalAddress(port);
-              if (lanShadow) {
-                throw new LoopbackShadowedError(port, `Another program answers on ${lanShadow}:${port}, not ADE.`);
-              }
-              cleanup();
-              resolve(port);
-            } catch (error) {
-              cleanup();
-              reject(error instanceof Error ? error : new Error(String(error)));
-            }
-          };
-          const onError = (error: unknown) => {
-            cleanup();
-            reject(error instanceof Error ? error : new Error(String(error)));
-          };
-          const handleListening = () => {
-            void onListening();
-          };
-          const cleanup = () => {
-            candidateServer.off("listening", handleListening);
-            candidateServer.off("error", onError);
-          };
-          candidateServer.on("listening", handleListening);
-          candidateServer.on("error", onError);
+  // Bind policy (which port may be taken, who already holds one) lives in its
+  // own module. Everything here that a bind touches is a closure over the
+  // controller's state, so a server that binds is adopted synchronously.
+  const bindOnce = createListenerBinder({
+    logger,
+    bindHost,
+    bindsLoopbackOnly,
+    createServerPair,
+    isClosed: () => closed,
+    validateLoopback,
+    assertLoopback: (port) => assertAdeLoopbackListener(port, expectedLoopbackNonce, loopbackProbe),
+    findShadowedLocalAddress: (port) => findShadowedLocalAddress(port),
+    inspectPort,
+    activeServicePid: deps.activeServicePid,
+    terminatePid: deps.terminatePid,
+    onBound: (nextServer, nextHttpServer, port, { recordedStatus }) => {
+      // The assignment is synchronous inside the bind, right after its
+      // `closed` re-check: shutdown can never observe a bound server that
+      // nothing tracks.
+      server = nextServer;
+      httpServer = nextHttpServer;
+      if (!recordedStatus) {
+        // A move's winner validated during its bind; record it now that it
+        // is the live server, so every reader sees port and verdict agree.
+        setLoopbackValidationStatus({
+          port,
+          loopbackAdeValidated: true,
+          lastFailureAt: loopbackValidationStatus.lastFailureAt,
+          reason: null,
+          lastSuccessAt: new Date().toISOString(),
+          shadowedBy: null,
+          loopbackPort: port,
         });
-        if (closed) {
-          // Shutdown won the race with this bind: never leave it listening.
-          await closeCandidateServer(candidateServer, candidateHttpServer);
-          throw new Error("The shared sync listener has been closed.");
-        }
-        server = candidateServer;
-        httpServer = candidateHttpServer;
-        if (!recordCandidateStatus) {
-          // A move's winner validated during its bind; record it now that it
-          // is the live server, so every reader sees port and verdict agree.
-          setLoopbackValidationStatus({
-            port: resolvedPort,
-            loopbackAdeValidated: true,
-            lastFailureAt: loopbackValidationStatus.lastFailureAt,
-            reason: null,
-            lastSuccessAt: new Date().toISOString(),
-            shadowedBy: null,
-            loopbackPort: resolvedPort,
-          });
-        }
-        server.on("error", (error: unknown) => {
-          logger.warn?.("sync_listener.server_error", {
-            error: error instanceof Error ? error.message : String(error),
-            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
-            port: resolvedPort,
-          });
-        });
-        return resolvedPort;
-      } catch (error) {
-        lastError = error;
-        await closeCandidateServer(candidateServer, candidateHttpServer);
-        // Record the RESOLVED port (not the literal 0) so an ephemeral shadow
-        // does not poison the remaining fresh-port re-binds.
-        if (isLoopbackShadowedError(error)) {
-          shadowedPorts.add(attemptedPort === 0 ? error.port : attemptedPort);
-        }
-        const retryable = isRetryableListenerBindError(error)
-          && (attemptedPort !== 0 || isLoopbackShadowedError(error));
-        let diagnosis: SyncListenerPortDiagnosis | null = null;
-        let reapedStaleHolder = false;
-        if (
-          (error as NodeJS.ErrnoException | null | undefined)?.code === "EADDRINUSE"
-          && attemptedPort > 0
-          && !zombieReapedPorts.has(attemptedPort)
-        ) {
-          diagnosis = await diagnosePort(attemptedPort);
-          const staleHolder = attemptedPort >= DEFAULT_SYNC_HOST_PORT
-            && attemptedPort <= SYNC_HOST_MAX_PORT
-            ? findStaleHolder(diagnosis)
-            : null;
-          if (staleHolder) {
-            // Reconfirm ownership immediately before signaling. The original
-            // holder may have exited and its pid may have been reused while
-            // the first lsof/ps diagnosis was being assembled.
-            const confirmedHolder = findStaleHolder(await diagnosePort(attemptedPort, true));
-            if (
-              staleHolder.startTime != null
-              && confirmedHolder?.pid === staleHolder.pid
-              && confirmedHolder.startTime === staleHolder.startTime
-            ) {
-              zombieReapedPorts.add(attemptedPort);
-              try {
-                await terminatePid(staleHolder.pid);
-                reapedStaleHolder = true;
-              } catch (error) {
-                // Not proven, or the kill did not take: the holder still owns the port.
-                logger.warn?.("sync_listener.zombie_not_reaped", {
-                  port: attemptedPort,
-                  pid: staleHolder.pid,
-                  error: error instanceof Error ? error.message : String(error),
-                });
-              }
-              if (reapedStaleHolder) {
-                logger.info?.("sync_listener.zombie_reaped", {
-                  port: attemptedPort,
-                  pid: staleHolder.pid,
-                  servicePid: activeServicePid(),
-                });
-                // Non-preferred candidates occur only once in the normal plan.
-                // Insert exactly one immediate retry for the newly-freed port.
-                attemptPlan.splice(attemptIndex + 1, 0, attemptedPort);
-              }
-            }
-          }
-          // A confirmed live holder will not disappear during a 3.2 second
-          // retry loop. Advance immediately to the next candidate instead of
-          // fighting the desktop (or another runtime) and logging eight copies.
-          if (!reapedStaleHolder && diagnosis.holders.length > 0) {
-            occupiedPorts.add(attemptedPort);
-          }
-        }
-        const event = isLoopbackShadowedError(error)
-          ? "sync_listener.loopback_shadowed"
-          : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed";
-        if (event !== "sync_listener.bind_port_conflict" || !loggedConflictPorts.has(attemptedPort)) {
-          if (event === "sync_listener.bind_port_conflict") loggedConflictPorts.add(attemptedPort);
-          // A move retries on a timer (every 15 s back toward 8787), so its
-          // expected misses stay at debug; the startup bind warns.
-          const log = bindOptions.migrate && event !== "sync_listener.bind_failed"
-            ? logger.debug
-            : logger.warn;
-          log?.(event, {
-            attemptedPort,
-            error: error instanceof Error ? error.message : String(error),
-            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
-            ...(diagnosis ? { holderPids: diagnosis.holders.map((holder) => holder.pid) } : {}),
-            retriesSkipped: occupiedPorts.has(attemptedPort)
-              ? attemptPlan.slice(attemptIndex + 1).filter((port) => port === attemptedPort).length
-              : 0,
-          });
-        }
-        if (!retryable) throw error;
       }
-    }
-    const candidateDiagnosis = await Promise.all(
-      [...new Set(candidates)]
-        .filter((port) => port > 0)
-        .slice(0, 5)
-        .map((port) => diagnosePort(port)),
-    );
-    if (!bindOptions.migrate) {
-      logger.warn?.("sync_listener.bind_exhausted", {
-        candidates: candidateDiagnosis,
-        error: lastError instanceof Error ? lastError.message : String(lastError),
+      nextServer.on("error", (error: unknown) => {
+        logger.warn?.("sync_listener.server_error", {
+          error: error instanceof Error ? error.message : String(error),
+          code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+          port,
+        });
       });
-    }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Unable to bind the shared sync listener.");
-  };
+    },
+  });
 
   /** The ports a move or side door tries: the few above `port`, then an OS-assigned one. */
   const portScanFrom = (port: number): number[] => {
@@ -794,7 +513,10 @@ export function createSyncListenerPortController(
       }
     }
     let lastError: unknown = null;
-    for (const candidate of portScanFrom(mainPort)) {
+    // Only the few ports above the main one, never an OS-assigned port: a
+    // stale Tailscale entry left by a crash is recognised by that shape
+    // (adeLoopbackForwardPort). With none free, the port itself moves.
+    for (const candidate of portScanFrom(mainPort).filter((candidatePort) => candidatePort !== 0)) {
       if (closed) return null;
       const pair = createServerPair();
       // `ws` re-emits the http server's errors (EADDRINUSE on a taken
@@ -891,7 +613,12 @@ export function createSyncListenerPortController(
     if (bindsLoopbackOnly) return recordNoRoute(holder);
     const hadDoor = sideDoor != null;
     const doorPort = await openSideDoor(port);
-    if (closed || currentPort() !== port) return false;
+    if (closed || currentPort() !== port) {
+      // A door this call opened for a port that is no longer live serves
+      // nothing; a move closes doors it sees, but this one opened after it.
+      if (!hadDoor) closeSideDoor();
+      return false;
+    }
     if (doorPort == null) return recordNoRoute(holder);
     const shadowReason = shadow.message;
     if (!hadDoor) {

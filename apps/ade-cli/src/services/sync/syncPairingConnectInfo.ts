@@ -4,6 +4,7 @@ import type {
   SyncPairingConnectInfo,
 } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 
 function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;
@@ -40,8 +41,17 @@ export function tailscaleDnsNameFromDevice(
 
 export function buildAddressCandidates(
   device: SyncDeviceRecord,
-  options: { isLocalDevice: boolean },
+  options: {
+    isLocalDevice: boolean;
+    /**
+     * The local listener serves its LAN addresses. False for a loopback-only
+     * bind (ADE_SYNC_BIND_HOST=127.0.0.1): no peer can reach it on one, so no
+     * pairing surface, directory row or QR code may offer one.
+     */
+    servesLan?: boolean;
+  },
 ): SyncAddressCandidate[] {
+  const servesLan = !options.isLocalDevice || options.servesLan !== false;
   const candidates: SyncAddressCandidate[] = [];
   const seen = new Set<string>();
   const append = (
@@ -65,11 +75,13 @@ export function buildAddressCandidates(
         || tailscaleDnsNameFromDevice(device) === preferredSavedHost
         ? "tailscale"
         : "saved";
-  if (preferredSavedHostKind && preferredSavedHostKind !== "saved") {
+  if (preferredSavedHostKind && preferredSavedHostKind !== "saved" && (servesLan || preferredSavedHostKind !== "lan")) {
     append(device.lastHost, preferredSavedHostKind);
   }
-  for (const lanAddress of device.ipAddresses) {
-    append(lanAddress, "lan");
+  if (servesLan) {
+    for (const lanAddress of device.ipAddresses) {
+      append(lanAddress, "lan");
+    }
   }
   if (preferredSavedHostKind === "saved") {
     append(device.lastHost, "saved");
@@ -101,7 +113,10 @@ export function buildPairingConnectInfo(argsIn: {
   relayWssUrl?: string | null;
 }): SyncPairingConnectInfo {
   const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
-  const addressCandidates = buildAddressCandidates(argsIn.localDevice, { isLocalDevice: true });
+  const addressCandidates = buildAddressCandidates(argsIn.localDevice, {
+    isLocalDevice: true,
+    servesLan: !SYNC_HOST_BIND_LOOPBACK_ONLY,
+  });
   // The cloud relay is the lowest-priority path: phones try every direct
   // candidate first and fall back to the tunnel only when nothing answers.
   if (argsIn.relayWssUrl) {

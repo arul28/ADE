@@ -822,6 +822,7 @@ export function createSyncAccountDirectoryHealth(
 export type SyncRouteHealth = {
   listener: {
     listenerBound: boolean;
+    /** Some local route (the port itself, or a side door) answers as ADE. */
     loopbackAdeValidated: boolean;
     port: number | null;
     lastFailureAt: string | null;
@@ -833,12 +834,6 @@ export type SyncRouteHealth = {
      * answers in its place.
      */
     shadowedBy?: string | null;
-    /**
-     * Where 127.0.0.1 reaches ADE: `port` itself, or the local side door ADE
-     * opened while another program holds 127.0.0.1:<port>. With a side door,
-     * `loopbackAdeValidated` means "some local route answers as ADE".
-     */
-    loopbackPort?: number | null;
   };
   tailscale: {
     enabled: boolean;

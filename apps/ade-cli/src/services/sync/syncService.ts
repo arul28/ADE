@@ -1230,7 +1230,9 @@ export function createSyncService(args: SyncServiceArgs) {
   // the port follows it: the sync lease, this device's row, Bonjour and
   // Tailscale Serve, and the account directory.
   const detachListenerPortChanged = args.sharedSyncListener?.onPortChanged((change) => {
-    if (disposed || !hostService) return;
+    if (disposed) return;
+    // The device row and the lease describe this machine whether or not this
+    // scope hosts right now; leaving them on the old port would advertise it.
     hostSingletonLease?.updatePort(change.to);
     deviceRegistryService.touchLocalDevice({
       lastSeenAt: nowIso(),
@@ -1241,6 +1243,7 @@ export function createSyncService(args: SyncServiceArgs) {
       to: change.to,
       reason: change.reason,
     });
+    if (!hostService) return;
     hostService.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
     void args.requestAccountMachinePublish?.();
     scheduleStatusEmit();
@@ -1511,6 +1514,9 @@ export function createSyncService(args: SyncServiceArgs) {
     }
     const current = hostService;
     hostService = null;
+    // Moving back to 8787 is this host's job; a scope that stopped hosting
+    // must not keep moving the shared listener.
+    stopCanonicalPortMigrateTimer();
     try {
       await current.dispose();
     } finally {

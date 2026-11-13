@@ -32,8 +32,6 @@ export const SYNC_HOST_MAX_PORT = 8999;
  * local side door, before an OS-assigned (ephemeral) port.
  */
 export const SYNC_PORT_SCAN_ABOVE = 24;
-/** Lowest port an OS hands out as ephemeral on Linux; macOS and Windows start higher. */
-export const SYNC_EPHEMERAL_PORT_FLOOR = 32_768;
 
 /**
  * Bind order for the shared sync listener.

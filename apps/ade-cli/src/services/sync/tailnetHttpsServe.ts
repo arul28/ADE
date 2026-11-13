@@ -2,28 +2,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { MachineTailnetHttpsRoute } from "../../../../desktop/src/shared/types";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import {
-  DEFAULT_SYNC_HOST_PORT,
-  SYNC_EPHEMERAL_PORT_FLOOR,
-  SYNC_HOST_MAX_PORT,
-  SYNC_PORT_SCAN_ABOVE,
-} from "./syncProtocol";
+import { enqueueTailscaleServe } from "./tailscaleServeCommand";
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT, SYNC_PORT_SCAN_ABOVE } from "./syncProtocol";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
 
 const execFileAsync = promisify(execFile);
-
-/**
- * One queue for every `tailscale serve` change ADE makes on this machine.
- * Serve is machine-global and two commands for one port (a publish to the
- * side door, then back to the sync port) must land in the order they were
- * issued, or the older one can win and forward to a port nothing serves.
- */
-let serveQueue: Promise<unknown> = Promise.resolve();
-export function enqueueTailscaleServe<T>(work: () => Promise<T>): Promise<T> {
-  const run = serveQueue.then(work, work);
-  serveQueue = run.catch(() => undefined);
-  return run;
-}
 
 /** A stuck `tailscale` can ignore SIGTERM, so a timeout kills it outright. */
 const runServe = (serveArgs: string[], timeoutMs: number) => enqueueTailscaleServe(() => execFileAsync(
@@ -35,11 +18,10 @@ const runServe = (serveArgs: string[], timeoutMs: number) => enqueueTailscaleSer
 /**
  * The loopback port an ADE serve entry for `syncPort` forwards to, or null when
  * the forward is not one ADE makes: `127.0.0.1:<syncPort>` itself, or the side
- * door the listener opens while another program holds that address (a few
- * ports above it, or an OS-assigned one). Anything else is never treated as
- * ADE's. A stale side door cannot be identity-probed, so this is a shape
- * match: a hand-set serve of exactly this shape is treated as ADE's too, and
- * reclaim removes it only while nothing serves at either end.
+ * door the listener opens a few ports above it while another program holds
+ * that address. A stale side door cannot be identity-probed, so this is a
+ * shape match: a hand-set serve of exactly this shape is treated as ADE's
+ * too, and reclaim removes it only while nothing serves at either end.
  */
 export function adeLoopbackForwardPort(syncPort: number, forward: unknown): number | null {
   if (typeof forward !== "string") return null;
@@ -47,8 +29,7 @@ export function adeLoopbackForwardPort(syncPort: number, forward: unknown): numb
   if (!match) return null;
   const target = Number(match[1]);
   if (!(target > 0 && target <= 65_535)) return null;
-  const isSideDoor = (target > syncPort && target <= syncPort + SYNC_PORT_SCAN_ABOVE)
-    || target >= SYNC_EPHEMERAL_PORT_FLOOR;
+  const isSideDoor = target > syncPort && target <= syncPort + SYNC_PORT_SCAN_ABOVE;
   return target === syncPort || isSideDoor ? target : null;
 }
 

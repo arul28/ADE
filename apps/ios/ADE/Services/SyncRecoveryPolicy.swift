@@ -367,8 +367,6 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
     message = "This computer is handling too many connections. Try again shortly."
   case _ where syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue):
     message = syncRelayHostDidNotAnswerMessage()
-  case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506:
-    message = "Can’t reach this computer right now. Reconnecting now."
   default:
     message = "Can’t reach this computer right now. Reconnecting now."
   }

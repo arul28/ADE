@@ -127,7 +127,6 @@ export function deriveListenerHealth(args: DeriveListenerHealthArgs): ListenerHe
       shadowedBy: args.bound && args.rawValidation.port === args.listenerPort
         ? args.rawValidation.shadowedBy ?? null
         : null,
-      loopbackPort: loopbackAdeValidated ? args.rawValidation.loopbackPort ?? null : null,
     },
   };
 }
