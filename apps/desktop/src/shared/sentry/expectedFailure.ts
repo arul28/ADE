@@ -165,7 +165,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // The network between this machine and GitHub, the account vault or an SSH host.
   /^GitHub API (?:request|response body) timed out\. Check network access on this machine\.$/,
   /^Couldn't read this PR's Actions runs from GitHub: Can't reach GitHub\b/,
-  /ADE couldn't reach your ADE account's vault from this computer/,
+  /ADE couldn't reach your ADE account's vault from this (?:computer|machine)/,
   /^Nothing is accepting SSH connections at \S+\. /,
   // A peer (phone, web) holding a project id from another machine.
   /^This project is not on this ADE machine\b/,

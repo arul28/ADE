@@ -12,6 +12,8 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
+import type { RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -55,6 +57,7 @@ import {
   routedToLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
+import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -586,6 +589,7 @@ import {
   formatAppleTests,
   formatAppleWindow,
   shapeAppleLeaseAnswer,
+  xcodeGenNote,
 } from "./cliAppleFormat";
 import { formatCloudStatus } from "./cliCloudStatus";
 import {
@@ -750,6 +754,7 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { DEVICES_HELP } from "./help/devicesHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -1597,6 +1602,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
@@ -1879,6 +1888,7 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   sessions: "session",
   project: "projects",
   machine: "machines",
+  device: "devices",
   quota: "usage",
   quotas: "usage",
   disk: "storage",
@@ -2104,6 +2114,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
   re-pairs as soon as it lands — no second command.
 `,
+  devices: DEVICES_HELP,
+
   search: `${ADE_BANNER}
   ADE Search
 
@@ -2806,14 +2818,21 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  On another machine (this chat's work copy there: a hidden worktree at your
-  commit, which must be on origin, with your uncommitted changes applied):
+  On another machine (in your code there: ADE keeps a copy of this chat's code
+  on that machine, at your commit, which must be pushed, with your uncommitted
+  changes applied):
     $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
-    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
-    $ ade shell clean --machine <name>               Delete this chat's work copy there
-  Each call opens a new shell there and syncs the copy again, so put all the
-  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
+    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
+    $ ade shell clean --machine <name>               Delete your code there and everything it held
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+  --code synced (the default) makes your code there match this checkout before
+  the command runs. Each call opens a new shell there and syncs again, so put
+  all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --no-code needs no commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
@@ -2878,13 +2897,15 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \\ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+  On another machine (your code there, the one ade shell start --machine uses;
+  paths there are relative to its top, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--code fresh drops it); one that replaces a file of
+  the repo is a change made there, so the next sync needs --code as-is or
+  --code fresh.
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -3081,9 +3102,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
-                                                    default; --fork carries full history). --machine names the
+                                                    default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
                                                     keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
@@ -3097,9 +3118,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+    $ ade chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
@@ -3795,6 +3816,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
 
+  Another machine: --machine <name> drives that machine's screen (Mac,
+  Windows or Linux Desktop) with no lane there. The screen belongs to your
+  code there (ADE puts it there at your commit on the first start or open;
+  the commit must be pushed), and this chat owns it, as for a lane. status,
+  windows and stream status put nothing there. --lane is refused. screen
+  proof and a captioned recording are filed in this chat's proof drawer.
+  lease and start --shared ask in a chat on that machine, so they are
+  refused; use the default input instead. ade devices use screen@<name>
+  sends every screen command there with no flag (ade devices --text lists
+  the screens you can use). ade shell clean --machine <name> deletes your
+  code there and closes its screen.
+    $ ade screen start --machine "MacBook Pro" --text
+    $ ade screen open TextEdit --machine "MacBook Pro" --text
+    $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
+
   Errors (each prints its next step):
     WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
     WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ADE did not start); ask
@@ -4048,14 +4084,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there works for this chat's work
-  copy (a hidden worktree at your commit, made on first use; the commit must
-  be on origin). Every view of this chat then shows it in the Android tool.
-  status and devices make no copy. --lane <id> uses a lane on that machine
+  no new lane. Without --lane, the emulator there runs your code there (ADE
+  puts it there at your commit on first use; the commit must be pushed).
+  Every view of this chat then shows it in the Android tool. status and
+  devices put nothing there. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  --gradle or --apk, test and preview make your code there match this
+  checkout first, uncommitted changes included (--code as-is uses it as it
+  is, --code fresh throws away changes made there; an APK that git ignores
+  does not travel: use --gradle). A Gradle build or a boot there waits as
+  long as it would here and prints "still running" lines to stderr
+  meanwhile. --clone sets this repo up there first. The emulator's lease is
+  let go when this chat's turn ends (it stays on). ade devices use
+  android@<name> sends every android command there with no flag (ade
+  devices --text lists the emulators you can use).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -4186,6 +4229,20 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The app runs from your code there (at your commit; the commit must
+  be pushed), and this chat owns the session, as for a lane. launch makes
+  your code there match this checkout first, uncommitted changes included
+  (--code as-is uses it as it is, --code fresh throws away changes made
+  there) and runs in a terminal there; --cwd must be inside this checkout and
+  is the same folder there. status and drivers put nothing there. --lane is
+  refused. proof and a captioned recording are filed in this chat's proof
+  drawer. ade devices use app@<name> sends every app-control command there
+  with no flag. ade shell clean --machine <name> deletes your code there and
+  stops its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -5489,7 +5546,7 @@ const REMOVED_LAUNCH_FLAGS: Readonly<Record<string, string>> = {
 /** `chat handoff` / `chat fork` flag spellings that were removed. */
 const REMOVED_HANDOFF_FLAGS: Readonly<Record<string, string>> = {
   "--model-id": "--model",
-  "--to-machine": "--machine",
+  "--to-machine": "--to",
   "--where": "--options",
   "--handoff-note": "--note",
   "--from-turn": "--through-turn",
@@ -5533,6 +5590,47 @@ function rejectFlagOperands(args: readonly string[], names: readonly string[]): 
       throw new CliUsageError(`${args[index]} requires a value.`);
     }
   }
+}
+
+/**
+ * `chat handoff|move`: the machine the chat moves to, `--to <machine>` or
+ * `--machine`, its older spelling. Null when neither is given; both at once,
+ * twice, or with no machine is refused.
+ */
+function readMoveDestination(args: string[]): string | null {
+  const names = ["--to", "--machine"] as const;
+  const flags = flagNamesOutsideFreeText(args);
+  if (flags.has("--to") && flags.has("--machine")) {
+    throw new CliUsageError("--to and --machine name the same destination: use --to.");
+  }
+  // The first destination flag outside free text: `--note "--to"` is a note.
+  let at = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    const name = token.split("=")[0]!;
+    if ((names as readonly string[]).includes(name)) {
+      at = index;
+      break;
+    }
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) index += 1;
+  }
+  let value: string | null = null;
+  if (at >= 0) {
+    const token = args[at]!;
+    if (token.includes("=")) {
+      value = token.slice(token.indexOf("=") + 1);
+      args.splice(at, 1);
+    } else {
+      const next = args[at + 1];
+      value = next == null || next.startsWith("--") ? "" : next;
+      args.splice(at, next == null || next.startsWith("--") ? 1 : 2);
+    }
+  }
+  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+  const left = flagNamesOutsideFreeText(args);
+  if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
+  return value;
 }
 
 export function readValue(args: string[], names: readonly string[]): string | null {
@@ -5877,7 +5975,7 @@ function envLaneIdForLaneCommand(): string | null {
   const laneId = process.env.ADE_LANE_ID?.trim() || null;
   if (isRemoteWorkLaneId(laneId)) {
     throw new CliUsageError(
-      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      "This shell runs in the code a chat on another machine keeps here, so it has no ADE lane. "
       + "Pass --lane <lane> to act on a lane of this machine.",
     );
   }
@@ -6755,7 +6853,7 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
 }
 
 /** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
-const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+export const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
 ]);
 
@@ -10708,8 +10806,8 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       formatText: (result: unknown) => {
         const value = unwrapActionEnvelope(result);
         return isRecord(value) && value.released === true
-          ? "Deleted this chat's work copy on that machine."
-          : "This chat had no work copy on that machine.";
+          ? "Deleted your code on that machine, and everything it held."
+          : "This chat had no code on that machine.";
       },
     };
   }
@@ -12089,7 +12187,7 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
-    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    rejectFlagOperands(args, ["--note", "--status", "--retry"]);
     const statusBatchId = readValue(args, ["--status"]);
     const retryBatchId = readValue(args, ["--retry"]);
     if (statusBatchId !== null && retryBatchId !== null) {
@@ -12110,9 +12208,9 @@ function buildChatPlan(args: string[]): CliPlan {
         steps: [actionStep("result", "chat", action, { batchId })],
       };
     }
-    const machine = readValue(args, ["--machine"]);
-    if (machine === null || !machine.trim()) {
-      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    const machine = readMoveDestination(args);
+    if (machine === null) {
+      throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
     const includeDescendants = !readFlag(args, ["--no-descendants"]);
@@ -13303,7 +13401,7 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "handoff" || sub === "fork") refuseRemovedFlags(args, REMOVED_HANDOFF_FLAGS);
   if (sub === "handoff") {
-    // The first control flag present wins. --machine with any of them is
+    // The first control flag present wins. --to (or --machine) with any of them is
     // refused earlier, by extractMachineTargeting.
     const controls = [
       { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
@@ -13312,10 +13410,7 @@ function buildChatPlan(args: string[]): CliPlan {
     ];
     const flagNames = flagNamesOutsideFreeText(args);
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
-    const handoffMachine = readValue(args, ["--machine"]);
-    if (handoffMachine !== null && !handoffMachine.trim()) {
-      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
-    }
+    const handoffMachine = readMoveDestination(args);
     if (control) {
       return {
         kind: "execute",
@@ -13326,7 +13421,7 @@ function buildChatPlan(args: string[]): CliPlan {
     if (handoffMachine !== null) {
       // Move the chat to another machine on the account. The brain runs the
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
-      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Never forwarded: --to names the destination (cliMachineTargeting).
       // Free text first: a prompt of "--fork" is text, not a flag.
       const continuationPrompt = readValue(args, ["--prompt", "--note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
@@ -15074,8 +15169,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     // One file into or out of this chat's work copy on another machine
     // (cliRemoteWork.ts sends it in chunks); there is no local form.
     const usage = sub === "push"
-      ? "ade files push --machine <name> <local file> <path in the work copy there>"
-      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+      ? "ade files push --machine <name> <local file> <path in your code there>"
+      : "ade files pull --machine <name> <path in your code there> <local file or folder>";
     if (!machine) {
       throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
     }
@@ -16018,12 +16113,7 @@ async function runChatHereThenElsewhere(
   if (match?.isThisMachine && match.scope.kind === "project" && match.scope.rootPath
     && !pathsEqual(path.resolve(match.scope.rootPath), path.resolve(resolveRoots(parsed.options).projectRoot))) {
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
-    const restoreShellScope = dropShellScopeForOtherProject(there.options);
-    try {
-      return await runParsedCli(there);
-    } finally {
-      restoreShellScope();
-    }
+    return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
@@ -23661,6 +23751,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--option",
   "--choice",
   "--answer",
+  // `--code synced|as-is|fresh` on a command bound for another machine.
+  "--code",
   "--answers-json",
   "--schedule-id",
   "--job-id",
@@ -23668,10 +23760,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
-  // `chat handoff` keeps --machine (it names the move's destination, so it
-  // is not extracted for forwarding); a session given after it must not be
-  // read as the machine's value.
+  // `chat handoff|move` keep --to and its alias --machine (they name the
+  // move's destination, so they are not extracted for forwarding); a session
+  // given after one must not be read as the machine's value.
   "--machine",
+  "--to",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -25487,7 +25580,8 @@ class SocketJsonRpcClient {
     );
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  /** `requestOptions.timeoutMs` overrides the connection's wait for this one call. */
+  request(method: string, params?: unknown, requestOptions?: { timeoutMs?: number }): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
@@ -25504,7 +25598,7 @@ class SocketJsonRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Timed out waiting for ${method}.`));
-      }, this.timeoutMs);
+      }, requestOptions?.timeoutMs ?? this.timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timer });
       this.socket.write(body, "utf8", (error) => {
         if (!error) return;
@@ -30830,6 +30924,8 @@ async function runServe(
   // Bound once the agents' machine bridge exists (below); a move asked for
   // before then is refused as "can't reach other machines".
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
+  /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
+  let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     openStrikes: projectOpenStrikes,
@@ -30849,6 +30945,7 @@ async function runServe(
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
+    ...(embedded ? {} : { releaseRemoteWorkDevices: (event: RemoteWorkTurnRelease) => releaseRemoteWorkDevices?.(event) }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -31101,6 +31198,37 @@ async function runServe(
 
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
+  // A chat that drove a simulator, emulator or screen on another machine
+  // through its work copy lets go of it there when its turn ends (that
+  // machine never sees the chat end). `release_remote_work_devices` there
+  // frees only this chat's own claims and powers nothing off. Best effort:
+  // a machine that is offline or asleep is skipped (never woken), and the
+  // device leases there still time out by themselves.
+  if (!embedded) {
+    releaseRemoteWorkDevices = ({ sessionId, turnId, uses }) => {
+      void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+        machine: use.machineKey,
+        scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+        method: "ade/actions/call",
+        // The ended turn goes in the arguments, not the caller claim: there
+        // it would count as the chat's latest turn, after its next one.
+        params: { name: "release_remote_work_devices", arguments: turnId ? { turnId } : {} },
+        caller: { chatSessionId: sessionId, permissionLevel: null },
+        timeoutMs: 30_000,
+        wake: false,
+      }).catch((error: unknown) => {
+        headlessProjectLogger.info("remote_work.turn_release_skipped", {
+          machineKey: use.machineKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })))).catch((error: unknown) => {
+        headlessProjectLogger.warn("remote_work.turn_release_bridge_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+  }
+
   if (!embedded) {
     crossMachineHandoffTransport = {
       listMachines: async (options) => {
@@ -31168,10 +31296,13 @@ async function runServe(
     // start and then hourly deletes copies unused for a week and copies whose
     // chat its own machine says is deleted or archived.
     const sweepWorkCopies = async (): Promise<void> => {
-      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+      const [{ sweepMachineRemoteWork }, { sweepRemoteWorkScratch }, { parseForeignCallerSessionId }] = await Promise.all([
         import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/main/services/remoteWork/remoteWorkScratch"),
         import("../../desktop/src/shared/runtimeClientNames"),
       ]);
+      // `--scratch` folders a restart left behind.
+      sweepRemoteWorkScratch(undefined, headlessProjectLogger);
       await sweepMachineRemoteWork({
         logger: headlessProjectLogger,
         ownerGone: async (owner) => {
@@ -36556,6 +36687,8 @@ function formatIosSimLaunch(value: unknown): string {
       "warning: launched a prebuilt binary — current changes not included.",
     );
   }
+  const generated = xcodeGenNote(session.generatedXcodeProjects);
+  if (generated) lines.push(generated);
   return lines.join("\n");
 }
 
@@ -40964,6 +41097,9 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
+// eslint-disable-next-line no-control-regex
+const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
 
 /**
  * Follow a shell `shell start` just started until it ends: print its output as
@@ -40983,14 +41119,36 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
-  const readMore = async (): Promise<JsonObject | null> => {
-    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
-    if (!isRecord(read)) return null;
-    const data = typeof read.data === "string" ? read.data : "";
-    if (data) {
-      if (options.text) process.stdout.write(data);
-      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+  // A read can end inside a screen code; its start waits for the next read
+  // so the pipe never gets half a code the stripper could not match.
+  let heldCode = "";
+  const writeText = (data: string, last: boolean): void => {
+    if (!options.text) return;
+    if (process.stdout.isTTY) {
+      if (data) process.stdout.write(data);
+      return;
     }
+    let text = `${heldCode}${data}`;
+    heldCode = "";
+    const partial = last ? null : FOLLOW_SHELL_PARTIAL_CODE.exec(text);
+    if (partial && text.length - partial.index <= 256) {
+      heldCode = text.slice(partial.index);
+      text = text.slice(0, partial.index);
+    }
+    if (text) process.stdout.write(stripAnsiWithOptions(text, { preserveCarriageReturns: true }));
+  };
+  const readMore = async (last = false): Promise<JsonObject | null> => {
+    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
+    if (!isRecord(read)) {
+      if (last) writeText("", true);
+      return null;
+    }
+    const data = typeof read.data === "string" ? read.data : "";
+    // To a pipe (an agent reading it), without the screen codes a terminal
+    // adds (Windows' console sends a title, clear screen and mode switches
+    // around the first line of output).
+    if (data || last) writeText(data, last);
+    if (data) output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
@@ -41004,7 +41162,7 @@ async function followShellToExit(
         : null));
     if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
-      await readMore();
+      await readMore(true);
       const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
       return {
         ...created,
@@ -41687,19 +41845,19 @@ function isChatLocateCommand(command: string[]): boolean {
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  // A device command with no --machine and no --lane follows the chat's
+  // device choice (`ade devices use`), exactly as --machine would.
+  const parsed = extractMachineTargeting(await withChatDeviceChoice(parseCliArgs(argv)));
   await applyAccountProjectSelector(parsed.options);
-  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
-  try {
+  return await withShellScopeFor(parsed.options, async () => {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
+    if (isDevicesCommand(parsed.command)) return await runDevicesCommand(parsed);
     if (!parsed.options.machine) {
       const sessionId = chatIdForLookup(parsed);
       return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);
     }
     return await runOnMachine(parsed);
-  } finally {
-    restoreShellScope();
-  }
+  });
 }
 
 /**
@@ -41792,47 +41950,79 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
  * names another project with `--project-root` must not pick that lane or
  * worktree up as its default: the lane is not in the named project, and a
  * worktree there would route the call back to the shell's project. For this
- * run only, the shell's lane and worktree are dropped (an explicit
- * `--workspace-root` still wins). Returns the undo.
+ * run only, the shell's lane and worktree are dropped. An explicit
+ * `--workspace-root` wins, and stands in for the shell's `ADE_WORKSPACE_ROOT`
+ * for the run: plan builders (`proof`'s `callerRoot`) read only the env.
  */
-function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Promise<T> {
+  const workspaceRoot = options.workspaceRoot;
+  const run = workspaceRoot ? () => withShellEnv({ ADE_WORKSPACE_ROOT: path.resolve(workspaceRoot) }, fn) : fn;
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
-  const saved: Array<[string, string | undefined]> = [];
-  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
-    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
-    saved.push([name, process.env[name]]);
-    delete process.env[name];
-  }
-  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return run();
+  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
+  if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
       `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
-  return () => {
+  return withoutShellEnv(names, run);
+}
+
+/**
+ * Runs `fn` with the named variables of this shell out of the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withoutShellEnv<T>(names: readonly string[], fn: () => T): T {
+  return withShellEnv(Object.fromEntries(names.map((name) => [name, undefined])), fn);
+}
+
+/**
+ * Runs `fn` with these variables set (undefined: removed) in the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withShellEnv<T>(values: Readonly<Record<string, string | undefined>>, fn: () => T): T {
+  const names = Object.keys(values);
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  const restore = () => {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   };
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result instanceof Promise) return result.finally(restore) as T;
+  restore();
+  return result;
+}
+
+/**
+ * Runs `fn` without this shell's lane. That lane is a lane on THIS machine:
+ * a plan for another machine that defaulted to it would name a lane that
+ * machine has never heard of. There the caller says `--lane <id>` (from
+ * `ade lanes list --machine …`) or lets the target pick, as `ade chat launch`
+ * does with a new lane.
+ */
+export function withoutShellLane<T>(fn: () => T): T {
+  return withoutShellEnv(["ADE_LANE_ID"], fn);
 }
 
 async function runOnMachine(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
-  // This shell's lane is a lane on THIS machine. Plan builders that default
-  // to it would name a lane the other machine has never heard of; there the
-  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
-  // target pick, as `ade chat launch` does with a new lane. Only for this run.
-  const laneId = process.env.ADE_LANE_ID;
-  delete process.env.ADE_LANE_ID;
-  try {
-    return await runParsedCli(parsed);
-  } finally {
-    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
-  }
+  return await withoutShellLane(() => runParsedCli(parsed));
 }
 
 /**
@@ -42502,7 +42692,10 @@ async function main(): Promise<void> {
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
-      const desktopHint = macDesktopErrorHint(error.message);
+      // A refusal from another machine (`--machine`) is about that machine,
+      // not this one.
+      const refusedOnOtherMachine = isRecord(error.details) && typeof error.details.machine === "string";
+      const desktopHint = macDesktopErrorHint(error.message, refusedOnOtherMachine ? null : process.platform);
       if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       const androidHint = androidEmulatorErrorHint(error.message);
       if (androidHint) await writeProcessOutput(process.stderr, `${androidHint}\n`);

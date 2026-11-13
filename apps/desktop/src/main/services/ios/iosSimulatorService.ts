@@ -1,4 +1,4 @@
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, onRemoteWorkCopyReleased, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -179,6 +179,7 @@ import { readAppleDeviceMarker } from "./appleDeviceMarker";
 
 import { appleAppOnDevice, appleLaneDerivedDataPath, healMovedDerivedData } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
+import { generateXcodeGenProjects, type XcodeGenOptions } from "./xcodeGenProjects";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
   createLaneDeviceMaintenance,
@@ -547,6 +548,8 @@ type ResolvedLaunchTarget = {
   appBundlePath: string | null;
   shouldBuild: boolean;
   shouldInstall: boolean;
+  /** Folders whose `project.yml` XcodeGen turned into a project just before this (`xcodeGenProjects.ts`). */
+  generatedXcodeProjects?: string[];
 };
 
 type PbxApplicationTarget = {
@@ -2304,6 +2307,17 @@ async function discoverXcodeProjectPaths(projectRoot: string): Promise<string[]>
 
   await addProjectPath(path.join(projectRoot, ADE_IOS_PROJECT));
   await scanDirectory(projectRoot);
+  // Each folder in the root too (`ios/`, `MyApp/`): the same folders XcodeGen
+  // generates in (`xcodeGenFoldersToGenerate`), so a project it made there lists.
+  let rootEntries: fs.Dirent[];
+  try {
+    rootEntries = await fs.promises.readdir(projectRoot, { withFileTypes: true });
+  } catch {
+    rootEntries = [];
+  }
+  await Promise.all(rootEntries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules" && !entry.name.endsWith(".xcodeproj"))
+    .map((entry) => scanDirectory(path.join(projectRoot, entry.name))));
 
   const appsRoot = path.join(projectRoot, "apps");
   await scanDirectory(appsRoot);
@@ -2622,13 +2636,79 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!isRemoteWorkLaneId(laneId)) return false;
     const runtime = runtimes.get(laneKey(laneId));
     if (!runtime) return false;
+    // An app session its chat let go of at a turn's end (no owner) does not
+    // count: it would keep the copy for good.
     return Boolean(
-      runtime.activeSession
+      runtime.activeSession?.chatSessionId
       || runtime.activeLaunchId
       || runtime.hub?.getDeviceSession()
       || runtime.streamStatus.running
       || recordings.active({ laneId: runtime.key }),
     );
+  });
+
+  /**
+   * A work copy was deleted (`ade shell clean`, the sweep, its chat gone):
+   * what its lane held here goes with it, so nothing stays behind. Its app and
+   * device sessions end, a simulator a chat on another machine booted is
+   * powered off again (a person's own simulator that was already on stays
+   * on), and the device is given back.
+   */
+  const releaseWorkCopyDevice = async (laneId: string): Promise<void> => {
+    const runtime = runtimes.get(laneKey(laneId));
+    const owner = runtime?.activeSession?.chatSessionId ?? runtime?.hub?.getDeviceSession()?.chatSessionId ?? null;
+    if (owner) {
+      await releaseIfOwnedBy(owner).catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_owner_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    // An app session its chat let go of at the end of a turn has no owner,
+    // and ends with the copy all the same.
+    if (runtime?.activeSession && !runtime.activeSession.chatSessionId) {
+      await shutdown({ laneId, force: false }).catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_session_end_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    // The device part runs in the lane's device queue (none of the steps
+    // above queue there): a start for the next copy with this id waits, so
+    // this never powers off or detaches the device that start bound.
+    const releaseDevice = async (): Promise<void> => {
+      // A capture with no owner (a start on a simulator that was already on)
+      // is stopped here: the registry's detach below leaves it running.
+      if (runtime?.streamStatus.running) {
+        await stopRuntimeStream(runtime).catch((error: unknown) => {
+          args.logger.warn("apple.work_copy_stream_stop_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+      const device = laneDevices.get(laneId);
+      if (!device) {
+        // No device now, but one it gave up earlier is still on record: the
+        // next copy with this id must not be told the lane gave up its device.
+        await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
+          args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        });
+        return;
+      }
+      const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
+      let poweredOff = false;
+      if (!heldElsewhere && bootedForWorkCopy.get(device.udid) === laneId) {
+        bootedForWorkCopy.delete(device.udid);
+        poweredOff = await power.powerOffDevice(device.udid, "power-off").catch((error: unknown) => {
+          args.logger.warn("apple.work_copy_device_power_off_failed", { laneId, udid: device.udid, error: error instanceof Error ? error.message : String(error) });
+          return false;
+        });
+      }
+      await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+      args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff });
+    };
+    await (runtime ? serializeDeviceLifecycle(runtime, releaseDevice) : releaseDevice());
+  };
+  const offWorkCopyReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
+    void releaseWorkCopyDevice(laneId).catch((error: unknown) => {
+      args.logger.warn("apple.work_copy_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+    });
   });
 
   const runtimeForKey = (key: string): LaneRuntime => {
@@ -2801,7 +2881,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // `fill-element` reads its field back itself, a better check than focus.
         typeText: ({ secure, ...textArgs }) => typeText({ ...textArgs, laneId: runtime.laneId }, { checkFocus: false, secure }),
         readElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
-        bootDevice: (device) => power.bootDevice(device),
+        bootDevice: (device) => ensureDeviceBooted(device, runtime.laneId),
         powerOffDevice: (deviceUdid) => power.powerOffDevice(deviceUdid, "hub-power"),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
         getAppSessionOwner: () => runtime.activeSession?.chatSessionId ?? null,
@@ -3331,6 +3411,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       source?: AppleInputSource;
       /** The call said `noRecord` (`--no-record`). */
       noRecord?: boolean | null;
+      /**
+       * The calling chat. Owns the recording when the lane's app session has
+       * no owner (its chat let go at a turn's end and kept it running), so
+       * that chat's turn end still finds it.
+       */
+      chatSessionId?: string | null;
     },
   ): void => {
     // Opted out for this call (`--no-record`) or for the lane (`auto-record
@@ -3341,7 +3427,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       autoStart,
       laneId: runtime.key,
       udid: input.udid,
-      chatSessionId: runtime.activeSession?.chatSessionId ?? null,
+      chatSessionId: runtime.activeSession?.chatSessionId ?? (input.chatSessionId?.trim() || null),
       kind: input.kind,
       x: input.x,
       y: input.y,
@@ -3477,6 +3563,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     );
 
   /**
+   * Simulators booted here for a work copy (a chat on another machine), by
+   * udid → the copy's lane id. When the copy goes, they go back powered off,
+   * as they were (`releaseWorkCopyDevice`). In memory: a restart forgets it.
+   */
+  const bootedForWorkCopy = new Map<string, string>();
+  const noteBootFor = (laneId: string | null | undefined, udid: string, bootedNow: boolean): void => {
+    if (bootedNow && laneId && isRemoteWorkLaneId(laneId)) bootedForWorkCopy.set(udid, laneId);
+  };
+  /**
    * Every boot and power-off goes through here, so the helper reset, the
    * recording stop and the device-list refresh cannot be left out of a path.
    * Lambdas, because the functions they call are declared further down.
@@ -3502,12 +3597,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /**
    * Boot a shut-down simulator and wait until CoreSimulator says it is ready.
    *
-   * Only explicit starts come here: `deviceStart`, and `startStream` when its
-   * caller passed `boot: true`. A viewer that only wants to watch gets
-   * `APPLE_DEVICE_OFF` instead (see `startStream`).
+   * Only explicit starts come here: `deviceStart`, a launch, the hub's boot,
+   * and `startStream` when its caller passed `boot: true`. A viewer that only
+   * wants to watch gets `APPLE_DEVICE_OFF` instead (see `startStream`).
+   *
+   * The one boot path for a lane's own device, so a boot for a work copy is
+   * always noted (`bootedForWorkCopy`). Answers whether this call booted it.
    */
-  const ensureDeviceBooted = async (device: IosSimulatorDevice): Promise<void> => {
-    await power.bootDevice(device);
+  const ensureDeviceBooted = async (device: IosSimulatorDevice, laneId?: string | null): Promise<boolean> => {
+    const bootedNow = await power.bootDevice(device);
+    noteBootFor(laneId, device.udid, bootedNow);
+    return bootedNow;
   };
 
   /**
@@ -3912,8 +4012,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return targets;
   };
 
+  /**
+   * XcodeGen for a build: only in the folder of the project the caller named
+   * (`projectPath`, or the project a `targetId` encodes), else everywhere.
+   */
+  const xcodeGenOptions = (named: { projectPath?: string | null; targetId?: string | null }): XcodeGenOptions => {
+    const decoded = decodeTargetId(named.targetId);
+    const projectPath = named.projectPath?.trim() || (decoded[0] === "project" ? decoded[1] ?? null : null);
+    return { run: (command, commandArgs, options) => run(command, commandArgs, options), logger: args.logger, projectPath };
+  };
+
   const listLaunchTargets = async (targetArgs: IosSimulatorListLaunchTargetsArgs = {}): Promise<IosSimulatorLaunchTarget[]> => {
     const projectRoot = await resolveScopedRoot(targetArgs);
+    // A chat's work copy is ADE's own, so a list there may write: XcodeGen
+    // makes the projects of its `project.yml` specs first, or an XcodeGen-only
+    // app would list nothing. A lane's own checkout is only read.
+    const laneId = targetArgs.laneId?.trim();
+    if (laneId && isRemoteWorkLaneId(laneId) && !targetArgs.projectRoot) {
+      await generateXcodeGenProjects(projectRoot, xcodeGenOptions({})).catch((error: unknown) => {
+        args.logger.warn("apple.xcodegen_before_list_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
     const [projectTargets, builtTargets, installedTargets] = await Promise.all([
       listProjectLaunchTargets(projectRoot),
       listBuiltLaunchTargets(projectRoot),
@@ -4687,7 +4806,22 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return { ok: true, path: openPath };
   };
 
+  /**
+   * The target a build uses, after XcodeGen has made the project of any
+   * `project.yml` that has none (or refreshed its own earlier one). Not for a
+   * prebuilt `.app` or a call that does not build.
+   */
   const resolveLaunchTarget = async (launchArgs: IosSimulatorLaunchArgs, deviceUdid: string, projectRoot: string): Promise<ResolvedLaunchTarget> => {
+    // An installed or prebuilt app never builds, so nothing is generated for it.
+    const targetKind = decodeTargetId(launchArgs.targetId)[0];
+    const generatedXcodeProjects = launchArgs.appBundlePath || launchArgs.build === false || targetKind === "installed" || targetKind === "built"
+      ? []
+      : await generateXcodeGenProjects(projectRoot, xcodeGenOptions(launchArgs));
+    const resolved = await resolveLaunchTargetFromProjects(launchArgs, deviceUdid, projectRoot);
+    return generatedXcodeProjects.length ? { ...resolved, generatedXcodeProjects } : resolved;
+  };
+
+  const resolveLaunchTargetFromProjects = async (launchArgs: IosSimulatorLaunchArgs, deviceUdid: string, projectRoot: string): Promise<ResolvedLaunchTarget> => {
     const targets = await listLaunchTargets({ deviceUdid, projectRoot });
     const explicitAppBundle = launchArgs.appBundlePath
       ? path.isAbsolute(launchArgs.appBundlePath)
@@ -5134,7 +5268,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       } else {
         emitLaunchProgress(launchId, "boot-simulator", "running", "Booting simulator...", device.name, { deviceUdid: device.udid });
       }
-      await power.bootDevice(device);
+      await ensureDeviceBooted(device, runtime.laneId);
       emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator services are ready.", device.name, { deviceUdid: device.udid });
 
       currentStep = "open-simulator";
@@ -5271,6 +5405,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         buildRoot: projectRoot,
         usedInstalledBinary,
         capabilities: currentCapabilities(),
+        ...(target.generatedXcodeProjects ? { generatedXcodeProjects: target.generatedXcodeProjects } : {}),
       };
     } catch (error) {
       emitLaunchProgress(
@@ -6086,27 +6221,44 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * session on one lane and a device session on another, and a per-lane release
    * would leave the second one claimed forever.
    */
-  const releaseIfOwnedBy = async (chatSessionId: string | null | undefined): Promise<IosSimulatorShutdownResult> => {
+  const releaseIfOwnedBy = async (
+    chatSessionId: string | null | undefined,
+    /**
+     * `keepRunning`: let go of what the chat holds (leases, automatic
+     * recordings, the device session, its claim on the app session) but
+     * leave the simulator on, the app open and its live view running. A chat on
+     * another machine whose turn ended asks for this (`release_remote_work_devices`).
+     */
+    options: { keepRunning?: boolean } = {},
+  ): Promise<IosSimulatorShutdownResult> => {
     const trimmed = chatSessionId?.trim() || null;
     if (!trimmed) return { released: false, previousSession: null };
+    // Its device leases (any holder name its agents gave) pass to the next in
+    // line now, not when their TTL runs out. First, with no await before it:
+    // a turn-end release (`keepRunning`) is checked against the chat's newer
+    // turn just before this call, and a lease that turn takes during an await
+    // would otherwise be ended here.
+    const leasesEnded = deviceLeases.endChat(trimmed);
+    if (leasesEnded > 0) args.logger.info("apple.device_leases_ended_with_chat", { chatSessionId: trimmed, count: leasesEnded });
     // A chat's turn ending also ends the recordings it started automatically.
-    await recordings.onTurnEnded(trimmed).catch((error: unknown) => {
+    // Started here, with no await before it, so the list of recordings to stop
+    // is fixed now: a recording the chat's next turn starts while the claims
+    // below are released is not this turn's. On a turn end it runs beside the
+    // claim releases (nothing is shut down then) and is awaited after them.
+    const recordingsEnded = recordings.onTurnEnded(trimmed).catch((error: unknown) => {
       args.logger.debug("apple.recording_turn_end_failed", {
         chatSessionId: trimmed,
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    // Its device leases (any holder name its agents gave) pass to the next in
-    // line now, not when their TTL runs out.
-    const leasesEnded = deviceLeases.endChat(trimmed);
-    if (leasesEnded > 0) args.logger.info("apple.device_leases_ended_with_chat", { chatSessionId: trimmed, count: leasesEnded });
+    if (!options.keepRunning) await recordingsEnded;
     let result: IosSimulatorShutdownResult = { released: false, previousSession: null };
     for (const runtime of [...runtimes.values()]) {
       // A chat can hold a device session without holding an app session, so the
       // device half is released on its own terms. Without this a closed chat
       // left its simulator claimed and no other chat could open one.
       if (runtime.hub) {
-        await runtime.hub.releaseDeviceIfOwnedBy(trimmed).catch((error: unknown) => {
+        await runtime.hub.releaseDeviceIfOwnedBy(trimmed, { keepRunning: options.keepRunning === true }).catch((error: unknown) => {
           args.logger.debug("ios_simulator.device_release_failed", {
             chatSessionId: trimmed,
             laneId: runtime.laneId,
@@ -6115,11 +6267,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         });
       }
       if (runtime.activeSession?.chatSessionId !== trimmed) continue;
+      if (options.keepRunning) {
+        // Only the chat's claim on the app session goes: the app and its live
+        // view keep running, and the chat's next turn (or another chat) takes
+        // the unowned session with its next call.
+        const previousSession = runtime.activeSession;
+        runtime.activeSession = { ...previousSession, chatSessionId: null };
+        invalidateStatus(runtime);
+        emit({ type: "session-updated", session: runtime.activeSession });
+        args.logger.info("ios_simulator.session_unowned_after_turn", { chatSessionId: trimmed, laneId: runtime.laneId });
+        result = { released: true, previousSession };
+        continue;
+      }
       args.logger.info("ios_simulator.released_with_chat_session", { chatSessionId: trimmed, laneId: runtime.laneId });
       // Identify as the owner: shutdown now refuses an anonymous non-force call.
       const released = await shutdown({ chatSessionId: trimmed, laneId: runtime.laneId, force: false });
       if (released.released) result = released;
     }
+    if (options.keepRunning) await recordingsEnded;
     return result;
   };
 
@@ -6229,7 +6394,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // is off. An explicit start boots it here; a viewer never gets this far
     // with a device that is off (see the check above). A device that is still
     // booting is waited for, not booted again.
-    if (wantsBoot) await ensureDeviceBooted(device);
+    if (wantsBoot) await ensureDeviceBooted(device, runtime.laneId);
     else if (device.state === "Booting") await waitForSimulatorBootStatus(device);
     if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
     const payload = await helper().send({
@@ -6604,7 +6769,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await liftLiveTouch(runtime.key, "tap", runtime.laneId);
       await helperTap(deviceUdid, x, y, inputPointSpace(point.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source, noRecord: point.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source, noRecord: point.noRecord, chatSessionId: point.chatSessionId });
       return { ok: true };
     });
   };
@@ -6629,7 +6794,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await liftLiveTouch(runtime.key, "long-press", runtime.laneId);
       await helperHold(deviceUdid, x, y, durationMs, space);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       return { ok: true, action: "long-press", durationMs };
     });
   };
@@ -6866,7 +7031,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // what is on screen, and a video that skips it shows a jump cut. The
       // source is carried through so a person scrolling the pane does not look
       // like an agent and start a recording.
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source, noRecord: scrollArgs.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source, noRecord: scrollArgs.noRecord, chatSessionId: scrollArgs.chatSessionId });
       return { ok: true as const, action: "scroll" as const, direction, deltaX, deltaY };
     });
   };
@@ -6906,6 +7071,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         ...(showText ? { text: input.text } : {}),
         source: input.source,
         noRecord: input.noRecord,
+        chatSessionId: input.chatSessionId,
         ...(pace ? { startedAtMs, seconds: pace.seconds } : {}),
       });
       if (focused === undefined) return { ok: true };
@@ -6967,7 +7133,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         }
       }
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       return { ok: true, key: label };
     });
   };
@@ -6991,7 +7157,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       // Named, so the answer does not read as a tap.
       return { ok: true, action };
     });
@@ -7111,7 +7277,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       liveTouches.delete(laneKey);
       await sendTouch(held.udid, "end", x, y);
       const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
-      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       return { ok: true };
     });
   };
@@ -7377,7 +7543,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       phase("starting");
       const device = await resolveDevice(udid, runtime);
-      await ensureDeviceBooted(device);
+      await ensureDeviceBooted(device, laneId);
       invalidateStatus(runtime);
       phase("booted");
       // `boot: true`: this IS the explicit start, and a device list cached
@@ -7662,7 +7828,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       if (extra) await bootExtraDevice(extra);
       const device = await resolveDevice(targetUdid, runtime);
-      if (!extra) await ensureDeviceBooted(device);
+      if (!extra) await ensureDeviceBooted(device, runtime.laneId);
       invalidateDeviceList();
       const target = await resolveLaunchTarget({
         projectRoot,
@@ -7721,6 +7887,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         installed: true,
         launched: Boolean(installArgs.launch),
         ...(installArgs.launch ? { pid } : {}),
+        ...(target.generatedXcodeProjects ? { generatedXcodeProjects: target.generatedXcodeProjects } : {}),
       };
     } finally {
       laneAppInstalls.delete(runtime.key);
@@ -7810,6 +7977,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const runTestsClaimed = async (testArgs: AppleRunTestsArgs, runtime: LaneRuntime): Promise<AppleRunTestsResult> => {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
+    // A `project.yml` with no project gets one from XcodeGen first, as for a launch.
+    const generatedXcodeProjects = await generateXcodeGenProjects(projectRoot, xcodeGenOptions(testArgs));
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
     testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}, scheme ${scheme}` };
@@ -7823,7 +7992,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
       const target = await resolveDevice(laneDevice.udid, runtime);
       device = target;
-      await ensureDeviceBooted(target);
+      await ensureDeviceBooted(target, runtime.laneId);
       activeTestUdids.add(target.udid);
       args.logger.info("apple.tests.start", { laneId: runtime.key, udid: target.udid, projectPath, scheme, derivedDataPath });
       // Same guard as a launch build: package state that names another folder goes first.
@@ -7850,7 +8019,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       testsFailed: result.testsFailed,
       durationMs: result.durationMs,
     });
-    return result;
+    return generatedXcodeProjects.length ? { ...result, generatedXcodeProjects } : result;
   };
 
   /* ───────────────────────── recording ───────────────────────── */
@@ -8262,7 +8431,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // `open-url` is an injected input under the auto-record contract: it is
       // how an agent drives a deeplink, and the video has to show it.
       const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
-      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source, noRecord: toolArgs.noRecord });
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source, noRecord: toolArgs.noRecord, chatSessionId: toolArgs.chatSessionId });
       return result;
     },
     relaunchApp: async (toolArgs: IosSimulatorRelaunchArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
@@ -8478,6 +8647,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     dispose: () => {
       disposed = true;
       offWorkCopyDeviceCheck();
+      offWorkCopyReleased();
       deviceLeases.dispose();
       maintenance?.stop();
       runtimeManagerInstance?.dispose();

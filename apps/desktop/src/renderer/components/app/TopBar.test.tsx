@@ -2235,4 +2235,110 @@ describe("TopBar", () => {
       delete (window as unknown as { __adeWebClient?: boolean }).__adeWebClient;
     }
   });
+
+  it("ADE Web: a stopped computer's tab in front comes forward when the open that held the front fails, and a failed reopen tries again on the next return", async () => {
+    (window as unknown as { __adeWebClient?: boolean }).__adeWebClient = true;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const solo = {
+        projectId: "solo-s",
+        rootPath: "/srv/solo",
+        displayName: "solo",
+        gitOriginUrl: "https://github.com/acme/solo",
+        exists: true,
+        catalogVisibility: "recent",
+        lastOpenedAt: 1_700_000_000,
+      };
+      const studio = makeRemoteConnectionSnapshot("studio", "Mac Studio", { projects: [solo] }).connections[0]!;
+      const studioAway = { ...studio, state: "connecting" };
+      let emit: ((snapshot: unknown) => void) | null = null;
+      (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue({
+        connections: [studio],
+        connectedCount: 1,
+        updatedAt: 1_700_000_000,
+      });
+      globalThis.window.ade.remoteRuntime.onConnectionSnapshotChanged = vi.fn((callback: (snapshot: unknown) => void) => {
+        emit = callback;
+        return () => {};
+      }) as any;
+      const soloOnStudio = {
+        kind: "remote" as const,
+        key: "remote:studio:solo-s",
+        targetId: "studio",
+        runtimeName: "Mac Studio",
+        projectId: "solo-s",
+        rootPath: "/srv/solo",
+        displayName: "solo",
+        gitOriginUrl: "https://github.com/acme/solo",
+      };
+      const switchRemoteProject = vi.fn(async (): Promise<unknown> => undefined);
+      useAppStore.setState({
+        project: { rootPath: soloOnStudio.rootPath, displayName: "solo", baseRef: "main" },
+        projectBinding: soloOnStudio,
+        openRemoteProjectTabs: [soloOnStudio],
+        openProjectTabRoots: [],
+        noMachineTabs: [],
+        activeNoMachineTabId: null,
+        switchRemoteProject,
+      } as any);
+
+      renderTopBarWithRouter();
+      await waitFor(() => expect(screen.getAllByText("solo").length).toBeGreaterThan(0));
+      await waitFor(() => expect(emit).not.toBeNull());
+
+      // Another project open is on its way when the computer stops.
+      act(() => {
+        useAppStore.setState({ projectTransition: { kind: "switching", rootPath: null, startedAtMs: Date.now() } } as any);
+      });
+      await act(async () => {
+        emit!({ connections: [studioAway], connectedCount: 0, updatedAt: 1_700_000_001 });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(3_500);
+      });
+      await waitFor(() => expect(useAppStore.getState().noMachineTabs.map((tab) => tab.displayName)).toEqual(["solo"]));
+      expect(useAppStore.getState().activeNoMachineTabId).toBeNull();
+
+      // That open fails: the project in front is still the stopped one, so its waiting page comes forward.
+      act(() => {
+        useAppStore.setState({ projectTransition: null } as any);
+      });
+      const waitingId = useAppStore.getState().noMachineTabs[0]!.id;
+      await waitFor(() => expect(useAppStore.getState().activeNoMachineTabId).toBe(waitingId));
+
+      // Another project is under the waiting page now.
+      act(() => {
+        useAppStore.setState({
+          projectBinding: { ...soloOnStudio, key: "remote:studio:other-s", projectId: "other-s", rootPath: "/srv/other", displayName: "other", gitOriginUrl: "https://github.com/acme/other" },
+        } as any);
+      });
+      // Back, but its copy fails to open: the waiting page stays.
+      switchRemoteProject.mockRejectedValueOnce(new Error("open failed"));
+      await act(async () => {
+        emit!({ connections: [studio], connectedCount: 1, updatedAt: 1_700_000_002 });
+      });
+      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        emit!({ connections: [studio], connectedCount: 1, updatedAt: 1_700_000_003 });
+      });
+      expect(switchRemoteProject).toHaveBeenCalledTimes(1);
+      expect(useAppStore.getState().activeNoMachineTabId).toBe(waitingId);
+
+      // The next return opens it.
+      await act(async () => {
+        emit!({ connections: [studioAway], connectedCount: 0, updatedAt: 1_700_000_004 });
+      });
+      await act(async () => {
+        emit!({ connections: [studio], connectedCount: 1, updatedAt: 1_700_000_005 });
+      });
+      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledTimes(2));
+      expect(switchRemoteProject).toHaveBeenLastCalledWith("studio", "solo-s", { keepNoMachineTab: true });
+      await waitFor(() =>
+        expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key)).toContain(soloOnStudio.key),
+      );
+    } finally {
+      vi.useRealTimers();
+      delete (window as unknown as { __adeWebClient?: boolean }).__adeWebClient;
+    }
+  });
 });

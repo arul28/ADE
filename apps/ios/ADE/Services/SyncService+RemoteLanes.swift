@@ -185,6 +185,67 @@ extension SyncService {
   }
 }
 
+// MARK: - A chat's work copies on other machines
+
+/// The project each work copy lane the phone has named lives in on its
+/// machine, keyed by the namespaced lane id (`registerRemoteWorkCopyLane`).
+///
+/// A work copy (`remote-work-…`) is not a lane of the focused repository's
+/// checkout there: it belongs to the project the chat's brain resolved for the
+/// call (`AgentChatRemoteWorkUse.projectId`). `routeOrStripFleetTarget` reads
+/// this so the copy's `apple.*`, `android.*` and `workTools.*` calls reach that
+/// project, never the checkout `requireRemoteLaneRepo` would pick.
+final class SyncRemoteWorkCopyProjects: @unchecked Sendable {
+  static let shared = SyncRemoteWorkCopyProjects()
+
+  struct Project: Equatable {
+    let projectId: String
+    let rootPath: String?
+  }
+
+  private let lock = NSLock()
+  private var projects: [String: Project] = [:]
+
+  func note(laneId: String, project: Project) {
+    lock.lock()
+    defer { lock.unlock() }
+    projects[laneId] = project
+  }
+
+  func project(laneId: String) -> Project? {
+    lock.lock()
+    defer { lock.unlock() }
+    return projects[laneId.trimmingCharacters(in: .whitespacesAndNewlines)]
+  }
+}
+
+extension SyncService {
+  /// The lane id this phone uses for a chat's work copy on another machine:
+  /// the copy's lane namespaced to that machine's fleet key, so every
+  /// lane-routed call (`apple.*`, `android.*`, `workTools.*`, `macDesktop.*`)
+  /// goes to that machine and its live sockets dial it. Also namespaced when
+  /// that machine is the focused one; the router strips it there.
+  ///
+  /// Nil when the phone cannot reach the machine: the account does not list it
+  /// (its `machineKey` is the account directory's), or it is not paired with
+  /// this phone. Nothing is sent then; the call never falls back to the
+  /// focused machine, where the same lane id means nothing.
+  func registerRemoteWorkCopyLane(_ device: WorkRemoteWorkDevice) -> String? {
+    guard let deviceId = AccountService.shared.machines
+      .first(where: { $0.machineKey == device.machineKey })?.deviceId
+      .flatMap(nonEmptyTrimmed)
+    else { return nil }
+    let fleetKey = HiddenMachineStore.fleetKey(deviceId: deviceId)
+    guard fleetKey == focusedMachineKey || machineFleet?.connection(for: fleetKey) != nil else { return nil }
+    let laneId = workRemoteLaneId(machineKey: fleetKey, laneId: device.workCopyLaneId)
+    SyncRemoteWorkCopyProjects.shared.note(
+      laneId: laneId,
+      project: .init(projectId: device.projectId, rootPath: device.projectRootPath)
+    )
+    return laneId
+  }
+}
+
 // MARK: - PRs of other machines (see Views/PRs/PrRemoteMachines.swift)
 
 extension SyncService {

@@ -286,6 +286,48 @@ export const MCP_MOUNT_HEADER = "x-ade-mcp-mount";
  */
 export const MCP_UNDELIVERED_HEADER = "x-ade-mcp-undelivered";
 export type McpUndeliveredReason = "offline" | "ade_mcp_off" | "not_member";
+/**
+ * Set on an answer for a request a machine's control socket took with it when
+ * it closed (a laptop that slept with its link open). The brain may or may not
+ * have seen it, so the Worker tries the next computer only for MCP messages
+ * that change nothing (`isReplaySafeMcpBody`). Never returned to a client.
+ */
+export const MCP_LOST_HEADER = "x-ade-mcp-lost";
+
+/** JSON-RPC methods that read or open a session and change nothing on a machine. */
+const REPLAY_SAFE_MCP_METHODS: ReadonlySet<string> = new Set([
+  "initialize",
+  "notifications/initialized",
+  "ping",
+  "tools/list",
+  "resources/list",
+  "resources/templates/list",
+  "resources/read",
+  "prompts/list",
+  "prompts/get",
+]);
+
+/**
+ * Whether an MCP POST body (one message or a batch) only reads, so sending it
+ * to a second computer after the first lost it does no harm. A tool call never
+ * is: it may have run there.
+ */
+export function isReplaySafeMcpBody(body: ArrayBuffer | null): boolean {
+  if (!body || body.byteLength === 0) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return false;
+  }
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  return messages.length > 0 && messages.every((message) => (
+    !!message
+    && typeof message === "object"
+    && typeof (message as { method?: unknown }).method === "string"
+    && REPLAY_SAFE_MCP_METHODS.has((message as { method: string }).method)
+  ));
+}
 export const MCP_MAX_REQUEST_BYTES = 1024 * 1024;
 // 32 random bytes in base64url is 43 characters; allow optional padding and
 // longer secrets, never a short or non-base64url one.

@@ -611,7 +611,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 
   return (
     <ProjectSidebarSlotProvider>
-      <div className="flex h-full min-h-0 w-full">
+      <div className="relative flex h-full min-h-0 w-full">
         <ProjectSidebar route={route} heldRoute={overlayOpen ? heldRoute : null} />
         <div className="ade-project-main relative h-full min-h-0 min-w-0 flex-1">
           {workSurface}

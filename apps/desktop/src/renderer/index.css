@@ -806,12 +806,52 @@ body.ade-project-sidebar-resizing {
   user-select: none;
 }
 
+/* ADE Web at phone width: the sidebar is a drawer over the page, so the page
+   keeps the whole width. It slides in from the left edge when the toggle
+   opens it; the scrim behind it closes it on a tap. */
+.ade-project-sidebar[data-drawer="true"] {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  width: min(300px, calc(100% - 52px));
+  box-shadow: 1px 0 0 var(--shell-sidebar-border), 16px 0 40px color-mix(in srgb, black 32%, transparent);
+  animation: ade-project-sidebar-drawer-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.ade-project-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 39;
+  border: 0;
+  padding: 0;
+  background: color-mix(in srgb, black 38%, transparent);
+  cursor: default;
+  animation: ade-project-sidebar-scrim-in 200ms ease-out;
+}
+
+@keyframes ade-project-sidebar-drawer-in {
+  from { transform: translateX(-24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes ade-project-sidebar-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ade-project-sidebar-tab,
   .ade-project-sidebar-tab::after,
   .ade-project-sidebar-tab-label,
   .ade-project-sidebar-tab[data-active="true"] .ade-project-sidebar-tab-label {
     transition: none;
+  }
+
+  .ade-project-sidebar[data-drawer="true"],
+  .ade-project-sidebar-scrim {
+    animation: none;
   }
 }
 

@@ -870,6 +870,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // to `agent_explicit` in the service, and scoped to the caller's own chat
     // by the RPC server's chat guard, so it cannot drop a person's hand.
     "clearAsk",
+    // `ade devices use|current`: the caller's own chat's device sources (self-scoped by the RPC server).
+    "getDeviceSources",
+    "setDeviceSource",
     "createSession",
     "deleteSession",
     // Settings › Recently deleted (`ade chat deleted`). Agents may list and

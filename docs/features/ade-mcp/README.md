@@ -426,6 +426,15 @@ AI app ◄───────────────────────�
   the others newest first, and moves on only when a machine is offline or off
   before the request reached its brain. It marks the message with
   `mount: {kind: "account", key}`.
+- A request a machine's control socket took with it when it closed (a laptop
+  that slept with its link open) may have reached the brain. The machine
+  object answers it 503 with the relay-only header `x-ade-mcp-lost`
+  (`failMcpForControl`), and the account route moves on only when every
+  message in the body changes nothing (`isReplaySafeMcpBody` in
+  `relayShared.ts`: `initialize`, `ping`, the `*/list` and `*/read`/`get`
+  reads). A `tools/call`, or a batch with one, keeps that 503: it may have
+  run there. The machine that lost it is not made the front, and the header
+  never reaches a client.
 - The brain answers an account mount only when the key is its own derived
   account key and it is serving; otherwise 404 `ade_mcp_off`, which the relay
   reads as that computer being off and moves on (its own 404, with `reason`
@@ -578,7 +587,13 @@ that grants access, or cut the connection:
 - `--machine`, `--all-machines` and `--machine-project`: a call reaches
   another computer through the tools' own `machine` input, which goes through
   that computer's own token check and policy, never through the CLI's agent
-  bridge.
+  bridge. `--to` on `chat handoff|move` (a chat moved to another machine) is
+  refused the same way;
+- `ade devices use`: it keeps a device choice for a chat, and a connected app
+  has no chat there. `ade devices` (the computer's devices) and `ade devices
+  current` are reads at both levels; the subcommand is read by the same parse
+  as the CLI (`devicesSubcommand` in `shared/types/deviceSources.ts`), and an
+  unknown one is refused.
 
 Both levels fail closed: a top-level command in neither
 `FULL_ACCESS_COMMANDS` nor `BLOCKED_COMMANDS` is refused, so a new `ade`

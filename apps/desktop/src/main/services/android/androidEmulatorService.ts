@@ -883,7 +883,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       return deviceSettings.getDeviceSettings(laneId);
     },
 
-    releaseIfOwnedBy: (chatSessionId) => agent.releaseIfOwnedBy(chatSessionId),
+    releaseIfOwnedBy: (chatSessionId, options) => agent.releaseIfOwnedBy(chatSessionId, options),
 
     stopForLane: router.stopForLane,
 

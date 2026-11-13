@@ -667,8 +667,13 @@ ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR A
                                                             # works for land/close/reopen/cleanup-branch/checks/comments/review; threads and deployments still need an ADE row
 ade shell start --lane lane-id -- npm test
 ade shell start --machine windows --wait -- bash ./scripts/check.sh   # run once in this chat's work copy on another machine; put every step in one call
+ade shell start --machine windows --code as-is -- git status       # use the work copy there as it is now (--code fresh throws away changes made there first)
+ade shell start --machine windows --no-code --wait -- nvidia-smi   # no code needed: an empty folder there, removed after
 ade files push --machine windows ./build/app.apk dist/app.apk      # copy one file into this chat's work copy there (chunked, sha256-checked, 256 MiB max)
 ade files pull --machine windows logs/run.log ./run.log            # copy one file back from that work copy
+ade devices --text                                                 # every device this chat can use (ios, android, screen, app), on every machine, as <kind>@<machine|here>
+ade devices use ios@"Mac mini"                                      # keep this chat's iPhone on that machine; device commands follow it as --machine does (use ios@here to undo)
+ade devices current                                                # this chat's choice per kind
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
@@ -731,7 +736,7 @@ ade chat set-parent <session-id> --parent <chat> [--type subagent|peer]  # relin
 ade chat set-parent <session-id> --no-parent                     # detach a chat from its parent
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
-ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
+ade chat handoff session-id --to "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine (--to names the destination; --machine is its alias); --fork, --include-changes, --clone, --when-turn-ends
 ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history natively (claude/codex/opencode/droid/copilot/muse/pi/kimi); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex, Copilot and Pi cut natively; others replay the kept turns)

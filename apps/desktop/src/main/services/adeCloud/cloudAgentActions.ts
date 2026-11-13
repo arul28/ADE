@@ -642,7 +642,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A move deletes the machine it runs from: the chat asking for it, and
       // this brain, would stop halfway, with the new machine awake and using hours.
       if (box.instanceId === process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
-        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --machine <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
+        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --to <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
       await hoursCheck();

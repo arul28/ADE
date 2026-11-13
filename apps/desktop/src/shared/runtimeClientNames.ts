@@ -111,6 +111,12 @@ export type RemoteCallerClaim = {
    */
   permissionLevel?: string | null;
   /**
+   * The calling chat's current turn. The target keeps the latest one per
+   * calling chat, so an end-of-turn release that arrives after the chat's next
+   * turn already called there lets go of nothing. Absent from older callers.
+   */
+  turnId?: string | null;
+  /**
    * Sent only with a request that starts the caller's own child. The target
    * stores it with the child and returns it with every report, so the calling
    * machine accepts the report from that machine and no other.

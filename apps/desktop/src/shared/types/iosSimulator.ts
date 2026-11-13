@@ -489,6 +489,8 @@ export type IosSimulatorLaunchResult = IosSimulatorSession & {
   usedInstalledBinary: boolean;
   /** Launch-only: what the resolved input backend can drive right now. */
   capabilities: IosSimulatorCapabilities;
+  /** Folders whose `project.yml` XcodeGen turned into the Xcode project (or refreshed it) before this build. */
+  generatedXcodeProjects?: string[];
 };
 
 export type IosSimulatorScreenshotArgs = {
@@ -2234,6 +2236,8 @@ export type AppleRunTestsResult = {
   /** One entry per failing test (XCTest and Swift Testing), in log order. Absent from an older brain. */
   failures?: AppleTestFailure[];
   durationMs: number;
+  /** Folders whose `project.yml` XcodeGen turned into the Xcode project (or refreshed it) before this build. */
+  generatedXcodeProjects?: string[];
 };
 
 /**
@@ -2360,6 +2364,8 @@ export type AppleInstallAppResult = {
   launched: boolean;
   /** The app's pid after `launch`, when simctl printed one. */
   pid?: number | null;
+  /** Folders whose `project.yml` XcodeGen turned into the Xcode project (or refreshed it) before this build. */
+  generatedXcodeProjects?: string[];
 };
 
 export type AppleDeviceAttachArgs = {

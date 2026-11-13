@@ -24575,7 +24575,7 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil,
+    targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     // Field diagnostics: one line per host command (name and round trip), so
@@ -24587,17 +24587,19 @@ final class SyncService: ObservableObject {
       }
     }
     let targetProjectId: String?
+    let targetProjectRootPath: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
       args: rawArgs,
       targetProjectId: rawTargetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
+      targetProjectRootPath: rawTargetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId, let focusedArgs):
+    case .focused(let projectId, let rootPath, let focusedArgs):
       targetProjectId = projectId
+      targetProjectRootPath = rootPath
       args = focusedArgs
     }
     let runtimeScoped = commandIsRuntimeScoped(action)
@@ -24616,7 +24618,10 @@ final class SyncService: ObservableObject {
     // sync project. Most callers default to the active project; shell launches
     // opt out when the selected lane does not carry trustworthy project scope.
     let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
-    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath)
+    // The active project's root only stands in for the active project itself:
+    // another target project with no root sends none.
+    let activeRootFallback = (syncNormalizedCommandScopeValue(targetProjectId) == nil || targetProjectId == self.activeProjectId) ? self.activeProjectRootPath : nil
+    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeRootFallback) : targetProjectRootPath)
     // The host already ran this exact request from the hello: wait for that
     // answer (or take it, if it came first) instead of asking again.
     if let pipelinedRequestId = takePipelinedHelloCommand(
@@ -24664,22 +24669,24 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil,
+    targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
     let targetProjectId: String?
+    let targetProjectRootPath: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
       args: rawArgs,
       targetProjectId: rawTargetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
+      targetProjectRootPath: rawTargetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId, let focusedArgs):
+    case .focused(let projectId, let rootPath, let focusedArgs):
       targetProjectId = projectId
+      targetProjectRootPath = rootPath
       args = focusedArgs
     }
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
@@ -25485,7 +25492,7 @@ extension SyncService {
       timeoutNanoseconds: nil
     ) {
     case .routed(let result): return result
-    case .focused(_, let focusedArgs): args = focusedArgs
+    case .focused(_, _, let focusedArgs): args = focusedArgs
     }
     guard supportsRemoteAction(action) else {
       throw NSError(
@@ -25647,10 +25654,17 @@ extension SyncService {
     }
 
     let update = try? decode(eventObject, as: AgentChatSessionMetaModeUpdate.self)
-    // Nothing to fold into the cached summary: no mode change and no title.
-    guard (update?.hasAnyField ?? false) || adoptedTitle != nil,
+    // The chat's whole list of other machines it works on (the brain sends
+    // it all at once after each new use). Absent = no change.
+    let remoteWork: [AgentChatRemoteWorkUse]? = (eventDict?["remoteWork"] as? [Any])
+      .flatMap { try? decode($0, as: [AgentChatRemoteWorkUse].self) }
+    // Nothing to fold into the cached summary: no mode change, no title, no remote work.
+    guard (update?.hasAnyField ?? false) || adoptedTitle != nil || remoteWork != nil,
           var summary = chatSummaryCache[envelope.sessionId]
     else { return }
+    if let remoteWork {
+      summary.remoteWork = remoteWork
+    }
     // `applyModeUpdate` applies an explicit `cursorModeId: null` /
     // `cursorConfigValues: null` clear directly to the cached summary (nulling
     // the field), so the cache is authoritative right here at receipt. The open
@@ -28349,9 +28363,18 @@ extension SyncService {
     // (`workRemoteLaneId`). The host gets the plain lane id, and the command
     // goes to the lane's machine in the project that machine holds.
     let laneTarget = try syncRemoteLaneTarget(args: args)
+    // A chat's work copy on another machine (`registerRemoteWorkCopyLane`) lives in
+    // the project the chat's brain named, which need not be the checkout the
+    // focused repository matches there. Also on the focused machine itself.
+    let workCopyProject = (args["laneId"] as? String).flatMap(SyncRemoteWorkCopyProjects.shared.project(laneId:))
     if let laneTarget {
       args = laneTarget.args
-      if laneTarget.machineKey != focusedMachineKey {
+      if let workCopyProject {
+        targetProjectId = laneTarget.machineKey == focusedMachineKey
+          ? workCopyProject.projectId
+          : syncFleetMarkedProjectId(machineKey: laneTarget.machineKey, projectId: workCopyProject.projectId)
+        targetProjectRootPath = workCopyProject.rootPath
+      } else if laneTarget.machineKey != focusedMachineKey {
         let repo = try requireRemoteLaneRepo(machineKey: laneTarget.machineKey)
         targetProjectId = repo.markedProjectId
         targetProjectRootPath = repo.rootPath
@@ -28383,6 +28406,7 @@ extension SyncService {
     }
     return .focused(
       projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId,
+      rootPath: targetProjectRootPath,
       args: args
     )
   }

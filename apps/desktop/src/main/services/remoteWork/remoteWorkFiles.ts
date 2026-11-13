@@ -58,21 +58,21 @@ const tooLarge = (bytes: number): RemoteWorkFileError => new RemoteWorkFileError
 export function workCopyRelativeSegments(requested: unknown): string[] {
   const raw = typeof requested === "string" ? requested.trim() : "";
   if (!raw || raw.length > 4096 || raw.includes("\0")) {
-    throw new RemoteWorkFileError("invalid_path", "Give a path inside this chat's work copy there, like src/config.json.");
+    throw new RemoteWorkFileError("invalid_path", "Give a path inside your code there, like src/config.json.");
   }
   const slashed = raw.replace(/\\/g, "/");
   if (slashed.startsWith("/") || /^[A-Za-z]:/.test(slashed)) {
     throw new RemoteWorkFileError(
       "invalid_path",
-      `${raw} is an absolute path. Paths are relative to this chat's work copy there (like src/config.json).`,
+      `${raw} is an absolute path. Paths are relative to your code there (like src/config.json).`,
     );
   }
   const segments = slashed.split("/").filter((segment) => segment !== "" && segment !== ".");
   if (!segments.length) {
-    throw new RemoteWorkFileError("invalid_path", "Give a file path inside this chat's work copy there, not the copy itself.");
+    throw new RemoteWorkFileError("invalid_path", "Give a file path inside your code there, not its folder itself.");
   }
   if (segments.some((segment) => segment === ".." || segment.includes(":"))) {
-    throw new RemoteWorkFileError("invalid_path", `${raw} leaves this chat's work copy there; use a path inside it.`);
+    throw new RemoteWorkFileError("invalid_path", `${raw} leaves your code there; use a path inside it.`);
   }
   // Refused on every OS, so a path means the same file whichever machine it is sent to.
   if (segments.some((segment) => /[. ]$/.test(segment))) {
@@ -84,7 +84,7 @@ export function workCopyRelativeSegments(requested: unknown): string[] {
     throw new RemoteWorkFileError("invalid_path", `${raw} uses a name Windows keeps for a device; pick another name.`);
   }
   if (segments[0]!.toLowerCase() === ".git") {
-    throw new RemoteWorkFileError("invalid_path", "The work copy's git metadata is not reachable with ade files.");
+    throw new RemoteWorkFileError("invalid_path", "The git metadata of your code there is not reachable with ade files.");
   }
   return segments;
 }
@@ -94,7 +94,7 @@ function realRootOf(copyRoot: string): string {
   try {
     return fs.realpathSync.native(copyRoot);
   } catch {
-    throw new RemoteWorkFileError("copy_missing", "This chat's work copy here is gone. Run `ade shell start --machine <this machine>` to make it again.");
+    throw new RemoteWorkFileError("copy_missing", "Your code there is gone. Run `ade shell start --machine <this machine>` to make it again.");
   }
 }
 
@@ -102,7 +102,7 @@ function realRootOf(copyRoot: string): string {
 // refusal is their answer, not a fault.
 const leadsOutside = (shown: string): RemoteWorkFileError =>
   markExpected(
-    new RemoteWorkFileError("invalid_path", `${shown} leads outside this chat's work copy there (a link); it was refused.`),
+    new RemoteWorkFileError("invalid_path", `${shown} leads outside your code there (a link); it was refused.`),
     "user",
   );
 
@@ -119,10 +119,10 @@ function resolveForRead(copyRoot: string, requested: unknown): { absolute: strin
     real = resolvePathWithinRoot(realRoot, path.join(...segments), { allowMissing: false });
   } catch (error) {
     if (isPathEscapeError(error)) throw leadsOutside(relative);
-    throw new RemoteWorkFileError("not_found", `${relative} is not in this chat's work copy there.`);
+    throw new RemoteWorkFileError("not_found", `${relative} is not in your code there.`);
   }
   if (!fs.statSync(real).isFile()) {
-    throw new RemoteWorkFileError("not_a_file", `${relative} is not a file in this chat's work copy there.`);
+    throw new RemoteWorkFileError("not_a_file", `${relative} is not a file in your code there.`);
   }
   return { absolute: real, relative };
 }
@@ -159,7 +159,7 @@ function resolveForWrite(copyRoot: string, requested: unknown): { absolute: stri
     // A new file.
   }
   if (existing?.isDirectory()) {
-    throw new RemoteWorkFileError("not_a_file", `${relative} is a folder in this chat's work copy there.`);
+    throw new RemoteWorkFileError("not_a_file", `${relative} is a folder in your code there.`);
   }
   return { absolute, relative };
 }
