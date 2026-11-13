@@ -122,6 +122,10 @@ export const extraDiskMonthMicros = (gb: number): number => gb * EXTRA_DISK_MICR
 /** Whether `gb` of extra disk kept a full month fits a monthly limit of `limitCents`. */
 export const extraDiskMonthFits = (gb: number, limitCents: number): boolean => extraDiskMonthMicros(gb) <= limitCents * CENT_MICROS;
 
+/** The most extra disk, in whole GB, that a monthly limit of `limitCents` keeps for a full month. */
+export const extraDiskMonthMaxGb = (limitCents: number): number =>
+  Math.max(0, Math.floor((limitCents * CENT_MICROS) / (EXTRA_DISK_MICROS_PER_GB_DAY * EXTRA_DISK_MONTH_DAYS)));
+
 /** The GB-days of extra disk a monthly limit of `limitCents` pays for. */
 export const extraDiskGbDaysIn = (limitCents: number): number => Math.floor((limitCents * CENT_MICROS) / EXTRA_DISK_MICROS_PER_GB_DAY);
 

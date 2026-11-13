@@ -146,6 +146,16 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     const result = await bridge?.openCheckout?.(plan, pick);
     if (result?.change !== "next_period") throw new Error("ADE Cloud didn't change your plan. Nothing changed. Try again in a moment.");
     const freeing = result.freeing?.length ?? 0;
+    if (pick.instanceIds.length > 0 && freeing === 0) {
+      // The plan changed but the pick wasn't queued (another pick was running): say so, never a quiet success.
+      showToast({
+        tone: "warning",
+        title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,
+        message: "ADE didn't start freeing the computers you picked. Choose them again from the notice on this page.",
+      });
+      onChanged();
+      return;
+    }
     showToast({
       tone: "success",
       title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,

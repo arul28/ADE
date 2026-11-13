@@ -27,7 +27,7 @@ import {
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { CLOUD_PATHS, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
-import { overPlanInForce, readPlanCleanupPick } from "./planCleanup";
+import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
@@ -552,6 +552,10 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     // One move at a time per computer: a chain (A to B, then B to C) would leave both A and B out of the disk.
     if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
       return refused(fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409));
+    }
+    // A computer the person picked to free for a cheaper plan goes; moving it would race the delete.
+    if (readPlanCleanupChoiceIds(account).includes(source.instance_id)) {
+      return refused(fail("computer_busy", "ADE is freeing this computer for your plan, so it can't move now.", 409));
     }
     diskGb = source.disk_gb;
     moveFromInstanceId = source.instance_id;
