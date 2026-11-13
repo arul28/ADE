@@ -4,8 +4,7 @@ import { AnimatePresence, motion, useAnimationControls } from "motion/react";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { AppSuggestionCard, useVisibleAppSuggestion } from "../../ui/notice/AppSuggestionStack";
 import { TOAST_MOTION_PROPS, ToastStack } from "./ToastStack";
-import { pauseToast, resumeToast, useToasts } from "./toastStore";
-import { pickNoticeCorner, useBrowserPageRects, type NoticeCorner } from "./cornerNoticeDock";
+import { pickNoticeCorner, setNoticeCornerHeld, useBrowserPageRects, type NoticeCorner } from "./cornerNoticeDock";
 
 /** Distance from the content area's bottom and side edges. */
 export const TOAST_VIEWPORT_INSET_PX = 12;
@@ -49,33 +48,6 @@ function useNoticeCorner(viewportRef: React.RefObject<HTMLDivElement | null>, st
 }
 
 /**
- * While the stack is held (a browser page covers both corners), nothing on it
- * may run out unseen: every toast's timer pauses, and resumes once a corner is
- * free again.
- */
-function usePauseWhileHeld(held: boolean): void {
-  const toasts = useToasts();
-  const pausedRef = useRef(new Set<string>());
-  useEffect(() => {
-    const paused = pausedRef.current;
-    if (held) {
-      for (const toast of toasts) {
-        if (paused.has(toast.id)) continue;
-        pauseToast(toast.id);
-        paused.add(toast.id);
-      }
-      return;
-    }
-    for (const id of paused) resumeToast(id);
-    paused.clear();
-  }, [held, toasts]);
-  useEffect(() => () => {
-    for (const id of pausedRef.current) resumeToast(id);
-    pausedRef.current.clear();
-  }, []);
-}
-
-/**
  * The one notice corner. It owns placement for everything that floats there —
  * position, width, gap, stacking layer, pointer handling and order — so no
  * toast-like surface positions itself.
@@ -93,8 +65,9 @@ function usePauseWhileHeld(held: boolean): void {
  * never paint over it, and anything that overlaps it freezes it. So the stack
  * uses the first bottom corner of `main` that no live page covers: the right,
  * as always, else the left (over the sidebar, when it is open and the browser
- * is not expanded). When both are covered the stack is held: hidden, with
- * every toast's timer paused, until a corner is free.
+ * is not expanded). When both are covered the stack is held: nothing is
+ * drawn (so nothing counts as shown or delivered), every countdown waits, and
+ * the stack returns once a corner is free.
  */
 export function ToastViewport({
   slots = NO_SLOTS,
@@ -108,14 +81,19 @@ export function ToastViewport({
   const corner = useNoticeCorner(viewportRef, stackHeight);
   const held = corner === "held";
   const liveSlots = useMemo(() => slots.filter((panel) => panel.node != null), [slots]);
-  usePauseWhileHeld(held);
+  // One signal for everything with a clock or a "shown" record
+  // (`cornerNoticeDock`): toast countdowns, suggestion claims, panel periods.
+  useEffect(() => {
+    setNoticeCornerHeld(held);
+  }, [held]);
+  useEffect(() => () => setNoticeCornerHeld(false), []);
 
   useLayoutEffect(() => {
     const element = viewportRef.current;
     if (!element || typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver(() => {
-      // A held stack measures 0; keep the last real height so the corner
-      // decision does not flap between "fits" and "covered".
+      // A held stack draws nothing and measures 0; keep the last real height
+      // so the corner decision does not flap between "fits" and "covered".
       const height = Math.round(element.getBoundingClientRect().height);
       if (height > 0) setStackHeight(height);
     });
@@ -123,9 +101,15 @@ export function ToastViewport({
     return () => observer.disconnect();
   }, []);
 
-  const side = corner === "left" ? "left" : "right";
+  // The side to draw on: a held stack keeps the last side it showed on, so a
+  // left → held → left round trip slides in from the left again.
+  const lastShownSideRef = useRef<"left" | "right">("right");
+  if (corner === "left" || corner === "right") lastShownSideRef.current = corner;
+  const side = lastShownSideRef.current;
   // A move between corners slides the stack in from the side it now sits on,
   // without remounting it (a remount would reset each card's own state).
+  // Coming back from a hold mounts it fresh, which is the point: nothing on
+  // it was shown while held.
   const slide = useAnimationControls();
   const lastSideRef = useRef(side);
   useEffect(() => {
@@ -146,15 +130,14 @@ export function ToastViewport({
         bottom: TOAST_VIEWPORT_INSET_PX,
         zIndex: Z_LAYERS.toast,
         width: `min(${MAX_WIDTH_PX}px, calc(100% - ${TOAST_VIEWPORT_INSET_PX * 2}px))`,
-        // Held: out of layout and out of the occlusion pass (it skips
-        // undisplayed elements), but still mounted so card state survives.
-        display: held ? "none" : "flex",
+        display: "flex",
         flexDirection: "column",
         justifyContent: "flex-end",
         gap: TOAST_VIEWPORT_GAP_PX,
         pointerEvents: "none",
       }}
     >
+      {held ? null : (
       <motion.div
         animate={slide}
         style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: TOAST_VIEWPORT_GAP_PX }}
@@ -175,6 +158,7 @@ export function ToastViewport({
           ))}
         </AnimatePresence>
       </motion.div>
+      )}
     </div>
   );
 }

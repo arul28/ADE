@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { noticeCornerHeld, noticeCornerReleasedAt, subscribeNoticeCornerHeld } from "../app/toast/cornerNoticeDock";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CaretRight, Check, Warning, X } from "@phosphor-icons/react";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -96,10 +97,22 @@ function selectPanelJobs(
     }
     // Online or cancelled: only a finish this window watched, and only for a beat.
     if (!mark?.seenLive) continue;
-    const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+    const endedAt = shownSince(job);
     if (Number.isFinite(endedAt) && input.now - endedAt <= CLOUD_LANE_JOB_PANEL_DONE_MS) shown.push(job);
   }
   return shown.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+}
+
+/**
+ * When a finished row's display period starts: when it ended, or, if it
+ * ended while the notice corner was held (a browser page covered both
+ * corners), when the corner freed up, so the finish is actually seen. While
+ * the corner is held, every finished row counts as just finished.
+ */
+function shownSince(job: CloudLaneJobSnapshot): number {
+  if (noticeCornerHeld()) return Date.now();
+  const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+  return Number.isFinite(endedAt) ? Math.max(endedAt, noticeCornerReleasedAt()) : endedAt;
 }
 
 /** When the first finished row of `shown` leaves the panel; null while every row runs or failed. */
@@ -107,7 +120,9 @@ function nextExpiryOf(shown: readonly CloudLaneJobSnapshot[]): number | null {
   let soonest: number | null = null;
   for (const job of shown) {
     if (isLive(job) || job.phase === "failed") continue;
-    const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+    // A held corner shows nothing, so no finished row's period runs out.
+    if (noticeCornerHeld()) return null;
+    const endedAt = shownSince(job);
     if (!Number.isFinite(endedAt)) continue;
     const at = endedAt + CLOUD_LANE_JOB_PANEL_DONE_MS;
     if (soonest == null || at < soonest) soonest = at;
@@ -154,9 +169,12 @@ function subscribeShell(listener: () => void): () => void {
   if (!stopShell) {
     const offJobs = subscribeCloudLaneJobs(recomputeOnChange);
     const offHidden = subscribeHidden(recomputeOnChange);
+    // A hold ending restarts the finished rows' periods from now.
+    const offHeld = subscribeNoticeCornerHeld(() => recomputeShell(true));
     stopShell = () => {
       offJobs();
       offHidden();
+      offHeld();
       if (shellTimer != null) window.clearTimeout(shellTimer);
       shellTimer = null;
       stopShell = null;

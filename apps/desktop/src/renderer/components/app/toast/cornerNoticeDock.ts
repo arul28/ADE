@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { setToastsHeld } from "./toastStore";
 
 /**
  * Where the live browser pages are, so the notice corner can avoid them.
@@ -88,4 +89,45 @@ function coveredByAny(rects: ReadonlyMap<string, CornerNoticeRect>, box: CornerN
     if (overlaps(rect, box)) return true;
   }
   return false;
+}
+
+/*
+ * The hold: both corners are covered, so nothing on the notice stack can be
+ * seen. `ToastViewport` sets it; everything with a clock or a "shown" record
+ * waits on it, so a notice is never timed out, delivered or counted as seen
+ * while nobody could see it:
+ *   - toast countdowns (`setToastsHeld` in toastStore);
+ *   - a suggestion's "shown" claim (`useSituationalSuggestion`);
+ *   - the Launches panel's dismiss and the cloud-lane rows' display period.
+ */
+let heldNow = false;
+/** When the last hold ended; a finished row's display period counts from here. */
+let heldReleasedAt = 0;
+const heldListeners = new Set<Listener>();
+
+export function setNoticeCornerHeld(next: boolean): void {
+  if (heldNow === next) return;
+  heldNow = next;
+  if (!next) heldReleasedAt = Date.now();
+  setToastsHeld(next);
+  for (const listener of Array.from(heldListeners)) listener();
+}
+
+export function noticeCornerHeld(): boolean {
+  return heldNow;
+}
+
+export function noticeCornerReleasedAt(): number {
+  return heldReleasedAt;
+}
+
+export function subscribeNoticeCornerHeld(listener: Listener): () => void {
+  heldListeners.add(listener);
+  return () => {
+    heldListeners.delete(listener);
+  };
+}
+
+export function useNoticeCornerHeld(): boolean {
+  return useSyncExternalStore(subscribeNoticeCornerHeld, noticeCornerHeld, noticeCornerHeld);
 }

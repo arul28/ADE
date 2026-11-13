@@ -14,6 +14,7 @@ import {
   getToasts,
   pauseToast,
   resumeToast,
+  setToastsHeld,
   showToast,
   updateToast,
 } from "./toastStore";
@@ -43,6 +44,7 @@ describe("toastStore", () => {
 
   afterEach(() => {
     cleanup();
+    setToastsHeld(false);
     clearAll();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -121,6 +123,35 @@ describe("toastStore", () => {
     expect(getToasts()).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(getToasts()).toHaveLength(0);
+  });
+
+  it("never times out a toast while the notice corner is held, replacements and hover included", () => {
+    // Held: a browser page covers both corners, so nothing on the stack can
+    // be seen. No countdown may run until the hold ends, even for a toast
+    // replaced in place (progress -> "done") or one a hover leave resumes.
+    showToast({ id: "a", title: "working", durationMs: 6000 });
+    vi.advanceTimersByTime(2000);
+    setToastsHeld(true);
+    showToast({ id: "a", title: "done", durationMs: 3000 });
+    pauseToast("a");
+    resumeToast("a");
+    vi.advanceTimersByTime(60_000);
+    expect(getToasts().map((toast) => toast.title)).toEqual(["done"]);
+
+    // Released: the replacement gets its full time, counted from now.
+    setToastsHeld(false);
+    vi.advanceTimersByTime(2999);
+    expect(getToasts()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(getToasts()).toHaveLength(0);
+
+    // A hover outlasting the hold keeps its own pause.
+    showToast({ id: "b", title: "hovered", durationMs: 3000 });
+    pauseToast("b");
+    setToastsHeld(true);
+    setToastsHeld(false);
+    vi.advanceTimersByTime(10_000);
+    expect(getToasts()).toHaveLength(1);
   });
 
   it("resume is a no-op when never paused", () => {
