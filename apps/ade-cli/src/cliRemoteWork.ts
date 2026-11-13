@@ -254,6 +254,7 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObje
 function remoteApkPath(apkPath: string, cwd: string): string {
   if (!fs.existsSync(path.resolve(cwd, apkPath))) throw new CliUsageError(`--apk ${apkPath}: no such file here.`);
   const { top, relative } = checkoutRelative(apkPath, cwd, "--apk");
+  if (!relative) throw new CliUsageError(`--apk ${apkPath} names this checkout's top folder, not an APK file.`);
   const ignored = spawnSync("git", ["check-ignore", "-q", "--", relative], { cwd: top, windowsHide: true });
   if (ignored.status === 0) {
     throw new CliUsageError(

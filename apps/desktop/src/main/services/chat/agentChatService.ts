@@ -25038,12 +25038,11 @@ export function createAgentChatService(args: {
     });
     // Devices this chat drove on other machines are let go of when its turn
     // ends, as a local chat's are when it ends (those machines never see this
-    // chat end). Shells there keep running: they are background work. Only
-    // machines this turn used: an earlier turn's end already let go there.
-    const turnStartedMs = pendingTurnStartMsBySession.get(settledSessionId);
-    const deviceUses = (remoteWorkBySession.get(settledSessionId) ?? []).filter((use) =>
-      remoteWorkUsesDevice(use)
-      && (turnStartedMs === undefined || !(Date.parse(use.lastStartedAt) < turnStartedMs)));
+    // chat end). Shells there keep running: they are background work. Every
+    // machine the chat holds a device on, not only this turn's: a release
+    // that machine skipped as stale (it saw a newer call first) is covered
+    // by this one. A machine with nothing held answers with nothing.
+    const deviceUses = (remoteWorkBySession.get(settledSessionId) ?? []).filter(remoteWorkUsesDevice);
     if (onRemoteWorkTurnSettled && deviceUses.length) {
       try {
         onRemoteWorkTurnSettled({
@@ -81892,17 +81891,17 @@ export function createAgentChatService(args: {
       });
     },
     /**
-     * The permission level a chat in this service runs at, or null when it is
-     * not one of this service's chats. The brain records it for a child it
-     * starts elsewhere (`rememberExternalChat`).
-     */
-    /**
      * The id another machine knows this chat's current (or latest) turn by:
      * when it started. Sent with every call there and with the end-of-turn
      * release, so a release that lands after the next turn's calls is
      * skipped there. Null when the chat has not had a turn here.
      */
     remoteTurnIdOf: (sessionId: string): string | null => lastTurnStartedAtBySession.get(sessionId) ?? null,
+    /**
+     * The permission level a chat in this service runs at, or null when it is
+     * not one of this service's chats. The brain records it for a child it
+     * starts elsewhere (`rememberExternalChat`).
+     */
     permissionLevelOf: (sessionId: string): PermissionLevel | null => {
       // A tracked CLI caller has a level too: the one it was launched with.
       // Without it a child it starts on another machine is capped at `ask`.

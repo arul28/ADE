@@ -139,50 +139,75 @@ function failedRead(error: unknown): (current: RemoteDeviceState) => RemoteDevic
   return (current) => (current === "device" ? current : { error: error instanceof Error ? error.message : String(error) });
 }
 
-/**
- * The other machine's simulator for this chat's work copy, once that copy
- * has one. Nothing is started from here: with no device yet, it says so.
- * `renderDevice` draws the device through `remotePin` on the copy's lane.
- */
-export function RemoteWorkSimulator({
-  use,
-  remotePin,
-  renderDevice,
-}: {
+/** How one kind of device on another machine is read and followed. */
+type RemoteDeviceKind = {
+  /** In ids and sentences: "simulator", "Android emulator". */
+  noun: string;
+  idPrefix: string;
+  /** Whether the copy's lane there has a device now. */
+  read: (laneId: string, pin: OpenProjectBinding) => Promise<boolean> | undefined;
+  /** Calls `changed` when the agent starts or gives back the device there. */
+  follow: (laneId: string, pin: OpenProjectBinding, changed: () => void) => (() => void) | undefined;
+};
+
+const REMOTE_SIMULATOR: RemoteDeviceKind = {
+  noun: "simulator",
+  idPrefix: "remote-simulator",
+  read: (laneId, pin) => window.ade?.iosSimulator?.deviceList?.({ laneId, installed: false }, pin)
+    .then((listed) => Boolean(listed?.lane)),
+  follow: (laneId, pin, changed) => window.ade?.iosSimulator?.onEvent?.((event) => {
+    if (event.type === "apple.device.state" && (!event.laneId || event.laneId === laneId)) changed();
+  }, pin),
+};
+
+const REMOTE_ANDROID: RemoteDeviceKind = {
+  noun: "Android emulator",
+  idPrefix: "remote-android",
+  read: (laneId, pin) => window.ade?.androidEmulator?.getStatus?.({ laneId }, pin)
+    .then((status) => Boolean(status?.lane?.device)),
+  follow: (laneId, pin, changed) => window.ade?.androidEmulator?.onEvent?.((event) => {
+    if (event.type === "android.device.state" && event.laneId === laneId) changed();
+  }, pin),
+};
+
+type RemoteDeviceProps = {
   use: RemoteWorkCopyUse;
   remotePin: OpenProjectBinding;
   renderDevice: () => ReactNode;
-}) {
+};
+
+/**
+ * The other machine's device for this chat's work copy, once that copy has
+ * one. Nothing is started or picked from here: with no device yet, it says so.
+ * `renderDevice` draws the device through `remotePin` on the copy's lane.
+ */
+function RemoteWorkDevice({ use, remotePin, renderDevice, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
   const laneId = use.workCopyLaneId;
   const [state, setState] = useState<RemoteDeviceState>("loading");
   useEffect(() => {
     let cancelled = false;
-    const api = window.ade?.iosSimulator;
     const read = () => {
-      void api?.deviceList?.({ laneId, installed: false }, remotePin)
-        .then((listed) => { if (!cancelled) setState(listed?.lane ? "device" : "none"); })
+      void kind.read(laneId, remotePin)
+        ?.then((has) => { if (!cancelled) setState(has ? "device" : "none"); })
         .catch((error: unknown) => { if (!cancelled) setState(failedRead(error)); });
     };
     read();
-    // The agent starts or gives back the device there; follow it.
-    const unsubscribe = api?.onEvent?.((event) => {
-      if (event.type === "apple.device.state" && (!event.laneId || event.laneId === laneId)) read();
-    }, remotePin);
+    const unsubscribe = kind.follow(laneId, remotePin, read);
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
     // Keyed by the component's key (pin key + lane); the pin object is stable for it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId]);
+  }, [laneId, kind]);
   if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} />;
-  if (state === "none") return <WorkToolEmptyLine title={`No simulator on ${use.machineName} for this chat right now`} />;
+  if (state === "none") return <WorkToolEmptyLine title={`No ${kind.noun} on ${use.machineName} for this chat right now`} />;
   if (typeof state === "object") {
     return (
       <div className="p-3">
         <Banner
           layout="inline"
-          model={{ id: `remote-simulator-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the simulator on ${use.machineName}`, error: state.error }}
+          model={{ id: `${kind.idPrefix}-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the ${kind.noun} on ${use.machineName}`, error: state.error }}
         />
       </div>
     );
@@ -190,53 +215,12 @@ export function RemoteWorkSimulator({
   return <>{renderDevice()}</>;
 }
 
-/**
- * The other machine's emulator for this chat's work copy, once that copy has
- * one. Nothing is started or picked from here: with no device yet, it says so.
- * `renderDevice` draws the device through `remotePin` on the copy's lane.
- */
-export function RemoteWorkAndroid({
-  use,
-  remotePin,
-  renderDevice,
-}: {
-  use: RemoteWorkCopyUse;
-  remotePin: OpenProjectBinding;
-  renderDevice: () => ReactNode;
-}) {
-  const laneId = use.workCopyLaneId;
-  const [state, setState] = useState<RemoteDeviceState>("loading");
-  useEffect(() => {
-    let cancelled = false;
-    const api = window.ade?.androidEmulator;
-    const read = () => {
-      void api?.getStatus?.({ laneId }, remotePin)
-        .then((status) => { if (!cancelled) setState(status?.lane?.device ? "device" : "none"); })
-        .catch((error: unknown) => { if (!cancelled) setState(failedRead(error)); });
-    };
-    read();
-    // The agent starts or gives back the device there; follow it.
-    const unsubscribe = api?.onEvent?.((event) => {
-      if (event.type === "android.device.state" && event.laneId === laneId) read();
-    }, remotePin);
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-    // Keyed by the component's key (pin key + lane); the pin object is stable for it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId]);
-  if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} />;
-  if (state === "none") return <WorkToolEmptyLine title={`No Android emulator on ${use.machineName} for this chat right now`} />;
-  if (typeof state === "object") {
-    return (
-      <div className="p-3">
-        <Banner
-          layout="inline"
-          model={{ id: `remote-android-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the Android emulator on ${use.machineName}`, error: state.error }}
-        />
-      </div>
-    );
-  }
-  return <>{renderDevice()}</>;
+/** The other machine's simulator for this chat's work copy (`RemoteWorkDevice`). */
+export function RemoteWorkSimulator(props: RemoteDeviceProps) {
+  return <RemoteWorkDevice {...props} kind={REMOTE_SIMULATOR} />;
+}
+
+/** The other machine's Android emulator for this chat's work copy (`RemoteWorkDevice`). */
+export function RemoteWorkAndroid(props: RemoteDeviceProps) {
+  return <RemoteWorkDevice {...props} kind={REMOTE_ANDROID} />;
 }

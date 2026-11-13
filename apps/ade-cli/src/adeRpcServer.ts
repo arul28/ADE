@@ -8696,11 +8696,16 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     // Sent without waiting, so it can land after the chat's next turn
-    // already claimed a device here: then it would free the new claim, and
-    // is skipped. A caller that names no turn (older ADE) releases as before.
+    // already called here: then it could free that turn's claim, and is
+    // skipped. A turn id is when the turn started, so "newer" is an order;
+    // the caller's next turn end releases here again, so nothing a skipped
+    // release held stays held. A caller that names no turn (older ADE)
+    // releases as before.
     const endedTurnId = asOptionalTrimmedString(toolArgs.turnId);
     const latestTurnId = externalChatLatestTurn(owner);
-    if (endedTurnId && latestTurnId && latestTurnId !== endedTurnId) {
+    const endedMs = endedTurnId ? Date.parse(endedTurnId) : Number.NaN;
+    const latestMs = latestTurnId ? Date.parse(latestTurnId) : Number.NaN;
+    if (Number.isFinite(endedMs) && Number.isFinite(latestMs) && latestMs > endedMs) {
       runtime.logger.info("remote_work.turn_release_stale", { endedTurnId, latestTurnId });
       return { released: [], skipped: "newer_turn" };
     }

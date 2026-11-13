@@ -608,14 +608,6 @@ export async function createMachineRemoteConnection(
   };
 
   /**
-   * The Apple verbs that file proof (`screenshot`, `captureProofBundle`,
-   * `duoAppStoreScreenshots`, `recordStop`) file it where they run, which on
-   * another machine is that machine's drawer: the chat would cite an id its
-   * own machine has never heard of. So the verb runs there with `proof: false`,
-   * the files it made are read back, and each is filed in THIS chat's drawer;
-   * the answer carries the ids filed here.
-   */
-  /**
    * File one capture read back from another machine in THIS chat's drawer.
    * Answers the id filed here, or null when the drawer refused it.
    */
@@ -651,6 +643,14 @@ export async function createMachineRemoteConnection(
     toolName: string,
   ): Promise<string | null> => fileCaptureHere(input, { backendName: "ade-ios-simulator", toolName, where });
 
+  /**
+   * The Apple verbs that file proof (`screenshot`, `captureProofBundle`,
+   * `duoAppStoreScreenshots`, `recordStop`) file it where they run, which on
+   * another machine is that machine's drawer: the chat would cite an id its
+   * own machine has never heard of. So the verb runs there with `proof: false`,
+   * the files it made are read back, and each is filed in THIS chat's drawer;
+   * the answer carries the ids filed here.
+   */
   const fileRemoteAppleProofHere = async (params: JsonObject, action: AppleProofAction): Promise<unknown> => {
     const toolArgs = isRecord(params.arguments) ? params.arguments : {};
     const actionArgs = isRecord(toolArgs.args) ? toolArgs.args : {};

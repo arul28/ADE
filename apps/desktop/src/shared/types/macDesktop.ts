@@ -30,6 +30,13 @@ import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 import { ADE_CLOUD_APPROVAL_METADATA_KEY } from "../adeCloud";
 import { MACHINE_REMOVAL_REQUEST_METADATA_KEY } from "../machineRemovalRequest";
 
+/**
+ * `mac_desktop` reads about the machine: status, the window list and the
+ * stream status. With `--machine` they send no commit and make no work copy,
+ * and name the chat's screen only when its copy is there already.
+ */
+export const MAC_DESKTOP_LANE_FREE_ACTIONS = ["getStatus", "listWindows", "getStreamStatus"] as const;
+
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
@@ -40,13 +47,6 @@ import { MACHINE_REMOVAL_REQUEST_METADATA_KEY } from "../machineRemovalRequest";
  * the code, exactly as `iosSimulatorErrorHint` does. The drawer and the phone
  * read the same string and cannot run a shell command.
  */
-/**
- * `mac_desktop` reads about the machine: status, the window list and the
- * stream status. With `--machine` they send no commit and make no work copy,
- * and name the chat's screen only when its copy is there already.
- */
-export const MAC_DESKTOP_LANE_FREE_ACTIONS = ["getStatus", "listWindows", "getStreamStatus"] as const;
-
 export const MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE = "MAC_DESKTOP_UNSUPPORTED_PLATFORM" as const;
 export const MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE = "MAC_DESKTOP_DRIVER_UNAVAILABLE" as const;
 export const MAC_DESKTOP_PERMISSION_REQUIRED_CODE = "MAC_DESKTOP_PERMISSION_REQUIRED" as const;
