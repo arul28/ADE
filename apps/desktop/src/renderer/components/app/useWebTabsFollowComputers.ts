@@ -246,12 +246,14 @@ export function useWebTabsFollowComputers({
       const opensInFront = front != null && store.projectBinding?.key !== front.key;
       restore(resumed.map(([, binding]) => binding).filter((binding) => !opensInFront || binding !== front));
       if (opensInFront) {
-        void store.switchRemoteProject(front.targetId, front.projectId, { keepNoMachineTab: true })
-          .catch((error: unknown) => {
-            // The tab is back; only its page did not open. A click on the tab opens it again.
+        void store.switchRemoteProject(front.targetId, front.projectId, { keepNoMachineTab: true }).then(
+          // Opened, or superseded by a later choice (the tab comes back behind it).
+          () => restore([front]),
+          (error: unknown) => {
+            // Not opened: the waiting page stays, with Open on that computer.
             captureError(error, { fingerprint: ["repository-tabs", "web-resume-open"], level: "warning", handled: true });
-          })
-          .finally(() => restore([front]));
+          },
+        );
       }
     }
     if (gone.size > 0) void moveWebTabsOffGoneTargets(gone);

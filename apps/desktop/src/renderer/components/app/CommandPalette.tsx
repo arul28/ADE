@@ -557,7 +557,14 @@ export function CommandPalette({
     };
   }, [applyRemoteSnapshot, open]);
 
+  // The add screen shows this computer once a picked computer disconnects;
+  // moving on to browse or create keeps that shown place, not the old pick.
+  const commitShownPlace = useCallback(() => {
+    if (selectedPlaceDisconnected) setSelectedProjectLocation(null);
+  }, [selectedPlaceDisconnected]);
+
   const startProjectBrowse = useCallback(() => {
+    commitShownPlace();
     setMode("project-browse");
     setQ("");
     setSelectedIdx(0);
@@ -570,7 +577,7 @@ export function CommandPalette({
     setBrowseResult(null);
     setBrowseError(null);
     setBrowseSelectedIdx(0);
-  }, [activeProjectLocation, browseRootForLocation]);
+  }, [activeProjectLocation, browseRootForLocation, commitShownPlace]);
 
   const startProjectAdd = useCallback(() => {
     setMode("project-add");
@@ -580,9 +587,10 @@ export function CommandPalette({
   }, []);
 
   const startProjectCreate = useCallback(() => {
+    commitShownPlace();
     setMode("project-create");
     setActionOutcome(null);
-  }, []);
+  }, [commitShownPlace]);
 
   const startProjectClone = useCallback(() => {
     setMode("project-clone");

@@ -2049,6 +2049,12 @@ export type AppState = {
     projectId: string,
     options?: { keepNoMachineTab?: boolean },
   ) => Promise<OpenProjectBinding>;
+  /**
+   * True once for the binding of a remote open that Home superseded: the
+   * open still reports its project, which then opens under Home instead of
+   * replacing it.
+   */
+  takeRemoteOpenSupersededByHome: (binding: { targetId: string; projectId: string }) => boolean;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
   /// when closing because a remote *disconnected*, not because the user closed
@@ -2235,18 +2241,23 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    *  Slower responses whose token doesn't match the latest value are discarded. */
   let laneRefreshVersion = 0;
   let remoteProjectSwitchGeneration = 0;
-  /** The transition of the remote project open still on its way, if any. */
-  let pendingRemoteSwitchTransition: AppState["projectTransition"] = null;
+  /** The remote project open still on its way, if any, with its transition. */
+  let pendingRemoteSwitch: { transition: AppState["projectTransition"]; targetId: string; projectId: string } | null = null;
+  /** The remote open that Home superseded, until its project report arrives or another open starts. */
+  let remoteOpenSupersededByHome: { targetId: string; projectId: string } | null = null;
   /**
    * Home or a no-machine tab opened in front wins over a remote project open
    * still on its way: that open must not finish over it, and its "switching"
-   * state ends here, since the open's own end skips a superseded switch.
+   * state ends here, since the open's own end skips a superseded switch. The
+   * open still reports its project when it lands (`app.onProjectChanged`, the
+   * web adapter's swap); for Home that report opens it under Home.
    */
-  const supersedeRemoteProjectSwitch = (prev: AppState): Partial<AppState> => {
-    if (!pendingRemoteSwitchTransition) return {};
+  const supersedeRemoteProjectSwitch = (prev: AppState, by: "home" | "no-machine-tab"): Partial<AppState> => {
+    if (!pendingRemoteSwitch) return {};
     ++remoteProjectSwitchGeneration;
-    const ownsTransition = prev.projectTransition === pendingRemoteSwitchTransition;
-    pendingRemoteSwitchTransition = null;
+    const ownsTransition = prev.projectTransition === pendingRemoteSwitch.transition;
+    if (by === "home") remoteOpenSupersededByHome = { targetId: pendingRemoteSwitch.targetId, projectId: pendingRemoteSwitch.projectId };
+    pendingRemoteSwitch = null;
     return ownsTransition ? { projectTransition: null } : {};
   };
   let laneRefreshInFlight: Promise<void> | null = null;
@@ -3220,7 +3231,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     showWelcome: true,
     standaloneSettingsOpen: false,
     activeNoMachineTabId: null,
-    ...supersedeRemoteProjectSwitch(prev),
+    ...supersedeRemoteProjectSwitch(prev, "home"),
   })),
   cancelNewTab: () => {
     const hasProject = get().project != null;
@@ -3239,7 +3250,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             activeNoMachineTabId: tab.id,
             isNewTabOpen: false,
             standaloneSettingsOpen: false,
-            ...supersedeRemoteProjectSwitch(prev),
+            ...supersedeRemoteProjectSwitch(prev, "no-machine-tab"),
           }
         : { noMachineTabs };
     });
@@ -3945,7 +3956,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       rootPath: null,
       startedAtMs: Date.now(),
     };
-    pendingRemoteSwitchTransition = transition;
+    pendingRemoteSwitch = { transition, targetId, projectId };
+    remoteOpenSupersededByHome = null;
     set((prev) => ({
       projectTransition: transition,
       projectTransitionError: null,
@@ -3963,7 +3975,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
-      pendingRemoteSwitchTransition = null;
+      pendingRemoteSwitch = null;
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
@@ -4039,7 +4051,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return binding;
     } catch (error) {
       if (switchGeneration === remoteProjectSwitchGeneration) {
-        pendingRemoteSwitchTransition = null;
+        pendingRemoteSwitch = null;
         set({
           projectTransition: null,
           lanesLoading: false,
@@ -4048,6 +4060,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       }
       throw error;
     }
+  },
+
+  takeRemoteOpenSupersededByHome: (binding) => {
+    const superseded = remoteOpenSupersededByHome;
+    if (!superseded || superseded.targetId !== binding.targetId || superseded.projectId !== binding.projectId) return false;
+    remoteOpenSupersededByHome = null;
+    return true;
   },
 
   closeProject: async (options) => {

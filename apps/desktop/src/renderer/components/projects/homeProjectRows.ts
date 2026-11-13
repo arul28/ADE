@@ -183,8 +183,9 @@ function locationsOfCopies(
         : input.webComputersByKey?.get(copy.machineId)?.key ?? copy.machineId;
     }
     const connection = connections.find((entry) => entry.target.id === copy.machineId) ?? null;
+    const openable = input.webMode ? webOpenable(copy, input.webComputers) : copy.address != null;
     const state = input.webMode
-      ? (copy.online ? "connected" : "idle")
+      ? (openable ? "connected" : "idle")
       : connection?.state ?? "idle";
     return {
       summary: {
@@ -208,7 +209,7 @@ function locationsOfCopies(
       machineId: targetId,
       machineName: copy.machineName,
       connectionState: state,
-      reachable: input.webMode ? copy.online : copy.address != null,
+      reachable: openable,
     };
   });
 }
@@ -254,11 +255,18 @@ function primaryOf(locations: readonly RecentProjectLocation[], copies: readonly
     || ms(right.summary.lastOpenedAt) - ms(left.summary.lastOpenedAt))[0]!;
 }
 
+/** ADE Web: a copy counts as online when its computer is live in this tab, as the sidebar tag and copies menu count it. */
 function webOnline(copies: readonly RepositoryCopy[], webComputers: ReadonlyMap<string, HomeWebComputer> | undefined): RepositoryCopy[] {
   return copies.map((copy) => {
     const computer = copy.machineKey ? webComputers?.get(copy.machineKey) : undefined;
-    return { ...copy, online: computer ? computer.reachable : copy.online };
+    return { ...copy, online: computer ? computer.live : copy.online };
   });
+}
+
+/** ADE Web: a copy can be opened when its computer is live or can be dialed now (the page connects first). */
+function webOpenable(copy: RepositoryCopy, webComputers: ReadonlyMap<string, HomeWebComputer> | undefined): boolean {
+  const computer = copy.machineKey ? webComputers?.get(copy.machineKey) : undefined;
+  return computer ? computer.reachable : copy.online;
 }
 
 export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectList {
