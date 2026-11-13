@@ -26,7 +26,8 @@ import { brainRunEndpointKey, pidRuns } from "./brainUnplannedRestart";
 const RECORD_DIR = "live-turns";
 const MAX_PROJECTS = 50;
 
-type RecordFile = { version: 1; pid: number; projects: string[] };
+/** `opening`: in a pending file, the project the brain was opening when it wrote it. */
+type RecordFile = { version: 1; pid: number; projects: string[]; opening?: string };
 
 type Holder = {
   filePath: string | null;
@@ -36,9 +37,12 @@ type Holder = {
   /**
    * Projects this brain took from a crashed brain and has not opened yet
    * (`<endpoint>.<pid>.pending.json`). If this brain crashes too before it
-   * opens them, the next brain takes this file like any other.
+   * opens them, the next brain takes this file like any other. `opening`:
+   * the project being opened now. The next brain skips that one, so a project
+   * whose open crashes the brain cannot crash every brain after it (the
+   * restart-loop guard does not run where crash reports are off).
    */
-  pending: { filePath: string; roots: string[] } | null;
+  pending: { filePath: string; roots: string[]; opening: string | null } | null;
 };
 
 const HOLDER_KEY = Symbol.for("ade.liveTurnProjects");
@@ -177,7 +181,12 @@ function writePending(state: Holder): void {
       fs.rmSync(pending.filePath, { force: true });
       return;
     }
-    const file: RecordFile = { version: 1, pid: process.pid, projects: pending.roots };
+    const file: RecordFile = {
+      version: 1,
+      pid: process.pid,
+      projects: pending.roots,
+      ...(pending.opening ? { opening: pending.opening } : {}),
+    };
     const tmpPath = `${pending.filePath}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(file));
     fs.renameSync(tmpPath, pending.filePath);
@@ -236,8 +245,11 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
     try {
       const parsed = JSON.parse(fs.readFileSync(claimed, "utf8")) as Partial<RecordFile>;
       if (parsed?.version === 1 && Array.isArray(parsed.projects)) {
+        const skipped = typeof parsed.opening === "string" ? path.resolve(parsed.opening) : null;
         for (const root of parsed.projects.slice(0, MAX_PROJECTS)) {
-          if (typeof root === "string" && root.trim()) roots.add(path.resolve(root));
+          if (typeof root !== "string" || !root.trim()) continue;
+          const resolved = path.resolve(root);
+          if (resolved !== skipped) roots.add(resolved);
         }
       }
     } catch {
@@ -249,12 +261,26 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
     state.pending = {
       filePath: path.join(dir, `${prefix}${process.pid}.pending.json`),
       roots: taken,
+      opening: null,
     };
     writePending(state);
   }
   // Only now: until the pending file exists, the claimed files are the record.
   for (const claimed of claimedPaths) removeQuietly(claimed);
   return taken;
+}
+
+/**
+ * This brain starts to open the project (`root`), or the open threw (`null`:
+ * a thrown error is not a crash, so a later brain may try it again).
+ */
+export function noteLiveTurnProjectOpening(root: string | null): void {
+  const state = holder();
+  const pending = state.pending;
+  if (!pending || pending.opening === root) return;
+  if (root !== null && !pending.roots.includes(root)) return;
+  pending.opening = root;
+  writePending(state);
 }
 
 /** This brain opened the project (or it no longer exists): the next brain does not need it. */
@@ -265,6 +291,7 @@ export function settleLiveTurnProjectAfterCrash(root: string): void {
   const next = pending.roots.filter((entry) => entry !== root);
   if (next.length === pending.roots.length) return;
   pending.roots = next;
+  if (pending.opening === root) pending.opening = null;
   writePending(state);
 }
 

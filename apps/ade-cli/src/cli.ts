@@ -719,6 +719,7 @@ import {
   closeLiveTurnProjectsRecord,
   dropLiveTurnProjectsAfterCrash,
   enableLiveTurnProjectsRecord,
+  noteLiveTurnProjectOpening,
   settleLiveTurnProjectAfterCrash,
   takeLiveTurnProjectsFromStoppedBrains,
 } from "../../desktop/src/main/services/runtime/liveTurnProjects";
@@ -32231,12 +32232,14 @@ async function runServe(
               settleLiveTurnProjectAfterCrash(root);
               continue;
             }
+            noteLiveTurnProjectOpening(root);
             try {
               await scopeRegistry.get(record.projectId);
               opened += 1;
               settleLiveTurnProjectAfterCrash(root);
             } catch (error) {
               // Kept on disk: if this brain crashes too, the next one tries it again.
+              noteLiveTurnProjectOpening(null);
               headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
                 projectId: record.projectId,
                 error: error instanceof Error ? error.message : String(error),
