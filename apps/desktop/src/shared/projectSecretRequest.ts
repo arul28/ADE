@@ -133,5 +133,5 @@ export function generateProjectSecretValue(): string {
  * the agent learns the name exists and how to use it without reading it.
  */
 export function projectSecretComposerNote(name: string): string {
-  return `I saved the project secret \`${name}\` (value hidden). Use it by name — e.g. \`"$(ade secrets get ${name} --text)"\` inside a command — and never print it.`;
+  return `I saved the project secret \`${name}\` (value hidden). Use it by name in a command: \`ade secrets exec --env ${name} -- <command>\` puts it in that command's environment as $${name}, and masks it in the output.`;
 }

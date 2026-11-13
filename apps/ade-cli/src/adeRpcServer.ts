@@ -6746,6 +6746,20 @@ async function runTool(args: {
       ensureAskUserAllowed(session);
       scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
     }
+    if (domain === "project_secret" && action === "exec") {
+      // Runs a command on THIS computer with its secrets: never for a call
+      // relayed from another machine's brain, which could not otherwise run
+      // commands here. The chat (for Activity) is stamped, never taken.
+      if (isRemoteBrainCallerClientName(session.clientName)) {
+        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "`ade secrets exec` runs only on the computer that holds the secrets. Run it in a chat on that computer.");
+      }
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "project_secret.exec requires object arguments.");
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, ...execArgs } = rawObjectArgs;
+      const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      scopedObjectArgs = { ...execArgs, ...(boundChat ? { chatSessionId: boundChat } : {}) };
+    }
     if (domain === "passwords" && action === "signin") {
       // `ade browser signin` may raise the secure sign-in card, and only in
       // the caller's own chat. Stamped here, never taken from the arguments,

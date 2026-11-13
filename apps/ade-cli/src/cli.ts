@@ -1101,7 +1101,8 @@ export type FormatterId =
   | "update-status"
   | "notify"
   | "remote-mcp"
-  | "passwords";
+  | "passwords"
+  | "secrets-exec";
 
 type ChatWaitTarget =
   | "idle"
@@ -4839,12 +4840,19 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Account-linked projects default to account storage, but only when the account
   vault is reachable: otherwise the secret is saved for this machine and the
   list says so. List output never reveals values and shows where each secret
-  lives; use get only for the specific secret you need.
+  lives.
+
+  Agents use secrets, they never read them: \`ade secrets exec\` runs a command
+  with the project's secrets (and Passwords' secrets for it) in its
+  environment, on this computer, and prints its output with every value masked
+  (also in base64 and URL-encoded form; values under 8 characters are not
+  masked, and it says which). \`get\` and \`export\` are the person's, in the ADE
+  desktop app. --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
     $ ade secrets pull --text                       Take account secrets from the vault
-    $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
-    $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
+    $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
+    $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
     $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
     $ ade secrets set TOKEN --value local --storage device
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
@@ -21662,6 +21670,22 @@ function buildPasswordsPlan(args: string[]): CliPlan {
   };
 }
 
+/** `ade secrets exec` in text: the command's own output (already masked), then one status line. */
+function formatSecretsExec(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return "";
+  const out = [asString(result.stdout) ?? "", asString(result.stderr) ?? ""].filter(Boolean).join("\n").replace(/\n+$/, "");
+  const injected = Array.isArray(result.injected) ? result.injected.filter((name): name is string => typeof name === "string") : [];
+  const unmasked = Array.isArray(result.unmasked) ? result.unmasked.filter((name): name is string => typeof name === "string") : [];
+  const status = result.timedOut === true ? "timed out" : `exit ${result.exitCode ?? asString(result.signal) ?? "?"}`;
+  const lines = [
+    out,
+    `[ade secrets exec: ${status}; secrets in its environment: ${injected.join(", ") || "none"}${result.truncated === true ? "; output cut at 1 MB" : ""}]`,
+  ];
+  if (unmasked.length) lines.push(`[too short to mask in output: ${unmasked.join(", ")}]`);
+  return lines.filter(Boolean).join("\n");
+}
+
 /** `ade passwords …` in text: summaries or the on/off status, never a value. */
 function formatPasswords(value: unknown): string {
   const result = unwrapActionEnvelope(value);
@@ -21688,10 +21712,32 @@ function formatPasswords(value: unknown): string {
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
+  // The command after `--` first: its own flags (`--help` included) are its own.
+  const execTail = args[0] === "exec" || args[0] === "run" ? takeArgsAfterTerminator(args) : null;
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
   }
   const sub = firstPositional(args) ?? "list";
+  if (sub === "exec" || sub === "run") {
+    if (!execTail?.length) {
+      throw new CliUsageError("secrets exec needs the command after `--`: ade secrets exec [--env NAME] -- npm run deploy");
+    }
+    const names = readRepeatedValues(args, ["--env", "--name"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 10 * 60_000;
+    return {
+      kind: "execute",
+      label: "secrets exec",
+      formatter: "secrets-exec",
+      steps: [actionStep("result", "project_secret", "exec", {
+        command: execTail,
+        cwd: process.cwd(),
+        ...(names.length ? { names } : {}),
+        timeoutMs,
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+    };
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
@@ -39319,6 +39365,8 @@ function formatTextOutput(
       return formatProjectSecrets(value);
     case "passwords":
       return formatPasswords(value);
+    case "secrets-exec":
+      return formatSecretsExec(value);
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":

@@ -509,6 +509,21 @@ export function createPasswordService(args: {
       return { username: secret.username, password: secret.password, totpUri: secret.totpUri };
     },
 
+    /**
+     * The Passwords secrets a project's processes get: those for every project,
+     * then the project's own over them. Empty when Passwords is off or locked.
+     */
+    async secretValuesForProject(projectScope: string | null): Promise<Record<string, string>> {
+      if (!args.getAccountUserId() || !isEnabled()) return {};
+      await ensureOpened();
+      const out: Record<string, string> = {};
+      for (const secret of opened.values()) if (secret.kind === "secret" && secret.projectScope === null) out[secret.name] = secret.value;
+      if (projectScope) {
+        for (const secret of opened.values()) if (secret.kind === "secret" && secret.projectScope === projectScope) out[secret.name] = secret.value;
+      }
+      return out;
+    },
+
     /** A secret's value by name, for injecting into a process ADE starts. Never returned to an agent. */
     async resolveSecretValue(input: { name: string; projectScope: string | null }): Promise<string | null> {
       await ensureOpened();

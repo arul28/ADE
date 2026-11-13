@@ -312,6 +312,7 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { requestPasswordLoginFromUser } from "../passwords/passwordLoginRequest";
+import { runWithSecrets } from "../secrets/secretExec";
 import { signInWithPasswords, type BrowserSignin } from "../passwords/passwordSignin";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
@@ -4365,6 +4366,36 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
     // the account holds now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
+    // `ade secrets exec -- <command>`: this runtime runs the command with the
+    // project's secrets (and Passwords' secrets for it) in its environment,
+    // and returns its output masked. No value is ever returned.
+    exec: async (args?: unknown) => {
+      const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
+      const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
+      const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : runtime.projectRoot;
+      const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+      const scope = projectSecretService.accountScope();
+      const fromPasswords = await runtime.passwordService?.secretValuesForProject(scope).catch(() => ({})) ?? {};
+      // A project secret of the same name wins: it is the one this project set.
+      const secrets = { ...fromPasswords, ...projectSecretService.valuesForProcess() };
+      const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
+      const chosen = only?.length ? Object.fromEntries(Object.entries(secrets).filter(([name]) => only.includes(name))) : secrets;
+      const missing = only?.filter((name) => !(name in secrets)) ?? [];
+      if (missing.length) throw new AdeExpectedError(`No secret named ${missing.join(", ")} in this project. \`ade secrets list\` shows the names.`, "user");
+      const result = await runWithSecrets({
+        command,
+        cwd,
+        allowedRoots: [runtime.projectRoot, ...lanes.map((lane) => lane.worktreePath).filter(Boolean)],
+        secrets: chosen,
+        timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+      });
+      const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : null;
+      // One Activity row per run: which names, and the command they went to.
+      if (result.injected.length) {
+        void runtime.passwordService?.recordUse({ itemId: result.injected.join(", "), kind: "secret", target: command.join(" ").slice(0, 200), by: chatSessionId ? "agent" : "person", chatSessionId }).catch(() => undefined);
+      }
+      return result;
+    },
     ...(agentChatService
       ? {
           request: async (args?: unknown) => {

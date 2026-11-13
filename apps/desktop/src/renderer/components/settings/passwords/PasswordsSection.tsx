@@ -445,7 +445,8 @@ export function PasswordsSection() {
                     <ul className="ade-pw-activity" data-testid="passwords-activity-list">
                       {uses.slice(0, 200).map((use, index) => {
                         const item = items.find((candidate) => candidate.id === use.itemId);
-                        const what = use.kind === "secret" ? `Used ${item?.title ?? "a secret"}` : `Signed in to ${use.target}`;
+                        // A secret row's id is the names given to the command.
+                        const what = use.kind === "secret" ? `Gave ${use.itemId} to \`${use.target}\`` : `Signed in to ${use.target}`;
                         return (
                           <li key={`${use.at}-${index}`} className="ade-pw-activity-row">
                             <span className="ade-pw-activity-what">

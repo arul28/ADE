@@ -400,6 +400,10 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // A secret's value is the person's to read (Settings, or the desktop's own
+  // calls). Agents use secrets by name with `ade secrets exec`, which puts
+  // them in a command's environment and returns its output masked.
+  project_secret: ["get", "exportEnv"],
   // Passwords: only the person adds, changes, imports or removes saved items;
   // agents use logins through `ade browser signin` and never read a value.
   passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
@@ -1188,7 +1192,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
+  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request", "exec"],
   // Passwords: `list`/`loginsForPage` return summaries only (agents use them
   // to pick a login); every write and `resolveForFill` are user-only below.
   passwords: ["status", "activity", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse"],

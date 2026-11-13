@@ -343,7 +343,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount",
-      "request",
+      "request", "exec",
     ],
   },
   // Passwords: agents read summaries (sites, usernames, never a value). The

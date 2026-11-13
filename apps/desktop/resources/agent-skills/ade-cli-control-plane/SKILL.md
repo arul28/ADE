@@ -42,9 +42,10 @@ up (or `ade skill show ade-cli-control-plane references/<file>`):
 
 **Never ask the user to paste a secret into chat.** Ask with the private card:
 `ade secrets request NAME --reason "<why>"` (add `--generate` to suggest a
-strong one). Use a stored secret by name without printing it:
-`gh secret set X --body "$(ade secrets get NAME --text)"`. Read secrets only
-when the user names one. Webhooks (run an agent when another service does
+strong one). Use a stored secret by name; you never read its value:
+`ade secrets exec --env NAME -- sh -c 'gh secret set X --body "$NAME"'` runs
+the command with it in the environment and masks it in the output. Use
+secrets only when the user names one or the task plainly needs it. Webhooks (run an agent when another service does
 something) are the **ade-webhooks** skill. Full detail:
 `references/secrets-and-webhooks.md`.
 

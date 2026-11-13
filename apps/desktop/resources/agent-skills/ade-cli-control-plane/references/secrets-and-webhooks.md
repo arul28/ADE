@@ -7,13 +7,16 @@ the CLI, runtime-backed actions, lanes, and agents on the same machine. They liv
 under the active project root, not inside an individual lane worktree.
 
 Use them only when the user names a secret or clearly asks you to use a stored
-credential. List output is metadata-only; `get` prints the value, so avoid
-echoing it into logs or chat unless the user explicitly asks.
+credential. You use a secret, you never read it: `ade secrets exec` runs a
+command on this computer with the project's secrets in its environment (plus
+any Passwords secrets for this project) and prints its output with every
+value masked. `ade secrets get` is the person's, in the ADE desktop app.
 
 ```
 ade secrets list --text
 ade secrets pull --text                 # take this repository's account secrets out of the vault
-ade secrets get STRIPE_API_KEY --text
+ade secrets exec -- npm run deploy      # every secret in the environment
+ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe customers list --api-key "$STRIPE_API_KEY"'
 ade secrets set STRIPE_API_KEY --value sk_...
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
@@ -37,8 +40,8 @@ value. For a token a shell CLI needs that should not stay in ADE, add
 `--delivery file --request-id <key>`: the user may choose a temporary private
 file, and you get `{saved: true, delivery: "file", file}`. Read it only inside
 a command (`TOKEN="$(cat <file>)" wrangler deploy`) and never print it; it is
-deleted after 24 hours or when the chat is archived. Otherwise use the secret by name without printing it, e.g.
-`gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
+deleted after 24 hours or when the chat is archived. Otherwise use the secret by name with `ade secrets exec`, e.g.
+`ade secrets exec --env NAME -- sh -c 'gh secret set X --body "$NAME"'`. If the user
 declines, carry on without it or explain what is blocked.
 
 ## Webhook automations
