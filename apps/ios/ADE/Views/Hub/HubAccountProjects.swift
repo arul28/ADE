@@ -687,10 +687,24 @@ func hubCopyReach(_ machine: AccountMachine?, isLive: Bool, isConnecting: Bool =
 
 // MARK: - Project home
 
+/// The copy the project opens on, with no pick: the main copy when its
+/// computer is online, else the first online copy (`held` is main first).
+/// Nil while no computer with a copy is online.
+@MainActor
+func accountProjectOpenCopy(_ held: [(copy: AccountProjectCopy, machine: AccountMachine?)]) -> AccountProjectCopy? {
+  held.first { entry in
+    if case .online = hubCopyReach(entry.machine, isLive: false) { return true }
+    return false
+  }?.copy
+}
+
+
 /// The page of a project that no reachable machine shows: the computers
-/// that hold a folder of it, and Open on the ones that are online. Open goes
-/// through the owned-link route, which connects that computer, waits for its
-/// catalog and opens the folder there.
+/// that hold a folder of it, and one Open for the project. Open picks the
+/// computer itself (`accountProjectOpenCopy`) and goes through the owned-link
+/// route, which connects that computer, waits for its catalog and opens the
+/// folder there. The project then connects every other online copy with no
+/// pick; the rows here are information, never a choice of copy.
 struct AccountProjectHomeScreen: View {
   let projectId: String
   var onConnectComputer: () -> Void = {}
@@ -763,6 +777,20 @@ struct AccountProjectHomeScreen: View {
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
         }
+      }
+
+      if let open = accountProjectOpenCopy(held) {
+        Button {
+          dismiss()
+          DeepLinkRouter.shared.openAccountProjectCopy(
+            accountMachineKey: open.machineKey,
+            checkoutId: open.checkoutId
+          )
+        } label: {
+          Text("Open project")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
 
       VStack(alignment: .leading, spacing: 8) {
@@ -842,26 +870,12 @@ struct AccountProjectHomeScreen: View {
   }
 
   private func copyRow(_ copy: AccountProjectCopy, machine: AccountMachine?) -> some View {
-    let reach = hubCopyReach(machine, isLive: false)
-    let name = machine?.displayName ?? "A computer that left your account"
-    return HubCopyRow(
-      name: name,
-      reach: reach,
+    HubCopyRow(
+      name: machine?.displayName ?? "A computer that left your account",
+      reach: hubCopyReach(machine, isLive: false),
       detail: copy.rootPath,
       detailIsPath: true,
       symbol: machineDeviceSymbol(deviceType: machine?.deviceType, platform: machine?.platform)
-    ) {
-      if case .online = reach {
-        Button("Open") {
-          dismiss()
-          DeepLinkRouter.shared.openAccountProjectCopy(
-            accountMachineKey: copy.machineKey,
-            checkoutId: copy.checkoutId
-          )
-        }
-        .buttonStyle(ADEKitButtonStyle(prominent: true))
-        .accessibilityLabel("Open on \(name)")
-      }
-    }
+    )
   }
 }

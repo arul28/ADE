@@ -677,10 +677,16 @@ struct HubScreen: View {
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
       return
     }
-    // No live roster connection to that machine (paused, offline, or an older
-    // ADE there): focus the machine, then open the chat the ordinary way.
+    // No live roster connection to that machine (paused or offline): connect
+    // it next to the others and open the chat there. Only when that fails (an
+    // older ADE there, or it stays unreachable) does the phone make it the
+    // home machine, keeping the previous one connected.
     Task { @MainActor in
-      guard await syncService.switchFocus(toMachineKey: owner.machineKey) else { return }
+      if state != .needsUpdate, await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(8)) {
+        openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
+        return
+      }
+      guard await syncService.switchFocusKeepingPrevious(toMachineKey: owner.machineKey) else { return }
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat)
     }
   }

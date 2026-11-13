@@ -2344,8 +2344,6 @@ struct WorkFilterMenu: View {
   }
 }
 
-/// Marks a lane that lives on another machine, after its name: two machines'
-/// lanes can share a name, and the machine never goes in the title.
 /// A small machine badge: the computer glyph and its name, with the state
 /// when it is not live ("Studio, offline").
 struct WorkMachineBadge: View {
@@ -2370,6 +2368,8 @@ struct WorkMachineBadge: View {
   }
 }
 
+/// Marks a lane that lives on another machine, after its name: two machines'
+/// lanes can share a name, and the machine never goes in the title.
 struct WorkRemoteLaneGlyph: View {
   var body: some View {
     Image(systemName: "desktopcomputer")

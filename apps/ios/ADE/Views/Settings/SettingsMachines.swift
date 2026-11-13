@@ -349,7 +349,7 @@ final class SettingsMachineController: ObservableObject {
         performConnect(target)
         return
       }
-      run(target, success: "\(target.name) is primary") {
+      run(target, success: "\(target.name) connected") {
         fleet.markConnected(machineKey: targetKey)
         guard await syncService.switchFocus(toMachineKey: targetKey) else {
           fleet.stopKeepingLive(machineKey: targetKey)
@@ -418,7 +418,7 @@ final class SettingsMachineController: ObservableObject {
     case .primary:
       // The most recently connected live machine becomes primary.
       if let next = fleet.connectedMachinesLeastRecentFirst.last(where: { $0.state == .live }) {
-        run(machine, success: "\(next.name) is primary") {
+        run(machine, success: "\(machine.name) disconnected") {
           guard await syncService.switchFocus(toMachineKey: next.machineKey) else { return false }
           // The old primary is now a fleet machine: out of the connected set.
           fleet.stopKeepingLive(machineKey: key)
@@ -433,13 +433,6 @@ final class SettingsMachineController: ObservableObject {
       ADEHaptics.light()
     case .available:
       break
-    }
-  }
-
-  func makePrimary(_ machine: SettingsMachine) {
-    guard let syncService, let key = machine.machineKey, !machine.isPrimary else { return }
-    run(machine, success: "\(machine.name) is primary") {
-      await syncService.switchFocusKeepingPrevious(toMachineKey: key)
     }
   }
 
@@ -594,7 +587,7 @@ struct SettingsMachineSections: View {
   }
 }
 
-/// One machine row: icon, computer name (with "Primary"), the install, a state
+/// One machine row: icon, computer name, the install, a state
 /// line, and one trailing control (live dot, Connect, Retry or a spinner).
 struct SettingsMachineRow: View {
   let machine: SettingsMachine
@@ -612,9 +605,6 @@ struct SettingsMachineRow: View {
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          if machine.isPrimary {
-            ADEKitTag(text: "Primary", tone: .accent)
-          }
           if machine.showsBetaTag {
             ADEKitTag(text: "Beta", tone: .warn)
           }
@@ -760,7 +750,6 @@ struct SettingsMachinePage: View {
           actions: SettingsMachinePageActions(
             connect: { controller.connect(machine) },
             disconnect: { controller.disconnect(machine) },
-            makePrimary: { controller.makePrimary(machine) },
             retry: { controller.retry(machine) },
             rename: machine.account.map { accountMachine in { controller.renaming = accountMachine } },
             forget: { confirmForget = true },
@@ -812,7 +801,6 @@ struct SettingsMachinePage: View {
 struct SettingsMachinePageActions {
   var connect: () -> Void = {}
   var disconnect: () -> Void = {}
-  var makePrimary: () -> Void = {}
   var retry: () -> Void = {}
   var rename: (() -> Void)?
   var forget: () -> Void = {}
@@ -966,7 +954,7 @@ struct SettingsMachinePageContent: View {
   private var stateLine: String {
     let state: String
     switch machine.link {
-    case .primary(let live, _): state = live ? "Primary · connected" : "Primary · \(machine.subtitle.lowercased())"
+    case .primary(let live, _): state = live ? "Connected" : machine.subtitle
     case .connected(let fleetState, _): state = fleetState == .live ? "Connected" : machine.subtitle
     case .available: return machine.subtitle
     }
@@ -984,9 +972,6 @@ struct SettingsMachinePageContent: View {
           Button("Retry", action: actions.retry).buttonStyle(ADEKitButtonStyle(prominent: true))
         }
         Button("Disconnect", action: actions.disconnect).buttonStyle(ADEKitButtonStyle())
-        if !machine.isPrimary {
-          Button("Make primary", action: actions.makePrimary).buttonStyle(ADEKitButtonStyle())
-        }
       } else {
         // Connecting again is the retry for a machine outside the connected set.
         Button(error == nil ? "Connect" : "Try again", action: actions.connect)

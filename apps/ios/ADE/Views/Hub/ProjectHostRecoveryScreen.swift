@@ -271,7 +271,7 @@ func projectHostBlockedReason(_ snapshot: SyncHostReadinessSnapshot?) -> Project
 func projectHostIneligibleGuidance(_ snapshot: SyncHostReadinessSnapshot?) -> String? {
   switch projectHostBlockedReason(snapshot) {
   case .unauthorized:
-    return "This iPhone can't stop the other runtime — retry, switch machines, or stop it on that computer."
+    return "This iPhone can't stop the other runtime — retry, or stop it on that computer."
   case .unidentified:
     return "ADE can't safely stop the other runtime from here, so stop it on that computer."
   case nil:
@@ -382,7 +382,7 @@ struct ProjectHostRecoveryScreen: View {
           Button("Retry") {
             Task { await syncService.retryProjectHost() }
           }
-          Button("Switch Mac") {
+          Button("Connect a computer") {
             syncService.settingsPresented = true
           }
         }
@@ -395,7 +395,7 @@ struct ProjectHostRecoveryScreen: View {
         .buttonStyle(ADEKitButtonStyle(prominent: true))
         .padding(.top, 4)
 
-        Button("Switch Mac") {
+        Button("Connect a computer") {
           syncService.settingsPresented = true
         }
         .font(.subheadline.weight(.semibold))
@@ -434,17 +434,13 @@ struct ProjectHostRecoveryScreen: View {
         }
       }
 
-      Text("You can switch machines.")
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textMuted)
-
       // Retry stays live during the repair. A restart that never comes back
       // would otherwise leave this screen an inert spinner with no way out.
       HStack(spacing: 16) {
         Button("Retry") {
           Task { await syncService.retryProjectHost() }
         }
-        Button("Switch Mac") {
+        Button("Connect a computer") {
           syncService.settingsPresented = true
         }
       }

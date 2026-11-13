@@ -178,7 +178,7 @@ extension LanesTabView {
           if machineFilter == .machine(machine.machineKey) {
             Label(machine.name, systemImage: "checkmark")
           } else {
-            Text(machine.isLive ? machine.name : "\(machine.name) (offline)")
+            Text(machine.stateWord.map { "\(machine.name), \($0)" } ?? machine.name)
           }
         }
       }
