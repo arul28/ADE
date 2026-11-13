@@ -226,6 +226,20 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       return Array.from(known.values());
     },
 
+    /**
+     * Known identities whose process is gone on this computer (`kill(pid, 0)`
+     * fails), never this process. Proof, not a guess from a stale heartbeat:
+     * a reused pid reads as running and stays out (the safe side). The
+     * startup rescan closes their rows at once instead of waiting out the
+     * fresh-activity grace, so a chat a crash cut off continues within
+     * seconds (`reconcileStaleRunningSessions`).
+     */
+    listDeadProcessIdentities(): RuntimeProcessIdentity[] {
+      return this.listKnownProcessIdentities().filter((identity) => (
+        identity.pid !== pid && !pidLivenessCheck(identity.pid)
+      ));
+    },
+
     /** Quick "is this peer still heartbeating" check. */
     isPidLive(candidatePid: number | null | undefined): boolean {
       if (candidatePid == null || !Number.isFinite(candidatePid)) return false;

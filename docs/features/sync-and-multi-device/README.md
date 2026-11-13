@@ -1281,7 +1281,15 @@ Runtime support files outside `services/sync/`:
   Machines cache the access token in `github.accountAppToken.v1`
   (`shared/github/accountAppTokenClient.ts`, one request per renewal across
   processes) and use it as the `account_app` credential, after their own
-  sign-ins and before an adopted `gh` copy. A legacy device-flow sign-in on a
+  sign-ins and before an adopted `gh` copy. When GitHub refuses that token
+  (a Disconnect, or a new Connect on another computer), the install check and
+  the relay poll ask the account once for its current token and retry once,
+  only with a token that is different. A process asks about one refused token
+  at most once a minute; a press of "Check again" in Settings → GitHub asks
+  anyway, also over a cached "not connected" answer, so each press asks once.
+  The "Connected to your ADE account as @login" line reads the account again
+  when a page opens with an answer older than 30 seconds, and on each press. A
+  legacy device-flow sign-in on a
   machine is handed to the account (`POST /github/app/adopt`). Without
   `GITHUB_APP_CLIENT_SECRET` the routes answer 503 and machines behave as
   before.

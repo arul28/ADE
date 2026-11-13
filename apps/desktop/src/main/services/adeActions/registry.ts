@@ -3467,6 +3467,7 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         owner: typeof actionArgs.owner === "string" ? actionArgs.owner : undefined,
         name: typeof actionArgs.name === "string" ? actionArgs.name : undefined,
         forceRefresh: actionArgs.forceRefresh === true,
+        userRequested: actionArgs.userRequested === true,
       });
     },
     async listRepoCollaborators(args?: unknown) {
