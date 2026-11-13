@@ -234,8 +234,6 @@ function GuestRow({
   );
 }
 
-/** A picker of the values the owner allows. Nothing else is listed. */
-/** One choice the owner allows more than one value for, as a segmented control. The current value is pressed. */
 /**
  * A picker shows when there is a choice, or when the chat is not on the one
  * allowed value (the host refuses a turn outside the lock until it is moved).
@@ -244,6 +242,7 @@ function pickerNeeded(values: readonly string[], current: string | null): boolea
   return values.length > 1 || (values.length === 1 && current != null && current !== values[0]);
 }
 
+/** The values the owner allows for one setting, as a segmented control; nothing else is listed. The current value is pressed. */
 function GuestPicker({
   label,
   values,

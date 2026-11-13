@@ -257,7 +257,7 @@ export function LaneShareRightsPanel({
   const setLimits = (patch: Partial<LaneShareRights["limits"]>) => onChange({ ...rights, limits: { ...rights.limits, ...patch } });
   const [detailsOpen, setDetailsOpen] = React.useState(detailsOpenInitial);
   const quickEnds = laneShareQuickEnds(now);
-  const [pickedEnd, setPickedEnd] = React.useState<string | null>(null);
+  const [pickedEnd, setPickedEnd] = React.useState<{ key: string; at: number | null } | null>(null);
   const cliTypingOff = cliTyping?.available === false ? CLI_TYPING_UNAVAILABLE_HINTS[cliTyping.reason] : null;
   const canRun = rights.speak.send || rights.run.startChats || rights.run.startCliSessions;
 
@@ -276,9 +276,9 @@ export function LaneShareRightsPanel({
                     type="button"
                     disabled={disabled}
                     // A quick end is relative to the click, so the picked one is remembered here.
-                    aria-pressed={option.at == null ? endsAt == null : endsAt != null && pickedEnd === option.key}
+                    aria-pressed={option.at == null ? endsAt == null : endsAt != null && pickedEnd?.key === option.key && pickedEnd.at === endsAt}
                     onClick={() => {
-                      setPickedEnd(option.key);
+                      setPickedEnd({ key: option.key, at: option.at });
                       onEndsAtChange(option.at);
                     }}
                   >

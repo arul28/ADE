@@ -375,6 +375,8 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       } satisfies SyncCommandResultPayload, requestId, { action });
     } catch (error) {
       undoPrepared();
+      // The refund moved the usage back.
+      if (prepared.claim) noteLaneShareUsageChanged(role);
       if (turnRecorded && turnSessionId && (turnKey ? turnSendsInFlight.get(turnKey) ?? 0 : 0) <= 1) {
         try {
           laneShareRights?.removeItem(role.grantId, "turn", turnSessionId);
