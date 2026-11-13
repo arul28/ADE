@@ -1134,8 +1134,11 @@ struct HubProjectTile: View, Equatable {
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
-  /// "Remove…": the Remove sheet (this list, a computer, all my computers,
-  /// my account). Nil hides the item.
+  /// "Hide on this iPhone": only this phone stops showing it. Nil hides the
+  /// item.
+  var onHide: (() -> Void)? = nil
+  /// "Remove…": the Remove sheet (a computer, all my computers, my
+  /// account). Nil hides the item.
   var onRemove: (() -> Void)? = nil
   var onLocation: () -> Void = {}
 
@@ -1289,8 +1292,15 @@ struct HubProjectTile: View, Equatable {
           Label("Location", systemImage: "folder")
         }
       }
-      if let onRemove {
+      if onHide != nil || onRemove != nil {
         Divider()
+      }
+      if let onHide {
+        Button(action: onHide) {
+          Label("Hide on this iPhone", systemImage: "eye.slash")
+        }
+      }
+      if let onRemove {
         Button(role: .destructive, action: onRemove) {
           Label("Remove…", systemImage: "trash")
         }
@@ -1337,6 +1347,7 @@ struct HubProjectTile: View, Equatable {
       && lhs.canMoveToTop == rhs.canMoveToTop
       && lhs.canShowLocation == rhs.canShowLocation
       && (lhs.onRemove == nil) == (rhs.onRemove == nil)
+      && (lhs.onHide == nil) == (rhs.onHide == nil)
       && lhs.subtitle == rhs.subtitle
       && lhs.selection == rhs.selection
       && lhs.accountProjectId == rhs.accountProjectId

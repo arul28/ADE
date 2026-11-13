@@ -1,28 +1,18 @@
 import SwiftUI
 
-// Remove… on the Hub, for one project or a selection. The choices match the
-// desktop's remove dialog, plus one that only this phone has:
+// Remove… and Hide on the Hub, for one project or a selection.
 //
-// - From this list: hides the projects on this iPhone. Nothing changes on a
-//   computer or the account, and Undo (or "Show") brings them back.
-// - From <computer>: the computer drops its entry for each folder
-//   (`project_forget_request`, sent on that computer's own link). The
-//   folder stays on disk.
-// - From all my computers: the same, on every computer with a copy.
-// - From my account: every reachable computer drops its entry, then the
-//   account forgets the project for every device.
-//
-// An offline computer is never called: it keeps its entry and its folder.
-// Folders are never deleted from the phone. The desktop deletes a folder
-// only after the computer reports it clean (`projects.inspectRemoval`), and
-// that machine call has no sync envelope a phone can send yet.
+// Remove… offers the desktop remove dialog's choices (`HubRemoveProjectsSheet`).
+// Hide on this iPhone is the phone's own: it takes rows off this phone's list
+// only, nothing changes on a computer or the account, and Undo or the
+// header's "N hidden" brings them back.
 
 // MARK: - Hidden on this phone
 
-/// The key "From this list" stores for an account project.
+/// The key "Hide on this iPhone" stores for an account project.
 func hubHiddenAccountKey(_ accountProjectId: String) -> String { "acct:\(accountProjectId)" }
 
-/// The key "From this list" stores for a folder that is not an account
+/// The key "Hide on this iPhone" stores for a folder that is not an account
 /// project: the computer and that computer's registry id of the folder.
 func hubHiddenFolderKey(computerKey: String, projectId: String) -> String { "folder:\(computerKey):\(projectId)" }
 
@@ -94,50 +84,38 @@ struct HubRemovalItem: Hashable, Identifiable {
   let name: String
   /// Nil for a folder that is not an account project.
   let accountProject: AccountProject?
-  /// Every folder of it the phone knows, one or more per computer.
+  /// The folder the card shows, on the computer the phone reaches it on
+  /// (desktop: the copy the tab is on). Nil for a project no reachable
+  /// computer shows.
+  let current: HubRemovalCopy?
+  /// Every folder of it the phone knows, `current` included, one or more per
+  /// computer.
   let copies: [HubRemovalCopy]
-  /// What "From this list" stores.
+  /// It has a GitHub repository, so other computers can hold copies of it
+  /// (desktop: `repoKey`). A folder with none lives on one computer only.
+  let hasRepository: Bool
+  /// What "Hide on this iPhone" stores.
   let hideKey: String
 }
 
+/// The desktop remove dialog's choices, by the same names: "From <computer>",
+/// "From all my computers" and "From my account".
 enum HubRemovalScope: Hashable {
-  case list
-  case computer(String)
+  /// The computer each card shows its folder from (desktop "this").
+  case current
   case all
   case account
 }
 
-struct HubRemovalComputer: Hashable, Identifiable {
-  let key: String
-  let name: String
-  let phoneKey: String?
-  var id: String { key }
-}
-
-/// Pure: every computer that holds a copy of the items, once, by name.
-func hubRemovalComputers(_ items: [HubRemovalItem]) -> [HubRemovalComputer] {
-  var seen: [String: HubRemovalComputer] = [:]
-  for copy in items.flatMap(\.copies) {
-    if let existing = seen[copy.computerKey], existing.phoneKey != nil { continue }
-    seen[copy.computerKey] = HubRemovalComputer(key: copy.computerKey, name: copy.computerName, phoneKey: copy.phoneKey)
-  }
-  return seen.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-}
-
-/// Pure: the choices the sheet offers for these items. "From all my
-/// computers" shows for a project on the account (as on the desktop) or
-/// for a selection on more than one computer; "From my account" only when
-/// every item is an account project.
+/// Pure: the choices for these items, as the desktop offers them: the
+/// card's computer when a reachable computer shows it, "all my computers"
+/// for a project with a GitHub repository and at least one copy, and "my
+/// account" for account projects.
 func hubRemovalScopes(_ items: [HubRemovalItem]) -> [HubRemovalScope] {
-  let computers = hubRemovalComputers(items)
-  var scopes: [HubRemovalScope] = [.list]
-  scopes += computers.map { .computer($0.key) }
-  if computers.count > 1 || items.contains(where: { $0.accountProject != nil && !$0.copies.isEmpty }) {
-    scopes.append(.all)
-  }
-  if !items.isEmpty, items.allSatisfy({ $0.accountProject != nil }) {
-    scopes.append(.account)
-  }
+  var scopes: [HubRemovalScope] = []
+  if items.contains(where: { $0.current != nil }) { scopes.append(.current) }
+  if items.contains(where: { $0.hasRepository && !$0.copies.isEmpty }) { scopes.append(.all) }
+  if !items.isEmpty, items.allSatisfy({ $0.accountProject != nil }) { scopes.append(.account) }
   return scopes
 }
 
@@ -148,15 +126,17 @@ struct HubRemovalTarget: Hashable, Identifiable {
   var id: String { "\(item.id)|\(copy.id)" }
 }
 
-/// Pure: the folders a scope calls.
+/// Pure: the folders a scope calls. A folder with no repository has only
+/// the copy the card shows, whatever the scope (desktop `rows`).
 func hubRemovalTargets(_ items: [HubRemovalItem], scope: HubRemovalScope) -> [HubRemovalTarget] {
-  switch scope {
-  case .list:
-    return []
-  case .computer(let key):
-    return items.flatMap { item in item.copies.filter { $0.computerKey == key }.map { HubRemovalTarget(item: item, copy: $0) } }
-  case .all, .account:
-    return items.flatMap { item in item.copies.map { HubRemovalTarget(item: item, copy: $0) } }
+  items.flatMap { item -> [HubRemovalTarget] in
+    let copies: [HubRemovalCopy]
+    if scope == .current || !item.hasRepository {
+      copies = item.current.map { [$0] } ?? []
+    } else {
+      copies = item.copies
+    }
+    return copies.map { HubRemovalTarget(item: item, copy: $0) }
   }
 }
 
@@ -187,6 +167,17 @@ struct HubLocalSectionModel: Identifiable, Equatable {
   var id: String { computerKey }
 }
 
+/// Something the user hid on this phone that the Hub would otherwise show.
+struct HubHiddenEntry: Identifiable, Equatable {
+  /// The stored key (`hubHiddenAccountKey` / `hubHiddenFolderKey`).
+  let key: String
+  let name: String
+  /// Nil for a row of the main list; else the computer of an "Only on"
+  /// folder.
+  let computerKey: String?
+  var id: String { key }
+}
+
 // MARK: - Sending a removal
 
 /// Removes one folder's entry on its own computer: the focused machine's
@@ -207,13 +198,6 @@ func hubRemoveCopy(_ copy: HubRemovalCopy, sync: SyncService, fleet: MachineFlee
   try await connection.forgetProject(projectId: copy.projectId, rootPath: copy.rootPath)
 }
 
-/// How the sheet ended, for the Hub's toast.
-enum HubRemovalFinish {
-  /// "From this list": the keys hidden, for Undo.
-  case hidden(keys: Set<String>, text: String)
-  case removed(text: String)
-}
-
 private enum HubRemovalResult: Equatable {
   case running
   case removed
@@ -231,52 +215,65 @@ private enum HubAccountStep: Equatable {
 
 // MARK: - The sheet
 
+/// Remove…, for one project or a selection. The choices, words and safety
+/// rule are the desktop remove dialog's (`RemoveProjectDialog.tsx`):
+///
+/// - From <computer>: that computer drops its entry for the folder
+///   (`project_forget_request`, sent on that computer's own link).
+/// - From all my computers: the same, on every computer with a copy.
+/// - From my account: every reachable computer drops its entry, then the
+///   account forgets the project for every device.
+///
+/// An offline computer is never called: it keeps its entry and its folder.
+/// The phone removes entries only; every folder stays on disk. The desktop's
+/// "Also delete the folders" needs `projects.inspectRemoval`, which a phone
+/// cannot send, so it is not offered here.
 struct HubRemoveProjectsSheet: View {
   let items: [HubRemovalItem]
   let fleet: MachineFleet?
-  let onFinished: (HubRemovalFinish) -> Void
+  /// The line the Hub's toast shows when the sheet is done.
+  let onFinished: (String) -> Void
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var sync: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
-  @State private var scope: HubRemovalScope = .list
+  @State private var scope: HubRemovalScope
   @State private var phase: Phase = .choose
   @State private var results: [String: HubRemovalResult] = [:]
   @State private var accountSteps: [String: HubAccountStep] = [:]
 
   private enum Phase { case choose, running, done }
 
-  private var computers: [HubRemovalComputer] { hubRemovalComputers(items) }
+  init(items: [HubRemovalItem], fleet: MachineFleet?, onFinished: @escaping (String) -> Void) {
+    self.items = items
+    self.fleet = fleet
+    self.onFinished = onFinished
+    // The desktop opens on the tab's computer, else on the account.
+    let scopes = hubRemovalScopes(items)
+    _scope = State(initialValue: scopes.first(where: { $0 != .all }) ?? scopes.first ?? .current)
+  }
+
   private var scopes: [HubRemovalScope] { hubRemovalScopes(items) }
   private var targets: [HubRemovalTarget] { hubRemovalTargets(items, scope: scope) }
+  private var single: Bool { items.count == 1 }
+  private var pronoun: String { single ? "it" : "them" }
 
   private func isReachable(_ phoneKey: String?) -> Bool {
     guard let phoneKey else { return false }
     return sync.startOnIsLive(phoneKey)
   }
 
-  private var reachableTargets: [HubRemovalTarget] { targets.filter { isReachable($0.copy.phoneKey) } }
+  private var actionable: [HubRemovalTarget] { targets.filter { isReachable($0.copy.phoneKey) } }
 
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 20) {
         header
-        if phase == .choose {
+        if phase == .choose, scopes.count > 1 {
           choices
         }
-        summary
-        if scope != .list {
-          HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "folder")
-              .font(.system(size: 12, weight: .semibold))
-              .padding(.top, 2)
-            Text("Folders stay on disk. To delete a folder too, use ADE on that computer. It checks the folder for work that isn’t pushed first.")
-              .font(.system(size: 13))
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          .foregroundStyle(ADEColor.textMuted)
-        }
+        rows
         buttons
       }
       .padding(.horizontal, 20)
@@ -292,15 +289,22 @@ struct HubRemoveProjectsSheet: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text(items.count == 1 ? "Remove \(items[0].name)?" : "Remove \(items.count) projects?")
+      Text(single ? "Remove \(items[0].name)?" : "Remove \(items.count) projects?")
         .font(.system(size: 20, weight: .bold))
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
-      if items.count > 1 {
+      if !single {
         Text(hubRemovalNames(items.map(\.name)))
           .font(.system(size: 14))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
+      }
+      if phase == .choose {
+        Text("ADE keeps the folders. Each copy stays on disk where it is.")
+          .font(.system(size: 14))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.top, 2)
       }
     }
   }
@@ -325,96 +329,104 @@ struct HubRemoveProjectsSheet: View {
     }
   }
 
-  private func computer(_ key: String) -> HubRemovalComputer? { computers.first { $0.key == key } }
+  /// The one computer every item's card shows from, if they share one.
+  private var currentComputer: HubRemovalCopy? {
+    let currents = items.compactMap(\.current)
+    guard let first = currents.first, currents.allSatisfy({ $0.computerKey == first.computerKey }) else { return nil }
+    return first
+  }
 
   private func title(for option: HubRemovalScope) -> String {
     switch option {
-    case .list: return "From this list"
-    case .computer(let key): return "From \(computer(key)?.name ?? "this computer")"
+    case .current:
+      if let computer = currentComputer { return "From \(computer.computerName)" }
+      return "From the computer each is on"
     case .all: return "From all my computers"
     case .account: return "From my account"
     }
   }
 
-  private func hint(for option: HubRemovalScope) -> String {
+  private func hint(for option: HubRemovalScope) -> String? {
     switch option {
-    case .list:
-      return "Only this iPhone stops showing \(items.count == 1 ? "it" : "them"). You can show \(items.count == 1 ? "it" : "them") again."
-    case .computer(let key):
-      guard let computer = computer(key) else { return "" }
-      return isReachable(computer.phoneKey)
-        ? "\(computer.name) takes \(items.count == 1 ? "it" : "them") off its list."
-        : "\(computer.name) is offline. Nothing changes there."
-    case .all:
-      return "Every computer with a copy takes \(items.count == 1 ? "it" : "them") off its list."
-    case .account:
-      return "Every computer and device stops listing \(items.count == 1 ? "it" : "them")."
+    case .account: return "Every computer and device stops listing \(pronoun)."
+    case .current, .all: return nil
     }
   }
 
   private func symbol(for option: HubRemovalScope) -> String {
     switch option {
-    case .list: return "iphone"
-    case .computer(let key):
-      return computer(key).map { machineSymbol(machineKey: $0.phoneKey, name: $0.name) } ?? "desktopcomputer"
+    case .current:
+      return currentComputer.map { machineSymbol(machineKey: $0.phoneKey, name: $0.computerName) } ?? "desktopcomputer"
     case .all: return "macbook.and.iphone"
     case .account: return "person.crop.circle"
     }
   }
 
-  // MARK: What happens
+  // MARK: Rows
 
-  @ViewBuilder
-  private var summary: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(phase == .done ? "Result" : "What happens")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-      ADESettingsRows {
-        if scope == .list {
-          summaryRow(
-            symbol: "iphone",
-            tone: .neutral,
-            title: "This iPhone",
-            lines: [(items.count == 1 ? "Hides \(items[0].name)." : "Hides \(items.count) projects.") + " Nothing changes on your computers or your account."]
-          )
+  private var rows: some View {
+    ADESettingsRows {
+      if targets.isEmpty && scope != .account {
+        summaryRow(symbol: "icloud.slash", tone: .neutral, title: nil, lines: ["No computer with this project is online."], dimmed: true)
+      }
+      if scope == .account {
+        ForEach(items.compactMap(\.accountProject), id: \.id) { project in
+          accountRow(project)
         }
-        if scope == .account {
-          ForEach(items.compactMap(\.accountProject), id: \.id) { project in
-            accountRow(project)
-          }
-        }
-        if scope != .list {
-          if targets.isEmpty {
-            summaryRow(symbol: "desktopcomputer", tone: .neutral, title: "Your computers", lines: ["No computer has a copy. No folder changes."])
-          }
-          ForEach(targets) { target in
-            targetRow(target)
-          }
-        }
+      }
+      ForEach(targets) { target in
+        targetRow(target)
       }
     }
   }
 
   private func accountRow(_ project: AccountProject) -> some View {
     let step = accountSteps[project.id] ?? .idle
-    let line: (String, ADEKitTone) = {
-      switch step {
-      case .idle: return ("Your project list forgets \(project.name). Lanes and chats come back if you add it again.", .neutral)
-      case .running: return ("Removing…", .neutral)
-      case .done: return ("Removed from your account.", .ok)
-      case .failed(let message): return ("Still on your account. \(message)", .crit)
+    var lines: [String]
+    var tone: ADEKitTone = .neutral
+    switch step {
+    case .idle:
+      lines = [single
+        ? "Your project list forgets it. Lanes and chats come back if you add it again."
+        : "Your project list forgets \(project.name). Lanes and chats come back if you add it again."]
+      let projectTargets = targets.filter { $0.item.accountProject?.id == project.id }
+      let offline = projectTargets.filter { !isReachable($0.copy.phoneKey) }.count
+      if offline == 1 {
+        lines.append("1 computer is offline and keeps its folder.")
+      } else if offline > 1 {
+        lines.append("\(offline) computers are offline and keep their folders.")
+      } else if projectTargets.isEmpty {
+        lines.append("No folder changes on any computer.")
       }
-    }()
-    return summaryRow(symbol: "person.crop.circle", tone: line.1, title: "Your account", lines: [line.0], running: step == .running)
+    case .running:
+      lines = ["Removing…"]
+    case .done:
+      tone = .ok
+      lines = ["Removed from your account."]
+    case .failed(let message):
+      tone = .crit
+      lines = ["Still on your account. \(message)"]
+    }
+    return summaryRow(
+      symbol: "person.crop.circle",
+      tone: tone,
+      title: single ? "Your account" : "\(project.name) on your account",
+      lines: lines,
+      running: step == .running
+    )
   }
 
   private func targetRow(_ target: HubRemovalTarget) -> some View {
     let reachable = isReachable(target.copy.phoneKey)
+    let name = target.copy.computerName
     var lines: [String] = []
     var tone: ADEKitTone = .neutral
     var running = false
-    if let result = results[target.id] {
+    if !reachable && results[target.id] == nil || results[target.id] == .offline {
+      lines.append(scope == .account
+        ? "\(name) is offline. It keeps its folder."
+        : "\(name) is offline. Nothing changes there.")
+    } else if let result = results[target.id] {
       switch result {
       case .running:
         running = true
@@ -425,27 +437,24 @@ struct HubRemoveProjectsSheet: View {
       case .failed(let message):
         tone = .crit
         lines.append("Kept. \(message)")
-      case .offline:
-        lines.append(scope == .account ? "Offline. It keeps its folder." : "Offline. Nothing changed there.")
       case .unknown:
         tone = .warn
-        lines.append("Not known: \(target.copy.computerName) stopped answering. Check again later.")
+        lines.append("Not known: \(name) disconnected. Open this again to check.")
+      case .offline:
+        break
       }
-    } else if !reachable {
-      lines.append(scope == .account ? "Offline. It keeps its folder." : "Offline. Nothing changes there.")
     } else {
       let working = runningChats(target.copy)
       if working > 0 {
         tone = .warn
-        lines.append("\(working) \(working == 1 ? "chat is" : "chats are") working. Removing it stops \(working == 1 ? "it" : "them").")
-      } else {
-        lines.append("Takes \(target.item.name) off its list.")
+        let they = working == 1 ? "it" : "them"
+        lines.append("\(working) \(working == 1 ? "chat" : "chats") running. Removing it stops \(they).")
       }
     }
     return summaryRow(
-      symbol: machineSymbol(machineKey: target.copy.phoneKey, name: target.copy.computerName),
+      symbol: machineSymbol(machineKey: target.copy.phoneKey, name: name),
       tone: tone,
-      title: items.count == 1 ? target.copy.computerName : "\(target.item.name) on \(target.copy.computerName)",
+      title: single ? name : "\(target.item.name) on \(name)",
       path: target.copy.rootPath,
       lines: lines,
       running: running,
@@ -462,7 +471,7 @@ struct HubRemoveProjectsSheet: View {
   private func summaryRow(
     symbol: String,
     tone: ADEKitTone,
-    title: String,
+    title: String?,
     path: String? = nil,
     lines: [String],
     running: Bool = false,
@@ -480,10 +489,12 @@ struct HubRemoveProjectsSheet: View {
       }
       .frame(width: 22, height: 20)
       VStack(alignment: .leading, spacing: 3) {
-        Text(title)
-          .font(.system(size: 15, weight: .medium))
-          .foregroundStyle(dimmed ? ADEColor.textSecondary : ADEColor.textPrimary)
-          .fixedSize(horizontal: false, vertical: true)
+        if let title {
+          Text(title)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(dimmed ? ADEColor.textSecondary : ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         if let path, !path.isEmpty {
           Text(path)
             .font(.adeMono(11))
@@ -494,7 +505,7 @@ struct HubRemoveProjectsSheet: View {
         ForEach(lines, id: \.self) { line in
           Text(line)
             .font(.system(size: 13))
-            .foregroundStyle(tone == .crit ? ADEColor.danger : ADEColor.textSecondary)
+            .foregroundStyle(tone == .crit ? ADEColor.danger : tone == .warn ? ADEColor.warning : ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -516,22 +527,19 @@ struct HubRemoveProjectsSheet: View {
 
   // MARK: Buttons
 
+  /// The desktop's confirm label.
   private var confirmLabel: String {
-    switch scope {
-    case .list: return "Remove from this list"
-    case .account: return "Remove from my account"
-    case .computer(let key): return "Remove from \(computer(key)?.name ?? "this computer")"
-    case .all:
-      let count = Set(reachableTargets.map(\.copy.computerKey)).count
-      return count == 1 ? "Remove from 1 computer" : "Remove from \(count) computers"
+    if scope == .account { return "Remove from my account" }
+    let computers = Set(actionable.map(\.copy.computerKey))
+    if computers.count <= 1 {
+      let name = actionable.first?.copy.computerName ?? currentComputer?.computerName ?? items.first?.current?.computerName
+      return "Remove from \(name ?? "this computer")"
     }
+    return "Remove from \(computers.count) computers"
   }
 
   private var canConfirm: Bool {
-    switch scope {
-    case .list, .account: return true
-    case .computer, .all: return !reachableTargets.isEmpty
-    }
+    !actionable.isEmpty || scope == .account
   }
 
   @ViewBuilder
@@ -563,16 +571,6 @@ struct HubRemoveProjectsSheet: View {
 
   private func run() async {
     guard phase == .choose else { return }
-    if scope == .list {
-      let keys = Set(items.map(\.hideKey))
-      HubPhoneHiddenList.shared.hide(keys)
-      dismiss()
-      onFinished(.hidden(
-        keys: keys,
-        text: items.count == 1 ? "Removed \(items[0].name) from this list" : "Removed \(items.count) projects from this list"
-      ))
-      return
-    }
     phase = .running
     var removed = 0
     var problems = 0
@@ -595,6 +593,8 @@ struct HubRemoveProjectsSheet: View {
         problems += 1
       }
     }
+    // The account step runs after the computers, as on the desktop: a copy
+    // that stays (offline, refused) keeps its folder either way.
     var accountRemoved = 0
     if scope == .account {
       for project in items.compactMap(\.accountProject) {
@@ -612,11 +612,11 @@ struct HubRemoveProjectsSheet: View {
     phase = .done
     let text: String
     if scope == .account {
-      text = accountRemoved == 1 && items.count == 1 ? "Removed \(items[0].name) from your account" : "Removed \(accountRemoved) from your account"
+      text = accountRemoved == 1 && single ? "Removed \(items[0].name) from your account" : "Removed \(accountRemoved) from your account"
     } else {
       text = removed == 1 ? "Removed 1 folder from a computer" : "Removed \(removed) folders from computers"
     }
-    onFinished(.removed(text: problems > 0 ? "\(text). Some were kept." : text))
+    onFinished(problems > 0 ? "\(text). Some were kept." : text)
   }
 }
 
@@ -631,13 +631,20 @@ func hubRemovalNames(_ names: [String], shown: Int = 3) -> String {
 
 // MARK: - List header and select mode
 
-/// Above the project grid: the list's name, how many it holds, and Select.
+/// Above the project grid: the list's name, how many it holds, what this
+/// phone hides, and Select.
 struct HubProjectsHeader: View {
   let title: String
+  /// The account's count when the account governs the list: hiding a row on
+  /// this phone never lowers it.
   let count: Int
+  /// Rows this phone hides, main list and "Only on" folders. Empty hides
+  /// the menu.
+  var hidden: [HubHiddenEntry] = []
   let selecting: Bool
   let canSelect: Bool
   let onToggleSelect: () -> Void
+  var onShowHidden: (Set<String>) -> Void = { _ in }
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -648,6 +655,9 @@ struct HubProjectsHeader: View {
         .font(.system(size: 13, weight: .medium))
         .monospacedDigit()
         .foregroundStyle(ADEColor.textMuted)
+      if !hidden.isEmpty, !selecting {
+        hiddenMenu
+      }
       Spacer(minLength: 8)
       if canSelect {
         Button(selecting ? "Done" : "Select", action: onToggleSelect)
@@ -661,28 +671,71 @@ struct HubProjectsHeader: View {
     .padding(.horizontal, 2)
     .accessibilityElement(children: .contain)
   }
+
+  /// "· 3 hidden": a menu that shows them all again, or one by name.
+  private var hiddenMenu: some View {
+    Menu {
+      Section("Hidden on this iPhone") {
+        Button {
+          onShowHidden(Set(hidden.map(\.key)))
+        } label: {
+          Label(hidden.count == 1 ? "Show it" : "Show all \(hidden.count)", systemImage: "eye")
+        }
+      }
+      Section {
+        ForEach(hidden) { entry in
+          Button(entry.name) { onShowHidden([entry.key]) }
+        }
+      }
+    } label: {
+      HStack(spacing: 4) {
+        Text("·")
+        Text("\(hidden.count) hidden")
+          .monospacedDigit()
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+      }
+      .font(.system(size: 13, weight: .medium))
+      .foregroundStyle(ADEColor.accent)
+      .frame(minHeight: 32)
+      .contentShape(Rectangle())
+    }
+    .accessibilityLabel(hidden.count == 1 ? "1 project hidden on this iPhone" : "\(hidden.count) projects hidden on this iPhone")
+    .accessibilityHint("Shows them again.")
+  }
 }
 
-/// Under the list while selecting: Select all, the count, and Remove….
+/// Under the list while selecting: Select all, the count, Hide and Remove….
 struct HubSelectionBar: View {
   let selected: Int
   let total: Int
   let onSelectAll: () -> Void
+  let onHide: () -> Void
   let onRemove: () -> Void
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       Button(selected == total && total > 0 ? "Deselect all" : "Select all", action: onSelectAll)
         .buttonStyle(ADEKitButtonStyle())
+        .lineLimit(1)
       Spacer(minLength: 4)
       Text(selected == 0 ? "None selected" : "\(selected) selected")
         .font(.system(size: 13, weight: .medium))
         .monospacedDigit()
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)
+        .minimumScaleFactor(0.85)
       Spacer(minLength: 4)
+      Button(action: onHide) {
+        Label("Hide", systemImage: "eye.slash")
+      }
+      .buttonStyle(ADEKitButtonStyle())
+      .lineLimit(1)
+      .disabled(selected == 0)
+      .accessibilityHint("Hides them on this iPhone only.")
       Button("Remove…", action: onRemove)
         .buttonStyle(ADEKitButtonStyle(prominent: true, brand: ADEColor.danger))
+        .lineLimit(1)
         .disabled(selected == 0)
     }
     .padding(.horizontal, 14)
@@ -718,6 +771,7 @@ struct HubLocalFolderSection: View {
   let selectedIds: Set<String>?
   let onOpen: (HubProjectPresentation) -> Void
   let onToggle: (HubProjectPresentation) -> Void
+  let onHide: (HubProjectPresentation) -> Void
   let onRemove: (HubProjectPresentation) -> Void
 
   var body: some View {
@@ -787,6 +841,7 @@ struct HubLocalFolderSection: View {
           Button { UIPasteboard.general.string = path } label: { Label("Copy path", systemImage: "doc.on.doc") }
         }
         Divider()
+        Button { onHide(presentation) } label: { Label("Hide on this iPhone", systemImage: "eye.slash") }
         Button(role: .destructive) { onRemove(presentation) } label: { Label("Remove…", systemImage: "trash") }
       }
     }

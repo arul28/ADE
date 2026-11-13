@@ -75,7 +75,7 @@ struct HubScreen: View {
   /// The saved order came from the per-machine layout and still names that
   /// machine's ids; the next rebuild maps them to account project ids.
   @State private var legacyOrderPending = false
-  /// Projects and folders the user removed from this list (phone only).
+  /// Projects and folders the user hid on this phone (phone only).
   @ObservedObject private var hiddenList = HubPhoneHiddenList.shared
   /// Folders on reachable computers that are not account projects, one
   /// section per computer ("Only on <computer>").
@@ -85,8 +85,9 @@ struct HubScreen: View {
   /// Second folders of a project another card shows. Not listed; their
   /// agents still show on the agent page.
   @State private var duplicatePresentations: [HubProjectPresentation] = []
-  /// The hidden keys that name something the Hub would show, for "Show".
-  @State private var hiddenShownKeys: Set<String> = []
+  /// What this phone hides that the Hub would otherwise show, by name, for
+  /// the header's "N hidden" menu.
+  @State private var hiddenEntries: [HubHiddenEntry] = []
   /// Select mode: the ticked card ids.
   @State private var selecting = false
   @State private var selectedIds: Set<String> = []
@@ -480,6 +481,7 @@ struct HubScreen: View {
           selected: selectedIds.count,
           total: selectableIds.count,
           onSelectAll: toggleSelectAll,
+          onHide: hideSelected,
           onRemove: removeSelected
         )
         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -508,16 +510,26 @@ struct HubScreen: View {
         onOpenSettings: { syncService.settingsPresented = true }
       )
     }
-    if !hubProjectPresentations.isEmpty || !localSections.isEmpty {
+    if !hubProjectPresentations.isEmpty || !localSections.isEmpty || !hiddenEntries.isEmpty {
       HubProjectsHeader(
         title: "Projects",
-        count: hubProjectPresentations.count,
+        count: hubListCount,
+        hidden: hiddenEntries,
         selecting: selecting,
-        canSelect: true,
-        onToggleSelect: toggleSelecting
+        canSelect: !hubProjectPresentations.isEmpty || !localSections.isEmpty,
+        onToggleSelect: toggleSelecting,
+        onShowHidden: { hiddenList.show($0) }
       )
     }
-    if hubProjectPresentations.isEmpty {
+    if hubProjectPresentations.isEmpty, hiddenEntries.contains(where: { $0.computerKey == nil }) {
+      // Every project is hidden on this phone: say so, not "no projects".
+      Text("Every project is hidden on this iPhone. Use \u{201C}hidden\u{201D} above to show them again.")
+        .font(.system(size: 13))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
+        .padding(.vertical, 8)
+    } else if hubProjectPresentations.isEmpty {
       HubAccountEmptyCard(
         kind: hubAccountEmptyKind(statusInputs),
         onRetryList: { Task { await reloadAccount() } },
@@ -533,18 +545,6 @@ struct HubScreen: View {
       }
       }
     }
-    if !hiddenShownKeys.isEmpty {
-      Button {
-        hiddenList.show(hiddenShownKeys)
-      } label: {
-        Text(hiddenShownKeys.count == 1 ? "Show 1 project hidden on this iPhone" : "Show \(hiddenShownKeys.count) projects hidden on this iPhone")
-          .font(.system(size: 13, weight: .medium))
-          .foregroundStyle(ADEColor.accent)
-          .frame(maxWidth: .infinity, minHeight: 36)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-    }
     ForEach(localSections) { section in
       let shown = section.presentations.compactMap { hubProjectPresentation($0, matching: effectiveRosterFilter) }
       if !shown.isEmpty {
@@ -555,6 +555,7 @@ struct HubScreen: View {
           selectedIds: selecting ? selectedIds : nil,
           onOpen: { openHubProject($0.project) },
           onToggle: { toggleSelection($0.project.id) },
+          onHide: { hideOnPhone([$0]) },
           onRemove: { presentRemoval([$0]) }
         )
         .padding(.top, 14)
@@ -590,6 +591,7 @@ struct HubScreen: View {
       },
       onChangeIcon: { png in changeHubProjectIcon(project, png: png) },
       onMoveToTop: { moveProjectToTop(orderKey) },
+      onHide: { hideOnPhone([presentation]) },
       onRemove: { presentRemoval([presentation]) },
       onLocation: {
         guard let accountId else { return }
@@ -647,28 +649,56 @@ struct HubScreen: View {
     selectedIds = selectedIds == all ? [] : all
   }
 
+  /// The header's count. With the account list, the account's count: a
+  /// project hidden on this phone still counts. Without it, what the
+  /// computers show, hidden folders included.
+  private var hubListCount: Int {
+    if accountProjects.governsHub { return accountProjects.liveProjects.count }
+    return hubProjectPresentations.count + hiddenEntries.filter { $0.computerKey == nil }.count
+  }
+
+  private var selectedPresentations: [HubProjectPresentation] {
+    (hubProjectPresentations + localSections.flatMap(\.presentations)).filter { selectedIds.contains($0.project.id) }
+  }
+
   private func removeSelected() {
-    let all = hubProjectPresentations + localSections.flatMap(\.presentations)
-    let picked = all.filter { selectedIds.contains($0.project.id) }
+    let picked = selectedPresentations
     guard !picked.isEmpty else { return }
     presentRemoval(picked)
+  }
+
+  private func hideSelected() {
+    let picked = selectedPresentations
+    guard !picked.isEmpty else { return }
+    hideOnPhone(picked)
   }
 
   private func presentRemoval(_ presentations: [HubProjectPresentation]) {
     removalTarget = HubRemovalSheetTarget(items: presentations.map(removalItem))
   }
 
-  private func handleRemovalFinish(_ finish: HubRemovalFinish) {
-    switch finish {
-    case .hidden(let keys, let text):
-      projectOpenFailureToast = ADEToastMessage(
-        text: text,
-        kind: .success,
-        action: ADEToastAction(title: "Undo") { HubPhoneHiddenList.shared.show(keys) }
-      )
-    case .removed(let text):
-      projectOpenFailureToast = ADEToastMessage(text: text, kind: .info)
-    }
+  /// "Hide on this iPhone": only this phone stops showing them. Nothing
+  /// changes on a computer or the account. Undo or "N hidden" shows them.
+  private func hideOnPhone(_ presentations: [HubProjectPresentation]) {
+    let items = presentations.map(removalItem)
+    let keys = Set(items.map(\.hideKey))
+    guard !keys.isEmpty else { return }
+    hiddenList.hide(keys)
+    projectOpenFailureToast = ADEToastMessage(
+      text: items.count == 1 ? "Hid \(items[0].name) on this iPhone" : "Hid \(items.count) projects on this iPhone",
+      kind: .success,
+      action: ADEToastAction(title: "Undo") { HubPhoneHiddenList.shared.show(keys) }
+    )
+    endSelecting()
+  }
+
+  private func handleRemovalFinish(_ text: String) {
+    projectOpenFailureToast = ADEToastMessage(text: text, kind: .info)
+    endSelecting()
+  }
+
+  private func endSelecting() {
+    guard selecting else { return }
     withAnimation(.easeOut(duration: 0.18)) {
       selecting = false
       selectedIds = []
@@ -755,6 +785,13 @@ struct HubScreen: View {
         add(removalCopy(hubCardComputer(phoneKey: location.machineKey, project: location.project)))
       }
     }
+    // The folder the card shows, on the computer the phone reaches it on
+    // (desktop: the tab's copy). An account-only card shows none.
+    let current: HubRemovalCopy? = {
+      guard accountOnly == nil else { return nil }
+      let computer = cardComputer(cardId)
+      return computer.reachable ? removalCopy(computer) : nil
+    }()
     if accountOnly == nil { addCard(cardId) }
     if let accountId {
       for duplicate in duplicatePresentations where accountJoin.duplicateCardIds[duplicate.project.id] == accountId {
@@ -774,11 +811,14 @@ struct HubScreen: View {
     let hideKey = accountId.map(hubHiddenAccountKey)
       ?? copies.first.map { hubHiddenFolderKey(computerKey: $0.computerKey, projectId: $0.projectId) }
       ?? "card:\(cardId)"
+    let ownRepository = !(presentation.project.repoOwner ?? "").isEmpty && !(presentation.project.repoName ?? "").isEmpty
     return HubRemovalItem(
       id: cardId,
       name: accountProject?.name ?? presentation.project.displayName,
       accountProject: accountProject,
+      current: current,
       copies: copies,
+      hasRepository: accountProject != nil || ownRepository,
       hideKey: hideKey
     )
   }
@@ -789,7 +829,7 @@ struct HubScreen: View {
     hubProjectPresentations + duplicatePresentations + localSections.flatMap(\.presentations)
   }
 
-  /// Whose "From this list" choices load: the account, else the machine.
+  /// Whose hidden list loads: the account, else the machine.
   private var hiddenListScope: String? {
     if let userId = account.identity?.userId { return "account|\(userId)" }
     return syncService.focusedMachineKey.map { "machine|\($0)" }
@@ -1171,9 +1211,9 @@ struct HubScreen: View {
     var accountOnly: [String: AccountProject] = [:]
     var local: [HubProjectPresentation] = []
     var duplicates: [HubProjectPresentation] = []
-    var hiddenMatched = Set<String>()
+    var hiddenMatched: [HubHiddenEntry] = []
     let hidden = hiddenList.keys
-    // A folder the user removed from this list, by its computer and id.
+    // A folder the user hid on this phone, by its computer and id.
     func folderHideKey(_ cardId: String) -> String {
       let computer = cardComputer(cardId, merge: merge)
       return hubHiddenFolderKey(computerKey: computer.key, projectId: computer.project.id)
@@ -1203,12 +1243,15 @@ struct HubScreen: View {
       join = pass.join
       accountOnly = pass.accountOnly
       for project in accountProjects.liveProjects where hidden.contains(hubHiddenAccountKey(project.id)) {
-        hiddenMatched.insert(hubHiddenAccountKey(project.id))
+        hiddenMatched.append(HubHiddenEntry(key: hubHiddenAccountKey(project.id), name: project.name, computerKey: nil))
       }
       for presentation in pass.localPresentations {
         let key = folderHideKey(presentation.project.id)
         if hidden.contains(key) {
-          hiddenMatched.insert(key)
+          let computer = cardComputer(presentation.project.id, merge: merge)
+          if computer.reachable {
+            hiddenMatched.append(HubHiddenEntry(key: key, name: "\(presentation.project.displayName) on \(computer.name)", computerKey: computer.key))
+          }
         } else {
           local.append(presentation)
         }
@@ -1233,13 +1276,14 @@ struct HubScreen: View {
       nextPresentations = nextPresentations.filter { presentation in
         let key = folderHideKey(presentation.project.id)
         guard hidden.contains(key) else { return true }
-        hiddenMatched.insert(key)
+        hiddenMatched.append(HubHiddenEntry(key: key, name: presentation.project.displayName, computerKey: nil))
         return false
       }
     }
     if join != accountJoin { accountJoin = join }
     if duplicates != duplicatePresentations { duplicatePresentations = duplicates }
-    if hiddenMatched != hiddenShownKeys { hiddenShownKeys = hiddenMatched }
+    hiddenMatched.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    if hiddenMatched != hiddenEntries { hiddenEntries = hiddenMatched }
     let sections = hubLocalSections(local, merge: merge)
     if sections != localSections { localSections = sections }
     // A ticked card that left the list is no longer selected.

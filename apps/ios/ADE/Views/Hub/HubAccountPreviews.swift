@@ -8,7 +8,12 @@ import SwiftUI
 // Hub over a seeded account list. States: `zero-computers` (projects, no
 // computer), `offline-computers` (the account's computers are all offline),
 // `empty` (no projects, no computer), `loading`, `cant-load` (first start
-// offline), `saved` (a read failed, the saved list shows).
+// offline), `saved` (a read failed, the saved list shows), `real-shape` (20
+// projects on 5 computers, 3 of them offline; see `realShape`).
+//
+// `-adeLiveAccountFixture <state>` seeds the same states into the normal app
+// (live pairing and sync, no Clerk), for a paired dev test machine. Like every
+// fixture here it exists only in Debug builds.
 //
 // `-adePreviewScreen hub-account-states` shows every status line and empty
 // state side by side, including the ones that need a paired computer
@@ -96,6 +101,10 @@ enum HubAccountPreviewData {
         phase: .ready,
         lastSuccessAt: Date()
       )
+    case "real-shape":
+      let shape = realShape()
+      AccountService.shared.seedPreviewMachines(shape.machines)
+      store.seedPreview(projects: shape.projects, display: display, phase: .ready, lastSuccessAt: Date())
     case "empty":
       AccountService.shared.seedPreviewMachines([])
       store.seedPreview(projects: [], display: [:], phase: .ready, lastSuccessAt: Date())
@@ -123,6 +132,59 @@ enum HubAccountPreviewData {
         lastSuccessAt: Date()
       )
     }
+  }
+
+  /// `real-shape`: an account the size of a real one. 20 projects on 5
+  /// computers (2 online, 3 offline); `ade` has two folders on the MacBook
+  /// Pro; 4 projects are on no computer. Pair a dev test machine with many
+  /// folders (`-adeLiveAccountFixture real-shape`) and its folders that are
+  /// no account project go to "Only on <computer>"; the count stays 20.
+  static func realShape() -> (machines: [AccountMachine], projects: [AccountProject]) {
+    let now = Date().timeIntervalSince1970 * 1000
+    let computers: [(key: String, name: String, type: String, online: Bool)] = [
+      ("mk-studio", "Mac Studio", "desktop", true),
+      ("mk-air", "MacBook Air", "laptop", true),
+      ("mk-macbook", "MacBook Pro", "laptop", false),
+      ("mk-mini", "Mac mini", "desktop", false),
+      ("mk-imac", "Office iMac", "desktop", false),
+    ]
+    let machines = computers.map { computer in
+      let lastSeen = computer.online ? now : now - 86_400_000 * 2
+      let row = #"{"machineKey":"\#(computer.key)","deviceId":"dev-\#(computer.key)","name":"\#(computer.name)","platform":"darwin","deviceType":"\#(computer.type)","online":\#(computer.online),"lastSeenAt":\#(lastSeen)}"#
+      return try! JSONDecoder().decode(AccountMachine.self, from: Data(row.utf8))
+    }
+    let rows: [(owner: String, name: String, on: [String])] = [
+      ("sam-rivera", "ade", ["mk-macbook", "mk-macbook", "mk-mini"]),
+      ("sam-rivera", "website", ["mk-macbook"]),
+      ("sam-rivera", "dotfiles", ["mk-air", "mk-imac", "mk-macbook", "mk-mini"]),
+      ("sam-rivera", "notes", ["mk-air"]),
+      ("sam-rivera", "blog", []),
+      ("sam-rivera", "advent-of-code", ["mk-air"]),
+      ("octocat", "Hello-World", ["mk-macbook"]),
+      ("octocat", "Spoon-Knife", ["mk-mini"]),
+      ("octocat", "linguist", []),
+      ("octocat", "git-consortium", ["mk-imac", "mk-imac"]),
+      ("octocat", "octocat.github.io", []),
+      ("acme-labs", "billing-service", ["mk-imac"]),
+      ("acme-labs", "api-gateway", ["mk-imac", "mk-mini"]),
+      ("acme-labs", "design-system", ["mk-studio"]),
+      ("acme-labs", "mobile-app", ["mk-macbook"]),
+      ("acme-labs", "infra", ["mk-mini"]),
+      ("acme-labs", "data-pipeline", []),
+      ("acme-labs", "docs", ["mk-air"]),
+      ("northwind", "analytics", ["mk-imac"]),
+      ("northwind", "storefront", ["mk-air", "mk-macbook"]),
+    ]
+    let projects = rows.enumerated().map { index, row in
+      var seen: [String: Int] = [:]
+      let copies = row.on.map { machine -> (machine: String, path: String) in
+        let nth = seen[machine, default: 0]
+        seen[machine] = nth + 1
+        return (machine, nth == 0 ? "/Users/sam/code/\(row.name)" : "/Users/sam/worktrees/\(row.name)-\(nth + 1)")
+      }
+      return project(String(format: "%02d", index), owner: row.owner, name: row.name, copies: copies)
+    }
+    return (machines, projects)
   }
 
   /// `-adeLiveAccountFixture <state>`: seed this account in the normal app.

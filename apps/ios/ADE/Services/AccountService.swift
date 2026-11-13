@@ -967,6 +967,12 @@ final class AccountService: ObservableObject {
     // still being restored. A paired phone can still continue while loading.
     if accountSessionStatusAllowsAccess(Clerk.shared.session?.status), Clerk.shared.user != nil {
       syncFromClerk()
+    } else if !localSignOutState.isSuppressed, let ownerId = deviceOwnershipStore.state.ownerId {
+      // The phone has an owner but Clerk has not restored the session yet.
+      // The Hub lists that account's saved projects meanwhile: with no
+      // account list it falls back to every folder of every computer it
+      // reaches. A refresh that answers signed out deletes the list.
+      AccountProjectStore.shared.activate(userId: ownerId, beforeSession: true)
     }
 
     do {

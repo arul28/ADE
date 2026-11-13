@@ -401,6 +401,8 @@ final class AccountProjectStore: ObservableObject {
   var listState: AccountProjectListState { state }
   private var lastAttemptAt: Date?
   private var failureCount = 0
+  /// Activated from the device owner before Clerk restored the session.
+  private var awaitingSession = false
   private var inFlight: Task<Void, Never>?
   /// Rows this phone added or removed, with the list cursor after each
   /// change. A read that answers an older cursor started before the change,
@@ -428,8 +430,20 @@ final class AccountProjectStore: ObservableObject {
   /// The account `userId` signed in (a cached session at launch, a sign-in,
   /// or an account switch). Loads that account's cache at once, so a first
   /// frame offline already shows its projects.
-  func activate(userId: String) {
-    guard self.userId != userId else { return }
+  ///
+  /// `beforeSession`: the phone's owner, at launch, before Clerk restored the
+  /// session. A read cannot run yet, so the first activation with the
+  /// session restored reads at once instead of waiting out a failure floor.
+  func activate(userId: String, beforeSession: Bool = false) {
+    guard self.userId != userId else {
+      if awaitingSession, !beforeSession {
+        awaitingSession = false
+        lastAttemptAt = nil
+        refreshIfStale()
+      }
+      return
+    }
+    awaitingSession = beforeSession
     inFlight?.cancel()
     inFlight = nil
     pendingChanges = [:]
@@ -452,6 +466,7 @@ final class AccountProjectStore: ObservableObject {
   /// account's cache, with its chat logs; a switch keeps the cache of the
   /// account that left.
   func deactivate(deletingCacheOf ownerId: String?) {
+    awaitingSession = false
     inFlight?.cancel()
     inFlight = nil
     pendingChanges = [:]
