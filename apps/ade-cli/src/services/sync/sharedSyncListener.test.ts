@@ -244,9 +244,14 @@ describe("shared sync listener upgrade policy", () => {
     });
     const moves: unknown[] = [];
     listener.onPortChanged((change) => moves.push(change));
+    // The first port above is taken: the side door must skip it, not crash.
+    let blocker: http.Server | null = null;
     try {
       const port = await listener.ensureListening([0]);
       const connectedBefore = await connect(port, "/");
+      blocker = http.createServer();
+      blocker.listen(port + 1, "127.0.0.1");
+      await once(blocker, "listening");
       shadowedPort = port;
 
       await listener.healNow();
@@ -256,6 +261,7 @@ describe("shared sync listener upgrade policy", () => {
       const loopbackPort = listener.getLoopbackPort();
       expect(loopbackPort).not.toBeNull();
       expect(loopbackPort).not.toBe(port);
+      expect(loopbackPort).not.toBe(port + 1);
       expect(listener.getLoopbackValidationStatus()).toMatchObject({
         port,
         loopbackAdeValidated: true,
@@ -278,6 +284,7 @@ describe("shared sync listener upgrade policy", () => {
       connectedBefore.close();
     } finally {
       await listener.close();
+      if (blocker?.listening) await new Promise<void>((resolve) => blocker!.close(() => resolve()));
     }
   });
 

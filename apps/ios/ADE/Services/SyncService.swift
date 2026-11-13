@@ -19285,7 +19285,8 @@ final class SyncService: ObservableObject {
     // means another machine, whatever the name says.
     let identitiesDiffer = hostIdentity.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .flatMap { requested in
-        syncNonEmpty(profile.hostIdentity).map { !requested.isEmpty && $0 != requested }
+        (syncNonEmpty(profile.hostIdentity) ?? syncNonEmpty(profile.lastHostDeviceId))
+          .map { !requested.isEmpty && $0 != requested }
       } ?? false
     let nameMatches = !identitiesDiffer && (hostName.flatMap { name in
       let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -573,7 +573,17 @@ export function createSyncListenerPortController(
    * false only when no local route answers as ADE (a loopback-only bind that
    * is shadowed, or a side door that could not open); the caller moves then.
    */
-  const ensureLocalRoute = async (port: number): Promise<boolean> => {
+  // Local-route checks (the self-check's and a host's revalidateLoopback) run
+  // one at a time: two at once could each open, adopt or close the side door
+  // and record a door the other had just closed.
+  let routeLock: Promise<unknown> = Promise.resolve();
+  const ensureLocalRoute = (port: number): Promise<boolean> => {
+    const run = routeLock.then(() => ensureLocalRouteNow(port), () => ensureLocalRouteNow(port));
+    routeLock = run.catch(() => undefined);
+    return run;
+  };
+
+  const ensureLocalRouteNow = async (port: number): Promise<boolean> => {
     // Probe before recording: while the side door serves, a shadowed main
     // port is the expected state, and writing "not validated" for a moment on
     // every check would make Tailscale unpublish and republish each time.

@@ -5000,7 +5000,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const publishValidatedDiscovery = async (
+  // One publication at a time: two overlapping ones (a port move and a
+  // loopback verdict change) could each tear down the other's Tailscale route.
+  let discoveryChain: Promise<unknown> = Promise.resolve();
+  const publishValidatedDiscovery = (
+    port: number,
+    options?: { forceLan?: boolean; forceTailnet?: boolean },
+  ): Promise<void> => {
+    const run = discoveryChain.then(
+      () => publishValidatedDiscoveryNow(port, options),
+      () => publishValidatedDiscoveryNow(port, options),
+    );
+    discoveryChain = run.catch(() => undefined);
+    return run;
+  };
+
+  const publishValidatedDiscoveryNow = async (
     port: number,
     options?: { forceLan?: boolean; forceTailnet?: boolean },
   ): Promise<void> => {

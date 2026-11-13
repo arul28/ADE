@@ -194,9 +194,11 @@ describe("staleAdeTailnetServePorts", () => {
     const json = serveStatus({
       "8787": "127.0.0.1:8787",
       "8788": "127.0.0.1:8788",
+      // A side door a crashed brain pointed Tailscale at, a few ports above.
+      "8789": "127.0.0.1:8791",
       "8852": "127.0.0.1:8852",
     });
-    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788]);
+    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788, 8789]);
   });
 
   it("leaves a hand-rolled serve in the same range alone", () => {

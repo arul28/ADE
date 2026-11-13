@@ -101,6 +101,9 @@ final class MachineConnection {
   private(set) var liveAddress: String?
   /// When the current link went live, for the drop report's age.
   private var liveSinceUptime: TimeInterval?
+  /// The socket this phone closed itself for heartbeat silence. Its close is
+  /// explained, so the drop report skips it.
+  private weak var heartbeatClosedSocket: URLSessionWebSocketTask?
   private var relayReauthorizationTask: Task<Void, Never>?
   /// Sleeping out a backoff delay between failed dials.
   private var waitingToRetry = false
@@ -437,12 +440,12 @@ final class MachineConnection {
           machineConnectionLog.notice(
             "fleet socket closed machine=\(self.machineKey, privacy: .public) code=\(task.closeCode.rawValue) reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
           )
-          SyncLiveDropReport.report(
+          if heartbeatClosedSocket !== task { SyncLiveDropReport.report(
             connection: "fleet",
             routeKind: liveRouteKind,
             closeCode: syncWebSocketCloseCode(task),
             connectionAgeSeconds: liveSinceUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
-          )
+          ) }
         }
         return
       }
@@ -735,6 +738,7 @@ final class MachineConnection {
           // Nothing (not even a host ping) for three intervals: the path is
           // dead. Close; the run loop reconnects with backoff.
           machineConnectionLog.notice("fleet heartbeat silence machine=\(self.machineKey, privacy: .public)")
+          self.heartbeatClosedSocket = self.socket
           self.socket?.cancel(with: .goingAway, reason: nil)
           return
         }
