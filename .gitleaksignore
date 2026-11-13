@@ -86,3 +86,12 @@ b5af93bc65f924f6a6bc4a563577335bb19cba7d:apps/desktop/src/main/services/shared/u
 ee0bad69f7bf663a02a3ee9190eed7dfbcf3cbca:apps/ios/ADE/Views/Hub/HubAccountProjects.swift:generic-api-key:783
 # A made-up token in a URL-fragment test row (PR #2200); the row now uses a value no scanner matches.
 0b75fdb5a0f2c7363d2a78f9f6d6e93e9f3607be:apps/desktop/src/shared/mcpServerImport.test.ts:github-pat:88
+
+# Passwords (PR #2237): RFC 6238 test keys in TOTP fixtures and a made-up
+# token in a secrets-exec test, found in this branch's earlier commits before
+# their inline `gitleaks:allow` markers.
+df3bfb9abe8aac6338a9686db9e81af64e72ba8f:apps/ios/Scripts/passwords-vector-fixture.ts:generic-api-key:22
+df3bfb9abe8aac6338a9686db9e81af64e72ba8f:apps/ios/ADETests/PasswordsVaultTests.swift:generic-api-key:16
+df3bfb9abe8aac6338a9686db9e81af64e72ba8f:apps/ios/ADETests/PasswordsVaultTests.swift:generic-api-key:30
+4087934e2be266300a6d8a89dac15331d83db14a:apps/ade-cli/src/services/passwords/passwordTotp.test.ts:generic-api-key:35
+8862d0a24ce0597186c0e64e14a5c46da36ee52b:apps/desktop/src/main/services/secrets/projectSecretService.test.ts:generic-api-key:599

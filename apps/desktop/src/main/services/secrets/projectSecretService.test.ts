@@ -596,7 +596,7 @@ describe("runWithSecrets", () => {
       command: ["sh", "-c", "sleep 30 & echo $!; sleep 31"],
       cwd: root,
       allowedRoots: [root],
-      secrets: { DEPLOY_TOKEN: "dtk_9f8e7d6c5b4a3210" },
+      secrets: { DEPLOY_TOKEN: "dtk_9f8e7d6c5b4a3210" }, // gitleaks:allow (a made-up test value)
       timeoutMs: 300,
     });
     expect(result.timedOut).toBe(true);
@@ -607,10 +607,12 @@ describe("runWithSecrets", () => {
     const alive = (() => {
       try {
         process.kill(backgroundPid, 0);
+        // `ps` exits non-zero once the process is gone: not alive either.
+        const state = execFileSync("ps", ["-o", "stat=", "-p", String(backgroundPid)], { encoding: "utf8" }).trim();
+        return state !== "" && !state.startsWith("Z");
       } catch {
         return false;
       }
-      return !/^\s*Z/.test(execFileSync("ps", ["-o", "stat=", "-p", String(backgroundPid)], { encoding: "utf8" }).trim() || "Z");
     })();
     expect(alive).toBe(false);
   });
