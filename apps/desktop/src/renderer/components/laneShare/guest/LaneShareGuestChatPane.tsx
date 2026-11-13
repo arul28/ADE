@@ -63,7 +63,9 @@ export function LaneShareGuestChatPane({
       chatScope={scope}
       lockSessionId={session.sessionId}
       lockSessionProvider={null}
-      availableModelIdsOverride={models}
+      // No allowed models means "keep the chat's model": the picker locks and
+      // shows the current one, and a send still goes (an empty override would refuse it).
+      availableModelIdsOverride={models.length > 0 ? models : undefined}
       modelSelectionLocked={models.length === 0}
       permissionModeLockReason={modeLock}
       effortSelectionLocked={reasoningLocked}

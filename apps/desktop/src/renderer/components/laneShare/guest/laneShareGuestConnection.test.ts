@@ -296,11 +296,14 @@ describe("the guest chat adapter", () => {
     rights.speak.drafts = true;
     const api = createLaneShareGuestAgentChatApi(connection, () => ({ rights } as never));
     const before = socket.sentOfType("command").length;
-    void api.steer({ sessionId: "chat-mine", text: "now", dispatchMode: "interrupt" } as never, null as never).catch(() => undefined);
+    expect(rights.run.models, "the preset keeps the chat's model").toEqual([]);
+    // The pane sends its copy of the model (a placeholder when names are hidden): a locked one stays out.
+    void api.steer({ sessionId: "chat-mine", text: "now", dispatchMode: "interrupt", modelId: "hidden-model" } as never, null as never).catch(() => undefined);
     await vi.waitFor(() => expect(socket.sentOfType("command").length).toBe(before + 1));
     const payload = socket.sentOfType("command").at(-1)!.payload as { action: string; args: Record<string, unknown> };
     expect(payload.action).toBe(action);
     expect(payload.args).toMatchObject(expected);
+    expect(payload.args.modelId).toBeUndefined();
     if (action === "chat.createDraft") expect(socket.sentOfType("command").some((c) => (c.payload as { action: string }).action === "chat.steer")).toBe(false);
     api.dispose();
   });

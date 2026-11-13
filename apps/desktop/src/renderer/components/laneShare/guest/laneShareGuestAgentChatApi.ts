@@ -38,11 +38,20 @@ function eventKey(entry: AgentChatEventEnvelope): string {
   return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
 }
 
-/** The fields of a send the owner's gate reads; attachments and local context stay here. */
-function guestSendArgs(args: Record<string, unknown>): Record<string, unknown> {
+/**
+ * The fields of a send the owner's gate reads; attachments and local context
+ * stay here. A model, reasoning level or mode the owner locked (an empty list:
+ * "keep the chat's own") is left out, so the chat keeps its current one; the
+ * pane may hold a hidden model's placeholder name.
+ */
+function guestSendArgs(args: Record<string, unknown>, rights: LaneShareGuestState["rights"] | null): Record<string, unknown> {
+  const locked = new Set<string>();
+  if (rights?.run.models.length === 0) locked.add("modelId");
+  if (rights?.run.reasoningLevels.length === 0) locked.add("reasoningEffort");
+  if (rights?.run.permissionModes.length === 0) locked.add("permissionMode");
   const out: Record<string, unknown> = {};
   for (const key of ["sessionId", "text", "displayText", "clientSendId", "modelId", "reasoningEffort", "permissionMode", "interactionMode"]) {
-    if (args[key] !== undefined) out[key] = args[key];
+    if (args[key] !== undefined && !locked.has(key)) out[key] = args[key];
   }
   return out;
 }
@@ -238,7 +247,7 @@ export function createLaneShareGuestAgentChatApi(
     },
     send: async (args: Record<string, unknown>) => {
       if (await sentAsDraft(args)) return;
-      const sendArgs = guestSendArgs(args);
+      const sendArgs = guestSendArgs(args, readGuestState()?.rights ?? null);
       // The owner's computer drops a repeated send by this id (a retry after a lost answer).
       if (typeof sendArgs.clientSendId !== "string") sendArgs.clientSendId = `lsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       await call("chat.send", sendArgs);
@@ -248,7 +257,7 @@ export function createLaneShareGuestAgentChatApi(
     steer: async (args: Record<string, unknown>) => (await sentAsDraft(args))
       ? { steerId: `draft-${Date.now().toString(36)}`, queued: false }
       : call<AgentChatSteerResult>("chat.steer", {
-      ...guestSendArgs(args),
+      ...guestSendArgs(args, readGuestState()?.rights ?? null),
       ...(typeof args.dispatchMode === "string" ? { dispatchMode: args.dispatchMode } : {}),
     }),
     // Queue edits, subagent stops and turn recovery are the owner's; the pane
@@ -272,8 +281,15 @@ export function createLaneShareGuestAgentChatApi(
       const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
       // The pane syncs its settings before a send; an update that changes
       // nothing is not sent (it would count against the guest's rate limit).
-      const changes = Object.entries(args).filter(([key, value]) => key !== "sessionId" && value !== undefined);
-      if (changes.length > 0) await call("chat.updateSession", args);
+      // A locked setting stays the chat's own; the pane's copy is not sent.
+      const rights = readGuestState()?.rights ?? null;
+      const lockedKeys = new Set([
+        ...(rights?.run.models.length === 0 ? ["modelId", "model"] : []),
+        ...(rights?.run.reasoningLevels.length === 0 ? ["reasoningEffort"] : []),
+        ...(rights?.run.permissionModes.length === 0 ? ["permissionMode"] : []),
+      ]);
+      const changes = Object.entries(args).filter(([key, value]) => key !== "sessionId" && value !== undefined && !lockedKeys.has(key));
+      if (changes.length > 0) await call("chat.updateSession", { sessionId, ...Object.fromEntries(changes) });
       const summary = await summaryOf(sessionId);
       if (!summary) throw new Error("The owner's computer did not answer.");
       return sessionFromSummary(summary);
