@@ -2931,6 +2931,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             laneId: lane.id,
             laneName: lane.name,
             lane,
+            // The tab's copy owns this lane: Manage and Share act on it there.
+            ...(tabCopyPin ? { binding: tabCopyPin } : {}),
             onToggleWorkPin: toggleWorkLanePinned,
             workPinnedLaneIds,
             workPinLaneId: lane.id,

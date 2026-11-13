@@ -49,9 +49,8 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   runtimePin: lanePinProp,
   onClose,
 }: WorkManageLaneDialogHostProps) {
-  // A lane with no pin is a lane of the tab's copy (the store's list), so its
-  // calls go to that copy. Without this, every action on a local lane refused
-  // with "not connected", because a chat-scoped call never defaults to a machine.
+  // No pin means the lane comes from the store's list, which is the tab's copy,
+  // so its calls go to that copy. An offline copy leaves no pin and the calls refuse.
   const tabCopyPin = useTabCopyPin();
   const runtimePin = lanePinProp ?? tabCopyPin ?? undefined;
   const lanes = useAppStore((state) => state.lanes);
