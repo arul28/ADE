@@ -511,3 +511,52 @@ enum CloudPlanSeenStore {
     return moment
   }
 }
+
+// MARK: Cloud computer labels
+
+/// What a person sees for an ADE Cloud lane computer: "Cloud · <lane>", never
+/// its generated name (an instance id as host name, a lane-derived computer
+/// name), as the desktop's `machineLabelForMachine`. The account's lane
+/// computers as last read, kept on this phone (lane names and ids, no secret),
+/// so the Machines list, pickers and chat headers can name them before the
+/// ADE Cloud page is opened. A label only: routing keeps the machine key.
+enum CloudLaneComputerLabels {
+  static let defaultsKey = "ade.cloudLaneComputers.v1"
+  /// The short name for any ADE Cloud computer.
+  static let cloudLabel = "Cloud"
+
+  /// Records the lane computers of a good read of the account's computers.
+  static func note(_ machines: [CloudPhoneMachine], defaults: UserDefaults = .standard) {
+    var lanes: [String: String] = [:]
+    for machine in machines {
+      guard let laneName = machine.lane?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !laneName.isEmpty else { continue }
+      lanes[machine.instanceId.lowercased()] = laneName
+      if let key = machine.machineKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty { lanes[key.lowercased()] = laneName }
+    }
+    defaults.set(lanes, forKey: defaultsKey)
+  }
+
+  /// "Cloud · fix-login" for a lane computer known by its machine key or host name; nil for any other machine.
+  static func label(machineKey: String?, hostName: String? = nil, defaults: UserDefaults = .standard) -> String? {
+    let lanes = defaults.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+    guard !lanes.isEmpty else { return nil }
+    for candidate in [machineKey, hostName] {
+      guard let id = candidate?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !id.isEmpty else { continue }
+      if let lane = lanes[id] { return "\(cloudLabel) · \(lane)" }
+    }
+    return nil
+  }
+
+  /// `name`, or "Cloud · <lane>" when the machine is a lane computer.
+  static func present(_ name: String, machineKey: String?, hostName: String? = nil) -> String {
+    label(machineKey: machineKey, hostName: hostName) ?? name
+  }
+}
+
+extension AccountMachine {
+  /// The name a row shows: "Cloud · <lane>" for an ADE Cloud lane computer,
+  /// else `displayName`. Rename fields and name matching keep `displayName`.
+  var presentedName: String {
+    CloudLaneComputerLabels.label(machineKey: machineKey, hostName: name) ?? displayName
+  }
+}

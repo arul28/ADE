@@ -208,6 +208,7 @@ final class CloudPaneStore: ObservableObject {
       let list = try await syncService.cloudRead("list", args: ["detail": "full"], as: CloudPhoneList.self)
       now = Date()
       machines = Self.ordered(list.machines, now: now)
+      CloudLaneComputerLabels.note(list.machines)
       account = list.account
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded

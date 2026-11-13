@@ -304,9 +304,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   {isCurrent && oldTerms?.hoursMilli != null ? (
-                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> hours until {until}</span></li>
+                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> computer hours until {until}</span></li>
                   ) : (
-                    <li><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b> hours a month</span></li>
+                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours a month on Linux computers in the cloud, as many computers as you like`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b> computer hours</span></li>
                   )}
                   {isCurrent && oldTerms?.diskGb != null ? (
                     <li title={`${column.facts.diskGb} GB from ${until}`}><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{oldTerms.diskGb} GB</b> disk until {until}</span></li>
@@ -314,7 +314,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     <li><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b> disk</span></li>
                   )}
                   {showPhoneMinutes ? (
-                    <li title="The phone simulator on a cloud computer. Coming soon."><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> phone minutes <em>soon</em></span></li>
+                    <li title="Time on an iPhone simulator in the cloud, for agents to test your app. Coming soon."><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes <em>soon</em></span></span></li>
                   ) : null}
                   {cents == null ? (
                     <li data-quiet="true" title="Work stops until your hours reset"><Lightning size={13} /><span>Work stops at the limit</span></li>
@@ -343,25 +343,32 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           })}
         </div>
 
-        <div className="adecd-howto" aria-label="How hours and disk work">
+        <div className="adecd-howto" aria-label="What every plan includes">
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Clock size={14} /></span>
               <p>
-                <b>An hour</b> is one hour of a Small computer while it&apos;s awake. Bigger sizes use hours faster (2× uses two).
+                <b>Hours run your cloud computers</b> and renew every month: Linux computers your agents work on, one per lane, as many as you like.
+                An hour is one hour of a Small computer; bigger sizes use hours faster (2× uses two).
                 {extraHours.available && currentExtraCents != null
                   ? ` With extra hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)} times the size's rate.`
                   : null}
               </p>
             </div>
             <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><HardDrives size={14} /></span>
-              <p><b>Disk</b> is what all your computers hold at one time. Make as many computers as you like.</p>
+              <span className="adecd-howto-icon"><MoonStars size={14} /></span>
+              <p><b>Computers sleep on their own</b> a few minutes after work stops, so your hours only go to real work.</p>
             </div>
             <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><MoonStars size={14} /></span>
-              <p><b>Asleep, a computer uses no hours.</b> It falls asleep a few minutes after its agent stops.</p>
+              <span className="adecd-howto-icon"><HardDrives size={14} /></span>
+              <p><b>Disk</b> is what all your computers hold at one time, shared between them.</p>
             </div>
+            {showPhoneMinutes ? (
+              <div className="adecd-howto-item">
+                <span className="adecd-howto-icon"><DeviceMobile size={14} /></span>
+                <p><b>iOS Simulator minutes</b> <em className="adecd-howto-soon">soon</em>: time on an iPhone simulator in the cloud, for agents to test your app.</p>
+              </div>
+            ) : null}
           </div>
           {notes.length ? (
             <ul className="adecd-howto-notes">

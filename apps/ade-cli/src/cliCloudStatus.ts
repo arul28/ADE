@@ -62,8 +62,8 @@ export function formatCloudStatus(value: unknown): string {
     const resetsOn = hours && typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : null;
     const planHours = typeof includes.hours === "number"
       ? periodHours != null && periodHours !== includes.hours && resetsOn
-        ? `${cloudHoursText(periodHours)} hours this period, ${cloudHoursText(includes.hours)} from ${resetsOn}`
-        : `${cloudHoursText(includes.hours)} hours`
+        ? `${cloudHoursText(periodHours)} computer hours this period, ${cloudHoursText(includes.hours)} from ${resetsOn}`
+        : `${cloudHoursText(includes.hours)} computer hours`
       : null;
     const facts = [
       planHours,

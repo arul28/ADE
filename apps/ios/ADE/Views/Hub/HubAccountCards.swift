@@ -247,7 +247,7 @@ func hubAccountProjectChip(_ project: AccountProject, holders: [HubChipHolder], 
   if all.count > 1 {
     label = "\(all.count) computers"
   } else if let key = all.first {
-    label = names[key] ?? machines.first { $0.machineKey == key }?.displayName
+    label = names[key] ?? machines.first { $0.machineKey == key }?.presentedName
   } else {
     label = nil
   }
@@ -259,7 +259,7 @@ func hubAccountProjectChip(_ project: AccountProject, holders: [HubChipHolder], 
 /// name is unknown until the computer list loads; the count still shows.
 func hubAccountOnlyChip(_ project: AccountProject, machines: [AccountMachine]) -> HubComputerChip {
   let held = accountProjectCopyMachines(project, machines: machines)
-  let label = held.count > 1 ? "\(held.count) computers" : held.first?.machine?.displayName
+  let label = held.count > 1 ? "\(held.count) computers" : held.first?.machine?.presentedName
   let online = held.filter { $0.machine?.online == true }.count
   return HubComputerChip(label: label, total: held.count, live: online)
 }

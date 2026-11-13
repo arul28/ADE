@@ -88,9 +88,10 @@
 .adecd-plancard-price span { font-size: 12px; color: var(--kit-text-3); }
 .adecd-plancard[data-current] .adecd-plancard-price span { color: var(--adecd-fg-2); }
 .adecd-plancard-facts { display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; list-style: none; }
-.adecd-plancard-facts li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--kit-text-2); }
-.adecd-plancard-facts li > svg { flex: none; color: var(--adec-mark); opacity: 0.9; }
-.adecd-plancard-facts li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecd-plancard-facts li { display: flex; align-items: flex-start; gap: 8px; min-width: 0; font-size: 12px; color: var(--kit-text-2); }
+.adecd-plancard-facts li > svg { flex: none; margin-top: 2px; color: var(--adec-mark); opacity: 0.9; }
+.adecd-plancard-facts li > span { min-width: 0; }
+.adecd-plancard-facts .adecd-nowrap { white-space: nowrap; }
 .adecd-plancard-facts li b { font-weight: 600; color: var(--color-fg); }
 .adecd-plancard-facts li em { margin-left: 2px; font-style: normal; font-size: 10.5px; color: var(--kit-text-3); }
 .adecd-plancard-facts li[data-quiet] { color: var(--kit-text-3); }
@@ -135,9 +136,12 @@
   border-radius: 12px;
   background: var(--kit-panel-bg);
 }
-.adecd-howto-items { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* Two by two: what the hours buy, sleep, disk, and the iOS Simulator minutes. */
+.adecd-howto-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .adecd-howto-item { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px 14px; }
-.adecd-howto-item + .adecd-howto-item { border-left: 1px solid var(--kit-rule); }
+.adecd-howto-item:nth-child(2n) { border-left: 1px solid var(--kit-rule); }
+.adecd-howto-item:nth-child(n + 3) { border-top: 1px solid var(--kit-rule); }
+.adecd-howto-soon { margin-left: 2px; font-style: normal; font-size: 10.5px; color: var(--kit-text-3); }
 .adecd-howto-icon {
   display: grid;
   place-items: center;
@@ -163,7 +167,8 @@
 .adecd-howto-notes svg { flex: none; margin-top: 3px; color: var(--adec-mark); }
 @container adecd (max-width: 760px) {
   .adecd-howto-items { grid-template-columns: 1fr; }
-  .adecd-howto-item + .adecd-howto-item { border-left: 0; border-top: 1px solid var(--kit-rule); }
+  .adecd-howto-item:nth-child(2n) { border-left: 0; }
+  .adecd-howto-item + .adecd-howto-item { border-top: 1px solid var(--kit-rule); }
 }
 
 /* Extra hours and extra disk: two tiles in the cards' language. */

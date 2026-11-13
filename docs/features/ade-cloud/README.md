@@ -168,7 +168,7 @@ The server's `plans.ts` holds them, and `GET /cloud/account` sends them in
 `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 `shared/adeCloud.ts` fills gaps from an older server).
 
-| Plan | Price | Hours a month | Disk at one time | Phone minutes | Extra hours |
+| Plan | Price | Hours a month | Disk at one time | iOS Simulator minutes (soon) | Extra hours |
 |---|---|---|---|---|---|
 | Free | $0 | 100 | 12 GB | 20 | none: work stops |
 | Plus | $5 | 300 | 30 GB | 30 | 2¢ an hour |
@@ -179,8 +179,13 @@ Hours are Small-computer hours. Disk is what the account's computers hold at
 one time, never a monthly amount. No plan limits how many computers an
 account has (Cloud 7). The account says `plan: "free" | "paid"` for older
 builds and `planId: "free" | "plus" | "pro" | "max"` for new ones; a
-`past_due` account follows the free rules but keeps what it has. Phone
-minutes are shown on the plan table only; nothing meters them yet.
+`past_due` account follows the free rules but keeps what it has. iOS
+Simulator minutes (`phoneMinutes` in the catalog: time on an iPhone simulator
+in the cloud) are shown on the plan table only, marked "soon"; nothing meters
+them yet. The plan screens say what a plan includes in plain words: computer
+hours on Linux computers, disk, the iOS Simulator minutes, and that computers
+sleep on their own a few minutes after work stops (the brain's
+`CLOUD_IDLE_SLEEP_AFTER_MS`), so hours only go to real work.
 
 - **Cloud 7 terms, from each account's next period** (migration 0033,
   `old_plan_terms`): accounts that existed before keep Plus's 40 GB and Pro's

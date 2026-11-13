@@ -429,7 +429,7 @@ function CloudHero({
       <div className="adecd-hero-body">
         <div className="adecd-hero-stats">
           <div className="adecd-hours">
-            <span className="adecd-label">Hours left this month</span>
+            <span className="adecd-label" title="Hours on your Linux computers in the cloud">Computer hours left this month</span>
             <div className="adecd-hours-num">
               <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
               {/* Free hours held (GitHub rules, or another account used them here): the plan's hours, on hold, never "of 0 h". */}

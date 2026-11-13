@@ -21,7 +21,8 @@ import {
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
-import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import {
@@ -1419,7 +1420,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     return [
       {
         id: activeMachineId,
-        name: machineNameForBinding(projectBinding),
+        name: machineLabelForBinding(projectBinding),
         online: crossMachineEntries[activeMachineId]?.online ?? true,
       },
       ...others,

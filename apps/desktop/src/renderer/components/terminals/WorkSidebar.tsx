@@ -23,7 +23,7 @@ import {
   type WorkSidebarContextTarget,
 } from "./workToolContextInsertion";
 import { useLanesForPin, usePinTargetsTab } from "../../state/crossMachineLanes";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { isChatToolType, isPtyContextInsertableToolType, primarySessionLabel } from "../../lib/sessions";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
@@ -251,7 +251,7 @@ export function WorkSidebar({
   const laneRoot = activeLane?.worktreePath ?? null;
   // Named only for another machine: the tab's own copy shows no machine chrome.
   const runsOnTab = usePinTargetsTab(runtimePin);
-  const pinnedMachineName = runtimePin && !runsOnTab ? machineNameForBinding(runtimePin) : null;
+  const pinnedMachineName = runtimePin && !runsOnTab ? machineLabelForBinding(runtimePin) : null;
 
   useEffect(() => {
     setSelectedPath(null);

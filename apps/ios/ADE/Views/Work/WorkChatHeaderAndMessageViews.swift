@@ -1109,7 +1109,7 @@ private struct WorkMachineChipFactsSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Label(machine.displayName, systemImage: "desktopcomputer").font(.headline)
+      Label(machine.presentedName, systemImage: "desktopcomputer").font(.headline)
       Text(status).font(.subheadline).foregroundStyle(.secondary)
       if let install = machine.installLabel { Text(install).font(.caption).foregroundStyle(.secondary) }
       if let endpoint = machine.preferredEndpoint {

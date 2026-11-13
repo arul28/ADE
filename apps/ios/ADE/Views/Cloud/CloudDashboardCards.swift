@@ -196,7 +196,7 @@ struct CloudHero: View {
     let level = ADEUsagePressure.color(percentLeft: percentLeft, fallback: CloudBrandColor.violet)
     let calm = percentLeft > 20
     return VStack(alignment: .leading, spacing: 8) {
-      Text("Hours left this month")
+      Text("Computer hours left this month")
         .font(.system(size: 12))
         .foregroundStyle(CloudBrandColor.skyText2)
       HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -493,14 +493,20 @@ struct CloudPlansCard: View {
     }
   }
 
-  /// The one place for the explanations.
+  private var showsSimulatorMinutes: Bool { columns.contains { $0.facts.phoneMinutes != nil } }
+
+  /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("clock", "An hour", "is one hour of a Small computer while it's awake. Bigger sizes use hours faster.")
+      howRow("clock", "Hours run your cloud computers", "and renew every month: Linux computers your agents work on, one per lane, as many as you like. An hour is one hour of a Small computer; bigger sizes use hours faster.")
       Divider().overlay(ADEKit.edge)
-      howRow("internaldrive", "Disk", "is what all your computers hold at one time. Make as many computers as you like.")
+      howRow("moon.stars", "Computers sleep on their own", "a few minutes after work stops, so your hours only go to real work.")
       Divider().overlay(ADEKit.edge)
-      howRow("moon.stars", "Asleep, a computer uses no hours.", "It falls asleep a few minutes after its agent stops.")
+      howRow("internaldrive", "Disk", "is what all your computers hold at one time, shared between them.")
+      if showsSimulatorMinutes {
+        Divider().overlay(ADEKit.edge)
+        howRow("iphone", "iOS Simulator minutes (soon):", "time on an iPhone simulator in the cloud, for agents to test your app.")
+      }
     }
     .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
@@ -547,9 +553,9 @@ struct CloudPlansCard: View {
       }
       VStack(alignment: .leading, spacing: 0) {
         if current, let old = oldTermsHours(column), let end {
-          bigFact(cloudHours(old), staysOn ? "hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "hours until \(cloudDate(end))", current: current)
+          bigFact(cloudHours(old), staysOn ? "computer hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "computer hours until \(cloudDate(end))", current: current)
         } else {
-          bigFact(cloudHours(column.facts.includedMilli), "hours a month", current: current)
+          bigFact(cloudHours(column.facts.includedMilli), "computer hours a month", current: current)
         }
       }
       VStack(alignment: .leading, spacing: 6) {
@@ -559,7 +565,7 @@ struct CloudPlansCard: View {
           fact("internaldrive", "\(cloudGb(column.facts.diskGb)) disk", current: current)
         }
         if let minutes = column.facts.phoneMinutes {
-          fact("iphone", "\(minutes) phone minutes, soon", current: current)
+          fact("iphone", "\(minutes) iOS Simulator minutes, soon", current: current)
         }
         fact("bolt", column.id == "free" ? "Stops at the limit" : "Extra hours if on", current: current, quiet: column.id == "free")
       }
@@ -577,7 +583,7 @@ struct CloudPlansCard: View {
     .overlay(shape.strokeBorder(current || isNew ? CloudBrandColor.lamp.opacity(0.6) : ADEKit.edge, lineWidth: current || isNew ? 1 : 0.75))
     .shadow(color: isNew ? CloudBrandColor.lamp.opacity(0.45) : (current ? CloudBrandColor.violet.opacity(0.3) : .clear), radius: isNew ? 14 : 10, y: current ? 6 : 0)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(cloudHours(column.facts.includedMilli)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes, coming soon" } ?? "")")
+    .accessibilityLabel("\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(cloudHours(column.facts.includedMilli)) computer hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) iOS Simulator minutes, coming soon" } ?? "")")
   }
 
   private func planTag(_ text: String, gold: Bool) -> some View {

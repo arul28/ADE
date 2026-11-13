@@ -80,6 +80,7 @@ import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from
 import { useStableBinding } from "./laneMachineRouting";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
+import { machineLabelForMachine } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -951,7 +952,12 @@ export function resolveCrossMachineLaneMarkers(
       : `${row.machineId}:${row.lane.id}`;
     markers.set(markerKey, {
       machineId: row.machineId,
-      machineName: row.machineName,
+      // A cloud lane computer reads "Cloud · <lane>"; its own name stays in the title for support.
+      machineName: machineLabelForMachine({
+        hostname: row.binding?.kind === "remote" ? row.binding.hostname ?? null : null,
+        machineKey: row.machineId,
+        name: row.machineName,
+      }),
       // A sleeping cloud computer is not marked offline: a send wakes it.
       online: rowShowsConnected(row),
       // Always the resting form. Offline is expressed by `online: false`, which
