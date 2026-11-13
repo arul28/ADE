@@ -215,10 +215,14 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
   const [state, setState] = useState<RemoteDeviceState>("loading");
   useEffect(() => {
     let cancelled = false;
+    // Only the newest read answers: an older one that lands last is stale.
+    let latestRead = 0;
     const read = () => {
+      const thisRead = ++latestRead;
+      const isLatest = () => !cancelled && thisRead === latestRead;
       void kind.read(laneId, remotePin)
-        ?.then((has) => { if (!cancelled) setState(has ? "device" : "none"); })
-        .catch((error: unknown) => { if (!cancelled) setState(failedRead(error)); });
+        ?.then((has) => { if (isLatest()) setState(has ? "device" : "none"); })
+        .catch((error: unknown) => { if (isLatest()) setState(failedRead(error)); });
     };
     read();
     const unsubscribe = kind.follow(laneId, remotePin, read);

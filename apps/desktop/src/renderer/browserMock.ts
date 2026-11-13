@@ -1562,11 +1562,12 @@ function withHeldElsewhereConnect(connect: (id: string) => Promise<any>): (id: s
 
 /** `window.ade.machines.connect`: the paired machines connect, after a beat; `?mockRemoteConnect` picks a failure. */
 async function browserMockConnectMachine(machineKey: string): Promise<any> {
-  browserMockRemoteConnects += 1;
+  // This call's own attempt number, taken before the wait.
+  const attempt = ++browserMockRemoteConnects;
   const mode = browserMockParam("mockRemoteConnect");
   if (mode === "hang") return new Promise(() => undefined);
   await new Promise((resolve) => window.setTimeout(resolve, 1_500));
-  if (mode === "fail" || (mode === "fail-once" && browserMockRemoteConnects === 1)) {
+  if (mode === "fail" || (mode === "fail-once" && attempt === 1)) {
     return { ok: false, reason: "unreachable", machineKey, message: "MacBook Pro (97) did not answer. It may be asleep or off." };
   }
   if (machineKey === BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY) {

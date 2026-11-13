@@ -269,7 +269,7 @@ Control terminal is active.
   Read `ade app-control logs --text` to see what the app printed.
 - **A browser (Chrome, Edge) never opens the port.** It needs its own profile
   folder, as an absolute path: `--user-data-dir=/tmp/ade-profile` (Windows:
-  `--user-data-dir="$env:TEMPde-profile"`). Chrome on Windows ignores a
+  `--user-data-dir="$env:TEMP\ade-profile"`). Chrome on Windows ignores a
   relative one and exits silently. On a Linux machine with no display, the app
   opens on the lane's own screen (`ade screen`), started for it.
 - **The port is taken.** Another app (or an old run) holds it. `stop` the old

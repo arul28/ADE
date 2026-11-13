@@ -873,14 +873,18 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     async releaseIfOwnedBy(chatSessionId: string, options: { turnEnded?: boolean } = {}): Promise<void> {
       const chat = chatSessionId?.trim();
       if (!chat) return;
+      let ended: number;
       if (options.turnEnded) {
+        // Leases first: the chat's next turn can take a lease while the
+        // recordings stop, and that one must stay. The stop reads no lease.
+        ended = leases.endChat(chat);
         await sessions.onTurnEnded(chat);
       } else {
         for (const laneId of sessions.lanesOfChat(chat)) {
           await sessions.finishQuietly(laneId, "chat-ended", "android.recording_chat_end_failed");
         }
+        ended = leases.endChat(chat);
       }
-      const ended = leases.endChat(chat);
       if (ended > 0) logger?.info("android.device_leases_ended_with_chat", { chatSessionId: chat, count: ended });
     },
 

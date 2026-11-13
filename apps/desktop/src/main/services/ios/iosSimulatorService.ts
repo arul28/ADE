@@ -2286,6 +2286,17 @@ async function discoverXcodeProjectPaths(projectRoot: string): Promise<string[]>
 
   await addProjectPath(path.join(projectRoot, ADE_IOS_PROJECT));
   await scanDirectory(projectRoot);
+  // Each folder in the root too (`ios/`, `MyApp/`): the same folders XcodeGen
+  // generates in (`xcodeGenFoldersToGenerate`), so a project it made there lists.
+  let rootEntries: fs.Dirent[];
+  try {
+    rootEntries = await fs.promises.readdir(projectRoot, { withFileTypes: true });
+  } catch {
+    rootEntries = [];
+  }
+  await Promise.all(rootEntries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules" && !entry.name.endsWith(".xcodeproj"))
+    .map((entry) => scanDirectory(path.join(projectRoot, entry.name))));
 
   const appsRoot = path.join(projectRoot, "apps");
   await scanDirectory(appsRoot);
@@ -2637,28 +2648,41 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         args.logger.warn("apple.work_copy_session_end_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
       });
     }
-    const device = laneDevices.get(laneId);
-    if (!device) {
-      // No device now, but one it gave up earlier is still on record: the
-      // next copy with this id must not be told the lane gave up its device.
+    // The device part runs in the lane's device queue (none of the steps
+    // above queue there): a start for the next copy with this id waits, so
+    // this never powers off or detaches the device that start bound.
+    const releaseDevice = async (): Promise<void> => {
+      // A capture with no owner (a start on a simulator that was already on)
+      // is stopped here: the registry's detach below leaves it running.
+      if (runtime?.streamStatus.running) {
+        await stopRuntimeStream(runtime).catch((error: unknown) => {
+          args.logger.warn("apple.work_copy_stream_stop_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+      const device = laneDevices.get(laneId);
+      if (!device) {
+        // No device now, but one it gave up earlier is still on record: the
+        // next copy with this id must not be told the lane gave up its device.
+        await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
+          args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        });
+        return;
+      }
+      const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
+      let poweredOff = false;
+      if (!heldElsewhere && bootedForWorkCopy.get(device.udid) === laneId) {
+        bootedForWorkCopy.delete(device.udid);
+        poweredOff = await power.powerOffDevice(device.udid, "power-off").catch((error: unknown) => {
+          args.logger.warn("apple.work_copy_device_power_off_failed", { laneId, udid: device.udid, error: error instanceof Error ? error.message : String(error) });
+          return false;
+        });
+      }
       await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
         args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
       });
-      return;
-    }
-    const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
-    let poweredOff = false;
-    if (!heldElsewhere && bootedForWorkCopy.get(device.udid) === laneId) {
-      bootedForWorkCopy.delete(device.udid);
-      poweredOff = await power.powerOffDevice(device.udid, "power-off").catch((error: unknown) => {
-        args.logger.warn("apple.work_copy_device_power_off_failed", { laneId, udid: device.udid, error: error instanceof Error ? error.message : String(error) });
-        return false;
-      });
-    }
-    await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
-      args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
-    });
-    args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff });
+      args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff });
+    };
+    await (runtime ? serializeDeviceLifecycle(runtime, releaseDevice) : releaseDevice());
   };
   const offWorkCopyReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
     void releaseWorkCopyDevice(laneId).catch((error: unknown) => {
@@ -3366,6 +3390,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       source?: AppleInputSource;
       /** The call said `noRecord` (`--no-record`). */
       noRecord?: boolean | null;
+      /**
+       * The calling chat. Owns the recording when the lane's app session has
+       * no owner (its chat let go at a turn's end and kept it running), so
+       * that chat's turn end still finds it.
+       */
+      chatSessionId?: string | null;
     },
   ): void => {
     // Opted out for this call (`--no-record`) or for the lane (`auto-record
@@ -3376,7 +3406,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       autoStart,
       laneId: runtime.key,
       udid: input.udid,
-      chatSessionId: runtime.activeSession?.chatSessionId ?? null,
+      chatSessionId: runtime.activeSession?.chatSessionId ?? (input.chatSessionId?.trim() || null),
       kind: input.kind,
       x: input.x,
       y: input.y,
@@ -4759,7 +4789,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * prebuilt `.app` or a call that does not build.
    */
   const resolveLaunchTarget = async (launchArgs: IosSimulatorLaunchArgs, deviceUdid: string, projectRoot: string): Promise<ResolvedLaunchTarget> => {
-    const generatedXcodeProjects = launchArgs.appBundlePath || launchArgs.build === false
+    // An installed or prebuilt app never builds, so nothing is generated for it.
+    const targetKind = decodeTargetId(launchArgs.targetId)[0];
+    const generatedXcodeProjects = launchArgs.appBundlePath || launchArgs.build === false || targetKind === "installed" || targetKind === "built"
       ? []
       : await generateXcodeGenProjects(projectRoot, xcodeGenOptions(launchArgs));
     const resolved = await resolveLaunchTargetFromProjects(launchArgs, deviceUdid, projectRoot);
@@ -6704,7 +6736,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await liftLiveTouch(runtime.key, "tap", runtime.laneId);
       await helperTap(deviceUdid, x, y, inputPointSpace(point.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source, noRecord: point.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source, noRecord: point.noRecord, chatSessionId: point.chatSessionId });
       return { ok: true };
     });
   };
@@ -6729,7 +6761,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await liftLiveTouch(runtime.key, "long-press", runtime.laneId);
       await helperHold(deviceUdid, x, y, durationMs, space);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       return { ok: true, action: "long-press", durationMs };
     });
   };
@@ -6966,7 +6998,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // what is on screen, and a video that skips it shows a jump cut. The
       // source is carried through so a person scrolling the pane does not look
       // like an agent and start a recording.
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source, noRecord: scrollArgs.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source, noRecord: scrollArgs.noRecord, chatSessionId: scrollArgs.chatSessionId });
       return { ok: true as const, action: "scroll" as const, direction, deltaX, deltaY };
     });
   };
@@ -7006,6 +7038,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         ...(showText ? { text: input.text } : {}),
         source: input.source,
         noRecord: input.noRecord,
+        chatSessionId: input.chatSessionId,
         ...(pace ? { startedAtMs, seconds: pace.seconds } : {}),
       });
       if (focused === undefined) return { ok: true };
@@ -7067,7 +7100,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         }
       }
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       return { ok: true, key: label };
     });
   };
@@ -7091,7 +7124,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       // Named, so the answer does not read as a tap.
       return { ok: true, action };
     });
@@ -7211,7 +7244,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       liveTouches.delete(laneKey);
       await sendTouch(held.udid, "end", x, y);
       const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
-      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source, noRecord: input.noRecord, chatSessionId: input.chatSessionId });
       return { ok: true };
     });
   };
@@ -8365,7 +8398,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // `open-url` is an injected input under the auto-record contract: it is
       // how an agent drives a deeplink, and the video has to show it.
       const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
-      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source, noRecord: toolArgs.noRecord });
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source, noRecord: toolArgs.noRecord, chatSessionId: toolArgs.chatSessionId });
       return result;
     },
     relaunchApp: async (toolArgs: IosSimulatorRelaunchArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),

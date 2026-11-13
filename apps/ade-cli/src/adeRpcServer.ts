@@ -8705,15 +8705,21 @@ async function runTool(args: {
     // release held stays held. A caller that names no turn (older ADE)
     // releases as before.
     const endedTurnId = asOptionalTrimmedString(toolArgs.turnId);
-    const latestTurnId = externalChatLatestTurn(owner);
     const endedMs = endedTurnId ? Date.parse(endedTurnId) : Number.NaN;
-    const latestMs = latestTurnId ? Date.parse(latestTurnId) : Number.NaN;
-    if (Number.isFinite(endedMs) && Number.isFinite(latestMs) && latestMs > endedMs) {
+    const newerTurnStarted = (): boolean => {
+      const latestTurnId = externalChatLatestTurn(owner);
+      const latestMs = latestTurnId ? Date.parse(latestTurnId) : Number.NaN;
+      if (!(Number.isFinite(endedMs) && Number.isFinite(latestMs) && latestMs > endedMs)) return false;
       runtime.logger.info("remote_work.turn_release_stale", { endedTurnId, latestTurnId });
-      return { released: [], skipped: "newer_turn" };
-    }
+      return true;
+    };
+    if (newerTurnStarted()) return { released: [], skipped: "newer_turn" };
     const released: string[] = [];
+    // Each release checks again first: a newer turn can start while an
+    // earlier release is awaited, and the check and the release call then
+    // run in one synchronous step.
     const release = async (device: string, run: () => Promise<boolean>): Promise<void> => {
+      if (newerTurnStarted()) return;
       try {
         if (await run()) released.push(device);
       } catch (error) {

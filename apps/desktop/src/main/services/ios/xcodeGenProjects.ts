@@ -74,6 +74,12 @@ function namedProjectFolder(projectRoot: string, projectPath: string): string {
   return /\.(xcodeproj|xcworkspace|ya?ml)$/iu.test(resolved) ? path.dirname(resolved) : resolved;
 }
 
+/** Whether `dir` is `projectRoot` or inside it. */
+function isWithinRoot(projectRoot: string, dir: string): boolean {
+  const relative = path.relative(projectRoot, dir);
+  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+}
+
 /** Folders under `projectRoot` whose `project.yml` needs XcodeGen before a build. */
 export async function xcodeGenFoldersToGenerate(projectRoot: string, options: XcodeGenOptions): Promise<string[]> {
   const childFolders = async (dir: string): Promise<string[]> => (await listDir(dir, options.logger))
@@ -82,8 +88,10 @@ export async function xcodeGenFoldersToGenerate(projectRoot: string, options: Xc
   // The root, each folder in it (`ios/`, `MyApp/`) and each app under `apps/`:
   // where a person puts a small app's spec.
   const named = options.projectPath?.trim();
+  // A named folder outside the root is never generated in; the caller's own
+  // root check then refuses the request with its usual error.
   const candidates = named
-    ? [namedProjectFolder(projectRoot, named)]
+    ? [namedProjectFolder(projectRoot, named)].filter((dir) => isWithinRoot(projectRoot, dir))
     : [...new Set([projectRoot, ...await childFolders(projectRoot), ...await childFolders(path.join(projectRoot, "apps"))])];
   const folders: string[] = [];
   for (const dir of candidates) {

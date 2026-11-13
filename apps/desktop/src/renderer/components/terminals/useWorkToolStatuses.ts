@@ -114,7 +114,8 @@ function prToolStatusLine(count: number | null): WorkToolStatus {
  * The cards of tools that show a device this chat drives on another machine
  * (`remoteWork`): "Simulator on MacBook Pro", "Screen on build-box", "On 2
  * machines". Only where the lane's own tool has nothing live, which is the
- * line the lane would give otherwise ("No device", "Mac Desktop is off").
+ * line the lane would give otherwise ("No device", "Mac Desktop is off"), and
+ * shows no error or attention mark.
  * From the chat summary alone: it reads nothing over the network.
  */
 export function withRemoteWorkToolLines(
@@ -124,7 +125,10 @@ export function withRemoteWorkToolLines(
   if (!remoteWork?.length) return statuses;
   let next: WorkToolStatusMap | null = null;
   for (const tool of Object.keys(REMOTE_WORK_TOOLS) as RemoteWorkTool[]) {
-    if (statuses[tool]?.live) continue;
+    // A measured local error or attention mark (a crashed emulator, a start
+    // in progress) stays: only a quiet local line gives way.
+    const local = statuses[tool];
+    if (local?.live || local?.attention === true || workToolHasError(local)) continue;
     const uses = remoteWorkUsesForTool({ remoteWork }, tool);
     const machines: string[] = [];
     for (const use of uses) {

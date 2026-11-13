@@ -359,6 +359,11 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    * throws the screen's own error, which says what to install.
    */
   laneScreenLaunchEnv(args: { laneId: string; start: boolean }): Promise<LinuxLaneLaunchEnv | null>;
+  /**
+   * An app on the lane's screen was just driven some other way (App Control
+   * over CDP): the screen is in use, so the idle sweep keeps it.
+   */
+  noteLaneScreenUse?(laneId: string): void;
   readonly resolutionSettingKey: string;
   setResolution(preset: MacDesktopResolutionPreset): void;
   getResolution(): MacDesktopResolutionPreset;
@@ -2099,6 +2104,10 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
         );
       }
       return launchEnv;
+    },
+    noteLaneScreenUse(laneId: string): void {
+      const trimmed = laneId?.trim();
+      if (trimmed) ownership.touchDisplay(trimmed);
     },
     /**
      * The lane whose display holds this process's windows, or null. App

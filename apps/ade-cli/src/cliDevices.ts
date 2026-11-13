@@ -453,9 +453,11 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
   const self = roster.machines.find((machine) => machine.isThisMachine) ?? null;
   const hereName = self?.name ?? os.hostname();
   const others = roster.machines.filter((machine) => !machine.isThisMachine);
-  // A device id names a machine by its name; two machines with one name by key.
+  // A device id names a machine by its name; two machines with one name by
+  // key. Counted over the whole roster, this machine too: `devices use`
+  // matches a name against all of it.
   const nameCount = new Map<string, number>();
-  for (const machine of others) nameCount.set(machine.name.toLowerCase(), (nameCount.get(machine.name.toLowerCase()) ?? 0) + 1);
+  for (const machine of roster.machines) nameCount.set(machine.name.toLowerCase(), (nameCount.get(machine.name.toLowerCase()) ?? 0) + 1);
   const idSourceOf = (machine: RosterMachine) => (nameCount.get(machine.name.toLowerCase()) ?? 0) > 1 ? machine.key : machine.name;
   const localIdentity = (() => {
     try {

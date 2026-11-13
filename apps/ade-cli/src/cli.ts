@@ -5597,8 +5597,30 @@ function readMoveDestination(args: string[]): string | null {
   if (flags.has("--to") && flags.has("--machine")) {
     throw new CliUsageError("--to and --machine name the same destination: use --to.");
   }
-  const at = args.findIndex((token) => token === "--to" || token === "--machine");
-  const value = at >= 0 && args[at + 1]?.startsWith("--") ? "" : readValue(args, names);
+  // The first destination flag outside free text: `--note "--to"` is a note.
+  let at = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    const name = token.split("=")[0]!;
+    if ((names as readonly string[]).includes(name)) {
+      at = index;
+      break;
+    }
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) index += 1;
+  }
+  let value: string | null = null;
+  if (at >= 0) {
+    const token = args[at]!;
+    if (token.includes("=")) {
+      value = token.slice(token.indexOf("=") + 1);
+      args.splice(at, 1);
+    } else {
+      const next = args[at + 1];
+      value = next == null || next.startsWith("--") ? "" : next;
+      args.splice(at, next == null || next.startsWith("--") ? 1 : 2);
+    }
+  }
   if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
   const left = flagNamesOutsideFreeText(args);
   if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
@@ -41029,6 +41051,9 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
+// eslint-disable-next-line no-control-regex
+const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
 
 /**
  * Follow a shell `shell start` just started until it ends: print its output as
@@ -41048,17 +41073,36 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
-  const readMore = async (): Promise<JsonObject | null> => {
-    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
-    if (!isRecord(read)) return null;
-    const data = typeof read.data === "string" ? read.data : "";
-    if (data) {
-      // To a pipe (an agent reading it), without the screen codes a terminal
-      // adds (Windows' console sends a title, clear screen and mode switches
-      // around the first line of output).
-      if (options.text) process.stdout.write(process.stdout.isTTY ? data : stripAnsiWithOptions(data, { preserveCarriageReturns: true }));
-      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+  // A read can end inside a screen code; its start waits for the next read
+  // so the pipe never gets half a code the stripper could not match.
+  let heldCode = "";
+  const writeText = (data: string, last: boolean): void => {
+    if (!options.text) return;
+    if (process.stdout.isTTY) {
+      if (data) process.stdout.write(data);
+      return;
     }
+    let text = `${heldCode}${data}`;
+    heldCode = "";
+    const partial = last ? null : FOLLOW_SHELL_PARTIAL_CODE.exec(text);
+    if (partial && text.length - partial.index <= 256) {
+      heldCode = text.slice(partial.index);
+      text = text.slice(0, partial.index);
+    }
+    if (text) process.stdout.write(stripAnsiWithOptions(text, { preserveCarriageReturns: true }));
+  };
+  const readMore = async (last = false): Promise<JsonObject | null> => {
+    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
+    if (!isRecord(read)) {
+      if (last) writeText("", true);
+      return null;
+    }
+    const data = typeof read.data === "string" ? read.data : "";
+    // To a pipe (an agent reading it), without the screen codes a terminal
+    // adds (Windows' console sends a title, clear screen and mode switches
+    // around the first line of output).
+    if (data || last) writeText(data, last);
+    if (data) output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
@@ -41072,7 +41116,7 @@ async function followShellToExit(
         : null));
     if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
-      await readMore();
+      await readMore(true);
       const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
       return {
         ...created,

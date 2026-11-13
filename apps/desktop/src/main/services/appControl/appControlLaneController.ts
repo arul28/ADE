@@ -180,6 +180,11 @@ export type CreateAppControlServiceArgs = {
    * `laneScreenLaunchEnv`.
    */
   laneScreenLaunchEnv?: ((args: { laneId: string; start: boolean }) => Promise<LinuxLaneLaunchEnv | null>) | null;
+  /**
+   * An app on that screen was driven (a click, typing, a screenshot): the
+   * screen counts it as use, so its idle sweep does not take the app away.
+   */
+  noteLaneScreenUse?: ((laneId: string) => void) | null;
 };
 
 /** How a call names its lane: directly, by the session it holds, or by its chat. */
@@ -2183,8 +2188,14 @@ export function createAppControlLaneController(context: AppControlLaneController
    * `DISPLAY` or `WAYLAND_DISPLAY` itself keeps it. Cleared keys are set
    * empty: the terminal merges this over the host's environment.
    */
+  /**
+   * Sessions launched onto the lane's Linux screen. Their App Control calls
+   * count as use of that screen (`noteLaneScreenUse`). Ids only, a few per lane.
+   */
+  const sessionsOnLaneScreen = new Set<string>();
+
   /** The env a launch names itself, with unset values as empty. */
-  const explicitLaunchEnv = (launchArgs: AppControlLaunchArgs): Record<string, string> => Object.fromEntries(
+  const explicitLaunchEnv =(launchArgs: AppControlLaunchArgs): Record<string, string> => Object.fromEntries(
     Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
   );
 
@@ -2267,6 +2278,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       debugPort,
       ...(screenEnv.DISPLAY ? { laneScreenDisplay: screenEnv.DISPLAY } : {}),
     });
+    if (Object.keys(screenEnv).length > 0) sessionsOnLaneScreen.add(session.id);
     emit({ type: "session-started", session });
     try {
       const terminal = await ptyService.create({
@@ -2352,6 +2364,8 @@ export function createAppControlLaneController(context: AppControlLaneController
   const withCdp = async <T>(fn: (client: CdpClient, session: AppControlSession) => Promise<T>): Promise<T> => {
     const session = await ensureConnectedSession();
     if (!session.cdpEndpoint) throw new Error("Active App Control session has no CDP endpoint.");
+    // Driving an app on the lane's Linux screen is use of that screen.
+    if (sessionsOnLaneScreen.has(session.id)) args.noteLaneScreenUse?.(laneId);
     // Reuse the persistent screencast client when it's connected to the same
     // session. This avoids opening a new WebSocket per click/scroll/key — under
     // a wheel gesture that's 30+ short-lived sockets, which CDP starts to

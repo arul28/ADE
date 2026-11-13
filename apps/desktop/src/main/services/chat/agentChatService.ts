@@ -3,7 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
-import { remoteWorkUsesDevice, type RemoteWorkTurnRelease } from "../../../shared/chatRemoteWork";
+import { remoteWorkUseKey, remoteWorkUsesDevice, type RemoteWorkTurnRelease } from "../../../shared/chatRemoteWork";
 import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
@@ -14235,6 +14235,12 @@ export function createAgentChatService(args: {
 
   /** Other machines each chat ran commands on; live only. See `noteRemoteWork`. */
   const remoteWorkBySession = new Map<string, AgentChatRemoteWorkUse[]>();
+  /**
+   * Every machine and project each chat used a device on, by `machineKey` +
+   * `projectId`. Kept apart from the six-entry list above, which drops old
+   * entries: a turn's end releases them all (see `notifyTurnSettled`).
+   */
+  const remoteDeviceTargetsBySession = new Map<string, Map<string, RemoteWorkTurnRelease["uses"][number]>>();
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -14271,6 +14277,13 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
+  /**
+   * Each chat's recent provider turn ids, with the start stamp
+   * (`lastTurnStartedAtBySession`) of the ADE turn their events ran in. A late
+   * `done` for an earlier turn then releases by its own turn's stamp, not the
+   * newer turn's. Cleared with the maps above.
+   */
+  const turnStartStampsBySession = new Map<string, Map<string, string>>();
   /** Chats whose last reply Jev read as waiting on their own work; read by the session summary. */
   const awaitingOwnWork = createAwaitingOwnWorkTracker({
     logger,
@@ -25061,13 +25074,19 @@ export function createAgentChatService(args: {
     // machine the chat holds a device on, not only this turn's: a release
     // that machine skipped as stale (it saw a newer call first) is covered
     // by this one. A machine with nothing held answers with nothing.
-    const deviceUses = (remoteWorkBySession.get(settledSessionId) ?? []).filter(remoteWorkUsesDevice);
+    const deviceUses = [...(remoteDeviceTargetsBySession.get(settledSessionId)?.values() ?? [])];
     if (onRemoteWorkTurnSettled && deviceUses.length) {
       try {
+        // The settled turn's own start: a late `done` for an earlier turn
+        // must not carry the newer turn's stamp, which the other machine
+        // would take as current.
+        const settledTurnStamp = (event.turnId ? turnStartStampsBySession.get(settledSessionId)?.get(event.turnId) : undefined)
+          ?? lastTurnStartedAtBySession.get(settledSessionId)
+          ?? null;
         onRemoteWorkTurnSettled({
           sessionId: settledSessionId,
-          turnId: lastTurnStartedAtBySession.get(settledSessionId) ?? null,
-          uses: deviceUses.map((use) => ({ machineKey: use.machineKey, machineName: use.machineName, projectId: use.projectId })),
+          turnId: settledTurnStamp,
+          uses: deviceUses,
         });
       } catch (error) {
         logger.warn("agent_chat.remote_work_turn_release_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -25925,6 +25944,17 @@ export function createAgentChatService(args: {
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
+      // The turn's working events stamp it with the ADE turn they run in (a
+      // provider that keeps one turn id into a new ADE turn moves with it);
+      // its `done` reads the stamp and never moves it.
+      const startStamp = lastTurnStartedAtBySession.get(managed.session.id);
+      if (startStamp && normalizedEvent.type !== "done") {
+        const stamps = turnStartStampsBySession.get(managed.session.id) ?? new Map<string, string>();
+        stamps.delete(eventTurnId);
+        stamps.set(eventTurnId, startStamp);
+        while (stamps.size > 8) stamps.delete(stamps.keys().next().value as string);
+        turnStartStampsBySession.set(managed.session.id, stamps);
+      }
     }
 
     if (isBufferablePlanDelta(normalizedEvent)) {
@@ -30325,6 +30355,7 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(managed.session.id);
     pendingTurnStartMsBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
+    turnStartStampsBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
     releaseChatBrowser(managed.session.id);
   };
@@ -72656,6 +72687,7 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(sessionId);
     pendingTurnStartMsBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
+    turnStartStampsBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -75478,6 +75510,7 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(trimmedSessionId);
     pendingTurnStartMsBySession.delete(trimmedSessionId);
     lastTurnIdBySession.delete(trimmedSessionId);
+    turnStartStampsBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -81434,6 +81467,11 @@ export function createAgentChatService(args: {
       list.splice(withoutDevice >= 0 ? withoutDevice : 0, 1);
     }
     remoteWorkBySession.set(sessionId, list);
+    if (remoteWorkUsesDevice(next)) {
+      const targets = remoteDeviceTargetsBySession.get(sessionId) ?? new Map();
+      targets.set(remoteWorkUseKey(next), { machineKey: next.machineKey, machineName: next.machineName, projectId: next.projectId });
+      remoteDeviceTargetsBySession.set(sessionId, targets);
+    }
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
     onRemoteWorkStarted?.({ sessionId, machineKey: args.machineKey });
   };

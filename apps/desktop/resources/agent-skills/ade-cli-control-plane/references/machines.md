@@ -30,8 +30,9 @@ ade shell clean --machine "Windows PC"            # delete your code there when 
   fixture) stays through the next sync. Unpushed work there (edits to tracked
   files, commits) stops a sync until you pass `--code as-is` (use it as it
   is) or `--code fresh` (throw that work away).
-- Devices work the same way: `ade devices --text`, then `ade devices use` or
-  `--device`; see ade-computer-use `references/other-machines.md`.
+- Devices work the same way: `ade devices --text`, then `ade devices use`, or
+  `--machine <name>` on one command; see ade-computer-use
+  `references/other-machines.md`.
 - To move one file (a fixture, a build log, a screenshot), use
   `ade files push --machine "Windows PC" ./local.bin test/fixtures/` and
   `ade files pull --machine "Windows PC" build/out.log ./logs/`. Paths there

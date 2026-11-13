@@ -187,17 +187,40 @@ export function withRemoteAppControlArgs(params: JsonObject, cwd: string, workCo
  * A folder inside this checkout as the other machine finds it in the chat's
  * work copy: relative to the checkout's top, `/`-separated ("" is the top).
  */
-function checkoutRelativePath(target: string, cwd: string, flag: string): string {
-  return checkoutRelative(target, cwd, flag).relative.split(path.sep).join("/");
+function checkoutRelativePath(target: string, cwd: string, flag: string, options: { mayBeMissingHere?: boolean } = {}): string {
+  return checkoutRelative(target, cwd, flag, options).relative.split(path.sep).join("/");
 }
 
-/** `target` relative to this checkout's top (git names the top by its real path: macOS `/tmp` is `/private/tmp`). */
-function checkoutRelative(target: string, cwd: string, flag: string): { top: string; relative: string } {
+/** The real path of `target`'s nearest folder that exists here, with the rest of `target` after it. */
+function realPathOfExistingPart(target: string): string {
+  const rest: string[] = [];
+  let current = target;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...rest.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return target;
+      rest.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * `target` relative to this checkout's top (git names the top by its real
+ * path: macOS `/tmp` is `/private/tmp`). `mayBeMissingHere`: a path the other
+ * machine's copy may have and this checkout not (a build made only there).
+ */
+function checkoutRelative(target: string, cwd: string, flag: string, options: { mayBeMissingHere?: boolean } = {}): { top: string; relative: string } {
   const { top } = localCheckout(cwd);
   const typed = path.resolve(cwd, target);
   let relative: string;
   try {
-    relative = path.relative(fs.realpathSync.native(top), fs.realpathSync.native(typed));
+    relative = path.relative(
+      fs.realpathSync.native(top),
+      options.mayBeMissingHere ? realPathOfExistingPart(typed) : fs.realpathSync.native(typed),
+    );
   } catch {
     throw new CliUsageError(`${flag} ${target}: no such folder here.`);
   }
@@ -237,13 +260,16 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string, workCopy:
   const sync = buildVerb ? workCopy?.sync ?? null : null;
   const builds = buildVerb && sync !== "none";
   const apkPath = buildVerb ? asString(args.apkPath) : null;
+  // `--code as-is` sends no patch: the APK is the one in the copy there
+  // (a build made only there), so it need not exist here; that machine
+  // checks it exists.
   return {
     ...params,
     arguments: {
       ...toolArgs,
       args: {
         ...args,
-        ...(apkPath ? { apkPath: builds ? remoteApkPath(apkPath, cwd) : checkoutRelativePath(apkPath, cwd, "--apk") } : {}),
+        ...(apkPath ? { apkPath: builds ? remoteApkPath(apkPath, cwd) : checkoutRelativePath(apkPath, cwd, "--apk", { mayBeMissingHere: true }) } : {}),
         remoteWork: remoteWorkPayload(ANDROID_MACHINE_ACTIONS.has(action) ? "machine" : builds ? "build" : "head", cwd, sync),
       },
     },

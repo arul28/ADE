@@ -727,11 +727,18 @@ function WorkAppControlTool(props: WorkToolPanelProps) {
       testId="app-control-target-switcher"
       stickyKey={remoteTargetStickyKey(props, "app-control")}
       renderLane={renderLane}
-      // The work copy's folder is on that machine; its service resolves it from the lane.
-      renderRemote={(use, pin) => panel(
-        `work-appcontrol:${pin.key}:${use.workCopyLaneId}`,
-        { laneId: use.workCopyLaneId, pin, projectRoot: null },
-      )}
+      // The work copy's folder is on that machine; its service resolves it
+      // from the lane. A read-only surface reads it there, as for the lane.
+      renderRemote={(use, pin) => (isReadOnlyWorkTool("app-control", toolContext)
+        ? (
+          <div ref={mountRef} className="contents">
+            <WorkToolReadOnlyView tool="app-control" laneId={use.workCopyLaneId} runtimePin={pin} />
+          </div>
+        )
+        : panel(
+          `work-appcontrol:${pin.key}:${use.workCopyLaneId}`,
+          { laneId: use.workCopyLaneId, pin, projectRoot: null },
+        ))}
     />
   );
 }
@@ -806,20 +813,27 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
       testId={`${tool}-target-switcher`}
       stickyKey={remoteTargetStickyKey(props, tool)}
       renderLane={renderLane}
-      renderRemote={(use, pin, reportDevice) => (
-        <NativePanelFrame padded frameRef={mountRef}>
-          <RemoteScreenDeviceReport use={use} pin={pin} onDeviceState={reportDevice} />
-          <ChatMacDesktopPanel
-            key={`work-${tool}:${pin.key}:${use.workCopyLaneId}`}
-            desktopTool={tool}
-            laneId={use.workCopyLaneId}
-            laneName={activeLane?.name ?? null}
-            sessionId={panelSessionId}
-            runtimePin={pin}
-            hostPlatform={remoteMachineHostPlatform(use.machinePlatform)}
-          />
-        </NativePanelFrame>
-      )}
+      renderRemote={(use, pin, reportDevice) => (isReadOnlyWorkTool(tool, toolContext) && !webClientHasFullDesktopPane(pin)
+        ? (
+          <div ref={mountRef} className="contents">
+            <RemoteScreenDeviceReport use={use} pin={pin} onDeviceState={reportDevice} />
+            <WorkToolReadOnlyView tool={tool} laneId={use.workCopyLaneId} runtimePin={pin} />
+          </div>
+        )
+        : (
+          <NativePanelFrame padded frameRef={mountRef}>
+            <RemoteScreenDeviceReport use={use} pin={pin} onDeviceState={reportDevice} />
+            <ChatMacDesktopPanel
+              key={`work-${tool}:${pin.key}:${use.workCopyLaneId}`}
+              desktopTool={tool}
+              laneId={use.workCopyLaneId}
+              laneName={activeLane?.name ?? null}
+              sessionId={panelSessionId}
+              runtimePin={pin}
+              hostPlatform={remoteMachineHostPlatform(use.machinePlatform)}
+            />
+          </NativePanelFrame>
+        ))}
     />
   );
 }

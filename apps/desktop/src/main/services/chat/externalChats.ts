@@ -191,8 +191,14 @@ export function noteExternalChatTurn(sessionId: string, turnId: string | null | 
   const id = sessionId.trim();
   const turn = turnId?.trim();
   if (!id || !turn) return;
+  // A turn id is when the turn started: a late call from an earlier turn
+  // keeps the newer turn it would overwrite (recency still refreshes).
+  const previous = externalChatTurns.get(id);
+  const turnMs = Date.parse(turn);
+  const previousMs = previous ? Date.parse(previous) : Number.NaN;
+  const keep = previous && Number.isFinite(turnMs) && Number.isFinite(previousMs) && turnMs < previousMs ? previous : turn;
   externalChatTurns.delete(id);
-  externalChatTurns.set(id, turn);
+  externalChatTurns.set(id, keep);
   while (externalChatTurns.size > MAX_EXTERNAL_CHATS) {
     externalChatTurns.delete(externalChatTurns.keys().next().value as string);
   }

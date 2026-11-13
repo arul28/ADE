@@ -402,7 +402,7 @@ function machineCallScopeFor(
   if (method.startsWith("projects.")) return { kind: "machine" };
   const selector = options.machineProject?.trim();
   if (selector) return { kind: "project", selector };
-  if (isMachineWideAction(method, params) || isScratchShell(method, params)) {
+  if (isMachineWideAction(method, params) || isScratchShell(method, params) || isScratchShellFollow(method, params, options)) {
     // A scratch command needs no code, so any project there can run it.
     // The machine's quota is the same from every project there, so a machine
     // without this repository can still answer. Sent as a `repo` scope that
@@ -447,6 +447,16 @@ function isScratchShell(method: string, params: JsonObject | undefined): boolean
   const remoteWork = call?.args?.remoteWork;
   return call?.name === "run_ade_action" && call.domain === "pty" && call.action === "create"
     && isRecord(remoteWork) && remoteWork.scratch === true;
+}
+
+/**
+ * `--no-code --wait` reading back the scratch shell it started: the reads go
+ * where the shell was made, not to this repository's checkout there.
+ */
+function isScratchShellFollow(method: string, params: JsonObject | undefined, options: GlobalOptions): boolean {
+  if (options.machineWorkCopy?.scratch !== true) return false;
+  const call = actionCallParts(method, params);
+  return call?.name === "run_ade_action" && call.domain === "terminal";
 }
 
 function isMachineWideAction(method: string, params: JsonObject | undefined): boolean {
