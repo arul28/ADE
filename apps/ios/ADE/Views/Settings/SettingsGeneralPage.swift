@@ -149,13 +149,22 @@ struct SettingsGeneralPage: View {
 
   // MARK: Machines
 
+  /// The machines the phone works on. Two or more read as one set: the
+  /// section names them all and Machines owns each one's actions, so the
+  /// machine the phone happens to be focused on is never singled out.
+  private var connectedMachines: [SettingsMachine] { machines.filter(\.isConnectedSet) }
+
   private var machineSection: some View {
-    ADESettingsSection("Machines") {
+    let several = connectedMachines.count > 1
+    return ADESettingsSection("Machines") {
       ADESettingsRows {
         ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
-          SettingsGeneralLeadRow(title: primary?.name ?? "No machine yet", subtitle: machineSubtitle) {
+          SettingsGeneralLeadRow(
+            title: several ? "\(connectedMachines.count) machines" : (primary?.name ?? "No machine yet"),
+            subtitle: several ? connectedMachines.map(\.title).joined(separator: ", ") : machineSubtitle
+          ) {
             ADESettingsIconTile(
-              symbol: primary?.symbol ?? "desktopcomputer",
+              symbol: several ? "desktopcomputer" : (primary?.symbol ?? "desktopcomputer"),
               tint: primary == nil ? .slate : .accent,
               size: 44
             )
@@ -163,9 +172,11 @@ struct SettingsGeneralPage: View {
             if pushes { ADESettingsChevron() }
           }
         }
-        connection(primary != nil)
-          .padding(.horizontal, ADEKit.inset)
-          .padding(.vertical, 12)
+        if !several {
+          connection(primary != nil)
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.vertical, 12)
+        }
       }
     }
   }

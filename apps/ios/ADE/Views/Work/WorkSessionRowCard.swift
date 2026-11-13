@@ -605,15 +605,17 @@ struct WorkSessionRow: View, Equatable {
   /// The lane and PR only where no lane header above already says them.
   ///
   /// Nothing on this line may draw over anything else: when it does not fit,
-  /// the PR tag goes first, then the lane's git state, then the machine; the
-  /// lane name truncates last.
+  /// the PR tag goes first, then the lane's git state, then the machine's
+  /// glyph. The machine's name always stays (a list spans machines); the lane
+  /// and machine names truncate last, the machine's in the middle, where two
+  /// computers of one owner share the least.
   private var duoMetaLine: some View {
     HStack(spacing: 6) {
       ViewThatFits(in: .horizontal) {
-        duoMetaItems(pr: true, git: true, machine: true)
-        duoMetaItems(pr: false, git: true, machine: true)
-        duoMetaItems(pr: false, git: false, machine: true)
-        duoMetaItems(pr: false, git: false, machine: false)
+        duoMetaItems(pr: true, git: true, machineGlyph: true)
+        duoMetaItems(pr: false, git: true, machineGlyph: true)
+        duoMetaItems(pr: false, git: false, machineGlyph: true)
+        duoMetaItems(pr: false, git: false, machineGlyph: false)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       .clipped()
@@ -622,7 +624,7 @@ struct WorkSessionRow: View, Equatable {
     }
   }
 
-  private func duoMetaItems(pr: Bool, git: Bool, machine: Bool) -> some View {
+  private func duoMetaItems(pr: Bool, git: Bool, machineGlyph: Bool) -> some View {
     HStack(spacing: 6) {
       if session.pinned {
         Image(systemName: "pin.fill")
@@ -657,13 +659,19 @@ struct WorkSessionRow: View, Equatable {
           laneGitState
         }
       }
-      if machine, let machineName, !machineName.isEmpty {
-        Label(machineName, systemImage: "desktopcomputer")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .labelStyle(.titleAndIcon)
-          .lineLimit(1)
-          .layoutPriority(-1)
+      if let machineName, !machineName.isEmpty {
+        HStack(spacing: 3) {
+          if machineGlyph {
+            Image(systemName: "desktopcomputer")
+              .font(.system(size: 10, weight: .medium))
+          }
+          Text(machineName)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+        .layoutPriority(-1)
       }
       if pr, showsLaneIdentity, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
