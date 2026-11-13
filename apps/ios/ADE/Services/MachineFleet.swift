@@ -662,10 +662,12 @@ final class MachineFleet: ObservableObject {
     }
   }
 
-  /// How many more machines could go live without parking another one.
-  var liveMachineRoom: Int {
+  /// How many more of the open project's machines could go live. The rest
+  /// of the connected set does not count: project machines go live before
+  /// it, and it parks instead.
+  var projectMachineRoom: Int {
     let focused = syncService?.focusedMachineKey
-    return max(0, liveOtherMachineLimit - wantedKeys.filter { $0 != focused }.count)
+    return max(0, liveOtherMachineLimit - projectMachineKeys.filter { $0 != focused }.count)
   }
 
   /// The machines that should be live: the user's connected set and the open

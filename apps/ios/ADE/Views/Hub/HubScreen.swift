@@ -701,7 +701,7 @@ struct HubScreen: View {
   /// The card's machine chip: one machine's name, or "N machines". Nil while
   /// the phone knows a single machine, where it would only repeat itself.
   private func hubMachineLabel(for project: MobileProjectSummary) -> String? {
-    guard machineFleet.machines.contains(where: \.isPinned) else { return nil }
+    guard machineFleet.machines.contains(where: \.isWanted) else { return nil }
     let others = hubProjectLocations(project)
     let onFocused = fleetMerge.projectOwners[project.id] == nil
     let count = others.count + (onFocused ? 1 : 0)
@@ -1018,8 +1018,9 @@ struct HubScreen: View {
   private func rebuildHubProjectPresentations() {
     let focusedProjects = hubProjects
     let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
-    // Only machines the user keeps connected: a disconnected machine's last
-    // roster would keep its projects on the hub (and hide the no-machine state).
+    // Only machines that are connected (the user's set or the open project's):
+    // a disconnected machine's last roster would keep its projects on the hub
+    // (and hide the no-machine state).
     // Signed in, the account decides which folders are one project.
     let resolver: HubAccountResolver? = accountProjects.governsHub
       ? hubAccountResolver(
@@ -1031,7 +1032,7 @@ struct HubScreen: View {
       : nil
     let merge = hubMergeFleetRosters(
       focused: focusedRosters,
-      machines: machineFleet.machines.filter(\.isPinned),
+      machines: machineFleet.machines.filter(\.isWanted),
       resolver: resolver,
       focusedMachineKey: syncService.focusedMachineKey
     )

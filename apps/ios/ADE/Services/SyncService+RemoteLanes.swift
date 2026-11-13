@@ -202,9 +202,9 @@ extension SyncService {
       return machine
     }
     guard !candidates.isEmpty else { return }
-    // Counted down here: a pairing joins the fleet's wanted set only at its
-    // next update, so re-reading the room would pair past the limit.
-    let initialRoom = fleet.liveMachineRoom
+    // Counted down here: a pairing joins the project's machines only at the
+    // fleet's next update, so re-reading the room would pair past the limit.
+    let initialRoom = fleet.projectMachineRoom
     guard initialRoom > 0 else { return }
     syncAutoPairRunning = true
     Task { @MainActor in

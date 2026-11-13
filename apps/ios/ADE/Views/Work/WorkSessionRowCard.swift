@@ -660,18 +660,8 @@ struct WorkSessionRow: View, Equatable {
         }
       }
       if let machineName, !machineName.isEmpty {
-        HStack(spacing: 3) {
-          if machineGlyph {
-            Image(systemName: "desktopcomputer")
-              .font(.system(size: 10, weight: .medium))
-          }
-          Text(machineName)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-        .font(.caption)
-        .foregroundStyle(ADEColor.textMuted)
-        .layoutPriority(-1)
+        machineLabel(machineName, font: .caption, glyphSize: machineGlyph ? 10 : nil)
+          .layoutPriority(-1)
       }
       if pr, showsLaneIdentity, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
@@ -764,16 +754,8 @@ struct WorkSessionRow: View, Equatable {
         if showsLaneIdentity, let machineName, !machineName.isEmpty {
           // Above the lane chip: the chip fills the rest of the line, so a
           // lower priority left the badge only its glyph.
-          HStack(spacing: 3) {
-            Image(systemName: "desktopcomputer")
-              .font(.system(size: 9, weight: .medium))
-            Text(machineName)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
-          .layoutPriority(1)
+          machineLabel(machineName, font: .caption2, glyphSize: 9)
+            .layoutPriority(1)
         }
         lineageMark(font: .caption2)
         subagentMarkView
@@ -931,12 +913,31 @@ struct WorkSessionRow: View, Equatable {
         if showsLaneIdentity {
           laneChip
           laneGitState
+          if let machineName, !machineName.isEmpty {
+            machineLabel(machineName, font: .caption, glyphSize: 12)
+          }
           if let pullRequest {
             WorkLanePrIndicator(tag: pullRequest)
           }
         }
       }
     }
+  }
+
+  /// The row's machine, muted: a computer glyph (unless `glyphSize` is nil)
+  /// and the name, cut in the middle when the line is short.
+  private func machineLabel(_ name: String, font: Font, glyphSize: CGFloat?) -> some View {
+    HStack(spacing: 3) {
+      if let glyphSize {
+        Image(systemName: "desktopcomputer")
+          .font(.system(size: glyphSize, weight: .medium))
+      }
+      Text(name)
+        .lineLimit(1)
+        .truncationMode(.middle)
+    }
+    .font(font)
+    .foregroundStyle(ADEColor.textMuted)
   }
 
   /// Interaction owns the surface. Background, border and shadow are reserved

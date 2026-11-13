@@ -403,7 +403,8 @@ struct WorkSidebarSectionHeader: View {
                   .truncationMode(.middle)
               }
             }
-            if let machine, !isQuietRow {
+            // Quiet too: two machines can each have a settled lane of one name.
+            if let machine {
               WorkMachineBadge(option: machine)
             } else if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
               WorkRemoteLaneGlyph()
@@ -559,10 +560,10 @@ struct WorkSidebarSectionHeader: View {
       let detail = group.shelfDetail.map { ", next \($0)" } ?? ""
       return "Snoozed, \(count) snoozed \(noun)\(detail). Tap to \(action)."
     }
-    if isQuietRow {
-      return "\(group.label), \(count) settled \(noun). Tap to \(action)."
-    }
     let machineText = machine.map { ", on \($0.label)" } ?? ""
+    if isQuietRow {
+      return "\(group.label)\(machineText), \(count) settled \(noun). Tap to \(action)."
+    }
     if let laneFocus = group.laneStatus, group.laneId != nil {
       let label = group.isOrphaned ? "Orphaned sessions: \(group.label)" : group.label
       return "\(label)\(machineText), \(laneFocus.statusFilter.title), \(count) \(noun). Tap to \(action)."
