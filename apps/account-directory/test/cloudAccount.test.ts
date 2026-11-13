@@ -776,6 +776,8 @@ describe("ADE Cloud account", () => {
     // An account from before Cloud 7 keeps Plus's 40 GB until its next period starts.
     ["an account on the old terms keeps 40 GB until its next period", { extra_disk_state: "off", old_plan_terms: 1 }, 20, 36, 200, null],
     ["the same grow on the new terms asks first", { extra_disk_state: "off" }, 20, 36, 403, "needs_approval"],
+    // ...and the old $1 extra disk price its subscription still pays: $6 holds 60 GB past 40 for a month.
+    ["an account on the old terms is held to the old extra disk price", { extra_disk_state: "on", extra_disk_limit_cents: 600, old_plan_terms: 1, period_start: NOW, period_end: NOW + 30 * DAY }, 28, 100, 200, null],
   ])("extra disk limit: %s", async (_label, overrides, fromGb, toGb, status, reason) => {
     Object.assign(harness.env, MONEY_ENV);
     seedAccount(harness, OWNER, { ...plusAccount, ...overrides });
@@ -813,7 +815,7 @@ describe("ADE Cloud account", () => {
     harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: price } }, { id: "si_extra", price: { id: "price_extra" } }] } });
     seedStopped(disks);
   }
-  const checkout = (plan: string) => harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan });
+  const checkout = (plan: string) => harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan, knowsMax: true });
 
   it.each<[string, () => Promise<void>]>([
     ["Pro to Plus above Plus's disk with extra disk off is accepted for the period end, and names what Plus's limits free", async () => {
@@ -837,6 +839,24 @@ describe("ADE Cloud account", () => {
       expect(planItem()).toBe("price_pro");
       expect(itemCalls().map((call) => [call.body?.price, call.body?.proration_behavior, call.body?.payment_behavior ?? null]))
         .toEqual([["price_plan", "none", null], ["price_pro", "none", null]]);
+    }],
+    ["Pro with a move to Plus waiting, then Max: the item goes back to Pro uncharged, so Max is charged from what was paid", async () => {
+      Object.assign(harness.env, EXTRA_PRICES);
+      seedSubscribed({ ...proAccount, paid_plan_next: "plus" }, "price_plan", [4]);
+      expect((await checkout("max")).status).toBe(200);
+      expect(planItem()).toBe("price_max");
+      expect(itemCalls().map((call) => [call.body?.price, call.body?.proration_behavior]))
+        .toEqual([["price_pro", "none"], ["price_max", "always_invoice"]]);
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "max", paid_plan_next: null }));
+    }],
+    ["a Max plan isn't changed from a build that doesn't know Max (it reads Max as Plus)", async () => {
+      Object.assign(harness.env, EXTRA_PRICES);
+      seedSubscribed({ ...proAccount, paid_plan: "max", included_milli: 5_000_000 }, "price_max", [4]);
+      const response = await harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan: "pro" });
+      expect(response.status).toBe(409);
+      expect((await errorOf(response))?.code).toBe("update_needed");
+      expect(itemCalls()).toHaveLength(0);
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "max", paid_plan_next: null }));
     }],
     ["Plus to Pro with a declined card leaves the plan, the hours and the item as they were", async () => {
       seedSubscribed(plusAccount, "price_plan", [4]);
@@ -1211,6 +1231,16 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     // The restored hours draw again when the period ends; what the cut drew came back.
     expect(balance(OWNER)).toEqual({ earned_granted_milli: 30_000, earned_used_milli: 0 });
     expect((await stateOf()).earnedHours?.leftMilli).toBe(10_000);
+  });
+
+  it("a failed payment and a paid invoice in the same period keep the terms from before Cloud 7 (40 GB, 500 hours)", async () => {
+    seedAccount(harness, OWNER, { ...plus, old_plan_terms: 1, included_milli: 500_000 });
+
+    await applyCloudPlanChange(harness.env, OWNER, { stripeStatus: "past_due" }, clock);
+    await applyCloudPlanChange(harness.env, OWNER, { stripeStatus: "active", plan: "paid" }, clock + HOUR);
+
+    expect(harness.row("select old_plan_terms, included_milli from cloud_accounts where user_id = ?", OWNER)).toEqual({ old_plan_terms: 1, included_milli: 500_000 });
+    expect((await stateOf()).disk.limitGb).toBe(40);
   });
 
   it("two accounts using one computer at once: one gets its free plan, the other gets 0 free hours", async () => {

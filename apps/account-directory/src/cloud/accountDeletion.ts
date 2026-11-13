@@ -65,6 +65,7 @@ export async function deleteCloudAccount(
     // The GitHub account's claim stays too, for the same reason; the hashed sign-up address goes.
     env.DB.prepare("update cloud_free_github_claims set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_signup_ips where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),
     env.DB.prepare("update cloud_referrals set friend_user_id = ? where friend_user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_referrals set referrer_user_id = ? where referrer_user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_earned_hours set user_id = ? where user_id = ?").bind(gone, userId),

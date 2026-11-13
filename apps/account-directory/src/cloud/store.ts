@@ -4,10 +4,11 @@ import { overPlanDiskSentence, type CloudExtraDiskState, type CloudHoursState, t
 import type { CloudEmailEnv } from "./email";
 import {
   CLOUD_PLANS,
-  EXTRA_DISK_MICROS_PER_GB_DAY,
+  extraDiskMicrosPerGbDayOf,
   FREE_INCLUDED_MILLI,
   PAID_PLAN_RANK,
   planDiskGbFor,
+  planIncludedMilliFor,
   computeCostMicrosFor,
   type CloudOffers,
   freePeriodFor,
@@ -207,6 +208,8 @@ export type AccountRow = {
    * Pro keep their old disk until the next period starts (`planDiskGbFor`).
    */
   old_plan_terms?: number | null;
+  /** When an account on the old terms that holds more than the new disk was told before its renewal (once; migration 0033). */
+  old_terms_told_at?: number | null;
   /** Why the GitHub rules hold the free hours at 0 (`freePlanGithub.ts`, migration 0035); null while nothing is held. */
   free_github_hold: string | null;
   /** 1: used ADE Cloud before the GitHub rules shipped, so they don't apply. */
@@ -692,12 +695,12 @@ export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: num
 }
 
 /** This period's billable extra disk so far, in micros: the days already billed plus the ones not yet reported. */
-export async function extraDiskMicrosThisPeriod(env: CloudDb, account: Pick<AccountRow, "user_id" | "period_start">): Promise<number> {
+export async function extraDiskMicrosThisPeriod(env: CloudDb, account: Pick<AccountRow, "user_id" | "period_start" | "old_plan_terms">): Promise<number> {
   const row = await env.DB.prepare(`
     select coalesce(sum(case when billable = 1 then coalesce(billed_gb, max(0, peak_gb - plan_gb)) else 0 end), 0) as gb_days
     from cloud_disk_days where user_id = ? and day >= ?
   `).bind(account.user_id, utcDay(account.period_start)).first<{ gb_days: number }>();
-  return (row?.gb_days ?? 0) * EXTRA_DISK_MICROS_PER_GB_DAY;
+  return (row?.gb_days ?? 0) * extraDiskMicrosPerGbDayOf(account);
 }
 
 /*
@@ -822,8 +825,10 @@ async function startFreshPeriod(
   next: FreshPeriod,
   now: number,
   alongside: D1PreparedStatement[] = [],
-  options: { stashEarnedDraw?: boolean } = {},
+  options: { stashEarnedDraw?: boolean; keepOldTerms?: boolean } = {},
 ): Promise<AccountRow> {
+  // The terms from before Cloud 7 last until a new paid period (or the end of paying), never through a failed payment.
+  const oldTerms = options.keepOldTerms ? account.old_plan_terms ?? 0 : 0;
   const computers = await listComputers(env, account.user_id);
   const statements: D1PreparedStatement[] = [];
   for (const computer of computers) statements.push(...settleStatements(env, computer, now));
@@ -842,10 +847,10 @@ async function startFreshPeriod(
   const included = next.included === "free" ? `case when free_refused_at is not null or free_github_hold is not null then 0 else ${FREE_INCLUDED_MILLI} end` : "?";
   statements.push(env.DB.prepare(`
     update cloud_accounts set plan = ?, included_milli = ${included},
-      used_milli = 0, period_start = ?, period_end = ?, old_plan_terms = 0,
+      used_milli = 0, period_start = ?, period_end = ?, old_plan_terms = ?,
       warned_80_at = null, warned_95_at = null, warned_zero_at = null, hours_restored_at = ?, updated_at = ?
     where user_id = ?
-  `).bind(next.plan, ...(next.included === "free" ? [] : [next.included]), next.start, next.end, restored, now, account.user_id));
+  `).bind(next.plan, ...(next.included === "free" ? [] : [next.included]), next.start, next.end, oldTerms, restored, now, account.user_id));
   // One batch: a retry decides from these columns, so half of a change could never be finished.
   await env.DB.batch([...statements, ...alongside]);
   const after = await env.DB.prepare("select earned_used_milli, past_due_earned_milli, included_milli from cloud_accounts where user_id = ?")
@@ -861,7 +866,7 @@ async function startFreshPeriod(
     used_milli: 0,
     period_start: next.start,
     period_end: next.end,
-    old_plan_terms: 0,
+    old_plan_terms: oldTerms,
     warned_80_at: null,
     warned_95_at: null,
     warned_zero_at: null,
@@ -883,7 +888,7 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
   const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: "free" }, now, cancelled ? [
     env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, extra_disk_state = 'off', stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
-  ] : []);
+  ] : [], { keepOldTerms: !cancelled && account.plan === "paid" });
   return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, extra_disk_state: "off", stripe_status: null } : rolled;
 }
 
@@ -921,7 +926,8 @@ function planTransition(
     const stashEnd = account.past_due_period_end;
     const end = change.periodEnd ?? stashEnd ?? free.end;
     return stashEnd != null && stashEnd > now && end === stashEnd
-      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: paidIncluded } }
+      // The same period comes back with the hours it had: the old terms' if it began before Cloud 7.
+      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: planIncludedMilliFor(nextPaidPlan, account.old_plan_terms === 1) } }
       : { kind: "restored_new_period", next: { plan: "paid", start: change.periodStart ?? now, end, included: paidIncluded } };
   }
   if (account.plan === "free" && nextPlan === "paid") {
@@ -1021,7 +1027,12 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     updates.push(env.DB.prepare(`update cloud_accounts set ${sets}, updated_at = ? where user_id = ?`)
       .bind(...extras.map(([, value]) => value), now, userId));
   }
-  if (transition) await startFreshPeriod(env, account, transition.next, now, updates, { stashEarnedDraw: transition.kind === "past_due" });
+  if (transition) {
+    await startFreshPeriod(env, account, transition.next, now, updates, {
+      stashEarnedDraw: transition.kind === "past_due",
+      keepOldTerms: transition.kind === "past_due" || transition.kind === "restored_same_period",
+    });
+  }
   else if (updates.length) await env.DB.batch(updates);
   const after = (await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>()) ?? account;
   // Today's disk-day follows the plan as it is now: an upgrade raises its plan disk, `past_due` makes it unbillable.

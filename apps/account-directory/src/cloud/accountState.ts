@@ -125,7 +125,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
-    catalog: cloudCatalog(offers, boughtPlanIdOf(account)),
+    catalog: cloudCatalog(offers, boughtPlanIdOf(account), account),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

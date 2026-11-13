@@ -64,8 +64,16 @@ create index if not exists idx_cloud_signup_ips_time on cloud_signup_ips (signed
 
 -- The computer's own report that it has run near full CPU for hours with no
 -- chat turn or agent working (the brain's keep-awake check). The daily report
--- lists computers that reported in its day.
-alter table cloud_computers add column cpu_high_since integer;
-alter table cloud_computers add column cpu_high_reported_at integer;
-alter table cloud_computers add column cpu_high_percent integer;
-alter table cloud_computers add column cpu_high_minutes integer;
+-- lists computers that reported in its day: one row per computer and UTC day,
+-- so a report after midnight never replaces the day before. Kept 7 days.
+create table if not exists cloud_cpu_reports (
+  instance_id text not null,
+  user_id text not null,
+  day text not null,
+  since integer not null,
+  cpu_percent integer not null,
+  minutes integer not null,
+  reported_at integer not null,
+  primary key (instance_id, day)
+);
+create index if not exists idx_cloud_cpu_reports_day on cloud_cpu_reports (day);

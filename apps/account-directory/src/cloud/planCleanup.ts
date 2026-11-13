@@ -146,7 +146,7 @@ type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status" | 
 function roomOf(env: CloudEnv, account: CleanupAccount, planId: CloudPlanId): PlanRoom {
   const diskGb = planId === cleanupPlanOf(account) ? planDiskGbOf(account, planId) : CLOUD_PLANS[planId].diskGb;
   const extraGb = planId !== "free" && cloudOffers(env).extraDisk && account.extra_disk_state === "on" && account.extra_disk_limit_cents != null
-    ? extraDiskMonthMaxGb(account.extra_disk_limit_cents)
+    ? extraDiskMonthMaxGb(account.extra_disk_limit_cents, account)
     : 0;
   return { planId, diskCapGb: diskGb + extraGb };
 }
@@ -427,6 +427,44 @@ async function tellPlanCleanupDone(env: CloudEnv, userId: string, done: CloudPla
   });
 }
 
+/** How long before a renewal an account leaving the old terms hears that its plan's disk shrinks. */
+const OLD_TERMS_NOTICE_MS = 7 * 86_400_000;
+
+/**
+ * An account on the terms from before Cloud 7 whose computers hold more than
+ * its plan's new disk (Plus 40 → 30 GB, Pro 120 → 80 GB) is told once, in the
+ * week before its renewal, that the new disk starts then. Without it the
+ * renewal would refuse new computers (or bill extra disk) with no warning.
+ * Nothing is freed. A downgrade or cancel waiting for the period end has its
+ * own warning.
+ */
+async function warnOldTermsEnding(env: CloudEnv, account: AccountRow, computers: ComputerRow[], now: number): Promise<void> {
+  if (account.old_plan_terms !== 1 || account.old_terms_told_at != null) return;
+  if (account.plan !== "paid" || account.stripe_status === "past_due" || account.cancel_at_period_end === 1 || account.paid_plan_next != null) return;
+  if (account.period_end - now > OLD_TERMS_NOTICE_MS || account.period_end <= now) return;
+  const planId = boughtPlanIdOf(account);
+  const cleanup = planCleanupFor(env, { ...account, old_plan_terms: 0 }, computers, planId);
+  if (!cleanup) return;
+  // Claimed first, so overlapping checks send one email.
+  const claimed = await env.DB.prepare("update cloud_accounts set old_terms_told_at = ? where user_id = ? and old_terms_told_at is null and old_plan_terms = 1")
+    .bind(now, account.user_id).run();
+  if (!claimed.meta.changes) return;
+  const planName = CLOUD_PLAN_SENTENCE_NAMES[planId];
+  const starts = utcDate(account.period_end);
+  logCloud("cloud.old_terms_warned", { userId: account.user_id, plan: planId, usedGb: cleanup.usedGb, limitGb: cleanup.limitGb });
+  const result = await sendCloudEmail(env, {
+    userId: account.user_id,
+    subject: `Your ADE Cloud ${planName} plan has ${cleanup.limitGb} GB of disk from ${starts}`,
+    text: [
+      `${planName}'s disk changes to ${cleanup.limitGb} GB when your plan renews on ${starts}. Until then you keep what you have now.`,
+      cleanup.sentence,
+      `From then, ADE can't make a new computer until your computers fit${account.extra_disk_state === "on" ? ", and the disk past it counts as extra disk" : ""}.`,
+      WAYS_OUT,
+    ].join("\n"),
+  });
+  if (result === "failed") reportCloudFailure("cloud.old_terms_warn_email_failed", { userId: account.user_id });
+}
+
 /* ---- Over the plan in force: told once, nothing freed ---- */
 
 /**
@@ -446,6 +484,7 @@ export async function runPlanLimitChecks(env: CloudEnv, computers: ComputerRow[]
     // An account ADE Cloud no longer lets in is left as it is.
     if (!cloudAccessAllows(env, account.user_id)) continue;
     try {
+      await warnOldTermsEnding(env, account, byUser.get(account.user_id) ?? [], now);
       const over = overPlanInForce(env, account, byUser.get(account.user_id) ?? []);
       if (!over) {
         if (account.plan_over_told_at != null) {

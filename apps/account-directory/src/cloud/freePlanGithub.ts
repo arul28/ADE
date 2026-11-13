@@ -114,6 +114,21 @@ async function rulesOn(env: CloudEnv): Promise<boolean> {
   return false;
 }
 
+/** Whether the account's GitHub grant still gives a token: `unknown` when GitHub couldn't be asked. */
+async function githubConnected(env: CloudEnv, userId: string, now: number): Promise<"live" | "disconnected" | "unknown"> {
+  try {
+    const runtime = await githubAppRuntime(env as unknown as GithubAppEnv);
+    if (!runtime) return "unknown";
+    const outcome = await serveToken(runtime, userId, { rejectedSha256: null }, now);
+    if (outcome.kind === "token") return "live";
+    if (outcome.kind === "not_connected" || outcome.kind === "needs_reauth") return "disconnected";
+    return "unknown";
+  } catch (error) {
+    logCloud("cloud.free_plan.github_connected_check_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return "unknown";
+  }
+}
+
 /**
  * Reads the GitHub account's creation time with the account's own token when
  * it isn't stored yet and a try is due. `null` when still unknown;
@@ -229,6 +244,11 @@ async function settle(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<voi
   if (createdAt == null) return applyHold(env, account, facts.grant_state === "active" ? "github_checking" : "no_github", ctx);
   const cardOnFile = account.free_card_unlocked_at != null || account.stripe_subscription_id != null;
   if (ctx.now - createdAt < CLOUD_FREE_GITHUB_MIN_AGE_MS && !cardOnFile) return applyHold(env, account, "github_too_new", ctx);
+  // A stored age outlives the connection: before the claim, the GitHub account must still be connected (not revoked or deleted).
+  if (facts.grant_state !== "active") return applyHold(env, account, "no_github", ctx);
+  const live = await githubConnected(env, account.user_id, ctx.now);
+  if (live === "disconnected") return applyHold(env, account, "no_github", ctx);
+  if (live === "unknown") return applyHold(env, account, "github_checking", ctx);
   // Old enough (or unlocked by a card): claim. Lost a race to another account at the same moment: refused.
   if (!(await claimGithub(env, account, facts.github_user_id, ctx))) return applyHold(env, account, "github_used", ctx);
   return applyHold(env, account, null, ctx);

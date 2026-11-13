@@ -47,28 +47,33 @@ export function parseSustainedCpuReport(body: Record<string, unknown> | null, no
 }
 
 export async function recordSustainedCpu(env: CloudEnv, computer: ComputerRow, report: CloudSustainedCpuReport, now: number): Promise<void> {
+  // One row per computer and UTC day: the day's longest stretch stays, and the next day starts its own row.
   await env.DB.prepare(`
-    update cloud_computers set cpu_high_since = ?, cpu_high_reported_at = ?, cpu_high_percent = ?, cpu_high_minutes = ? where instance_id = ?
-  `).bind(report.since, now, report.cpuPercent, report.minutes, computer.instance_id).run();
+    insert into cloud_cpu_reports (instance_id, user_id, day, since, cpu_percent, minutes, reported_at) values (?, ?, ?, ?, ?, ?, ?)
+    on conflict (instance_id, day) do update set
+      since = case when excluded.minutes >= minutes then excluded.since else since end,
+      cpu_percent = case when excluded.minutes >= minutes then excluded.cpu_percent else cpu_percent end,
+      minutes = max(minutes, excluded.minutes),
+      reported_at = excluded.reported_at
+  `).bind(computer.instance_id, computer.user_id, new Date(now).toISOString().slice(0, 10), report.since, report.cpuPercent, report.minutes, now).run();
   logCloud("cloud.cpu_sustained_reported", { userId: computer.user_id, instanceId: computer.instance_id, minutes: report.minutes, cpuPercent: report.cpuPercent });
 }
 
-type CpuRow = { instance_id: string; user_id: string; plan: string | null; cpu_high_since: number; cpu_high_percent: number; cpu_high_minutes: number };
+type CpuRow = { instance_id: string; user_id: string; plan: string | null; since: number; cpu_percent: number; minutes: number };
 
 const hoursText = (minutes: number): string => `${Math.round((minutes / 60) * 10) / 10} hours`;
 const utcTime = (at: number): string => new Date(at).toISOString().slice(11, 16);
 
 /** The report's lines for computers that reported hours near full CPU with no chat turn during `day`. */
 export async function sustainedCpuAlarms(env: CloudEnv, day: string): Promise<string[]> {
-  const dayStart = Date.parse(`${day}T00:00:00Z`);
   const rows = await env.DB.prepare(`
-    select c.instance_id, c.user_id, a.plan, c.cpu_high_since, c.cpu_high_percent, c.cpu_high_minutes
-    from cloud_computers c left join cloud_accounts a on a.user_id = c.user_id
-    where c.cpu_high_reported_at >= ? and c.cpu_high_reported_at < ?
-    order by c.cpu_high_minutes desc
-  `).bind(dayStart, dayStart + DAY_MS).all<CpuRow>();
+    select r.instance_id, r.user_id, a.plan, r.since, r.cpu_percent, r.minutes
+    from cloud_cpu_reports r left join cloud_accounts a on a.user_id = r.user_id
+    where r.day = ?
+    order by r.minutes desc
+  `).bind(day).all<CpuRow>();
   return (rows.results ?? []).map((row) =>
-    `Computer ${row.instance_id} of account ${row.user_id} (${row.plan ?? "free"}) ran at ${row.cpu_high_percent}% CPU or more for ${hoursText(row.cpu_high_minutes)} from ${utcTime(row.cpu_high_since)} UTC with no chat turn or agent working. That looks like mining.`);
+    `Computer ${row.instance_id} of account ${row.user_id} (${row.plan ?? "free"}) ran at ${row.cpu_percent}% CPU or more for ${hoursText(row.minutes)} from ${utcTime(row.since)} UTC with no chat turn or agent working. That looks like mining.`);
 }
 
 /* ---- Sign-up bursts ---- */
@@ -98,6 +103,8 @@ export async function recordSignupIp(env: Pick<CloudEnv, "DB" | "CLOUD_CHAT_MAST
 /** Deletes hashed sign-up addresses older than {@link SIGNUP_IP_KEEP_DAYS} days. */
 export async function pruneSignupIps(env: CloudEnv, now: number): Promise<void> {
   await env.DB.prepare("delete from cloud_signup_ips where signed_up_at < ?").bind(now - SIGNUP_IP_KEEP_DAYS * DAY_MS).run();
+  // CPU reports go after the same days.
+  await env.DB.prepare("delete from cloud_cpu_reports where day < ?").bind(new Date(now - SIGNUP_IP_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10)).run();
 }
 
 /**

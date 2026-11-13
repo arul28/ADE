@@ -354,7 +354,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async billingCheckout(plan, cleanup): Promise<CloudCheckoutResult> {
-      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", ...(cleanup ? { cleanup } : {}) } }));
+      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", knowsMax: true, ...(cleanup ? { cleanup } : {}) } }));
       if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
         // A downgrade with a pick: the computers ADE frees now. Without one, over the cheaper plan: what goes over.
         const over = readCloudPlanCleanup(body.cleanup);

@@ -26,7 +26,7 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
 /** D1's statement surface over node:sqlite, with the real migration applied. */
 function sqliteD1(): D1Database {
   const db = new DatabaseSync(":memory:");
-  for (const migration of ["0016_agent37_wakes.sql", "0017_cloud_wakes.sql"]) {
+  for (const migration of ["0016_agent37_wakes.sql", "0017_cloud_wakes.sql", "0018_cloud_account.sql"]) {
     db.exec(fs.readFileSync(path.join(__dirname, "../migrations", migration), "utf8"));
   }
   const statement = (sql: string, params: unknown[] = []) => ({

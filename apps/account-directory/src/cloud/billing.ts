@@ -420,6 +420,17 @@ async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: Clo
  *   back, uncharged.
  * The webhook that follows applies the same change again, which is a no-op.
  */
+/** After a failed upgrade from a waiting downgrade, the item goes back to the cheaper plan's price, uncharged. */
+async function putBackWaitingPrice(env: CloudEnv, userId: string, itemId: string, price: string, now: number): Promise<void> {
+  try {
+    await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(itemId)}`, { price, quantity: "1", proration_behavior: "none" },
+      `ade-plan:${itemId}:put-back:${price}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+  } catch (error) {
+    // The renewal would bill the plan in force instead of the waiting one: the owner must see it.
+    reportCloudFailure("cloud.plan_waiting_price_not_restored", { userId, status: error instanceof StripeRequestError ? error.status : 0 });
+  }
+}
+
 async function changePaidPlan(
   env: CloudEnv,
   account: AccountRow,
@@ -461,6 +472,31 @@ async function changePaidPlan(
     reportCloudFailure("cloud.plan_item_missing", { userId: account.user_id });
     throw unavailable();
   }
+  // An upgrade while a downgrade waits: the item sits on the cheaper plan's price, and Stripe would
+  // credit only that. It goes back to the plan in force first, uncharged, so the proration credits
+  // what the person paid for.
+  const inForcePrice = planPriceIds(env)[current];
+  let waitingPrice: string | null = null;
+  if (charged && account.paid_plan_next != null && inForcePrice && planItem.price !== inForcePrice && planItem.price !== toPrice) {
+    try {
+      const restored = await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(planItem.id)}`, {
+        price: inForcePrice,
+        quantity: "1",
+        proration_behavior: "none",
+      }, `ade-plan:${planItem.id}:${current}:restore:${account.updated_at}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+      if (idOf(restored.price) !== inForcePrice) throw new Error("item_not_restored");
+      waitingPrice = planItem.price;
+      planItem = { id: planItem.id, price: inForcePrice };
+    } catch (error) {
+      reportCloudFailure("cloud.plan_change_refused", {
+        userId: account.user_id,
+        to,
+        step: "restore_in_force",
+        status: error instanceof StripeRequestError ? error.status : 0,
+      });
+      throw new CloudBillingError("plan_change_refused", "ADE Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
+    }
+  }
   if (planItem.price !== toPrice) {
     let confirmed = false;
     let failure: unknown = null;
@@ -484,6 +520,8 @@ async function changePaidPlan(
       const error = failure;
       const after = await planItemOf().catch(() => null);
       if (after?.price !== toPrice) {
+        // The upgrade didn't happen: the waiting downgrade's price goes back, so the next invoice is still the cheaper plan.
+        if (waitingPrice && planItem) await putBackWaitingPrice(env, account.user_id, planItem.id, waitingPrice, now);
         // The account stays exactly as it was. Managed Payments may refuse some subscription changes from the API.
         if (error instanceof StripeRequestError && charged && error.status === 402) {
           reportCloudFailure("cloud.plan_upgrade_declined", { userId: account.user_id });
@@ -1064,6 +1102,7 @@ type DiskDayRow = {
   stripe_subscription_id: string | null;
   extra_disk_limit_cents: number | null;
   period_start: number;
+  old_plan_terms: number | null;
 };
 
 /** Stripe keeps a meter event's identifier for about a day; a send is retried only well inside that. */
@@ -1089,7 +1128,7 @@ const DISK_REPORTS_PER_RUN = 200;
 export async function reportExtraDiskDays(env: CloudEnv, now = Date.now()): Promise<void> {
   const rows = await env.DB.prepare(`
     select d.user_id, d.day, d.peak_gb, d.plan_gb, d.billable, d.send_started_at, d.billed_gb,
-      a.stripe_customer_id, a.stripe_subscription_id, a.extra_disk_limit_cents, a.period_start
+      a.stripe_customer_id, a.stripe_subscription_id, a.extra_disk_limit_cents, a.period_start, a.old_plan_terms
     from cloud_disk_days d join cloud_accounts a on a.user_id = d.user_id
     where d.reported_at is null and d.unconfirmed_at is null and d.day < ?
     order by d.day limit ?
@@ -1161,7 +1200,7 @@ async function diskRoomUnderLimit(env: CloudEnv, row: DiskDayRow): Promise<numbe
     select coalesce(sum(billed_gb), 0) as gb from cloud_disk_days
     where user_id = ? and day >= ? and day < ? and billed_gb is not null
   `).bind(row.user_id, from, row.day).first<{ gb: number }>();
-  const limitGbDays = extraDiskGbDaysIn(row.extra_disk_limit_cents);
+  const limitGbDays = extraDiskGbDaysIn(row.extra_disk_limit_cents, row);
   return Math.max(0, limitGbDays - (billed?.gb ?? 0));
 }
 
@@ -1186,8 +1225,8 @@ export async function checkExtraDiskLimits(env: CloudEnv, now: number): Promise<
     const planGb = countedPlanDiskGb(account, boughtPlanIdOf(account));
     const extraGb = Math.max(0, account.disk_gb - planGb);
     const limitCents = account.extra_disk_limit_cents ?? 0;
-    const monthCents = Math.ceil(extraDiskMonthMicros(extraGb) / CENT_MICROS);
-    const isOver = account.plan === "paid" && account.extra_disk_state === "on" && !extraDiskMonthFits(extraGb, limitCents);
+    const monthCents = Math.ceil(extraDiskMonthMicros(extraGb, account) / CENT_MICROS);
+    const isOver = account.plan === "paid" && account.extra_disk_state === "on" && !extraDiskMonthFits(extraGb, limitCents, account);
     if (!isOver) {
       if (account.extra_disk_over_limit_at != null) {
         await env.DB.prepare("update cloud_accounts set extra_disk_over_limit_at = null where user_id = ?").bind(account.user_id).run();

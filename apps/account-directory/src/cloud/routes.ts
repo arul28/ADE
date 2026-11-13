@@ -38,8 +38,8 @@ import {
   DISK_ON_CREATE_GB,
   DISK_STEP_GB,
   CENT_MICROS,
-  EXTRA_DISK_CENTS_PER_10GB_MONTH,
-  EXTRA_DISK_MICROS_PER_GB_DAY,
+  extraDiskCentsPer10GbMonthOf,
+  extraDiskMicrosPerGbDayOf,
   extraDiskMonthMicros,
   WAKE_PORT,
   cloudSizeFor,
@@ -237,7 +237,7 @@ async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number,
   const limitCents = account.extra_disk_limit_cents;
   const needsApproval = (): Refused => diskRefusal(
     "disk_limit",
-    `This needs ${extraGb} GB more disk than your plan's ${planGb} GB at one time. Extra disk is ${formatCloudCents(EXTRA_DISK_CENTS_PER_10GB_MONTH)} for each 10 GB a month, counted by the day. Turn it on in Settings, or delete a computer you no longer use.`,
+    `This needs ${extraGb} GB more disk than your plan's ${planGb} GB at one time. Extra disk is ${formatCloudCents(extraDiskCentsPer10GbMonthOf(account))} for each 10 GB a month, counted by the day. Turn it on in Settings, or delete a computer you no longer use.`,
     "needs_approval",
     "needs_approval",
   );
@@ -246,8 +246,8 @@ async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number,
     return { ok: false, ...(account.extra_disk_state === "off" ? needsApproval() : diskRefusal("disk_limit", `${overPlan} ${PAID_DISK_WAYS_OUT}`, "extra_off", "extra_off")) };
   }
   if (limitCents == null) return { ok: false, ...needsApproval() };
-  const thisPeriod = await extraDiskMicrosThisPeriod(env, account) + extraGb * EXTRA_DISK_MICROS_PER_GB_DAY * daysLeftIn(account.period_end, now);
-  if (Math.max(thisPeriod, extraDiskMonthMicros(extraGb)) > limitCents * CENT_MICROS) {
+  const thisPeriod = await extraDiskMicrosThisPeriod(env, account) + extraGb * extraDiskMicrosPerGbDayOf(account) * daysLeftIn(account.period_end, now);
+  if (Math.max(thisPeriod, extraDiskMonthMicros(extraGb, account)) > limitCents * CENT_MICROS) {
     return {
       ok: false,
       ...diskRefusal("disk_limit", `This would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`, "monthly_limit", "monthly_limit"),
@@ -916,6 +916,9 @@ async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerR
   if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
   const { blocked } = await wakeBlocker(env, computer.user_id, now);
   if (blocked) return blocked.response;
+  // An update wakes a sleeping computer, so it counts toward the awake cap like any wake.
+  const capped = await awakeRoom(env, computer, now);
+  if (capped) return capped.response;
   try {
     // Saved with the update: whether this image sends a boot report decides its rollback, whatever the channel says later.
     const expectsReport = automaticTemplate(targets, channel) === templateVersion;
@@ -1000,6 +1003,8 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
   if (!isMeteredStatus(computer.status)) {
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
     if (blocked) return blocked.response;
+    const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
+    if (capped) return capped.response;
   }
   return json(await provider.exec(computer.instance_id, command, timeoutMs));
 }
@@ -1207,6 +1212,15 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
       const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
       if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
+      // A build from before Max reads a Max plan as Plus, so its "Move to Pro" would be a silent downgrade.
+      // Builds that know Max say so (`knowsMax`); an older one changes a Max plan only in the billing portal.
+      if (body.knowsMax !== true) {
+        const bought = await env.DB.prepare("select plan, paid_plan from cloud_accounts where user_id = ?").bind(userId).first<{ plan: string; paid_plan: string | null }>();
+        if (bought?.plan === "paid" && bought.paid_plan === "max") {
+          logCloud("cloud.plan_change_old_build_refused", { userId });
+          return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
+        }
+      }
       return json(await createCheckoutUrl(env, userId, url.origin, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
     }
     if (path === CLOUD_PATHS.billingPlanCleanup) {

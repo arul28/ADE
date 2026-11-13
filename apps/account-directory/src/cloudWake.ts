@@ -1,4 +1,6 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
+import { AWAKE_COMPUTER_CAP } from "./cloud/plans";
+import { logCloud, reportCloudFailure } from "./cloud/store";
 
 /**
  * Timed wakes for cloud machines (README, "the provider timed wakes").
@@ -95,7 +97,34 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
     .all<{ user_id: string; instance_id: string; wake_url: string; wake_at: number }>();
   let woken = 0;
   let failed = 0;
-  await Promise.all((due.results ?? []).map(async (row) => {
+  // The awake cap holds for timed wakes too: a computer whose account is at it waits for a later tick.
+  const rows = due.results ?? [];
+  const userIds = [...new Set(rows.map((row) => row.user_id))];
+  const awakeRows = userIds.length ? await env.DB.prepare(`
+    select user_id, instance_id from cloud_computers
+    where deleted_at is null and status in ('running', 'restarting', 'updating') and user_id in (select value from json_each(?))
+  `).bind(JSON.stringify(userIds)).all<{ user_id: string; instance_id: string }>() : { results: [] };
+  const awakeIds = new Set((awakeRows.results ?? []).map((row) => row.instance_id));
+  const awakeByUser = new Map<string, number>();
+  for (const row of awakeRows.results ?? []) awakeByUser.set(row.user_id, (awakeByUser.get(row.user_id) ?? 0) + 1);
+  const givenUp: typeof rows = [];
+  const allowed = rows.filter((row) => {
+    if (awakeIds.has(row.instance_id)) return true;
+    const awake = awakeByUser.get(row.user_id) ?? 0;
+    if (awake < AWAKE_COMPUTER_CAP) {
+      awakeByUser.set(row.user_id, awake + 1);
+      return true;
+    }
+    if (now - row.wake_at > GIVE_UP_AFTER_MS) {
+      reportCloudFailure("cloud.timed_wake_capped", { userId: row.user_id, instanceId: row.instance_id, awake });
+      givenUp.push(row);
+    } else logCloud("cloud.timed_wake_waits_for_cap", { userId: row.user_id, instanceId: row.instance_id, awake });
+    return false;
+  });
+  await Promise.all(givenUp.map((row) => env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")
+    .bind(row.user_id, row.instance_id, row.wake_at).run()));
+  failed += givenUp.length;
+  await Promise.all(allowed.map(async (row) => {
     let reached = false;
     if (WAKE_URL.test(row.wake_url)) {
       try {

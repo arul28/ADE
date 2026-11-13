@@ -6,7 +6,7 @@ import { idleCleanupReportLine } from "./idleCleanup";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
-  EXTRA_DISK_MICROS_PER_GB_DAY,
+  extraDiskMicrosPerGbDayOf,
   computeCostMicrosFor,
   extraHoursIncomeMicros,
   utcDay,
@@ -249,7 +249,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     } else if (planId !== "free" && !before && account.period_start >= dayStart) {
       income += extraHoursIncomeMicros(planId, 0, account.extra_reported_milli);
     }
-    income += (diskRow?.billed_gb ?? 0) * EXTRA_DISK_MICROS_PER_GB_DAY;
+    income += (diskRow?.billed_gb ?? 0) * extraDiskMicrosPerGbDayOf(account);
     rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start });
   }
   if (rows.length) {
