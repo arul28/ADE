@@ -12,10 +12,12 @@ import { useAdeCloudSignIns } from "../providers/cloud/useAdeCloudSignIns";
 import { SettingsToggle } from "../primitives/SettingsControls";
 import { adeCloudSettingsSearch } from "../SettingsMachineScope";
 
-/** Claude's row: how Claude gets on ADE Cloud, then what its pass needs ("Approve a Claude pass for ADE Cloud"). */
-function claudePassLine(fact: string | null): string {
-  const lead = "Uses a Claude pass on ADE Cloud, not a sign-in";
-  return fact ? `${lead}. ${fact}` : lead;
+/** Claude's row: how Claude gets on ADE Cloud, then what its pass needs (none yet, ended, off). */
+function claudePassLine(tile: { row: string; facts: readonly { text: string }[] }): string {
+  const lead = "Uses a Claude pass on ADE Cloud, not a sign-in.";
+  // C1: no pass yet. The tile's own words ("Approve a Claude pass…") would say "Claude pass" twice.
+  const next = tile.row === "C1" ? "Approve one to use Claude there." : tile.facts[0]?.text ? `${tile.facts[0].text}.` : "";
+  return next ? `${lead} ${next}` : lead;
 }
 
 /**
@@ -117,7 +119,7 @@ export function CloudSignIns() {
                       <span className="adecd-signin-logo" aria-hidden="true">{providerListMark(pass.descriptor, 22)}</span>
                       <span className="adecd-signin-text">
                         <b>{pass.descriptor.label}</b>
-                        <span className="adecd-signin-wrap">{claudePassLine(pass.tile.facts[0]?.text ?? null)}</span>
+                        <span className="adecd-signin-wrap">{claudePassLine(pass.tile)}</span>
                       </span>
                       <span
                         className="kit-dot"
