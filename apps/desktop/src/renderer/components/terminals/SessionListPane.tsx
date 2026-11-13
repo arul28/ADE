@@ -3442,7 +3442,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           </>
         ) : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
-        onStopBusy={deleteProgress?.cancellable ? () => stopLaneDelete(lane.id, lane.name, null) : null}
+        // A lane of the tab's copy: the stop goes to that copy.
+        onStopBusy={deleteProgress?.cancellable ? () => stopLaneDelete(lane.id, lane.name, tabCopyPin) : null}
         pinned={lanePinned}
         dragProps={laneDragProps(lane.id)}
         dropIndicatorEdge={laneDrop?.laneId === lane.id ? laneDrop.edge : null}
