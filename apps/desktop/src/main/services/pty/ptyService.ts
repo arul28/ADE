@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { summarizeBackgroundWork } from "../../../shared/sessionCanonicalState";
 import { readProcChildren, readPtyForeground, type ProcChildren } from "./procForeground";
 import os from "node:os";
 import path from "node:path";
@@ -186,6 +187,7 @@ import {
 } from "./cliStatusInspector";
 import {
   buildClaudeTurnHookSettings,
+  claudeHookSubagentChange,
   claudeHookTurnSignal,
   cliTurnHooksOverdue,
   CLI_TURN_HOOK_SOCKET_ENV,
@@ -859,6 +861,14 @@ type PtyEntry = {
   cliTurn: CliTurnState | null;
   /** The secret this launch's Claude hooks send back (`CLI_TURN_HOOK_TOKEN_ENV`); null without hooks. */
   cliTurnHookToken: string | null;
+  /**
+   * Agents the CLI reported starting and not yet stopping (Claude's
+   * SubagentStart / SubagentStop hooks), by agent id, with the time each
+   * started. A background agent keeps running after its turn's Stop; while any
+   * is here the row shows background work instead of done. Null until the
+   * first one starts.
+   */
+  cliLiveSubagents: Map<string, number> | null;
   /** After an Esc / Ctrl-C in a Claude turn: end it once the screen goes quiet. */
   cliTurnInterruptTimer: ReturnType<typeof setTimeout> | null;
   /**
@@ -2781,6 +2791,8 @@ export function createPtyService({
     at: string;
     /** The state comes from the CLI's own signals, not output timing. */
     exactTurnState?: boolean;
+    /** Agents the CLI reported still running (Claude hooks); absent for a CLI without those hooks. */
+    backgroundAgentIds?: string[];
   }) => void;
   onSessionAttentionRequested?: (args: { sessionId: string; message: string; source: "cli_prompt" }) => boolean;
   onSessionAttentionResolved?: (args: { laneId: string; sessionId: string }) => void;
@@ -5562,7 +5574,11 @@ export function createPtyService({
     flushPreview(entry);
   };
 
-  const emitRuntimeSignalThrottled = (entry: PtyEntry, runtimeState: TerminalRuntimeState) => {
+  const emitRuntimeSignalThrottled = (
+    entry: PtyEntry,
+    runtimeState: TerminalRuntimeState,
+    opts?: { force?: boolean },
+  ) => {
     if (!entry.tracked || !onSessionRuntimeSignal) return;
     const now = Date.now();
     const preview = entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null;
@@ -5570,7 +5586,7 @@ export function createPtyService({
     const previewChanged = preview !== entry.lastRuntimeSignalPreview;
     const periodicHeartbeatDue = now - entry.lastRuntimeSignalAt >= 10_000;
     const previewEmitDue = previewChanged && now - entry.lastRuntimeSignalAt >= 1_200;
-    if (!stateChanged && !previewEmitDue && !periodicHeartbeatDue) return;
+    if (!opts?.force && !stateChanged && !previewEmitDue && !periodicHeartbeatDue) return;
     entry.lastRuntimeSignalAt = now;
     entry.lastRuntimeSignalState = runtimeState;
     entry.lastRuntimeSignalPreview = preview;
@@ -5582,6 +5598,9 @@ export function createPtyService({
         lastOutputPreview: preview,
         at: new Date(now).toISOString(),
         ...(entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? { exactTurnState: true } : {}),
+        ...(entry.cliTurn?.source === "claude-hooks"
+          ? { backgroundAgentIds: [...(entry.cliLiveSubagents?.keys() ?? [])] }
+          : {}),
       });
     } catch {
       // ignore callback failures
@@ -5663,7 +5682,26 @@ export function createPtyService({
     if (!turn || entry.disposed) return;
     const wasExact = isExactCliTurnSource(turn.source);
     const now = Date.now();
+    const interruptedTurnStartedAt = signal.kind === "ended" && signal.reason === "interrupted"
+      ? turn.turnStartedAt
+      : null;
     const transition = reduceCliTurn(turn, signal, origin, now);
+    // Esc / Ctrl-C cancels the agents that turn was waiting on, and Claude
+    // sends no SubagentStop for them. Agents started in earlier turns are
+    // background agents and keep running.
+    if (interruptedTurnStartedAt != null && entry.cliLiveSubagents?.size) {
+      let pruned = false;
+      for (const [agentId, startedAt] of entry.cliLiveSubagents) {
+        if (startedAt >= interruptedTurnStartedAt) {
+          entry.cliLiveSubagents.delete(agentId);
+          pruned = true;
+        }
+      }
+      if (pruned) {
+        try { sessionService.notifyChanged(entry.sessionId); } catch { /* best effort */ }
+        emitRuntimeSignalThrottled(entry, computeRuntimeState(entry.sessionId, "running"), { force: true });
+      }
+    }
     const exact = isExactCliTurnSource(turn.source);
     if (exact && !wasExact) {
       logger.info("pty.cli_turn_exact_source", { sessionId: entry.sessionId, source: turn.source });
@@ -7983,6 +8021,7 @@ export function createPtyService({
           : null,
         cliTurnInterruptTimer: null,
         cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
+        cliLiveSubagents: null,
         priorEndState,
         piSessionLease,
         openCodeLease,
@@ -10136,6 +10175,18 @@ export function createPtyService({
         const runningSince = liveEntry && runtimeState === "running"
           ? runtimeStates.get(row.id)?.runningSince ?? null
           : null;
+        // Agents a tracked CLI reported still running (Claude hooks). Chat rows
+        // get theirs from the chat projection; a CLI row's are ours to set.
+        const liveSubagentStarts = liveEntry && !isPersistedChatToolType(row.toolType ?? null)
+          ? [...(liveEntry.cliLiveSubagents?.values() ?? [])]
+          : [];
+        const cliBackgroundWork = liveSubagentStarts.length
+          ? {
+              activeBackgroundTaskCount: liveSubagentStarts.length,
+              backgroundWork: summarizeBackgroundWork(liveSubagentStarts.map(() => null)),
+              backgroundWorkSince: new Date(Math.min(...liveSubagentStarts)).toISOString(),
+            }
+          : {};
         return {
           ...row,
           ...(live
@@ -10157,6 +10208,7 @@ export function createPtyService({
             ? {}
             : { currentTurnStartedAt: runningSince ? new Date(runningSince).toISOString() : null }),
           runtimeState,
+          ...cliBackgroundWork,
           chatSessionId: live
             ? terminalChatSessions.get(row.id) ?? live[1].chatSessionId ?? row.chatSessionId ?? null
             : terminalChatSessions.get(row.id) ?? row.chatSessionId ?? null,
@@ -10475,6 +10527,24 @@ export function createPtyService({
       if (args.provider !== "claude" || !isClaudeTrackedCliToolType(entry.toolTypeHint)) return true;
       const signal = claudeHookTurnSignal(args.payload);
       if (signal) applyCliTurnSignal(entry, signal, "claude-hooks");
+      const change = claudeHookSubagentChange(args.payload);
+      if (change && !entry.disposed) {
+        let changed = false;
+        if (change.kind === "reset") {
+          changed = (entry.cliLiveSubagents?.size ?? 0) > 0;
+          entry.cliLiveSubagents = null;
+        } else if (change.kind === "start") {
+          entry.cliLiveSubagents ??= new Map();
+          changed = !entry.cliLiveSubagents.has(change.agentId);
+          if (changed) entry.cliLiveSubagents.set(change.agentId, Date.now());
+        } else {
+          changed = entry.cliLiveSubagents?.delete(change.agentId) ?? false;
+        }
+        if (changed) {
+          try { sessionService.notifyChanged(entry.sessionId); } catch { /* best effort */ }
+          emitRuntimeSignalThrottled(entry, computeRuntimeState(entry.sessionId, "running"), { force: true });
+        }
+      }
       return true;
     },
 

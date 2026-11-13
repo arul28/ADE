@@ -283,7 +283,12 @@ export const CLI_TURN_HOOK_SOCKET_ENV = "ADE_CLI_TURN_HOOK_SOCKET";
  */
 export const CLI_TURN_HOOK_TOKEN_ENV = "ADE_CLI_TURN_HOOK_TOKEN";
 
-/** The hook events ADE listens to, and nothing else: each one costs a process. */
+/**
+ * The hook events ADE listens to, and nothing else: each one costs a process.
+ * SubagentStart / SubagentStop keep a count of agents that outlive the turn
+ * (Claude sends Stop as soon as it starts a background agent); SessionEnd
+ * clears that count when the conversation ends (`/clear`, exit).
+ */
 export const CLAUDE_TURN_HOOK_EVENTS = [
   "UserPromptSubmit",
   "Stop",
@@ -291,6 +296,9 @@ export const CLAUDE_TURN_HOOK_EVENTS = [
   "PermissionRequest",
   "Notification",
   "Elicitation",
+  "SubagentStart",
+  "SubagentStop",
+  "SessionEnd",
 ] as const;
 
 /**
@@ -427,10 +435,27 @@ export function claudeHookTurnSignal(payload: Record<string, unknown>): CliTurnS
   }
 }
 
+/**
+ * What one Claude hook payload means for the agents that run beside the turn,
+ * or null when it does not touch them. Claude also sends SubagentStop for its
+ * own helper agents, with no SubagentStart before it, so the caller keys the
+ * count by agent id and ignores a stop for an id it never saw start.
+ */
+export function claudeHookSubagentChange(
+  payload: Record<string, unknown>,
+): { kind: "start" | "stop"; agentId: string } | { kind: "reset" } | null {
+  const event = stringField(payload, "hook_event_name");
+  if (event === "SessionEnd") return { kind: "reset" };
+  if (event !== "SubagentStart" && event !== "SubagentStop") return null;
+  const agentId = stringField(payload, "agent_id");
+  if (!agentId) return null;
+  return { kind: event === "SubagentStart" ? "start" : "stop", agentId };
+}
+
 /** The fields of a hook payload worth sending to the runtime; the rest stays local. */
 export function claudeHookPayloadSummary(payload: Record<string, unknown>): Record<string, string> {
   const summary: Record<string, string> = {};
-  for (const key of ["hook_event_name", "prompt_id", "notification_type", "tool_name", "session_id"]) {
+  for (const key of ["hook_event_name", "prompt_id", "notification_type", "tool_name", "session_id", "agent_id", "agent_type"]) {
     const value = stringField(payload, key);
     if (value) summary[key] = value.slice(0, 200);
   }

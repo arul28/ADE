@@ -1,6 +1,6 @@
 import { PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
-import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useMemo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { STANDARD_EASE } from "../../lib/motion";
 import {
   ArrowClockwise,
@@ -1099,6 +1099,25 @@ const WORK_AREA_MODE_VARIANTS = {
     : { opacity: 0, filter: "blur(12px)", scale: 0.992, transition: WORK_AREA_MODE_TRANSITION }),
 };
 
+/**
+ * Marks the mode layer it sits in `inert` while that layer animates out. The
+ * leaving layer stays in the page for the exit animation, ahead of the layer
+ * that replaces it, so without this a keystroke or a focus helper looking for
+ * the first prompt box (`focusWorkInputSoon` after ⌘⇧N) could land in the chat
+ * the person just left. Renders a hidden span, so it adds nothing to layout.
+ */
+function InertWhileExiting() {
+  const isPresent = useIsPresent();
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const layer = ref.current?.parentElement;
+    if (!layer) return;
+    if (isPresent) layer.removeAttribute("inert");
+    else layer.setAttribute("inert", "");
+  }, [isPresent]);
+  return <span ref={ref} hidden />;
+}
+
 const MODE_OPTIONS: Array<{
   kind: WorkDraftKind;
   label: string;
@@ -1431,6 +1450,7 @@ export function WorkViewArea({
           animate="visible"
           exit="exit"
         >
+          <InertWhileExiting />
           {workAreaContent}
         </motion.div>
       </AnimatePresence>

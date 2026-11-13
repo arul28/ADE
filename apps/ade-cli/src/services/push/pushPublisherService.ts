@@ -243,6 +243,12 @@ export type PushCliRuntimeSignal = {
    * `idle` is a finished turn, not a guess from quiet output.
    */
   exactTurnState?: boolean;
+  /**
+   * The agents this CLI reported still running beside its turn (Claude's
+   * SubagentStart / SubagentStop hooks), by agent id. Present only for a CLI
+   * that reports them; an empty list means none are left.
+   */
+  backgroundAgentIds?: string[];
 };
 
 export type PushSessionAttentionRequest = {
@@ -2339,6 +2345,20 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
     // Exit/kill phases are owned by onPtyExit (which knows the exit code).
     if (signal.runtimeState === "exited" || signal.runtimeState === "killed") return;
+    // The CLI's live agents are this run's background work, as a chat's are:
+    // a clean turn end then waits for them before the run reads completed.
+    if (existing?.kind === "cli" && signal.backgroundAgentIds) {
+      const live = new Set(signal.backgroundAgentIds);
+      const before = existing.phase;
+      for (const taskId of [...existing.backgroundTaskIds]) {
+        if (!live.has(taskId)) applyBackgroundTaskUpdate(existing, taskId, "completed");
+      }
+      for (const taskId of live) applyBackgroundTaskUpdate(existing, taskId, "running");
+      if (existing.phase !== before) {
+        markRunUpdated(existing);
+        scheduleFlush(false);
+      }
+    }
     // Explicit/provider-structured attention owns this phase until the
     // lifecycle event that resolves it. PTY heartbeats are observational and
     // must not erase a real request.

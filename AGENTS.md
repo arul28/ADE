@@ -142,6 +142,36 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
    computer, guard it with a clear message (as Cursor Cloud launch does), never
    by letting the call misroute.
 
+## Every provider, both surfaces
+
+Claude Code does not load this file, so `CLAUDE.md` has a copy of this
+section. Keep the two the same.
+
+ADE runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
+Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin and Antigravity. The list grows;
+read it from `AgentChatProvider` (`apps/desktop/src/shared/types/chat.ts`) and
+`LAUNCH_PROFILE_TOOL_TYPE` (`apps/desktop/src/shared/cliLaunch.ts`).
+
+Each provider reaches ADE in two ways, and they behave differently:
+- **Chat:** ADE drives the agent through an SDK or protocol (Claude Agent SDK,
+  `codex app-server`, the SDK workers, OpenCode's server, ACP). ADE gets typed
+  events: turns, tools, subagents, approvals.
+- **CLI:** the provider's own program runs in an ADE terminal. ADE sees the
+  screen plus whatever signal that CLI gives: Claude Code hooks, Codex's
+  OSC 7501 state, or nothing (output guesses).
+
+1. Before you design a fix, list every provider and surface it touches. Do not
+   stop after Claude and Codex.
+2. For each one, decide: works the same, needs its own code, or not supported.
+   Put "not supported" in the capability gate and the UI. Silence is not a
+   decision.
+3. Read each provider's real mechanism in its adapter
+   (`services/chat/*SdkEventMapper.ts`, `services/chat/acpHost/`,
+   `services/pty/cliTurnSignals.ts`) or in its docs. Never assume it works
+   like Claude.
+4. In your report and in `/quality`, name the providers you changed, the ones
+   you checked and left as they are, and the ones you could not check.
+
 ## Playbooks
 
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge), plus the **Early PR and harvests** procedure that `/quality` and `/test` run. Baseline `/quality` and `/test` run before ship; delta-only commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
@@ -153,7 +183,7 @@ The most common defect class in this repo is a change that works on the path you
 
 - **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
 - **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brain. Shared logic belongs in shared services and types, not re-implemented per client.
-- **Providers.** Claude, Codex, Cursor, OpenCode, and Droid each have an adapter with different capabilities. A provider-shaped feature needs a decision per adapter, even when the decision is "not supported here" — record it in the capability gate, not by silence.
+- **Providers.** Every provider, on both its chat and its CLI surface; see **Every provider, both surfaces**.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
 - **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.

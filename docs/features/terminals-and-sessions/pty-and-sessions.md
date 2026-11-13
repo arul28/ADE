@@ -429,7 +429,7 @@ the roster all read that phase.
 
 | CLI | working | done | needs you |
 | --- | --- | --- | --- |
-| Claude Code | `UserPromptSubmit` hook | `Stop` / `StopFailure` hook | `PermissionRequest` hook (tool permission, `AskUserQuestion`, `ExitPlanMode`), `Notification` `permission_prompt` / `elicitation_dialog`, `Elicitation` |
+| Claude Code | `UserPromptSubmit` hook | `Stop` / `StopFailure` hook (background work while `SubagentStart` agents have no `SubagentStop`) | `PermissionRequest` hook (tool permission, `AskUserQuestion`, `ExitPlanMode`), `Notification` `permission_prompt` / `elicitation_dialog`, `Elicitation` |
 | Codex 0.167+ | OSC `7501;state=working`, or a launch that carries the prompt (`promptSubmittedAtLaunch`) | `state=done`, or `idle` after working (an interrupt); every report in an output chunk is applied in order | `state=blocked` (`kind=permission`) |
 | Others | output (heuristic) | 12.5 s of quiet (heuristic) | the Jev screen check, `ade chat ask` |
 
@@ -442,8 +442,9 @@ the roster all read that phase.
   shell parses it, it runs the same on Windows, and Claude never waits for it.
   On Windows a `.cmd` shim cannot be started this way, so that launch gets no
   hooks. The hook command (`apps/ade-cli/src/cliTurnHook.ts`) reads the hook
-  JSON and sends only the event name, prompt id, notification type, tool name
-  and message (never the transcript path or the last message). It sends them
+  JSON and sends only the event name, prompt id, notification type, tool name,
+  agent id and type, and message (never the transcript path or the last
+  message). It sends them
   with `--socket $ADE_CLI_TURN_HOOK_SOCKET`, the runtime that owns the
   terminal, to `session.reportCliTurnSignal`. It never starts a brain, prints
   nothing, gives up after 5 s and exits 0 (the process exits even when the
@@ -463,6 +464,20 @@ the roster all read that phase.
 
   A key that picks in a Claude menu (Enter, a letter or digit, Esc) answers a
   `needs-input` and returns the turn to working. Arrow keys do not.
+- **Background agents.** Claude sends `Stop` as soon as it starts a background
+  agent, so the turn ends while the agent still works. `SubagentStart` and
+  `SubagentStop` keep the agent ids in `PtyEntry.cliLiveSubagents`;
+  `SessionEnd` (`/clear`, exit) empties it. Claude also sends `SubagentStop`
+  for its own helper agents with no `SubagentStart`; a stop for an id that
+  never started is ignored. An interrupt (Esc / Ctrl-C) drops the agents its
+  turn started, because Claude cancels them without a `SubagentStop`. While the
+  set is not empty, `enrichSessions` gives the row `activeBackgroundTaskCount`,
+  `backgroundWork` and `backgroundWorkSince`, the same fields a chat gets, so
+  the row reads background work instead of done on desktop, web and iOS. The
+  runtime signal carries the ids too (`backgroundAgentIds`), and the push
+  publisher keeps the run `running` until they drain, as it does for a chat.
+  Other CLIs have no such signal yet: Codex's OSC 7501 is unchecked for
+  background agents, and the heuristic CLIs show done once their output stops.
 - **Exact signals win.** Once a session reports through a hook or OSC 7501,
   output no longer flips it to running, the 12.5 s quiet rule no longer ends a
   Codex turn, and the Jev screen check only runs after a Claude turn ends on
@@ -486,7 +501,8 @@ the roster all read that phase.
   the sequence. The tracker is a few field writes per transition, and
   `sessionService.notifyChanged` runs on transitions only, never per chunk.
   Each Claude turn starts two short `ade` processes (submit, stop), plus one or
-  two per permission prompt. No per-tool hook is installed.
+  two per permission prompt, two per subagent (start, stop) and one at session
+  end. No per-tool hook is installed.
 
 Activity detail is a separate typed value (`planning`, `exploring`,
 `implementing`, `testing`, `debugging`, `reviewing`, `shipping`, or

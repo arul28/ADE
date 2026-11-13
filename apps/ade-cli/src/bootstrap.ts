@@ -2003,6 +2003,7 @@ export async function createAdeRuntime(args: {
           sessionId: signal.sessionId,
           runtimeState: signal.runtimeState,
           ...(signal.exactTurnState ? { exactTurnState: true } : {}),
+          ...(signal.backgroundAgentIds ? { backgroundAgentIds: signal.backgroundAgentIds } : {}),
         });
       },
       onSessionAttentionRequested: (request) => runtimeForCtoActions

@@ -1,0 +1,27 @@
+;; Seatbelt profile for the ADE tool-use eval (macOS `sandbox-exec -f`).
+;; Every agent process runs inside it, with its whole process tree. PATH
+;; stand-ins are not enough: a login shell (`zsh -lc`) runs path_helper and
+;; puts /usr/bin and /usr/sbin first, and an agent can type an absolute path.
+;; This profile makes the real tools fail whatever the shell or path.
+(version 1)
+(allow default)
+
+;; Tools that act on the user's real screen, and the real `gh`.
+(deny process-exec
+  (literal "/usr/sbin/screencapture")
+  (literal "/usr/bin/osascript")
+  (literal "/usr/bin/osacompile")
+  (literal "/usr/bin/automator")
+  (literal "/usr/bin/shortcuts")
+  (regex #"/cliclick$")
+  (regex #"^/(opt/homebrew|usr/local)/(bin|Cellar/gh/[^/]+/bin)/gh$")
+  ;; The real ADE CLI, in every install location.
+  (regex #"^/Users/[^/]+/\.local/bin/ade")
+  (regex #"^/Applications/ADE[^/]*\.app/Contents/Resources/ade-cli/")
+  (regex #"/ade-cli-shims/"))
+
+;; The real CLI's code, so `node .../cli.cjs` cannot run it either.
+(deny file-read* (regex #"^/Applications/ADE[^/]*\.app/Contents/Resources/ade-cli/"))
+
+;; The live brain, its helpers and the gh token sockets.
+(deny network-outbound (remote unix-socket (path-regex #"^/Users/[^/]+/\.ade/sock/")))
