@@ -231,6 +231,7 @@ export function LaneShareRightsPanel({
   cliTyping = null,
   showEnd = true,
   detailsOpen: detailsOpenInitial = false,
+  folded = false,
   runtimePin = null,
 }: {
   rights: LaneShareRights;
@@ -249,6 +250,11 @@ export function LaneShareRightsPanel({
   showEnd?: boolean;
   /** Whether "All rights" starts open. */
   detailsOpen?: boolean;
+  /**
+   * Everything behind one "More options" fold, with a one-line summary: the
+   * share window, where the access level above already says most of it.
+   */
+  folded?: boolean;
   /** The lane's machine, whose models the Models picker lists. Null: this window's machine (the saved defaults). */
   runtimePin?: OpenProjectBinding | null;
 }) {
@@ -261,8 +267,31 @@ export function LaneShareRightsPanel({
   const cliTypingOff = cliTyping?.available === false ? CLI_TYPING_UNAVAILABLE_HINTS[cliTyping.reason] : null;
   const canRun = rights.speak.send || rights.run.startChats || rights.run.startCliSessions;
 
+  const summary = [
+    showEnd ? formatLaneShareEnd(endsAt) : null,
+    rights.privacy.hideMachines ? "machines hidden" : null,
+    rights.privacy.hideModels ? "models hidden" : null,
+  ].filter(Boolean).join(", ");
+  const disclosure = (label: string, testId: string) => (
+    <button
+      type="button"
+      className="ade-ls-disclosure"
+      aria-expanded={detailsOpen}
+      onClick={() => setDetailsOpen((open) => !open)}
+      data-testid={testId}
+    >
+      {detailsOpen ? <CaretDown size={12} /> : <CaretRight size={12} />}
+      {label}
+      {folded && !detailsOpen && summary ? <span className="ade-ls-disclosure-hint">{summary}</span> : null}
+    </button>
+  );
+  if (folded && !detailsOpen) {
+    return <div className="ade-ls-rights" data-testid="lane-share-rights">{disclosure("More options", "lane-share-all-rights")}</div>;
+  }
+
   return (
     <div className="ade-ls-rights" data-testid="lane-share-rights">
+      {folded ? disclosure("More options", "lane-share-all-rights") : null}
       <ModernRows>
         {showEnd ? (
           <ModernRow
@@ -297,16 +326,7 @@ export function LaneShareRightsPanel({
           hint="They see only the models you allow." checked={rights.privacy.hideModels} disabled={disabled} onChange={(hideModels) => set("privacy", { hideModels })} />
       </ModernRows>
 
-      <button
-        type="button"
-        className="ade-ls-disclosure"
-        aria-expanded={detailsOpen}
-        onClick={() => setDetailsOpen((open) => !open)}
-        data-testid="lane-share-all-rights"
-      >
-        {detailsOpen ? <CaretDown size={12} /> : <CaretRight size={12} />}
-        All rights
-      </button>
+      {folded ? null : disclosure("All rights", "lane-share-all-rights")}
 
       {detailsOpen ? (
         <div className="ade-ls-groups">

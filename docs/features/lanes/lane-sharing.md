@@ -182,13 +182,16 @@ case a share made by an agent cannot change anything on the host.
   **Share lane…**, and for a lane with live shares **Manage sharing…** and
   **Stop sharing with all**.
 - **Share sheet** (`LaneShareSheet.tsx`, `LaneShareSheetHost.tsx`,
-  `LaneShareRightsPanel.tsx`): people on the left (invite form, one row per
-  guest with state and preset), the selected person's rights on the right,
-  with the risk level and reasons live.
+  `LaneShareRightsPanel.tsx`): one column. The email field, then the people
+  with access (hidden while empty), then the access level of the selected
+  person or of the next invite, with the risk level live. The end date, the
+  privacy switches and every single right are under one "More options" fold.
 - **Share mark** (`LaneShareMark.tsx`) on the lane sidebar row and the lane
   header, while the lane has a pending or active share.
-- **Composer line** (`LaneShareComposerChip.tsx`) in a chat of a shared
-  lane: who has access and who is connected now.
+- **Chat header icon** (`LaneShareHeaderButton.tsx`) in a chat of a shared
+  lane, filled while a guest is connected. Its panel lists who has access,
+  their access level, messages left and end date, "Move this chat to them…"
+  for an accepted guest, and **Manage sharing**.
 - **Author labels**: the host stamps a guest's messages, drafts and thread
   comments with an author (see [Message author](#message-author)). The
   transcript shows "From <name>" under a guest's message

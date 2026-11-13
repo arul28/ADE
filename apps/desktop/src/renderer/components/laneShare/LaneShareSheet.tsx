@@ -357,10 +357,10 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       title={`Share ${laneName}`}
-      description={machineName ? `On ${machineName}` : "Give another ADE account limited access to this lane."}
+      description={machineName ? `On ${machineName}` : undefined}
       icon={<ShareNetwork size={18} weight="duotone" />}
-      size="lg"
-      width={860}
+      size="md"
+      width={600}
       actions={actions}
       testId="lane-share-sheet"
       bodyStyle={{ paddingTop: 4 }}
@@ -379,74 +379,65 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
           />
         ) : null}
         <div className="ade-ls-sheet">
-          {/* People */}
-          <div className="ade-ls-people" data-testid="lane-share-people">
-            <h3 className="ade-ls-pane-title">
-              People
-              <span className="kit-num">{liveCount} of {LANE_SHARE_MAX_GUESTS}</span>
-            </h3>
-            <div className="ade-ls-invite">
-              <input
-                className="kit-input"
-                type="email"
-                placeholder="Invite by email"
-                aria-label="Email address to invite"
-                value={email}
-                disabled={formDisabled || atLimit}
-                onFocus={() => setSelected(NEW)}
-                onChange={(event) => {
-                  setFormError(null);
-                  setSelected(NEW);
-                  setEmail(event.target.value);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void sendInvite(false);
-                  }
-                }}
-              />
-            </div>
-            {atLimit ? (
-              <div className="ade-ls-line">A lane can have {LANE_SHARE_MAX_GUESTS} people, invites included. Remove one to invite another.</div>
-            ) : null}
+          <input
+            className="kit-input ade-ls-invite-input"
+            type="email"
+            placeholder={atLimit ? `${LANE_SHARE_MAX_GUESTS} people have access, the most a lane can have` : "Add people by email"}
+            aria-label="Email address to invite"
+            value={email}
+            disabled={formDisabled || atLimit}
+            onFocus={() => setSelected(NEW)}
+            onChange={(event) => {
+              setFormError(null);
+              setSelected(NEW);
+              setEmail(event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void sendInvite(false);
+              }
+            }}
+          />
 
-            <div role="group" aria-label="People with access" className="ade-ls-person-list">
-              {loading ? (
-                <div className="ade-ls-empty">Loading…</div>
-              ) : shares.length === 0 ? (
-                <div className="ade-ls-empty">Nobody has access yet.</div>
-              ) : shares.map((share) => {
-                const shareDraft = edits[share.grantId]?.rights ?? share.rights;
-                return (
-                  <PersonRow
-                    key={share.grantId}
-                    entry={share}
-                    selected={selected === share.grantId}
-                    presetValue={shareDraft ? laneShareRightsPreset(forHost(shareDraft)) : "custom"}
-                    revokePending={revokePending[share.grantId] === true}
-                    onSelect={() => {
-                      setFormError(null);
-                      setSelected(share.grantId);
-                    }}
-                  />
-                );
-              })}
+          {loading ? (
+            <div className="ade-ls-empty">Loading…</div>
+          ) : shares.length > 0 ? (
+            <div className="ade-ls-people" data-testid="lane-share-people">
+              <h3 className="ade-ls-pane-title">People with access</h3>
+              <div role="group" aria-label="People with access" className="ade-ls-person-list">
+                {shares.map((share) => {
+                  const shareDraft = edits[share.grantId]?.rights ?? share.rights;
+                  return (
+                    <PersonRow
+                      key={share.grantId}
+                      entry={share}
+                      selected={selected === share.grantId}
+                      presetValue={shareDraft ? laneShareRightsPreset(forHost(shareDraft)) : "custom"}
+                      revokePending={revokePending[share.grantId] === true}
+                      onSelect={() => {
+                        setFormError(null);
+                        setSelected(share.grantId);
+                      }}
+                    />
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           {/* Access of the selected person, or of the person being invited */}
           <div className="ade-ls-access" data-testid="lane-share-rights-pane">
             <div className="ade-ls-access-head">
               <div className="ade-ls-access-who">
                 <span className="ade-ls-access-name" title={selectedEntry?.receiverEmail ?? undefined}>
-                  {selectedEntry ? selectedEntry.receiverEmail ?? "Guest" : email.trim() || "New person"}
+                  {selectedEntry ? `Access for ${selectedEntry.receiverEmail ?? "this guest"}` : email.trim() ? `Access for ${email.trim()}` : "Access for new people"}
                 </span>
                 {selectedEntry && selectedState ? (
                   <LaneShareMeta
                     parts={[
                       <LaneShareState key="state" label={selectedState.label} tone={selectedState.tone} />,
-                      usage ? <span key="usage" className="kit-num">{usage}</span> : null,
+                      usage ? <span key="usage">{usage}</span> : null,
                     ]}
                   />
                 ) : null}
@@ -470,7 +461,6 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                   </div>
                 ) : null}
               </div>
-              {selectedEntry ? null : <div className="ade-ls-line">They start from your default rights.</div>}
               {selectedEntry && selectedRevokePending ? (
                 <Banner layout="inline" model={{
                   id: "lane-share-revoke-pending",
@@ -491,25 +481,19 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
               onChange={(preset) => updateDraft({ ...draft, rights: withLaneSharePreset(draft.rights, preset) })}
             />
             <LaneShareRiskSummary rights={draft.rights} />
-            {formError ? (
-              <Banner
-                layout="inline"
-                model={{ id: "lane-share-form-error", tone: "error", title: formError.message, ...(formError.fixable ? { report: false } : {}) }}
-              />
-            ) : null}
+            {formError ? <div className="ade-ls-line" data-tone="crit" role="alert">{formError.message}</div> : null}
             {notice ? <div className="ade-ls-line" role="status">{notice}</div> : null}
-            <div className="ade-ls-scroll">
-              <LaneShareRightsPanel
-                rights={draft.rights}
-                endsAt={draft.endsAt}
-                now={now}
-                disabled={rightsDisabled}
-                cliTyping={cliTyping}
-                runtimePin={pin ?? null}
-                onChange={(rights) => updateDraft({ ...draft, rights })}
-                onEndsAtChange={(endsAt) => updateDraft({ ...draft, endsAt })}
-              />
-            </div>
+            <LaneShareRightsPanel
+              rights={draft.rights}
+              endsAt={draft.endsAt}
+              now={now}
+              disabled={rightsDisabled}
+              cliTyping={cliTyping}
+              runtimePin={pin ?? null}
+              folded
+              onChange={(rights) => updateDraft({ ...draft, rights })}
+              onEndsAtChange={(endsAt) => updateDraft({ ...draft, endsAt })}
+            />
           </div>
         </div>
       </div>

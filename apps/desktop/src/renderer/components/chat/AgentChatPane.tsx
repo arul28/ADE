@@ -294,7 +294,7 @@ import {
   settingsHeldBesideEffortChange,
 } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip, noticeKindModel } from "../ui/notice";
-import { LaneShareComposerChip } from "../laneShare/LaneShareComposerChip";
+import { LaneShareHeaderButton } from "../laneShare/LaneShareHeaderButton";
 import { LaneShareOwnerMoveCard } from "../laneShare/LaneShareOwnerMove";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
@@ -19019,8 +19019,14 @@ export function AgentChatPane({
     runningSubagentCount,
     selectedTaskProgress?.done,
     selectedTaskProgress?.total,
+    chatRuntimePinKey,
+    composerDriftLaneId,
+    laneDisplayLabel,
+    forceDraft,
   ], () => (
     <>
+      {/* Lane sharing (owner view): who has access to this lane, who is here. Same machine as the chat. */}
+      {!forceDraft ? <LaneShareHeaderButton pin={chatRuntimePin} laneId={composerDriftLaneId ?? null} laneName={laneDisplayLabel ?? null} sessionId={selectedSessionId ?? null} /> : null}
       <AgentBrowserPresenceHeaderButton
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
@@ -20032,8 +20038,6 @@ export function AgentChatPane({
         {compactFirstChip}
         {mcpRefreshChip}
         {pendingSettingsChip}
-        {/* Lane sharing (owner view): who has access to this lane, who is here. Same machine as the chat. */}
-        {!forceDraft ? <LaneShareComposerChip pin={chatRuntimePin} laneId={composerDriftLaneId ?? null} laneName={laneDisplayLabel ?? null} sessionId={selectedSessionId ?? null} /> : null}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"
