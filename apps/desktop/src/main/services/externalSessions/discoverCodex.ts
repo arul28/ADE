@@ -16,6 +16,7 @@ import {
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
   openExternalSessionDb,
+  providerAdeHome,
   readFileSuffix,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -29,6 +30,7 @@ import {
   sessionFileCandidate,
   sortFileCandidatesByMtime,
   sortDiscoveryRecords,
+  type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
@@ -39,6 +41,7 @@ import type {
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
 } from "../../../shared/types";
+import { pathComparisonKey } from "../shared/pathCompare";
 
 const CODEX_LAUNCH_BACKWARD_SCAN_CHUNK_BYTES = 256 * 1024;
 const CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES = 64 * 1024 * 1024;
@@ -270,6 +273,59 @@ export function codexHomeDir(args: Pick<ExternalSessionDiscoveryArgs, "homeDir" 
   const env = args.env ?? (args.homeDir ? undefined : process.env);
   const configured = typeof env?.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
   return configured ? path.resolve(configured) : path.join(resolveHomeDir(args), ".codex");
+}
+
+function childDirectories(dir: string): string[] {
+  return safeReadDir(dir)
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(dir, entry.name));
+}
+
+/**
+ * Every Codex config directory ADE can be holding rollouts in, with the launch
+ * identity that writes to each.
+ *
+ * Same reasoning as Claude: ADE runs its own codex under a per-account home
+ * (`CODEX_HOME` pointing at `<adeHome>/provider-homes/codex/<instance>`), and a
+ * preset or stored API key gets its own home. A session started in an ADE
+ * terminal lives there, not under `~/.codex`.
+ */
+export function codexConfigHomeDirs(args: ExternalSessionDiscoveryArgs = {}): ExternalSessionConfigHome[] {
+  const homes: ExternalSessionConfigHome[] = [{
+    dir: codexHomeDir(args),
+    instanceId: null,
+    presetId: null,
+    credentialId: null,
+  }];
+  const providerHomes = path.join(providerAdeHome(args), "provider-homes");
+  for (const dir of childDirectories(path.join(providerHomes, "codex"))) {
+    homes.push({ dir, instanceId: path.basename(dir), presetId: null, credentialId: null });
+  }
+  for (const dir of childDirectories(path.join(providerHomes, "preset"))) {
+    homes.push({ dir, instanceId: null, presetId: path.basename(dir), credentialId: null });
+  }
+  for (const dir of childDirectories(path.join(providerHomes, "credential", "codex"))) {
+    homes.push({ dir, instanceId: null, presetId: null, credentialId: path.basename(dir) });
+  }
+  const seen = new Set<string>();
+  return homes.filter((home) => {
+    const key = pathComparisonKey(path.resolve(home.dir));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * The homes worth scanning for rollouts. A home with neither `sessions/` nor
+ * `archived_sessions/` never wrote one (this keeps a Claude preset home, which
+ * has `projects/` instead, out of the scan).
+ */
+function codexTranscriptHomes(args: ExternalSessionDiscoveryArgs): ExternalSessionConfigHome[] {
+  return codexConfigHomeDirs(args).filter((home) => (
+    safeReadDir(path.join(home.dir, "sessions")).length > 0
+    || safeReadDir(path.join(home.dir, "archived_sessions")).length > 0
+  ));
 }
 
 /**
@@ -924,20 +980,43 @@ export async function discoverCodexSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const lookupId = args.sessionId?.trim() || null;
-  const codexDir = codexHomeDir(args);
-  const index = readCodexIndex(path.join(codexDir, "session_index.jsonl"));
   const ctx: CodexClassifyContext = {
     logger: args.logger,
     warnedSources: new Set(),
     includeAdeOwned: args.includeAdeOwned === true,
   };
 
-  const seeds = codexSeedsFromStateDb(args, codexDir, limit, lookupId, ctx)
-    ?? codexSeedsFromFiles(path.join(codexDir, "sessions"), limit, lookupId, args.scopeRoots, ctx);
+  // Every config home ADE can have run codex under, not just `~/.codex`:
+  // account, preset and API-key homes all hold their own rollouts.
+  type HomeSeed = {
+    seed: CodexRecordSeed;
+    configHome: ExternalSessionConfigHome;
+    index: Map<string, CodexIndexEntry>;
+    /** Newest of the provider's own update time and the file's mtime. */
+    stamp: number;
+  };
+  const byId = new Map<string, HomeSeed>();
+  for (const configHome of codexTranscriptHomes(args)) {
+    const index = readCodexIndex(path.join(configHome.dir, "session_index.jsonl"));
+    const seeds = codexSeedsFromStateDb(args, configHome.dir, limit, lookupId, ctx)
+      ?? codexSeedsFromFiles(path.join(configHome.dir, "sessions"), limit, lookupId, args.scopeRoots, ctx);
+    for (const seed of seeds) {
+      const stamp = Math.max(seed.updatedAt ?? 0, seed.mtimeMs ?? 0);
+      const existing = byId.get(seed.id);
+      // One id can sit in two homes (an account move leaves the source copy):
+      // the more recently written copy is the one to list.
+      if (existing && existing.stamp >= stamp) continue;
+      byId.set(seed.id, { seed, configHome, index, stamp });
+    }
+  }
 
   const records: ExternalSessionDiscoveryRecord[] = [];
-  for (const seed of seeds) {
-    records.push(await codexRecordFromSeed(seed, index.get(seed.id), lookupId != null, args.logger));
+  for (const { seed, configHome, index } of byId.values()) {
+    const record = await codexRecordFromSeed(seed, index.get(seed.id), lookupId != null, args.logger);
+    // The home the rollout was found in, so an import launches the resume
+    // under the same account instead of the provider's default one.
+    record.configHome = configHome;
+    records.push(record);
   }
 
   return sortDiscoveryRecords(records, limit)

@@ -46,8 +46,8 @@ ADE first learns it.
 | `apps/desktop/src/shared/externalSessionPolicy.ts` | The one import policy. `PROVIDER_IMPORT_RULES` (the per-provider table), `effectiveImportRules` (the table narrowed by host capabilities), `planImport` (what the action bar shows), `importRejectionReason` (the host guard), and `importProviderLabel` (the provider label every desktop surface uses). The renderer and the host import all use it. iOS mirrors it in Swift. |
 | `apps/desktop/src/main/services/externalSessions/sessionHome.ts` | `createSessionHomeResolver`: maps a provider cwd to the lane that owns it (`ExternalSessionHome`). The deepest lane root wins. A folder under `.ade/worktrees/` that no live lane owns is a removed lane, not the primary lane. |
 | `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
-| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles, excludes SDK-origin transcripts, and collapses continuation chains to their leaf. |
-| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from `CODEX_HOME/state_5.sqlite` (default `~/.codex`): top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when the thread store is unusable. |
+| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under **every** Claude config home: `CLAUDE_CONFIG_DIR` or `~/.claude`, each account home under `<ADE_HOME>/provider-homes/claude/<instance>`, and the per-preset / per-credential homes ADE launches with. Reads `ai-title`/custom titles, excludes SDK-origin transcripts, collapses continuation chains to their leaf, and keeps the config home on the record so an import can resume under the account that owns the transcript. |
+| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from **every** Codex config home — `CODEX_HOME` / `~/.codex`, each `<ADE_HOME>/provider-homes/codex/<instance>`, and the preset / API-key homes ADE launches with — reading each home's `state_5.sqlite`: top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when a thread store is unusable, and keeps the config home on the record for import. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`), one record per session id, using the `session_start` row for id/cwd/title. |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. Never shells out to the CLI and never starts a 2.0 server on that store. |
@@ -59,7 +59,7 @@ ADE first learns it.
 | `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it, and finds which live process holds each file. The Claude / Codex / Droid roots come from `shared/providerConfigHomes.ts` so `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `FACTORY_HOME_OVERRIDE` are all honoured — and honoured with the right shape, since only the first two name a directory while `FACTORY_HOME_OVERRIDE` replaces the HOME that `.factory` is appended to. The ACP roots come from the same module (`QWEN_HOME`, `GROK_HOME`, `COPILOT_HOME`, `KIMI_CODE_HOME`). The live-process scan (`isProviderCliCommandLine`) matches native CLIs by name, including ADE's absolute pinned paths, and ADE's Node-run pins (Qwen `lib/cli-entry.js`, Pi `dist/cli.js`, Cursor `index.js`) by their tools-cache package directory plus script path, so a terminal still on the previous pin matches too. See [Session tracking](#session-tracking). |
 | `apps/desktop/src/main/services/externalSessions/liveChatProviderRefs.ts` | `providerPointersFromChatRecord`: every provider pointer that one ADE chat holds (`importedFrom` for a continue, the provider session ids including Copilot's `copilotSdkSessionId`, and `acpSessionId` for the ACP providers and older Copilot chats). `chatImportedRefsProvider(chatService)` builds the chat refs source from it over the non-archived chats. Both runtime hosts wire in that one function, so a session that ADE itself runs never lists as importable on either. |
 | `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the ADE session and the only one that knows a fork's new provider id. |
-| `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`) and returns the session ids whose pid is still alive, for `possiblyActive`. |
+| `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<config-home>/sessions/<pid>.json`) from every Claude config home ADE runs the CLI under and returns the session ids whose pid is still alive, for `possiblyActive`. |
 | `apps/desktop/src/main/services/externalSessions/claudeSessionTransplant.ts` | Non-destructive Claude transcript transplant. For forks it copies JSONL rows, rekeys `sessionId`, hard-links without clobbering, and leaves the source untouched; for moves it can link/unlink when requested by other callers. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Canonical CLI launch/resume/fork command builders. External import uses `buildTrackedCliResumeCommand`, `withCodexNoAltScreen`, provider permission/model mappings, and shell quoting from here. Also holds the pre-assigned session id helpers (`preassignedSessionIdArgs`, `withPreassignedSessionIdInCommandLine`) and `buildClaudeForkLaunchCommand`. |
 | `apps/desktop/src/shared/importedTurnBoundaries.ts` | `withImportedTurnBoundaries`: adds a `done` event after each imported turn that did tool work. The preview and `appendImportedChatEvents` both apply it. See [Conversation events](#conversation-events). |
@@ -243,7 +243,8 @@ The service also stamps:
 
 - `alreadyImported` and `importedSessionRef` (see "Import marking" below).
 - `possiblyActive`. For Claude this is the CLI's own live-session registry,
-  `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`: an entry whose `pid` is still alive
+  `<config-home>/sessions/<pid>.json`, read across every Claude config home
+  (default, account, preset, credential): an entry whose `pid` is still alive
   means the session is open right now, which is the question the badge is
   actually asking. Stale entries survive the process that wrote them, so
   liveness is checked, never assumed. Every other provider — and Claude when the
@@ -257,6 +258,33 @@ The service also stamps:
 A session that a live tracked ADE PTY owns is not listed. Ownership uses
 `handleIsOwnedByTrackedPty`, so the CLI process can be any descendant of the
 PTY. See [Session tracking](#session-tracking).
+
+### Where Claude sessions live
+
+Claude Code writes a session's transcript under the config home its process ran
+with. ADE does not run its CLIs on the provider default: an account gets
+`CLAUDE_CONFIG_DIR=<ADE_HOME>/provider-homes/claude/<instance>`, and a harness
+preset or a stored API key gets its own home too. A session started in an ADE
+terminal therefore lives in one of those homes, not in `~/.claude`.
+
+So discovery scans them all (`claudeConfigHomeDirs` / `codexConfigHomeDirs`),
+and a record carries the home it was found in (`configHome`, main-process only).
+Import launches the resume (`--resume <id>`) with that home in its environment
+and records the account/preset in `resumeMetadata.launch`, so the CLI can find
+the transcript and a later resume of the imported terminal stays on the same
+account. Scanning only `~/.claude` / `~/.codex` is what made those sessions look
+lost: they were on disk, but invisible to Import and to a fresh shell whose
+config-dir variable differed.
+
+**Choosing an account.** The action bar shows an account picker for Claude and
+Codex whenever the source machine lists more than one account. It starts on the
+account that owns the transcript (`accountId` on the summary). Picking another
+account copies the session into that account's config home first
+(`moveProviderThread`, which leaves the source in place) and runs the CLI under
+it; the stored resume metadata names that account, so the terminal keeps working
+after a restart. A chat import creates the ADE chat on the chosen account and
+the chat importer moves the transcript into that account's home. A removed
+account id is refused rather than silently falling back to the default account.
 
 ### Lane attribution
 
@@ -364,7 +392,8 @@ never collapse and never set it. It is discovery-internal and not part
 of `ExternalSessionSummary`, so no DTO, sync payload, or iOS mirror changes.
 
 **ADE-created artifacts are not new sessions.** A cross-cwd Claude fork writes a
-transplanted copy into `~/.claude` under a fresh uuid, and a Codex chat fork
+transplanted copy into the source session's own config home under a fresh uuid,
+and a Codex chat fork
 mints a new thread; both then re-list as fresh importable sessions. Rows whose
 ids are all recorded fork *targets* are dropped from the list. "All", not "any":
 when discovery collapses the user's original into the copy, that one row is also

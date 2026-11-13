@@ -9,6 +9,7 @@ import {
   isUuidLike,
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
+  providerAdeHome,
   readFileWindow,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -24,10 +25,12 @@ import {
   asRecord,
   asString,
   JSONL_SCAN_BYTE_LIMIT,
+  type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { pathComparisonKey } from "../shared/pathCompare";
 
 /** Window read when looking for the first or last record uuid, and when probing. */
 const CLAUDE_CHAIN_WINDOW_BYTES = JSONL_SCAN_BYTE_LIMIT;
@@ -45,7 +48,10 @@ const CLAUDE_CHAIN_SAMPLE_FRACTIONS = [0.25, 0.5, 0.75] as const;
 /** Entrypoint rows inspected at the head of a transcript to classify its origin. */
 const CLAUDE_ENTRYPOINT_SAMPLE_SIZE = 20;
 
-type ClaudeSessionCandidate = ExternalSessionFileCandidate<{ id: string }>;
+type ClaudeSessionCandidate = ExternalSessionFileCandidate<{
+  id: string;
+  configHome: ExternalSessionConfigHome;
+}>;
 
 type ClaudeChainSignature = {
   /** uuid of the first record that carries one; identifies the continuation chain. */
@@ -71,6 +77,62 @@ export function claudeConfigDir(args: ExternalSessionDiscoveryArgs = {}): string
     ? env.CLAUDE_CONFIG_DIR.trim()
     : "";
   return configured || path.join(resolveHomeDir(args), ".claude");
+}
+
+function childDirectories(dir: string): string[] {
+  return safeReadDir(dir)
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(dir, entry.name));
+}
+
+/**
+ * Every Claude config directory ADE can be holding transcripts in, with the
+ * launch identity that writes to each.
+ *
+ * The default home is not the only one. ADE runs its own claude under a
+ * per-account config home (`CLAUDE_CONFIG_DIR` pointing at
+ * `<adeHome>/provider-homes/claude/<instance>`), and a harness preset or a
+ * stored API key gets its own home too. A session started in an ADE terminal
+ * lives there, not under `~/.claude` — so scanning only the default folder
+ * made those sessions impossible to import or resume from a fresh shell.
+ *
+ * `route` homes are deliberately absent: an ad-hoc harness route is a chat
+ * transport, never a terminal CLI, so it holds no CLI session to import.
+ */
+export function claudeConfigHomeDirs(args: ExternalSessionDiscoveryArgs = {}): ExternalSessionConfigHome[] {
+  const homes: ExternalSessionConfigHome[] = [{
+    dir: claudeConfigDir(args),
+    instanceId: null,
+    presetId: null,
+    credentialId: null,
+  }];
+  const providerHomes = path.join(providerAdeHome(args), "provider-homes");
+  for (const dir of childDirectories(path.join(providerHomes, "claude"))) {
+    homes.push({ dir, instanceId: path.basename(dir), presetId: null, credentialId: null });
+  }
+  for (const dir of childDirectories(path.join(providerHomes, "preset"))) {
+    homes.push({ dir, instanceId: null, presetId: path.basename(dir), credentialId: null });
+  }
+  for (const dir of childDirectories(path.join(providerHomes, "credential", "claude"))) {
+    homes.push({ dir, instanceId: null, presetId: null, credentialId: path.basename(dir) });
+  }
+  const seen = new Set<string>();
+  return homes.filter((home) => {
+    const key = pathComparisonKey(path.resolve(home.dir));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * The homes worth scanning for transcripts: a home that never wrote a
+ * `projects/` folder holds no Claude session (this also keeps a Codex preset
+ * home, which has `sessions/` instead, out of the scan).
+ */
+function claudeProjectHomes(args: ExternalSessionDiscoveryArgs): ExternalSessionConfigHome[] {
+  return claudeConfigHomeDirs(args)
+    .filter((home) => safeReadDir(path.join(home.dir, "projects")).length > 0);
 }
 
 export function claudeSessionPath(args: {
@@ -302,25 +364,32 @@ export async function discoverClaudeSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
-  const projectsDir = path.join(claudeConfigDir(args), "projects");
   const lookupId = args.sessionId?.trim() || null;
   if (lookupId && !isUuidLike(lookupId)) return [];
   const candidates: ClaudeSessionCandidate[] = [];
 
-  for (const projectEntry of safeReadDir(projectsDir)) {
-    if (!projectEntry.isDirectory()) continue;
-    if (!slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, claudeProjectSlugForCwd)) continue;
-    const projectDir = path.join(projectsDir, projectEntry.name);
-    if (lookupId) {
-      const candidate = sessionFileCandidate(path.join(projectDir, `${lookupId}.jsonl`), { id: lookupId });
-      if (candidate) candidates.push(candidate);
-      continue;
-    }
-    for (const entry of safeReadDir(projectDir)) {
-      const id = claudeTopLevelSessionId(entry);
-      if (!id) continue;
-      const candidate = sessionFileCandidate(path.join(projectDir, entry.name), { id });
-      if (candidate) candidates.push(candidate);
+  // Every config home ADE can have run claude under, not just `~/.claude`:
+  // account, preset and API-key homes all hold their own transcripts.
+  for (const configHome of claudeProjectHomes(args)) {
+    const projectsDir = path.join(configHome.dir, "projects");
+    for (const projectEntry of safeReadDir(projectsDir)) {
+      if (!projectEntry.isDirectory()) continue;
+      if (!slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, claudeProjectSlugForCwd)) continue;
+      const projectDir = path.join(projectsDir, projectEntry.name);
+      if (lookupId) {
+        const candidate = sessionFileCandidate(
+          path.join(projectDir, `${lookupId}.jsonl`),
+          { id: lookupId, configHome },
+        );
+        if (candidate) candidates.push(candidate);
+        continue;
+      }
+      for (const entry of safeReadDir(projectDir)) {
+        const id = claudeTopLevelSessionId(entry);
+        if (!id) continue;
+        const candidate = sessionFileCandidate(path.join(projectDir, entry.name), { id, configHome });
+        if (candidate) candidates.push(candidate);
+      }
     }
   }
 
@@ -396,6 +465,9 @@ export async function discoverClaudeSessions(
       sourceMtimeMs: candidate.mtimeMs,
     });
     record.sizeBytes = candidate.size;
+    // The home the transcript was found in, so an import launches the resume
+    // under the same account instead of the provider's default one.
+    record.configHome = candidate.configHome;
     // The model of the newest assistant turn, so a continue keeps it instead
     // of switching the session to ADE's default Claude model.
     const lastModel = latestClaudeModel(scan.suffix) ?? latestClaudeModel(scan.prefix);

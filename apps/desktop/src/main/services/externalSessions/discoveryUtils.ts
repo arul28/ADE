@@ -16,12 +16,35 @@ import {
   resolveCanonicalCommandLineLaunch,
 } from "../../../shared/shell";
 
+/**
+ * The provider config home a transcript was found in, and the ADE launch
+ * identity that writes there.
+ *
+ * ADE does not run its CLIs under the provider's default folder: an account
+ * gets `CLAUDE_CONFIG_DIR=<adeHome>/provider-homes/claude/<id>`, a harness
+ * preset or a stored API key gets its own home too. A session started in an
+ * ADE terminal therefore lives in one of those homes, and an import has to
+ * launch the resume against that same home or the CLI reports "no conversation
+ * found" for an id that is plainly on disk.
+ */
+export type ExternalSessionConfigHome = {
+  dir: string;
+  /** The provider account ("instance") whose home this is, when ADE can name it. */
+  instanceId?: string | null;
+  /** The saved harness preset whose home this is, when ADE can name it. */
+  presetId?: string | null;
+  /** The stored API credential whose home this is, when ADE can name it. */
+  credentialId?: string | null;
+};
+
 export type ExternalSessionDiscoveryRecord = Omit<
   ExternalSessionSummary,
   "alreadyImported" | "possiblyActive" | "cwdMatchesRequestedLane" | "capabilities"
 > & {
   sourcePath?: string | null;
   sourceMtimeMs?: number | null;
+  /** Where the transcript lives when discovery scanned beyond a provider's default home. */
+  configHome?: ExternalSessionConfigHome | null;
   /**
    * Provider ids this row supersedes, because discovery collapsed them into it
    * (a Claude continuation chain, a Codex parent hidden behind its fork). A
@@ -115,6 +138,17 @@ export function resolveHomeDir(args?: Pick<ExternalSessionDiscoveryArgs, "homeDi
     return path.win32.isAbsolute(envHome) ? envHome : os.homedir();
   }
   return envHome || os.homedir();
+}
+
+/**
+ * The ADE home whose `provider-homes/` tree holds this machine's own config
+ * homes for every provider. `ADE_HOME` names it (the launcher and every channel
+ * build set it); a hand-started brain without one uses `<home>/.ade`, which is
+ * where `resolveMachineAdeDir` would look too.
+ */
+export function providerAdeHome(args?: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env">): string {
+  const configured = typeof args?.env?.ADE_HOME === "string" ? args.env.ADE_HOME.trim() : "";
+  return path.resolve(configured || path.join(resolveHomeDir(args), ".ade"));
 }
 
 export function safeStat(filePath: string): fs.Stats | null {

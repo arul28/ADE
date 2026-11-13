@@ -2,14 +2,14 @@ import { qwenSessionRoot } from "./discoverQwen";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { resolveHomeDir } from "./discoveryUtils";
+import { claudeConfigHomeDirs } from "./discoverClaude";
+import { codexConfigHomeDirs } from "./discoverCodex";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
 import { museSessionsRoot } from "./discoverMuse";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import { resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import type { ExternalSessionProvider } from "../../../shared/types/externalSessions";
 import {
-  claudeConfigHome,
-  codexConfigHome,
   copilotConfigHome,
   factoryConfigHome,
   grokConfigHome,
@@ -118,8 +118,17 @@ export function providerSessionRoots(args: {
   // keeps them straight so ADE reads the same directory the CLI writes.
   const providerHome = { env, homeDir };
   return [
-    { provider: "claude", root: path.join(claudeConfigHome(providerHome), "projects") },
-    { provider: "codex", root: path.join(codexConfigHome(providerHome), "sessions") },
+    // Every config home ADE runs claude under: an account, preset or API-key
+    // home holds the transcript of the process ADE launched there, so a single
+    // default root would leave those sessions invisible to this scan.
+    ...claudeConfigHomeDirs(providerHome).map((home) => ({
+      provider: "claude" as const,
+      root: path.join(home.dir, "projects"),
+    })),
+    ...codexConfigHomeDirs(providerHome).map((home) => ({
+      provider: "codex" as const,
+      root: path.join(home.dir, "sessions"),
+    })),
     { provider: "droid", root: path.join(factoryConfigHome(providerHome), "sessions") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "chats") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "projects") },

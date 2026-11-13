@@ -9,6 +9,7 @@ import {
   type ImportSurface,
 } from "../../../../shared/externalSessionPolicy";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../../shared/types/externalSessions";
+import type { ProviderInstance } from "../../../../shared/types/providerInstances";
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import type { LaneComboboxLane } from "../LaneCombobox";
 import {
@@ -128,6 +129,9 @@ export function ImportSessionBrowser({
   const [targetChoice, setTargetChoice] = useState<{ key: string; laneId: string } | null>(null);
   const [surfacePrefs, setSurfacePrefs] = useState<Partial<Record<ExternalSessionProvider, ImportSurface>>>({});
   const [modelChoice, setModelChoice] = useState<{ key: string; model: string } | null>(null);
+  /** Accounts of the selected session's provider on the source machine. */
+  const [accounts, setAccounts] = useState<ProviderInstance[]>([]);
+  const [accountChoice, setAccountChoice] = useState<{ key: string; accountId: string | null } | null>(null);
   // One action at a time waits on a second press, keyed to the row, surface and
   // lane it was armed for. `confirm`: continuing a live session. `copy`: a chat
   // copy asks for its model first, so the first "Copy" click shows the picker
@@ -189,6 +193,7 @@ export function ImportSessionBrowser({
     setSelectedKey(null);
     setTargetChoice(null);
     setModelChoice(null);
+    setAccountChoice(null);
     setArmed(null);
     setSelectionTouched(false);
     setImportError(null);
@@ -420,6 +425,39 @@ export function ImportSessionBrowser({
   const model = active
     ? (modelChoice?.key === activeKey ? modelChoice.model : defaultForkModel(active))
     : null;
+  // Only the two providers with per-account config homes have an account to
+  // pick, and the list belongs to the source machine, so it is read with that
+  // machine's pin.
+  const accountProvider = activeProvider === "claude" || activeProvider === "codex" ? activeProvider : null;
+  const sourcePinKey = runtimePin?.key ?? null;
+  const runtimePinRef = useRef(runtimePin);
+  runtimePinRef.current = runtimePin;
+  useEffect(() => {
+    if (!open || !accountProvider) {
+      setAccounts((prev) => (prev.length ? [] : prev));
+      return;
+    }
+    const api = window.ade?.providerInstances;
+    if (!api?.list) {
+      setAccounts((prev) => (prev.length ? [] : prev));
+      return;
+    }
+    let alive = true;
+    void (async () => {
+      try {
+        const list = await api.list({ provider: accountProvider }, runtimePinRef.current ?? null);
+        if (alive) setAccounts(list ?? []);
+      } catch {
+        if (alive) setAccounts([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [accountProvider, open, sourcePinKey]);
+  const accountForActive = active && accountProvider
+    ? (accountChoice?.key === activeKey ? accountChoice.accountId : active.accountId ?? null)
+    : null;
   const importedRef = active?.alreadyImported ? readImportedSessionRef(active) : null;
   const needsLiveConfirm = plan?.primary?.confirmBeforeRun === true;
   const currentArmToken = active && plan ? `${activeKey}|${plan.surface}|${plan.targetLaneId}` : null;
@@ -453,6 +491,11 @@ export function ImportSessionBrowser({
     setModelChoice({ key: activeKey, model: nextModel });
   }, [activeKey]);
 
+  const handleAccountChange = useCallback((nextAccountId: string | null) => {
+    if (!activeKey) return;
+    setAccountChoice({ key: activeKey, accountId: nextAccountId });
+  }, [activeKey]);
+
   const runImport = useCallback(async (summary: ExternalSessionSummary, action: ImportPlanAction, laneForImport: string) => {
     const api = getExternalSessionsApi();
     const key = sessionKey(summary);
@@ -470,6 +513,9 @@ export function ImportSessionBrowser({
         target: action.target,
         mode: action.mode,
         ...(action.needsModel && model ? { model } : {}),
+        // Only a provider with accounts can honor this; the host refuses it for
+        // the rest. The session's own account is the default and needs no copy.
+        ...(accountForActive ? { accountId: accountForActive } : {}),
       };
       const result = runtimePin ? await api.import(request, runtimePin) : await api.import(request);
       onImported(summary, result, selectedSource ?? undefined);
@@ -480,7 +526,7 @@ export function ImportSessionBrowser({
     } finally {
       setImporting(null);
     }
-  }, [machineName, model, onImported, onOpenChange, runtimePin, selectedSource]);
+  }, [accountForActive, machineName, model, onImported, onOpenChange, runtimePin, selectedSource]);
 
   const handleRun = useCallback((action: ImportPlanAction) => {
     if (!active || !plan || importing || !plan.targetLaneId) return;
@@ -667,6 +713,10 @@ export function ImportSessionBrowser({
                     lanes={availableLanes}
                     homeLane={activePlace.kind === "lane" ? { name: activePlace.name, color: activePlace.color } : null}
                     onTargetLaneChange={handleTargetLaneChange}
+                    accounts={accounts}
+                    accountId={accountForActive}
+                    sessionAccountId={active.accountId ?? null}
+                    onAccountChange={handleAccountChange}
                     model={model}
                     onModelChange={handleModelChange}
                     running={importing?.key === activeKey ? importing.mode : null}

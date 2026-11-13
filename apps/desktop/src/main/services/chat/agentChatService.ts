@@ -57282,7 +57282,10 @@ export function createAgentChatService(args: {
     if (hasPathSeparator(externalSessionId)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
     }
-    const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome);
+    // A reopened chat names the account it was on; an external import names the
+    // account the user picked (or the one that owns the transcript).
+    const accountId = reopen?.instanceId ?? args.instanceId?.trim() ?? null;
+    const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome ?? args.configHome);
     if (!source) {
       const sourceHint = args.cwd?.trim()
         ? ` for cwd '${args.cwd.trim()}'`
@@ -57339,7 +57342,7 @@ export function createAgentChatService(args: {
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
         ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
-        ...(reopen?.instanceId ? { instanceId: reopen.instanceId } : {}),
+        ...(accountId ? { instanceId: accountId } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -57427,6 +57430,7 @@ export function createAgentChatService(args: {
     reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalThreadId = args.externalSessionId.trim();
+    const accountId = reopen?.instanceId ?? args.instanceId?.trim() ?? null;
     let createdSessionId: string | null = null;
     let forkedProviderThreadId: string | null = null;
     let forkedProviderRuntime: CodexRuntime | null = null;
@@ -57479,7 +57483,7 @@ export function createAgentChatService(args: {
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
         ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
-        ...(reopen?.instanceId ? { instanceId: reopen.instanceId } : {}),
+        ...(accountId ? { instanceId: accountId } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -57488,7 +57492,12 @@ export function createAgentChatService(args: {
         managed,
         "codex",
         externalThreadId,
-        path.resolve(reopen?.configHome?.trim() || process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
+        path.resolve(
+          reopen?.configHome?.trim()
+            || args.configHome?.trim()
+            || process.env.CODEX_HOME?.trim()
+            || path.join(os.homedir(), ".codex"),
+        ),
       );
       const runtime = await ensureCodexSessionRuntime(managed);
       forkedProviderRuntime = runtime;
@@ -57591,7 +57600,7 @@ export function createAgentChatService(args: {
       if (hasPathSeparator(externalSessionId)) {
         throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
       }
-      const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome);
+      const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome ?? args.configHome);
       if (!source) {
         throw externalChatImportError(
           "EXTERNAL_CHAT_SESSION_NOT_FOUND",
@@ -57615,6 +57624,9 @@ export function createAgentChatService(args: {
           laneId: args.laneId,
           provider: "codex",
           model: defaultCodexModel(),
+          // The source rollout is in its own account's home; the reader must
+          // run there to see the thread it is asked to read.
+          ...(args.instanceId?.trim() ? { instanceId: args.instanceId.trim() } : {}),
         });
         readerSessionId = reader.id;
         const readerManaged = ensureManagedSession(reader.id);

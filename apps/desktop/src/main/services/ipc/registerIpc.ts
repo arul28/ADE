@@ -7250,6 +7250,7 @@ export function registerIpc({
       ...(typeof record.reasoningEffort === "string" ? { reasoningEffort: record.reasoningEffort } : {}),
       ...(typeof record.fastMode === "boolean" ? { fastMode: record.fastMode } : {}),
       ...(typeof record.permissionMode === "string" ? { permissionMode: record.permissionMode } : {}),
+      ...(typeof record.accountId === "string" ? { accountId: record.accountId } : {}),
     };
   };
 

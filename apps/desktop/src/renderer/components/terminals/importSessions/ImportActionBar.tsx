@@ -1,9 +1,11 @@
 import { CircleNotch, LockSimple } from "@phosphor-icons/react";
 import type { ImportPlan, ImportPlanAction, ImportSurface } from "../../../../shared/externalSessionPolicy";
+import type { ProviderInstance } from "../../../../shared/types/providerInstances";
 import { Banner } from "../../ui/notice";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
+import { ImportAccountPicker } from "./ImportAccountPicker";
 import { LaneDot } from "./ImportSessionParts";
 
 const SURFACE_LABELS: Record<ImportSurface, string> = {
@@ -18,6 +20,13 @@ export type ImportActionBarProps = {
   /** The session's home lane, shown on the locked pill when the lane list lacks it. */
   homeLane: { name: string; color: string | null } | null;
   onTargetLaneChange: (laneId: string) => void;
+  /** Accounts of the provider's own multi-account homes; empty means no choice to offer. */
+  accounts: ProviderInstance[];
+  /** The account chosen for this import; null keeps the session's own account. */
+  accountId: string | null;
+  /** The account that owns the transcript, when the host named it. */
+  sessionAccountId: string | null;
+  onAccountChange: (accountId: string | null) => void;
   /** Shown only for a chat copy. */
   model: string | null;
   onModelChange: (model: string) => void;
@@ -127,6 +136,10 @@ export function ImportActionBar({
   lanes,
   homeLane,
   onTargetLaneChange,
+  accounts,
+  accountId,
+  sessionAccountId,
+  onAccountChange,
   model,
   onModelChange,
   running,
@@ -183,6 +196,20 @@ export function ImportActionBar({
               aria-label="Import into lane"
             />
           )}
+          {/* Only providers with per-account config homes get a choice, and only
+              when this machine actually has more than one account to pick. */}
+          {accounts.length > 1 ? (
+            <>
+              <span className="import-actions-label">on</span>
+              <ImportAccountPicker
+                accounts={accounts}
+                value={accountId}
+                sessionAccountId={sessionAccountId}
+                disabled={busy}
+                onChange={onAccountChange}
+              />
+            </>
+          ) : null}
           {showModel && model ? (
             <div className="min-w-0 max-w-[220px]" data-testid="import-model">
               <ModelPicker value={model} onChange={(next) => onModelChange(next)} disabled={busy} />
