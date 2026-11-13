@@ -568,7 +568,8 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
    *
    * A usage read is optional background work, so it only rides a connection
    * that is already open: it never dials, pairs or re-pairs a machine. One
-   * without an open connection keeps its last durable rollup.
+   * without an open connection keeps its last durable rollup. A reset spend is
+   * the exception: it may open the paired connection again.
    */
   const fetchUsageMethod = async (
     machineKey: string,
@@ -581,7 +582,10 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     if (!machine) throw new Error("This computer is no longer on your ADE account.");
     if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
-    const entry = pool.liveConnection(machineKey);
+    // A spend is a user's click, not background work, so it may open the
+    // paired connection when the idle one closed.
+    const entry = pool.liveConnection(machineKey)
+      ?? (method === "usage.consumeResetCredit" ? await pool.acquire(machine) : null);
     if (!entry) throw new Error(`${machineName(machine)} is not connected from here right now.`);
     return await pool.request(
       machine,

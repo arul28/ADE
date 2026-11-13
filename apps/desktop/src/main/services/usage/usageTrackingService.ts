@@ -6186,7 +6186,9 @@ export function createUsageTrackingService({
     if (result.status === "failure") {
       logger.warn("usage.peer_reset_credit_failed", { provider, error: result.message ?? null });
     }
-    peerQuota.refresh({ force: true });
+    // Wait for the peer's new count, so the row stops offering the credit
+    // that was just spent before a second click can claim another one.
+    await peerQuota.refreshNow();
     captureResetCreditOutcome(result, provider);
     return result;
   }

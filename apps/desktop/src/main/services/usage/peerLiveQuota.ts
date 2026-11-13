@@ -149,11 +149,22 @@ export function createPeerLiveQuota({
       });
   }
 
+  /**
+   * A pull whose answer the caller waits for, after any pull already in
+   * flight: that one started before the change the caller needs to see.
+   */
+  async function refreshNow(): Promise<void> {
+    if (inFlight) await inFlight;
+    refresh({ force: true });
+    if (inFlight) await inFlight;
+  }
+
   return {
     set,
     get,
     views,
     refresh,
+    refreshNow,
     setFetcher: (next: AccountLiveQuotaFetcher | null): void => {
       fetcher = next;
     },

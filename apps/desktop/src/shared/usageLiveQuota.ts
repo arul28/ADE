@@ -175,9 +175,13 @@ function peerCreditHolders(peers: readonly PeerLiveQuota[]): Map<string, PeerCre
   return best;
 }
 
-/** `account` with a peer's credits, when it has none of its own to spend. */
+/**
+ * `account` with a peer's credits, when it cannot spend its own: it has none,
+ * or its login expired or signed out, so a cached count here is not spendable.
+ */
 function withPeerCredits(account: UsageAccount, holder: PeerCreditHolder | undefined): UsageAccount {
-  if (!holder || (account.resetCredits?.availableCount ?? 0) > 0) return account;
+  if (!holder) return account;
+  if (loginUsable(account) && (account.resetCredits?.availableCount ?? 0) > 0) return account;
   return { ...account, resetCredits: holder.credits, resetCreditsOn: holder.on };
 }
 
