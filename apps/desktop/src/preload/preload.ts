@@ -1,7 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
-import type { NoticeLayerRect } from "../shared/noticeLayer";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
@@ -115,7 +114,7 @@ import type {
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
@@ -13941,7 +13940,10 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
-    openCheckout: (plan?: CloudPaidPlanId): Promise<CloudOpenCheckoutResult> => ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan } : undefined),
+    openCheckout: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudOpenCheckoutResult> =>
+      ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
+    pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
+      ipcRenderer.invoke(IPC.cloudPickPlanCleanup, input),
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
@@ -14995,14 +14997,6 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
     onCommand: (cb: (command: AppZoomCommand) => void) =>
       subscribeAppCommand("zoom", cb),
-  },
-  /** The bottom-right cards' own window over a live browser page (`shared/noticeLayer`). */
-  noticeLayer: {
-    // See-through windows depend on the Linux compositor; there the cards
-    // stay in the corner and the page pauses behind them, as before.
-    available: process.platform !== "linux",
-    place: async (rect: NoticeLayerRect | null): Promise<boolean> =>
-      ipcRenderer.invoke(IPC.appPlaceNoticeLayer, { rect }),
   },
   cto: {
     getState: async (

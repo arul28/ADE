@@ -18,11 +18,6 @@
 [data-theme="light"] .adecd { --kit-tag-accent: var(--adec-600); }
 .adecd-grow { flex: 1; }
 
-/* A cheaper plan's cleanup: the computers it removes, under the banner's text. */
-.adecd-cleanup-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
-.adecd-cleanup-list li { display: flex; gap: 8px; }
-.adecd-cleanup-list li span { color: var(--kit-text-3); }
-
 /*
  * The city card: a night sky over the ground. The block colors are the
  * owner's pick (blue glass, warm windows); the light theme gets a dusk sky
@@ -302,6 +297,54 @@
 .adecd-choice[data-tone="crit"][aria-checked="true"] .adecd-radio { border-color: var(--kit-crit); }
 .adecd-choice[data-tone="crit"][aria-checked="true"] .adecd-radio::after { background: var(--kit-crit); }
 .adecd-sheet-total { font-size: 11.5px; color: var(--kit-text-3); }
+.adecd-sheet-total[data-tone="warn"] { color: var(--kit-warn); }
+
+/*
+ * The question before a cheaper plan's limits are passed (CloudPlanLimitsDialog):
+ * what fits after the pick, the two paths, the push switch, the computers.
+ */
+.adecd-limits { display: flex; flex-direction: column; gap: 12px; }
+.adecd-limits-fit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.adecd-limits-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--kit-panel-bg);
+  border: 1px solid var(--kit-panel-edge);
+  font-size: 11.5px;
+  color: var(--kit-text-2);
+}
+.adecd-limits-cell .kit-dot { align-self: center; }
+.adecd-limits-cell b { margin-left: auto; font-size: 15px; font-weight: 600; color: var(--color-fg); }
+.adecd-limits-cell small { font-size: 11px; color: var(--kit-text-3); }
+.adecd-limits-cell[data-fits="false"] small { color: var(--kit-warn); }
+.adecd-limits-push { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+.adecd-limits-push > div { flex: 1; min-width: 0; }
+.adecd-limits-push b { display: block; font-size: 12px; font-weight: 500; }
+.adecd-limits-push small { display: block; margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--kit-text-3); }
+.adecd-limits-list { display: flex; flex-direction: column; gap: 2px; }
+.adecd-limits-list-head { margin-bottom: 4px; font-size: 11px; color: var(--kit-text-3); }
+.adecd-limits-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.adecd-limits-row:hover { background: var(--kit-hover); }
+.adecd-limits-row[data-static="true"] { cursor: default; }
+.adecd-limits-row[data-static="true"]:hover { background: transparent; }
+.adecd-limits-row[data-checked="true"] { background: color-mix(in srgb, var(--adec-600) 10%, transparent); }
+.adecd-limits-row input { flex: none; margin: 0; accent-color: var(--adec-500); }
+.adecd-limits-row:has(input:focus-visible) { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecd-limits-name { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.adecd-limits-name b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecd-limits-name small { font-size: 11px; color: var(--kit-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecd-limits-row .kit-num { flex: none; font-size: 11px; color: var(--kit-text-2); }
 .adecd-error { margin: 8px 0 0; font-size: 12px; color: var(--kit-crit); }
 
 @container adecd (max-width: 620px) {
@@ -581,6 +624,8 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-signin-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .adecd-signin-text b { font-size: 12.5px; font-weight: 500; }
 .adecd-signin-text span { overflow: hidden; font-size: 11.5px; color: var(--kit-text-3); text-overflow: ellipsis; white-space: nowrap; }
+/* A line that says how to get a provider here wraps instead of hiding its second half. */
+.adecd-signin-text span.adecd-signin-wrap { white-space: normal; }
 .adecd-signin-rest { display: flex; flex-direction: column; gap: 6px; }
 .adecd-signin-rest > span { font-size: 11.5px; color: var(--kit-text-3); }
 .adecd-signin-chips { display: flex; flex-wrap: wrap; gap: 6px; }

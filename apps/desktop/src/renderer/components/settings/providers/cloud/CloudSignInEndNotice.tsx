@@ -1,8 +1,10 @@
 /**
- * The one app banner that warns when a Claude pass for ADE Cloud ends soon,
- * may have ended, or ended (design §4.5), or when a key ADE Cloud carries ends
- * on the date its provider set (Cloud 5 decision 2; never a guessed date). Mounted once in the app shell; it
- * renders nothing itself and registers its banner with the host.
+ * The one app banner for a saved sign-in ADE can't renew on its own: a Claude
+ * pass for ADE Cloud that ends soon, may have ended, or that Claude refused
+ * (design §4.5), or a key ADE Cloud carries that ends on the date its provider
+ * set (Cloud 5 decision 2; never a guessed date). It says what stops working
+ * (that provider's chats and automations on ADE Cloud computers). Mounted once
+ * in the app shell; it renders nothing itself and registers its banner with the host.
  *
  * Cost: no read of its own. Desktop main adds `signInEnd` to the answer of
  * `cloudAccess.read()`, the read every window already makes on open and on

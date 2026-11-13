@@ -2429,6 +2429,41 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("holds a CLI run running while its background agents outlive the turn", async () => {
+    const { publisher, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+    const signal = (runtimeState: "running" | "idle", backgroundAgentIds: string[]) =>
+      publisher.handleCliRuntimeSignal("scope-1", {
+        laneId: "auth-lane", sessionId: "cli-1", runtimeState, exactTurnState: true, backgroundAgentIds,
+      });
+    const cliRun = () => publisher._debug.runs.get("cli-1");
+
+    // The turn ends with an agent still working: the run waits for it.
+    signal("running", []);
+    signal("idle", ["agent-1"]);
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(cliRun()?.phase).toBe("running");
+    // Idle heartbeats while it waits change nothing on the phone.
+    const parkedAt = cliRun()?.lastActiveAt;
+    await vi.advanceTimersByTimeAsync(10_000);
+    signal("idle", ["agent-1"]);
+    expect(cliRun()?.lastActiveAt).toBe(parkedAt);
+
+    // A new turn starts before the agent finishes: its drain must not end the new turn.
+    signal("running", ["agent-1"]);
+    signal("running", []);
+    expect(cliRun()?.phase).toBe("running");
+
+    // That turn ends with a new agent; the run completes when the agent does.
+    signal("idle", ["agent-2"]);
+    expect(cliRun()?.phase).toBe("running");
+    signal("idle", []);
+    expect(cliRun()?.phase).toBe("completed");
+
+    publisher.dispose();
+  });
+
   it("publishes an empty full Attention snapshot when the last contributing scope detaches", async () => {
     const { publisher, publishAttention, emit, detach } = makeHarness();
     publishAttention.mockResolvedValue({ ok: true, revision: 1 });

@@ -1,6 +1,7 @@
 /**
  * The sign-in variables an ADE Cloud computer may carry in its instance env
- * (an older desktop still sends the person's saved keys), and the one moment
+ * (an older desktop sent the person's saved keys; the Worker's create route
+ * now drops them, so only a computer made before that has them), and the one moment
  * the brain takes them out of its env (P5 step 2a, fix B1).
  *
  * The boot leaves them in place and runs the old path (`applyCloudSignIns`

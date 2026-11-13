@@ -96,6 +96,11 @@ import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingletonAsync, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
+import {
+  PREFERRED_PORT_BIND_ATTEMPTS,
+  PREFERRED_PORT_BIND_RETRY_DELAY_MS,
+  isRetryableListenerBindError,
+} from "./syncListenerBind";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
@@ -612,17 +617,6 @@ export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
     && unseenForMs > STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
 }
 
-function isRetryableHostBindError(error: unknown): boolean {
-  if (isLoopbackShadowedError(error)) return true;
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
-  return code === "EADDRINUSE" || code === "EACCES";
-}
-
-// How long to insist on the preferred port before drifting: 8 × 400ms ≈ 3.2s,
-// enough for a disposing listener (or a sibling host being replaced) to free
-// the port that paired phones have saved.
-const PREFERRED_PORT_BIND_ATTEMPTS = 8;
-const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
 function createInactiveTailnetDiscoveryStatus(
   error: string,
@@ -1249,7 +1243,9 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const scheduleCanonicalPortMigrate = (delayMs: number): void => {
-    if (!args.sharedSyncListener || disposed) return;
+    // Moving back to 8787 is the hosting scope's job; an attempt that finishes
+    // after hosting stopped must not re-arm it.
+    if (!args.sharedSyncListener || disposed || hostService == null) return;
     stopCanonicalPortMigrateTimer();
     canonicalPortMigrateTimer = setTimeout(() => {
       canonicalPortMigrateTimer = null;
@@ -1264,24 +1260,14 @@ export function createSyncService(args: SyncServiceArgs) {
     const currentPort = listener.getPort();
     if (currentPort == null || currentPort === DEFAULT_SYNC_HOST_PORT) return;
     try {
+      // A successful move announces itself through the listener's
+      // onPortChanged, which updates everything that advertises the port.
       const migrated = await listener.tryMigrateToPort(DEFAULT_SYNC_HOST_PORT);
       // Migration awaits a bind + close; dispose can land during that window.
       if (disposed) return;
       if (migrated !== DEFAULT_SYNC_HOST_PORT) {
         scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
-        return;
       }
-      hostSingletonLease?.updatePort(migrated);
-      deviceRegistryService.touchLocalDevice({
-        lastSeenAt: nowIso(),
-        lastPort: migrated,
-      });
-      args.logger.warn("sync_listener.port_drifted", {
-        from: currentPort,
-        to: migrated,
-      });
-      hostService?.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
-      void args.requestAccountMachinePublish?.();
     } catch (error) {
       args.logger.debug("sync_listener.canonical_port_migrate_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -1289,6 +1275,40 @@ export function createSyncService(args: SyncServiceArgs) {
       if (!disposed) scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
     }
   };
+
+  // The shared listener moves off a port another program took (and back to
+  // 8787 when it frees). While this scope hosts, everything that advertises
+  // the port follows it: the sync lease, this device's row, Bonjour and
+  // Tailscale Serve, and the account directory.
+  const detachListenerPortChanged = args.sharedSyncListener?.onPortChanged((change) => {
+    if (disposed) return;
+    // The device row and the lease describe this machine whether or not this
+    // scope hosts right now; leaving them on the old port would advertise it.
+    hostSingletonLease?.updatePort(change.to);
+    deviceRegistryService.touchLocalDevice({
+      lastSeenAt: nowIso(),
+      lastPort: change.to,
+    });
+    args.logger.warn("sync_listener.port_drifted", {
+      from: change.from,
+      to: change.to,
+      reason: change.reason,
+    });
+    if (!hostService) return;
+    hostService.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
+    void args.requestAccountMachinePublish?.();
+    scheduleStatusEmit();
+    if (change.to !== DEFAULT_SYNC_HOST_PORT) {
+      scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
+    }
+  }) ?? null;
+  // A loopback verdict change moves the Tailscale route (and the listener line
+  // in Settings); re-emit status and re-publish so neither waits for a poll.
+  const detachListenerStatusChanged = args.sharedSyncListener?.onLoopbackStatusChanged(() => {
+    if (disposed || !hostService) return;
+    scheduleStatusEmit();
+    void args.requestAccountMachinePublish?.();
+  }) ?? null;
 
   const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
     db: args.db,
@@ -1513,7 +1533,7 @@ export function createSyncService(args: SyncServiceArgs) {
             };
           }
           await candidateHostService.dispose().catch(() => {});
-          const retryable = isRetryableHostBindError(error)
+          const retryable = isRetryableListenerBindError(error)
             && (attemptedPort !== 0 || isLoopbackShadowedError(error));
           args.logger.warn(
             isLoopbackShadowedError(error)
@@ -1547,6 +1567,9 @@ export function createSyncService(args: SyncServiceArgs) {
     }
     const current = hostService;
     hostService = null;
+    // Moving back to 8787 is this host's job; a scope that stopped hosting
+    // must not keep moving the shared listener.
+    stopCanonicalPortMigrateTimer();
     try {
       await current.dispose();
     } finally {
@@ -2547,6 +2570,8 @@ export function createSyncService(args: SyncServiceArgs) {
 
     async dispose(): Promise<void> {
       disposed = true;
+      detachListenerPortChanged?.();
+      detachListenerStatusChanged?.();
       syncPeerService.disconnect();
       clearInterval(localLanePresenceHeartbeatTimer);
       stopCanonicalPortMigrateTimer();

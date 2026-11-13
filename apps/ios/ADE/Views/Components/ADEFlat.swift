@@ -78,30 +78,43 @@ extension ADEFlatSectionHeader where Trailing == EmptyView {
 }
 
 /// A screen-level problem as one slim row: icon, message, optional Retry.
+/// With `technicalDetail`, the design system's technical-details fold (raw
+/// text and Copy) sits under the row, folded by default.
 struct ADEFlatInlineNotice: View {
   let message: String
   var tint: Color = ADEColor.warning
+  var technicalDetail: String? = nil
   var retry: (() -> Void)?
 
   var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(tint)
-      Text(message)
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(2)
-      Spacer(minLength: 8)
-      if let retry {
-        Button("Retry", action: retry)
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .buttonStyle(.plain)
+    let detail = technicalDetail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 8) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(tint)
+          .accessibilityHidden(true)
+        Text(message)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+        Spacer(minLength: 8)
+        if let retry {
+          Button("Retry", action: retry)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .buttonStyle(.plain)
+            .fixedSize()
+        }
+      }
+      if !detail.isEmpty {
+        ADETechnicalDetailsFold(text: detail)
+          .padding(.leading, 19)
       }
     }
     .frame(minHeight: 32)
-    .accessibilityElement(children: .combine)
+    // The fold's own controls sit beside Retry, so they need their own elements.
+    .accessibilityElement(children: detail.isEmpty ? .combine : .contain)
   }
 }
 

@@ -44,7 +44,13 @@ import {
 } from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
-import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  ANNOUNCEMENTS_SEEN_SETTING_KEY,
+  mergeSeenAnnouncements,
+  normalizeSeenAnnouncements,
+  seenAnnouncementsCover,
+} from "../../../../desktop/src/shared/announcementsSeen";
 import {
   FAST_MODE_SETTING_KEY,
   FAST_MODE_SETTING_SCOPE,
@@ -8408,6 +8414,29 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       handler,
     });
   };
+
+  // ADE Web's "What's new" seen pages: one account setting, read and grown
+  // through this brain because a browser has no account-settings store. Only
+  // this key, and only by union, so a caller can add seen pages but never
+  // remove one or touch any other setting. Not in the lane-share guest list:
+  // a guest's pages would land on the host's account.
+  register("announcements.getSeen", { viewerAllowed: true }, async () => {
+    if (!args.accountSettingsStore) return { available: false, value: {} };
+    return {
+      available: true,
+      value: normalizeSeenAnnouncements(args.accountSettingsStore.get(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY)),
+    };
+  }, "runtime");
+  register("announcements.markSeen", { viewerAllowed: true }, async (payload) => {
+    const store = requireService(args.accountSettingsStore, "Account settings are not available on this machine.");
+    const current = normalizeSeenAnnouncements(store.get(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY));
+    const merged = mergeSeenAnnouncements(current, normalizeSeenAnnouncements(payload.seen));
+    if (seenAnnouncementsCover(current, merged)) return { ok: true, value: current };
+    if (!store.set(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY, merged)) {
+      return { ok: false, value: current };
+    }
+    return { ok: true, value: merged };
+  }, "runtime");
 
   register("analytics.capture", { viewerAllowed: true }, async (payload) => {
     if (!args.productAnalyticsService) {

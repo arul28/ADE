@@ -101,6 +101,8 @@ function visibleWorkSessionRows(root: ParentNode = document): HTMLElement[] {
 
 function findVisibleElement(selector: string): HTMLElement | null {
   for (const element of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+    // A pane that is animating out is inert (WorkViewArea) and cannot take focus.
+    if (element.closest("[inert]")) continue;
     if (element.getClientRects().length > 0) return element;
   }
   return null;

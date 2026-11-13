@@ -783,10 +783,10 @@ func settingsMachineRowErrorMessage(
 /// deliberately — a failed switch restores the connection it interrupted, so
 /// "connected to the Studio, MacBook row explaining why it would not answer" is
 /// the honest steady state rather than the contradiction it used to be.
-func settingsMachineRowErrorsRetiring(
-  _ existing: [String: String],
+func settingsMachineRowErrorsRetiring<Failure>(
+  _ existing: [String: Failure],
   attachedEntryId: String?
-) -> [String: String] {
+) -> [String: Failure] {
   guard let attachedEntryId else { return existing }
   var remaining = existing
   remaining.removeValue(forKey: attachedEntryId)

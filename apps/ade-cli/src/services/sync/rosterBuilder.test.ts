@@ -10,6 +10,7 @@ import {
   createForeignChatTranscriptResolver,
   type RosterBootedScope,
   type RosterLiveSession,
+  type RosterPtyService,
   type RosterScopeRegistry,
 } from "./rosterBuilder";
 
@@ -142,6 +143,8 @@ function seedDatabase(): void {
   );
 }
 
+type RosterPtyTurn = ReturnType<NonNullable<RosterPtyService["getTrackedCliTurn"]>>;
+
 const projectRegistry = {
   list: () => [
     {
@@ -159,12 +162,16 @@ const unbootedScopes: RosterScopeRegistry = { getIfBooted: () => null, isOpenBlo
 function bootedScopes(
   liveSessions: RosterLiveSession[],
   livePtySessionIds: string[] = [],
+  trackedCliTurn: RosterPtyTurn | null = null,
 ): RosterScopeRegistry {
   const livePtyIds = new Set(livePtySessionIds);
   const scope: RosterBootedScope = {
     runtime: {
       agentChatService: { listSessions: async () => liveSessions },
-      ptyService: { hasLivePty: (sessionId) => livePtyIds.has(sessionId) },
+      ptyService: {
+        hasLivePty: (sessionId) => livePtyIds.has(sessionId),
+        getTrackedCliTurn: () => trackedCliTurn,
+      },
     },
   };
   return { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null), isOpenBlocked: () => false };
@@ -559,15 +566,22 @@ describe("buildRosterSnapshot", () => {
     }
   });
 
-  it("marks a CLI session running via the booted scope's live PTY table", async () => {
-    const scopeRegistry = bootedScopes([], ["cli-codex"]);
+  it.each<[string, RosterPtyTurn | null, string, number]>([
+    ["no tracked turn", null, "running", 1],
+    ["output-timing turn", { phase: "idle", source: "heuristic" }, "running", 1],
+    ["exact turn ended", { phase: "idle", source: "claude-hooks" }, "idle", 0],
+    // Background agents outlive the turn; the phone must not read the CLI as done.
+    ["exact turn ended, agents still running", { phase: "idle", source: "claude-hooks", backgroundAgentCount: 2 }, "running", 1],
+    ["exact turn waiting on the person", { phase: "needs-input", source: "claude-hooks" }, "awaiting", 0],
+  ])("reads a live CLI's status from its PTY turn: %s", async (_label, turn, status, runningCount) => {
+    const scopeRegistry = bootedScopes([], ["cli-codex"], turn);
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
     const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
 
-    // Live PTY → running; a CLI row with no live PTY keeps its disk status.
-    expect(byId.get("cli-codex")!.status).toBe("running");
+    expect(byId.get("cli-codex")!.status).toBe(status);
+    // A CLI row with no live PTY keeps its disk status.
     expect(byId.get("cli-fail")!.status).toBe("failed");
-    expect(projects[0]!.runningCount).toBe(1);
+    expect(projects[0]!.runningCount).toBe(runningCount);
   });
 
   it("resolves a registered foreign chat transcript path and rejects unsafe input", () => {

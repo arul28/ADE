@@ -428,7 +428,7 @@ ends, and closes on Escape without moving the reading position.
 - **Agent tabs clean themselves up.** The brain tells every desktop when a chat starts a turn, goes idle (`done`) or ends (`releaseChatBrowser`) through the bridge-served `chatBrowserLifecycle` method, locally and as a broadcast to desktops holding a pin, but only for chats that sent a browser command through that brain. A chat's agent tabs that nobody kept close 15 minutes after it goes idle (`CHAT_IDLE_CLOSE_MS`; any browser command from the chat re-arms the countdown, a new turn cancels it) and at once when it ends or its lane is archived or deleted. A tab that is on screen, recording, watched, or mid-handoff waits and is retried every 5 minutes. Each lifecycle word (and each browser command from the chat) bumps the chat's generation; a close pass already under way stops at the next tab when it sees a newer one, so a turn that starts mid-close keeps the rest of its tabs. A two-hour sweep closes agent tabs no command touched, for chats whose word never arrived (a brain restart). `tab.autoCloseAt` carries the deadline to the strip.
 - **Background tabs sleep.** A tab unused for 30 minutes (not active, not audible, not recording, watched, emulating, in DevTools or logging, no agent action running, and nothing a reload would lose: no field in use, no field changed from what the page loaded with, no editor area with text) drops its page to `about:blank` and remembers its URL, title and navigation entries (`tab.sleeping`); showing it, an agent read or action, or a watcher wakes it with `navigationHistory.restore`, falling back to loading the URL. Status, persistence and access checks use the remembered URL (`tabPageUrl`). Every blocker is read again after the page check (it awaits), and a sleeping tab sent to any new page (an agent's `navigate` with `activate: false`) forgets the remembered one, so a wake never restores an old page over a new one.
 - **PDFs and printing.** Tabs run with `plugins: true`, so Chromium's PDF viewer opens PDFs in the tab; the page's right-click menu has **Print…**. Each profile's HTTP disk cache is capped at 320 MB (`--disk-cache-size`, packaged and non-Vite runs). Per-project profiles left from before the shared profile are deleted once every live persistent cookie they hold is confirmed in the shared profile (`builtInBrowserProfileMigration.ts`: verified partitions are recorded as `retiredPartitions` and removed at the start of the next launch, before any session opens them).
-- **Notices never freeze the page.** See "Bottom-right notices and the browser" in `docs/design/notices.md`: while a visible page covers the notice corner, the corner's cards are drawn in their own see-through window over that corner (the notice layer), so they stay bottom-right and the page around them stays live.
+- **Notices never freeze the page.** See "Bottom-right notices and the browser" in `docs/design/notices.md`: the corner cards use the first bottom corner no live page covers (right, else left over the sidebar), or wait until one is free.
 - **Tabs on other machines.** Tabs stay on the machine that opened them. A pane pinned to another machine lists that machine's tabs for the lane (from `work_tools.getLaneState`, every 5 s while visible) in a row under the strip (`RemoteBrowserTabs.tsx`). Picking one streams it: `work_tools.readBrowserTabFrame` (person-only: scoped for every caller, CTO included, and in `ADE_ACTION_USER_ONLY`, so only the desktop app reaches it over RPC) renews a 6-second watch on that machine's desktop, which runs an ordinary preview stream with owner `remote` and answers with the newest frame; frames are polled one at a time at about 4 fps and stop when nobody polls. **Take control** sends clicks, scrolls and typing as fractions of the frame (`work_tools.sendBrowserTabInput`, person-only like the read, `webContents.sendInputEvent`/`insertText`), and makes the tab the person's. The viewer is keyed by machine and tab, so a newly picked tab starts blank, and input goes only to a fresh picture: with no frame for 3 s it says the link is lost and ends control until frames return. **Open here** loads the page in this computer's browser (a remote localhost goes through a tunnel as usual). When this chat's agent starts working in a tab over there, the pane shows it once. A local-server row for a port the other machine already has open asks whether to watch it there or tunnel it here. The phone's Browser card uses the same two calls through the sync commands `workTools.readBrowserTabFrame` / `workTools.sendBrowserTabInput`.
 
 ## Built-in browser: new tabs, device presets, find, and dev servers
@@ -903,10 +903,34 @@ in `chatRuntimeOwnership.ts`:
   brain when that brain is live on this project.** It does not take over chats
   it is not running: startup recovery, prewarm, and scheduled wakes skip them.
   Its own chats and messages sent to it directly still work. Other secondary
-  brains do not make one another yield.
+  brains do not make one another yield. A chat whose owner stamp names an
+  installed brain's socket (its own home's, plus `~/.ade`'s and
+  `~/.ade-alpha`'s) waits for the machine brain even while that brain is down
+  or restarting (`isMachineBrainSocket`): launchd brings it back and it
+  recovers its own chats. Before this, a lane's test brain picked up a chat in
+  the gap after the installed brain was killed, resumed it on the lane's code,
+  and then held it.
+- **The machine brain takes its chats back.** A send, `messageSession`,
+  `runSessionTurn` or rerun on the machine brain for a chat another live brain
+  holds asks that brain, over its socket, to release it
+  (`takeChatRuntimeOrRefuse` → `chat.releaseChatRuntime`, CTO-only), after the
+  request's own cheap checks so a refused request never stops anything. The
+  whole exchange has one 10 s deadline (`chatRuntimeReleaseClient.ts`), and an
+  answer that arrives after it releases nothing. The
+  owner stops its agent process the way "Restart agent session" does (the
+  conversation is kept) and clears its stamp, then the send runs here. While a
+  turn, an accepted send or background work is running there it answers
+  `busy`, and the send is refused in plain words
+  (`ChatRuntimeBusyElsewhereError`): the chat is still working in another copy
+  of ADE, send again when it finishes or close that copy. A brain that does
+  not answer, or one an agent started by hand (served at the `agent` role,
+  which may not release a chat), leaves the old refusal with the owner's
+  socket. So a person never has to find and stop a dev test brain to get a
+  chat back.
 - **A non-owner never re-stamps or releases.** Without a runtime, a persist
-  keeps whatever owner is on disk, and a teardown releases only its own or a
-  dead brain's stamp.
+  keeps whatever owner is on disk, and a teardown or a hand-back releases only
+  its own or a dead brain's stamp, never one a live brain wrote since
+  (`persistedRuntimeOwner`).
 - **A non-owner does not guess.** It cannot see the owner's turn, so its
   summary carries `runtimeOwnedElsewhere` instead of `runtimeAlive`, turn
   status reports `BUSY … runs under another ADE brain` (phase `running`),

@@ -17455,6 +17455,19 @@ describe("--machine targeting", () => {
     // A command whose own --machine means something else keeps its flag.
     expect(extractMachineTargeting(parseCliArgs(["drafts", "list", "--machine", "Studio"])).options.machine)
       .toBeUndefined();
+    // A move's --machine names its destination: the move runs here and its
+    // plan carries the machine, instead of being sent to that machine bare.
+    for (const sub of ["move", "handoff"]) {
+      const move = extractMachineTargeting(parseCliArgs(["chat", sub, "chat-1", "--machine", "Studio"]));
+      expect(move.options.machine).toBeUndefined();
+      expect(move.command).toEqual(["chat", sub, "chat-1", "--machine", "Studio"]);
+    }
+    const movePlan = expectExecutePlan(buildCliPlan(
+      extractMachineTargeting(parseCliArgs(["chat", "move", "chat-1", "--machine", "Studio"])).command,
+    ));
+    expect(JSON.stringify(movePlan.steps)).toContain("\"Studio\"");
+    expect(() => extractMachineTargeting(parseCliArgs(["chat", "move", "--status", "b-1", "--machine", "Studio"])))
+      .toThrow(/names the destination of a move/);
     // A value that happens to read `--machine` is a value, not targeting.
     const secret = extractMachineTargeting(parseCliArgs(["secrets", "set", "TOKEN", "--value", "--machine"]));
     expect(secret.command).toEqual(["secrets", "set", "TOKEN", "--value", "--machine"]);

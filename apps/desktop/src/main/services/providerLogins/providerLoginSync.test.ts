@@ -49,7 +49,7 @@ describe("provider login capture: stable reads", () => {
     return abs;
   }
 
-  async function makeSync(seed: Array<{ key: string; value: string | null }> = [], now?: () => number) {
+  async function makeSync(seed: Array<{ key: string; value: string | null }> = [], now?: () => number, settingSeed: Record<string, unknown> = {}) {
     const items = seed.map((item) => ({
       scope: "all", kind: "provider_login", key: item.key, value: item.value,
       updatedAt: new Date(Date.now() - 60_000).toISOString(), writerDeviceId: "device-a", refreshOwner: null,
@@ -67,7 +67,7 @@ describe("provider login capture: stable reads", () => {
     });
     await vault.sync();
     const env: NodeJS.ProcessEnv = { HOME: home };
-    const settingValues = new Map<string, unknown>();
+    const settingValues = new Map<string, unknown>(Object.entries(settingSeed));
     const sync = createProviderLoginSync({
       adeDir,
       staticOff: null,
@@ -90,7 +90,7 @@ describe("provider login capture: stable reads", () => {
       const payload = JSON.parse(vault.get("all", "provider_login", row.key)!) as { files: Array<{ rel: string; enc: string; data: string }> };
       return Object.fromEntries(payload.files.map((file) => [file.rel, file.enc === "base64" ? Buffer.from(file.data, "base64").toString("hex") : file.data]));
     };
-    return { sync, carried, vault, items };
+    return { sync, carried, vault, items, settingValues };
   }
 
   const grokLogin = (key: string) => JSON.stringify({ "https://auth.x.ai": { key, expires_at: "2099-01-01T00:00:00.000Z", email: "a@example.test" } });
@@ -165,6 +165,44 @@ describe("provider login capture: stable reads", () => {
     await sync.remove({ key });
     await sync.pass();
     expect(carried("grok")).toEqual({ "auth.json": grokLogin("key-local") });
+  });
+
+  // Another computer's copy of a Grok sign-in, as its capture wrote it.
+  const otherCopy = (machine: string, email: string, capturedAt: number) => ({
+    key: `grok/${originId(machine)}.base`,
+    value: JSON.stringify({
+      v: 1, provider: "grok", slot: "base", class: "renewing",
+      origin: { machineKey: machine, deviceId: `device-${machine}`, label: machine, platform: "linux" },
+      account: { email, id: null }, capturedAt, renewedAt: null, renewedBy: null, expiresAt: null,
+      familyHash: crypto.createHash("sha256").update(`${machine}-family`).digest("hex").slice(0, 16),
+      contentHash: crypto.createHash("sha256").update(`${machine}-content`).digest("hex").slice(0, 16),
+      files: [{ root: "grokHome", rel: "auth.json", enc: "utf8", data: grokLogin(`key-${machine}`) }],
+    }),
+  });
+
+  // The origin signs out of the sign-in ADE Cloud was told to use (for some
+  // providers that revokes the token its copy holds). ADE Cloud must stay on
+  // the picked account through another computer's copy of it, never fall to
+  // the newest copy of another account.
+  it("moves the pick to another copy of the same account when the origin signs out of the picked one", async () => {
+    let clock = Date.now();
+    const ownKey = `grok/${originId("machine-a")}.base`;
+    const sameAccount = otherCopy("machine-b", "a@example.test", clock - 3_600_000);
+    const otherAccount = otherCopy("machine-c", "b@example.test", clock - 60_000);
+    const { sync, carried, settingValues } = await makeSync([sameAccount, otherAccount], () => clock);
+    writeFile(".grok/auth.json", grokLogin("key-a"), 10_000);
+    await sync.pass();
+    expect(carried("grok")).not.toBeNull();
+    settingValues.set("providerLogins.cloud", { v: 1, enabled: true, inUse: { grok: ownKey }, off: [] });
+
+    fs.rmSync(path.join(home, ".grok", "auth.json"));
+    for (let pass = 0; pass < 2; pass += 1) {
+      clock += 61_000;
+      await sync.pass();
+    }
+    const status = await sync.status("grok");
+    expect(status.signIns.some((signIn) => signIn.key === ownKey)).toBe(false);
+    expect(status.signIns.find((signIn) => signIn.inUseOnCloud)?.key).toBe(sameAccount.key);
   });
 
   // A lock or a permission change is not a sign-out: only a login file that

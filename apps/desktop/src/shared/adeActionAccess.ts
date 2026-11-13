@@ -212,7 +212,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage",
       "recoverContinuity", "restoreCancelledQueue", "killDroidWorker", "launchCli",
       "launchHeadless", "startLaunch", "cancelLaunch", "retryLaunch", "startLaunchNow",
-      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume",
+      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume", "releaseChatRuntime",
       "createDraft", "updateDraft", "deleteDraft", "claimDraft", "sendDraftNow",
       "createThreadComment", "updateThreadComment", "deleteThreadComment", "messageSession",
       "typeIntoCli", "actOnClaudePluginUi",

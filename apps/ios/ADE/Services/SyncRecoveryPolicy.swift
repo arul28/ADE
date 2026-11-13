@@ -326,6 +326,36 @@ func syncSocketCompletionAction(
     : .failHandshake
 }
 
+/// Relay close codes that mean the phone got through to the computer's relay
+/// connection, but ADE on that computer did not answer: its bridge refused
+/// the tunnel (4507). Only a code the computer itself sends belongs here:
+/// 4501 (no host connection at the relay) also means the computer is asleep or
+/// offline, and 4509 can come from the relay side. Copy only: these codes
+/// recover exactly like every other close.
+let syncRelayHostDidNotAnswerCloseCodes: Set<Int> = [4507]
+
+/// What the phone says when the relay reached the computer but ADE on it did
+/// not answer. With a machine name it names the route; without one (the
+/// primary banner) it stays route-neutral.
+func syncRelayHostDidNotAnswerMessage(machineName: String? = nil) -> String {
+  let fix = "It usually repairs itself in a few seconds; if it doesn’t, open ADE on that computer to see why."
+  guard let machineName = machineName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !machineName.isEmpty else {
+    return "This computer is online, but ADE on it didn’t answer. \(fix)"
+  }
+  return "ADE relay reached \(machineName), but ADE on it didn’t answer. \(fix)"
+}
+
+/// Whether `error` ended with one of `syncRelayHostDidNotAnswerCloseCodes`.
+func syncErrorIsRelayHostDidNotAnswer(_ error: Error?) -> Bool {
+  guard let error else { return false }
+  if let mailboxError = error as? SyncConnectionRaceMailboxError {
+    return mailboxError.closeCode.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
+  }
+  let code = (error as NSError).userInfo["ADESocketCloseCode"] as? Int
+  return code.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
+}
+
 func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
   let message: String
   switch closeCodeRawValue {
@@ -335,8 +365,8 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
     message = "Connection attempts are paused briefly. Try again shortly."
   case 4503:
     message = "This computer is handling too many connections. Try again shortly."
-  case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506, 4507:
-    message = "Can’t reach this computer right now. Reconnecting now."
+  case _ where syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue):
+    message = syncRelayHostDidNotAnswerMessage()
   default:
     message = "Can’t reach this computer right now. Reconnecting now."
   }
@@ -527,5 +557,58 @@ func syncRunRelayReauthorizationLoop<Attempt>(
       try? await Task.sleep(nanoseconds: retryDelay)
       guard !Task.isCancelled else { return }
     }
+  }
+}
+
+
+/// Reports a live connection to a machine that dropped without either side
+/// closing it (no close frame: 1006, or none at all). Such a drop was seen only
+/// on a real iPhone (a Wi-Fi socket dropped 110 ms after the computer's sync
+/// port moved) and never in the simulator, so the phone says what it saw. The
+/// Sentry event carries the breadcrumbs left just before it (saved port
+/// changes, network path changes). Names and counts only: no address, machine
+/// name or content. At most one report per kind per ten minutes.
+@MainActor
+enum SyncLiveDropReport {
+  private static var lastReportedAt: [String: Date] = [:]
+  static let minimumInterval: TimeInterval = 600
+
+  /// Close codes that mean nobody closed the connection on purpose.
+  static func isUnexplainedDrop(closeCode: Int?) -> Bool {
+    guard let closeCode else { return true }
+    return closeCode == 0 || closeCode == 1006
+  }
+
+  static func report(
+    connection: String,
+    routeKind: SyncConnectionRouteKind?,
+    closeCode: Int?,
+    connectionAgeSeconds: TimeInterval?,
+    now: Date = Date()
+  ) {
+    guard isUnexplainedDrop(closeCode: closeCode) else { return }
+    let kind = "\(connection):\(routeKind.map { String(describing: $0) } ?? "unknown")"
+    if let last = lastReportedAt[kind], now.timeIntervalSince(last) < minimumInterval { return }
+    lastReportedAt[kind] = now
+    let ageBucket: String
+    switch connectionAgeSeconds ?? -1 {
+    case ..<0: ageBucket = "unknown"
+    case ..<10: ageBucket = "under_10s"
+    case ..<60: ageBucket = "under_1m"
+    case ..<600: ageBucket = "under_10m"
+    default: ageBucket = "over_10m"
+    }
+    CrashReporting.capture(
+      NSError(domain: "ADESyncLiveDrop", code: closeCode ?? 0, userInfo: [
+        NSLocalizedDescriptionKey: "A live machine connection dropped without a close frame.",
+      ]),
+      context: [
+        "area": "sync_live_drop",
+        "connection": connection,
+        "route": routeKind.map { String(describing: $0) } ?? "unknown",
+        "close_code": String(closeCode ?? 0),
+        "age": ageBucket,
+      ]
+    )
   }
 }

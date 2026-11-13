@@ -112,7 +112,7 @@ import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "..
 import { composerDomPointAtSerializedOffset, serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   composerModelInfo,
-  composerModelSuggestion,
+  composerModelSuggestionsFor,
   createModelChipNode,
   initialModelMention,
   modelChipOptions,
@@ -202,7 +202,7 @@ import {
   type ComposerAtChipKind,
 } from "./mentionChipMark";
 import { ComposerMachineChipPopover } from "./MachineChipCard";
-import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -225,6 +225,7 @@ import {
 } from "../../../shared/projectSecretRequest";
 import { IntegrationConnectComposer } from "./IntegrationConnectCard";
 import { McpServerRequestComposer } from "./McpServerCard";
+import { MachineRemovalComposer } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import {
   isAskQuestionRequest,
@@ -984,6 +985,8 @@ function ComposerMachineChip({
   if (adeCloudLane) {
     return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
   }
+  // An ADE Cloud launch still being set up: no lane computer to name yet, but the cloud mark already.
+  const onAdeCloud = !cloud && machineName === ADE_CLOUD_NAME;
   if (action) {
     return (
       <>
@@ -1028,7 +1031,9 @@ function ComposerMachineChip({
         label: machineName,
         description: cloud
           ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
-          : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
+          : onAdeCloud
+            ? "This chat runs on its lane's own ADE Cloud computer, which is being set up."
+            : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
       }}
     >
       <span
@@ -1042,6 +1047,8 @@ function ComposerMachineChip({
       >
         {cloud ? (
           <CloudArrowUp size={11} weight="fill" className="shrink-0 text-violet-300/85" aria-hidden />
+        ) : onAdeCloud ? (
+          <CloudMark size={11} brand />
         ) : (
           <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
         )}
@@ -3263,16 +3270,7 @@ function AgentChatComposerImpl({
   const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
-    const ids = mentionModelIds ?? availableModelIds ?? [];
-    const out = [];
-    const seen = new Set<string>();
-    for (const id of ids) {
-      const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, modelCatalogScopeKey) ?? getModelById(id);
-      if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
-      seen.add(descriptor.id);
-      out.push(composerModelSuggestion(descriptor));
-    }
-    return out;
+    return composerModelSuggestionsFor(mentionModelIds ?? availableModelIds ?? [], modelCatalogScopeKey);
     // runtimeCatalogTick is not read here: it changes when the runtime catalog
     // loads, which the descriptor lookups above read from module state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8207,6 +8205,8 @@ function AgentChatComposerImpl({
             reasoningTiers={reasoningTiers}
             harness={activeHarnessPreset?.harness}
             reasoningEffort={reasoningEffort}
+            // An open chat shows its own level: the family's memory is another chat's pick (B14-34).
+            showFamilyDefault={!sessionId}
             squeezed={modelHint.chip != null}
             onChange={handleReasoningEffortPickerChange}
             disabled={effortSelectionLocked ?? modelSelectionLocked}
@@ -8240,7 +8240,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
@@ -9607,6 +9607,23 @@ function AgentChatComposerImpl({
               chatProvider={sessionProvider}
               onAdd={(answers) => { void onApproval("accept", null, answers); }}
               onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "machine-removal") {
+          // The computer removal card. The brain on the chat's machine removes
+          // the computer while it accepts Remove; a failure comes back as
+          // `pendingInputError` and keeps the card open.
+          return (
+            <MachineRemovalComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onAnswer={(answers) => { void onApproval("accept", null, answers); }}
             />
           );
         }

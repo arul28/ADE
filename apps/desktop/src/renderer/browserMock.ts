@@ -10394,7 +10394,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setTitleBarOverlay: async () => ({ applied: false }),
       onCommand: () => () => {},
     },
-    noticeLayer: { available: false, place: async () => false },
     updateCheckForUpdates: resolved(undefined),
     updateCheckTrackSwitch: async (target: "stable" | "beta") => ({ allowed: true as const, target, targetVersion: null }),
     updateSwitchTrack: async (target: "stable" | "beta") => ({ ok: true as const, target }),

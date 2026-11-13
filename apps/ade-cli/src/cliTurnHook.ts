@@ -70,7 +70,7 @@ function parsePayload(raw: string): Record<string, unknown> | null {
     const event = pick("hook_event_name");
     if (!event) return null;
     const payload: Record<string, unknown> = { hook_event_name: event };
-    for (const key of ["prompt_id", "notification_type", "tool_name"]) {
+    for (const key of ["prompt_id", "notification_type", "tool_name", "agent_id", "agent_type"]) {
       const value = pick(key);
       if (value) payload[key] = value;
     }
