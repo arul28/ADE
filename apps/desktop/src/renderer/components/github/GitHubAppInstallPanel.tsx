@@ -29,6 +29,7 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import {
   cancelGithubAccountAppSignIn,
+  refreshGithubAccountApp,
   signOutGithubAccountApp,
   startGithubAccountAppSignIn,
   useGithubAccountApp,
@@ -92,7 +93,15 @@ export function GitHubAppInstallPanel({
   const mountedRef = useRef(true);
   appAuthRef.current = appAuth;
 
-  const loadStatus = useCallback(async (forceRefresh = false, opts: { retryAfterAuthorization?: boolean } = {}) => {
+  /**
+   * `userRequested`: a person pressed Check again. The first request then asks
+   * the ADE account once even when its last answer was a refusal; the waits
+   * after an authorization stay ordinary reads.
+   */
+  const loadStatus = useCallback(async (
+    forceRefresh = false,
+    opts: { retryAfterAuthorization?: boolean; userRequested?: boolean } = {},
+  ) => {
     if (!window.ade?.github?.getAppInstallationStatus) return;
     const requestSeq = statusRequestSeqRef.current + 1;
     statusRequestSeqRef.current = requestSeq;
@@ -103,8 +112,12 @@ export function GitHubAppInstallPanel({
         ? POST_AUTH_STATUS_RETRY_DELAYS_MS.length + 1
         : 1;
       for (let attempt = 0; attempt < attemptCount; attempt += 1) {
+        // A press also reads the account's sign-in again: another computer
+        // may have connected a different GitHub user since the last read.
+        if (opts.userRequested && attempt === 0) void refreshGithubAccountApp();
         latestStatus = await window.ade.github.getAppInstallationStatus({
           forceRefresh: forceRefresh || attempt > 0,
+          ...(opts.userRequested && attempt === 0 ? { userRequested: true } : {}),
         }, pin);
         if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
         setStatus(latestStatus);
@@ -486,7 +499,7 @@ export function GitHubAppInstallPanel({
       type="button"
       style={primaryStyle ? primaryBtnStyle : secondaryBtnStyle}
       {...(primaryStyle ? primaryBtnProps : secondaryBtnProps)}
-      onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
+      onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized, userRequested: true })}
       disabled={loading}
     >
       <ArrowClockwise size={12} weight="bold" className={loading ? "ade-icon-spin" : undefined} />
@@ -670,7 +683,7 @@ export function GitHubAppInstallPanel({
             data-icon="true"
             aria-label="Check again"
             title="Check again"
-            onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
+            onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized, userRequested: true })}
             disabled={loading}
           >
             <ArrowClockwise size={13} className={loading ? "ade-icon-spin" : undefined} />

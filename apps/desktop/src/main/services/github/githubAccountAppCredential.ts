@@ -30,6 +30,9 @@ import type { GitHubRelayAuthAuditLog } from "./githubRelayConfig";
  *   when the cached token reached its stop time);
  * - a GitHub 401 to the token calls `onRejected()`, which asks the server
  *   once and answers the replacement, if any;
+ * - a read that finds a new token (the account connected again on another
+ *   computer) calls `onChanged`, so the owner restarts a relay poll that
+ *   stopped on the old one;
  * - the vault tick calls `adoptLocalSignIn()`;
  * - the status adds `statusFor(repo)`;
  * - the relay installation check and the relay poll use `relayAppUserAuth`,
@@ -118,14 +121,38 @@ export function createGithubAccountAppCredential(deps: {
     : null;
 
   let lastToken: string | null = null;
+  /**
+   * What reads in this process saw: `undefined` before the first read, then the
+   * last answer (null included), and the last token that was not null.
+   */
+  let seenToken: string | null | undefined;
+  let lastNonNullToken: string | null = null;
 
-  /** The current account App token, or null. Never throws. */
-  const readToken = async (): Promise<string | null> => {
+  /**
+   * Records a read. True when it brought a token this process did not have:
+   * a new one after another, or one after a read found none. The first read
+   * after start is not a change, and a token that comes back after a short
+   * gap (a network error) is not one either.
+   */
+  const noteToken = (token: string | null): boolean => {
+    const changed = token != null && seenToken !== undefined && token !== lastNonNullToken;
+    seenToken = token;
+    if (token != null) lastNonNullToken = token;
+    lastToken = token;
+    return changed;
+  };
+
+  /**
+   * The current account App token, or null. Never throws.
+   * `force`: ask even when a negative answer still stands (a person pressed
+   * Refresh).
+   */
+  const readToken = async (opts: { force?: boolean } = {}): Promise<string | null> => {
     if (!client) return null;
     try {
-      const result = await client.getToken();
+      const result = await client.getToken(opts.force ? { force: true } : {});
       const token = result.ok ? result.token : null;
-      lastToken = token;
+      if (noteToken(token)) deps.onChanged();
       return token;
     } catch (error) {
       deps.logger.warn("github.account_app_token_read_failed", {
@@ -142,13 +169,15 @@ export function createGithubAccountAppCredential(deps: {
    * GitHub answered 401 to `token`. Asks the server once for the current token
    * (the server and this process each ask GitHub about one token at most once
    * a minute). Answers a different token to retry with, or null.
+   * `userRequested`: a person pressed Refresh; the one-minute window per
+   * token does not apply.
    */
-  const onRejected = async (token: string): Promise<string | null> => {
+  const onRejected = async (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => {
     if (!client) return null;
     try {
-      const result = await client.getToken({ afterRejected: token });
+      const result = await client.getToken({ afterRejected: token, userRequested: opts.userRequested === true });
       if (result.ok && result.token !== token) {
-        lastToken = result.token;
+        noteToken(result.token);
         deps.onChanged();
         return result.token;
       }
@@ -254,11 +283,12 @@ export function createGithubAccountAppCredential(deps: {
    */
   const relayAppUserAuth = {
     auditLog: deps.appUserAuth.auditLog,
-    getValidTokenForRelay: async (): Promise<string> => {
+    /** `userRequested`: a person pressed Refresh, so a standing negative answer is asked again. */
+    getValidTokenForRelay: async (opts: { userRequested?: boolean } = {}): Promise<string> => {
       try {
         return await deps.appUserAuth.getValidTokenForRelay();
       } catch (legacyError) {
-        const token = await readToken();
+        const token = await readToken({ force: opts.userRequested === true });
         if (token) return token;
         throw legacyError;
       }
@@ -270,7 +300,7 @@ export function createGithubAccountAppCredential(deps: {
      * directory once for the current token (`onRejected`); null when there is
      * no other.
      */
-    onTokenRejected: (token: string): Promise<string | null> => onRejected(token),
+    onTokenRejected: (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => onRejected(token, opts),
   };
 
   return {

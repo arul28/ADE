@@ -1,3 +1,7 @@
+import {
+  GITHUB_ACCOUNT_APP_TOKEN_KEY,
+  parseAccountAppCacheEntry,
+} from "../../../../desktop/src/shared/github/accountAppTokenClient";
 import { EncryptedFileCredentialStore } from "./credentialStore";
 
 /**
@@ -11,11 +15,17 @@ import { EncryptedFileCredentialStore } from "./credentialStore";
  * Without this the brain sits out the full five-minute cooldown after a repair
  * the user already finished.
  *
+ * It also watches the ADE account's App token (`account_app`). When the
+ * account connects again on another computer, the first process here that
+ * asks the account directory writes the new token to this file, and every
+ * project runtime's relay poll restarts with it, including a poll that
+ * stopped after GitHub refused the old token twice.
+ *
  * Best-effort throughout: a store with no watcher, or a watcher that cannot be
  * installed, leaves the behaviour exactly as it was.
  */
 
-/** The credential this repair exists for. Other keys share the same file. */
+/** This machine's own App sign-in. Other keys share the same file. */
 const GITHUB_APP_USER_TOKEN_KEY = "github.appUserToken.v1";
 
 /** At most one forced poll per this window, however noisy the file is. */
@@ -62,7 +72,10 @@ type AppUserTokenRead =
 type AppUserTokenListener = (read: AppUserTokenRead) => void;
 
 /**
- * Reads the App credential, or reports that it could not be read.
+ * Reads the App credentials the relay uses, or reports that they could not be
+ * read: this machine's own sign-in, and the access token of the account's
+ * entry. The account entry also changes for leases and stop times; only its
+ * token counts.
  *
  * A store with no `getSync` is reported the same way a throwing one is: there
  * is nothing to scope the repair to, so every change has to force a poll.
@@ -71,7 +84,10 @@ function readAppUserToken(store: WatchableCredentialStore): AppUserTokenRead {
   const getSync = store.getSync;
   if (typeof getSync !== "function") return { kind: "read_failed" };
   try {
-    return { kind: "value", value: getSync.call(store, GITHUB_APP_USER_TOKEN_KEY) ?? null };
+    const own = getSync.call(store, GITHUB_APP_USER_TOKEN_KEY) ?? null;
+    const account = parseAccountAppCacheEntry(getSync.call(store, GITHUB_ACCOUNT_APP_TOKEN_KEY))?.accessToken ?? null;
+    if (own == null && account == null) return { kind: "value", value: null };
+    return { kind: "value", value: JSON.stringify([own, account]) };
   } catch {
     return { kind: "read_failed" };
   }

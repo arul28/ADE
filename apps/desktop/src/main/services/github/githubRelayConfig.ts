@@ -369,9 +369,9 @@ export async function fetchGitHubAppInstallationStatus(args: {
 export async function fetchAppInstallationStatusForRepo(args: {
   repo: GitHubRepoRef | null;
   appUserAuth: {
-    getValidTokenForRelay(): Promise<string>;
+    getValidTokenForRelay(opts?: { userRequested?: boolean }): Promise<string>;
     /** GitHub refused this token: the account's current one, or null (`relayAppUserAuth`). */
-    onTokenRejected?(token: string): Promise<string | null>;
+    onTokenRejected?(token: string, opts?: { userRequested?: boolean }): Promise<string | null>;
     auditLog: GitHubRelayAuthAuditLog;
   };
   logger: {
@@ -380,12 +380,21 @@ export async function fetchAppInstallationStatusForRepo(args: {
   };
   secretReader?: GitHubRelaySecretReader | null;
   forceRefresh?: boolean;
+  /**
+   * A person pressed Refresh. The token read asks the account again even when
+   * its last answer was "not connected", and a refused token is asked about
+   * again inside the one-minute window: one account request per press.
+   */
+  userRequested?: boolean;
   /** Resolved lazily: a signed-in machine can carry the check without the App. */
   getAccountAccessToken?: (() => Promise<string | null>) | null;
   fetchImpl?: typeof fetch;
 }): Promise<GitHubAppInstallationStatus> {
+  const userRequested = args.userRequested === true;
   const appUserToken = await resolveAppUserTokenForRelay({
-    appUserAuth: args.appUserAuth,
+    appUserAuth: {
+      getValidTokenForRelay: () => args.appUserAuth.getValidTokenForRelay(userRequested ? { userRequested } : undefined),
+    },
     logger: args.logger,
     event: "github.app_installation_status_auth_unavailable",
   });
@@ -402,7 +411,7 @@ export async function fetchAppInstallationStatusForRepo(args: {
     accountAccessToken,
     auditLog: args.appUserAuth.auditLog,
     onAppUserTokenRejected: args.appUserAuth.onTokenRejected
-      ? (token) => args.appUserAuth.onTokenRejected!(token)
+      ? (token) => args.appUserAuth.onTokenRejected!(token, userRequested ? { userRequested } : undefined)
       : null,
   });
 }

@@ -21,6 +21,12 @@ const SIGN_IN_POLL_MS = 2_000;
  * longer pending, up to both legs plus a minute.
  */
 const SIGN_IN_MAX_MS = 21 * 60_000;
+/**
+ * A usable answer older than this is read again when a page that shows it
+ * opens. Another computer can disconnect, or connect a different GitHub user,
+ * and this window hears of it only by asking.
+ */
+const STATUS_STALE_AFTER_MS = 30_000;
 
 export type GithubAccountAppSignInPhase =
   | { kind: "idle" }
@@ -42,6 +48,8 @@ export type GithubAccountAppSignInPhase =
 type Store = {
   status: GitHubAccountAppAccountStatus | null;
   loaded: boolean;
+  /** Epoch ms of the last answer (0 before the first). */
+  loadedAt: number;
   inFlight: Promise<GitHubAccountAppAccountStatus | null> | null;
   phase: GithubAccountAppSignInPhase;
   pollTimer: number | null;
@@ -51,6 +59,7 @@ type Store = {
 const store: Store = {
   status: null,
   loaded: false,
+  loadedAt: 0,
   inFlight: null,
   phase: { kind: "idle" },
   pollTimer: null,
@@ -84,6 +93,7 @@ export function refreshGithubAccountApp(): Promise<GitHubAccountAppAccountStatus
   const pending = api.getStatus()
     .then((status) => {
       store.status = status;
+      store.loadedAt = Date.now();
       return status;
     }, () => store.status)
     .finally(() => {
@@ -185,8 +195,13 @@ export function useGithubAccountApp() {
     store.listeners.add(listener);
     // Read again on each open while the last answer said "not available"
     // (signed out, the server not answering): a later sign-in must show the
-    // Connect flow without a window reload. A usable answer is kept.
-    if ((!store.loaded || !store.status?.available) && !store.inFlight) void refreshGithubAccountApp();
+    // Connect flow without a window reload. A usable answer is kept for a short
+    // time only: a disconnect or a new connect on another computer must show
+    // here too. The old answer stays on screen until the new one arrives.
+    const stale = !store.loaded
+      || !store.status?.available
+      || Date.now() - store.loadedAt > STATUS_STALE_AFTER_MS;
+    if (stale && !store.inFlight) void refreshGithubAccountApp();
     return () => {
       store.listeners.delete(listener);
     };

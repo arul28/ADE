@@ -2557,6 +2557,7 @@ export function createHeadlessGitHubService(
         logger,
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh,
+        userRequested: args.userRequested,
         getAccountAccessToken: options.getAccountAccessToken,
       });
     },

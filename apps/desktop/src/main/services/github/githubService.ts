@@ -2453,7 +2453,7 @@ export function createGithubService({
   };
 
   const getAppInstallationStatus = async (
-    args: { owner?: string; name?: string; forceRefresh?: boolean } = {},
+    args: { owner?: string; name?: string; forceRefresh?: boolean; userRequested?: boolean } = {},
   ): Promise<GitHubAppInstallationStatus> => {
     const owner = args.owner?.trim();
     const name = args.name?.trim();
@@ -2465,6 +2465,7 @@ export function createGithubService({
       logger,
       secretReader: githubRelaySecretReader,
       forceRefresh: args.forceRefresh,
+      userRequested: args.userRequested,
       getAccountAccessToken,
     });
   };
