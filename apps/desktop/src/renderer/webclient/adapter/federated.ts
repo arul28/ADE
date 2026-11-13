@@ -1,4 +1,5 @@
 import type {
+  AdeAccountMachinePairResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
   PersonalChatMachineTarget,
@@ -13,8 +14,37 @@ import type { BrowserAccountClient } from "../account/client";
 import type { AdeSyncClient } from "../sync";
 import type { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
+import { createReconnectHold } from "./reconnectHold";
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
+
+/**
+ * Members whose answer is the same from every computer on the account: usage
+ * totals with `scope: "account"`, the signed-in GitHub user's calendar, and
+ * the usage update that tells their readers to read again. The update goes
+ * with the reads: the adapter that serves the totals is the one that knows
+ * when they finished filling in.
+ */
+const ACCOUNT_WIDE_MEMBERS: ReadonlySet<string> = new Set([
+  "usage.getAdeStats",
+  "usage.getGithubContributions",
+  "usage.onUpdate",
+]);
+/**
+ * Namespaces that only reach the account's ADE Cloud through whichever
+ * computer answers: cloud access, the cloud computers, their sleep and wake,
+ * and the account's agent limits (`webclient/adapter/cloud.ts`). The
+ * Connections panel reads them, and its Wake must work while the displayed
+ * computer is the one that dropped.
+ */
+const ACCOUNT_WIDE_NAMESPACES: ReadonlySet<string> = new Set(["cloud", "cloudAccess"]);
+
+function isAccountWideMember(path: readonly PropertyKey[]): boolean {
+  return ACCOUNT_WIDE_NAMESPACES.has(String(path[0] ?? ""))
+    || ACCOUNT_WIDE_MEMBERS.has(path.map(String).join("."));
+}
+/** How long an account-wide read waits for the first computer to connect. */
+const ACCOUNT_WIDE_READ_WAIT_MS = 15_000;
 
 /** Walk a dotted member path on an adapter's surface, keeping the receiver. */
 function readPath(
@@ -194,8 +224,22 @@ export function createFederatedWebAdapter({
     return result;
   };
 
+  const reconnectHold = createReconnectHold(
+    (targetId) => {
+      const client = manager.getClient(targetId);
+      if (!client) return null;
+      // A dial round that failed on every route reads "error" but dials
+      // again: that is the reconnect itself (a laptop whose network is not
+      // back yet), not a refusal.
+      return client.isRetryingDial() ? "reconnecting" : client.getStatus().state;
+    },
+    () => {
+      const connectionSnapshot = getConnectionSnapshot();
+      for (const listener of connectionListeners) listener(connectionSnapshot);
+    },
+  );
   const getConnectionSnapshot = () =>
-    manager.getConnectionSnapshot(extraProjectsByTarget());
+    reconnectHold.apply(manager.getConnectionSnapshot(extraProjectsByTarget()));
 
   let managerDispose = () => {};
 
@@ -221,6 +265,8 @@ export function createFederatedWebAdapter({
     path: PropertyKey[];
     args: unknown[];
     detach: (() => void) | null;
+    /** The adapter it is attached to now. */
+    adapter: AdeWebAdapter | null;
   };
   const durableSubscriptions = new Set<DurableSubscription>();
 
@@ -248,6 +294,21 @@ export function createFederatedWebAdapter({
       // A disposed adapter can throw on detach; the attachment dies with it.
     }
     entry.detach = null;
+    entry.adapter = null;
+  };
+
+  /**
+   * Move one recorded subscription to the adapter that serves it now: the
+   * displayed one, or for an account-wide member the computer that answers
+   * those reads. Detach first: overlapping attachments would deliver both
+   * adapters' events to the same listener.
+   */
+  const reattachDurableSubscription = (entry: DurableSubscription): void => {
+    const adapter = adapterForUnpinnedCall(entry.path);
+    if (entry.detach && entry.adapter === adapter) return;
+    detachDurableSubscription(entry);
+    entry.detach = attachDurableSubscription(adapter, entry);
+    entry.adapter = entry.detach ? adapter : null;
   };
 
   /** Record a subscription and hand the caller an unsubscribe that outlives swaps. */
@@ -269,12 +330,7 @@ export function createFederatedWebAdapter({
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
     if (currentAdapter === adapter) return;
     currentAdapter = adapter;
-    for (const entry of durableSubscriptions) {
-      // Detach first: overlapping attachments would deliver both projects'
-      // events to the same listener for the width of this loop.
-      detachDurableSubscription(entry);
-      entry.detach = attachDurableSubscription(adapter, entry);
-    }
+    for (const entry of durableSubscriptions) reattachDurableSubscription(entry);
     for (const listener of activeAdapterListeners) listener();
   };
 
@@ -319,6 +375,53 @@ export function createFederatedWebAdapter({
     adapters.add(adapter);
     return adapter;
   };
+
+  /**
+   * With no machine in front (Home with no project open) the display sits on
+   * `fallbackAdapter`, whose client may not be connected, so an account-wide
+   * read came back empty ("Activity history is unavailable here"). Any
+   * connected computer answers these the same, so one of them does.
+   */
+  const connectedComputerId = (): string | null =>
+    manager.getConnectionSnapshot().connections.find((entry) =>
+      entry.state === "connected" && manager.getClient(entry.target.id) != null)?.target.id ?? null;
+  const needsAnotherComputer = (path: PropertyKey[]): boolean =>
+    currentAdapter === fallbackAdapter
+    && isAccountWideMember(path)
+    && fallbackClient.getStatus().state !== "connected";
+  const adapterForUnpinnedCall = (path: PropertyKey[]): AdeWebAdapter => {
+    if (!needsAnotherComputer(path)) return currentAdapter;
+    const targetId = connectedComputerId();
+    if (!targetId) return currentAdapter;
+    try {
+      return adapterForChats(targetId);
+    } catch {
+      return currentAdapter;
+    }
+  };
+  /** True while no computer can answer yet but one is on its way. */
+  const accountWideReadWaitsForComputer = (path: PropertyKey[]): boolean =>
+    needsAnotherComputer(path)
+    && connectedComputerId() == null
+    && manager.getConnectionSnapshot().connections.some((entry) => entry.state === "connecting");
+  /** Resolves when a computer is connected, or after `timeoutMs`; never rejects. */
+  const waitForConnectedComputer = (timeoutMs: number): Promise<void> => new Promise((resolve) => {
+    let done = false;
+    let dispose: (() => void) | null = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      dispose?.();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    // The manager calls a new listener at once, before `subscribe` returns.
+    dispose = manager.subscribe(() => {
+      if (connectedComputerId()) finish();
+    });
+    if (done) dispose();
+  });
 
   const disposeClosedProjectAdapters = (bindings: RemoteBinding[]) => {
     const referencedKeys = new Set(bindings.map((binding) => binding.key));
@@ -619,7 +722,26 @@ export function createFederatedWebAdapter({
     },
   };
 
+  // Connect on an account machine in the Connections panel. The desktop pairs
+  // through its brain; this tab pairs through its own session manager, the
+  // same path a machine link or a project row takes. A machine this tab
+  // already has a pairing for reconnects with it instead of pairing again.
+  const accountOverrides = {
+    async pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult> {
+      const machine = accountClient.getSnapshot().machines.find((entry) => entry.machineKey === machineKey);
+      if (!machine) throw new Error("This machine is no longer on your account. Refresh the list, then try again.");
+      const session = await manager.connectAccountMachine(machine);
+      return {
+        targetId: session.targetId,
+        machineKey,
+        deviceId: machine.deviceId ?? session.environment.hostDeviceId,
+        name: machine.customName?.trim() || machine.name?.trim() || session.environment.machineName || "This machine",
+      };
+    },
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    account: accountOverrides,
     app: appOverrides,
     personalChats: personalChatsOverrides,
     project: projectOverrides,
@@ -696,7 +818,16 @@ export function createFederatedWebAdapter({
             return () => {};
           }
         }
-        const { parent, value } = readPath(pinnedAdapter ?? currentAdapter, path);
+        if (!pinnedAdapter && !isSubscriptionMember(path) && accountWideReadWaitsForComputer(path)) {
+          // Home reads these once as the page opens, which is before the
+          // first computer has connected.
+          return waitForConnectedComputer(ACCOUNT_WIDE_READ_WAIT_MS).then(() => {
+            const { parent, value } = readPath(adapterForUnpinnedCall(path), path);
+            return typeof value === "function" ? Reflect.apply(value, parent, args) : value;
+          });
+        }
+        const servingAdapter = pinnedAdapter ?? adapterForUnpinnedCall(path);
+        const { parent, value } = readPath(servingAdapter, path);
         if (typeof value !== "function") return value;
         // Some adapter functions are themselves proxies so nested missing APIs
         // can keep resolving. Reflect.apply invokes the callable directly
@@ -712,6 +843,7 @@ export function createFederatedWebAdapter({
           path,
           args,
           detach: result as () => void,
+          adapter: servingAdapter,
         });
       };
       const dynamicFunction = new Proxy(callDynamic, {
@@ -781,6 +913,11 @@ export function createFederatedWebAdapter({
     // Covers both the reconnect that just replaced a client above and a later
     // snapshot in which a machine we were parked off of comes back.
     if (currentAdapter === fallbackAdapter) restoreCurrentAdapterForDisplayedSurface();
+    // An account-wide subscription follows the computer that answers its
+    // reads: the first one to connect, or a new client after a reconnect.
+    for (const entry of durableSubscriptions) {
+      if (isAccountWideMember(entry.path)) reattachDurableSubscription(entry);
+    }
     const connectionSnapshot = getConnectionSnapshot();
     for (const listener of connectionListeners) listener(connectionSnapshot);
     if (workspace.activeSurface !== "project" || !activeBinding) return;
@@ -894,6 +1031,7 @@ export function createFederatedWebAdapter({
     dispose() {
       invalidationDispose();
       managerDispose();
+      reconnectHold.dispose();
       manager.setProtectedTargetId(null);
       for (const entry of durableSubscriptions) detachDurableSubscription(entry);
       durableSubscriptions.clear();

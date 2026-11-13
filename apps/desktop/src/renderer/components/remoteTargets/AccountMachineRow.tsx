@@ -262,7 +262,7 @@ export function AccountMachineRow({
                 </form>
               ) : (
                 <>
-                  <span style={nameStyle} title={machine.adeHome ?? undefined}>
+                  <span className="ade-cx-machine-name" style={nameStyle} title={machine.adeHome ?? undefined}>
                     {installTag ? accountMachineRowName(machine) ?? displayName : displayName}
                   </span>
                   {/* The install is named only when it is not the regular
