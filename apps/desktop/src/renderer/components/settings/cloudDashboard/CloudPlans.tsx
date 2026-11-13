@@ -265,7 +265,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
             const more = below && below.facts.includedMilli > 0 ? Math.floor(column.facts.includedMilli / below.facts.includedMilli) : 0;
             const tag = isCurrent ? <span className="adecd-plancard-tag" data-tone="current">Your plan</span>
               : nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free") ? <span className="adecd-plancard-tag">From {until}</span>
-              : more >= 2 ? <span className="adecd-plancard-tag" data-tone={isNext ? "next" : undefined}>{more}× the hours</span>
+              // Only the plan right above yours: "3× the hours" on a plan further up would read as 3× yours.
+              : isNext && more >= 2 ? <span className="adecd-plancard-tag" data-tone="next">{more}× the hours</span>
               : null;
             return (
               <article
@@ -331,7 +332,12 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Clock size={14} /></span>
-              <p><b>An hour</b> is one hour of a Small computer while it&apos;s awake. Bigger sizes use hours faster.</p>
+              <p>
+                <b>An hour</b> is one hour of a Small computer while it&apos;s awake. Bigger sizes use hours faster (2× uses two).
+                {extraHours.available && currentExtraCents != null
+                  ? ` With extra hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)} times the size's rate.`
+                  : null}
+              </p>
             </div>
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><HardDrives size={14} /></span>

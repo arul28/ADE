@@ -471,12 +471,12 @@ function CloudHero({
             </div>
           </div>
           <div className="adecd-minis">
-            <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
+            <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} title="All your computers together" />
             {/* No plan limits how many computers an account has: a count, with no meter. */}
             <MiniMeter label="Computers" value={String(account.computers.total)} of={null} pct={null} note={`${account.computers.awake} awake now`} />
           </div>
         </div>
-        <div className="adecd-hero-city">
+        <div className="adecd-hero-city" title={lanes.length ? "Height is disk. Lit windows are awake." : undefined}>
           {lanes.length ? (
             <>
               <CloudCity
@@ -484,12 +484,11 @@ function CloudHero({
                 selectedKey={selectedKey}
                 onSelect={onSelect}
                 onOpen={onOpen}
-                label="Your cloud lanes as a city. Arrow keys move, Enter looks inside."
+                label="Your cloud lanes as a city: height is disk, lit windows are awake. Arrow keys move, Enter looks inside."
                 compact
                 maxLabels={3}
                 stars={false}
               />
-              <span className="adecd-city-cap">Height is disk. Lit windows are awake.</span>
             </>
           ) : (
             <div className="adecd-city-empty">
@@ -504,16 +503,14 @@ function CloudHero({
   );
 }
 
-/** `pct` null: a count with nothing to fill toward; the meter's row stays, empty, so the minis line up. */
-function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number | null; note: string }) {
+/** `pct` null: a count with nothing to fill toward, no meter. The last row sits at the bottom, so the two tiles line up. */
+function MiniMeter({ label, value, of, pct, note, title }: { label: string; value: string; of: string | null; pct: number | null; note?: string; title?: string }) {
   return (
-    <div className="adecd-mini">
+    <div className="adecd-mini" title={title}>
       <span className="adecd-label">{label}</span>
       <div className="adecd-mini-num"><b className="kit-num" data-face="ui">{value}</b>{of ? <span>{of}</span> : null}</div>
-      {pct == null
-        ? <div className="kit-meter adecd-meter" aria-hidden="true" style={{ visibility: "hidden" }} />
-        : <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>}
-      <span className="adecd-mini-note">{note}</span>
+      {pct == null ? null : <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>}
+      {note ? <span className="adecd-mini-note">{note}</span> : null}
     </div>
   );
 }
