@@ -212,10 +212,11 @@ extension SyncService {
       var room = initialRoom
       for machine in candidates {
         guard room > 0 else { break }
-        room -= 1
         syncAutoPairedAccountMachines.insert(machine.machineKey)
         switch await pairAccountMachineAlongsidePrimary(machine, authorization: authorization, keepConnected: false) {
         case .success:
+          // Only a pairing that worked takes a slot; a failed one leaves it.
+          room -= 1
           // The new pairing is a copy's machine now: the project keeps it live.
           fleet.scheduleProjectMachinesUpdate()
         case .failure(let failure):
