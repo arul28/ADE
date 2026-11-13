@@ -313,7 +313,8 @@ export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntr
       const before = useLaneShareGuestStore.getState().guestStates[entry.grantId] ?? null;
       void refreshLaneShareGuestState(entry.grantId, { withSessions: true }).then(() => {
         const after = useLaneShareGuestStore.getState().guestStates[entry.grantId] ?? null;
-        const notice = laneShareAccessChangeNotice(before, after, entry.giverLabel);
+        const giver = useLaneShareGuestStore.getState().received?.find((row) => row.grantId === entry.grantId)?.giverLabel ?? null;
+        const notice = laneShareAccessChangeNotice(before, after, giver);
         if (notice) setNotice(entry.grantId, { code: "lane_share_rights_changed", message: notice });
       });
     });

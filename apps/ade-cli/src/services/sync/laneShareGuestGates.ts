@@ -69,6 +69,10 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     onLaneShareEvent?: (event: LaneShareEvent) => void;
     /** This machine's `process.platform` (the default): a Windows host takes no guest CLI typing. */
     platform?: NodeJS.Platform;
+    /** The project folder (staged chat attachments live in its `.ade/attachments`). */
+    projectRoot?: string | null;
+    /** Where a lane's worktree is on this host (guest image and turn diff reads). */
+    laneService?: { getLaneBaseAndBranch(laneId: string): { worktreePath: string } } | null;
   };
   /** The guest host's state and rules. */
   host: {
@@ -454,6 +458,15 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     turnOwners: laneShareTurnOwners,
     resolveSession: resolveLaneShareSession,
     laneState: laneShareLaneState,
+    projectRoot: () => toOptionalString(args.projectRoot) ?? null,
+    laneWorktreePath: (laneId) => {
+      try {
+        return toOptionalString(args.laneService?.getLaneBaseAndBranch(laneId)?.worktreePath) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    historyCutoff: laneShareHistoryCutoffFor,
   });
   const {
     prepareLaneShareGuestCommand,

@@ -3125,6 +3125,7 @@ export type SyncRemoteCommandAction =
   | "chat.getChatEventHistory"
   | "chat.listSubagents"
   | "chat.listPendingInputs"
+  | "chat.getSessionCapabilities"
   | "chat.getSubagentTranscript"
   | "chat.getMainTranscript"
   | "chat.create"

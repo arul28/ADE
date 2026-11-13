@@ -431,11 +431,11 @@ export function LaneShareGuestView({
             type="button"
             className="kit-btn kit-btn-ghost"
             data-size="sm"
-            title="Add the repository of this lane on this computer. The share works without it."
+            title="Clone the repository of this lane to one of your computers. The share works without it."
             onClick={openAddProject}
           >
             <FolderPlus size={13} />
-            Add this project
+            Clone this project
           </button>
         ) : null}
         <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => { void leave(); }}>

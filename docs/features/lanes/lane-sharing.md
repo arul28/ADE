@@ -197,12 +197,15 @@ case a share made by an agent cannot change anything on the host.
   transcript shows "From <name>" under a guest's message
   (`AgentChatMessageList.tsx`), and a guest's draft names its author
   (`draftsFormat.ts`). The owner's own messages stay unlabelled.
-- **Settings › Sharing** (`SharingSettingsPage.tsx`, account level, desktop
-  only): "Shared by me" across every machine of the account, grouped by
-  project; "Shared with me" with Accept, Open and Leave; and **My default
-  rights** (`laneShareDefaults.tsx`, account settings key
+- **Settings › Sharing** (`SharingSettingsPage.tsx`, `sharingSettings.css`,
+  account level, desktop only), three sections on one page: **Lanes you
+  shared** across every machine of the account, grouped by project, one row
+  per person (person, lane, access, state, and a menu with Change access,
+  Re-send invite and Remove access; **Stop sharing all** per project);
+  **Lanes shared with you** with Accept, Open, Decline and Leave; and
+  **Default access** (`laneShareDefaults.tsx`, account settings key
   `laneShare.defaultRights`, scope `all`), the start value of the sheet for a
-  new person. "Shared by me" is read from the account directory
+  new person. "Lanes you shared" is read from the account directory
   (`laneShareGuest.listGiven`, `GET /lane-shares/given`), so it lists every
   share with no project open and no computer online; an online copy of the
   open project adds its own rows' rights, usage and connections. Revoke goes

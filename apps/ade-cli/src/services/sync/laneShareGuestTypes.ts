@@ -148,6 +148,9 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
     laneShareMoves?: LaneShareMoveService | null;
     onLaneShareEvent?: (event: LaneShareEvent) => void;
     platform?: NodeJS.Platform;
+    /** The project folder and the lanes' worktrees: where a guest's image and turn diff reads may look. */
+    projectRoot?: string | null;
+    laneService?: { getLaneBaseAndBranch(laneId: string): { worktreePath: string } } | null;
   };
   peers: ReadonlySet<LaneShareGuestPeer>;
   send(target: WebSocket | LaneShareGuestPeer, type: SyncEnvelope["type"], payload: unknown, requestId?: string | null): boolean;

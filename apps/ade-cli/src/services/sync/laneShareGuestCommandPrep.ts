@@ -1,4 +1,11 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentChatProvider } from "../../../../desktop/src/shared/types/chat";
+import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import { runGit } from "../../../../desktop/src/main/services/git/git";
+import { resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
+import { laneShareEventBeforeCutoff } from "./laneShareGuestScrub";
 import { MAX_DRAFTS, type AdeMessageAuthor } from "../../../../desktop/src/shared/types/chat";
 import { isLaunchProfile, LAUNCH_PROFILE_TOOL_TYPE } from "../../../../desktop/src/shared/cliLaunch";
 import {
@@ -71,7 +78,90 @@ export type LaneShareGuestCommandPrepDeps = {
   turnOwners: ReadonlyMap<string, { userId: string; turnId: string | null }>;
   resolveSession: LaneShareSessionResolver;
   laneState: (laneId: string | null | undefined) => "active" | "archived" | "missing";
+  /** This host's project folder (staged attachments live in its `.ade/attachments`). */
+  projectRoot: () => string | null;
+  /** The worktree of a lane on this host, or null when it has none. */
+  laneWorktreePath: (laneId: string) => string | null;
+  /** The guest's history cutoff (`laneShareHistoryCutoff`), null when it may read the history. */
+  historyCutoff: (role: LaneShareGuestRole) => number | null;
 };
+
+/** Transcript pages (each at most the page budget) a guest's image or diff check reads back at most. */
+const LANE_SHARE_EVENT_SCAN_MAX_PAGES = 16;
+/** Paths one guest connection keeps as "named by this chat" before the cache starts over. */
+const LANE_SHARE_NAMED_PATH_CACHE_MAX = 1_024;
+
+const pathKeyOf = (resolved: string): string => (process.platform === "win32" ? resolved.toLowerCase() : resolved);
+
+/**
+ * A path string as an absolute path on this host, or null: a `file://` URL is
+ * read as the path it names, any other URL or a data URI is not a path, and a
+ * relative path is taken from `base`.
+ */
+function laneShareLocalPath(value: string, base: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 4_096 || trimmed.includes("\0") || /^data:/i.test(trimmed)) return null;
+  let local = trimmed;
+  if (/^file:\/\//i.test(local)) {
+    try {
+      local = fileURLToPath(local);
+    } catch {
+      return null;
+    }
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(local)) {
+    return null;
+  }
+  return path.resolve(path.isAbsolute(local) ? local : path.join(base, local));
+}
+
+/** Whether a relative path (either separator) starts in `.ade/` or passes through `.git`. */
+function laneShareRelIsPrivate(rel: string): boolean {
+  const segments = rel.split(/[\\/]+/).filter((segment) => segment !== "" && segment !== ".");
+  return segments[0]?.toLowerCase() === ".ade" || segments.some((segment) => segment.toLowerCase() === ".git");
+}
+
+/** A path inside `root` (`path.relative` that does not climb and is not on another drive). */
+function laneShareRelInside(root: string, target: string): string | null {
+  const rel = path.relative(root, target);
+  if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)) return null;
+  return rel;
+}
+
+/**
+ * The path a guest asked for, as an event string would name it: the string as
+ * sent, the resolved path's key, its file name's key (a cheap first filter),
+ * and the folder a relative string is read from (the lane's worktree).
+ */
+type LaneShareWantedPath = { raw: string; key: string; name: string; relativeTo: string };
+
+/** Whether any string in a chat event (bounded walk) names the wanted path. */
+function laneShareEventNamesPath(value: unknown, wanted: LaneShareWantedPath, depth = 0): boolean {
+  if (typeof value === "string") {
+    if (value.trim() === wanted.raw) return true;
+    // Cheap first: a string without the file's name is not this path (a
+    // `file://` URL may spell the name percent-encoded).
+    if (!/^\s*file:/i.test(value) && !pathKeyOf(value).includes(wanted.name)) return false;
+    const local = laneShareLocalPath(value, wanted.relativeTo);
+    return local != null && pathKeyOf(local) === wanted.key;
+  }
+  if (!value || typeof value !== "object" || depth > 12) return false;
+  if (Array.isArray(value)) return value.some((entry) => laneShareEventNamesPath(entry, wanted, depth + 1));
+  return Object.values(value as Record<string, unknown>).some((entry) => laneShareEventNamesPath(entry, wanted, depth + 1));
+}
+
+/** A `/`-separated path with no `./` prefix, as the guest gate normalizes one. */
+const slashPath = (value: string): string => value.replace(/\\/g, "/").split("/").filter((segment) => segment !== "" && segment !== ".").join("/");
+
+/** Whether a chat event is the `turn_diff_summary` of these shas that lists `filePath`. */
+function laneShareTurnDiffNames(event: unknown, beforeSha: string, afterSha: string, filePath: string): boolean {
+  if (!event || typeof event !== "object") return false;
+  const record = event as { type?: unknown; beforeSha?: unknown; afterSha?: unknown; files?: unknown };
+  if (record.type !== "turn_diff_summary" || record.beforeSha !== beforeSha || record.afterSha !== afterSha) return false;
+  return Array.isArray(record.files) && record.files.some((file) => {
+    const filePathOf = file && typeof file === "object" ? (file as { path?: unknown }).path : null;
+    return typeof filePathOf === "string" && slashPath(filePathOf) === filePath;
+  });
+}
 
 export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepDeps) {
   const laneShareRights = deps.laneShareRights;
@@ -211,6 +301,134 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
 
   const laneShareRefuse = (message: string, code = "forbidden_command"): LaneSharePrepared =>
     ({ ok: false, refusal: { code, message } });
+
+  /**
+   * Whether a chat event of this session, from the guest's history cutoff on,
+   * passes `matches`: the newest window first (it holds events still being
+   * written), then older transcript pages, newest first, at most
+   * `LANE_SHARE_EVENT_SCAN_MAX_PAGES`. Anything that cannot be read answers no.
+   */
+  async function laneShareSessionEventMatches(
+    sessionId: string,
+    role: LaneShareGuestRole,
+    matches: (event: unknown) => boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const chat = deps.chat();
+    if (!chat) return false;
+    const cutoff = deps.historyCutoff(role);
+    const any = (envelopes: readonly unknown[] | undefined) => (envelopes ?? []).some((envelope) =>
+      !laneShareEventBeforeCutoff(envelope, cutoff) && matches((envelope as { event?: unknown } | null)?.event));
+    try {
+      const snapshot = await chat.getChatEventHistory(sessionId, { signal });
+      if (any(snapshot.events) || any(snapshot.pinnedEvents)) return true;
+      let beforeOffset = snapshot.tailEndOffset;
+      for (let page = 0; page < LANE_SHARE_EVENT_SCAN_MAX_PAGES && typeof beforeOffset === "number" && beforeOffset > 0; page += 1) {
+        if (signal?.aborted) return false;
+        const older = await chat.getChatEventHistoryPage(sessionId, { beforeOffset, signal });
+        if (any(older.events)) return true;
+        if (!older.hasMore || !(older.startOffset < beforeOffset)) break;
+        beforeOffset = older.startOffset;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+
+  /** Paths each guest connection has seen a chat name, per rights object (new rights, new cache). */
+  const namedPathCache = new WeakMap<LaneShareGuestRole, { rights: LaneShareGuestRole["rights"]; keys: Set<string> }>();
+
+  async function laneShareSessionNamesPath(
+    sessionId: string,
+    role: LaneShareGuestRole,
+    wanted: LaneShareWantedPath,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    let cache = namedPathCache.get(role);
+    if (!cache || cache.rights !== role.rights) {
+      cache = { rights: role.rights, keys: new Set() };
+      namedPathCache.set(role, cache);
+    }
+    const cacheKey = `${sessionId}\u0000${wanted.key}`;
+    if (cache.keys.has(cacheKey)) return true;
+    const named = await laneShareSessionEventMatches(sessionId, role, (event) => laneShareEventNamesPath(event, wanted), signal);
+    if (named) {
+      if (cache.keys.size >= LANE_SHARE_NAMED_PATH_CACHE_MAX) cache.keys.clear();
+      cache.keys.add(cacheKey);
+    }
+    return named;
+  }
+
+  /** Whether git ignores any of these paths in the worktree. No answer from git: treated as ignored. */
+  async function laneShareGitIgnores(worktree: string, rels: string[]): Promise<boolean> {
+    const candidates = [...new Set(rels.map(slashPath).filter(Boolean))];
+    if (candidates.length === 0) return true;
+    try {
+      // Exit 0: at least one is ignored. Exit 1: none is. Anything else: no answer.
+      const result = await runGit(["check-ignore", "--quiet", "--", ...candidates], { cwd: worktree, timeoutMs: 10_000 });
+      return result.exitCode !== 1;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * The file a guest's `chat.getImageDataUrl` may read, resolved on this host
+   * (links followed), or null. Only two places:
+   * - the granted lane's worktree, outside its `.ade/` and `.git`: a file git
+   *   does not ignore, or one this chat's own events name;
+   * - the project's staged attachments (`.ade/attachments`), only a file this
+   *   chat's own events name. Nothing else under `.ade/` is ever read.
+   * Events from before the guest's history cutoff do not count. A relative
+   * path is read from the lane's worktree.
+   */
+  async function laneShareGuestImagePath(
+    role: LaneShareGuestRole,
+    sessionId: string,
+    laneId: string,
+    raw: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const projectRoot = deps.projectRoot();
+    const worktree = deps.laneWorktreePath(laneId);
+    if (!projectRoot || !worktree) return null;
+    const requested = laneShareLocalPath(raw, worktree);
+    if (!requested) return null;
+    const wanted: LaneShareWantedPath = {
+      raw,
+      key: pathKeyOf(requested),
+      name: pathKeyOf(path.basename(requested)),
+      relativeTo: worktree,
+    };
+    const named = () => laneShareSessionNamesPath(sessionId, role, wanted, signal);
+
+    // In the lane's worktree: as asked and as resolved, never under `.ade/` or `.git`.
+    const askedRel = laneShareRelInside(path.resolve(worktree), requested);
+    let worktreeReal: string | null = null;
+    let resolved: string | null = null;
+    try {
+      worktreeReal = fs.realpathSync(worktree);
+      resolved = resolvePathWithinRoot(worktree, requested);
+    } catch {
+      resolved = null;
+    }
+    const resolvedRel = resolved && worktreeReal ? laneShareRelInside(worktreeReal, resolved) : null;
+    if (resolved && askedRel != null && resolvedRel != null && !laneShareRelIsPrivate(askedRel) && !laneShareRelIsPrivate(resolvedRel)) {
+      if (!(await laneShareGitIgnores(worktree, [askedRel, resolvedRel]))) return resolved;
+      return (await named()) ? resolved : null;
+    }
+
+    // A staged attachment: only one this chat names.
+    let attachment: string | null = null;
+    try {
+      attachment = resolvePathWithinRoot(projectAttachmentsDir(projectRoot), requested);
+    } catch {
+      attachment = null;
+    }
+    if (!attachment) return null;
+    return (await named()) ? attachment : null;
+  }
 
   function laneShareGuestAuthor(role: LaneShareGuestRole): AdeMessageAuthor {
     return { kind: "guest", userId: role.userId, name: role.name };
@@ -533,6 +751,35 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
           belongs = false;
         }
         return belongs ? { ok: true, args: gateArgs, claim: null } : laneShareRefuse("This is not available on a shared lane.");
+      }
+      case "chat.getImageDataUrl": {
+        // The lane comes from this host's own row of the session (the gate checked it).
+        const laneId = sessionId ? laneShareGuestSessionInfo(role, sessionId, resolveLaneShareSession)?.laneId ?? null : null;
+        const raw = toOptionalString(gateArgs.path);
+        const filePath = laneId && sessionId && raw
+          ? await laneShareGuestImagePath(role, sessionId, laneId, raw, context.signal)
+          : null;
+        if (!filePath) return laneShareRefuse("That image is not part of this shared lane.");
+        return { ok: true, args: { sessionId, path: filePath }, claim: null };
+      }
+      case "chat.getTurnFileDiff": {
+        const laneId = sessionId ? laneShareGuestSessionInfo(role, sessionId, resolveLaneShareSession)?.laneId ?? null : null;
+        const beforeSha = toOptionalString(gateArgs.beforeSha);
+        const afterSha = toOptionalString(gateArgs.afterSha);
+        const filePath = toOptionalString(gateArgs.filePath);
+        if (!laneId || !sessionId || !beforeSha || !afterSha || !filePath || !deps.laneWorktreePath(laneId)) {
+          return laneShareRefuse("This is not available on a shared lane.");
+        }
+        // A provider names commits of any lane (one object store): only a
+        // change this chat's own turn reported, in the lane's worktree.
+        const reported = await laneShareSessionEventMatches(
+          sessionId,
+          role,
+          (event) => laneShareTurnDiffNames(event, beforeSha, afterSha, filePath),
+          context.signal,
+        );
+        if (!reported) return laneShareRefuse("That change is not part of this shared chat.");
+        return { ok: true, args: { ...gateArgs, laneId }, claim: null };
       }
       default:
         return { ok: true, args: gateArgs, claim: null };
