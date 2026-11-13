@@ -3237,6 +3237,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// (`metadata.kind == "continuity_recovery"`). Never a bubble: the user did
   /// not write it. Same rule as desktop `foldContinuityRecovery`.
   var userMessageIsRecoveryHandOff: Bool = false
+  /// True for the message that continues a chat after ADE restarted
+  /// (`metadata.scheduledWake.scheduleId` starts with `update-resume:`).
+  /// Never a bubble: the restart notice already says the agent continues.
+  /// Same rule as desktop `isRestartResumeScheduleId`.
+  var userMessageIsRestartResume: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3318,11 +3323,16 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
     var metadataMarksRecoveryHandOff = false
+    var metadataMarksRestartResume = false
     var metadataGuestAuthorName: String?
 
     private struct MessageAuthor: Decodable {
       var kind: String?
       var name: String?
+    }
+
+    private struct ScheduledWake: Decodable {
+      var scheduleId: String?
     }
 
     private struct MetadataKey: CodingKey {
@@ -3378,6 +3388,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
           && (try? metadata.decodeNil(forKey: sideChatKey)) == false
         metadataMarksRecoveryHandOff =
           (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
+        if let wake = try? metadata.decodeIfPresent(ScheduledWake.self, forKey: MetadataKey("scheduledWake")) {
+          metadataMarksRestartResume = workIsRestartResumeScheduleId(wake.scheduleId)
+        }
         if let author = try? metadata.decodeIfPresent(MessageAuthor.self, forKey: MetadataKey("author")),
            author.kind == "guest" {
           metadataGuestAuthorName = (author.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3451,6 +3464,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
     userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
+    userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.

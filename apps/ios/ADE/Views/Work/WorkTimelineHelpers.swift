@@ -1921,8 +1921,11 @@ func assembleWorkTimeline(
     WorkTimelineEntry(id: row.id, timestamp: row.timestamp, rank: 1_450 + index, payload: .subagent(row), turnId: row.snapshot.turnId)
   })
 
+  // A restart resume draws no schedule row: the restart notice says the
+  // agent continues (desktop `isRestartResumeScheduleId`).
   let scheduleSnapshots = scheduledSnapshots.filter {
     $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "background_task"
+      && !workIsRestartResumeScheduleId($0.id)
   }
   entries.append(contentsOf: scheduleSnapshots.enumerated().map { index, snapshot in
     WorkTimelineEntry(
@@ -2465,6 +2468,9 @@ private let workTurnFoldTrivialEventKinds: Set<String> = [
 private func workTurnFoldNoticeRole(_ card: WorkEventCardModel) -> WorkTurnFoldRole {
   if card.spawnCompletionChildId != nil { return .history }
   if card.tint == .danger { return .keep }
+  // The restart line is the one place the chat says ADE restarted and the
+  // agent continued (the resume message and its wake line draw nothing).
+  if card.kind == "notice", workIsRestartInterruptedNotice(card.title) { return .keep }
   // The card carries the host's raw kind; the metadata label is only the
   // fallback for a card built before it did.
   let kind = card.noticeKind?.lowercased()
@@ -4941,7 +4947,10 @@ func eventCard(
       // composer badge, and Chat Info. Rendering every lifecycle envelope as a
       // normal event card makes mobile chats look much longer than desktop.
       return nil
-    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
+    case .scheduledWorkUpdate(let id, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
+      // A restart resume's "Woke at" line: the restart notice already says
+      // the agent continues (desktop `isRestartResumeScheduleId`).
+      guard !workIsRestartResumeScheduleId(id) else { return nil }
       // Background shell commands are owned by the Chat Info pane's Background
       // section (and a compact timeline finish chip).
       //
@@ -5131,6 +5140,23 @@ func eventCard(
         )
       }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
+      // "ADE restarted while this response was running. …": one quiet line
+      // with its clock time, as on the desktop (`isRestartInterruptedNotice`).
+      // The turn fold keeps it in view (`workTurnFoldNoticeRole`).
+      if workIsRestartInterruptedNotice(message) {
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "notice",
+          title: message.trimmingCharacters(in: .whitespacesAndNewlines),
+          icon: "arrow.clockwise",
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: [],
+          noticeKind: kind
+        )
+      }
       // A spawn notice whose subagent card is inline draws nothing: the card
       // is the announcement (desktop `isInlineCardSpawnNotice`).
       guard !workNoticeHasInlineSubagentCard(detail) else { return nil }
@@ -5396,6 +5422,18 @@ func eventCard(
 func isLowSignalWorkReasoning(_ text: String) -> Bool {
   let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return normalized.isEmpty || normalized == "thinking through the answer"
+}
+
+/// The resume ADE arms after any restart (an update, a crash) has the fixed
+/// id `update-resume:<session>`. Same as desktop `isRestartResumeScheduleId`.
+func workIsRestartResumeScheduleId(_ scheduleId: String?) -> Bool {
+  scheduleId?.hasPrefix("update-resume:") == true
+}
+
+/// A notice the host's `restartInterruptedNotice` wrote. Same as desktop
+/// `isRestartInterruptedNotice`.
+func workIsRestartInterruptedNotice(_ message: String?) -> Bool {
+  message?.hasPrefix("ADE restarted while ") == true
 }
 
 func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?) -> Bool {
