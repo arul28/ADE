@@ -763,11 +763,11 @@ client version and for work nobody watches
 
 - **`ade_cloud_action`**: one per decided action. `action` is `create`,
   `move`, `copy`, `tier_change`, `grow`, `delete`, `plan_change` or
-  `refused`; `plan` is `free`, `plus` or `pro`; `origin` is `person`,
+  `refused`; `plan` is `free`, `plus`, `pro` or `max`; `origin` is `person`,
   `agent` (the computer was made by an agent's chat, or an agent deleted it)
-  or `system` (the computer's own disk grower, the 30-day delete); `tier` is
+  or `system` (the computer's own disk grower, the idle cleanup); `tier` is
   `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
-  (`out_of_hours`, `computer_limit`, `plan_disk`, `needs_approval`,
+  (`out_of_hours`, `awake_cap`, `plan_disk`, `needs_approval`,
   `extra_off`, `monthly_limit`, `tier_limit`, `owner_limit`, `over_plan_disk`) and
   `refused_action` (`create`, `move`, `copy`, `tier_change`, `grow`, `wake`).
   The uuid comes from the account, the action, a key (the instance id, hashed
@@ -785,6 +785,16 @@ client version and for work nobody watches
   and `referrer_rewarded`), `reward_refused` (with `reason` `same_computer` or
   `friend_computer_used`) or `cap_reached` (the referrer's 10th reward). One
   per account, step, reason and hour.
+- **`ade_cloud_idle_cleanup`** (`idleCleanup.ts`): `step` is `warned`,
+  `emailed` (a follow-up), `saved`, `push_refused` (with `reason`, a closed
+  code such as `push_left_work`, `check_left_work`, `prepare_stop_failed`,
+  `wake_failed`), `deleted` or `kept` (with `how`: `button`, `used`,
+  `hours_back`); `plan` is the account's plan. One per account, step,
+  computer (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.idle_cleanup_warned`, `_kept`, `_came_back`, `_held`, `_deleted`;
+  Sentry: `cloud.idle_cleanup_push_refused`, `_save_failed`, `_delete_failed`,
+  `_email_failed`, `_run_failed`, `_account_failed`, `_log_failed`,
+  `_unclaim_failed`, `_report_failed`, `cloud.idle_cleanup_put_back_failed`.
 - **`ade_cloud_free_plan`** (`freePlan.ts`): `step` is `claimed`, `restored`
   (a refused account claimed a computer of its own), `refused` (the computer
   already gave another account its free hours), `id_unreadable` or
@@ -2339,6 +2349,13 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 `/download/*` Vercel redirect endpoints are deliberately analytics-free — the
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
+
+The pricing page (`/pricing`, screen `pricing`) reuses the same events: each
+plan card's button records the CTA event with `choose_plan_free`,
+`choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
+`pricing_page` (it opens the install dialog, which records its own feature
+event), and every link to the page (site header, home page masthead and
+ADE Cloud teaser, footer) records the `view_pricing` feature.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

@@ -86,7 +86,8 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
-| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
+| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
 | CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
 | The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
@@ -164,16 +165,42 @@ The server's `plans.ts` holds them, and `GET /cloud/account` sends them in
 `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 `shared/adeCloud.ts` fills gaps from an older server).
 
-| Plan | Price | Hours a month | Disk at one time | Computers at one time |
-|---|---|---|---|---|
-| Free | $0 | 50 | 12 GB shared | 3 |
-| Plus | $5 | 500 | 40 GB | 10 |
-| Pro | $20 | 1,500 | 120 GB | 30 |
+| Plan | Price | Hours a month | Disk at one time | Phone minutes | Extra hours |
+|---|---|---|---|---|---|
+| Free | $0 | 100 | 12 GB | 20 | none: work stops |
+| Plus | $5 | 300 | 30 GB | 30 | 2¢ an hour |
+| Pro | $20 | 1,600 | 80 GB | 160 | 1.5¢ an hour |
+| Max | $50 | 5,000 | 175 GB | 500 | 1.2¢ an hour |
 
-Hours are Small-computer hours. Disk and computers are what the account has
-at one time, never a monthly amount. The account says `plan: "free" | "paid"`
-for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
-`past_due` account follows the free rules but keeps what it has.
+Hours are Small-computer hours. Disk is what the account's computers hold at
+one time, never a monthly amount. No plan limits how many computers an
+account has (Cloud 7). The account says `plan: "free" | "paid"` for older
+builds and `planId: "free" | "plus" | "pro" | "max"` for new ones; a
+`past_due` account follows the free rules but keeps what it has. Phone
+minutes are shown on the plan table only; nothing meters them yet.
+
+- **Cloud 7 terms, from each account's next period** (migration 0033,
+  `old_plan_terms`): accounts that existed before keep Plus's 40 GB and Pro's
+  120 GB until their next period starts, so nobody is cut mid-period. Hours
+  are stored per period (`included_milli`), so the new hours (Free 100,
+  Plus 300, Pro 1,600) also start with the next period.
+- **Extra hours** are one flat price per plan (2¢, 1.5¢, 1.2¢), each its own
+  Stripe metered price on the one extra-hours meter
+  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`). Checkout uses the plan's
+  price. An upgrade moves the subscription's hours item to the new plan's
+  price at once; a downgrade or a subscription still on the old graduated
+  price (1¢, then 0.85¢) and the old $1 disk price moves at its next renewal
+  (`moveMeteredItems`, `cloud.metered_price_moved`).
+- **Awake cap (hidden):** about 25 computers awake at once per account
+  (`AWAKE_COMPUTER_CAP`). It is never shown as a plan limit. A wake waits up
+  to 12 seconds for room (another computer going to sleep), then answers 429
+  `too_many_awake` with a plain sentence; a create, copy, resize wake or
+  sign-in wake past it is refused at once. Each refusal reports
+  `cloud.awake_cap_reached`; the 10-minute owner check reports
+  `cloud.awake_cap_passed` (traffic wakes the server can't stop) and adds an
+  owner alert line. Older builds still read `computers.limit`: the server
+  sends `max(25, computers + 1)` there, so their "computers full" check never
+  blocks.
 
 - **Sizes:** the main list is Small (standard 2/4, 1x, disk up to 12 GB),
   Medium (standard 4/8, 2x, 20 GB), Large (full 4/8, 5x, 50 GB) and X-Large
@@ -181,16 +208,17 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
 - **Changing plans:** Plus to Pro applies now, charges the difference for the
   rest of the period, and keeps the hours used. Pro to Plus applies at the
-  period end (`billing.nextPlanId`). A downgrade is never refused: over
-  Plus's computers or disk, the answer carries `cleanup`, what Plus's limits
-  will free (see **A cheaper plan's limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
+  period end (`billing.nextPlanId`); the same for Max to Pro or Plus. A
+  downgrade is never refused: over the cheaper plan's disk, the answer
+  carries `cleanup`, what that plan's disk will free (see **A cheaper plan's
+  limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
   subscription itself: Stripe's portal can't switch a subscription with more
   than one item.
 - **Not set up yet:** Pro and extra disk are offered only once their Stripe
   prices are set. Until then `catalog.plans.plus`/`pro`,
   `catalog.extraDiskCentsPer10GbMonth` and `account.extraDisk` are absent, a
   checkout for Pro is a 400 and the extra-disk route is a 404.
-- **Extra disk** (Plus and Pro): disk past the plan's, $1 for each 10 GB a
+- **Extra disk** (Plus, Pro and Max): disk past the plan's, $2 for each 10 GB a
   month, counted by the day on the day's peak (`cloud_disk_days`, its own
   Stripe meter). It starts undecided; the first grow past the plan is refused
   with reason `needs_approval` and ADE asks once. On, a grow passes only
@@ -207,17 +235,18 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   cancelled plan rolls to it; `past_due` does not count) with more than 12 GB
   keeps its computers but they stay stopped: a wake, a command, an update and
   a new timed wake are refused with 402 `over_plan_disk`, except the short
-  "Push all work to GitHub" wake, which does not restart the 30-day delete
+  "Push all work to GitHub" wake, which does not restart the idle cleanup's
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
-  and the 30-day delete of unused computers still runs. The owner report
+  and the idle cleanup of unused computers still runs. The owner report
   lists these accounts. A cheaper plan's limits apply too (below).
 - **A cheaper plan's limits** (`planCleanup.ts`, migrations 0027 and 0032;
   the owner's rules of 2026-11-13): ADE never removes a computer on its own,
   and there is no grace period. Disk that extra disk covers counts as
   fitting; a `past_due` account is never cleaned.
-  - **In ADE (Pro to Plus):** a move that fits asks nothing special. A move
-    that would leave more computers or disk than Plus allows
-    (`downgradePreviews.plus`) opens a question first
+  - **In ADE (a move to a cheaper paid plan):** only disk counts. A move
+    that fits asks nothing special. A move that would leave more disk than
+    the cheaper plan allows (`downgradePreviews.plus` / `.pro`) opens a
+    question first
     (`CloudPlanLimitsDialog.tsx`): "I'll clean up myself" (nothing changes;
     it lists the oldest computers whose delete would be enough) or "Let ADE
     handle it" (a "Push all work to GitHub first" switch, on by default, and
@@ -251,6 +280,73 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
     computer. After the pick, an email names each computer and the branch its
     work went to, and the account carries `planCleanupDone` for 14 days. The
     phone shows the notices and sends the person to the desktop to pick.
+- **Idle cleanup** (`idleCleanup.ts`, migration 0034; the owner's rules for
+  Cloud 7, replacing the 30-day delete). Idle means not awake since the later
+  of `last_awake_at` (or creation), `hours_restored_at` and `idle_kept_at`.
+  Free: warned at 2 days idle (email and in ADE, "deleted in 1 day"), one
+  more email about 6 hours before, deleted at 3 days. Paid (Plus, Pro, and a
+  `past_due` paid account): warned at 7 days ("deleted in 3 days"), one email
+  a day, deleted at 10 days. The minute cron runs it.
+  - **Never sooner than promised.** The warning stores the delete time it
+    announced (`idle_deletes_at`); the delete waits for it and for the last
+    email plus a gap (5 hours free, 20 hours paid). A late first warning still
+    gives the full lead. A plan change re-times it: the delete is the later
+    of the announced time and the new plan's rule, so an upgrade moves it
+    later (and warns again at the new plan's warning time) and a downgrade
+    never moves it earlier.
+  - **Never for** an account out of hours or without access, a computer that
+    is awake, pending, moving or updating, or one with a timed wake-up booked
+    (a `cloud_wakes` row: a chat's scheduled wake-up or an automation's
+    schedule, up to 32 days ahead; the wake itself counts as use). Using it
+    (`last_awake_at`), its hours coming back, or "Keep it" (`POST
+    /cloud/instances/:id/keep`, no wake, no hours) void the warning and
+    restart the clock; a booked wake-up voids it too (kept, `scheduled`). The
+    warning's and each follow-up's claim also checks that none of these
+    happened since the tick read the row.
+  - **Emails.** Paid follow-ups go out at 2 days and 1 day before the delete
+    (anchored on the delete time, so a late tick never pulls the next one
+    earlier). A send that fails keeps its claim, is reported (Sentry
+    `cloud.idle_cleanup_email_failed`, step `failed`), and never blocks the
+    steps after it; the in-app warning stands.
+  - **Save first.** In a free wake (as an update's), the computer's own ADE
+    stops its agents, saves its chats, commits with "saved by ADE before
+    cleanup" (`ade cloud push-work --message`) and does a normal push to each
+    lane's own branch (never force, no extra branch; `git add -A` leaves out
+    what git ignores), then a `work-state` read must find nothing left
+    (`pushAllWork`). If it doesn't go through, the computer is kept
+    (`idle_held_at`/`idle_held_reason`): one email and an in-app notice say
+    why, what to do and when ADE tries again (`held.retryAt`), Sentry gets
+    `cloud.idle_cleanup_push_refused` or `cloud.idle_cleanup_save_failed`,
+    and each failure in a row doubles the wait (1, 2, 4 ... days, at most
+    14; `idle_held_count`). A run that fails after the save (the provider
+    refuses the delete, or anything throws) records `idle_failed_at` and
+    waits 1, 2, 4 ... hours (at most a day) before it runs again. Used while
+    the save ran (Keep it, hours back, a booked wake-up, or a start, command
+    or sign-in through the account server, which marks `last_awake_at` while
+    `idle_claimed_at` is held), it isn't deleted; one the person started
+    stays awake for them, any other goes back to rest.
+  - **The lane stays** as a lane without a computer, reason `idle_cleanup`;
+    its chats stay and the next message makes a new computer from the branch.
+    The delete is `system` with reason `idle_cleanup`.
+  - **Ignored files.** At its idle step the computer reports, with its disk
+    report, a summary of what git ignores in its lanes (`ignored` on `POST
+    /cloud/instances/:id/disk-usage`: up to 10 paths, the likely precious
+    such as `.env` and local databases first, a count of the rest, build and
+    install folders only counted; `cloudIgnoredFiles.ts`). The server keeps
+    it (`ignored_files_json`) and the warning lists it, or says it isn't
+    known yet. A lane that can't be read (a timeout) marks the summary
+    `incomplete`, and the warning says there may be more; entries past
+    5,000 in a lane count in `more`.
+  - **Where it shows:** `account.dueForDeletion` (`CloudIdleCleanupEntry`:
+    when, the lane and branch, the idle days, the ignored files, `held`).
+    The dashboard shows a notice per computer with "Keep it" and a mark on
+    the lane row (`CloudIdleCleanupNotice.tsx`); the lane's chat header cloud
+    button gets a dot and a "Keep it" entry; the phone shows the notice and
+    says to send a message in the lane or keep it from the desktop.
+  - **Once per step:** every warning and email is claimed with a conditional
+    update before it is sent, and the save-and-delete with `idle_claimed_at`,
+    so overlapping cron ticks do it once. Each step writes a row to
+    `cloud_idle_cleanup_log`, which the owner report counts.
 - **Timed wake-ups cancelled:** when a blocked account's timed wakes are
   deleted (0 hours, or the free plan over its disk), the person gets one
   email a period, and the account carries `timedWakesCancelled` while that
@@ -331,6 +427,41 @@ logged dev constant without it) and keeps only that.
   sentence }`; the sentence is set only while refused on the free plan's rules.
 - Account deletion keeps the claim (re-making an account must not give the
   computer's free hours again) and deletes the computers seen and the invite code.
+
+**One free plan per GitHub account.** Migration `0035`, `freePlanGithub.ts`.
+On a free plan, free hours need a connected GitHub account at least 30 days
+old (`CLOUD_FREE_GITHUB_MIN_AGE_MS`). GitHub's `created_at` is read once from
+`GET /user` (at connect, adopt, or on the first settle) into
+`github_account_ages`; a failed read is retried with a backoff (5 minutes,
+doubling to 6 hours), never refused or granted for good. `cloud_free_github_claims`
+is unique on both the GitHub user id and the ADE account, like the computer
+claim, so a GitHub account switch never feeds two free plans and a lost race
+is refused. The settle runs with the computer claim (account read, creates,
+launches) and only while the GitHub App is configured. A hold
+(`free_github_hold`: `no_github`, `github_too_new`, `github_used`,
+`github_checking`) keeps `included_milli` at 0; paid plans, earned and extra
+hours are untouched. Accounts that used ADE Cloud before the rules are
+`free_github_exempt` (they still claim their GitHub account). A too-new
+GitHub account can start now with a card saved at no charge:
+`POST /cloud/billing/free-unlock` opens a Stripe Checkout in setup mode (or
+unlocks at once when a card is already on file, a past subscription counts);
+the webhook checks the SetupIntent succeeded and sets
+`free_card_unlocked_at`, kept if the card is removed later. The account read
+carries `freePlan.github` (`state`, `oldEnoughAt`, `canUnlockWithCard`,
+`githubLogin`, `sentence`); desktop (plan card and hero), CLI, the lane-start
+refusal and the `ade-cloud` skill show it; the phone states it without the
+card. PostHog `ade_cloud_free_plan` steps `github_*`, `card_unlock_started`,
+`card_unlocked`.
+
+**Abuse lines in the daily report.** `abuseSignals.ts`. A computer's brain
+samples CPU once a minute in its keep-awake check (`cloudSustainedCpu.ts`)
+and, after two hours at 85% or more with no chat turn or agent working, sends
+`POST /cloud/instances/:id/cpu-report` (again every six hours). It reports on
+itself, and a long build in a terminal looks the same, so the line is for a
+person to look at. Sign-up bursts: the Clerk `user.created` client IP is
+stored only as a Worker-keyed HMAC (`cloud_signup_ips`, kept 7 days), and 5
+or more sign-ups from one address in any hour make a line
+(`SIGNUP_BURST_PER_IP_HOUR`).
 
 **Referrals.** One invite code per account (`cloud_invite_codes`, 8 characters
 without 0/O/1/I/L), link `https://ade-app.dev/invite/<CODE>`, made at the
@@ -829,7 +960,7 @@ Each call is account level: it names a computer of the account, never a pin.
   work-state` lists the lanes with uncommitted or unpushed work, the same check
   as `ade cloud push-work --check`, and pushes nothing. Then the server deletes the
   computer with `keepLane` and keeps a lane without a computer
-  (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
+  (`cloud_lanes_without_computer`, migration 0021). The idle cleanup keeps the
   lane the same way. A new computer made for the same lane id ends the row.
 - **Tier change.** In place when the kind stays (resize), else a move to the
   other kind. The provider refuses a resize of a sleeping computer, so the
@@ -944,7 +1075,7 @@ channel's image, only when nothing runs on them. The server's rules are in
   daily reconcile already leave out. The boot report closes the window, so
   hours count from then on; a computer the cron woke only for the update
   sleeps at its first idle check. Asleep, the update does not reset the
-  30-day delete clock. A person's update is metered as before.
+  idle cleanup's clock. A person's update is metered as before.
 - **What people see.** Where another machine has an Update button (Settings
   "Update other machines", the General page rows, the Machines list), a cloud
   computer shows one line: "Updates itself when idle", "Updating…", or

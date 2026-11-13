@@ -47,7 +47,11 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | The sentence says | Next step |
 |---|---|
 | out of ADE Cloud hours | Tell the person. Hours come back on `hours.resetsAt`. |
-| using all N (or your one) ADE Cloud computers | Propose a cleanup (section 5). |
+| too many of your computers are awake at once | Put a computer you aren't using to sleep (`ade cloud sleep`), then try again. No plan limits how many computers there are. |
+| Free hours need a GitHub account | The person connects GitHub in Settings › Integrations › GitHub. |
+| Your GitHub account is new, so free hours start on | Tell the person the day. They can add a card (no charge) in Settings › ADE Cloud to start now. Never add one yourself. |
+| This GitHub account already has a free plan | Tell the person. Only a paid plan gives hours here; never make another account. |
+| ADE couldn't check your GitHub account | Try again in a few minutes. |
 | ADE Cloud disk space is full | Propose a cleanup (section 5). |
 | Sign in to ADE to use ADE Cloud | The person signs in to ADE in the app. |
 | isn't available on this account | Tell the person. Never ask for a key. |
@@ -63,6 +67,13 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 Propose a cleanup to the person first: which lanes, and why each is safe (its
 pull request is merged, nothing is unpushed, unused for long, `deletesAt`).
 Delete nothing without their yes. Deleting a lane deletes its computer.
+
+ADE Cloud deletes unused computers on its own: on Free after 3 days unused
+(warned at 2), on a paid plan after 10 (warned at 7). It commits and pushes
+each lane's work to the lane's branch first and keeps the lane; a push that
+doesn't go through keeps the computer. Files git ignores (`.env`, a local
+database) are never pushed. `dueForDeletion` in the account lists the
+warnings; using the computer, or "Keep it" in Settings › ADE Cloud, keeps it.
 
 ## Never
 

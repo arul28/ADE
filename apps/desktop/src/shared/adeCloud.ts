@@ -6,6 +6,8 @@ import type {
   CloudDiskUsageItem,
   CloudDiskUsageKind,
   CloudDiskUsageReport,
+  CloudIdleCleanupEntry,
+  CloudIgnoredFiles,
   CloudLaneWork,
   CloudHoursState,
   CloudPaidPlanId,
@@ -16,13 +18,17 @@ import type {
   CloudPlanCleanupPick,
   CloudPlanFacts,
   CloudPlanId,
+  CloudSustainedCpuReport,
   CloudTimedWakesCancelled,
 } from "../../../account-directory/src/cloud/contract";
 import { CLOUD_INVITE_REFUSAL_REASONS, formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
 import type {
   CloudEarnedHours,
   CloudFreePlan,
+  CloudFreePlanGithub,
+  CloudFreePlanGithubState,
   CloudFreePlanState,
+  CloudFreeUnlockResult,
   CloudInviteRedeemResult,
   CloudInviteRefusalReason,
   CloudReferralSummary,
@@ -32,13 +38,25 @@ export {
   CLOUD_REFERRAL_ENTER_DAYS,
   CLOUD_REFERRAL_REWARD_LIMIT,
   CLOUD_REFERRAL_REWARD_MILLI,
+  CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
+  cloudFreeGithubSentence,
   cloudFreePlanRefusedSentence,
+  formatCloudFreeGithubDay,
   cloudInviteLink,
   parseCloudInviteCode,
 } from "../../../account-directory/src/cloud/contract";
-export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanState, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary };
+export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanGithub, CloudFreePlanGithubState, CloudFreePlanState, CloudFreeUnlockResult, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary, CloudSustainedCpuReport };
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
 export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
+/** The idle cleanup's shared sentences (the server's emails say the same). */
+export {
+  CLOUD_IGNORED_FILES_MAX_PATHS,
+  idleCleanupHeldNext,
+  idleCleanupSaveSentence,
+  idleCleanupWhen,
+  ignoredFilesList,
+  ignoredFilesSentence,
+} from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
 
@@ -133,12 +151,12 @@ const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
   ],
   // Only what every server sells: Pro and extra disk are offered only when the server sends them.
   plans: {
-    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 12, priceUsd: 0 },
-    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
+    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
+    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
-  extraHourCents: 1,
+  extraHourCents: 2,
 };
 
 /**
@@ -165,27 +183,48 @@ export function cloudCatalogHasPro(catalog: CloudCatalog): catalog is CloudCatal
   return catalog.plans.plus != null && catalog.plans.pro != null;
 }
 
-/** Which plan the account has: `plus` for a paid account from a server that predates Pro. */
+/** True when the server sells Max too (it sends Max's facts only once its price is set). */
+export function cloudCatalogHasMax(catalog: CloudCatalog): catalog is CloudCatalog & { plans: { plus: CloudPlanFacts; pro: CloudPlanFacts; max: CloudPlanFacts } } {
+  return cloudCatalogHasPro(catalog) && catalog.plans.max != null;
+}
+
+const PAID_PLAN_IDS: readonly CloudPaidPlanId[] = ["plus", "pro", "max"];
+export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => (PAID_PLAN_IDS as readonly unknown[]).includes(value);
+
+/** Which plan the account has: `plus` for a paid account from a server that predates Pro, or one naming a plan this build doesn't know. */
 export function cloudPlanIdOf(account: Pick<CloudAccountState, "plan" | "planId">): CloudPlanId {
-  if (account.planId === "free" || account.planId === "plus" || account.planId === "pro") return account.planId;
+  if (account.planId === "free" || isPaidPlanId(account.planId)) return account.planId;
   return account.plan === "paid" ? "plus" : "free";
 }
 
 /** The facts of the account's plan, from what the server sent: a server before Pro has only `free` and `paid`. */
 export function cloudPlanFactsOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): CloudPlanFacts {
-  const byId = account.planId === "plus" || account.planId === "pro" ? catalog.plans[account.planId] : undefined;
+  const byId = isPaidPlanId(account.planId) ? catalog.plans[account.planId] : undefined;
   return byId ?? catalog.plans[account.plan];
 }
 
-/** "Free", "Plus" or "Pro"; a paid account on a server before Pro keeps its old name, "$5 plan". */
+/** "Free", "Plus", "Pro" or "Max"; a paid account on a server before Pro keeps its old name, "$5 plan". */
 export function cloudPlanLabelOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): string {
-  if (account.planId === "plus" || account.planId === "pro") return CLOUD_PLAN_LABELS[account.planId];
+  if (isPaidPlanId(account.planId)) return CLOUD_PLAN_LABELS[account.planId];
   return account.plan === "paid" ? `$${catalog.paidPriceUsd} plan` : CLOUD_PLAN_LABELS.free;
 }
 
-export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro" };
+/**
+ * What one extra hour costs on `planId`, in cents, or null when it has none
+ * (the free plan). A server before per-plan prices sends one price for all.
+ */
+export function cloudExtraHourCentsOf(planId: CloudPlanId, catalog: CloudCatalog): number | null {
+  if (planId === "free") return null;
+  const own = catalog.plans[planId]?.extraHourCents;
+  return own === undefined ? catalog.extraHourCents : own;
+}
+
+/** "2¢", "1.5¢": an extra hour's price as people read it. */
+export const formatCloudCentsPerHour = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
+
+export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max" };
 /** Plan order, cheapest first: whether a move between two plans is up or down. */
-export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2 };
+export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2, max: 3 };
 
 /** Hours of a Small computer this size uses per hour awake. */
 export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
@@ -742,7 +781,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming, CloudPlanFacts, CloudPlanId };
 export type { CloudPlanCleanup, CloudPlanCleanupComputer, CloudPlanCleanupDone, CloudPlanCleanupPick, CloudTimedWakesCancelled };
-export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
+export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudIdleCleanupEntry, CloudIgnoredFiles, CloudLaneWork };
 
 /**
  * What opening checkout did: a browser page opened, or the plan changed
@@ -805,9 +844,26 @@ export function formatCloudGb(gb: number): string {
 /** Whether the account gets the free plan's hours. An older server gives every account the free plan: `unclaimed`. */
 export function cloudFreePlanOf(account: Pick<CloudAccountState, "freePlan"> | null | undefined): CloudFreePlan {
   const state = account?.freePlan?.state;
-  if (state !== "claimed" && state !== "refused" && state !== "unclaimed") return { state: "unclaimed", sentence: null };
+  const github = cloudFreePlanGithubOf(account?.freePlan?.github);
+  if (state !== "claimed" && state !== "refused" && state !== "unclaimed") return { state: "unclaimed", sentence: null, github };
   const sentence = account?.freePlan?.sentence;
-  return { state, sentence: typeof sentence === "string" && sentence ? sentence : null };
+  return { state, sentence: typeof sentence === "string" && sentence ? sentence : null, github };
+}
+
+const FREE_GITHUB_STATES = new Set<string>(["ok", "no_github", "too_new", "used", "checking"]);
+
+/** The free plan's GitHub rules from any answer; an older server (or an unknown state) reads as `ok`. */
+export function cloudFreePlanGithubOf(value: unknown): CloudFreePlanGithub {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const state = typeof raw?.state === "string" && FREE_GITHUB_STATES.has(raw.state) ? raw.state as CloudFreePlanGithubState : "ok";
+  if (state === "ok") return { state, oldEnoughAt: null, canUnlockWithCard: false, githubLogin: null, sentence: null };
+  return {
+    state,
+    oldEnoughAt: typeof raw?.oldEnoughAt === "number" && Number.isFinite(raw.oldEnoughAt) ? raw.oldEnoughAt : null,
+    canUnlockWithCard: raw?.canUnlockWithCard === true,
+    githubLogin: typeof raw?.githubLogin === "string" && raw.githubLogin ? raw.githubLogin : null,
+    sentence: typeof raw?.sentence === "string" && raw.sentence ? raw.sentence : null,
+  };
 }
 
 /** The account's referral summary, or null when the server sent none (an older server, or it couldn't build one). */
@@ -847,7 +903,7 @@ export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   if (typeof raw.sentence !== "string") return null;
-  if (raw.planId !== "free" && raw.planId !== "plus" && raw.planId !== "pro") return null;
+  if (raw.planId !== "free" && !isPaidPlanId(raw.planId)) return null;
   const text = (entry: unknown): string | null => (typeof entry === "string" && entry ? entry : null);
   const computersOf = (list: unknown): CloudPlanCleanupComputer[] => (Array.isArray(list)
     ? list.flatMap((entry): CloudPlanCleanupComputer[] => {
@@ -871,8 +927,6 @@ export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
     ...(Array.isArray(raw.choices) ? { choices: computersOf(raw.choices) } : {}),
     usedGb: finite(raw.usedGb),
     limitGb: finite(raw.limitGb),
-    computerCount: finite(raw.computerCount),
-    computerLimit: finite(raw.computerLimit),
     startsAt: typeof raw.startsAt === "number" && Number.isFinite(raw.startsAt) ? raw.startsAt : null,
     freeing: freeing && typeof freeing.push === "boolean" && Array.isArray(freeing.instanceIds) && typeof freeing.at === "number"
       ? { push: freeing.push, at: freeing.at, instanceIds: freeing.instanceIds.filter((id): id is string => typeof id === "string") }
@@ -928,7 +982,7 @@ export async function cloudDomainEnabled(
 /** "412" or "49.5" hours from thousandths. */
 export function formatCloudHours(milli: number): string {
   const hours = Math.max(0, milli) / 1000;
-  return hours >= 100 ? String(Math.floor(hours)) : String(Math.floor(hours * 10) / 10);
+  return hours >= 100 ? Math.floor(hours).toLocaleString("en-US") : String(Math.floor(hours * 10) / 10);
 }
 
 /** The banner for an account, or null when there is nothing to warn about. */
@@ -942,6 +996,10 @@ export type CloudAccountBanner = {
 export function formatCloudDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 }
+
+/** The account banner while the free plan's GitHub rules hold its hours (the dashboard's plan card says it there). */
+export const CLOUD_FREE_GITHUB_BANNER_ID = "cloud-free-github";
+export const CLOUD_FREE_REFUSED_BANNER_ID = "cloud-free-refused";
 
 /** "You're out of hours", "You've used 95%", a failed payment: one banner, the most urgent. */
 export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
@@ -960,6 +1018,16 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
   if (overPlanDisk) {
     return { id: "cloud-over-plan-disk", tone: "warning", title: "Your computers can't wake", detail: overPlanDisk };
   }
+  // The free plan's GitHub rules hold its hours: they don't come back at the reset, so say why instead.
+  const github = account.rules === "free" ? cloudFreePlanOf(account).github : undefined;
+  if (account.hours.state === "zero" && github && github.state !== "ok" && github.sentence) {
+    return { id: CLOUD_FREE_GITHUB_BANNER_ID, tone: "warning", title: "Free hours wait on GitHub", detail: github.sentence };
+  }
+  // Another account already used this computer's free plan: those hours never come back at the reset, so never say "until Dec 1".
+  const freePlan = account.rules === "free" ? cloudFreePlanOf(account) : undefined;
+  if (account.hours.state === "zero" && freePlan?.state === "refused" && freePlan.sentence) {
+    return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: "No free hours on this account", detail: freePlan.sentence };
+  }
   if (account.hours.state === "zero") {
     return {
       id: "cloud-hours-zero",
@@ -967,6 +1035,8 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       title: "You're out of ADE Cloud hours",
       detail: account.extraHours.available
         ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
+        : cloudCatalogHasMax(catalog)
+          ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
         : cloudCatalogHasPro(catalog)
           ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
           : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,
