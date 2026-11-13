@@ -1,6 +1,5 @@
 import type {
   AgentChatEventEnvelope,
-  AgentChatSession,
   AgentChatSessionSummary,
   PersonalChatAction,
   PersonalChatCallArgs,
@@ -10,6 +9,7 @@ import type {
 } from "../../../shared/types";
 import type { AgentChatApi, MachineBoundAgentChatApi } from "../chat/agentChatApi";
 import { CONSERVATIVE_ATTACHMENT_STAGING_MODE } from "../chat/chatAttachmentStaging";
+import { boundChatRefusal, boundChatRefusals, sessionFromSummary, type PartialAgentChatApi } from "../chat/boundAgentChatApi";
 
 /**
  * `window.ade.agentChat`, re-pointed at the machine's personal-chat scope.
@@ -58,20 +58,8 @@ export function personalEnvelopeFromPayload(payload: Record<string, unknown>): A
   return null;
 }
 
-/** The pane reads `created.id`; personal `create` answers with a summary. */
-function sessionFromSummary(summary: AgentChatSessionSummary): AgentChatSession {
-  return { ...summary, id: summary.sessionId } as unknown as AgentChatSession;
-}
-
-/**
- * What the personal adapter implements: a subset of the project chat API,
- * signature for signature (one level deep, so `codex.*` can be partial too).
- */
-export type PersonalAgentChatApi = {
-  [K in keyof AgentChatApi]?: AgentChatApi[K] extends (...args: never[]) => unknown
-    ? AgentChatApi[K]
-    : Partial<AgentChatApi[K]>;
-};
+/** The personal adapter's shape (kept for its callers). */
+export type PersonalAgentChatApi = PartialAgentChatApi;
 
 export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): MachineBoundAgentChatApi {
   const call = async <T>(action: PersonalChatAction, args?: unknown): Promise<T> => {
@@ -107,37 +95,15 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): Machine
     }
   };
 
-  // Actions personal chats have no backend for. The pane hides the controls
-  // that call them; these answer any path that still reaches one with a
-  // clear refusal instead of a TypeError, and never with a project call.
-  const unavailable = (name: string) => async () => {
-    throw new Error(`${name} is not available in a chat without a project.`);
-  };
+  const where = "in a chat without a project";
+  const unavailable = (name: string) => boundChatRefusal(name, where);
 
   // Typed against the real API: every method here must match the project
   // API's signature, and a method absent here is absent at runtime too (the
   // pane checks for it before offering the control that would call it).
   const api = {
-    // Best-effort pre-start of a CLI-backed model; the personal runtime
-    // starts the provider on the first send instead.
-    warmupModel: async () => undefined,
-    handoff: unavailable("Handoff"),
-    rewindFiles: unavailable("Rewind"),
-    recoverContinuity: unavailable("Transcript recovery"),
-    recoverCodexTurn: unavailable("Codex turn recovery"),
-    generateAutoLaneIdentity: unavailable("Lane naming"),
-    getContextUsage: unavailable("/context"),
-    getClaudeUsage: unavailable("/usage"),
+    ...boundChatRefusals(where),
     dismissPendingInput: unavailable("Dismissing a question"),
-    parallelLaunchState: { get: unavailable("Parallel launch"), set: unavailable("Parallel launch") },
-    codex: {
-      getGoal: async () => null,
-      setGoal: unavailable("Codex goals"),
-      clearGoal: unavailable("Codex goals"),
-      setGoalStatus: unavailable("Codex goals"),
-      resetMemory: unavailable("Codex memory reset"),
-      terminateBackgroundTerminal: unavailable("Stopping a Codex background terminal"),
-    },
     list:(args?: { includeArchived?: boolean }) =>
       call<AgentChatSessionSummary[]>("list", { includeArchived: args?.includeArchived === true })
         .then((rows) => (Array.isArray(rows) ? rows : [])),

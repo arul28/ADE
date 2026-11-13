@@ -25,7 +25,8 @@ import {
   useLaneShareGuestStore,
   useLaneShareGuestLaneName,
 } from "./laneShareGuestStore";
-import { LaneShareGuestChatPane, laneShareGuestModelLabel, laneShareMessagesLeftText } from "./LaneShareGuestChatPane";
+import { LaneShareGuestChatPane } from "./LaneShareGuestChatPane";
+import { laneShareGuestModelLabel, laneShareMessagesLeftText } from "./laneShareGuestModel";
 import { LaneShareGuestMoveCard, LaneShareGuestMoveOut } from "./LaneShareGuestMove";
 
 /**

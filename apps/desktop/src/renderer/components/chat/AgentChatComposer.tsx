@@ -3803,12 +3803,12 @@ function AgentChatComposerImpl({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, chatPaneScope != null));
+      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, !projectChatPane));
       void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, warmPin)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [chatPaneScope?.kind, chatRuntimePinKey, sessionId]);
+  }, [projectChatPane, chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -4044,7 +4044,7 @@ function AgentChatComposerImpl({
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
     // A personal pane's adapter knows its computer; it has no binding when no project is open.
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope != null);
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
@@ -4193,7 +4193,7 @@ function AgentChatComposerImpl({
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope != null);
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -5992,6 +5992,8 @@ function AgentChatComposerImpl({
   );
 
   const nativeControlsDisabled = permissionModeLocked;
+  // A mode locked with a reason (a shared lane's rights) says why on the picker.
+  const nativeLockTitle = permissionModeLocked && permissionModeLockReason ? permissionModeLockReason : undefined;
   const slot = parallelControlSlot;
   const sp = slot?.sessionProvider ?? sessionProvider ?? "opencode";
   const im = slot?.interactionMode ?? interactionMode ?? "default";
@@ -6253,7 +6255,7 @@ function AgentChatComposerImpl({
             ariaLabel="Claude permission mode"
             selectedValue={selectedOption.value}
             options={withoutPlanning(CLAUDE_MODE_OPTIONS)}
-            disabled={nativeControlsDisabled}
+            title={nativeLockTitle} disabled={nativeControlsDisabled}
             onSelect={permissionAppliers.claude}
           />
         </div>
@@ -6282,7 +6284,7 @@ function AgentChatComposerImpl({
             if (preset === "custom") return;
             applyCodexPreset(preset);
           }}
-          title={pickerOptions.find((option) => option.value === codexPreset)?.detail ?? codexCustomSummary ?? "Codex permission mode"}
+          title={nativeLockTitle ?? pickerOptions.find((option) => option.value === codexPreset)?.detail ?? codexCustomSummary ?? "Codex permission mode"}
         />
       );
     }
@@ -6293,14 +6295,14 @@ function AgentChatComposerImpl({
           ariaLabel="Droid autonomy mode"
           selectedValue={dpmUse}
           options={withoutPlanning(DROID_PERMISSION_OPTIONS)}
-          disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
+          title={nativeLockTitle} disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
           onSelect={permissionAppliers.droid}
         />
       );
     }
 
     if (sp === "copilot") {
-      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={permissionAppliers.copilot} />;
+      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} title={nativeLockTitle} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={permissionAppliers.copilot} />;
     }
 
     if (sp === "muse") {
@@ -6309,7 +6311,7 @@ function AgentChatComposerImpl({
           ariaLabel="Muse approval mode"
           selectedValue={im === "plan" ? "plan" : mpmUse}
           options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
-          disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
+          title={nativeLockTitle} disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
           onSelect={permissionAppliers.muse}
         />
       );
@@ -6335,7 +6337,7 @@ function AgentChatComposerImpl({
           ariaLabel="Cursor mode"
           selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
           options={withoutPlanning(cursorModeOptions)}
-          disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+          title={nativeLockTitle} disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
           onSelect={permissionAppliers.cursor}
         />
       );
@@ -6346,7 +6348,7 @@ function AgentChatComposerImpl({
         ariaLabel="OpenCode permission mode"
         selectedValue={opmUse ?? "edit"}
         options={withoutPlanning(OPENCODE_PERMISSION_OPTIONS)}
-        disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
+        title={nativeLockTitle} disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
         onSelect={permissionAppliers.opencode}
       />
     );
@@ -6357,6 +6359,7 @@ function AgentChatComposerImpl({
     codexPresetOptions,
     codexCustomSummary,
     nativeControlsDisabled,
+    nativeLockTitle,
     hideNativeControls,
     onCursorModeChange,
     onDroidPermissionModeChange,
@@ -8069,11 +8072,7 @@ function AgentChatComposerImpl({
               "[&_button]:h-6 [&_button]:max-h-6 [&_button]:min-h-6 [&_button]:shrink-0 [&_button]:py-0",
               "[&_label]:flex [&_label]:h-6 [&_label]:max-h-6 [&_label]:min-h-6 [&_label]:items-center [&_label]:py-0",
               "[&_select]:h-6 [&_select]:max-h-6 [&_select]:min-h-6",
-              permissionModeLocked && permissionModeLockReason && "[&_button]:pointer-events-none",
             )}
-            // A locked mode with a reason: the reason is the tooltip (the
-            // picker's own tooltip would hide it).
-            title={permissionModeLocked && permissionModeLockReason ? permissionModeLockReason : undefined}
           >
             {nativeControlPanel}
           </div>

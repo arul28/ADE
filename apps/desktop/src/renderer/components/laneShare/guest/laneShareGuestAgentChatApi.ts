@@ -1,13 +1,12 @@
 import type {
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
-  AgentChatSession,
   AgentChatSessionSummary,
 } from "../../../../shared/types";
 import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
 import type { MachineBoundAgentChatApi } from "../../chat/agentChatApi";
 import { CONSERVATIVE_ATTACHMENT_STAGING_MODE } from "../../chat/chatAttachmentStaging";
-import type { PersonalAgentChatApi } from "../../personalChats/personalAgentChatApi";
+import { boundChatRefusal, boundChatRefusals, sessionFromSummary, type PartialAgentChatApi } from "../../chat/boundAgentChatApi";
 import type { LaneShareGuestConnection, LaneShareGuestConnectionState } from "./laneShareGuestConnection";
 
 /**
@@ -27,6 +26,7 @@ type Listener = (event: AgentChatEventEnvelope) => void;
 /** How long a history read waits for the owner's tail before it reads as unreachable. */
 const SNAPSHOT_TIMEOUT_MS = 20_000;
 const MAX_SEEN_KEYS = 64;
+const WHERE = "on a shared lane";
 
 export type LaneShareGuestAgentChatApi = MachineBoundAgentChatApi & {
   /** Ends the chat subscriptions this adapter opened. */
@@ -35,16 +35,6 @@ export type LaneShareGuestAgentChatApi = MachineBoundAgentChatApi & {
 
 function eventKey(entry: AgentChatEventEnvelope): string {
   return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
-}
-
-function sessionFromSummary(summary: AgentChatSessionSummary): AgentChatSession {
-  return { ...summary, id: summary.sessionId } as unknown as AgentChatSession;
-}
-
-function refusal(name: string) {
-  return async () => {
-    throw new Error(`${name} is not available on a shared lane.`);
-  };
 }
 
 /** The fields of a send the owner's gate reads; attachments and local context stay here. */
@@ -157,23 +147,7 @@ export function createLaneShareGuestAgentChatApi(
   const summaryOf = (sessionId: string) => call<AgentChatSessionSummary | null>("chat.getSummary", { sessionId });
 
   const api = {
-    warmupModel: async () => undefined,
-    handoff: refusal("Handoff"),
-    rewindFiles: refusal("Rewind"),
-    recoverContinuity: refusal("Transcript recovery"),
-    recoverCodexTurn: refusal("Codex turn recovery"),
-    generateAutoLaneIdentity: refusal("Lane naming"),
-    getContextUsage: refusal("/context"),
-    getClaudeUsage: refusal("/usage"),
-    parallelLaunchState: { get: refusal("Parallel launch"), set: refusal("Parallel launch") },
-    codex: {
-      getGoal: async () => null,
-      setGoal: refusal("Codex goals"),
-      clearGoal: refusal("Codex goals"),
-      setGoalStatus: refusal("Codex goals"),
-      resetMemory: refusal("Codex memory reset"),
-      terminateBackgroundTerminal: refusal("Stopping a Codex background terminal"),
-    },
+    ...boundChatRefusals(WHERE),
     list: async () => {
       const rows = await Promise.all(
         connection.listSessions()
@@ -192,9 +166,8 @@ export function createLaneShareGuestAgentChatApi(
         ...(typeof args.permissionMode === "string" ? { permissionMode: args.permissionMode } : {}),
       });
       await connection.refreshSessions().catch(() => undefined);
-      const sessionId = result && typeof result === "object"
-        ? (typeof result.sessionId === "string" ? result.sessionId : typeof (result as { id?: unknown }).id === "string" ? (result as { id: string }).id : null)
-        : null;
+      const rawId = result?.sessionId ?? (result as { id?: unknown } | null)?.id;
+      const sessionId = typeof rawId === "string" && rawId ? rawId : null;
       if (!sessionId) throw new Error("The owner's computer did not start the chat.");
       const summary = await summaryOf(sessionId).catch(() => null);
       return sessionFromSummary(summary ?? ({ ...(result as object), sessionId } as AgentChatSessionSummary));
@@ -235,20 +208,19 @@ export function createLaneShareGuestAgentChatApi(
     slashCommands: async () => [],
     getEventHistory,
     getAttachmentStagingMode: async () => CONSERVATIVE_ATTACHMENT_STAGING_MODE,
-    saveTempAttachment: refusal("Attachments"),
+    saveTempAttachment: boundChatRefusal("Attachments", WHERE),
     getImageDataUrl: (path: string) => call<{ dataUrl: string }>("chat.getImageDataUrl", { path, ...(firstSubscribed() ? { sessionId: firstSubscribed() } : {}) }),
     onEvent: (listener: Listener) => {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-  } satisfies PersonalAgentChatApi;
+  } satisfies PartialAgentChatApi;
 
   function firstSubscribed(): string | null {
     return subscriptions.keys().next().value ?? null;
   }
 
-  const bound = api as PersonalAgentChatApi as unknown as LaneShareGuestAgentChatApi;
-  bound.dispose = () => {
+  const dispose = () => {
     offSnapshot();
     offEvent();
     offState();
@@ -257,6 +229,6 @@ export function createLaneShareGuestAgentChatApi(
     waiting.clear();
     listeners.clear();
   };
-  return bound;
+  return Object.assign(api as PartialAgentChatApi as unknown as MachineBoundAgentChatApi, { dispose });
 }
 

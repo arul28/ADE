@@ -4205,6 +4205,9 @@ export function AgentChatPane({
   availableModelIdsOverride,
   modelSelectionLocked = false,
   permissionModeLocked = false,
+  permissionModeLockReason = null,
+  effortSelectionLocked = false,
+  sendBlockedReason = null,
   presentation,
   embeddedWorkLayout = false,
   suppressDraftLaunchNavigation = false,
@@ -4282,6 +4285,12 @@ export function AgentChatPane({
   availableModelIdsOverride?: string[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
+  /** Why the mode is locked, shown on the locked control; a reason also locks it. */
+  permissionModeLockReason?: string | null;
+  /** The reasoning level cannot change (a shared lane's owner allows none). */
+  effortSelectionLocked?: boolean;
+  /** Why Send is blocked now (a shared lane's rights), or null. */
+  sendBlockedReason?: string | null;
   presentation?: ChatSurfacePresentation;
   /** Work tab draft: flatter shell, no duplicate header chrome above the composer. */
   embeddedWorkLayout?: boolean;
@@ -4371,13 +4380,11 @@ export function AgentChatPane({
   // does not change over its life.
   const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat));
   agentChatApiRef.current = chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat);
-  // A personal chat or a shared lane's chat: its API is bound to one place,
-  // and the pane hides what only a project chat can do (files, PRs, lanes).
-  const boundScope = chatScope ?? null;
-  const guestScope = chatScope?.kind === "lane_share_guest" ? chatScope : null;
-  // The boolean the pane's hooks gate on: stable for the pane's life, so it
-  // joins a dependency list without re-running anything.
-  const isBoundScopePane = boundScope != null;
+  // A personal chat or a shared lane's chat (`chatScope`): its API is bound
+  // to one place, and the pane hides what only a project chat can do (files,
+  // PRs, lanes). The boolean the pane's hooks gate on: stable for the pane's
+  // life, so it joins a dependency list without re-running anything.
+  const isBoundScopePane = chatScope != null;
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
   // The originating project's binding, captured per launch so detached draft
@@ -4658,7 +4665,7 @@ export function AgentChatPane({
    * render — the same shape as `runtimeCatalogVersion`.
    */
   const [modelCatalogScopeKey, setModelCatalogScopeKey] = useState(
-    () => boundScope?.modelCatalogScopeKey ?? projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
+    () => chatScope?.modelCatalogScopeKey ?? projectBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
   );
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const { getReasoningForFamily } = useReasoningByFamily();
@@ -5136,10 +5143,10 @@ export function AgentChatPane({
   const companionStateKey = selectedSessionId
     ?? (isWorkDraftComposer
       ? WORK_START_DRAFT_COMPANION_STATE_KEY
-      : boundScope ? personalDraftKey : laneId ? `draft:${laneId}` : "draft");
+      : chatScope ? personalDraftKey : laneId ? `draft:${laneId}` : "draft");
   // Personal drafts are machine-scoped, not filed under whichever project the
   // window happens to have open.
-  const composerDraftProjectRoot = boundScope ? PERSONAL_COMPOSER_DRAFT_ROOT : projectRoot;
+  const composerDraftProjectRoot = chatScope ? PERSONAL_COMPOSER_DRAFT_ROOT : projectRoot;
   const legacyWorkDraftCompanionStateKey =
     companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
       ? `draft:${legacyWorkDraftLaneId}`
@@ -5661,7 +5668,7 @@ export function AgentChatPane({
   // chat is open (Work, the Chats page, the Browser tab's dock), not only when
   // the Work page has it in front.
   useServeRemoteBrowserCalls({
-    active: !boundScope,
+    active: !chatScope,
     binding: chatEffectiveBinding,
     chatSessionId: selectedSessionId,
     laneId: selectedSession?.laneId ?? chatScopeLaneId ?? null,
@@ -5671,7 +5678,7 @@ export function AgentChatPane({
   // readable session (a launch still starting, a draft) or the composer and
   // transcript disagree on which chat is open. Always null in a personal chat:
   // thread comments are a project-runtime action the personal scope lacks.
-  const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !boundScope ? composerSessionId : null;
+  const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !chatScope ? composerSessionId : null;
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
   // Mod UI is for a readable Claude project chat (the thread-comments gate)
   // in the desktop window: the hosted client draws none, and a subagent view
@@ -6092,7 +6099,7 @@ export function AgentChatPane({
     [selectedEventsForDisplay],
   );
   useEffect(() => {
-    if (!renderedSessionId || !selectedHasJiraIssueContext || boundScope) {
+    if (!renderedSessionId || !selectedHasJiraIssueContext || chatScope) {
       setJiraIssueSnapshots(null);
       return;
     }
@@ -6132,7 +6139,7 @@ export function AgentChatPane({
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
       unsubscribe?.();
     };
-  }, [chatRuntimePinKey, chatScopeLaneId, boundScope, renderedSessionId, selectedHasJiraIssueContext]);
+  }, [chatRuntimePinKey, chatScopeLaneId, chatScope, renderedSessionId, selectedHasJiraIssueContext]);
   // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
@@ -7293,7 +7300,7 @@ export function AgentChatPane({
       activeProviderConnection.runtimeDetected
       && !activeProviderConnection.authAvailable
       && providerSignInKnownBeforeSend(activeProviderConnection.provider)
-      && !boundScope
+      && !chatScope
       && !subagentView
     )
     && (
@@ -7407,7 +7414,7 @@ export function AgentChatPane({
     ? renderedSession?.provider ?? (lockSessionId ? lockSessionProvider : null)
     : null) ?? selectedSession?.provider ?? sessionProvider;
   /** `/usage` opens Claude's usage sheet: a Claude chat outside personal chats. */
-  const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !boundScope;
+  const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !chatScope;
   // The chat's last turn stopped on its provider being signed out.
   const chatSignInFailure = useMemo(() => latestChatSignInFailure({
     provider: selectedSession?.provider ?? null,
@@ -8005,7 +8012,7 @@ export function AgentChatPane({
     // `useChatPaneScope()` is null both for a project pane AND for a personal
     // pane that has no enclosing provider, so the pane's own scope is the
     // signal that distinguishes them. Drafts are a project surface.
-    if (schedulePaneScope != null || boundScope != null) return null;
+    if (schedulePaneScope != null || chatScope != null) return null;
     const laneIdForChat = selectedSession?.laneId ?? laneId ?? null;
     // A chat pinned to another machine lives on THAT machine's lanes. Offering
     // this computer's list would aim a new-chat send at a lane the host does
@@ -8017,7 +8024,7 @@ export function AgentChatPane({
       lanes: sourceLanes.map((lane) => ({ id: lane.id, name: lane.name })),
       machineName: chatForeignPin?.displayName ?? null,
     };
-  }, [chatMachineLanes, chatForeignPin?.displayName, laneId, lanes, boundScope, schedulePaneScope, selectedSession?.laneId]);
+  }, [chatMachineLanes, chatForeignPin?.displayName, laneId, lanes, chatScope, schedulePaneScope, selectedSession?.laneId]);
   const cloudReadinessLaneId = useMemo(() => {
     const sourceLanes = chatMachineLanes ?? lanes;
     if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {
@@ -10512,10 +10519,10 @@ export function AgentChatPane({
   // Fetch provider slash commands when session, lane, or draft provider changes.
   useEffect(() => {
     if (!isTileActive) { setSdkSlashCommands([]); return; }
-    if (boundScope) {
+    if (chatScope) {
       // The personal scope answers for its own chats and its own workspace.
       let cancelledPersonal = false;
-      boundScope.agentChat.slashCommands(
+      chatScope.agentChat.slashCommands(
         selectedSessionId ? { sessionId: selectedSessionId } : { provider: sessionProvider },
       )
         .then((cmds) => { if (!cancelledPersonal) setSdkSlashCommands(cmds); })
@@ -10842,8 +10849,8 @@ export function AgentChatPane({
     // A personal chat's adapter is bound to its machine. A project chat needs
     // its machine; none known means no feed.
     type ChatEventListener = Parameters<typeof agentChatApiRef.current.onEvent>[0];
-    const subscribe: ((listener: ChatEventListener) => () => void) | null = boundScope
-      ? (listener) => boundScope.agentChat.onEvent(listener)
+    const subscribe: ((listener: ChatEventListener) => () => void) | null = chatScope
+      ? (listener) => chatScope.agentChat.onEvent(listener)
       : chatRuntimePin
         ? (listener) => agentChatApiRef.current.onEvent(listener, chatRuntimePin)
         : null;
@@ -11136,8 +11143,8 @@ export function AgentChatPane({
 
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
-          (boundScope
-            ? boundScope.agentChat.slashCommands({ sessionId: envelope.sessionId })
+          (chatScope
+            ? chatScope.agentChat.slashCommands({ sessionId: envelope.sessionId })
             : getAgentChatSlashCommandsCached(
               { sessionId: envelope.sessionId, projectRoot },
               {
@@ -11151,7 +11158,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [isBoundScopePane, boundScope, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
+  }, [isBoundScopePane, chatScope, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     const eventPin = chatRuntimePinRef.current;
@@ -17447,7 +17454,7 @@ export function AgentChatPane({
   // The open chat ran on a lane kept without a computer: Send gives it a new one (`startFreedLaneChat`).
   freedChatLaneRef.current = useCloudLaneWithoutComputerForChat(
     activeComposerRuntimeBinding,
-    Boolean(selectedSessionId) && !boundScope && cursorRuntime !== "cloud",
+    Boolean(selectedSessionId) && !chatScope && cursorRuntime !== "cloud",
   );
   // A draft reads the launch defaults of the machine it will launch on, again
   // whenever that machine changes, a chat is created, or the window regains
@@ -17578,7 +17585,7 @@ export function AgentChatPane({
   // missing login does not hold it off (a failed turn still shows its card).
   const sessionRunsInACloud = Boolean(selectedSessionId) && composerCloudRuntime === "cloud";
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
-    if (!signInProvider || turnActive || subagentView || boundScope || draftSkipsLocalSignIn) return null;
+    if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
       return {
@@ -17596,7 +17603,7 @@ export function AgentChatPane({
       return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, boundScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // The connection of the provider the card signs in to.
   const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
@@ -17637,7 +17644,7 @@ export function AgentChatPane({
     blockReason: adeCloudSignInBlockReason,
     openSignIn: openAdeCloudSignIn,
   } = useAdeCloudSignInNeed({
-    enabled: !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !boundScope && !parallelDraftActive,
+    enabled: !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !chatScope && !parallelDraftActive,
     provider: signInLoginProvider,
     navigate,
   });
@@ -17763,7 +17770,7 @@ export function AgentChatPane({
   const returnFocusToComposer = useCallback(() => setComposerFocusRequest((current) => current + 1), []);
   // The failed first turn after an account change: a new thread or the old account.
   const [dismissedSwitchKey, setDismissedSwitchKey] = useState<string | null>(null);
-  const accountSwitchShown = !providerSignInShown && selectedSessionId && !subagentView && !boundScope
+  const accountSwitchShown = !providerSignInShown && selectedSessionId && !subagentView && !chatScope
     && chatAccountSwitchFailure && chatAccountSwitchFailure.eventKey !== dismissedSwitchKey
     ? chatAccountSwitchFailure
     : null;
@@ -17905,8 +17912,8 @@ export function AgentChatPane({
   // machine's model list when the composer switches machines. Setting the same
   // key is a no-op re-render, so the common case still costs nothing.
   useLayoutEffect(() => {
-    setModelCatalogScopeKey(boundScope?.modelCatalogScopeKey ?? composerModelCatalogScopeKey);
-  }, [composerModelCatalogScopeKey, boundScope?.modelCatalogScopeKey]);
+    setModelCatalogScopeKey(chatScope?.modelCatalogScopeKey ?? composerModelCatalogScopeKey);
+  }, [composerModelCatalogScopeKey, chatScope?.modelCatalogScopeKey]);
   const draftAttachmentMachine = useMemo(() => ({
     id: selectedDraftMachineId,
     name: draftMachineDisplayName,
@@ -18178,7 +18185,7 @@ export function AgentChatPane({
   );
 
   // A personal pane has no lane by design; everything below handles that.
-  if (!laneId && !boundScope) {
+  if (!laneId && !chatScope) {
     return (
       <ChatSurfaceShell
         mode={surfaceMode}
@@ -19720,9 +19727,9 @@ export function AgentChatPane({
             executionModeOptions={launchModeEditable ? executionModeOptions : EMPTY_EXECUTION_MODE_OPTIONS}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
             // Effort can change mid-turn: the service applies it when the turn ends.
-            effortSelectionLocked={modelSelectionLocked || Boolean(guestScope?.reasoningLocked) || sessionMutationKind === "model" || projectTransitionBlocksChat || Boolean(subagentView)}
-            permissionModeLocked={permissionModeLocked || Boolean(guestScope?.permissionModeLockReason) || identitySessionSettingsBusy || projectTransitionBlocksChat}
-            permissionModeLockReason={guestScope?.permissionModeLockReason ?? null}
+            effortSelectionLocked={modelSelectionLocked || effortSelectionLocked || sessionMutationKind === "model" || projectTransitionBlocksChat || Boolean(subagentView)}
+            permissionModeLocked={permissionModeLocked || Boolean(permissionModeLockReason) || identitySessionSettingsBusy || projectTransitionBlocksChat}
+            permissionModeLockReason={permissionModeLockReason}
             hideNativeControls={hideNativeControls}
             hideModelControls={hideModelControls}
             messagePlaceholder={effectiveMessagePlaceholder}
@@ -19755,7 +19762,7 @@ export function AgentChatPane({
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
             aboveComposerSlot={composerAboveSlot}
-            sendBlockedReason={guestScope?.sendBlockedReason ?? signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? null}
+            sendBlockedReason={sendBlockedReason ?? signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? null}
             onSendBlocked={handleSendBlocked}
             sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}
@@ -20113,7 +20120,7 @@ export function AgentChatPane({
   const composerBannerStyle = layoutVariant === "grid-tile"
     ? { width: "100%", marginBottom: 6 }
     : { width: "100%", maxWidth: "var(--chat-column,52rem)", margin: "0 auto 6px" };
-  const crossMachineMoveBanner = selectedSessionId && renderedSessionId === selectedSessionId && !boundScope ? (
+  const crossMachineMoveBanner = selectedSessionId && renderedSessionId === selectedSessionId && !chatScope ? (
     <CrossMachineHandoffBanner
       key={`move:${selectedSessionId}`}
       sessionId={selectedSessionId}
@@ -20124,7 +20131,7 @@ export function AgentChatPane({
     />
   ) : null;
   // Lane sharing (owner view): a guest's request to move work here, and this chat's move to a guest.
-  const laneShareMoveCard = selectedSessionId && renderedSessionId === selectedSessionId && !boundScope && !forceDraft ? (
+  const laneShareMoveCard = selectedSessionId && renderedSessionId === selectedSessionId && !chatScope && !forceDraft ? (
     <LaneShareOwnerMoveCard
       key={`lane-share-move:${selectedSessionId}`}
       pin={chatRuntimePin}
@@ -20134,7 +20141,7 @@ export function AgentChatPane({
     />
   ) : null;
   // An agent's batch move that waits for the person in this (requesting) chat.
-  const crossMachineBatchApprovalBanner = selectedSessionId && renderedSessionId === selectedSessionId && !boundScope ? (
+  const crossMachineBatchApprovalBanner = selectedSessionId && renderedSessionId === selectedSessionId && !chatScope ? (
     <CrossMachineBatchApprovalBanner
       key={`batch-move:${selectedSessionId}`}
       approval={selectedSession?.crossMachineBatchApproval}
@@ -20690,12 +20697,12 @@ export function AgentChatPane({
                         onAddAttachment={listAddAttachment}
                         onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
-                        onRewindFiles={boundScope ? undefined : listRewindFiles}
+                        onRewindFiles={chatScope ? undefined : listRewindFiles}
                         onCancelQueuedMessage={!subagentView && selectedSessionId ? listCancelQueuedMessage : undefined}
                         onRestoreCancelledQueue={!subagentView && selectedSessionId ? listRestoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
-                        onCodexRecovery={boundScope ? undefined : handleListCodexRecovery}
-                        onRecoverContinuity={boundScope ? undefined : recoverContinuity}
+                        onCodexRecovery={chatScope ? undefined : handleListCodexRecovery}
+                        onRecoverContinuity={chatScope ? undefined : recoverContinuity}
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
                         onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
@@ -21079,7 +21086,7 @@ export function AgentChatPane({
         localContent={localHandoffOpen && canShowHandoff ? handoffLocalView : null}
         onCloseLocal={closeLocalHandoff}
       />
-      {crossMachineHandoffMounted && selectedSessionId && !boundScope && (selectedSession?.laneId ?? laneId) ? (
+      {crossMachineHandoffMounted && selectedSessionId && !chatScope && (selectedSession?.laneId ?? laneId) ? (
         <Suspense fallback={null}>
         <CrossMachineHandoffModal
           open={crossMachineHandoffOpen}
