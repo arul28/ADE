@@ -748,6 +748,15 @@ step that works in a lane here (`automationCloudProblem`). A safe test run
 stays here. Every `ade-action` step that calls the `cloud` domain gets the
 same automation approval, whatever its args say.
 
+**Names.** A new lane on ADE Cloud is named exactly as a lane on this
+computer: it starts on the name from the prompt and a placeholder branch in
+the project's pattern, and the brain on its computer asks for the AI name and
+renames the lane and its branch (`cloudLaneConfig` keeps `autoName` whenever a
+local launch would be auto-named; a name the person chose is kept). The desktop
+follows a finished launch until that name lands, so the card and the
+computer's branch metadata get it. The computer's own name is set from the
+first name and stays internal.
+
 **Renames.** A cloud computer's brain writes a lane's new name to its
 computer's `ade_lane_name` metadata when that lane is the one the computer was
 made for (`cloudLaneNameSync.ts`). The write goes through the account server
@@ -876,6 +885,9 @@ ADE's server, and the new computer runs its own launch
   create's request id: the same id answers the same launch and never makes a
   second computer. The create is the one create path (`createComputer` in
   `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
+  A caller whose lane name came from the prompt sends `lane.autoName: true`:
+  the computer's brain then names the lane and its branch with the AI name, as
+  a local lane is named.
 - **Join.** The computer's env carries `ADE_LAUNCH_ID` and an
   `ADE_LAUNCH_JOIN` code. The code is an HMAC under the Worker secret
   `CLOUD_LAUNCH_JOIN_KEY` of the launch id and a salt the row keeps from the

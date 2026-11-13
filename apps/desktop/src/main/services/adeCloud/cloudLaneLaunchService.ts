@@ -318,7 +318,11 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // Progress ticks are many; only settled changes are written down.
     const settled = !event.launch.stages.some((stage) => stage.status === "running") || isChatLaunchTerminal(event.launch.phase);
     publish(record, { persist: settled });
-    if (isSettled(record)) stopFollowing(launchId);
+    // The AI name can land after the chat started: a finished launch is
+    // followed until it does (at most until the record expires), so the lane's
+    // name and renamed branch reach the card and the computer's metadata.
+    const namingAfterDone = record.snapshot.laneNaming && isChatLaunchTerminal(record.snapshot.phase);
+    if (isSettled(record) && !namingAfterDone) stopFollowing(launchId);
   };
 
   const stopFollowing = (launchId: string): void => {

@@ -288,6 +288,8 @@ export type ProviderLoginSettings = {
   get(scope: string, key: string): unknown;
   set?(scope: string, key: string, value: unknown): boolean;
   startPeriodicSync?(intervalMs?: number): () => void;
+  /** Pull the account's settings now (the person's "look now"). */
+  sync?(): Promise<unknown>;
 };
 
 export type Logger = {
