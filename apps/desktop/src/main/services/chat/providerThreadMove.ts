@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { findCodexRolloutPathBySessionId, findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
 import { findCodexThreadRolloutPath, uuidV7TimestampMs } from "./codexSubagentUsage";
-import { isPathInside } from "../shared/pathCompare";
+import { isPathInside, pathsEqual } from "../shared/pathCompare";
 
 /**
  * Copies one provider thread from one local account's config home to another,
@@ -179,8 +179,12 @@ async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderT
   }
   const relative = path.relative(args.fromConfigHome, sourcePath);
   const targetPath = path.join(args.toConfigHome, relative);
-  if (await destinationIsNewer(sourcePath, targetPath)) {
-    return { ok: true, targetPath, targetExisted: true, skipped: "destination_newer" };
+  // The destination may hold the thread in a different project folder; that
+  // copy is what a resume reads, so the recency check must find it by id.
+  const existingTarget = await findClaudeThreadFile(args.toConfigHome, args.threadId);
+  const comparisonPath = existingTarget ?? targetPath;
+  if (await destinationIsNewer(sourcePath, comparisonPath)) {
+    return { ok: true, targetPath: comparisonPath, targetExisted: true, skipped: "destination_newer" };
   }
   const targetExisted = fs.existsSync(targetPath);
   await copyFileReplacing(sourcePath, targetPath);
@@ -209,8 +213,19 @@ async function moveCodexThread(args: ProviderThreadMoveArgs): Promise<ProviderTh
     };
   }
   const targetPath = path.join(args.toConfigHome, path.relative(args.fromConfigHome, sourcePath));
-  if (await destinationIsNewer(sourcePath, targetPath)) {
-    return { ok: true, targetPath, targetExisted: true, skipped: "destination_newer" };
+  // Resolve the destination by thread id: a compacted copy lives at the same
+  // name plus `.jsonl.zst`, so the plain derived path can name no file while
+  // the home already holds a newer copy.
+  const existingTarget = await findCodexRolloutPathBySessionIdAsync(args.threadId, {
+    env: { CODEX_HOME: args.toConfigHome },
+  });
+  const comparisonPath = existingTarget ?? targetPath;
+  if (await destinationIsNewer(sourcePath, comparisonPath)) {
+    return { ok: true, targetPath: comparisonPath, targetExisted: true, skipped: "destination_newer" };
+  }
+  if (existingTarget && !pathsEqual(existingTarget, targetPath)) {
+    // A stale copy under another suffix would otherwise outlive the refresh.
+    await fs.promises.rm(existingTarget, { force: true }).catch(() => undefined);
   }
   const targetExisted = fs.existsSync(targetPath);
   await copyFileReplacing(sourcePath, targetPath);

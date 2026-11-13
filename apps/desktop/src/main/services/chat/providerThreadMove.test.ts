@@ -256,3 +256,31 @@ describe("findInstanceHoldingThread", () => {
     expect(result).toMatchObject({ ok: true, targetExisted: true, skipped: "destination_newer" });
     expect(fs.readFileSync(targetPath, "utf8")).toBe("a newer target copy\n");
   });
+
+  it("sees a newer compacted destination and does not copy beside it", async () => {
+    const threadId = "codex-thread-zst";
+    const sourceDir = path.join(fromHome, "sessions", "2026", "10", "01");
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sourceDir, `rollout-2026-10-01T00-00-00-${threadId}.jsonl`),
+      "older source\n",
+      "utf8",
+    );
+    const targetDir = path.join(toHome, "sessions", "2026", "10", "01");
+    fs.mkdirSync(targetDir, { recursive: true });
+    const compressed = path.join(targetDir, `rollout-2026-10-01T00-00-00-${threadId}.jsonl.zst`);
+    fs.writeFileSync(compressed, "newer compressed copy", "utf8");
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(compressed, future, future);
+
+    const result = await moveProviderThread({
+      provider: "codex",
+      threadId,
+      fromConfigHome: fromHome,
+      toConfigHome: toHome,
+    });
+
+    expect(result).toMatchObject({ ok: true, targetPath: compressed, skipped: "destination_newer" });
+    expect(fs.readFileSync(compressed, "utf8")).toBe("newer compressed copy");
+    expect(fs.existsSync(path.join(targetDir, `rollout-2026-10-01T00-00-00-${threadId}.jsonl`))).toBe(false);
+  });
