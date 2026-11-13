@@ -28,7 +28,7 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
-import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles } from "./idleCleanup";
+import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
 import { CLOUD_PATHS, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
@@ -879,6 +879,8 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     return json({ status });
   }
   await recordStatus(env, computer, status, now, "user");
+  // Already running for an idle cleanup's save: the status didn't change, but this is use.
+  await recordIdleUse(env, computer.instance_id, now);
   return json({ status });
 }
 
@@ -1001,6 +1003,8 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
     if (blocked) return blocked.response;
   }
+  // A person's command during an idle cleanup's save calls its delete off.
+  await recordIdleUse(env, computer.instance_id, now);
   return json(await provider.exec(computer.instance_id, command, timeoutMs));
 }
 
@@ -1409,6 +1413,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
         if (!INSTANCE_ID.test(instanceRoute.instanceId)) return notFound();
         const computer = await ownedComputer(env, caller.userId, instanceRoute.instanceId);
         if (!computer) return notFound();
+        // Signing in on the computer is use, even during an idle cleanup's save.
+        await recordIdleUse(env, computer.instance_id, now);
         return routeSignIns(request, computer, instanceRoute.rest, {
           provider,
           isAwake: isMeteredStatus(computer.status),

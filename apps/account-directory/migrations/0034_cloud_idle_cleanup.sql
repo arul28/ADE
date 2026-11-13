@@ -19,6 +19,15 @@ alter table cloud_computers add column idle_claimed_at integer;
 -- The save didn't go through, so the computer was kept: when, and why in one sentence.
 alter table cloud_computers add column idle_held_at integer;
 alter table cloud_computers add column idle_held_reason text;
+-- How many saves in a row failed this idle stretch: each retry waits twice as
+-- long (1, 2, 4 ... days, at most 14), so a save that keeps failing doesn't
+-- wake the computer every day.
+alter table cloud_computers add column idle_held_count integer;
+-- A run that failed after (or outside) the save, such as a delete the provider
+-- refused: retried after a wait (1, 2, 4 ... hours, at most a day), never every
+-- minute.
+alter table cloud_computers add column idle_failed_at integer;
+alter table cloud_computers add column idle_failed_count integer;
 -- Files git ignores that a delete would lose, as the computer last reported
 -- them at its idle step (`{"checkedAt","paths","more"}`).
 alter table cloud_computers add column ignored_files_json text;

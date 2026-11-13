@@ -295,9 +295,19 @@ minutes are shown on the plan table only; nothing meters them yet.
     later (and warns again at the new plan's warning time) and a downgrade
     never moves it earlier.
   - **Never for** an account out of hours or without access, a computer that
-    is awake, pending, moving or updating. Using it (`last_awake_at`), its
-    hours coming back, or "Keep it" (`POST /cloud/instances/:id/keep`, no
-    wake, no hours) void the warning and restart the clock.
+    is awake, pending, moving or updating, or one with a timed wake-up booked
+    (a `cloud_wakes` row: a chat's scheduled wake-up or an automation's
+    schedule, up to 32 days ahead; the wake itself counts as use). Using it
+    (`last_awake_at`), its hours coming back, or "Keep it" (`POST
+    /cloud/instances/:id/keep`, no wake, no hours) void the warning and
+    restart the clock; a booked wake-up voids it too (kept, `scheduled`). The
+    warning's and each follow-up's claim also checks that none of these
+    happened since the tick read the row.
+  - **Emails.** Paid follow-ups go out at 2 days and 1 day before the delete
+    (anchored on the delete time, so a late tick never pulls the next one
+    earlier). A send that fails keeps its claim, is reported (Sentry
+    `cloud.idle_cleanup_email_failed`, step `failed`), and never blocks the
+    steps after it; the in-app warning stands.
   - **Save first.** In a free wake (as an update's), the computer's own ADE
     stops its agents, saves its chats, commits with "saved by ADE before
     cleanup" (`ade cloud push-work --message`) and does a normal push to each
@@ -305,9 +315,16 @@ minutes are shown on the plan table only; nothing meters them yet.
     what git ignores), then a `work-state` read must find nothing left
     (`pushAllWork`). If it doesn't go through, the computer is kept
     (`idle_held_at`/`idle_held_reason`): one email and an in-app notice say
-    why and what to do, Sentry gets `cloud.idle_cleanup_push_refused` or
-    `cloud.idle_cleanup_save_failed`, and ADE tries again a day later. Used
-    while the save ran, it goes back to sleep and stays.
+    why, what to do and when ADE tries again (`held.retryAt`), Sentry gets
+    `cloud.idle_cleanup_push_refused` or `cloud.idle_cleanup_save_failed`,
+    and each failure in a row doubles the wait (1, 2, 4 ... days, at most
+    14; `idle_held_count`). A run that fails after the save (the provider
+    refuses the delete, or anything throws) records `idle_failed_at` and
+    waits 1, 2, 4 ... hours (at most a day) before it runs again. Used while
+    the save ran (Keep it, hours back, a booked wake-up, or a start, command
+    or sign-in through the account server, which marks `last_awake_at` while
+    `idle_claimed_at` is held), it isn't deleted; one the person started
+    stays awake for them, any other goes back to rest.
   - **The lane stays** as a lane without a computer, reason `idle_cleanup`;
     its chats stay and the next message makes a new computer from the branch.
     The delete is `system` with reason `idle_cleanup`.
@@ -317,7 +334,9 @@ minutes are shown on the plan table only; nothing meters them yet.
     such as `.env` and local databases first, a count of the rest, build and
     install folders only counted; `cloudIgnoredFiles.ts`). The server keeps
     it (`ignored_files_json`) and the warning lists it, or says it isn't
-    known yet.
+    known yet. A lane that can't be read (a timeout) marks the summary
+    `incomplete`, and the warning says there may be more; entries past
+    5,000 in a lane count in `more`.
   - **Where it shows:** `account.dueForDeletion` (`CloudIdleCleanupEntry`:
     when, the lane and branch, the idle days, the ignored files, `held`).
     The dashboard shows a notice per computer with "Keep it" and a mark on

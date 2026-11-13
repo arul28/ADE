@@ -249,17 +249,20 @@ export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, u
  * - `saved`: the computer committed and pushed its work before the delete.
  * - `push_refused`: the save didn't go through, so the computer was kept.
  * - `deleted`: the computer was deleted; its lane stays.
- * - `kept`: the person kept it after a warning (`how`: `button`, `used`, `hours_back`).
+ * - `kept`: the person kept it after a warning (`how`: `button`, `used`,
+ *   `hours_back`, or `scheduled`: it has a timed wake-up booked).
+ * - `failed`: an ADE-side failure that didn't keep the computer for good
+ *   (`reason`: `email_failed`, `delete_failed`, `run_failed`); retried later.
  */
-export type CloudIdleCleanupStep = "warned" | "emailed" | "saved" | "push_refused" | "deleted" | "kept";
+export type CloudIdleCleanupStep = "warned" | "emailed" | "saved" | "push_refused" | "deleted" | "kept" | "failed";
 
 export type CloudIdleCleanupEvent = {
   step: CloudIdleCleanupStep;
   plan: CloudPlanId;
-  /** `push_refused`: the closed code (`push_left_work`, `prepare_stop_failed`, `wake_timeout` ...). */
+  /** `push_refused` and `failed`: the closed code (`push_left_work`, `prepare_stop_failed`, `wake_timeout`, `delete_failed` ...). */
   reason?: string;
   /** `kept`: how. */
-  how?: "button" | "used" | "hours_back";
+  how?: "button" | "used" | "hours_back" | "scheduled";
 };
 
 /** One `ade_cloud_idle_cleanup` per account, step, computer (hashed into the uuid, never sent) and hour. */

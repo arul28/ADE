@@ -261,10 +261,14 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let paths: [String]
       let more: Int
       let rebuildable: Int?
+      /// Some lane couldn't be read, so there may be more than listed.
+      let incomplete: Bool?
     }
     struct Held: Decodable, Equatable {
       let at: Double
       let reason: String
+      /// When ADE tries again; an older server leaves it out (`deletesAt` then).
+      let retryAt: Double?
     }
     let instanceId: String
     let name: String?
