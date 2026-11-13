@@ -1,5 +1,6 @@
 import { useEffect, useId, type RefObject } from "react";
 import { CLOUD_LOGO_PATH } from "../../remoteTargets/cloudBrand";
+import "./cloudSky.css";
 
 /*
  * ADE Cloud's dusk sky, as on the website: stars, a violet and rose glow low
@@ -29,7 +30,11 @@ const STARS: Array<[number, number, number, boolean]> = [
   [93, 22, 1, true], [97, 48, 1, false], [2, 64, 1, false], [48, 62, 1, false], [31, 70, 1, true],
 ];
 
-/** Widths of the bank's clouds, as shares of the row; the middle ones stand tallest. */
+/**
+ * Widths of the bank's clouds, as shares of the row; the middle ones stand tallest.
+ * Change one, change both: the billing return page draws the same bank
+ * (apps/account-directory/src/cloud/returnPage.ts).
+ */
 const BANK_BACK = [16, 22, 18, 26, 20, 24, 17];
 const BANK_FRONT = [20, 15, 24, 19, 27, 16, 22];
 
@@ -75,7 +80,7 @@ function BankRow({ widths, gradient, rim, className, flipOdd }: { widths: number
           style={{ width: `${width}%`, transform: flipOdd && index % 2 ? "scaleX(-1)" : undefined }}
         >
           <path d={CLOUD_LOGO_PATH} fill={`url(#${gradient})`} />
-          <path d={CLOUD_LOGO_PATH} fill="none" stroke="#efe7ff" strokeOpacity={rim} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+          <path d={CLOUD_LOGO_PATH} fill="none" style={{ stroke: "var(--adecd-sky-rim)" }} strokeOpacity={rim} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
         </svg>
       ))}
     </div>
@@ -101,19 +106,19 @@ export function CloudSky({ moon = true, bank = true, drift = true }: { moon?: bo
       <svg width="0" height="0" className="adecd-sky-defs">
         <defs>
           <linearGradient id={`${id}-cloud`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#d8ccff" stopOpacity="0.32" />
-            <stop offset="45%" stopColor="#a78bfa" stopOpacity="0.14" />
-            <stop offset="100%" stopColor="#a78bfa" stopOpacity="0" />
+            <stop offset="0%" stopOpacity="0.32" style={{ stopColor: "var(--adecd-sky-cloud-top)" }} />
+            <stop offset="45%" stopOpacity="0.14" style={{ stopColor: "var(--adecd-sky-cloud)" }} />
+            <stop offset="100%" stopOpacity="0" style={{ stopColor: "var(--adecd-sky-cloud)" }} />
           </linearGradient>
           <linearGradient id={`${id}-back`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6b2f7d" />
-            <stop offset="45%" stopColor="#2c1650" />
-            <stop offset="100%" stopColor="#1a1138" />
+            <stop offset="0%" style={{ stopColor: "var(--adecd-sky-back-top)" }} />
+            <stop offset="45%" style={{ stopColor: "var(--adecd-sky-back-mid)" }} />
+            <stop offset="100%" style={{ stopColor: "var(--adecd-sky-back-low)" }} />
           </linearGradient>
           <linearGradient id={`${id}-front`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#4a3392" />
-            <stop offset="40%" stopColor="#24184f" />
-            <stop offset="100%" stopColor="#120e2a" />
+            <stop offset="0%" style={{ stopColor: "var(--adecd-sky-front-top)" }} />
+            <stop offset="40%" style={{ stopColor: "var(--adecd-sky-front-mid)" }} />
+            <stop offset="100%" style={{ stopColor: "var(--adecd-sky-front-low)" }} />
           </linearGradient>
         </defs>
       </svg>

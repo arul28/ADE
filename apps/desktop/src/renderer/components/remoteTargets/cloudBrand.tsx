@@ -5,7 +5,11 @@ import "./cloudBrand.css";
 
 export const ADE_CLOUD_NAME = "ADE Cloud";
 
-/** The logo's cloud outline (viewBox `1 3 30 20`), shared with the dashboard's sky. */
+/**
+ * The logo's cloud outline (viewBox `1 3 30 20`), shared with the dashboard's sky.
+ * Change one, change both: the billing return page draws the same cloud
+ * (apps/account-directory/src/cloud/returnPage.ts).
+ */
 export const CLOUD_LOGO_PATH =
   "M9 21H24A5.5 5.5 0 0 0 24.6 10.03A7.5 7.5 0 0 0 10.4 8.2A6.5 6.5 0 0 0 9 21Z";
 
@@ -14,6 +18,8 @@ export const CLOUD_LOGO_PATH =
  * of the night city's windows (one lit window is one agent at work). The same
  * mark as the website. Draws at any size from 11px up; `glow` adds the soft
  * halo around the window for large sizes (a filter, so only where it shows).
+ * Its colours are fixed on purpose (the same in both themes, and the same as
+ * the website and the billing return page), so they don't read the tokens.
  */
 export function CloudLogo({
   size = 16,

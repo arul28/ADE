@@ -5,6 +5,9 @@ import {
   cloudCatalogOf,
   cloudPlanFactsOf,
   cloudPlanIdOf,
+  formatCloudDate,
+  formatCloudGb,
+  formatCloudHours,
   type CloudAccountState,
   type CloudPlanId,
 } from "../../../../shared/adeCloud";
@@ -26,6 +29,9 @@ import {
 
 export const CLOUD_PLAN_SEEN_STORAGE_KEY = "ade.cloud.planSeen.v1";
 
+/** The toast's id: the in-app "Move to Pro" answer and the moment replace each other in place. */
+export const CLOUD_PLAN_MOMENT_TOAST_ID = "cloud-plan-moment";
+
 export type CloudPlanSeen = {
   planId: CloudPlanId;
   periodStart: number;
@@ -45,6 +51,22 @@ export type CloudPlanMoment = {
   /** Free hours left before the upgrade that the new plan's fresh period replaced; null when none were. */
   replacedFreeMilli: number | null;
 };
+
+/** "Your 79.1 unused free hours were replaced by Plus's 300." when the upgrade replaced free hours; null otherwise. */
+export function cloudPlanReplacedSentence(moment: CloudPlanMoment): string | null {
+  return moment.replacedFreeMilli != null
+    ? `Your ${formatCloudHours(moment.replacedFreeMilli)} unused free hours were replaced by ${moment.label}'s ${formatCloudHours(moment.includedMilli)}.`
+    : null;
+}
+
+/** "You're on Plus" and the one line under it, for the page's banner (the toast puts the facts in its body). */
+export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; detail: string } {
+  const replaced = cloudPlanReplacedSentence(moment);
+  return {
+    title: `You're on ${moment.label}`,
+    detail: `${formatCloudHours(moment.includedMilli)} hours and ${formatCloudGb(moment.diskGb)} of disk a month. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
+  };
+}
 
 /**
  * What this computer should record now, and the moment to show if the plan
@@ -101,9 +123,15 @@ function writeSeen(accountKey: string, seen: CloudPlanSeen): boolean {
   }
 }
 
-/** The account's key for the record: its invite code, the one id the state carries. */
-export function cloudPlanSeenKey(account: CloudAccountState): string {
-  return account.referral?.code ?? "account";
+/**
+ * The account's key for the record: its invite code, the one id the state
+ * carries. Without one the record falls back to a shared "account" key,
+ * which another account on this computer could have written: such a record is
+ * kept up to date but never celebrates (`canCelebrate` false).
+ */
+export function cloudPlanSeenKey(account: CloudAccountState): { key: string; canCelebrate: boolean } {
+  const code = account.referral?.code;
+  return code ? { key: code, canCelebrate: true } : { key: "account", canCelebrate: false };
 }
 
 /* The moment shown this session: the toast fires once; the page reads it for its banner and highlight. */
@@ -136,7 +164,9 @@ export function dismissCloudPlanMoment(): void {
  * so a reload can't repeat it.
  */
 export function useCloudPlanMoment(account: CloudAccountState | null, onMoment: (moment: CloudPlanMoment) => void): void {
-  const accountKey = account ? cloudPlanSeenKey(account) : null;
+  const seenKey = account ? cloudPlanSeenKey(account) : null;
+  const accountKey = seenKey?.key ?? null;
+  const canCelebrate = seenKey?.canCelebrate ?? false;
   const planId = account ? cloudPlanIdOf(account) : null;
   const periodStart = account?.billing.periodStart ?? null;
   const rules = account?.rules ?? null;
@@ -146,7 +176,7 @@ export function useCloudPlanMoment(account: CloudAccountState | null, onMoment: 
     const previous = readSeen(accountKey);
     const { seen, moment } = nextCloudPlanSeen(previous, account);
     if (!writeSeen(accountKey, seen)) return;
-    if (moment) {
+    if (moment && canCelebrate) {
       publish(moment);
       onMoment(moment);
     } else if (current && current.planId !== planId) {
@@ -154,5 +184,5 @@ export function useCloudPlanMoment(account: CloudAccountState | null, onMoment: 
     }
     // Keyed on what the record holds, not the account object (re-read every few minutes).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountKey, planId, periodStart, rules, leftMilli]);
+  }, [accountKey, canCelebrate, planId, periodStart, rules, leftMilli]);
 }

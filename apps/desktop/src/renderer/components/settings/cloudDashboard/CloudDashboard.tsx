@@ -9,7 +9,6 @@ import {
   cloudEarnedHoursOf,
   cloudFreePlanOf,
   cloudCatalogOf,
-  cloudPlanIdOf,
   cloudPlanLabelOf,
   formatCloudDate,
   formatCloudGb,
@@ -36,8 +35,7 @@ import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudSky, useStillWhenHidden } from "./CloudSky";
-import { cloudPlanMomentWords } from "./CloudPlanMomentNotice";
-import { dismissCloudPlanMoment, useCloudPlanMomentState } from "./cloudPlanMoment";
+import { cloudPlanMomentWords, dismissCloudPlanMoment, useCloudPlanMomentState } from "./cloudPlanMoment";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
@@ -48,6 +46,7 @@ import { CloudInviteCard } from "./CloudInvite";
 import {
   STATE_LABEL,
   dashLanes,
+  heroPeriodChip,
   hoursForecast,
   lastRunText,
   planName,
@@ -409,17 +408,7 @@ function CloudHero({
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
   // The free plan's GitHub rules hold its hours: one line here, the plan card says what to do.
   const githubLine = account.rules === "free" && freePlan.github ? cloudFreeGithubHeroLine(freePlan.github) : null;
-  const pastDue = account.billing.notice === "past_due";
-  const nextPlanId = account.billing.nextPlanId ?? null;
-  const period = account.billing.cancelAtPeriodEnd
-    ? { text: `Ends ${formatCloudDate(account.billing.periodEnd)}`, tone: "warn" as const }
-    : pastDue
-      ? { text: "Payment failed", tone: "crit" as const }
-      : nextPlanId && nextPlanId !== cloudPlanIdOf(account)
-        ? { text: `${CLOUD_PLAN_LABELS[nextPlanId]} from ${formatCloudDate(account.billing.periodEnd)}`, tone: null }
-        : account.plan === "paid"
-          ? { text: `Renews ${formatCloudDate(account.billing.periodEnd)}`, tone: null }
-          : { text: `Resets ${formatCloudDate(account.billing.periodEnd)}`, tone: null };
+  const period = heroPeriodChip(account);
   const held = hours.includedMilli <= 0 && (githubLine || blockedSentence) && account.plan === "free";
   const toPlans = () => document.getElementById("cloud-plan")?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   return (
