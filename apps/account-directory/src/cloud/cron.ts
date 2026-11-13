@@ -7,7 +7,7 @@ import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
-import { runPlanCleanups } from "./planCleanup";
+import { runPlanLimitChecks } from "./planCleanup";
 import { computersJoiningLaunches } from "./launches";
 import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
@@ -397,9 +397,9 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   } catch (error) {
     reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
-  // Last of the account jobs, since a push can take minutes. A cheaper plan's limits: warn, then push and free the oldest computers past them.
+  // A cheaper plan's limits: an account over the plan in force is told once (new computers are refused). Nothing is freed here.
   try {
-    await runPlanCleanups(env, provider, computers, now);
+    await runPlanLimitChecks(env, computers, now);
   } catch (error) {
     reportCloudFailure("cloud.plan_cleanup_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
