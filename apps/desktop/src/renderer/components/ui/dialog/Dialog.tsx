@@ -33,8 +33,8 @@ export type DialogPlacement = "center" | "right" | "top";
 
 const SIZE_WIDTH: Record<DialogSize, number> = { sm: 400, md: 520, lg: 720 };
 
-/** The scrim: one tint, one blur, everywhere. */
-const DIALOG_SCRIM_STYLE: CSSProperties = {
+/** The scrim: one tint, one blur, everywhere (the command palette uses it too). */
+export const DIALOG_SCRIM_STYLE: CSSProperties = {
   position: "fixed",
   inset: 0,
   background: "rgba(6, 5, 10, 0.58)",

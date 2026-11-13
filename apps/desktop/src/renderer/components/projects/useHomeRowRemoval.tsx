@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { ArrowCounterClockwise, Trash } from "@phosphor-icons/react";
 import type { RecentProjectSummary } from "../../../shared/types";
 import { dismissToast, showToast } from "../app/toast/toastStore";
-import type { RecentProjectGroup } from "../app/projectTabGrouping";
+import { recentProjectLocationKey, type RecentProjectGroup } from "../app/projectTabGrouping";
 import { hideFromHome, showOnHome } from "./homeHiddenProjects";
 import { removeTargetForRow, type HomeProjectRow } from "./homeProjectRows";
 import { requestRemoveProject } from "./removeProjectRequest";
@@ -19,7 +19,8 @@ const HIDE_TOAST_ID = "welcome-hide-account-project";
  *   computers, and my account. The top bar owns that window.
  * - A folder that is no account project leaves this computer's recents after
  *   an Undo window, as before: the row hides at once and the forget runs when
- *   the window ends.
+ *   the window ends. A connected computer's folder that this computer never
+ *   opened is in no recents: Home on this computer stops listing it instead.
  */
 export function useHomeRowRemoval(args: {
   recentProjects: RecentProjectSummary[];
@@ -49,9 +50,15 @@ export function useHomeRowRemoval(args: {
       window.clearTimeout(forgetTimerRef.current);
       forgetTimerRef.current = null;
     }
+    const saved = new Set(recentProjects.map(recentProjectLocationKey));
     void (async () => {
       let next = recentProjects;
       for (const recentKey of recentKeys) {
+        if (!saved.has(recentKey) && recentKey.startsWith("remote:")) {
+          // Only another computer's catalog lists it; nothing here to forget.
+          hideFromHome(recentKey);
+          continue;
+        }
         next = await window.ade.project.forgetRecent(recentKey);
       }
       setRecentProjects(next);

@@ -126,6 +126,7 @@ import {
 import { openStartChatDraft } from "../../lib/workDraft";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
+import { DIALOG_SCRIM_STYLE } from "../ui/dialog/Dialog";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import {
   CHAT_FIND_PALETTE_GROUP,
@@ -2233,12 +2234,11 @@ export function CommandPalette({
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild>
               <motion.div
-                // Same overlay language as the app's dialogs (LaneDialogShell,
-                // the import browser): dim, then a light blur. `blur-2xl` over
-                // the whole window read as a different app taking over — and it
-                // is a full-window backdrop filter per frame of the fade.
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-                style={{ zIndex: Z_LAYERS.commandPalette }}
+                // The app's one dialog scrim (its tint and light blur; the fade
+                // is this motion's). `blur-2xl` over the whole window read as a
+                // different app taking over — and it is a full-window backdrop
+                // filter per frame of the fade.
+                style={{ ...DIALOG_SCRIM_STYLE, zIndex: Z_LAYERS.commandPalette }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

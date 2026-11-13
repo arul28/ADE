@@ -4692,7 +4692,13 @@ export function registerIpc({
   handle(IPC.projectListThisComputer, async (): Promise<RecentProjectSummary[]> => {
     const pool = localRuntimeConnectionPool;
     if (!pool || pool.getStatus().connectionState !== "connected") return [];
-    const records = await pool.projects().catch(() => []);
+    const records = await pool.projects().catch((error: unknown) => {
+      // Home stays on the recents; it reads again on its next open.
+      getCtx().logger.warn("project.list_this_computer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    });
     return records
       .filter((record) => record.catalogVisibility !== "system" && record.exists !== false)
       .map((record): RecentProjectSummary => ({
@@ -4953,9 +4959,11 @@ export function registerIpc({
     clearRecentProjectSummaryCache();
     // A folder Home lists from this computer's catalog alone (no desktop
     // recent, see `projectListThisComputer`) leaves that catalog the same way.
+    // That is the whole forget, so a failed call throws: Home says why the row
+    // stays. With no background service there is no catalog row to leave.
     if (!removed && path.isAbsolute(targetKey)) {
       const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
-      await catalogPool?.setProjectCatalogVisibility(targetKey, "system", "desktop").catch(() => undefined);
+      await catalogPool?.setProjectCatalogVisibility(targetKey, "system", "desktop");
     }
     if (removed && !removed.remote) {
       // Removing a project is the person's way to start over with it: adding

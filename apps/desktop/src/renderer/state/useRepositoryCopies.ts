@@ -121,6 +121,26 @@ function readThisMachineKey(): Promise<string | null> {
   return thisMachineKeyRead;
 }
 
+/**
+ * This computer's account machine key while `enabled`: read once per app
+ * session (`readThisMachineKey`), so a surface that mounts again starts with
+ * it and does not render twice. Null in the hosted web client.
+ */
+export function useThisMachineKey(enabled: boolean): string | null {
+  const [machineKey, setMachineKey] = useState<string | null>(thisMachineKeyCache);
+  useEffect(() => {
+    if (!enabled || thisMachineKeyCache) return undefined;
+    let cancelled = false;
+    void readThisMachineKey().then((key) => {
+      if (!cancelled && key) setMachineKey(key);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return machineKey;
+}
+
 type ThisComputer = { machineKey: string | null; localProjects: readonly RecentProjectSummary[] };
 
 const NO_RECENTS: readonly RecentProjectSummary[] = [];

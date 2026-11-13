@@ -100,7 +100,10 @@ export type HomeProjectListInput = {
   webComputers?: ReadonlyMap<string, HomeWebComputer>;
   /** Web only: computers by web machine row key (a catalog row's `targetId`) and by browser environment id. */
   webComputersByKey?: ReadonlyMap<string, HomeWebComputer>;
-  /** Account projects this computer's Home does not list ("From this list"), with when each was hidden. */
+  /**
+   * What this computer's Home does not list, with when each was hidden: account
+   * projects ("From this list") by id, and connected computers' folders by location key.
+   */
   hidden: ReadonlyMap<string, number>;
   /** Folders on this disk that are another machine's copy (F6). */
   foreignPaths: ReadonlySet<string>;
@@ -336,6 +339,9 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
         };
         const key = recentProjectLocationKey(summary);
         if (listed.has(key)) continue;
+        // Removed from this list here, and not opened since.
+        const hiddenAt = input.hidden.get(key);
+        if (hiddenAt != null && ms(summary.lastOpenedAt) <= hiddenAt) continue;
         listed.add(key);
         localCandidates.push(summary);
       }

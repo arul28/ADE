@@ -259,6 +259,17 @@ export function ProjectsCard({
             {inlineItems.items.map((item) => item.node)}
           </FitList>
         </div>
+      ) : hiddenRows.length > 0 ? (
+        // Every project is hidden from this list: they still count, so say where they went.
+        <div className="ade-welcome-empty">
+          <strong>Every project is hidden from this list</strong>
+          They stay on your account and on your computers.
+          {preview ? null : (
+            <button type="button" className="ade-welcome-hidden-toggle" onClick={() => setShowHidden(true)}>
+              Show hidden projects
+            </button>
+          )}
+        </div>
       ) : (
         <div className="ade-welcome-empty">
           <strong>No projects yet</strong>

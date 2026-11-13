@@ -88,6 +88,8 @@ export function ProjectWelcomePage() {
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
+  // The first recents read finished (or failed): Home's catalog read waits for it.
+  const [recentsLoaded, setRecentsLoaded] = useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [webAddProjectNoticeOpen, setWebAddProjectNoticeOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
@@ -173,10 +175,12 @@ export function ProjectWelcomePage() {
         if (recentReadRef.current !== request) return;
         setRecentProjects(rows);
         setRecentListError(null);
+        setRecentsLoaded(true);
       })
       .catch((error: unknown) => {
         if (recentReadRef.current !== request) return;
         setRecentListError(error instanceof Error ? error.message : String(error));
+        setRecentsLoaded(true);
       });
   }, []);
 
@@ -282,6 +286,7 @@ export function ProjectWelcomePage() {
   const { list: homeList, openNoMachineTab } = useHomeAccountProjects({
     webMode,
     recentProjects,
+    recentsLoaded,
     webRecents,
     webComputers,
     webComputersByKey,
@@ -294,8 +299,6 @@ export function ProjectWelcomePage() {
     [homeList],
   );
   const visibleProjectGroups = useMemo(() => homeRows.map((row) => row.group), [homeRows]);
-
-  const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
   // Selecting anything on the hosted client connects its machine first — a
   // machine the account can reach is never a dead end (bug-ledger C2d).
@@ -480,8 +483,6 @@ export function ProjectWelcomePage() {
     [switchProjectToPath],
   );
 
-  const rows = homeRows;
-
   const [rowMenu, setRowMenu] = useState<(NonNullable<ContextMenuState> & { key: string }) | null>(null);
   const closeRowMenu = useCallback(() => setRowMenu(null), []);
   const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
@@ -491,7 +492,7 @@ export function ProjectWelcomePage() {
   const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
     if (!rowMenu) return [];
     const hiddenRow = homeList.hiddenRows.find((entry) => entry.key === rowMenu.key);
-    const row = rows.find((entry) => entry.key === rowMenu.key) ?? hiddenRow;
+    const row = homeRows.find((entry) => entry.key === rowMenu.key) ?? hiddenRow;
     if (!row) return [];
     const { group, rp } = row;
     const remoteBinding = remoteBindingFromRecent(rp);
@@ -569,7 +570,7 @@ export function ProjectWelcomePage() {
         : null,
     ];
     return entries.filter((entry): entry is ContextMenuEntry => entry != null);
-  }, [connectionByTarget, handleOpen, handleRemoveRow, handleShowAgain, handleTogglePin, homeList.hiddenRows, rowMenu, rows, webMode]);
+  }, [connectionByTarget, handleOpen, handleRemoveRow, handleShowAgain, handleTogglePin, homeList.hiddenRows, homeRows, rowMenu, webMode]);
 
   const focusRowButton = useCallback((index: number) => {
     const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
