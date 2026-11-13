@@ -27,6 +27,7 @@ import type {
   AutomationWebhookSignatureConfig,
 } from "../../../shared/types";
 import { openKvDb, type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import type { Logger } from "../logging/logger";
 import {
   createCustomWebhookService,
@@ -158,7 +159,7 @@ describe("customWebhookService", () => {
 
   beforeEach(async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-custom-webhook-"));
-    db = await openKvDb(path.join(tempRoot, "ade.db"), makeLogger());
+    db = await openFreshKvDb(path.join(tempRoot, "ade.db"), makeLogger());
     // The runtime creates this alongside the automation service; the webhook
     // service reads it to link a delivery to its still-running run.
     db.run(`

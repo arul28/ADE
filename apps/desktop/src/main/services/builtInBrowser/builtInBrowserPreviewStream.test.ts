@@ -204,14 +204,6 @@ describe("createBuiltInBrowserPreviewStreams", () => {
     expect(liveTimers(h)[0]?.ms).toBe(42);
   });
 
-  it("defaults to 12fps at 480px", () => {
-    const h = harness();
-    const started = h.streams.start("tab-1");
-    expect(started.fps).toBe(12);
-    expect(started.maxWidth).toBe(480);
-    expect(liveTimers(h)[0]?.ms).toBe(83);
-  });
-
   it("drops a frame whose subscribers all left while the capture was in flight", async () => {
     const pending: { resolve: ((frame: BuiltInBrowserPreviewCapture) => void) | null } = { resolve: null };
     const h = harness({

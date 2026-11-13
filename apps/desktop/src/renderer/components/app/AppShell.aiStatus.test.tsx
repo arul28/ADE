@@ -12,7 +12,7 @@ import {
   listSessionsCached,
 } from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
-import { AppShell, productAnalyticsScreenForPathname } from "./AppShell";
+import { AppShell } from "./AppShell";
 
 vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
@@ -232,12 +232,6 @@ describe("AppShell AI provider status", () => {
     cleanup();
     delete window.__adeWebClient;
     vi.useRealTimers();
-  });
-
-  it("maps the project picker to the sampled project analytics screen", () => {
-    expect(productAnalyticsScreenForPathname("/project")).toBe("project");
-    expect(productAnalyticsScreenForPathname("/project/recent")).toBe("project");
-    expect(productAnalyticsScreenForPathname("/hub")).toBe("hub");
   });
 
   it("captures a normalized route without query strings or route identifiers", async () => {

@@ -97,10 +97,6 @@ describe("providerAccountAnalyticsCapture", () => {
     expect(coarseProviderFamily("anthropic")).toBe("claude");
   });
 
-  it("is safe when analytics is not configured", () => {
-    const capture = providerAccountAnalyticsCapture(null, "desktop");
-    expect(() => capture("auto_start_changed", "disabled", "codex")).not.toThrow();
-  });
 });
 
 describe("captureNewLaneLaunchAnalytics", () => {

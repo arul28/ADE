@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   CTO_LIVE_STATE_MAX_CHARS,
   CTO_STATIC_CONTEXT_TITLE,
@@ -28,7 +29,7 @@ async function createStateFixture() {
   const adeDir = path.join(root, ".ade");
   fs.mkdirSync(adeDir, { recursive: true });
   const dbPath = path.join(adeDir, "ade.db");
-  const db = await openKvDb(dbPath, createLogger());
+  const db = await openFreshKvDb(dbPath, createLogger());
   const projectId = "project-test";
   return { root, adeDir, db, projectId };
 }

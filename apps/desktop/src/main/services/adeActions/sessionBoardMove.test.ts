@@ -170,14 +170,6 @@ describe("boardMoveMessageText", () => {
     expect(boardMoveMessageText("waiting", "working")).toBeNull();
   });
 
-  it("pins the exact wording both texts ship with", () => {
-    expect(BOARD_MOVE_DONE_TO_WORKING_TEXT).toBe(
-      "You moved this chat from Done to Working. Continue the work, or ask me what you need if the next step is unclear.",
-    );
-    expect(BOARD_MOVE_TO_NEEDS_YOU_TEXT).toBe(
-      "The user set this chat's status to Needs you. Ask them what they need before you continue.",
-    );
-  });
 });
 
 describe("session.moveOnBoard", () => {

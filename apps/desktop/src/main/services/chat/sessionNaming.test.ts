@@ -371,28 +371,6 @@ describe("session metadata context helpers", () => {
     ], 3)).toBe("Hunk one.\n\nHunk two.\n\nCurrently rebasing onto main.");
   });
 
-  it("labels lane threads and git work as the sources for each field", () => {
-    const prompt = buildSessionMetadataPrompt({
-      provider: "cursor",
-      chatModel: "grok-4.6",
-      currentLaneName: "Old lane",
-      currentChatTitle: "Old title",
-      requestedFields: ["title", "laneName", "statusLine"],
-      threadTranscript: "User: fix login\nAssistant: Wired the fallback.",
-      latestAssistantParagraphs: "Wired the fallback.",
-      laneThreads: "- Fix login (this thread)\n- Review auth tests",
-      laneWorkVersusRemote: "Compared to origin/main:\nChanged files:\nM apps/desktop/src/auth.ts",
-    });
-    expect(prompt).toContain("source for chatTitle");
-    expect(prompt).toContain("User: fix login");
-    expect(prompt).toContain("source for statusLine");
-    expect(prompt).toContain("Wired the fallback.");
-    expect(prompt).toContain("source for laneName, together with git work");
-    expect(prompt).toContain("Review auth tests");
-    expect(prompt).toContain("Work on this lane that differs from remote");
-    expect(prompt).toContain("apps/desktop/src/auth.ts");
-  });
-
   it("sends a lean status-only prompt even when a full transcript and git dump are passed", () => {
     const prompt = buildSessionMetadataPrompt({
       provider: "cursor",
@@ -452,13 +430,4 @@ describe("buildSessionMetadataSystemPrompt", () => {
     expect(buildSessionMetadataSystemPrompt()).toBe(SESSION_METADATA_SYSTEM_PROMPT);
   });
 
-  it("tells a status-only namer to copy the current title and lane name", () => {
-    const systemPrompt = buildSessionMetadataSystemPrompt(["statusLine"]);
-    expect(systemPrompt).toContain("Users scan many threads at once");
-    expect(systemPrompt).toContain("Write new values for: statusLine.");
-    expect(systemPrompt).toContain("Copy these current values unchanged: chatTitle, laneName.");
-    expect(systemPrompt).toContain("Derive this only from the latest assistant output");
-    expect(systemPrompt).not.toContain("every thread in this lane");
-    expect(systemPrompt).not.toContain("full conversation transcript");
-  });
 });

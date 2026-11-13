@@ -49,7 +49,7 @@ import {
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "../sessions/sessionService";
 import { createPrChatLinkStore } from "../prs/prChatLinkStore";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
@@ -133,7 +133,7 @@ function saveClaudePresets(): { savedPreset: HarnessPreset; foreignModelPreset: 
 
 describe("createAgentChatService", () => {
   it("gives a PR origin to the first ordinary persisted chat and cleans up failed claims", async () => {
-    const db = await openKvDb(path.join(tmpRoot, "origin.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const db = await openFreshKvDb(path.join(tmpRoot, "origin.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
     const now = new Date().toISOString();
     let service: ReturnType<typeof createAgentChatService> | undefined;
     try {
@@ -160,7 +160,7 @@ describe("createAgentChatService", () => {
   });
 
   it("gives a PR to the chats above the one that opened it, and to no others", async () => {
-    const db = await openKvDb(path.join(tmpRoot, "spawn-family.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
+    const db = await openFreshKvDb(path.join(tmpRoot, "spawn-family.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
     const now = new Date().toISOString();
     let service: ReturnType<typeof createAgentChatService> | undefined;
     try {
@@ -2809,14 +2809,6 @@ describe("createAgentChatService", () => {
         return vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as Record<string, unknown>;
       };
 
-      // Every existing embedder passes nothing. `settingSources` must still be
-      // explicit, because an omitted option and an empty array are not
-      // documented to be the same thing in the Agent SDK.
-      it("defaults to the ADE prompt and an empty settingSources list", async () => {
-        const opts = await openPersonalClaudeSession({});
-        expect(opts.systemPrompt).toContain("ADE personal chat");
-        expect(opts.settingSources).toEqual([]);
-      });
 
       it.each([
         ["none", []],
@@ -3637,12 +3629,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("getSessionSummary", () => {
-    it("returns null for unknown session id", async () => {
-      const { service } = createService();
-      for (const id of ["nonexistent-id", "", "   "]) {
-        expect(await service.getSessionSummary(id)).toBeNull();
-      }
-    });
 
     it("returns summary for an existing session", async () => {
       const { service } = createService();

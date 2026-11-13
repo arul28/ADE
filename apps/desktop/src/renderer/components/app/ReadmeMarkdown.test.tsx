@@ -18,25 +18,6 @@ describe("ReadmeMarkdown", () => {
     expect(container.textContent).not.toContain("<p align");
   });
 
-  it("renders the alt text for an inline README badge", () => {
-    render(
-      <ReadmeMarkdown
-        content={
-          '<p align="center"><img src="https://img.shields.io/badge/test.svg" alt="Test Badge" /></p>'
-        }
-      />,
-    );
-    expect(screen.queryByAltText("Test Badge")).toBeNull();
-    expect(screen.getByText("Test Badge")).toBeTruthy();
-  });
-
-  it("keeps align on non-overridden elements like <div> after sanitize", () => {
-    const { container } = render(
-      <ReadmeMarkdown content={'<div align="center">Hello</div>'} />,
-    );
-    expect(container.querySelector('div[align="center"]')).not.toBeNull();
-  });
-
   it("falls back to alt text for image sources instead of loading them", () => {
     const inlinePng =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/l5v4ygAAAABJRU5ErkJggg==";

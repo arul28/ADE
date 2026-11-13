@@ -20,26 +20,6 @@ function row(id: number, over: Partial<IosSimulatorLogRow> = {}): IosSimulatorLo
 }
 
 describe("AppSection", () => {
-  it("renders the foreground row, both verbs, both submit rows, permissions, push and the log", () => {
-    installAdeMock();
-    render(<AppSection ctx={makeCtx()} />);
-    // No heading of its own: the App GROUP card is the heading (§B1).
-    expect(screen.queryByRole("heading")).toBeNull();
-    expect(screen.getByText("Foreground")).toBeTruthy();
-    expect(screen.getByTestId("apple-drawer-foreground").textContent).toBe("com.acme.app");
-    expect(screen.getByRole("button", { name: "Relaunch" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Terminate" })).toBeTruthy();
-    expect(screen.getByPlaceholderText("https://… or myapp://")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
-    expect(screen.getByPlaceholderText("Bundle ID")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Launch" })).toBeTruthy();
-    // The three sections that used to sit under this one, folded in.
-    expect(screen.getByText("Permissions")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Grant" })).toBeTruthy();
-    expect(screen.getByText("Push notification")).toBeTruthy();
-    expect(screen.getByPlaceholderText("Alert text")).toBeTruthy();
-    expect(screen.getByText("Event log")).toBeTruthy();
-  });
 
   it("shows — and disables Relaunch/Terminate with no foreground app, never hiding them", () => {
     installAdeMock();

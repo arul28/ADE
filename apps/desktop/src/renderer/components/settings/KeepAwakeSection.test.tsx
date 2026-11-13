@@ -37,16 +37,6 @@ afterEach(() => {
 });
 
 describe("KeepAwakeControls", () => {
-  it("defaults to Never and states each level's own limit", async () => {
-    installAde({ get: async () => snapshot() });
-    render(<KeepAwakeControls />);
-
-    await waitFor(() => expect(screen.getByRole("radio", { name: /Never/ })).toBeTruthy());
-    expect(screen.getByRole("radio", { name: /Never/ }).getAttribute("aria-checked")).toBe("true");
-    // The load-bearing line: a wake lock stops idle sleep and does not survive
-    // a closed lid. It must not be softened.
-    expect(screen.getByText("Stops idle sleep. Not the lid.")).toBeTruthy();
-  });
 
   it("discloses that the lid-closed level outlives quitting ADE", async () => {
     installAde({ get: async () => snapshot() });

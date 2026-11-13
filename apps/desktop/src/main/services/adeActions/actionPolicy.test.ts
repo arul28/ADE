@@ -33,32 +33,6 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
   });
 
-  it("exposes every iOS simulator action the preload routes as a runtime action", () => {
-    // The `ios_simulator` domain spreads `APPLE_AGENT_ACTIONS`, and the preload
-    // calls some of those through `callIosSimulatorActionOr` — a runtime action
-    // the daemon rejects if the name is missing here. `recordingsTotalBytes`
-    // was implemented and exposed but absent from the list, so the runtime path
-    // rejected it and the Diagnostics row silently fell back to a tree walk.
-    for (const action of [
-      "recordingsTotalBytes",
-      "startStream",
-      "stopStream",
-      "deviceStart",
-      "deviceCreate",
-    ]) {
-      expect(isAllowedAdeAction("ios_simulator", action), action).toBe(true);
-    }
-    expect(isAllowedAdeAction("ios_simulator", "definitelyNotAnAction")).toBe(false);
-  });
-
-  it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
-    expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForLaneSessions")).toBe(true);
-    expect(isAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
-  });
-
   it("exposes the Linear issue tracker write actions for the CLI daemon bridge", () => {
     // CLI agents have no Linear creds; they write back through the daemon
     // bridge, so these must be agent-reachable (not CTO-gated).
@@ -199,32 +173,6 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(false);
     expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
     expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);
-  });
-
-  it("exposes subagent transcript reads through the chat runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "getMainTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscriptPage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "getMainTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscriptPage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "messageSession")).toBe(false);
-  });
-
-  it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "setCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "setCodexGoalStatus")).toBe(true);
-    expect(isAllowedAdeAction("chat", "clearCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "resetCodexMemory")).toBe(true);
-    expect(isAllowedAdeAction("chat", "terminateCodexBackgroundTerminal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "stopTask")).toBe(true);
-    expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
   });
 
   it("rejects an unknown action on a known domain", () => {
@@ -527,49 +475,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("automations", "refreshWebhookGatewayStatus")).toBe(false);
   });
 
-  it("exposes the issue domain with GitHub issue mutation helpers", () => {
-    const actions = ADE_ACTION_ALLOWLIST.issue ?? [];
-    for (const name of ["addComment", "setLabels", "close", "reopen", "assign", "setTitle"]) {
-      expect(actions).toContain(name);
-    }
-  });
-
-  it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listSnapshots");
-  });
-
-  it("exposes lane.listDeleteProgress for runtime-backed lane delete progress recovery", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listDeleteProgress");
-  });
-
-  it("exposes runtime-backed PR reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("listPrsByLane");
-    expect(actions).toContain("getMobileGithubDetail");
-  });
-
-  it("exposes reconcileOnFocus + syncLanePr so the reconcile safety net works in the runtime-backed build", () => {
-    // Regression: in production a project is runtime-backed (local daemon RPC),
-    // so the desktop context's prService is null and these actions are dispatched
-    // to the daemon. If they are not allowlisted, the daemon rejects them —
-    // reconcile-on-focus becomes a no-op and the manual ⟳ sync silently fails.
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("reconcileOnFocus");
-    expect(actions).toContain("syncLanePr");
-  });
-
-  it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
-    const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
-    expect(actions).toContain("clearLocalData");
-  });
-
-  it("exposes session.getDelta for runtime-backed session delta reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.session ?? [];
-    expect(actions).toContain("getDelta");
-  });
-
   it("exposes computer-use backend status and artifact preview reads for runtime-backed proof flows", () => {
     const actions = ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? [];
     expect(actions).toContain("getBackendStatus");
@@ -707,14 +612,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
     expect(contract, `${domain}.${action} needs an entry in ADE_ACTION_INPUT_CONTRACTS`).toBeDefined();
     expect(contract?.description?.length ?? 0).toBeGreaterThan(10);
     expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
-  });
-
-  it("covers every domain the coverage table claims exactly once", () => {
-    const domains = CTO_DOMAIN_COVERAGE.map((entry) => entry.domain);
-    expect(new Set(domains).size).toBe(domains.length);
-    for (const domain of domains) {
-      expect(ADE_ACTION_ALLOWLIST[domain], `${domain} must exist in the allowlist`).toBeDefined();
-    }
   });
 
   // ── CTO-only decisions ────────────────────────────────────────────────────

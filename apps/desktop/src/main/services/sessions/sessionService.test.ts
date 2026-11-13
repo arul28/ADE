@@ -4,6 +4,7 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 
 function createLogger() {
@@ -71,7 +72,7 @@ describe("sessionService resume metadata", () => {
 
   it("reads terminal scrollback transparently from a compressed log", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-gzip-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -85,7 +86,7 @@ describe("sessionService resume metadata", () => {
   it("stores a create-time goal on the terminal session row", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -108,7 +109,7 @@ describe("sessionService resume metadata", () => {
   it("derives permission-aware resume commands from stored metadata", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -160,7 +161,7 @@ describe("sessionService resume metadata", () => {
   it("keeps the launch identity across a round trip through the store", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -197,7 +198,7 @@ describe("sessionService resume metadata", () => {
   it("mirrors a launch-only credential id onto the metadata and back", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -228,7 +229,7 @@ describe("sessionService resume metadata", () => {
   it("projects tracked CLI spawn lineage from resume metadata without assigning a chat owner", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-lineage-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -277,7 +278,7 @@ describe("sessionService resume metadata", () => {
   it("preserves Codex approval and sandbox settings when rebuilding the resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -338,7 +339,7 @@ describe("sessionService resume metadata", () => {
   it("round-trips Codex full-auto resume commands without dropping the thread id", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -388,7 +389,7 @@ describe("sessionService resume metadata", () => {
   it("recovers launch permissions from a detected resume command when metadata is missing", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -426,7 +427,7 @@ describe("sessionService resume metadata", () => {
   it("hard deletes a stored session row", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -458,7 +459,7 @@ describe("sessionService resume metadata", () => {
   it("drops the PR links that pointed at a deleted session", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
     const now = "2026-03-17T00:10:00.000Z";
@@ -516,7 +517,7 @@ describe("sessionService resume metadata", () => {
   it("reattaches an existing tracked session to a new PTY without changing its identity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -565,7 +566,7 @@ describe("sessionService resume metadata", () => {
   it("emits a change event when metadata is updated", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
     const events: string[] = [];
@@ -601,7 +602,7 @@ describe("sessionService resume metadata", () => {
   it("preserves droid chat sessions as droid-chat instead of coercing them to other", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -632,7 +633,7 @@ describe("sessionService resume metadata", () => {
   it("preserves Copilot chat sessions and finds them through the chat filter", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -661,7 +662,7 @@ describe("sessionService resume metadata", () => {
   it("allows internal callers to opt out of the default session list limit", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -687,7 +688,7 @@ describe("sessionService resume metadata", () => {
   it("applies tool type filters before the session list limit", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -725,7 +726,7 @@ describe("sessionService resume metadata", () => {
   it("leaves archived rows out before applying the session list limit", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -770,7 +771,7 @@ describe("sessionService resume metadata", () => {
   ])("settledLimit keeps an older working chat ahead of newer settled ones (%s)", async (_label, filter) => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -805,7 +806,7 @@ describe("sessionService resume metadata", () => {
   it("repairs legacy droid chat rows from their resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -849,7 +850,7 @@ describe("sessionService resume metadata", () => {
   it("reconciles stale running chat sessions when no exclusions are provided", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -883,7 +884,7 @@ describe("sessionService resume metadata", () => {
   it("persists ownerPid on create and returns it from get", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -910,7 +911,7 @@ describe("sessionService resume metadata", () => {
   it("reconciles only running sessions without a live owner pid", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
     const events: string[] = [];
@@ -985,7 +986,7 @@ describe("sessionService resume metadata", () => {
   it("requires owner process identity to preserve peer-owned running sessions", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1040,7 +1041,7 @@ describe("sessionService resume metadata", () => {
   it("does not reconcile sessions owned by unknown synced machines when known owners are scoped locally", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1129,7 +1130,7 @@ describe("sessionService resume metadata", () => {
   it("does not reconcile running sessions with fresh startup or output", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1251,7 +1252,7 @@ describe("sessionService resume metadata", () => {
   it("preserves fresh activity for every terminal-backed CLI tool type", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
     const freshToolTypes = [
@@ -1328,7 +1329,7 @@ describe("sessionService resume metadata", () => {
   it("omitted live owner set only reconciles legacy ownerless sessions", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1374,7 +1375,7 @@ describe("sessionService resume metadata", () => {
   it("updates ownerPid on reattach", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1411,7 +1412,7 @@ describe("sessionService resume metadata", () => {
   it("mirrors Claude SDK session pointers by lane and owning chat", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1468,7 +1469,7 @@ describe("sessionService resume metadata", () => {
   it("returns every Claude session pointer a caller asks for past the old 500 clamp", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1493,7 +1494,7 @@ describe("sessionService resume metadata", () => {
   it("keeps a chat bound to only one Claude SDK session pointer", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1530,7 +1531,7 @@ describe("sessionService resume metadata", () => {
   it("touchSessionActivity refreshes only the activity timestamp", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1561,7 +1562,7 @@ describe("sessionService resume metadata", () => {
   it("activity writes undo a stale detach left by a liveness sweep", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -1628,7 +1629,7 @@ describe("sessionService resume metadata", () => {
   it("reopen repairs any non-running row exactly once", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-reopen-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
-    const db = await openKvDb(dbPath, createLogger() as any);
+    const db = await openFreshKvDb(dbPath, createLogger() as any);
     insertProjectGraph(db);
     const service = createSessionService({ db });
     const events: string[] = [];
@@ -1671,7 +1672,7 @@ describe("sessionService resume metadata", () => {
 
   it("settles idempotently, records an outcome, clears attention, and unsets", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-settle-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -1716,7 +1717,7 @@ describe("sessionService resume metadata", () => {
 
   it("bulk settles only rows that were not already settled", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-settle-many-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -1761,7 +1762,7 @@ describe("sessionService resume metadata", () => {
 
   it("reports a settled chat one time, and not a shell, a subagent that follows its parent, or a second settle", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-chat-settled-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const reported: Array<{ sessionId: string; laneId: string; provider: string | null }> = [];
@@ -1808,7 +1809,7 @@ describe("sessionService resume metadata", () => {
 
   it("settles a parent's subagents with it, reaches them through an already-settled parent, and brings them back on unsettle", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-subagent-cascade-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     // The lineage the chat service reports: parent → its subagents.
@@ -1862,7 +1863,7 @@ describe("sessionService resume metadata", () => {
 
   it("normalizes status and attention text and clears turn-start markers separately from agent activity", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-markers-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -1995,7 +1996,7 @@ describe("sessionService resume metadata", () => {
 
   it("keeps chat activity on the chat row and attached CLI activity on its terminal row", async () => {
     const projectRoot = makeProjectRoot("ade-session-activity-projection-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -2036,7 +2037,7 @@ describe("sessionService resume metadata", () => {
 
   it("lets PTY callers preserve agent settlement while ordinary output clears it", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-output-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -2088,7 +2089,7 @@ describe("sessionService resume metadata", () => {
 describe("sessionService attention ownership", () => {
   it("clears inferred attention only when its source and timestamp predate turn start", async () => {
     const projectRoot = makeProjectRoot("ade-session-attention-owner-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -2138,7 +2139,7 @@ describe("sessionService attention ownership", () => {
 describe("sessionService snooze overlay", () => {
   async function makeService(prefix: string) {
     const projectRoot = makeProjectRoot(prefix);
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -2405,7 +2406,7 @@ describe("sessionService snooze overlay", () => {
 describe("sessionService settle override", () => {
   async function makeService(prefix: string) {
     const projectRoot = makeProjectRoot(prefix);
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -2589,7 +2590,7 @@ describe("sessionService settle override", () => {
 describe("sessionService attached shell archiving", () => {
   it("archives exactly the live shells a chat owns, and never a chat-kind row", async () => {
     const projectRoot = makeProjectRoot("ade-attached-shells-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
     try {
       insertProjectGraph(db);
       const now = "2026-03-17T00:00:00.000Z";
@@ -2628,7 +2629,7 @@ describe("sessionService attached shell archiving", () => {
 describe("sessionService archived lane backfill", () => {
   it("archives the chats of lanes archived earlier once, and leaves a chat the user restored alone", async () => {
     const projectRoot = makeProjectRoot("ade-archived-lane-backfill-");
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
     try {
       insertProjectGraph(db);
       const laneArchivedAt = "2026-03-18T00:00:00.000Z";

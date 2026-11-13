@@ -10,6 +10,16 @@ name: Warm release caches
 #
 # The cache keys come from .github/actions/release-cache-keys, which
 # release-core.yml uses too, so the two cannot drift apart.
+#
+# The cache alone was not enough: the repository's 10 GB cache drops the least
+# recently used entry first, and these few-MB entries, read only by releases,
+# were gone within hours of each save. So every run also uploads the same files
+# as workflow artifacts named by the cache key, which do not share that space.
+# A release whose cache misses fetches the newest one
+# (scripts/fetch-warm-release-build.sh) and checks the same attestation. The
+# weekly schedule keeps a fresh artifact well inside its 90-day retention; a
+# run whose cache misses reuses the previous run's attested artifact instead of
+# compiling again, so the schedule costs minutes, not a full build.
 
 on:
   push:
@@ -29,11 +39,16 @@ on:
       - "apps/desktop/scripts/native-helper-cache.mjs"
       - ".github/actions/release-cache-keys/**"
       - ".github/workflows/warm-release-caches.yml"
+  schedule:
+    # Sundays 07:23 UTC, a quiet hour for the macOS runners.
+    - cron: "23 7 * * 0"
   workflow_dispatch:
 
 # id-token and attestations: the builds below are attested, and release-core.yml
 # uses a cached file only when it carries this workflow's attestation.
+# actions: read finds and downloads the previous run's artifact.
 permissions:
+  actions: read
   contents: read
   id-token: write
   attestations: write
@@ -63,12 +78,25 @@ jobs:
           path: apps/desktop/resources/whisper/transcribe-cli
           key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
 
-      - name: Build transcribe-cli
+      # A miss is usually eviction, not a source change: the previous run's
+      # artifact holds the same build. It is reused only when it carries this
+      # workflow's attestation, the check a release makes; otherwise it is
+      # deleted and the step below compiles it.
+      - name: Reuse the last run's transcribe-cli
         if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+        run: |
+          scripts/fetch-warm-release-build.sh "$KEY" apps/desktop/resources/whisper/transcribe-cli
+          scripts/verify-cached-release-builds.sh TRANSCRIBE_REUSED apps/desktop/resources/whisper/transcribe-cli
+
+      - name: Build transcribe-cli
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' && env.TRANSCRIBE_REUSED != '1' }}
         run: cd apps/desktop && node scripts/materialize-whisper-resources.mjs
 
       - name: Attest transcribe-cli
-        if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' && env.TRANSCRIBE_REUSED != '1' }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: apps/desktop/resources/whisper/transcribe-cli
@@ -80,8 +108,21 @@ jobs:
           path: ${{ steps.cache-keys.outputs.native-helper-paths }}
           key: ${{ steps.cache-keys.outputs.native-helpers }}
 
-      - name: Build native helpers
+      - name: Reuse the last run's native helpers
         if: ${{ steps.helpers.outputs.cache-hit != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.cache-keys.outputs.native-helpers }}
+          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
+        run: |
+          # One path per line, none with spaces; split them into arguments.
+          # shellcheck disable=SC2086
+          scripts/fetch-warm-release-build.sh "$KEY" $HELPER_PATHS
+          # shellcheck disable=SC2086
+          scripts/verify-cached-release-builds.sh HELPERS_REUSED $HELPER_PATHS
+
+      - name: Build native helpers
+        if: ${{ steps.helpers.outputs.cache-hit != 'true' && env.HELPERS_REUSED != '1' }}
         env:
           HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
         run: |
@@ -95,10 +136,44 @@ jobs:
           while read -r helper; do lipo -archs "../../$helper"; done <<< "$HELPER_PATHS"
 
       - name: Attest native helpers
-        if: ${{ steps.helpers.outputs.cache-hit != 'true' }}
+        if: ${{ steps.helpers.outputs.cache-hit != 'true' && env.HELPERS_REUSED != '1' }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: ${{ steps.cache-keys.outputs.native-helper-paths }}
+
+      # The same files as artifacts named by the cache keys, one tar each, so
+      # file modes and paths survive. ustar and COPYFILE_DISABLE keep macOS
+      # metadata entries out: the fetch script accepts an archive only when it
+      # lists exactly the expected files.
+      - name: Pack the builds for releases
+        env:
+          TRANSCRIBE_KEY: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+          HELPERS_KEY: ${{ steps.cache-keys.outputs.native-helpers }}
+          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
+        run: |
+          set -euo pipefail
+          mkdir -p .warm-release-build
+          COPYFILE_DISABLE=1 tar --format=ustar -cf - apps/desktop/resources/whisper/transcribe-cli > ".warm-release-build/$TRANSCRIBE_KEY.tar"
+          # shellcheck disable=SC2086
+          COPYFILE_DISABLE=1 tar --format=ustar -cf - $HELPER_PATHS > ".warm-release-build/$HELPERS_KEY.tar"
+          tar -tvf - < ".warm-release-build/$TRANSCRIBE_KEY.tar"
+          tar -tvf - < ".warm-release-build/$HELPERS_KEY.tar"
+
+      - name: Upload transcribe-cli for releases
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+          path: .warm-release-build/${{ steps.cache-keys.outputs.transcribe-darwin }}.tar
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload native helpers for releases
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cache-keys.outputs.native-helpers }}
+          path: .warm-release-build/${{ steps.cache-keys.outputs.native-helpers }}.tar
+          retention-days: 90
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
@@ -120,12 +195,43 @@ jobs:
           path: apps/desktop/resources/whisper/transcribe-cli.exe
           key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
 
-      - name: Build transcribe-cli
+      # See the mac job.
+      - name: Reuse the last run's transcribe-cli
         if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+        run: |
+          scripts/fetch-warm-release-build.sh "$KEY" apps/desktop/resources/whisper/transcribe-cli.exe
+          scripts/verify-cached-release-builds.sh TRANSCRIBE_REUSED apps/desktop/resources/whisper/transcribe-cli.exe
+
+      - name: Build transcribe-cli
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' && env.TRANSCRIBE_REUSED != '1' }}
         run: cd apps/desktop && node scripts/materialize-whisper-resources.mjs
 
       - name: Attest transcribe-cli
-        if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
+        if: ${{ steps.transcribe.outputs.cache-hit != 'true' && env.TRANSCRIBE_REUSED != '1' }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: apps/desktop/resources/whisper/transcribe-cli.exe
+
+      # See the mac job. Through stdin and stdout: GNU tar on Windows reads
+      # "D:" in a file name as a remote host.
+      - name: Pack transcribe-cli for releases
+        shell: bash
+        env:
+          KEY: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+        run: |
+          set -euo pipefail
+          mkdir -p .warm-release-build
+          tar --format=ustar -cf - apps/desktop/resources/whisper/transcribe-cli.exe > ".warm-release-build/$KEY.tar"
+          tar -tvf - < ".warm-release-build/$KEY.tar"
+
+      - name: Upload transcribe-cli for releases
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+          path: .warm-release-build/${{ steps.cache-keys.outputs.transcribe-win32 }}.tar
+          retention-days: 90
+          if-no-files-found: error

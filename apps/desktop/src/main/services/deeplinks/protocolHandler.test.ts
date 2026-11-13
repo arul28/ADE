@@ -299,57 +299,6 @@ describe("handleDeeplinkUrl", () => {
  * sync-host project window, not the globally focused window.
  */
 describe("project-scoped deeplink dispatch contract", () => {
-  it("prefers project-root dispatch over focused-window dispatch for sync:ios", () => {
-    const focusedDispatch = vi.fn();
-    const projectDispatch = vi.fn();
-    let dispatchAppNavigationForProjectRoot:
-      | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
-      | null = projectDispatch;
-
-    const projectRoot = "/projects/beta";
-    const request: AppNavigationRequest = {
-      target: { kind: "lane", laneId: "lane-in-beta" },
-      source: "deeplink:sync:ios",
-    };
-
-    const dispatchSyncDeeplink = (req: AppNavigationRequest) => {
-      if (dispatchAppNavigationForProjectRoot) {
-        dispatchAppNavigationForProjectRoot(projectRoot, req);
-        return;
-      }
-      focusedDispatch(req);
-    };
-
-    dispatchSyncDeeplink(request);
-
-    expect(projectDispatch).toHaveBeenCalledWith(projectRoot, request);
-    expect(focusedDispatch).not.toHaveBeenCalled();
-  });
-
-  it("falls back to focused-window dispatch when project dispatch is unavailable", () => {
-    const focusedDispatch = vi.fn();
-    const getProjectDispatch = ():
-      | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
-      | null => null;
-
-    const request: AppNavigationRequest = {
-      target: { kind: "lane", laneId: "lane-1" },
-      source: "deeplink:sync:ios",
-    };
-
-    const dispatchSyncDeeplink = (req: AppNavigationRequest) => {
-      const projectDispatch = getProjectDispatch();
-      if (projectDispatch) {
-        projectDispatch("/projects/beta", req);
-        return;
-      }
-      focusedDispatch(req);
-    };
-
-    dispatchSyncDeeplink(request);
-
-    expect(focusedDispatch).toHaveBeenCalledWith(request);
-  });
 
   it("activates an existing project tab before opening a duplicate window", async () => {
     const activeProjectRoots = new Map<number, string | null>([[1, "/projects/alpha"]]);

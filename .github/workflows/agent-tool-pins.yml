@@ -17,7 +17,11 @@
 # Opening a PR needs "Allow GitHub Actions to create and approve pull
 # requests" (Settings > Actions > General > Workflow permissions). Pushes made
 # with GITHUB_TOKEN do not start CI on their own, so the workflow starts
-# ci.yml on the branch with workflow_dispatch.
+# ci.yml on the branch with workflow_dispatch. ci.yml gates a dispatch on a
+# pins/* branch like a pull request (runtime targets and iOS by the diff from
+# main), so a tool bump no longer builds all five runtimes and the iOS suite;
+# the run still ends in the ci-pass check on the branch head that the PR needs
+# to merge. At most two of these runs are in flight at a time (see below).
 name: Agent tool pins
 
 on:
@@ -216,6 +220,20 @@ jobs:
           else
             gh pr create --head "${BRANCH}" --base main --title "${title}" --body "${body}" --label dependencies
           fi
+          # At most two pins CI runs in flight. Ten started at once filled the
+          # runner slots, the macOS ones included, for up to an hour. Waits up
+          # to 18 minutes (this job's timeout is 30), then starts anyway; a
+          # failed count counts as zero. A shared concurrency group in ci.yml
+          # would not do: GitHub keeps one pending run per group and cancels
+          # the rest.
+          for _ in $(seq 1 36); do
+            active="$(gh run list --workflow ci.yml --event workflow_dispatch --limit 50 --json headBranch,status \
+              --jq '[.[] | select((.headBranch | startswith("pins/")) and .status != "completed")] | length' 2>/dev/null || echo 0)"
+            [[ "${active}" =~ ^[0-9]+$ ]] || active=0
+            if [ "${active}" -lt 2 ]; then break; fi
+            echo "${active} pins CI runs are in flight; waiting before starting ${BRANCH}."
+            sleep 30
+          done
           gh workflow run ci.yml --ref "${BRANCH}"
 
   retire-dependabot:

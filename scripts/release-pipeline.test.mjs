@@ -20,7 +20,7 @@ function tempDir(prefix) {
 }
 
 // A `gh` on PATH that answers from files: `ci/<sha>` holds the ci-pass check
-// run for a commit, `docs/<sha>` the validate-docs conclusion, `attest/<basename>` the `gh attestation verify --format
+// run for a commit, `docs/<sha>` the conclusion of the packages job (it runs validate-docs), `attest/<basename>` the `gh attestation verify --format
 // json` output for a file (absent = verification fails).
 function stubGh(dir) {
   const bin = path.join(dir, "bin");
@@ -32,7 +32,7 @@ data="${dir}"
 if [ "$1" = api ]; then
   sha="$(printf '%s' "$2" | sed -E 's#.*/commits/([^/]+)/check-runs#\\1#')"
   case "$*" in
-    *validate-docs*) [ -f "$data/docs/$sha" ] && cat "$data/docs/$sha" ;;
+    *packages*) [ -f "$data/docs/$sha" ] && cat "$data/docs/$sha" ;;
     *) [ -f "$data/ci/$sha" ] && cat "$data/ci/$sha" ;;
   esac
   exit 0

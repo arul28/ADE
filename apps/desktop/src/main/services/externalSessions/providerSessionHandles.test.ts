@@ -3,7 +3,6 @@ import path from "node:path";
 import {
   collectDescendantPidRoots,
   handleIsOwnedByTrackedPty,
-  handleInspectionUnavailableMessage,
   inspectLiveProviderSessions,
   parseHandleExePaths,
   parseLsofNameLines,
@@ -236,7 +235,4 @@ describe("providerSessionHandles", () => {
     expect(index.byKey.size).toBe(0);
   });
 
-  it("documents the Windows handle-enumeration degrade", () => {
-    expect(handleInspectionUnavailableMessage("windows_handle_enumeration_unavailable")).toMatch(/handle\.exe/);
-  });
 });

@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { localDayKey, localDayOffset } from "../usage/localDay";
 import { recordUsageInteraction } from "../usage/usageStatsStore";
 import type { AdeUsageStats } from "../../../shared/types";
@@ -2842,7 +2843,7 @@ describe("usage product analytics exporter", () => {
     run: (db: Awaited<ReturnType<typeof openKvDb>>) => Promise<void>,
   ): Promise<void> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), name));
-    const db = await openKvDb(path.join(root, "ade.db"), analyticsLogger() as never);
+    const db = await openFreshKvDb(path.join(root, "ade.db"), analyticsLogger() as never);
     try {
       await run(db);
     } finally {

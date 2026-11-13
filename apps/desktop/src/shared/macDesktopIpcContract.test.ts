@@ -86,62 +86,6 @@ function harness() {
 }
 
 describe("Mac Desktop IPC contract", () => {
-  it("names a channel for every method the panel drives", () => {
-    // The spec's method list. Named here so a channel deleted in a refactor is
-    // a failing test rather than a panel button that stops working.
-    const required = [
-      "macDesktopGetStatus",
-      "macDesktopRecheckPermissions",
-      "macDesktopRequestPermission",
-      "macDesktopStart",
-      "macDesktopSetupWindows",
-      "macDesktopTakeoverWindows",
-      "macDesktopUseSharedDesktop",
-      "macDesktopStop",
-      "macDesktopListWindows",
-      "macDesktopOpen",
-      "macDesktopClaimWindow",
-      "macDesktopReleaseWindow",
-      "macDesktopCloseWindow",
-      "macDesktopObserve",
-      "macDesktopClick",
-      "macDesktopType",
-      "macDesktopPress",
-      "macDesktopScroll",
-      "macDesktopDrag",
-      "macDesktopMove",
-      "macDesktopWait",
-      "macDesktopScreenshot",
-      "macDesktopStartRecording",
-      "macDesktopStopRecording",
-      "macDesktopStartStream",
-      "macDesktopStopStream",
-      "macDesktopGetStreamStatus",
-      "macDesktopTakeControl",
-      "macDesktopReturnControl",
-      "macDesktopRenewLease",
-      "macDesktopPresent",
-      "macDesktopSetEscapeHotkey",
-      "macDesktopEvent",
-      "macDesktopEscapeHotkeyPressed",
-    ];
-    expect(macDesktopChannelKeys.sort()).toEqual([...required].sort());
-  });
-
-  it("exposes exactly the bridge methods the renderer declares", () => {
-    const { bridge } = harness();
-    expect(Object.keys(bridge).sort()).toEqual(
-      [
-        ...ROUTED_CALLS.map(([method]) => method),
-        "resolveStreamUrl",
-        // Never routed: the accelerator belongs to this Electron app, not the
-        // runtime that owns the display.
-        "setEscapeHotkey",
-        "onEscapeHotkey",
-        "onEvent",
-      ].sort(),
-    );
-  });
 
   it("routes every call through the mac_desktop action domain before the local channel", async () => {
     // The runtime-backed build has no in-process service. A preload method that

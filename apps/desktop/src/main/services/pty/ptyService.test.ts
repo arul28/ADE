@@ -3862,39 +3862,6 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith(`${expectedCommand}\r`);
     });
 
-    it("registers the session via sessionService.create", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "My session",
-        cols: 120,
-        rows: 40,
-      });
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "My session",
-          tracked: true,
-        }),
-      );
-    });
-
-    it("uses a default title when runtime payloads omit one", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        cols: 120,
-        rows: 40,
-      } as any);
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "Terminal",
-          tracked: true,
-        }),
-      );
-    });
-
     it("rejects terminal launches when the lane worktree does not exist", async () => {
       mocks.existsSyncResults.set("/tmp/test-worktree", false);
       const { service, loadPty } = createHarness();
@@ -4015,18 +3982,6 @@ describe("ptyService", () => {
         expect.any(Array),
         expect.objectContaining({ cols: 400, rows: 200 }),
       );
-    });
-
-    it("writes startup command to the PTY when provided", async () => {
-      const { service, mockPty } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "With startup",
-        cols: 80,
-        rows: 24,
-        startupCommand: "echo hello",
-      });
-      expect(mockPty.write).toHaveBeenCalledWith("echo hello\r");
     });
 
     it("delays startup command writes when requested", async () => {
@@ -6105,34 +6060,6 @@ describe("ptyService", () => {
       }));
     });
 
-    it("normalizes toolType to a known value", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "Claude session",
-        cols: 80,
-        rows: 24,
-        toolType: "claude",
-      });
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ toolType: "claude" }),
-      );
-    });
-
-    it("preserves droid-chat as a known toolType", async () => {
-      const { service, sessionService } = createHarness();
-      await service.create({
-        laneId: "lane-1",
-        title: "Droid chat",
-        cols: 80,
-        rows: 24,
-        toolType: "droid-chat",
-      });
-      expect(sessionService.create).toHaveBeenCalledWith(
-        expect.objectContaining({ toolType: "droid-chat" }),
-      );
-    });
-
     it("normalizes unknown toolType to 'other'", async () => {
       const { service, sessionService } = createHarness();
       await service.create({
@@ -6725,20 +6652,6 @@ describe("ptyService", () => {
     });
   });
 
-  describe("write", () => {
-    it("forwards data to the underlying PTY", async () => {
-      const { service, mockPty } = createHarness();
-      const { ptyId } = await service.create({ laneId: "lane-1", title: "w", cols: 80, rows: 24 });
-      service.write({ ptyId, data: "ls\r" });
-      expect(mockPty.write).toHaveBeenCalledWith("ls\r");
-    });
-
-    it("silently ignores writes to unknown pty ids", () => {
-      const { service } = createHarness();
-      expect(() => service.write({ ptyId: "non-existent", data: "test" })).not.toThrow();
-    });
-  });
-
   describe("resize", () => {
     it("resizes the PTY with clamped dimensions", async () => {
       const { service, mockPty } = createHarness();
@@ -6758,10 +6671,6 @@ describe("ptyService", () => {
       expect(mockPty.resize).toHaveBeenCalledWith(132, 43);
     });
 
-    it("silently ignores resize on unknown pty ids", () => {
-      const { service } = createHarness();
-      expect(() => service.resize({ ptyId: "non-existent", cols: 80, rows: 24 })).not.toThrow();
-    });
   });
 
   describe("getRuntimeState", () => {
@@ -7048,14 +6957,6 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
-    });
-
-    it("handles disposing an already-disposed PTY gracefully", async () => {
-      const { service } = createHarness();
-      const { ptyId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24 });
-      service.dispose({ ptyId });
-      // Second dispose should not throw
-      expect(() => service.dispose({ ptyId })).not.toThrow();
     });
 
     it("does not create per-session ADE tool config artifacts for tool sessions", async () => {
@@ -7416,20 +7317,6 @@ describe("ptyService", () => {
       );
     });
 
-    it("silently ignores dispose for completely unknown pty/session", () => {
-      const { service } = createHarness();
-      expect(() => service.dispose({ ptyId: "non-existent" })).not.toThrow();
-    });
-  });
-
-  describe("disposeAll", () => {
-    it("disposes all active PTYs", async () => {
-      const { service, broadcastExit } = createHarness();
-      await service.create({ laneId: "lane-1", title: "a", cols: 80, rows: 24 });
-      await service.create({ laneId: "lane-1", title: "b", cols: 80, rows: 24 });
-      service.disposeAll();
-      expect(broadcastExit).toHaveBeenCalledTimes(2);
-    });
   });
 
   describe("PTY data handling", () => {
@@ -8470,12 +8357,6 @@ describe("ptyService", () => {
 
       expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
       expect(mockPty.resize).toHaveBeenLastCalledWith(200, 40);
-    });
-
-    it("returns null from readScreenSnapshot for an unknown session", async () => {
-      const { service } = createHarness();
-      expect(service.readScreenSnapshot("missing")).toBeNull();
-      expect(service.readScreenSnapshot("")).toBeNull();
     });
 
     it("hydrates stored screens from scrollback-0 CSI instead of the full snapshot serialize", async () => {

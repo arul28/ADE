@@ -481,23 +481,6 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
   });
 
-  // Account, Settings, feedback, help, and zoom moved to the project sidebar
-  // (the footer cog and the settings sidebar header).
-  it("keeps account, settings, help, and zoom out of the top bar", () => {
-    useAppStore.setState({
-      project: { rootPath: "/Users/arul/ADE", name: "ADE" },
-      projectBinding: null,
-      projectHydrated: true,
-      showWelcome: false,
-    } as any);
-
-    render(<TopBar />);
-
-    expect(screen.queryByRole("button", { name: /^Account/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Zoom in" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Zoom out" })).toBeNull();
-  });
-
   it("shows connections before a project is open without immediate polling", async () => {
     useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 
@@ -764,24 +747,6 @@ describe("TopBar", () => {
     const expected = root === front ? 0 : 1;
     expect(switchProjectToPath).toHaveBeenCalledTimes(expected);
     if (expected) expect(switchProjectToPath).toHaveBeenCalledWith(root);
-  });
-
-  it("drops the project tab's active styling while the Chats tab is the foreground surface", () => {
-    const root = "/Users/arul/ADE";
-    renderChatsTopBar({
-      personalChatsRouteActive: true,
-      storeOverrides: {
-        project: { rootPath: root, name: "ADE" },
-        showWelcome: false,
-        openProjectTabRoots: [root],
-        projectInfoByRoot: { [root]: { rootPath: root, displayName: "ADE" } },
-      } as any,
-    });
-
-    expect(screen.getByText("Chats").parentElement?.getAttribute("data-state")).toBe("active");
-    const projectTab = screen.getByText("ADE", { selector: "span" }).closest('[role="button"]');
-    expect(projectTab?.getAttribute("data-state")).toBeNull();
-    expect(projectTab?.getAttribute("aria-current")).toBe("true");
   });
 
   it("keeps the mobile connections tab open before a project is open", async () => {

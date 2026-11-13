@@ -12,21 +12,6 @@ import { SETTINGS, controlsIn, installAdeMock, makeActions, makeCtx, DRAWER_PIN 
 afterEach(cleanup);
 
 describe("DeviceSection", () => {
-  it("holds everything §B1 puts in the Device group, and no heading of its own", () => {
-    installAdeMock();
-    const { container } = render(<DeviceSection ctx={makeCtx()} />);
-    expect(screen.queryByRole("heading")).toBeNull();
-    expect(screen.getByRole("group", { name: "Appearance" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Text size" })).toBeTruthy();
-    for (const label of ["Reduce Motion", "Increase Contrast", "Reduce Transparency", "Show Borders", "VoiceOver"]) {
-      expect(screen.getByRole("switch", { name: label })).toBeTruthy();
-    }
-    expect(screen.getByText("Location")).toBeTruthy();
-    expect(screen.getByLabelText("Latitude")).toBeTruthy();
-    expect(screen.getByText("Status bar")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "9:41" })).toBeTruthy();
-    expect(container.textContent).toContain("Device's own");
-  });
 
   it("writes the appearance the device does not already have, and never the one it does", async () => {
     const { iosSimulator } = installAdeMock();

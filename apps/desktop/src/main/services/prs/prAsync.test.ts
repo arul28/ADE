@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrSummary } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   getPrMergeAutoSettlementState,
   getSessionLifecycleSettings,
@@ -2011,7 +2012,7 @@ describe("PR-origin merge lifecycle", () => {
   async function fixture(count = 1, handled = true) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-origin-merge-"));
     roots.push(root);
-    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, "ade.db"), createLogger());
     databases.push(db);
     const before = "2026-03-24T12:00:00.000Z";
     const after = "2026-03-24T12:02:00.000Z";

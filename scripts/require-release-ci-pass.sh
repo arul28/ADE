@@ -18,6 +18,8 @@ ci_pass_for() {
     --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
 }
 
+# CI runs scripts/validate-docs.mjs in the `packages` job, beside the package
+# checks, so that job is the docs check here.
 validate_docs_failed() {
   local conclusion
   conclusion="$(gh api "repos/$GH_REPO/commits/$1/check-runs" \
@@ -25,7 +27,7 @@ validate_docs_failed() {
     -H "Accept: application/vnd.github+json" \
     -f per_page=100 \
     --paginate \
-    --jq '[.check_runs[] | select(.name == "validate-docs")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)" || return 0
+    --jq '[.check_runs[] | select(.name == "packages")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)" || return 0
   [ -n "$conclusion" ] && [ "$conclusion" != "success" ] && [ "$conclusion" != "cancelled" ] && [ "$conclusion" != "skipped" ]
 }
 
@@ -37,8 +39,8 @@ validate_docs_failed() {
 # has not finished may borrow the green ci-pass of the nearest
 # ancestor, provided every commit in between touches only these
 # paths. On such a commit only validate-docs can catch anything the
-# parent's CI did not, so a failed ci-pass blocks only when its
-# validate-docs failed. Any other failure (a cancelled run, which
+# parent's CI did not, so a failed ci-pass blocks only when the job that
+# runs it (packages) failed. Any other failure (a cancelled run, which
 # ci-pass reports as failure, or a flaky code test) counts as
 # unfinished. A failed ci-pass on any other commit always blocks.
 release_notes_only() {

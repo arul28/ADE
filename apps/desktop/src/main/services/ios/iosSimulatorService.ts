@@ -820,7 +820,7 @@ export function clampStreamFps(value: number | null | undefined): number {
 }
 
 /** There is one backend now; the name is kept so a status read still says which. */
-export const IOS_SIMULATOR_STREAM_BACKEND: IosSimulatorStreamBackend = "helper-h264";
+const IOS_SIMULATOR_STREAM_BACKEND: IosSimulatorStreamBackend = "helper-h264";
 
 function encodeMcpMessage(message: JsonRpcMessage): Buffer {
   return Buffer.from(`${JSON.stringify(message)}\n`, "utf8");

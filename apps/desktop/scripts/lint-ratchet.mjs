@@ -11,17 +11,34 @@
  * only lets those numbers go down. Guide: docs/design/notices.md.
  *
  * Flags: --update (write the baseline), --baseline <path> (read/write a
- * different baseline file), --warnings (also print every warning).
+ * different baseline file), --warnings (also print every warning),
+ * --workers <n> (lint in n worker threads; default: one per CPU, up to
+ * MAX_WORKERS; 1 lints in this process).
  *
- * Needs a large heap like `npm run lint`: the npm scripts pass
- * --max-old-space-size=8192.
+ * The files are the ones `npm run lint` lints (see LINT_DIR). They are split
+ * across worker threads by size, and the results are merged and sorted by path
+ * before the ratchet compares them, so the output does not depend on the
+ * number of workers. No rule keeps state across files, so the split cannot
+ * change a result.
+ *
+ * The npm scripts pass --max-old-space-size=8192, like `npm run lint`.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
 export const RATCHET_RULE_PREFIX = "ade-ui/";
-const LINT_PATTERNS = ["src/**/*.{ts,tsx}"];
+// The same files as `eslint "src/**/*.{ts,tsx}"`: every .ts/.tsx under src
+// that the config does not ignore.
+const LINT_DIR = "src";
+const LINT_FILE = /\.tsx?$/;
+// Each worker loads ESLint, the plugins and the TypeScript parser once and
+// holds about 1 GB. Measured on a 14-core Mac: 1 worker 36 s, 4 workers 14 s,
+// 8 workers 12 s. More workers add memory for little gain. CI has 4 CPUs.
+const MAX_WORKERS = 8;
+const WORKER_MARKER = "adeLintRatchetWorker";
 
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopDir, "..", "..");
@@ -96,14 +113,22 @@ export function compareCounts(baseline, current) {
   return { grown, dropped };
 }
 
+function parseWorkers(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`--workers needs a positive integer, got: ${value}`);
+  return n;
+}
+
 function parseArgs(argv) {
-  const args = { update: false, baseline: DEFAULT_BASELINE, warnings: false };
+  const args = { update: false, baseline: DEFAULT_BASELINE, warnings: false, workers: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--update") args.update = true;
     else if (arg === "--warnings") args.warnings = true;
     else if (arg === "--baseline") args.baseline = path.resolve(argv[++i] ?? "");
     else if (arg.startsWith("--baseline=")) args.baseline = path.resolve(arg.slice("--baseline=".length));
+    else if (arg === "--workers") args.workers = parseWorkers(argv[++i]);
+    else if (arg.startsWith("--workers=")) args.workers = parseWorkers(arg.slice("--workers=".length));
     else throw new Error(`Unknown argument: ${arg}`);
   }
   return args;
@@ -113,13 +138,84 @@ function plural(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+async function createESLint() {
+  const { loadESLint } = await import("eslint");
+  const ESLint = await loadESLint({ useFlatConfig: true });
+  return { ESLint, eslint: new ESLint({ cwd: desktopDir }) };
+}
+
+/** Every .ts/.tsx file under LINT_DIR that the config does not ignore, sorted. */
+async function listLintFiles(eslint) {
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      // node_modules is one of ESLint's default ignores; do not walk into it.
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules") walk(full);
+      } else if (entry.isFile() && LINT_FILE.test(entry.name)) {
+        found.push(full);
+      }
+    }
+  };
+  walk(path.join(desktopDir, LINT_DIR));
+  const ignored = await Promise.all(found.map((file) => eslint.isPathIgnored(file)));
+  return found.filter((_, i) => !ignored[i]).sort(comparePaths);
+}
+
+function comparePaths(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Splits files into `count` groups of about the same total size. */
+function partitionBySize(files, count) {
+  const groups = Array.from({ length: count }, () => ({ bytes: 0, files: [] }));
+  const sized = files.map((file) => ({ file, bytes: fs.statSync(file).size }));
+  sized.sort((a, b) => b.bytes - a.bytes || comparePaths(a.file, b.file));
+  for (const { file, bytes } of sized) {
+    let smallest = groups[0];
+    for (const group of groups) if (group.bytes < smallest.bytes) smallest = group;
+    smallest.files.push(file);
+    smallest.bytes += bytes;
+  }
+  return groups.map((group) => group.files).filter((group) => group.length > 0);
+}
+
+async function lintFileList(files) {
+  const { eslint } = await createESLint();
+  return eslint.lintFiles(files);
+}
+
+function lintInWorker(files) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(import.meta.url), { workerData: { [WORKER_MARKER]: true, files } });
+    let results = null;
+    worker.once("message", (message) => {
+      results = message;
+    });
+    worker.once("error", reject);
+    worker.once("exit", (code) => {
+      if (results) resolve(results);
+      else reject(new Error(`lint worker exited with code ${code} before it sent its results`));
+    });
+  });
+}
+
+/** Lints every file, split across `workers` threads; results sorted by path. */
+async function lintAll(files, workers) {
+  if (workers <= 1) return (await lintFileList(files)).sort((a, b) => comparePaths(a.filePath, b.filePath));
+  const groups = partitionBySize(files, workers);
+  const parts = await Promise.all(groups.map((group) => lintInWorker(group)));
+  return parts.flat().sort((a, b) => comparePaths(a.filePath, b.filePath));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const started = Date.now();
-  const { loadESLint } = await import("eslint");
-  const ESLint = await loadESLint({ useFlatConfig: true });
-  const eslint = new ESLint({ cwd: desktopDir });
-  const results = await eslint.lintFiles(LINT_PATTERNS);
+  const { ESLint, eslint } = await createESLint();
+  const files = await listLintFiles(eslint);
+  const workers = Math.max(1, Math.min(args.workers ?? Math.min(os.availableParallelism(), MAX_WORKERS), files.length));
+  const results = await lintAll(files, workers);
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
 
   const formatter = await eslint.loadFormatter("stylish");
@@ -130,7 +226,7 @@ async function main() {
 
   const errorCount = results.reduce((sum, r) => sum + r.errorCount + r.fatalErrorCount, 0);
   const warningCount = results.reduce((sum, r) => sum + r.warningCount, 0);
-  console.log(`eslint: ${plural(results.length, "file")} in ${seconds}s, ${plural(errorCount, "error")}, ${plural(warningCount, "warning")}${args.warnings ? "" : " (--warnings to list them)"}`);
+  console.log(`eslint: ${plural(results.length, "file")} in ${seconds}s (${plural(workers, "worker")}), ${plural(errorCount, "error")}, ${plural(warningCount, "warning")}${args.warnings ? "" : " (--warnings to list them)"}`);
 
   const current = countRatchetViolations(results);
   const relativeBaseline = repoRelative(args.baseline);
@@ -198,7 +294,11 @@ export function isEntryScript(argvPath, moduleUrl = import.meta.url, platform = 
   return platform === "win32" ? entry.toLowerCase() === self.toLowerCase() : entry === self;
 }
 
-if (isEntryScript(process.argv[1])) {
+if (!isMainThread && workerData?.[WORKER_MARKER]) {
+  // A worker started by lintInWorker. A rejection here becomes the worker's
+  // "error" event, which fails the run in the main thread.
+  parentPort.postMessage(await lintFileList(workerData.files));
+} else if (isMainThread && isEntryScript(process.argv[1])) {
   main().catch((error) => {
     console.error(error);
     process.exitCode = 1;

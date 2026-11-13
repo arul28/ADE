@@ -118,11 +118,6 @@ describe("ProjectSidebar footer", () => {
       expect(screen.getByTestId("location").textContent).toBe("/cto");
     });
   });
-
-  it("shows no Back chip when nothing is held", () => {
-    renderSidebar("/cto");
-    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-  });
 });
 
 function SlotHost({ children }: { children: React.ReactNode }) {

@@ -37,7 +37,7 @@ import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import { landHandoffGitBundle } from "./handoffGitBundle";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { listDrafts } from "./draftService";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { sessionPermissionLevel } from "../../../shared/permissionLadder";
@@ -4725,7 +4725,7 @@ describe("lane share move: the moved chat on the receiving machine", () => {
   ])("lands a %s chat read only, with no turn and the brief in Drafts", async (provider, modelHint, nativeFields) => {
     installMoveGitFixture();
     const root = fs.mkdtempSync(path.join(tmpRoot, "move-db-"));
-    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as never);
+    const db = await openFreshKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as never);
     try {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ db, onEvent: (event: AgentChatEventEnvelope) => events.push(event) });

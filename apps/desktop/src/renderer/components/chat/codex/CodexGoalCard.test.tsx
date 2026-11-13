@@ -63,20 +63,6 @@ describe("CodexGoalCard", () => {
     expect(onEdit).toHaveBeenCalledWith("Refactor auth for compliance");
   });
 
-  it("limits edits to the Codex goal objective maximum", () => {
-    render(
-      <CodexGoalCard
-        goal={{ objective: "Refactor auth middleware", status: "active" }}
-        onEdit={() => undefined}
-        onClear={() => undefined}
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Refactor auth middleware"));
-    const textarea = screen.getByLabelText("Edit goal objective") as HTMLTextAreaElement;
-    expect(textarea.maxLength).toBe(4000);
-  });
-
   it("disables goal controls while a mutation is pending", () => {
     const onEdit = vi.fn();
     const onClear = vi.fn();

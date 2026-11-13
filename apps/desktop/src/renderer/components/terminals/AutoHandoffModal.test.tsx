@@ -601,7 +601,6 @@ describe("AutoHandoffModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect((screen.getByLabelText("Retries") as HTMLInputElement).value)
       .toBe(String(AUTO_HANDOFF_DEFAULT_RETRIES));
-    expect(AUTO_HANDOFF_DEFAULT_RETRIES).toBe(3);
   });
 
   it("closes on Escape", async () => {

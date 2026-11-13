@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   countLaneProvenance,
   deletePullRequestRowsByIds,
@@ -65,7 +66,7 @@ describe("pullRequestRowCleanup detach", () => {
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-detach-"));
-    db = await openKvDb(path.join(dir, "kv.sqlite"), createLogger());
+    db = await openFreshKvDb(path.join(dir, "kv.sqlite"), createLogger());
   });
 
   afterEach(() => {

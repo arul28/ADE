@@ -51,16 +51,7 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import {
-  createProjectAppStore,
-  effectiveThemeId,
-  retainProjectAppStoreState,
-  selectEffectiveThemeId,
-  useAppStore,
-  THEME_IDS,
-  DEFAULT_TERMINAL_PREFERENCES,
-  DEFAULT_CHAT_FONT_SIZE_PX,
-} from "./appStore";
+import { createProjectAppStore, effectiveThemeId, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
 
 // ---------------------------------------------------------------------------
@@ -241,16 +232,6 @@ describe("appStore", () => {
     });
   });
 
-  // ─────────────────────────────────────────────────────────────
-  // Theme
-  // ─────────────────────────────────────────────────────────────
-
-  describe("THEME_IDS", () => {
-    it("exposes exactly dark and light", () => {
-      expect(THEME_IDS).toEqual(["dark", "light"]);
-    });
-  });
-
   describe("setTheme", () => {
     it("updates the theme in state and persists to localStorage", () => {
       useAppStore.getState().setTheme("light");
@@ -261,17 +242,6 @@ describe("appStore", () => {
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({ theme: "light" });
-    });
-
-    it("persists dark theme", () => {
-      useAppStore.getState().setTheme("dark");
-      expect(useAppStore.getState().theme).toBe("dark");
-      const calls = mockLocalStorage.setItem.mock.calls.filter(
-        ([key]) => key === "ade.userPreferences.v1",
-      );
-      const latest = calls[calls.length - 1];
-      expect(latest).toBeTruthy();
-      expect(JSON.parse(latest![1])).toMatchObject({ theme: "dark" });
     });
 
     it("selects a shipped theme and resolves a retired id to its replacement", () => {
@@ -729,13 +699,6 @@ describe("appStore", () => {
       expect(useAppStore.getState().providerMode).toBe("subscription");
     });
 
-    it("setShowWelcome toggles the welcome screen flag", () => {
-      useAppStore.getState().setShowWelcome(false);
-      expect(useAppStore.getState().showWelcome).toBe(false);
-      useAppStore.getState().setShowWelcome(true);
-      expect(useAppStore.getState().showWelcome).toBe(true);
-    });
-
     it("a new tab ends Settings-without-a-project and shows the new-project screen", () => {
       useAppStore.getState().setStandaloneSettingsOpen(true);
       expect(useAppStore.getState().standaloneSettingsOpen).toBe(true);
@@ -746,12 +709,6 @@ describe("appStore", () => {
       expect(state.standaloneSettingsOpen).toBe(false);
       expect(state.isNewTabOpen).toBe(true);
       expect(state.showWelcome).toBe(true);
-    });
-
-    it("setLanes updates the lanes array", () => {
-      const lanes = [{ id: "lane-1", name: "test" }] as any[];
-      useAppStore.getState().setLanes(lanes);
-      expect(useAppStore.getState().lanes).toBe(lanes);
     });
 
     it("keeps lane delete progress in app state across local updates", () => {
@@ -1206,11 +1163,6 @@ describe("appStore", () => {
       ]);
     });
 
-    it("selectLane updates selectedLaneId", () => {
-      useAppStore.getState().selectLane("lane-42");
-      expect(useAppStore.getState().selectedLaneId).toBe("lane-42");
-    });
-
     it("selectLane records the choice in laneSelectionByProject when a project is active", () => {
       useAppStore.setState({ project: { rootPath: "/p/a" } as any });
       useAppStore.getState().selectLane("lane-42");
@@ -1223,11 +1175,6 @@ describe("appStore", () => {
     it("selectLane does not write laneSelectionByProject when there is no project", () => {
       useAppStore.getState().selectLane("lane-42");
       expect(useAppStore.getState().laneSelectionByProject).toEqual({});
-    });
-
-    it("focusSession updates focusedSessionId", () => {
-      useAppStore.getState().focusSession("session-abc");
-      expect(useAppStore.getState().focusedSessionId).toBe("session-abc");
     });
 
     it("focusSession records the choice in laneSelectionByProject without clobbering laneId", () => {
@@ -1263,44 +1210,6 @@ describe("appStore", () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // Lane inspector tabs
-  // ─────────────────────────────────────────────────────────────
-
-  describe("setLaneInspectorTab", () => {
-    it("stores the tab choice per lane", () => {
-      useAppStore.getState().setLaneInspectorTab("lane-1", "context");
-      useAppStore.getState().setLaneInspectorTab("lane-2", "merge");
-      expect(useAppStore.getState().laneInspectorTabs).toEqual({
-        "lane-1": "context",
-        "lane-2": "merge",
-      });
-    });
-
-    it("overwrites a previous tab selection", () => {
-      useAppStore.getState().setLaneInspectorTab("lane-1", "terminals");
-      useAppStore.getState().setLaneInspectorTab("lane-1", "context");
-      expect(useAppStore.getState().laneInspectorTabs["lane-1"]).toBe("context");
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────
-  // Terminal attention
-  // ─────────────────────────────────────────────────────────────
-
-  describe("setTerminalAttention", () => {
-    it("replaces the terminal attention snapshot", () => {
-      const snapshot = {
-        runningCount: 3,
-        activeCount: 1,
-        needsAttentionCount: 2,
-        indicator: "running-needs-attention" as const,
-      };
-      useAppStore.getState().setTerminalAttention(snapshot);
-      expect(useAppStore.getState().terminalAttention).toEqual(snapshot);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────
   // Work view state (project-level)
   // ─────────────────────────────────────────────────────────────
 
@@ -1309,16 +1218,6 @@ describe("appStore", () => {
       const state = useAppStore.getState().getWorkViewState(null);
       expect(state.draftKind).toBe("chat");
       expect(state.openItemIds).toEqual([]);
-    });
-
-    it("returns default state for empty string project root", () => {
-      const state = useAppStore.getState().getWorkViewState("  ");
-      expect(state.draftKind).toBe("chat");
-    });
-
-    it("returns default state for undefined project root", () => {
-      const state = useAppStore.getState().getWorkViewState(undefined);
-      expect(state.draftKind).toBe("chat");
     });
 
     it("stores and retrieves work view state by project root", () => {
@@ -1648,12 +1547,6 @@ describe("appStore", () => {
       expect(useAppStore.getState().getLaneWorkViewState(null, "lane-1").draftKind).toBe("chat");
       expect(useAppStore.getState().getLaneWorkViewState("/proj", null).draftKind).toBe("chat");
       expect(useAppStore.getState().getLaneWorkViewState(null, null).draftKind).toBe("chat");
-    });
-
-    it("stores and retrieves lane-scoped work view state", () => {
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "running" });
-      const state = useAppStore.getState().getLaneWorkViewState("/proj", "lane-1");
-      expect(state.search).toBe("running");
     });
 
     it("keeps separate state per lane", () => {

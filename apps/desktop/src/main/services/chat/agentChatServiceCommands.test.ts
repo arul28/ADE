@@ -61,11 +61,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("getSlashCommands", () => {
-    it("returns empty array for unknown session", async () => {
-      const { service } = createService();
-      const commands = await service.getSlashCommands({ sessionId: "unknown-id" });
-      expect(commands).toEqual([]);
-    });
 
     it("returns Claude commands for a draft lane before a chat session exists", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");

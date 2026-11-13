@@ -22,7 +22,6 @@ import type * as AcpHostModule from "./acpHost";
 import type * as TurnUsageReconcilersModule from "../usage/turnUsageReconcilers";
 import type * as PiSdkPoolModule from "./piSdkPool";
 import type * as PiInstallationModule from "../ai/piInstallation";
-import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
 import {
@@ -2513,7 +2512,6 @@ export {
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openKvDb,
   os,
   parkCursorSend,
   parseAgentChatTranscript,

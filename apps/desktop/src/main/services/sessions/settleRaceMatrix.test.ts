@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import { createSettleWiring } from "./settleWiring";
@@ -55,7 +56,7 @@ describe("settle race matrix", () => {
 
   async function fixture() {
     const projectRoot = makeProjectRoot();
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     disposers.push(async () => db.close());
     insertProjectGraph(db);
     // The check seam the race matrix drives. Whatever this does is what the

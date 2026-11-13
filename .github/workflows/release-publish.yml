@@ -87,9 +87,13 @@ jobs:
           set -euo pipefail
           # Each per-arch build uploaded latest-mac-<arch>.yml; merge them into a
           # single latest-mac.yml whose files[] lists both arch zips (electron-updater
-          # picks the right one by arch). --ignore-scripts skips the heavy electron
-          # postinstall — we only need the pure-JS `yaml` dep for the merge.
-          (cd apps/desktop && npm ci --ignore-scripts)
+          # picks the right one by arch). The merge needs only the pure-JS
+          # `yaml` package: install that one, at the version and integrity
+          # apps/desktop/package-lock.json pins, instead of a 100 s desktop
+          # npm ci. If that fails for any reason, the full npm ci (scripts
+          # skipped) runs as before; it checks the same integrity.
+          node scripts/release-tools/install-locked-package.mjs apps/desktop/package-lock.json yaml \
+            || (cd apps/desktop && npm ci --ignore-scripts)
           node apps/desktop/scripts/merge-mac-latest-yml.mjs \
             release-assets/mac/latest-mac-arm64.yml \
             release-assets/mac/latest-mac-x64.yml \
@@ -430,17 +434,6 @@ jobs:
             exit 1
           fi
 
-      # Links the Sentry release ade@<version> (ade-desktop, ade-brain) to its
-      # commits for suspect-commit hints. Needs the Sentry GitHub integration;
-      # skips without SENTRY_AUTH_TOKEN and never fails the publish. The source
-      # maps were uploaded by the build jobs in release-core.yml.
-      - name: Associate commits with the Sentry release
-        continue-on-error: true
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/sentry/sentry-release.mjs set-commits --version "$RELEASE_TAG"
-
       # Last step, after the inventory check above passed: the release goes
       # public with every asset already attached (T3 #26917). Prerelease tags
       # only. A stable release stays a draft for the release skill, which runs
@@ -466,3 +459,34 @@ jobs:
             echo "::error::$TAG_NAME should be a public prerelease, but isDraft/isPrerelease is $state."
             exit 1
           fi
+
+  # Links the Sentry release ade@<version> (ade-desktop, ade-brain) to its
+  # commits for suspect-commit hints, from this checkout's git history; skips
+  # without SENTRY_AUTH_TOKEN and never fails. The source maps were uploaded by
+  # the build jobs in release-core.yml, which also created the release. It
+  # used to be a step of publish-release, where its ~45 s came before the
+  # beta went public and before the feed. Nothing reads its result, so it runs
+  # beside publish-release instead. A caller's next job waits for every job
+  # here, so it must stay shorter than publish-release (minutes), which it is.
+  sentry-commits:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      # One commit; the script deepens the history itself (500 commits).
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Associate commits with the Sentry release
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sentry/sentry-release.mjs set-commits --version "$RELEASE_TAG"

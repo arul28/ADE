@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -496,6 +496,112 @@ export function createStampedJsonCache<T>(
 
     /** Drops the entry for a file that was deleted or is about to be. */
     forget,
+  };
+}
+
+/**
+ * Tells whether a file still holds what this process last read or wrote, when
+ * other processes also rewrite it: another brain on the project, a sync client,
+ * an editor.
+ *
+ * The mtime alone is not enough. Two writes in one timestamp tick (a few
+ * milliseconds on Linux and Windows, one or two seconds on HFS+ and FAT) get the
+ * same mtime. A check compares the whole stamp (device, inode, size, mtime,
+ * ctime) with one stat. A replace by rename gives the file a new inode, and the
+ * ctime cannot be set back by a writer that keeps the mtime.
+ *
+ * A stamp can still match when the writes share a tick and the inode is reused
+ * or meaningless (FAT, some network shares, the in-place copy fallback of
+ * `writeFileAtomic`). So until the file has gone STAMP_SETTLE_MS unchanged, a
+ * check with a matching stamp also compares a digest of the bytes. A settled
+ * file costs one stat per check. The settle check reads the wall clock; when
+ * that clock steps back, the next check compares the bytes again.
+ *
+ * Inodes come from a bigint stat: an NTFS file id does not fit in a double.
+ */
+export function createFileVersionTracker(filePath: string) {
+  type Look = { stamp: string; changedAtMs: number };
+  type Seen = { stamp: string | null; digest: string | null; settled: boolean };
+  let seen: Seen | null = null;
+  let lastClockLead: number | null = null;
+
+  const look = (): Look | null => {
+    const stat = fs.statSync(filePath, { bigint: true, throwIfNoEntry: false });
+    if (!stat) return null;
+    const changedAtNs = stat.mtimeNs > stat.ctimeNs ? stat.mtimeNs : stat.ctimeNs;
+    return {
+      stamp: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
+      changedAtMs: Number(changedAtNs / 1_000_000n),
+    };
+  };
+  const lookOrNull = (): Look | null => {
+    try {
+      return look();
+    } catch {
+      return null;
+    }
+  };
+  const digestOf = (text: string): string => createHash("sha1").update(text).digest("base64");
+  const settledAt = (current: Look | null, wallNow: number): boolean =>
+    current !== null && current.changedAtMs <= wallNow - STAMP_SETTLE_MS;
+  /** True when the wall clock stepped back since the last call. */
+  const clockSteppedBack = (wallNow: number): boolean => {
+    const clockLead = wallNow - performance.now();
+    const stepped = lastClockLead !== null && clockLead < lastClockLead - CLOCK_STEP_TOLERANCE_MS;
+    lastClockLead = clockLead;
+    return stepped;
+  };
+
+  return {
+    /** True when the file may differ from what was last read or written here. */
+    changed(): boolean {
+      if (!seen) return true;
+      const wallNow = Date.now();
+      const stepped = clockSteppedBack(wallNow);
+      let current: Look | null;
+      try {
+        current = look();
+      } catch {
+        return true;
+      }
+      if ((current?.stamp ?? null) !== seen.stamp) return true;
+      if (current === null || (seen.settled && !stepped)) return false;
+      let text: string;
+      try {
+        text = fs.readFileSync(filePath, "utf8");
+      } catch {
+        return true;
+      }
+      if (digestOf(text) !== seen.digest) return true;
+      seen = { ...seen, settled: settledAt(current, wallNow) };
+      return false;
+    },
+
+    /** Reads the file as `fs.readFileSync` does (and throws as it does), and remembers what it read. */
+    read(): string {
+      // The clock and the stat come before the read: a write that lands after
+      // them leaves an older stamp, so the next check sees a change.
+      const wallNow = Date.now();
+      clockSteppedBack(wallNow);
+      const before = lookOrNull();
+      try {
+        const text = fs.readFileSync(filePath, "utf8");
+        seen = { stamp: before?.stamp ?? null, digest: digestOf(text), settled: settledAt(before, wallNow) };
+        return text;
+      } catch (error) {
+        // A missing or unreadable file reads as unchanged until its stamp changes.
+        seen = { stamp: before?.stamp ?? null, digest: null, settled: before === null || settledAt(before, wallNow) };
+        throw error;
+      }
+    },
+
+    /** Remembers `text`, which this process just wrote to the file. */
+    wrote(text: string): void {
+      const wallNow = Date.now();
+      clockSteppedBack(wallNow);
+      const after = lookOrNull();
+      seen = { stamp: after?.stamp ?? null, digest: digestOf(text), settled: settledAt(after, wallNow) };
+    },
   };
 }
 

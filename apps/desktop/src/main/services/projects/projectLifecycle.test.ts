@@ -11,6 +11,7 @@ import { __internal, getProjectDetail, parseDirtyStatus } from "./projectDetailS
 import { writeGlobalState } from "../state/globalState";
 import { inspectRecentProject, toRecentProjectSummary, toShallowRecentProjectSummary } from "./recentProjectSummary";
 import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createProjectConfigService } from "../config/projectConfigService";
 
 const { parseLastCommitLine, parseAheadBehind } = __internal;
@@ -342,7 +343,7 @@ describe("createAdeProjectService.clearLocalData", () => {
   it("preserves attachment-backed proof rows when clearing artifact packs", async () => {
     const root = makeTempDir("ade-project-clear-artifact-rows-");
     const layout = resolveAdeLayout(root);
-    const db = await openKvDb(path.join(layout.adeDir, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(layout.adeDir, "ade.db"), createLogger());
     const now = "2026-07-29T00:00:00.000Z";
     insertProject(db, "project-1", root, now);
     const service = createAdeProjectService({
@@ -568,7 +569,7 @@ describe("toRecentProjectSummary", () => {
     tempDirs.push(attachedLanePath);
     fs.mkdirSync(managedLanePath, { recursive: true });
 
-    const db = await openKvDb(layout.dbPath, createLogger());
+    const db = await openFreshKvDb(layout.dbPath, createLogger());
     const now = "2026-04-02T12:00:00.000Z";
     insertProject(db, "proj-recent", projectRoot, now);
     insertLane(db, {
@@ -645,7 +646,7 @@ describe("toRecentProjectSummary", () => {
     fs.mkdirSync(path.join(projectRoot, ".git", "worktrees", "lane-a"), { recursive: true });
 
     const layout = resolveAdeLayout(projectRoot);
-    const db = await openKvDb(layout.dbPath, createLogger());
+    const db = await openFreshKvDb(layout.dbPath, createLogger());
     const now = "2026-04-02T12:00:00.000Z";
     insertProject(db, "proj-recent-archived", projectRoot, now);
     insertLane(db, {
