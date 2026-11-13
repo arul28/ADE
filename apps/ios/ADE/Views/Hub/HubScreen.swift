@@ -75,6 +75,22 @@ struct HubScreen: View {
   /// The saved order came from the per-machine layout and still names that
   /// machine's ids; the next rebuild maps them to account project ids.
   @State private var legacyOrderPending = false
+  /// Projects and folders the user removed from this list (phone only).
+  @ObservedObject private var hiddenList = HubPhoneHiddenList.shared
+  /// Folders on reachable computers that are not account projects, one
+  /// section per computer ("Only on <computer>").
+  @State private var localSections: [HubLocalSectionModel] = []
+  /// Card id -> the line under a local folder's name.
+  @State private var localSubtitles: [String: String] = [:]
+  /// Second folders of a project another card shows. Not listed; their
+  /// agents still show on the agent page.
+  @State private var duplicatePresentations: [HubProjectPresentation] = []
+  /// The hidden keys that name something the Hub would show, for "Show".
+  @State private var hiddenShownKeys: Set<String> = []
+  /// Select mode: the ticked card ids.
+  @State private var selecting = false
+  @State private var selectedIds: Set<String> = []
+  @State private var removalTarget: HubRemovalSheetTarget?
   @Environment(\.scenePhase) private var scenePhase
   /// The inner display is wide enough for the two-page Home.
   @Environment(\.duoLayout) private var duo
@@ -114,6 +130,12 @@ struct HubScreen: View {
       onConnectComputer: { syncService.settingsPresented = true },
       onNotice: { text in projectOpenFailureToast = ADEToastMessage(text: text) }
     )
+    .sheet(item: $removalTarget) { target in
+      HubRemoveProjectsSheet(items: target.items, fleet: machineFleet, onFinished: handleRemovalFinish)
+        .hubAccountPageDetents()
+    }
+    .task(id: hiddenListScope) { hiddenList.use(scope: hiddenListScope) }
+    .onChange(of: hiddenList.keys) { _, _ in rebuildHubProjectPresentations() }
     .hubChatCover(target: $openChatTarget)
     .overlay(alignment: .bottom) {
       if let toast = createdToast {
@@ -386,7 +408,7 @@ struct HubScreen: View {
   /// `DuoHomeWide`); Chats pushes on the projects page.
   private var wideHome: some View {
     DuoHomeWide(
-      presentations: hubProjectPresentations,
+      presentations: hubOverviewPresentations,
       actions: hubToolbarActions,
       showsOverview: canShowProjects || !hubProjectPresentations.isEmpty,
       onOpenAgent: { item in
@@ -424,7 +446,8 @@ struct HubScreen: View {
   private var composerBar: some View {
     // Kept while a send switches machines: the primary is reconnecting, and the
     // draft and any error belong to this composer.
-    if canShowProjects || composerSwitchingMachine {
+    // Select mode puts its own bar under the list instead.
+    if (canShowProjects || composerSwitchingMachine) && !selecting {
       // The list ends above it: the composer is the screen's footer, never a
       // layer over the last rows.
       HubInlineComposer(
@@ -449,6 +472,19 @@ struct HubScreen: View {
     }
     .scrollIndicators(.hidden)
     .scrollDismissesKeyboard(.interactively)
+    // While selecting, Select all, the count and Remove… sit under the list
+    // they act on, on every form of the Hub.
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if selecting {
+        HubSelectionBar(
+          selected: selectedIds.count,
+          total: selectableIds.count,
+          onSelectAll: toggleSelectAll,
+          onRemove: removeSelected
+        )
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+      }
+    }
     // Pull to refresh: the account list, the computers, and the live rosters.
     .refreshable {
       await reloadAccount()
@@ -472,6 +508,15 @@ struct HubScreen: View {
         onOpenSettings: { syncService.settingsPresented = true }
       )
     }
+    if !hubProjectPresentations.isEmpty || !localSections.isEmpty {
+      HubProjectsHeader(
+        title: "Projects",
+        count: hubProjectPresentations.count,
+        selecting: selecting,
+        canSelect: true,
+        onToggleSelect: toggleSelecting
+      )
+    }
     if hubProjectPresentations.isEmpty {
       HubAccountEmptyCard(
         kind: hubAccountEmptyKind(statusInputs),
@@ -484,59 +529,270 @@ struct HubScreen: View {
     } else {
       LazyVGrid(columns: HubProjectGridMetrics.columns, spacing: HubProjectGridMetrics.spacing) {
       ForEach(filteredHubProjectPresentations) { presentation in
-        let project = presentation.project
-        let orderKey = hubOrderKey(project.id)
-        let accountOnly = accountOnlyProjects[project.id]
-        let accountId = accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id
-        let chip = hubComputerChip(for: project, accountOnly: accountOnly)
-        HubProjectTile(
-          presentation: presentation,
-          machineLabel: chip.label,
-          machineCount: chip.total,
-          machineLive: chip.live,
-          canChangeIcon: accountOnly == nil && hubCanChangeIcon(for: project),
-          canMoveToTop: projectOrder.first != orderKey,
-          canForget: accountId == nil,
-          canRemoveFromADE: accountProjects.governsHub && accountId != nil,
-          accountProjectId: accountId,
-          onOpenProject: {
-            if let accountOnly {
-              accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)
-            } else {
-              openHubProject(project)
-            }
-          },
-          onChangeIcon: { png in changeHubProjectIcon(project, png: png) },
-          onMoveToTop: { moveProjectToTop(orderKey) },
-          onForget: {
-            // A project that lives only on another machine is forgotten there.
-            guard fleetMerge.projectOwners[project.id] == nil else { return }
-            syncService.forgetProject(project)
-          },
-          onRemoveFromADE: {
-            guard let accountId else { return }
-            deleteProjectTarget = accountProjects.liveProjects.first { $0.id == accountId }
-          },
-          onLocation: {
-            guard let accountId else { return }
-            locationTarget = HubAccountHomeTarget(id: accountId)
-          }
-        )
-        .equatable()
-        .draggable(orderKey)
-        .dropDestination(for: String.self) { items, _ in
-          guard let draggedId = items.first else { return false }
-          moveProject(draggedId, onto: orderKey)
-          return true
-        }
-        // While one project is switching in, the tapped row shows its own
-        // spinner and every other row is disabled + dimmed so the catalog
-        // stays visible but non-interactive (M12).
-        .disabled(syncService.isProjectSwitching && !presentation.isSwitching)
-        .opacity(syncService.isProjectSwitching && !presentation.isSwitching ? 0.55 : 1)
+        projectTile(presentation)
       }
       }
     }
+    if !hiddenShownKeys.isEmpty {
+      Button {
+        hiddenList.show(hiddenShownKeys)
+      } label: {
+        Text(hiddenShownKeys.count == 1 ? "Show 1 project hidden on this iPhone" : "Show \(hiddenShownKeys.count) projects hidden on this iPhone")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.accent)
+          .frame(maxWidth: .infinity, minHeight: 36)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+    }
+    ForEach(localSections) { section in
+      let shown = section.presentations.compactMap { hubProjectPresentation($0, matching: effectiveRosterFilter) }
+      if !shown.isEmpty {
+        HubLocalFolderSection(
+          computerName: section.computerName,
+          presentations: shown,
+          subtitles: localSubtitles,
+          selectedIds: selecting ? selectedIds : nil,
+          onOpen: { openHubProject($0.project) },
+          onToggle: { toggleSelection($0.project.id) },
+          onRemove: { presentRemoval([$0]) }
+        )
+        .padding(.top, 14)
+      }
+    }
+  }
+
+  private func projectTile(_ presentation: HubProjectPresentation) -> some View {
+    let project = presentation.project
+    let orderKey = hubOrderKey(project.id)
+    let accountOnly = accountOnlyProjects[project.id]
+    let accountId = accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id
+    let chip = hubComputerChip(for: project, accountOnly: accountOnly)
+    return HubProjectTile(
+      presentation: presentation,
+      machineLabel: chip.label,
+      machineCount: chip.total,
+      machineLive: chip.live,
+      subtitle: hubTileSubtitle(project, accountId: accountId),
+      selection: selecting ? selectedIds.contains(project.id) : nil,
+      canChangeIcon: accountOnly == nil && hubCanChangeIcon(for: project),
+      canMoveToTop: projectOrder.first != orderKey,
+      canShowLocation: accountProjects.governsHub && accountId != nil,
+      accountProjectId: accountId,
+      onOpenProject: {
+        if selecting {
+          toggleSelection(project.id)
+        } else if let accountOnly {
+          accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)
+        } else {
+          openHubProject(project)
+        }
+      },
+      onChangeIcon: { png in changeHubProjectIcon(project, png: png) },
+      onMoveToTop: { moveProjectToTop(orderKey) },
+      onRemove: { presentRemoval([presentation]) },
+      onLocation: {
+        guard let accountId else { return }
+        locationTarget = HubAccountHomeTarget(id: accountId)
+      }
+    )
+    .equatable()
+    .draggable(orderKey)
+    .dropDestination(for: String.self) { items, _ in
+      guard let draggedId = items.first else { return false }
+      moveProject(draggedId, onto: orderKey)
+      return true
+    }
+    // While one project is switching in, the tapped row shows its own
+    // spinner and every other row is disabled + dimmed so the catalog
+    // stays visible but non-interactive (M12).
+    .disabled(syncService.isProjectSwitching && !presentation.isSwitching)
+    .opacity(syncService.isProjectSwitching && !presentation.isSwitching ? 0.55 : 1)
+  }
+
+  /// The line under a tile's name: the account project's GitHub address, or
+  /// the folder's own `owner/name`. Never a folder path.
+  private func hubTileSubtitle(_ project: MobileProjectSummary, accountId: String?) -> String? {
+    if let accountId, let accountProject = accountProjectById[accountId] ?? accountOnlyProjects[accountId] {
+      return accountProject.addressLabel
+    }
+    guard let owner = project.repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines), !owner.isEmpty,
+          let name = project.repoName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+    else { return nil }
+    return "\(owner)/\(name)"
+  }
+
+  // MARK: Select mode and Remove…
+
+  /// Every card select mode can tick: the projects and the local folders.
+  private var selectableIds: [String] {
+    hubProjectPresentations.map(\.project.id) + localSections.flatMap { $0.presentations.map(\.project.id) }
+  }
+
+  private func toggleSelecting() {
+    withAnimation(.easeOut(duration: 0.18)) {
+      selecting.toggle()
+      selectedIds = []
+      if selecting { composerExpanded = false }
+    }
+  }
+
+  private func toggleSelection(_ id: String) {
+    ADEHaptics.light()
+    if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
+  }
+
+  private func toggleSelectAll() {
+    let all = Set(selectableIds)
+    selectedIds = selectedIds == all ? [] : all
+  }
+
+  private func removeSelected() {
+    let all = hubProjectPresentations + localSections.flatMap(\.presentations)
+    let picked = all.filter { selectedIds.contains($0.project.id) }
+    guard !picked.isEmpty else { return }
+    presentRemoval(picked)
+  }
+
+  private func presentRemoval(_ presentations: [HubProjectPresentation]) {
+    removalTarget = HubRemovalSheetTarget(items: presentations.map(removalItem))
+  }
+
+  private func handleRemovalFinish(_ finish: HubRemovalFinish) {
+    switch finish {
+    case .hidden(let keys, let text):
+      projectOpenFailureToast = ADEToastMessage(
+        text: text,
+        kind: .success,
+        action: ADEToastAction(title: "Undo") { HubPhoneHiddenList.shared.show(keys) }
+      )
+    case .removed(let text):
+      projectOpenFailureToast = ADEToastMessage(text: text, kind: .info)
+    }
+    withAnimation(.easeOut(duration: 0.18)) {
+      selecting = false
+      selectedIds = []
+    }
+  }
+
+  /// The computer a card's folder is on: the machine that owns an extra
+  /// card, else the focused machine.
+  private func cardComputer(_ cardId: String, merge: HubFleetMerge? = nil) -> HubCardComputer {
+    if let owner = (merge ?? fleetMerge).projectOwners[cardId] {
+      return hubCardComputer(phoneKey: owner.machineKey, project: owner.project)
+    }
+    let focused = syncService.focusedMachineKey
+    let project = syncService.projects.first { $0.id == cardId }
+      ?? hubProjectPresentations.first { $0.project.id == cardId }?.project
+      ?? MobileProjectSummary(id: cardId, displayName: "", laneCount: 0, isAvailable: false, isCached: false)
+    return hubCardComputer(phoneKey: focused, project: project)
+  }
+
+  /// "Only on <computer>" for each computer the phone reaches now, by name;
+  /// an unreachable computer's folders do not show.
+  private func hubLocalSections(_ local: [HubProjectPresentation], merge: HubFleetMerge) -> [HubLocalSectionModel] {
+    var byComputer: [String: (name: String, presentations: [HubProjectPresentation])] = [:]
+    for presentation in local {
+      let computer = cardComputer(presentation.project.id, merge: merge)
+      guard computer.reachable else { continue }
+      byComputer[computer.key, default: (computer.name, [])].presentations.append(presentation)
+    }
+    return byComputer
+      .map { key, entry in
+        HubLocalSectionModel(
+          computerKey: key,
+          computerName: entry.name,
+          presentations: entry.presentations.sorted {
+            $0.project.displayName.localizedCaseInsensitiveCompare($1.project.displayName) == .orderedAscending
+          }
+        )
+      }
+      .sorted { $0.computerName.localizedCaseInsensitiveCompare($1.computerName) == .orderedAscending }
+  }
+
+  private func hubCardComputer(phoneKey: String?, project: MobileProjectSummary) -> HubCardComputer {
+    let accountMachine = phoneKey.flatMap { account.machine(forFleetKey: $0) }
+    let isFocused = phoneKey != nil && phoneKey == syncService.focusedMachineKey
+    let name = accountMachine?.displayName
+      ?? (isFocused ? syncService.focusedMachineDisplayName : phoneKey.flatMap { machineFleet.machine(for: $0)?.name })
+      ?? "Another computer"
+    return HubCardComputer(
+      key: accountMachine?.machineKey ?? phoneKey ?? "focused",
+      name: name,
+      phoneKey: phoneKey,
+      reachable: phoneKey.map { syncService.startOnIsLive($0) } ?? false,
+      project: project
+    )
+  }
+
+  private func removalCopy(_ computer: HubCardComputer) -> HubRemovalCopy {
+    HubRemovalCopy(
+      computerKey: computer.key,
+      computerName: computer.name,
+      phoneKey: computer.phoneKey,
+      projectId: computer.project.id,
+      rootPath: computer.project.rootPath
+    )
+  }
+
+  /// What Remove… acts on for one card: its folders on every computer the
+  /// phone knows (the card's own, other machines' copies, second folders on
+  /// the same computer, and the account's copies), each with the link it
+  /// is sent on.
+  private func removalItem(_ presentation: HubProjectPresentation) -> HubRemovalItem {
+    let cardId = presentation.project.id
+    let accountOnly = accountOnlyProjects[cardId]
+    let accountId = accountJoin.accountIdByCardId[cardId] ?? accountOnly?.id
+    let accountProject = accountId.flatMap { accountProjectById[$0] } ?? accountOnly
+    var copies: [HubRemovalCopy] = []
+    var seen = Set<String>()
+    func add(_ copy: HubRemovalCopy) {
+      if seen.insert(copy.id).inserted { copies.append(copy) }
+    }
+    func addCard(_ id: String) {
+      add(removalCopy(cardComputer(id)))
+      for location in fleetMerge.projectLocations[id] ?? [] {
+        add(removalCopy(hubCardComputer(phoneKey: location.machineKey, project: location.project)))
+      }
+    }
+    if accountOnly == nil { addCard(cardId) }
+    if let accountId {
+      for duplicate in duplicatePresentations where accountJoin.duplicateCardIds[duplicate.project.id] == accountId {
+        addCard(duplicate.project.id)
+      }
+    }
+    for copy in accountProject?.copies ?? [] {
+      let machine = account.machines.first { $0.machineKey == copy.machineKey }
+      add(HubRemovalCopy(
+        computerKey: copy.machineKey,
+        computerName: machine?.displayName ?? "A computer that left your account",
+        phoneKey: machine.flatMap { syncService.startOnPhoneKey(for: $0) },
+        projectId: copy.checkoutId,
+        rootPath: copy.rootPath
+      ))
+    }
+    let hideKey = accountId.map(hubHiddenAccountKey)
+      ?? copies.first.map { hubHiddenFolderKey(computerKey: $0.computerKey, projectId: $0.projectId) }
+      ?? "card:\(cardId)"
+    return HubRemovalItem(
+      id: cardId,
+      name: accountProject?.name ?? presentation.project.displayName,
+      accountProject: accountProject,
+      copies: copies,
+      hideKey: hideKey
+    )
+  }
+
+  /// The agent page's cards: the projects, the second folders of a project,
+  /// and the local folders, so every working chat shows there.
+  private var hubOverviewPresentations: [HubProjectPresentation] {
+    hubProjectPresentations + duplicatePresentations + localSections.flatMap(\.presentations)
+  }
+
+  /// Whose "From this list" choices load: the account, else the machine.
+  private var hiddenListScope: String? {
+    if let userId = account.identity?.userId { return "account|\(userId)" }
+    return syncService.focusedMachineKey.map { "machine|\($0)" }
   }
 
   // MARK: Other machines, folded in
@@ -777,6 +1033,8 @@ struct HubScreen: View {
       String(syncService.chatLaunchRevision),
       syncService.activeProjectId ?? "",
       String(syncService.isProjectSwitching),
+      // "Only on <computer>" shows only while that computer is reachable.
+      String(describing: syncService.connectionState),
     ].joined(separator: "#")
   }
 
@@ -911,28 +1169,82 @@ struct HubScreen: View {
     // removed projects, and add a card for every project no machine shows.
     var join = HubAccountJoin()
     var accountOnly: [String: AccountProject] = [:]
+    var local: [HubProjectPresentation] = []
+    var duplicates: [HubProjectPresentation] = []
+    var hiddenMatched = Set<String>()
+    let hidden = hiddenList.keys
+    // A folder the user removed from this list, by its computer and id.
+    func folderHideKey(_ cardId: String) -> String {
+      let computer = cardComputer(cardId, merge: merge)
+      return hubHiddenFolderKey(computerKey: computer.key, projectId: computer.project.id)
+    }
     if accountProjects.governsHub {
+      // The account list is the one source of the main list: one card per
+      // project, whatever the machines show. Folders that are no account
+      // project go to "Only on <computer>".
+      let cards = hubAccountJoinCards(
+        focused: focusedRosters,
+        merge: merge,
+        focusedAccountKey: account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey,
+        accountMachineKey: { [account] fleetKey in account.machine(forFleetKey: fleetKey)?.machineKey }
+      )
       let pass = hubAccountCardPass(
         presentations: nextPresentations,
-        cards: hubAccountJoinCards(
-          focused: focusedRosters,
-          merge: merge,
-          focusedAccountKey: account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey,
-          accountMachineKey: { [account] fleetKey in account.machine(forFleetKey: fleetKey)?.machineKey }
-        ),
+        cards: cards,
         live: accountProjects.liveProjects,
         removed: accountProjects.removedProjects,
         merged: accountProjects.mergedTargets,
         display: accountProjects.display,
-        machines: account.machines
+        machines: account.machines,
+        hiddenOnPhone: hidden
       )
       nextPresentations = pass.presentations
+      duplicates = pass.duplicatePresentations
       join = pass.join
       accountOnly = pass.accountOnly
+      for project in accountProjects.liveProjects where hidden.contains(hubHiddenAccountKey(project.id)) {
+        hiddenMatched.insert(hubHiddenAccountKey(project.id))
+      }
+      for presentation in pass.localPresentations {
+        let key = folderHideKey(presentation.project.id)
+        if hidden.contains(key) {
+          hiddenMatched.insert(key)
+        } else {
+          local.append(presentation)
+        }
+      }
+      // The line under a local folder's name: its GitHub address, if any.
+      var subtitles: [String: String] = [:]
+      let identityByCard = Dictionary(cards.map { ($0.cardId, $0.gitHubIdentity) }, uniquingKeysWith: { first, _ in first })
+      for presentation in local {
+        let project = presentation.project
+        let own: String? = {
+          guard let owner = project.repoOwner, !owner.isEmpty, let name = project.repoName, !name.isEmpty else { return nil }
+          return "\(owner)/\(name)"
+        }()
+        subtitles[project.id] = hubLocalFolderSubtitle(gitHubIdentity: own ?? identityByCard[project.id] ?? nil)
+      }
+      if subtitles != localSubtitles { localSubtitles = subtitles }
       if !pass.icons.isEmpty { accountProjects.recordDisplay(pass.icons) }
       accountProjects.noteUnknownRepositories(join.unknownIdentities)
+    } else {
+      // The machine-only Hub (signed out, or an older server): every folder
+      // is a card, less the ones removed from this list.
+      nextPresentations = nextPresentations.filter { presentation in
+        let key = folderHideKey(presentation.project.id)
+        guard hidden.contains(key) else { return true }
+        hiddenMatched.insert(key)
+        return false
+      }
     }
     if join != accountJoin { accountJoin = join }
+    if duplicates != duplicatePresentations { duplicatePresentations = duplicates }
+    if hiddenMatched != hiddenShownKeys { hiddenShownKeys = hiddenMatched }
+    let sections = hubLocalSections(local, merge: merge)
+    if sections != localSections { localSections = sections }
+    // A ticked card that left the list is no longer selected.
+    let selectable = Set(nextPresentations.map(\.project.id) + local.map(\.project.id))
+    if !selectedIds.isSubset(of: selectable) { selectedIds.formIntersection(selectable) }
     let byId = accountProjects.governsHub
       ? Dictionary(accountProjects.liveProjects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
       : [:]

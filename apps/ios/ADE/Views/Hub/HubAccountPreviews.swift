@@ -85,6 +85,17 @@ enum HubAccountPreviewData {
     case "offline-computers":
       AccountService.shared.seedPreviewMachines(machines(online: false))
       store.seedPreview(projects: projects, display: display, phase: .ready, lastSuccessAt: Date())
+    case "reachable":
+      // With `-adeLiveAccountFixture`: the account's computers are offline,
+      // and a paired dev test machine holds a clone of octocat/Spoon-Knife
+      // (an account project) beside folders that are not on the account.
+      AccountService.shared.seedPreviewMachines(machines(online: false))
+      store.seedPreview(
+        projects: projects + [project("e", owner: "octocat", name: "Spoon-Knife")],
+        display: display,
+        phase: .ready,
+        lastSuccessAt: Date()
+      )
     case "empty":
       AccountService.shared.seedPreviewMachines([])
       store.seedPreview(projects: [], display: [:], phase: .ready, lastSuccessAt: Date())
@@ -112,6 +123,14 @@ enum HubAccountPreviewData {
         lastSuccessAt: Date()
       )
     }
+  }
+
+  /// `-adeLiveAccountFixture <state>`: seed this account in the normal app.
+  static var liveFixtureState: String? {
+    let arguments = ProcessInfo.processInfo.arguments
+    guard let index = arguments.firstIndex(of: "-adeLiveAccountFixture"),
+          arguments.index(after: index) < arguments.endIndex else { return nil }
+    return arguments[arguments.index(after: index)]
   }
 
   static var requestedState: String {
@@ -184,8 +203,8 @@ struct HubAccountStatesPreviewHost: View {
               ),
               machineLabel: project.copies.isEmpty ? nil : "Mac Studio",
               machineCount: Set(project.copies.map(\.machineKey)).count,
-              canForget: false,
-              onOpenProject: {}, onChangeIcon: { _ in }, onMoveToTop: {}, onForget: {}
+              subtitle: project.addressLabel,
+              onOpenProject: {}, onChangeIcon: { _ in }, onMoveToTop: {}, onRemove: {}
             )
           }
         }

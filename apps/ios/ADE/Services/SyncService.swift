@@ -5838,9 +5838,49 @@ final class SyncService: ObservableObject {
     requestRosterSnapshot()
   }
 
+  /// Removes a folder's entry from the focused machine (`project_forget_request`,
+  /// the desktop's "Remove from <computer>" without deleting the folder) and
+  /// waits for its answer. The folder stays on disk. Unlike `forgetProject`,
+  /// nothing is hidden on this phone: the machine's next catalog no longer
+  /// lists the folder.
+  func removeProjectFromFocusedMachine(projectId: String, rootPath: String?) async throws {
+    guard canSendLiveRequests() else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
+    }
+    let requestId = makeRequestId()
+    var payload: [String: Any] = ["projectId": projectId]
+    if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+      payload["rootPath"] = rootPath
+    }
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Timed out removing that project.",
+      timeoutNanoseconds: 8_000_000_000
+    ) {
+      self.sendEnvelope(type: "project_forget_request", requestId: requestId, payload: payload)
+    }
+    let result = try decode(raw, as: MobileProjectForgetResultPayload.self)
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
+      ])
+    }
+    if let project = projects.first(where: { $0.id == projectId }) {
+      dropProjectLocally(project)
+    }
+    syncConnectLog.info("project removed from focused machine")
+  }
+
   func forgetProject(_ project: MobileProjectSummary) {
-    let wasActive = isActiveProject(project)
     rememberHiddenProject(project)
+    dropProjectLocally(project)
+    sendProjectForget(project)
+  }
+
+  /// Takes a folder off the phone's catalog now, and leaves it if it was open.
+  private func dropProjectLocally(_ project: MobileProjectSummary) {
+    let wasActive = isActiveProject(project)
     remoteProjectCatalog.removeAll { existing in
       existing.id == project.id
         || (normalizedProjectRoot(existing.rootPath) != nil
@@ -5859,7 +5899,9 @@ final class SyncService: ObservableObject {
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
     }
+  }
 
+  private func sendProjectForget(_ project: MobileProjectSummary) {
     guard canSendLiveRequests() else { return }
     let requestId = makeRequestId()
     var payload: [String: Any] = ["projectId": project.id]

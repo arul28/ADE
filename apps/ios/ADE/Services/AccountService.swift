@@ -934,6 +934,20 @@ final class AccountService: ObservableObject {
   func bootstrap() async {
     guard !didConfigure else { return }
     didConfigure = true
+#if DEBUG
+    // `-adeLiveAccountFixture <state>`: the full app (live pairing and sync)
+    // over a fixture account, so a paired dev test machine can be checked
+    // against an account list with no Clerk and no account directory.
+    if let state = HubAccountPreviewData.liveFixtureState {
+      HubAccountPreviewData.seed(state: state)
+      // The access gate never shows over a seeded account, so a launch
+      // `-adePairingLink` goes to Settings, which opens it like a scanned code.
+      if let raw = UserDefaults.standard.string(forKey: "adePairingLink"), !raw.isEmpty {
+        SyncService.shared?.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: raw)
+      }
+      return
+    }
+#endif
     guard let key = AccountConfig.clerkPublishableKey else {
       phase = .unconfigured
       ProductAnalytics.shared.captureColdStart(afterReconcilingAccount: nil)

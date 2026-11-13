@@ -501,6 +501,7 @@
 		E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE09 /* HubAccountPreviews.swift */; };
 		E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE08 /* HubAccountProjects.swift */; };
 		E2000000000000000000DE0E /* HubAccountCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0E /* HubAccountCards.swift */; };
+		E2000000000000000000DE1F /* HubRemoveProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE1F /* HubRemoveProjects.swift */; };
 		E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0F /* HubPhoneLayout.swift */; };
 		E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE10 /* GitHubAccountCredential.swift */; };
 		E2000000000000000000DE11 /* GitHubDirectClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE11 /* GitHubDirectClient.swift */; };
@@ -1038,6 +1039,7 @@
 		D2000000000000000000DE09 /* HubAccountPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountPreviews.swift; path = ADE/Views/Hub/HubAccountPreviews.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE08 /* HubAccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountProjects.swift; path = ADE/Views/Hub/HubAccountProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0E /* HubAccountCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountCards.swift; path = ADE/Views/Hub/HubAccountCards.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE1F /* HubRemoveProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubRemoveProjects.swift; path = ADE/Views/Hub/HubRemoveProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0F /* HubPhoneLayout.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubPhoneLayout.swift; path = ADE/Views/Hub/HubPhoneLayout.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE10 /* GitHubAccountCredential.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubAccountCredential.swift; path = ADE/Services/GitHubAccountCredential.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE11 /* GitHubDirectClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubDirectClient.swift; path = ADE/Services/GitHubDirectClient.swift; sourceTree = "<group>"; };
@@ -1266,6 +1268,7 @@
 				D2000000000000000000DE09 /* HubAccountPreviews.swift */,
 				D2000000000000000000DE08 /* HubAccountProjects.swift */,
 				D2000000000000000000DE0E /* HubAccountCards.swift */,
+				D2000000000000000000DE1F /* HubRemoveProjects.swift */,
 				D2000000000000000000DE0F /* HubPhoneLayout.swift */,
 				D2000000000000000000DE0A /* StartOnPicker.swift */,
 				D2000000000000000000DE0B /* DeleteProjectSheet.swift */,
@@ -2305,6 +2308,7 @@
 				E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */,
 				E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */,
 				E2000000000000000000DE0E /* HubAccountCards.swift in Sources */,
+				E2000000000000000000DE1F /* HubRemoveProjects.swift in Sources */,
 				E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */,
 				E2000000000000000000DE0A /* StartOnPicker.swift in Sources */,
 				E2000000000000000000DE0B /* DeleteProjectSheet.swift in Sources */,

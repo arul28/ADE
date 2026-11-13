@@ -669,6 +669,32 @@ final class MachineConnection {
     requestRosterSnapshot()
   }
 
+  /// Removes a folder's entry from this machine (`project_forget_request`).
+  /// The folder stays on disk. Never queued: it acts on this machine only.
+  func forgetProject(projectId: String, rootPath: String?) async throws {
+    var payload: [String: Any] = ["projectId": projectId]
+    if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+      payload["rootPath"] = rootPath
+    }
+    let raw = try await request(
+      type: "project_forget_request",
+      payload: payload,
+      timeoutNanoseconds: 8_000_000_000,
+      timeoutMessage: "Timed out removing that project."
+    )
+    guard let result = machineConnectionDecode(raw, as: MobileProjectForgetResultPayload.self) else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "The computer sent an unreadable answer.",
+      ])
+    }
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
+      ])
+    }
+    requestRosterSnapshot()
+  }
+
   /// Run a remote command on this machine, scoped to a project. Never queued:
   /// a command for another machine must not replay later to a different one.
   func sendCommand(

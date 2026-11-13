@@ -1111,18 +1111,22 @@ struct HubProjectTile: View, Equatable {
   /// How many machines the project is on; the chip shows the count, which
   /// never truncates in a narrow tile. 0 hides it.
   var machineCount = 0
-  /// How many of those computers are connected now, for an account project
-  /// (the chip then reads "1/2"). Nil: the chip shows the count alone.
+  /// How many of those computers the phone can reach now, for an account
+  /// project (the chip reads "1/2", with a dot while one is). Nil: the chip
+  /// shows the count alone.
   var machineLive: Int? = nil
+  /// The line under the name: the project's GitHub `owner/name`, never a
+  /// folder path. Nil shows none.
+  var subtitle: String? = nil
+  /// Nil while the list is not selecting; else whether this tile is ticked.
+  /// While selecting, a tap ticks (the caller's `onOpenProject`) and the
+  /// long-press menu is off.
+  var selection: Bool? = nil
   /// The project's machines can store a new icon (`projectIcon` feature).
   var canChangeIcon = false
   var canMoveToTop = true
-  /// "Remove from list" hides a machine's folder on this phone. An account
-  /// project is not hidden that way (removing it from the account is the
-  /// Delete flow), so its card has no such item.
-  var canForget = true
-  /// An account project: "Remove from ADE…" opens the Delete sheet.
-  var canRemoveFromADE = false
+  /// An account project: "Location" opens where its folders are.
+  var canShowLocation = false
   /// The card's account project. The menu actions name it, so a card whose
   /// project changes (a merge) must redraw them.
   var accountProjectId: String? = nil
@@ -1130,10 +1134,9 @@ struct HubProjectTile: View, Equatable {
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
-  let onForget: () -> Void
-  var onRemoveFromADE: () -> Void = {}
-  /// An account project (`canRemoveFromADE`): "Location" opens where its
-  /// folders are.
+  /// "Remove…": the Remove sheet (this list, a computer, all my computers,
+  /// my account). Nil hides the item.
+  var onRemove: (() -> Void)? = nil
   var onLocation: () -> Void = {}
 
   @State private var iconPickerShown = false
@@ -1161,17 +1164,17 @@ struct HubProjectTile: View, Equatable {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
               .frame(maxWidth: .infinity, alignment: .leading)
-            if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount, live: machineLive)
-            }
+            trailingMark
           }
+          // Under the row, not beside the name: the chip or the selection
+          // mark would leave the subtitle a few characters.
+          subtitleText
+            .padding(.top, 4)
         } else {
           HStack(alignment: .top, spacing: 6) {
             HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 34)
             Spacer(minLength: 4)
-            if machineLabel != nil, machineCount > 0 {
-              HubProjectMachineChip(count: machineCount, live: machineLive)
-            }
+            trailingMark
           }
           // The name right under the icon and the counts pinned to the
           // bottom: a name that wraps to two lines no longer pushes its
@@ -1180,10 +1183,12 @@ struct HubProjectTile: View, Equatable {
           Text(project.displayName)
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
+            .lineLimit(subtitle == nil ? 2 : 1)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 8)
+          subtitleText
+            .padding(.top, 1)
         }
         Spacer(minLength: 0)
         // Bound to a local because `stateCounts` walks the whole lane tree.
@@ -1211,7 +1216,7 @@ struct HubProjectTile: View, Equatable {
           Spacer(minLength: 4)
           if presentation.isSwitching {
             ProgressView().controlSize(.small)
-          } else {
+          } else if selection == nil {
             ADESettingsChevron()
           }
         }
@@ -1220,8 +1225,12 @@ struct HubProjectTile: View, Equatable {
       .frame(maxWidth: .infinity, minHeight: tileHeight, maxHeight: tileHeight, alignment: .topLeading)
       .adeKitCard(padding: nil)
       .overlay {
-        // The accent marks the one selected thing: the project open on the phone.
-        if presentation.isActive {
+        // The accent marks the one selected thing: a ticked tile while the
+        // list selects, else the project open on the phone.
+        if selection == true {
+          RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+            .strokeBorder(ADEColor.accent, lineWidth: 1.5)
+        } else if selection == nil, presentation.isActive {
           RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
             .strokeBorder(ADEColor.accent.opacity(0.45), lineWidth: 1)
         }
@@ -1231,8 +1240,27 @@ struct HubProjectTile: View, Equatable {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(tileSpokenLabel)
-    .accessibilityHint("Opens the project.")
+    .accessibilityHint(selection == nil ? "Opens the project." : "Selects the project.")
+    .accessibilityAddTraits(selection == true ? .isSelected : [])
     .contextMenu {
+      if selection == nil {
+        menuItems
+      }
+    }
+    .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
+    .onChange(of: pickedIcon) { _, item in
+      guard let item else { return }
+      pickedIcon = nil
+      Task {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let png = hubProjectIconPNG(from: data) else { return }
+        onChangeIcon(png)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var menuItems: some View {
       if let machineLabel {
         Section("On \(machineLabel)") {}
       }
@@ -1256,40 +1284,45 @@ struct HubProjectTile: View, Equatable {
           Label("Copy path", systemImage: "doc.on.doc")
         }
       }
-      if canRemoveFromADE {
+      if canShowLocation {
         Button(action: onLocation) {
           Label("Location", systemImage: "folder")
         }
       }
-      if canForget {
+      if let onRemove {
         Divider()
-        Button(role: .destructive, action: onForget) {
-          Label("Remove from list", systemImage: "trash")
+        Button(role: .destructive, action: onRemove) {
+          Label("Remove…", systemImage: "trash")
         }
       }
-      if canRemoveFromADE {
-        Divider()
-        Button(role: .destructive, action: onRemoveFromADE) {
-          Label("Remove from ADE…", systemImage: "trash")
-        }
-      }
+  }
+
+  @ViewBuilder
+  private var subtitleText: some View {
+    if let subtitle {
+      Text(subtitle)
+        .font(.system(size: 12))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
-    .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
-    .onChange(of: pickedIcon) { _, item in
-      guard let item else { return }
-      pickedIcon = nil
-      Task {
-        guard let data = try? await item.loadTransferable(type: Data.self),
-              let png = hubProjectIconPNG(from: data) else { return }
-        onChangeIcon(png)
-      }
+  }
+
+  /// Top trailing: the tick while selecting, else the computer chip.
+  @ViewBuilder
+  private var trailingMark: some View {
+    if let selection {
+      HubSelectionMark(selected: selection)
+    } else if machineLabel != nil, machineCount > 0 {
+      HubProjectMachineChip(count: machineCount, live: machineLive)
     }
   }
 
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
+    if let subtitle { parts.append(subtitle) }
     if let machineLabel { parts.append("on \(machineLabel)") }
-    if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) connected") }
+    if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) online") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)
     return parts.joined(separator: ", ")
@@ -1302,8 +1335,10 @@ struct HubProjectTile: View, Equatable {
       && lhs.machineLive == rhs.machineLive
       && lhs.canChangeIcon == rhs.canChangeIcon
       && lhs.canMoveToTop == rhs.canMoveToTop
-      && lhs.canForget == rhs.canForget
-      && lhs.canRemoveFromADE == rhs.canRemoveFromADE
+      && lhs.canShowLocation == rhs.canShowLocation
+      && (lhs.onRemove == nil) == (rhs.onRemove == nil)
+      && lhs.subtitle == rhs.subtitle
+      && lhs.selection == rhs.selection
       && lhs.accountProjectId == rhs.accountProjectId
   }
 }
@@ -1312,8 +1347,8 @@ struct HubProjectTile: View, Equatable {
 /// the count. The names are in the long-press menu and the spoken label.
 struct HubProjectMachineChip: View {
   let count: Int
-  /// Connected computers, for an account project: "1/2" with the connected
-  /// count first; a green dot while at least one is connected.
+  /// Reachable computers, for an account project: "1/2" with the reachable
+  /// count first; a green dot while at least one is reachable.
   var live: Int? = nil
 
   var body: some View {

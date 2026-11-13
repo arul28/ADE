@@ -129,20 +129,33 @@ func hubAccountJoinCards(
 
 /// The machine cards after the account list had its say.
 struct HubAccountCardPass {
+  /// One card per live account project, in no set order: a machine's card
+  /// when a reachable machine shows the project, else an account-only card.
+  /// Projects hidden on this phone are left out.
   var presentations: [HubProjectPresentation]
+  /// Machine cards that show no account project (a folder with no GitHub
+  /// repository, or one the account does not list). The Hub shows them in
+  /// "Only on <computer>", for computers it can reach.
+  var localPresentations: [HubProjectPresentation]
+  /// Cards of a project another card already shows. Not listed; their agents
+  /// still count on the agent page.
+  var duplicatePresentations: [HubProjectPresentation]
   var join: HubAccountJoin
   /// Account projects no reachable machine shows, by card id (the project id).
   var accountOnly: [String: AccountProject]
   /// The icon each joined card shows now, kept for when no machine is
   /// reachable (`AccountProjectStore.recordDisplay`).
   var icons: [String: AccountProjectDisplay]
+  /// Live account projects the user hid on this phone.
+  var hiddenOnPhoneCount: Int
 }
 
 /// Pure: match each card to its account project, hide cards of removed
 /// projects, add a card for every project no machine shows, and name each
 /// joined card by the account. The account has no icon, so a joined card
 /// keeps the icon its machine sends (the shared project icon), then the
-/// saved one.
+/// saved one. The account list is the one source of the main list: its
+/// count is the account's count, less the projects hidden on this phone.
 func hubAccountCardPass(
   presentations: [HubProjectPresentation],
   cards: [HubAccountJoinCard],
@@ -150,29 +163,38 @@ func hubAccountCardPass(
   removed: [AccountProject],
   merged: [String: String],
   display: [String: AccountProjectDisplay],
-  machines: [AccountMachine]
+  machines: [AccountMachine],
+  hiddenOnPhone: Set<String> = []
 ) -> HubAccountCardPass {
   let join = hubJoinAccountProjects(cards: cards, live: live, removed: removed, merged: merged)
-  var next = presentations.filter { !join.hiddenCardIds.contains($0.project.id) }
+  let shown = presentations.filter { !join.hiddenCardIds.contains($0.project.id) }
   var icons: [String: AccountProjectDisplay] = [:]
-  for presentation in next {
+  for presentation in shown {
     guard let accountId = join.accountIdByCardId[presentation.project.id] else { continue }
     icons[accountId] = AccountProjectDisplay(iconDataUrl: presentation.project.iconDataUrl)
   }
   let projectsById = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-  next = next.map { presentation in
-    guard let accountId = join.accountIdByCardId[presentation.project.id],
-          let accountProject = projectsById[accountId]
-    else { return presentation }
-    return presentation.showing(
-      name: accountProject.name,
-      iconDataUrl: presentation.project.iconDataUrl ?? display[accountId]?.iconDataUrl
-    )
+  var main: [HubProjectPresentation] = []
+  var local: [HubProjectPresentation] = []
+  var duplicates: [HubProjectPresentation] = []
+  for presentation in shown {
+    let cardId = presentation.project.id
+    if let accountId = join.accountIdByCardId[cardId], let accountProject = projectsById[accountId] {
+      guard !hiddenOnPhone.contains(hubHiddenAccountKey(accountId)) else { continue }
+      main.append(presentation.showing(
+        name: accountProject.name,
+        iconDataUrl: presentation.project.iconDataUrl ?? display[accountId]?.iconDataUrl
+      ))
+    } else if join.duplicateCardIds[cardId] != nil {
+      duplicates.append(presentation)
+    } else {
+      local.append(presentation)
+    }
   }
   var accountOnly: [String: AccountProject] = [:]
-  for project in join.unmatchedProjects {
+  for project in join.unmatchedProjects where !hiddenOnPhone.contains(hubHiddenAccountKey(project.id)) {
     accountOnly[project.id] = project
-    next.append(HubProjectPresentation(
+    main.append(HubProjectPresentation(
       project: hubAccountProjectSummary(project, display: display[project.id]),
       isActive: false,
       isSwitching: false,
@@ -183,16 +205,27 @@ func hubAccountCardPass(
       note: hubAccountProjectNote(project, machines: machines)
     ))
   }
-  return HubAccountCardPass(presentations: next, join: join, accountOnly: accountOnly, icons: icons)
+  let hiddenCount = live.filter { hiddenOnPhone.contains(hubHiddenAccountKey($0.id)) }.count
+  return HubAccountCardPass(
+    presentations: main,
+    localPresentations: local,
+    duplicatePresentations: duplicates,
+    join: join,
+    accountOnly: accountOnly,
+    icons: icons,
+    hiddenOnPhoneCount: hiddenCount
+  )
 }
 
 // MARK: - Computer chip
 
 /// A card's computer chip: a name or "N computers", how many computers, and
-/// (for an account project) how many are connected now.
+/// (for an account project) how many of them the phone can reach now.
 struct HubComputerChip: Equatable {
   var label: String?
   var total: Int
+  /// Computers the phone can reach: connected now, or online on the account
+  /// (a tap connects it). The chip shows a dot when at least one is.
   var live: Int?
 }
 
@@ -203,17 +236,21 @@ struct HubChipHolder: Equatable {
   let isLive: Bool
 }
 
-/// Pure: the chip of a card of an account project. It counts every computer
-/// with a copy (the account's copies and the machines that show the card's
-/// folders), and how many of them are connected.
+/// Pure: the chip of a card of an account project. It counts every distinct
+/// computer with a copy (the account's copies and the machines that show the
+/// card's folders, however many folders each has), and how many of them are
+/// reachable: connected now, or online on the account.
 func hubAccountProjectChip(_ project: AccountProject, holders: [HubChipHolder], machines: [AccountMachine]) -> HubComputerChip {
   var all = Set(project.copies.map(\.machineKey))
-  var live = Set<String>()
+  var reachable = Set<String>()
   var names: [String: String] = [:]
   for holder in holders {
     all.insert(holder.accountKey)
     if let name = holder.name { names[holder.accountKey] = name }
-    if holder.isLive { live.insert(holder.accountKey) }
+    if holder.isLive { reachable.insert(holder.accountKey) }
+  }
+  for machine in machines where machine.online && all.contains(machine.machineKey) {
+    reachable.insert(machine.machineKey)
   }
   let label: String?
   if all.count > 1 {
@@ -223,16 +260,17 @@ func hubAccountProjectChip(_ project: AccountProject, holders: [HubChipHolder], 
   } else {
     label = nil
   }
-  return HubComputerChip(label: label, total: all.count, live: live.count)
+  return HubComputerChip(label: label, total: all.count, live: reachable.count)
 }
 
 /// Pure: the chip of a project no reachable machine shows: the computers
-/// that hold a folder of it. The name is unknown until the computer list
-/// loads; the count still shows.
+/// that hold a folder of it, and how many are online on the account. The
+/// name is unknown until the computer list loads; the count still shows.
 func hubAccountOnlyChip(_ project: AccountProject, machines: [AccountMachine]) -> HubComputerChip {
   let held = accountProjectCopyMachines(project, machines: machines)
   let label = held.count > 1 ? "\(held.count) computers" : held.first?.machine?.displayName
-  return HubComputerChip(label: label, total: held.count, live: nil)
+  let online = held.filter { $0.machine?.online == true }.count
+  return HubComputerChip(label: label, total: held.count, live: online)
 }
 
 // MARK: - Saved order
