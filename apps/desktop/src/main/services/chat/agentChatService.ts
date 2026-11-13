@@ -1856,6 +1856,8 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { forgetLiveTurnProject, noteLiveTurn } from "../runtime/liveTurnProjects";
+import { noteRestartContinuation } from "../runtime/brainUnplannedRestart";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
 import { createClaudeCliScheduleMirror } from "./claudeCliScheduledWork";
@@ -22937,6 +22939,8 @@ export function createAgentChatService(args: {
     managed.session.idleSinceAt = null;
     // The accepted turn has started, so it no longer waits on a provider start.
     clearTurnAccepted(managed);
+    // The next brain opens this project at once if this one crashes mid-turn.
+    noteLiveTurn(projectRoot, `chat:${managed.session.id}`, true);
   };
 
   /**
@@ -22955,6 +22959,7 @@ export function createAgentChatService(args: {
     managed.session.currentTurnStartedAt = null;
     managed.turnReasoningEffort = undefined;
     clearTurnAccepted(managed);
+    noteLiveTurn(projectRoot, `chat:${managed.session.id}`, false);
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
@@ -23193,6 +23198,8 @@ export function createAgentChatService(args: {
           provider: managed.session.provider,
           streak: restartResumeStreak,
         });
+        // For the window's restart banner; counted only after an unplanned restart.
+        if (resume.prompt === RESTART_RESUME_PROMPT) noteRestartContinuation("chat");
       } catch (error) {
         logger.warn("agent_chat.restart_resume_arm_failed", {
           sessionId,
@@ -71589,6 +71596,7 @@ export function createAgentChatService(args: {
       alreadyOpen: 0,
       notReopenable: 0,
       failed: 0,
+      plannedReopened: 0,
     };
     if (hold) {
       // Claimed all the same: a later start must not reopen what this one held back.
@@ -71708,6 +71716,7 @@ export function createAgentChatService(args: {
         }
         ptyService.showSessionNotice?.(row.id, cliReopenedNotice({ unexpected, continued }));
         tally.reopened += 1;
+        if (!unexpected) tally.plannedReopened += 1;
         if (continued) tally.continued += 1;
       } catch (error) {
         // No resume target, a deleted lane, moved to another machine: it stays ended, as before.
@@ -71715,6 +71724,7 @@ export function createAgentChatService(args: {
         logger.warn("agent_chat.cli_reopen_failed", { sessionId: row.id, error: errorText(error) });
       }
     }
+    noteRestartContinuation("cli", tally.reopened - tally.plannedReopened);
     logger.info("agent_chat.cli_reopened_after_restart", {
       planned: planned.length,
       crash: crash.cutOff.length,
@@ -75294,6 +75304,7 @@ export function createAgentChatService(args: {
     // First, before anything in the drain can emit a turn's `done` event:
     // whatever the turn-settled path defers from here on must not run.
     serviceDisposed = true;
+    forgetLiveTurnProject(projectRoot);
     runtimeBudget.unregister(runtimeBudgetParticipant);
     clearTimeout(mcpAppOrphanSweepTimer);
     for (const watch of acceptedStartWatches.values()) clearTimeout(watch);

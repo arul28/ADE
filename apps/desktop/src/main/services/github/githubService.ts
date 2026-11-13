@@ -3080,6 +3080,9 @@ export function createGithubService({
     async getAppUserTokenForRelay(): Promise<string> {
       return await accountApp.relayAppUserAuth.getValidTokenForRelay();
     },
+    async reportAppUserTokenRejected(token: string): Promise<void> {
+      await accountApp.relayAppUserAuth.onTokenRejected(token);
+    },
 
     detectRepo,
     getAppInstallationStatus,

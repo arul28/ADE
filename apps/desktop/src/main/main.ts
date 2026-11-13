@@ -4490,6 +4490,7 @@ app.whenReady().then(async () => {
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),
         knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
+        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {

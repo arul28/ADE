@@ -263,6 +263,14 @@ export function createGithubAccountAppCredential(deps: {
         throw legacyError;
       }
     },
+    /**
+     * GitHub answered 401 to a relay token: this computer's own sign-in, or
+     * the account's cached token after the account connected again elsewhere
+     * (a Disconnect deleted the old one at GitHub). Asks the account
+     * directory once for the current token (`onRejected`); null when there is
+     * no other.
+     */
+    onTokenRejected: (token: string): Promise<string | null> => onRejected(token),
   };
 
   return {

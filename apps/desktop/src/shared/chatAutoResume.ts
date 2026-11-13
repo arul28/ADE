@@ -270,6 +270,16 @@ export function updateResumeScheduleId(sessionId: string): string {
 }
 
 /**
+ * The resume ADE arms after any restart (an update, a crash) uses the fixed
+ * id, so a transcript event names it by its schedule id, old transcripts too.
+ * Its wake line, wake divider and wake message are not drawn: the restart
+ * notice already says the agent continues (`isRestartInterruptedNotice`).
+ */
+export function isRestartResumeScheduleId(scheduleId: string | null | undefined): boolean {
+  return typeof scheduleId === "string" && scheduleId.startsWith(UPDATE_RESUME_ID_PREFIX);
+}
+
+/**
  * Recognises an update-resume row by its tag. Unlike the usage-limit pair there
  * is no pre-tag history to fall back on — the source was introduced with the
  * tag — so the id prefix is not a recogniser here, only the deterministic id.
@@ -369,6 +379,13 @@ export function restartResumeHold(args: {
   if (!args.recent) return "stale";
   if (args.capped) return "capped";
   return null;
+}
+
+const RESTART_INTERRUPTED_NOTICE_PREFIX = "ADE restarted while ";
+
+/** A notice `restartInterruptedNotice` wrote. The transcript adds its time. */
+export function isRestartInterruptedNotice(message: string | null | undefined): boolean {
+  return typeof message === "string" && message.startsWith(RESTART_INTERRUPTED_NOTICE_PREFIX);
 }
 
 /** The notice for a turn a restart cut short, by what happens next. */

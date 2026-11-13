@@ -5944,6 +5944,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           syncPort: null,
           publishHealth: null,
           lastWedge: null,
+          lastUnplannedRestart: null,
           runtimeMode: "primary",
           versionSkew: {
             state: "none",

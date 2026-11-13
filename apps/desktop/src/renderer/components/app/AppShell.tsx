@@ -64,6 +64,7 @@ import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { AppBundleOwnershipBanner } from "./AppBundleOwnershipBanner";
 import { CloudSignInEndNotice } from "../settings/providers/cloud/CloudSignInEndNotice";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
+import { BrainRestartNotice } from "./BrainRestartNotice";
 import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
@@ -1160,6 +1161,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AppBundleOwnershipBanner />
       <CloudSignInEndNotice navigate={navigate} />
       <BrainRecoveryNotice />
+      <BrainRestartNotice />
       <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners

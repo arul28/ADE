@@ -235,6 +235,13 @@ export async function fetchGitHubAppInstallationStatus(args: {
   appUserAuthFailure?: GitHubAppUserAuthUnavailable | null;
   accountAccessToken?: string | null;
   auditLog?: GitHubRelayAuthAuditLog | null;
+  /**
+   * GitHub refused the App user token (401). Answers the account's current
+   * token when it is a different one, or null. The check then asks once more
+   * with it: after a Disconnect and a new Connect on another computer, this
+   * computer still holds the old token until it asks (`onRejected`).
+   */
+  onAppUserTokenRejected?: ((token: string) => Promise<string | null>) | null;
 }): Promise<GitHubAppInstallationStatus> {
   const config = readGitHubRelayConfig(args.secretReader);
   if (!args.repo) {
@@ -306,6 +313,17 @@ export async function fetchGitHubAppInstallationStatus(args: {
       },
     });
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && hostedAuth?.ok && args.onAppUserTokenRejected) {
+      const replacement = (await args.onAppUserTokenRejected(hostedAuth.token).catch(() => null))?.trim();
+      if (replacement && replacement !== hostedAuth.token) {
+        return await fetchGitHubAppInstallationStatus({
+          ...args,
+          githubAppUserToken: replacement,
+          appUserAuthFailure: null,
+          onAppUserTokenRejected: null,
+        });
+      }
+    }
     if (!response.ok) {
       const relayMessage = payload && typeof payload === "object" && "error" in payload
         ? String((payload as { error?: unknown }).error)
@@ -352,6 +370,8 @@ export async function fetchAppInstallationStatusForRepo(args: {
   repo: GitHubRepoRef | null;
   appUserAuth: {
     getValidTokenForRelay(): Promise<string>;
+    /** GitHub refused this token: the account's current one, or null (`relayAppUserAuth`). */
+    onTokenRejected?(token: string): Promise<string | null>;
     auditLog: GitHubRelayAuthAuditLog;
   };
   logger: {
@@ -381,5 +401,8 @@ export async function fetchAppInstallationStatusForRepo(args: {
     appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
     accountAccessToken,
     auditLog: args.appUserAuth.auditLog,
+    onAppUserTokenRejected: args.appUserAuth.onTokenRejected
+      ? (token) => args.appUserAuth.onTokenRejected!(token)
+      : null,
   });
 }

@@ -64,6 +64,7 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
+import { noteLiveTurn } from "../runtime/liveTurnProjects";
 import { createCliTurnRecorder, recordCliSessionsToReopen, resetCliCrashReopenCount, type CliReopenEntry } from "./cliReopenAfterRestart";
 import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
@@ -2870,10 +2871,10 @@ export function createPtyService({
   const recordCliTurnRunning = (entry: PtyEntry): void => {
     if (!cliTurnRecorder || !entry.tracked) return;
     const turn = entry.cliTurn;
-    cliTurnRecorder.setRunning(
-      entry.sessionId,
-      !entry.disposed && turn != null && isExactCliTurnSource(turn.source) && turn.phase === "working",
-    );
+    const running = !entry.disposed && turn != null && isExactCliTurnSource(turn.source) && turn.phase === "working";
+    cliTurnRecorder.setRunning(entry.sessionId, running);
+    // The next brain opens this project at once if this one crashes mid-turn.
+    noteLiveTurn(projectRoot, `cli:${entry.sessionId}`, running);
   };
   const piLeaseIdentity = processRegistry
     ? {

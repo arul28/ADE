@@ -1538,6 +1538,9 @@ export async function createAdeRuntime(args: {
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),
         knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
+        // A crashed brain's rows close now, not after the 2-minute grace, so
+        // the restart sweep (3 s after start) continues its chats.
+        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {

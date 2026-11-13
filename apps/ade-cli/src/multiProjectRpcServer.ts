@@ -483,6 +483,12 @@ export type MultiProjectRpcHandlerOptions = {
       blockedMs: number;
       ts: string;
     } | null;
+    /** This brain started after the one before it stopped unplanned (`brainUnplannedRestart.ts`). Optional for older embedders. */
+    lastUnplannedRestart?: {
+      ts: string;
+      chats: number;
+      cliSessions: number;
+    } | null;
   };
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
@@ -2703,12 +2709,20 @@ export function createMultiProjectRpcRequestHandler(
             }
           : null,
         lastWedge: status?.lastWedge ? { ...status.lastWedge } : null,
+        lastUnplannedRestart: status?.lastUnplannedRestart
+          ? {
+              ts: status.lastUnplannedRestart.ts,
+              chats: status.lastUnplannedRestart.chats,
+              cliSessions: status.lastUnplannedRestart.cliSessions,
+            }
+          : null,
       };
     } catch {
       return {
         syncPort: null,
         publishHealth: null,
         lastWedge: null,
+        lastUnplannedRestart: null,
       };
     }
   };
