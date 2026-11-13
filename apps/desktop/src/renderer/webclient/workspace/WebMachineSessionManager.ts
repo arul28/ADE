@@ -139,6 +139,11 @@ function remoteProject(project: SyncMobileProjectSummary): RemoteRuntimeProjectR
     icon: project.iconDataUrl
       ? { dataUrl: project.iconDataUrl, sourcePath: null, mimeType: null }
       : null,
+    // The account project joins copies on every client, origin or not: a
+    // repository that is not on GitHub has no origin here, and without the
+    // account id the web could not tell that two machines hold one project.
+    ...(project.accountProjectId ? { accountProjectId: project.accountProjectId } : {}),
+    ...(typeof project.githubRepoId === "number" ? { githubRepoId: project.githubRepoId } : {}),
   };
 }
 
