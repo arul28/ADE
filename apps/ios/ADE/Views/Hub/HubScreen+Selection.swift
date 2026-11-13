@@ -5,17 +5,37 @@ import SwiftUI
 // is sent on. The sheet and the pure parts live in `HubRemoveProjects.swift`.
 
 extension HubScreen {
-  /// The folders the join folded into an account project's tile (a second
-  /// folder of it on a computer, or a copy another computer shows). The
-  /// tile's long-press menu opens each; the list has one row per project.
-  func otherFolders(ofAccountProject accountId: String?) -> [HubTileFolder] {
-    guard let accountId else { return [] }
-    return duplicatePresentations
-      .filter { accountJoin.duplicateCardIds[$0.project.id] == accountId }
-      .map { folder in
-        let name = hubFolderName(folder.project.rootPath) ?? folder.project.displayName
-        return HubTileFolder(id: folder.project.id, label: "\(name) on \(cardComputer(folder.project.id).name)")
+  /// The folders folded into a project's tile: the copies other computers
+  /// show (the fleet merge's `projectLocations`), and for an account project
+  /// its second folders (duplicate cards) with their own copies. The tile's
+  /// long-press menu opens each on its own computer; the list has one row
+  /// per project.
+  func otherFolders(ofCard cardId: String, accountProject accountId: String?) -> [HubTileFolder] {
+    // The tile's own folder is the tile; never list it.
+    let own = cardComputer(cardId)
+    var seen: Set<String> = ["\(own.key)|\(own.project.id)"]
+    var folders: [HubTileFolder] = []
+    // `opens`: what the tap opens; a duplicate card opens as a card, so
+    // `openHubProject` finds the machine that owns it.
+    func add(_ computer: HubCardComputer, machineKey: String?, opens: MobileProjectSummary) {
+      let id = "\(computer.key)|\(computer.project.id)"
+      guard seen.insert(id).inserted else { return }
+      let name = hubFolderName(computer.project.rootPath) ?? computer.project.displayName
+      folders.append(HubTileFolder(id: id, label: "\(name) on \(computer.name)", machineKey: machineKey, project: opens))
+    }
+    func addLocations(of id: String) {
+      for location in fleetMerge.projectLocations[id] ?? [] {
+        add(hubCardComputer(phoneKey: location.machineKey, project: location.project), machineKey: location.machineKey, opens: location.project)
       }
+    }
+    addLocations(of: cardId)
+    if let accountId {
+      for duplicate in duplicatePresentations where accountJoin.duplicateCardIds[duplicate.project.id] == accountId {
+        add(cardComputer(duplicate.project.id), machineKey: nil, opens: duplicate.project)
+        addLocations(of: duplicate.project.id)
+      }
+    }
+    return folders
   }
 
   /// The cards the list shows now, under the status filter: the projects,

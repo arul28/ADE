@@ -574,7 +574,7 @@ struct HubScreen: View {
       canMoveToTop: projectOrder.first != orderKey,
       canShowLocation: accountProjects.governsHub && accountId != nil,
       accountProjectId: accountId,
-      otherFolders: otherFolders(ofAccountProject: accountId),
+      otherFolders: otherFolders(ofCard: project.id, accountProject: accountId),
       onOpenProject: {
         if selecting {
           toggleSelection(project.id)
@@ -584,9 +584,12 @@ struct HubScreen: View {
           openHubProject(project)
         }
       },
-      onOpenFolder: { cardId in
-        guard let folder = duplicatePresentations.first(where: { $0.project.id == cardId }) else { return }
-        openHubProject(folder.project)
+      onOpenFolder: { folder in
+        if let machineKey = folder.machineKey {
+          openFleetCopy(folder.project, onMachine: machineKey)
+        } else {
+          openHubProject(folder.project)
+        }
       },
       onChangeIcon: { png in changeHubProjectIcon(project, png: png) },
       onMoveToTop: { moveProjectToTop(orderKey) },
@@ -628,10 +631,16 @@ struct HubScreen: View {
       return
     }
     // Lives only on another machine: focus that machine, then open it there.
-    switchingRemoteProjectId = project.id
+    openFleetCopy(owner.project, onMachine: owner.machineKey, cardId: project.id)
+  }
+
+  /// Focuses `machineKey` and opens its own `project` there.
+  private func openFleetCopy(_ project: MobileProjectSummary, onMachine machineKey: String, cardId: String? = nil) {
+    let switching = cardId ?? project.id
+    switchingRemoteProjectId = switching
     Task { @MainActor in
-      await syncService.openProject(owner.project, onMachine: owner.machineKey)
-      if switchingRemoteProjectId == project.id { switchingRemoteProjectId = nil }
+      await syncService.openProject(project, onMachine: machineKey)
+      if switchingRemoteProjectId == switching { switchingRemoteProjectId = nil }
     }
   }
 

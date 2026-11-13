@@ -1135,8 +1135,8 @@ struct HubProjectTile: View, Equatable {
   /// computer, or a copy on another one). The long-press menu opens each.
   var otherFolders: [HubTileFolder] = []
   let onOpenProject: () -> Void
-  /// Opens one of `otherFolders`, by its id.
-  var onOpenFolder: (String) -> Void = { _ in }
+  /// Opens one of `otherFolders` on its own computer.
+  var onOpenFolder: (HubTileFolder) -> Void = { _ in }
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
@@ -1279,7 +1279,7 @@ struct HubProjectTile: View, Equatable {
       if !otherFolders.isEmpty {
         Section("Other folders") {
           ForEach(otherFolders) { folder in
-            Button { onOpenFolder(folder.id) } label: {
+            Button { onOpenFolder(folder) } label: {
               Label(folder.label, systemImage: "folder")
             }
           }
@@ -1372,10 +1372,15 @@ struct HubProjectTile: View, Equatable {
 
 /// One more folder of a Hub tile's project, for its long-press menu.
 struct HubTileFolder: Equatable, Identifiable {
-  /// The folder's Hub card id.
+  /// The computer's key and the folder's id there.
   let id: String
   /// "ade-2 on MacBook Pro".
   let label: String
+  /// The machine whose copy this is; nil for a Hub card (`openHubProject`
+  /// finds its owner).
+  let machineKey: String?
+  /// What a tap opens: the Hub card, or that machine's own project.
+  let project: MobileProjectSummary
 }
 
 /// The last part of a folder path, with `/` or `\` separators (a Windows
