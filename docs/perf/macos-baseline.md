@@ -3264,8 +3264,8 @@ pass, the first run after a reload is the cold one.
 | --- | --- | --- | --- |
 | Home "Add project" to the add form ready (input, folder and options filled), warm median | 150 ms (first screen, the tiles, 141 ms; the form one press later); long task 129 ms | 36–37 ms (form shown 30–31 ms); no long task | — |
 | Home "Add project" to the add form ready, cold (first open after a reload) | 156–160 ms; long task 132–135 ms | 43–44 ms; no long task | — |
-| Home: "+" to the first Projects row (the S4 probe: one frame after the row), median | 39–40.5 ms; a long frame of 57–70 ms in 5–6 of 8 runs | 49.5–51.5 ms; no long frame | — |
-| Home: "+" to the first Projects row painted / to settled frames (6 frames under 20 ms), median of each pass | 30–31 ms / 151–161 ms; worst frame 65–80 ms | 28–47 ms / 90–149 ms; worst frame 0–67 ms | — |
+| Home: "+" to the first Projects row (the S4 probe: one frame after the row), warm median of each pass | 54.0–56.2 ms; a long frame of 62–64 ms in 5–6 of 14 runs | 48.4–51.2 ms; no long frame in 56 runs | — |
+| Home: "+" to the first Projects row painted / to settled frames (6 frames under 20 ms), warm median of each pass | 27.4–28.3 ms / 133 ms | 34.0–36.6 ms / 91–116 ms | — |
 | Home page elements / Projects card elements | 2,417 / 1,866 (81 rows, most hidden) | 1,422 / 871 (40 rows) | — |
 
 The add window cost one long task of 120–200 ms on every open, in the base
@@ -3282,10 +3282,15 @@ Home's Projects card renders at most 40 rows inline (`INLINE_ROW_CAP`); the
 "N more" dialog shows every row. A hidden row still costs style and layout on
 every pass over the page. A cap of 24 measured the same as 40.
 
-The "+" probe's first-row median is about 10 ms later than the base, and the
-spread between passes is about as large (28–47 ms across four after passes).
-The page settles sooner and has no long frame in most passes. No ceiling is
-set for these rows.
+The "+" rows were measured again on `1dc88e0c4` (2026-11-13): four
+interleaved pairs, 15 warm runs a pass after a warm-up pass, each pass waiting
+for a 1-minute load under 16 on the 14-core machine (load 9–14 at the start
+of the passes used, one after pass at 25). Two base passes that ran back to
+back measured like the branch code and are left out, since the pass did not
+record which renderer it measured. The base paints the first row 6–9 ms
+sooner, in a frame that then runs long; the branch has no long frame,
+settles sooner, and is not slower on the S4 probe. No ceiling is set for
+these rows.
 
 No timer, poll or subscription is added. Home reads this computer's folders
 from the brain's project catalog (`project.listThisComputer`, one local IPC)
