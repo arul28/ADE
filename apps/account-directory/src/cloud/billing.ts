@@ -1,6 +1,7 @@
 import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "../brandPage";
-import { captureCloudAction, type CloudWaitUntil } from "./analytics";
-import { formatCloudCents, type CloudCheckoutResult, type CloudPlanCleanupPick } from "./contract";
+import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
+import { formatCloudCents, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
+import { unlockFreePlanWithCard } from "./freePlanGithub";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
 import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
@@ -232,6 +233,88 @@ export async function createCheckoutUrl(
     }
     throw error;
   }
+}
+
+/* ---- A card with no charge for the free plan ---- */
+
+/** `metadata[ade_purpose]` of the setup-mode Checkout that unlocks the free hours early. */
+const FREE_UNLOCK_PURPOSE = "free_unlock";
+
+/** Whether the Stripe customer already has a card saved (a former paid customer, a card added before). */
+async function customerHasCard(env: CloudEnv, customerId: string): Promise<boolean> {
+  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=1`);
+  return Array.isArray(cards.data) && cards.data.length > 0;
+}
+
+/**
+ * `POST /cloud/billing/free-unlock`: a card saved with no charge starts the
+ * free hours of a GitHub account younger than 30 days (`freePlanGithub.ts`).
+ * A card already on file unlocks at once; otherwise this answers a Stripe
+ * Checkout in setup mode (nothing is charged), and its
+ * `checkout.session.completed` unlocks.
+ */
+export async function createFreeUnlockUrl(env: CloudEnv, userId: string, origin: string, ctx: { now: number; waitUntil?: CloudWaitUntil }): Promise<CloudFreeUnlockResult> {
+  const waitUntil: CloudWaitUntil = ctx.waitUntil ?? ((promise) => { void promise; });
+  const account = await loadAccount(env, userId, ctx.now);
+  if (account.free_card_unlocked_at != null) return { url: null, unlocked: true };
+  if (accountRules(account) !== "free" || account.free_github_hold !== "github_too_new") {
+    throw new CloudBillingError("nothing_to_unlock", "Your free hours don't need a card.", 409);
+  }
+  if (!env.STRIPE_SECRET_KEY?.trim()) {
+    reportCloudFailure("cloud.billing_not_configured", { plan: FREE_UNLOCK_PURPOSE });
+    throw unavailable();
+  }
+  try {
+    if (account.stripe_customer_id && await customerHasCard(env, account.stripe_customer_id)) {
+      await unlockFreePlanWithCard(env, account, "card_on_file", { now: ctx.now, waitUntil });
+      return { url: null, unlocked: true };
+    }
+    const customer = await ensureCustomer(env, account, ctx.now);
+    const session = await stripeRequest(env, "POST", "/checkout/sessions", {
+      mode: "setup",
+      currency: "usd",
+      customer,
+      client_reference_id: userId,
+      "payment_method_types[0]": "card",
+      "metadata[ade_user_id]": userId,
+      "metadata[ade_purpose]": FREE_UNLOCK_PURPOSE,
+      "setup_intent_data[metadata][ade_user_id]": userId,
+      "setup_intent_data[metadata][ade_purpose]": FREE_UNLOCK_PURPOSE,
+      success_url: `${origin}${RETURN_PATH}?to=card`,
+      cancel_url: `${origin}${RETURN_PATH}?to=card_cancelled`,
+    });
+    const url = textOf(session.url);
+    if (!url) throw unavailable();
+    captureCloudFreePlan(env, waitUntil, userId, "card_unlock_started", null, ctx.now);
+    return { url, unlocked: false };
+  } catch (error) {
+    if (error instanceof StripeRequestError) {
+      reportCloudFailure("cloud.free_unlock_checkout_failed", { status: error.status, message: error.stripeMessage });
+      throw unavailable();
+    }
+    throw error;
+  }
+}
+
+/** A setup-mode Checkout finished: the card is saved (its SetupIntent succeeded), so the free hours unlock. */
+async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
+  const metadata = objectOf(session.metadata);
+  const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
+  if (!userId) return;
+  if (session.status !== "complete") {
+    logCloud("cloud.free_unlock_incomplete", { userId, status: textOf(session.status) });
+    return;
+  }
+  const setupIntentId = idOf(session.setup_intent);
+  if (setupIntentId) {
+    const intent = await stripeRequest(env, "GET", `/setup_intents/${encodeURIComponent(setupIntentId)}`);
+    if (intent.status !== "succeeded") {
+      logCloud("cloud.free_unlock_not_succeeded", { userId, status: textOf(intent.status) });
+      return;
+    }
+  }
+  const account = await loadAccount(env, userId, now);
+  await unlockFreePlanWithCard(env, account, "checkout", { now, waitUntil });
 }
 
 /** The portal setup stripe-setup made (card, cancel at period end, invoices), when set. */
@@ -726,7 +809,10 @@ const invoiceSubscriptionId = (invoice: StripeObject): string | null =>
   idOf(objectOf(objectOf(invoice.parent)?.subscription_details)?.subscription) ?? idOf(invoice.subscription);
 
 async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
-  if (type === "checkout.session.completed") return onCheckoutCompleted(env, object, now, waitUntil);
+  if (type === "checkout.session.completed") {
+    if (object.mode === "setup" && textOf(objectOf(object.metadata)?.ade_purpose) === FREE_UNLOCK_PURPOSE) return onFreeUnlockCompleted(env, object, now, waitUntil);
+    return onCheckoutCompleted(env, object, now, waitUntil);
+  }
   if (type === "customer.subscription.updated" || type === "customer.subscription.deleted") return syncSubscription(env, idOf(object.id), now, waitUntil);
   if (type === "invoice.paid") return syncSubscription(env, invoiceSubscriptionId(object), now, waitUntil, object);
   if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now, waitUntil);
@@ -793,6 +879,8 @@ const RETURN_MESSAGES: Record<string, { heading: string; line: string }> = {
   done: { heading: "You're all set", line: "Your plan will show in ADE in a moment." },
   cancelled: { heading: "Nothing changed", line: "You left checkout before paying." },
   portal: { heading: "Back to ADE", line: "Any changes you made will show in ADE in a moment." },
+  card: { heading: "Card saved", line: "You weren't charged. Your free hours will show in ADE in a moment." },
+  card_cancelled: { heading: "Nothing changed", line: "You left before saving a card. Your free hours start when your GitHub account is 30 days old." },
 };
 
 function returnPage(url: URL, method: string): Response {

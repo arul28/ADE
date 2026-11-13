@@ -380,7 +380,8 @@ export function logGithubApp(args: {
     | "github_app.retired"
     | "github_app.disconnected"
     | "github_app.keepalive"
-    | "github_app.abandoned_confirms_dropped";
+    | "github_app.abandoned_confirms_dropped"
+    | "github_app.account_age_save_failed";
   userId: string;
   [field: string]: string | number | boolean | undefined;
 }): void {
@@ -392,6 +393,7 @@ export function logGithubApp(args: {
   }
   const failed = event === "github_app.refresh_failed"
     || event === "github_app.refresh_unpersisted"
-    || event === "github_app.refresh_unpersisted_dropped";
+    || event === "github_app.refresh_unpersisted_dropped"
+    || event === "github_app.account_age_save_failed";
   (failed ? console.error : console.log)(JSON.stringify(line));
 }

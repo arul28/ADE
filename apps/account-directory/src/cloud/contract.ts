@@ -21,6 +21,7 @@
  *   GET    /cloud/instances/:id/update-check   CloudUpdateCheck   (from the computer)
  *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
  *   POST   /cloud/instances/:id/disk-usage     { ok: true }   (from the computer: CloudDiskUsageReport)
+ *   POST   /cloud/instances/:id/cpu-report     { ok: true }   (from the computer: CloudSustainedCpuReport)
  *   POST   /cloud/instances/:id/resize         { status }
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
@@ -35,6 +36,7 @@
  *   POST   /cloud/billing/portal               { url }   409 `no_billing`
  *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
  *   POST   /cloud/billing/extra-disk           CloudAccountState   403 `needs_paid_plan`, 409 `disk_over_plan` (404 while extra disk isn't set up)
+ *   POST   /cloud/billing/free-unlock          CloudFreeUnlockResult   409 `nothing_to_unlock`
  *   GET    /cloud/chats?machine&project&limit&cursor   { chats: CloudChatRow[], nextCursor }
  *   GET    /cloud/chats/:machine/:chat?before&limit     CloudChatTranscriptPage
  *   PUT    /cloud/chats/:machine/:chat/parts/:seq       CloudChatPartResponse   (from the computer)
@@ -143,6 +145,8 @@ export const CLOUD_PATHS = {
   billingExtraDisk: "/cloud/billing/extra-disk",
   /** `POST` `{ planId, push, instanceIds }`: free the picked computers to fit a cheaper plan (`CloudPlanCleanupPick`). */
   billingPlanCleanup: "/cloud/billing/plan-cleanup",
+  /** `POST {}`: save a card with no charge to start the free hours of a GitHub account younger than 30 days (`CloudFreeUnlockResult`). */
+  billingFreeUnlock: "/cloud/billing/free-unlock",
   chats: "/cloud/chats",
   lanesWithoutComputer: "/cloud/lanes/without-computer",
   /** `GET`: this account's `CloudReferralSummary`. */
@@ -533,7 +537,67 @@ export type CloudFreePlan = {
   state: CloudFreePlanState;
   /** The one sentence for the dashboard while it matters (refused, on the free plan's rules); null otherwise. */
   sentence: string | null;
+  /** The GitHub rules of the free plan (`freePlanGithub.ts`). Older servers leave it out: read it as `ok`. */
+  github?: CloudFreePlanGithub;
 };
+
+/** Days a GitHub account must be old before its ADE account gets free hours (a card with no charge skips the wait). */
+export const CLOUD_FREE_GITHUB_MIN_AGE_DAYS = 30;
+
+/**
+ * The free plan's GitHub rules, on the free plan only (`ok` on a paid plan).
+ * - `ok`: nothing is held (the account claimed its GitHub account, or used ADE Cloud before the rules).
+ * - `no_github`: no GitHub account is connected (or the connection ended), so no free hours yet.
+ * - `too_new`: the GitHub account is younger than 30 days; free hours start at `oldEnoughAt`, or now with a card (no charge).
+ * - `used`: that GitHub account already gives another ADE account its free plan.
+ * - `checking`: GitHub couldn't be asked yet; ADE tries again in a few minutes.
+ * While not `ok`, the free plan's hours are 0. Paid plans, earned hours and extra hours still work.
+ */
+export type CloudFreePlanGithubState = "ok" | "no_github" | "too_new" | "used" | "checking";
+
+export type CloudFreePlanGithub = {
+  state: CloudFreePlanGithubState;
+  /** When a `too_new` GitHub account turns 30 days old (ms); null otherwise. */
+  oldEnoughAt: number | null;
+  /** A card saved with no charge starts the free hours now (`POST /cloud/billing/free-unlock`): only for `too_new`. */
+  canUnlockWithCard: boolean;
+  /** The connected GitHub login, for `too_new` and `used`; null otherwise. */
+  githubLogin: string | null;
+  /** The server's one sentence for the CLI and older screens; null when `ok`. */
+  sentence: string | null;
+};
+
+/** "December 13": the day a too-new GitHub account is old enough, in UTC so every client says the same day. */
+export const formatCloudFreeGithubDay = (at: number): string =>
+  new Date(at).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+
+/** The server's sentence for each GitHub rule that holds the free hours; the server passes `CLOUD_PLANS.plus.includedMilli`. */
+export function cloudFreeGithubSentence(state: CloudFreePlanGithubState, facts: { oldEnoughAt: number | null; plusIncludedMilli: number }): string | null {
+  switch (state) {
+    case "no_github":
+      return "Free hours need a GitHub account. Connect GitHub to start; ADE Cloud uses it to get your code.";
+    case "too_new":
+      return facts.oldEnoughAt != null
+        ? `Your GitHub account is new, so free hours start on ${formatCloudFreeGithubDay(facts.oldEnoughAt)}. Add a card (no charge) to start now.`
+        : "Your GitHub account is new, so free hours start when it is 30 days old. Add a card (no charge) to start now.";
+    case "used":
+      return `This GitHub account already has a free plan on another ADE account. Plus gives you ${Math.round(facts.plusIncludedMilli / 1000).toLocaleString("en-US")} hours a month.`;
+    case "checking":
+      return "ADE couldn't check your GitHub account just now. It tries again in a few minutes.";
+    default:
+      return null;
+  }
+}
+
+/** `POST /cloud/billing/free-unlock`: open `url` to save a card (no charge), or `unlocked` when a card on file already did it. */
+export type CloudFreeUnlockResult = { url: string; unlocked: false } | { url: null; unlocked: true };
+
+/**
+ * `POST /cloud/instances/:id/cpu-report`, from the computer's brain: it has run
+ * at `cpuPercent` (all cores, averaged) or more since `since` (ms) for
+ * `minutes`, with no chat turn or agent working. For the owner's daily report.
+ */
+export type CloudSustainedCpuReport = { since: number; minutes: number; cpuPercent: number };
 
 /** The dashboard's sentence for a refused free plan; the server passes `CLOUD_PLANS.plus.includedMilli` (`plans.ts`). */
 export const cloudFreePlanRefusedSentence = (plusIncludedMilli: number): string =>
