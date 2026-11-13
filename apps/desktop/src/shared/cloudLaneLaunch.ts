@@ -6,7 +6,7 @@
  * `ade_request_id`, which is the launch id.
  */
 
-import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
+import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudFreePlanOf, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchSnapshot } from "./types/chatLaunch";
 import { isChatLaunchSucceeded } from "./chatLaunch";
@@ -40,7 +40,10 @@ export function cloudLaneStartBlock(
   // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
   const { extraHours, computers, disk } = account as Partial<CloudAccountState>;
   if (cloudOutOfHours(account) && !extraHours?.enabled) {
-    return { code: "out_of_hours", message: CLOUD_OUT_OF_HOURS_MESSAGE, short: "Out of ADE Cloud hours." };
+    // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
+    const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
+    const why = github && github.state !== "ok" ? github.sentence : null;
+    return { code: "out_of_hours", message: why ?? CLOUD_OUT_OF_HOURS_MESSAGE, short: why ? "Free hours wait on GitHub." : "Out of ADE Cloud hours." };
   }
   if (!options.newLane) return null;
   if (computers && computers.limit > 0 && computers.total >= computers.limit) {

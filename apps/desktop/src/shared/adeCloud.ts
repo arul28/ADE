@@ -37,6 +37,7 @@ export {
   CLOUD_REFERRAL_REWARD_LIMIT,
   CLOUD_REFERRAL_REWARD_MILLI,
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
+  cloudFreeGithubSentence,
   cloudFreePlanRefusedSentence,
   formatCloudFreeGithubDay,
   cloudInviteLink,

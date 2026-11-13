@@ -47,6 +47,10 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | The sentence says | Next step |
 |---|---|
 | out of ADE Cloud hours | Tell the person. Hours come back on `hours.resetsAt`. |
+| Free hours need a GitHub account | The person connects GitHub in Settings › Integrations › GitHub. |
+| Your GitHub account is new, so free hours start on | Tell the person the day. They can add a card (no charge) in Settings › ADE Cloud to start now. Never add one yourself. |
+| This GitHub account already has a free plan | Tell the person. Only a paid plan gives hours here; never make another account. |
+| ADE couldn't check your GitHub account | Try again in a few minutes. |
 | using all N (or your one) ADE Cloud computers | Propose a cleanup (section 5). |
 | ADE Cloud disk space is full | Propose a cleanup (section 5). |
 | Sign in to ADE to use ADE Cloud | The person signs in to ADE in the app. |

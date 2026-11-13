@@ -14,6 +14,9 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [String] {
     // (App Store 3.1.1, see `cloudPhoneWords`).
     lines.append("This computer already used another account's free hours, so the free plan has no hours here.")
   }
+  if let line = cloudFreeGithubLine(account) {
+    lines.append(line)
+  }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
     lines.append("+\(cloudHours(earned.leftMilli)) hours earned from invites. They never expire.")
   }
@@ -29,6 +32,37 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [String] {
     lines.append("\(forecast) (estimate)")
   }
   return lines
+}
+
+/// Why the free plan's GitHub rules hold its hours, in the phone's own words:
+/// facts only, no card or plan to get (App Store 3.1.1). The desktop offers
+/// the card (no charge) that starts a new GitHub account's hours early.
+func cloudFreeGithubLine(_ account: CloudPhoneAccount) -> String? {
+  guard let github = account.freePlan?.github, let state = github.state else { return nil }
+  switch state {
+  case "no_github":
+    return "Free hours need a GitHub account at least 30 days old. Connect GitHub to start."
+  case "too_new":
+    if let at = github.oldEnoughAt {
+      return "Your GitHub account is new, so free hours start on \(cloudFreeGithubDay(at))."
+    }
+    return "Your GitHub account is new, so free hours start when it is 30 days old."
+  case "used":
+    return "This GitHub account already gives another ADE account its free hours, so the free plan has no hours here."
+  case "checking":
+    return "ADE couldn't check your GitHub account just now. It tries again in a few minutes."
+  default:
+    return nil
+  }
+}
+
+/// "December 13", in UTC like the server and the desktop, so every screen names the same day.
+func cloudFreeGithubDay(_ ms: Double) -> String {
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US")
+  formatter.timeZone = TimeZone(identifier: "UTC")
+  formatter.dateFormat = "MMMM d"
+  return formatter.string(from: Date(timeIntervalSince1970: ms / 1000))
 }
 
 /// Each plan's name inside a sentence (`CLOUD_PLAN_SENTENCE_NAMES`).

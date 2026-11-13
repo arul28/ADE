@@ -186,6 +186,27 @@ struct CloudPhoneAccount: Decodable, Equatable {
   struct FreePlan: Decodable, Equatable {
     let state: String
     let sentence: String?
+    /// The free plan's GitHub rules (`CloudFreePlanGithub`); older servers leave it out.
+    let github: FreePlanGithub?
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      state = try c.decode(String.self, forKey: .state)
+      sentence = c.lenient(String.self, forKey: .sentence)
+      github = c.lenient(FreePlanGithub.self, forKey: .github)
+    }
+
+    private enum CodingKeys: String, CodingKey { case state, sentence, github }
+  }
+
+  /// Why the free plan has no hours under its GitHub rules: `no_github`,
+  /// `too_new` (free hours start at `oldEnoughAt`, ms), `used` (that GitHub
+  /// account gives another ADE account its free plan), `checking`; `ok` when
+  /// nothing is held. Every field optional, so a newer server never breaks it.
+  struct FreePlanGithub: Decodable, Equatable {
+    let state: String?
+    let oldEnoughAt: Double?
+    let githubLogin: String?
   }
 
   /// What goes over a cheaper plan's limits (`CloudPlanCleanup`). ADE frees
