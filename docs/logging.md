@@ -57,7 +57,7 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 | Project | Surface | Started in |
 |---|---|---|
-| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process (the notice layer window shares the renderer's process and runs none of its own code, so its errors are the renderer's) | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
+| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
 | `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
 | `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
 | `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |

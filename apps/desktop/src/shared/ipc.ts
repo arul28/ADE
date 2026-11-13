@@ -77,7 +77,6 @@ export const IPC = {
   appCommandsReady: "ade.app.commandsReady",
   appRequestWindowClose: "ade.app.requestWindowClose",
   appSetTitleBarOverlay: "ade.app.setTitleBarOverlay",
-  appPlaceNoticeLayer: "ade.app.placeNoticeLayer",
   appProjectChanged: "ade.app.projectChanged",
   appProjectBindingChanged: "ade.app.projectBindingChanged",
   appOpenExternal: "ade.app.openExternal",

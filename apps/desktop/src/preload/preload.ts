@@ -1,7 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
-import type { NoticeLayerRect } from "../shared/noticeLayer";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
@@ -14991,14 +14990,6 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
     onCommand: (cb: (command: AppZoomCommand) => void) =>
       subscribeAppCommand("zoom", cb),
-  },
-  /** The bottom-right cards' own window over a live browser page (`shared/noticeLayer`). */
-  noticeLayer: {
-    // See-through windows depend on the Linux compositor; there the cards
-    // stay in the corner and the page pauses behind them, as before.
-    available: process.platform !== "linux",
-    place: async (rect: NoticeLayerRect | null): Promise<boolean> =>
-      ipcRenderer.invoke(IPC.appPlaceNoticeLayer, { rect }),
   },
   cto: {
     getState: async (

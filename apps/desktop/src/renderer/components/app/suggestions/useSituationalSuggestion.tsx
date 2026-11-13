@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { useNoticeCornerHeld } from "../toast/cornerNoticeDock";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../ui/notice/appBannerStore";
 import {
   ADE_SUGGESTIONS,
@@ -71,9 +72,12 @@ export function useSituationalSuggestion({
   onNeverRef.current = onNever;
   const canStart = start !== null && scopeKey !== null;
 
+  // A held notice corner (a browser page covers both corners) shows nothing,
+  // so nothing is claimed as shown until a corner is free.
+  const cornerHeld = useNoticeCornerHeld();
   useEffect(() => {
-    if (signalKey && canStart) claimSuggestion(id, signalKey, scopeKey);
-  }, [canStart, id, rulesVersion, scopeKey, signalKey]);
+    if (signalKey && canStart && !cornerHeld) claimSuggestion(id, signalKey, scopeKey);
+  }, [canStart, cornerHeld, id, rulesVersion, scopeKey, signalKey]);
 
   // The signal went away or changed under a showing card: free the corner,
   // or every other card waits until the next launch.
