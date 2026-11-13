@@ -119,11 +119,6 @@ export function noticeCornerHeld(): boolean {
   return heldNow;
 }
 
-/** When the current hold began; meaningful only while held. */
-export function noticeCornerHeldSince(): number {
-  return heldStartedAt;
-}
-
 /** The last hold that has ended, as `[start, end]`, or null before any. */
 export function lastNoticeCornerHold(): readonly [number, number] | null {
   return heldReleasedAt > 0 ? [heldStartedAt, heldReleasedAt] : null;
