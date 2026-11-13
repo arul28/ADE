@@ -15,6 +15,9 @@ import {
 import { AppleLogo } from "../ui/appleIcons";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { desktopProductName } from "../../../shared/types/macDesktop";
+import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
+import { remoteWorkUsesOf, type RemoteWorkCopyUse, type RemoteWorkDeviceFlag } from "../../../shared/chatRemoteWork";
+import { remoteMachineHostPlatform } from "../../../shared/machineIdentity";
 
 /**
  * The Work tools pane's catalogue.
@@ -499,18 +502,7 @@ export function laneScreenPlatform(
   return context.remoteMacDesktopPlatform ?? host;
 }
 
-/**
- * A machine's platform as the account directory names it ("darwin",
- * "windows", "win32-x64", "linux"), or null when it says nothing usable.
- * "darwin" is read first: it contains "win".
- */
-export function remoteMachineHostPlatform(platform: string | null | undefined): NodeJS.Platform | null {
-  const value = platform?.trim().toLowerCase() ?? "";
-  if (/darwin|mac|osx/.test(value)) return "darwin";
-  if (/win/.test(value)) return "win32";
-  if (/linux/.test(value)) return "linux";
-  return null;
-}
+export { remoteMachineHostPlatform };
 
 /** The lane-screen tool that shows a machine's screen: Windows Desktop for Windows, else Mac Desktop. */
 export function desktopToolForMachinePlatform(platform: string | null | undefined): DesktopWorkTool {
@@ -539,6 +531,37 @@ export function remoteDesktopToolContext(
   if (platforms.some((platform) => platform === "darwin" || platform === null)) remoteMacDesktopPlatform = "darwin";
   else if (platforms.includes("linux")) remoteMacDesktopPlatform = "linux";
   return { remoteMacDesktopPlatform, hasRemoteWindowsDesktop: platforms.includes("win32") };
+}
+
+/**
+ * The tools that can show a device this chat drives on another machine: the
+ * `remoteWork` flag that says the chat drove it there, and the noun its card
+ * line and target chip put before that machine's name ("Simulator on Studio
+ * Mac", "Screen · build-box").
+ */
+export const REMOTE_WORK_TOOLS = {
+  ios: { flag: "usesSimulator", noun: "Simulator" },
+  android: { flag: "usesAndroidEmulator", noun: "Emulator" },
+  "app-control": { flag: "usesAppControl", noun: "App Control" },
+  "mac-desktop": { flag: "usesDesktop", noun: "Screen" },
+  "windows-desktop": { flag: "usesDesktop", noun: "Screen" },
+} as const satisfies Partial<Record<WorkSidebarTab, { flag: RemoteWorkDeviceFlag; noun: string }>>;
+
+export type RemoteWorkTool = keyof typeof REMOTE_WORK_TOOLS;
+
+/**
+ * The other machines whose device `tool` shows for this chat, newest first.
+ * A screen shows only on the tool named for its machine: a Windows PC's in
+ * Windows Desktop, any other in Mac Desktop.
+ */
+export function remoteWorkUsesForTool(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+  tool: RemoteWorkTool,
+): RemoteWorkCopyUse[] {
+  const uses = remoteWorkUsesOf(session, REMOTE_WORK_TOOLS[tool].flag);
+  return isDesktopWorkTool(tool)
+    ? uses.filter((use) => desktopToolForMachinePlatform(use.machinePlatform) === tool)
+    : uses;
 }
 
 /** The lane-screen tools: one per host platform, never both. */

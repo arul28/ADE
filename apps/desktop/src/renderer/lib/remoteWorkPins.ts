@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
 import type { AgentChatRemoteWorkUse } from "../../shared/types/chat";
 import type { ChatTerminalSession } from "../../shared/types/sessions";
@@ -146,17 +146,15 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
   const { snapshot, loaded } = useRemoteConnectionSnapshot(active);
   const localMachineKey = useLocalMachineKey(active);
   const [attempt, setAttempt] = useState<ConnectAttempt | null>(null);
-  const [nonce, setNonce] = useState(0);
+  // One per click. `takeBackTargetId` is the saved machine a "Use it here"
+  // click takes the link back on; only the connect that click starts uses it.
+  const [request, setRequest] = useState<{ nonce: number; takeBackTargetId: string | null }>({ nonce: 0, takeBackTargetId: null });
   // A click is the person's say-so, even over their own Disconnect. It holds
   // for that one connect: a later Disconnect of theirs must win again.
   const [clicked, setClicked] = useState(false);
-  // The saved machine a "Use it here" click takes the link back on; read by
-  // the connect that click starts.
-  const takeBackTargetRef = useRef<string | null>(null);
   const retry = useCallback(() => {
-    takeBackTargetRef.current = null;
     setClicked(true);
-    setNonce((value) => value + 1);
+    setRequest((current) => ({ nonce: current.nonce + 1, takeBackTargetId: null }));
   }, []);
 
   const resolved = resolveRemoteWorkPin(use, snapshot, localMachineKey);
@@ -166,9 +164,8 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     ? connection.target.id
     : null;
   const useHere = useCallback(() => {
-    takeBackTargetRef.current = heldTargetId;
     setClicked(true);
-    setNonce((value) => value + 1);
+    setRequest((current) => ({ nonce: current.nonce + 1, takeBackTargetId: heldTargetId }));
   }, [heldTargetId]);
   const reconnectBlocked = connection?.reconnectBlocked ?? null;
   const [blockSeen, setBlockSeen] = useState(reconnectBlocked);
@@ -193,8 +190,11 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     }
     let cancelled = false;
     setAttempt({ machineKey, phase: "connecting" });
-    const takeBackTargetId = takeBackTargetRef.current;
-    takeBackTargetRef.current = null;
+    const { nonce, takeBackTargetId } = request;
+    // Spent on this connect: a later one this click did not start connects plainly.
+    if (takeBackTargetId) {
+      setRequest((current) => (current.nonce === nonce ? { nonce, takeBackTargetId: null } : current));
+    }
     void connectRemoteWorkMachine(machineKey, takeBackTargetId
       ? () => takeBackRemoteWorkLink(machineKey, takeBackTargetId)
       : () => window.ade.machines.connect(machineKey))
@@ -210,9 +210,10 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
         setAttempt({ machineKey, phase: "failed", message: error instanceof Error ? error.message : String(error) });
       });
     return () => { cancelled = true; };
-    // Once per machine and per click: a snapshot push must not connect again.
+    // Once per machine and per click: a snapshot push must not connect again,
+    // nor spending the take-back.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machineKey, nonce, needsConnect]);
+  }, [machineKey, request.nonce, needsConnect]);
 
   if (resolved !== "unreachable") return { kind: "pin", pin: resolved };
   if (!hasProject) return { kind: "unknown", retry };

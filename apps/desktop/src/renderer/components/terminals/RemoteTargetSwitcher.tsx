@@ -21,10 +21,15 @@ const DEVICELESS_USES = new Map<string, ReadonlySet<string>>();
 const NO_KEYS: ReadonlySet<string> = new Set();
 const MAX_REMEMBERED = 200;
 
-function remember<T>(map: Map<string, T>, key: string, value: T): void {
+function remember<T>(map: Map<string, T>, key: string | null, value: T): void {
+  if (key === null) return;
   map.delete(key);
   map.set(key, value);
   if (map.size > MAX_REMEMBERED) map.delete(map.keys().next().value!);
+}
+
+function recalled<T>(map: Map<string, T>, key: string | null): T | undefined {
+  return key === null ? undefined : map.get(key);
 }
 
 function devicelessKey(use: RemoteWorkCopyUse): string {
@@ -39,21 +44,22 @@ function devicelessKey(use: RemoteWorkCopyUse): string {
  * (`reportDevice`), else the newest: `lastStartedAt` moves with any command
  * there, so a machine the chat only ran a shell on can be newer than the one
  * whose emulator it drove. A person's pick holds for this chat and tool until
- * the window closes. `stickyKey` names the chat and tool.
+ * the window closes. `stickyKey` names the chat and tool; null (no chat)
+ * remembers nothing past this pane.
  */
-export function useRemoteTargetChoice(remoteUses: RemoteWorkCopyUse[], laneAvailable: boolean, stickyKey: string) {
+export function useRemoteTargetChoice(remoteUses: RemoteWorkCopyUse[], laneAvailable: boolean, stickyKey: string | null) {
   const options: RemoteTargetOption[] = [
     ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
     ...(laneAvailable ? [{ key: "lane", label: "This lane", use: null }] : []),
   ];
-  const [pickedKey, setPickedKey] = useState<string | null>(() => PICKED_TARGETS.get(stickyKey) ?? null);
-  const [deviceless, setDeviceless] = useState<ReadonlySet<string>>(() => DEVICELESS_USES.get(stickyKey) ?? NO_KEYS);
+  const [pickedKey, setPickedKey] = useState<string | null>(() => recalled(PICKED_TARGETS, stickyKey) ?? null);
+  const [deviceless, setDeviceless] = useState<ReadonlySet<string>>(() => recalled(DEVICELESS_USES, stickyKey) ?? NO_KEYS);
   // Another chat in the same pane: its own pick and its own readings.
   const [stickySeen, setStickySeen] = useState(stickyKey);
   if (stickySeen !== stickyKey) {
     setStickySeen(stickyKey);
-    setPickedKey(PICKED_TARGETS.get(stickyKey) ?? null);
-    setDeviceless(DEVICELESS_USES.get(stickyKey) ?? NO_KEYS);
+    setPickedKey(recalled(PICKED_TARGETS, stickyKey) ?? null);
+    setDeviceless(recalled(DEVICELESS_USES, stickyKey) ?? NO_KEYS);
   }
   const picked = options.find((option) => option.key === pickedKey) ?? null;
   const chosen = picked

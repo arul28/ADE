@@ -31,9 +31,12 @@ export type RemoteWorkTurnRelease = {
   uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
 };
 
+/** The `remoteWork` flags that say an entry drives a device on its machine. */
+export type RemoteWorkDeviceFlag = "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl";
+
 /** Whether this entry drives any device on its machine (simulator, emulator, screen or App Control). */
 export function remoteWorkUsesDevice(
-  use: Pick<AgentChatRemoteWorkUse, "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl">,
+  use: Pick<AgentChatRemoteWorkUse, RemoteWorkDeviceFlag>,
 ): boolean {
   return use.usesSimulator === true || use.usesAndroidEmulator === true || use.usesDesktop === true || use.usesAppControl === true;
 }
@@ -46,7 +49,7 @@ export function remoteWorkUsesDevice(
  */
 export function remoteWorkUsesOf(
   session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-  kind: "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl",
+  kind: RemoteWorkDeviceFlag,
 ): RemoteWorkCopyUse[] {
   return (session?.remoteWork ?? [])
     .filter((use): use is RemoteWorkCopyUse =>

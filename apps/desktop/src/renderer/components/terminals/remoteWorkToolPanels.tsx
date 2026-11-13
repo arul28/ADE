@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { remoteWorkUseKey, type RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
@@ -8,8 +8,12 @@ import { useAppStore } from "../../state/appStore";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { Banner } from "../ui/notice/Banner";
 import { macDesktopStatusKey, useMacDesktopStatusEntry } from "../chat/macDesktopStatusStore";
+import { HELD_ELSEWHERE_ACTION_LABEL, HELD_ELSEWHERE_STATE_LABEL } from "../remoteTargets/remoteMachineModel";
 import { RemoteTargetSwitcher, useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
+
+/** Says whether a use's machine has a device for it (`useRemoteTargetChoice`'s `reportDevice`). */
+export type ReportRemoteDevice = (use: RemoteWorkCopyUse, hasDevice: boolean) => void;
 
 /**
  * A tool's view of the chat's work copy on another machine, once this window
@@ -55,11 +59,11 @@ function RemoteWorkReachGate({
     // read as doing nothing. The Connections panel's state and action.
     return (
       <WorkToolEmptyLine
-        title={`${use.machineName} is in use by another ADE app on this computer`}
+        title={`${use.machineName} · ${HELD_ELSEWHERE_STATE_LABEL}`}
         testId="remote-work-held-elsewhere"
         action={(
           <button type="button" className={WORK_TOOL_CHROME_CHIP} onClick={reach.useHere}>
-            Use it here
+            {HELD_ELSEWHERE_ACTION_LABEL}
           </button>
         )}
       />
@@ -102,14 +106,14 @@ export function RemoteOrLaneTool({
   laneAvailable: boolean;
   remoteLabel: string;
   testId: string;
-  /** The chat and tool a person's pick of target holds for (`useRemoteTargetChoice`). */
-  stickyKey: string;
+  /** The chat and tool a person's pick of target holds for (`useRemoteTargetChoice`); null with no chat. */
+  stickyKey: string | null;
   renderLane: () => ReactNode;
   /**
    * `reportDevice` says whether that machine has a device for this use, from
    * a read the panel makes anyway; the default target skips one that has none.
    */
-  renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding, reportDevice: (hasDevice: boolean) => void) => ReactNode;
+  renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding, reportDevice: ReportRemoteDevice) => ReactNode;
 }) {
   const { options, chosen, choose, reportDevice } = useRemoteTargetChoice(uses, laneAvailable, stickyKey);
   const use = chosen?.use ?? null;
@@ -126,7 +130,7 @@ export function RemoteOrLaneTool({
       <div className="min-h-0 flex-1">
         {use ? (
           <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
-            {(pin) => renderRemote(use, pin, (hasDevice) => reportDevice(use, hasDevice))}
+            {(pin) => renderRemote(use, pin, reportDevice)}
           </RemoteWorkReachGate>
         ) : renderLane()}
       </div>
@@ -197,8 +201,8 @@ type RemoteDeviceProps = {
   use: RemoteWorkCopyUse;
   remotePin: OpenProjectBinding;
   renderDevice: () => ReactNode;
-  /** Hears each read: whether the copy's lane there has a device. */
-  onDeviceState?: (hasDevice: boolean) => void;
+  /** Hears whether the copy's lane there has a device, from each read. */
+  onDeviceState?: ReportRemoteDevice;
 };
 
 /**
@@ -209,17 +213,11 @@ type RemoteDeviceProps = {
 function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
   const laneId = use.workCopyLaneId;
   const [state, setState] = useState<RemoteDeviceState>("loading");
-  const onDeviceStateRef = useRef(onDeviceState);
-  onDeviceStateRef.current = onDeviceState;
   useEffect(() => {
     let cancelled = false;
     const read = () => {
       void kind.read(laneId, remotePin)
-        ?.then((has) => {
-          if (cancelled) return;
-          setState(has ? "device" : "none");
-          onDeviceStateRef.current?.(has);
-        })
+        ?.then((has) => { if (!cancelled) setState(has ? "device" : "none"); })
         .catch((error: unknown) => { if (!cancelled) setState(failedRead(error)); });
     };
     read();
@@ -231,6 +229,10 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
     // Keyed by the component's key (pin key + lane); the pin object is stable for it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [laneId, kind]);
+  const hasDevice = state === "device" ? true : state === "none" ? false : null;
+  useEffect(() => {
+    if (hasDevice !== null) onDeviceState?.(use, hasDevice);
+  }, [hasDevice, onDeviceState, use]);
   if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} />;
   if (state === "none") return <WorkToolEmptyLine title={`No ${kind.noun} on ${use.machineName} for this chat right now`} />;
   if (typeof state === "object") {
@@ -261,21 +263,19 @@ export function RemoteWorkAndroid(props: RemoteDeviceProps) {
  * status the screen pane itself reads into the store; reads nothing itself.
  */
 export function RemoteScreenDeviceReport({
-  laneId,
+  use,
   pin,
   onDeviceState,
 }: {
-  laneId: string;
+  use: RemoteWorkCopyUse;
   pin: OpenProjectBinding;
-  onDeviceState: (hasDevice: boolean) => void;
+  onDeviceState: ReportRemoteDevice;
 }) {
-  const entry = useMacDesktopStatusEntry(macDesktopStatusKey(laneId, pin));
+  const entry = useMacDesktopStatusEntry(macDesktopStatusKey(use.workCopyLaneId, pin));
   const known = entry?.confirmed !== false && entry?.status != null;
   const hasDevice = known ? Boolean(entry?.status?.display) : null;
-  const onDeviceStateRef = useRef(onDeviceState);
-  onDeviceStateRef.current = onDeviceState;
   useEffect(() => {
-    if (hasDevice !== null) onDeviceStateRef.current(hasDevice);
-  }, [hasDevice]);
+    if (hasDevice !== null) onDeviceState(use, hasDevice);
+  }, [hasDevice, onDeviceState, use]);
   return null;
 }

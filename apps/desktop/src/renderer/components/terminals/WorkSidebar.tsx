@@ -1,4 +1,4 @@
-import { activeRemoteWorkOnRow, remoteAndroidEmulatorUses, remoteSimulatorUses, remoteWorkUsesOf } from "../../../shared/chatRemoteWork";
+import { activeRemoteWorkOnRow } from "../../../shared/chatRemoteWork";
 import {
   useCallback,
   useEffect,
@@ -46,6 +46,7 @@ import {
   isHostMismatchWorkTool,
   laneScreenPlatform,
   remoteDesktopToolContext,
+  remoteWorkUsesForTool,
   workToolContextLabel,
   workToolLabel,
   type WorkToolContext,
@@ -210,13 +211,14 @@ export function WorkSidebar({
     activeSession && activeSession.id === panelChatSessionId ? activeSession.sideChatSessionId ?? null : null,
   );
   const hasSideChat = sideChat.kind !== "none";
-  const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
-  const hasRemoteAndroidEmulator = remoteAndroidEmulatorUses(activeSession).length > 0;
+  const hasRemoteSimulator = remoteWorkUsesForTool(activeSession, "ios").length > 0;
+  const hasRemoteAndroidEmulator = remoteWorkUsesForTool(activeSession, "android").length > 0;
   // The other machines' screens this chat drives, by the tool that shows each.
-  const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(
-    remoteWorkUsesOf(activeSession, "usesDesktop"),
-  );
-  const hasRemoteAppControl = remoteWorkUsesOf(activeSession, "usesAppControl").length > 0;
+  const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext([
+    ...remoteWorkUsesForTool(activeSession, "mac-desktop"),
+    ...remoteWorkUsesForTool(activeSession, "windows-desktop"),
+  ]);
+  const hasRemoteAppControl = remoteWorkUsesForTool(activeSession, "app-control").length > 0;
   const toolContext = useMemo<WorkToolContext>(
     () => ({
       ...feedsToolContext,

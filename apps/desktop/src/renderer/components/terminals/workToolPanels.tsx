@@ -24,7 +24,6 @@ import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import { AndroidDevicePane } from "../android/AndroidDevicePane";
-import { remoteWorkUsesOf } from "../../../shared/chatRemoteWork";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { RemoteOrLaneTool, RemoteScreenDeviceReport, RemoteWorkAndroid, RemoteWorkSimulator, useDriverChat } from "./remoteWorkToolPanels";
 import {
@@ -45,11 +44,13 @@ import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
 import {
-  desktopToolForMachinePlatform,
   isReadOnlyWorkTool,
   laneHostRunsDesktopTool,
   remoteMachineHostPlatform,
+  REMOTE_WORK_TOOLS,
+  remoteWorkUsesForTool,
   type DesktopWorkTool,
+  type RemoteWorkTool,
   type WorkToolContext,
 } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
@@ -166,9 +167,13 @@ function NativePanelFrame({
 
 /* ── Panels ───────────────────────────────────────────────────────────────── */
 
-/** The chat and tool a remote target pick holds for (`RemoteOrLaneTool`). */
-function remoteTargetStickyKey(props: Pick<WorkToolPanelProps, "panelSessionId" | "activeSession">, tool: string): string {
-  return `${props.panelSessionId ?? props.activeSession?.id ?? ""}:${tool}`;
+/**
+ * The chat and tool a remote target pick holds for (`RemoteOrLaneTool`). Null
+ * with no chat: chat-less panes must not share one remembered pick.
+ */
+function remoteTargetStickyKey(props: Pick<WorkToolPanelProps, "panelSessionId" | "activeSession">, tool: RemoteWorkTool): string | null {
+  const chatId = props.panelSessionId ?? props.activeSession?.id ?? null;
+  return chatId ? `${chatId}:${tool}` : null;
 }
 
 function WorkTerminalTool({
@@ -370,9 +375,9 @@ function WorkIosTool(props: WorkToolPanelProps) {
   const driverChat = useDriverChat(props);
   return (
     <RemoteOrLaneTool
-      uses={remoteWorkUsesOf(activeSession, "usesSimulator")}
+      uses={remoteWorkUsesForTool(activeSession, "ios")}
       laneAvailable={Boolean(laneId && toolContext.supportsIosSimulator)}
-      remoteLabel="Simulator"
+      remoteLabel={REMOTE_WORK_TOOLS.ios.noun}
       testId="ios-target-switcher"
       stickyKey={remoteTargetStickyKey(props, "ios")}
       renderLane={() => <WorkIosDevice {...props} driverChat={driverChat} />}
@@ -576,9 +581,9 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
   return (
     <NativePanelFrame frameRef={mountRef}>
       <RemoteOrLaneTool
-        uses={remoteWorkUsesOf(activeSession, "usesAndroidEmulator")}
+        uses={remoteWorkUsesForTool(activeSession, "android")}
         laneAvailable={Boolean(laneId && toolContext.supportsAndroidEmulator !== false)}
-        remoteLabel="Android"
+        remoteLabel={REMOTE_WORK_TOOLS.android.noun}
         testId="android-target-switcher"
         stickyKey={remoteTargetStickyKey(props, "android")}
         renderLane={() => (laneId
@@ -678,7 +683,7 @@ function WorkAppControlTool(props: WorkToolPanelProps) {
   // `ade app-control show` answers "shown" only once this is on screen, and
   // the floating App Control player stays hidden while it is.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("app-control", mountScope, laneId) : null);
-  const remoteUses = remoteWorkUsesOf(activeSession, "usesAppControl");
+  const remoteUses = remoteWorkUsesForTool(activeSession, "app-control");
   const panel = (key: string, args: { laneId: string; pin: OpenProjectBinding | null; projectRoot: string | null }) => (
     <NativePanelFrame padded>
       <Suspense fallback={null}>
@@ -718,7 +723,7 @@ function WorkAppControlTool(props: WorkToolPanelProps) {
     <RemoteOrLaneTool
       uses={remoteUses}
       laneAvailable={Boolean(laneId)}
-      remoteLabel="App Control"
+      remoteLabel={REMOTE_WORK_TOOLS["app-control"].noun}
       testId="app-control-target-switcher"
       stickyKey={remoteTargetStickyKey(props, "app-control")}
       renderLane={renderLane}
@@ -766,8 +771,7 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
   const mountScope = useWorkToolMountScope(runtimePin);
   // `ade screen show` answers "shown" only once this is on screen.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey(tool, mountScope, laneId) : null);
-  const remoteUses = remoteWorkUsesOf(activeSession, "usesDesktop")
-    .filter((use) => desktopToolForMachinePlatform(use.machinePlatform) === tool);
+  const remoteUses = remoteWorkUsesForTool(activeSession, tool);
   const renderLane = () => {
     if (isReadOnlyWorkTool(tool, toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
       return (
@@ -798,13 +802,13 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
     <RemoteOrLaneTool
       uses={remoteUses}
       laneAvailable={Boolean(laneId) && laneHostRunsDesktopTool(tool, toolContext)}
-      remoteLabel="Screen"
+      remoteLabel={REMOTE_WORK_TOOLS[tool].noun}
       testId={`${tool}-target-switcher`}
       stickyKey={remoteTargetStickyKey(props, tool)}
       renderLane={renderLane}
       renderRemote={(use, pin, reportDevice) => (
         <NativePanelFrame padded frameRef={mountRef}>
-          <RemoteScreenDeviceReport laneId={use.workCopyLaneId} pin={pin} onDeviceState={reportDevice} />
+          <RemoteScreenDeviceReport use={use} pin={pin} onDeviceState={reportDevice} />
           <ChatMacDesktopPanel
             key={`work-${tool}:${pin.key}:${use.workCopyLaneId}`}
             desktopTool={tool}

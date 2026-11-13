@@ -3,6 +3,7 @@ import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/
 import { ANDROID_SDK_PERSON_ONLY_ACTIONS } from "../../../../desktop/src/shared/types/androidEmulator";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
 import { CLOUD_LANE_MACHINE } from "../../../../desktop/src/shared/cloudLaneLaunch";
+import { devicesSubcommand } from "../../../../desktop/src/shared/types/deviceSources";
 
 /**
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
@@ -199,25 +200,24 @@ export function checkRemoteAdeCommand(
       reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
     };
   }
-  // Another computer is reached through the tools' own `machine` input, which
-  // goes through that computer's token check and policy, never through the
-  // CLI's agent bridge. The one exception is a new ADE Cloud lane
-  // (`--machine cloud`), which reaches no existing computer.
-  if (args.some((word) => MACHINE_TARGET_FLAG.test(word)) && !isCloudLaneMachineUse(command, args)) {
+  const words = positionalWords(args);
+  // Another machine is reached through the tools' own `machine` input, which
+  // goes through that machine's token check and policy, never through the
+  // CLI's agent bridge: so `--machine`, and `--to` on `chat handoff|move`
+  // (another machine, as the destination), are refused. The one exception is
+  // a new ADE Cloud lane (`--machine cloud`), which reaches no existing machine.
+  const movesChat = (command === "chat" || command === "chats") && (words[0] === "handoff" || words[0] === "move");
+  const namesMachine = args.some((word) => MACHINE_TARGET_FLAG.test(word) || (movesChat && MOVE_DESTINATION_FLAG.test(word)));
+  if (namesMachine && !isCloudLaneMachineUse(command, args)) {
     return {
       ok: false,
-      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
+      reason: movesChat
+        ? "Moving a chat to another machine (`--to`) is not available through ADE MCP. Use the tool's `machine` input to work on another machine."
+        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
     };
   }
-  const words = positionalWords(args);
   const devicesVerdict = checkDevicesCommand(command, args);
   if (devicesVerdict) return devicesVerdict;
-  // `--to <machine>` moves a chat to another computer, the same as the old
-  // `--machine` there, which the rule above refuses: so is this.
-  if ((command === "chat" || command === "chats") && (words[0] === "handoff" || words[0] === "move")
-    && args.some((word) => word === "--to" || word.startsWith("--to="))) {
-    return { ok: false, reason: "Moving a chat to another computer (`--to`) is not available through ADE MCP." };
-  }
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
@@ -279,8 +279,8 @@ const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
-/** `ade devices` subcommands an app may run: the list and the (empty) choice. */
-const DEVICES_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "current"]);
+/** `chat handoff|move --to <machine>`: the machine a chat moves to. */
+const MOVE_DESTINATION_FLAG = /^--to(?:=|$)/;
 
 /**
  * `ade devices`: the list (of this computer's devices; the app picks the
@@ -289,17 +289,7 @@ const DEVICES_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "cu
  */
 function checkDevicesCommand(command: string, args: readonly string[]): RemoteCommandVerdict | null {
   if (command !== "devices") return null;
-  let sub: string | null = null;
-  for (let index = 1; index < args.length; index += 1) {
-    const word = args[index]!;
-    if (word === "--kind") {
-      index += 1;
-      continue;
-    }
-    if (word.startsWith("-")) continue;
-    sub = word.toLowerCase();
-    break;
-  }
+  const { sub, first } = devicesSubcommand(args.slice(1));
   if (sub === "use") {
     return {
       ok: false,
@@ -307,8 +297,8 @@ function checkDevicesCommand(command: string, args: readonly string[]): RemoteCo
         + "Pick the machine with the tool's `machine` input, then pass --lane <lane there> to the device commands.",
     };
   }
-  if (sub !== null && !DEVICES_READ_SUBCOMMANDS.has(sub)) {
-    return { ok: false, reason: `\`ade devices ${sub}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
+  if (sub === null) {
+    return { ok: false, reason: `\`ade devices ${first}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
   }
   return null;
 }

@@ -14,6 +14,8 @@
    See docs/features/sync-and-multi-device/devices-and-machines.md.
    ────────────────────────────────────────────────────────────────────────── */
 
+import { remoteMachineHostPlatform } from "../machineIdentity";
+
 export const DEVICE_KINDS = ["ios", "android", "screen", "app"] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
 
@@ -23,16 +25,6 @@ export type DeviceSource =
   | { kind: "cloud" };
 
 export type DeviceId = { kind: DeviceKind; source: DeviceSource };
-
-/** The action domain that drives each kind. */
-export const DEVICE_KIND_DOMAIN = {
-  ios: "ios_simulator",
-  android: "android_emulator",
-  screen: "mac_desktop",
-  app: "app_control",
-} as const satisfies Record<DeviceKind, string>;
-
-export type DeviceDomain = (typeof DEVICE_KIND_DOMAIN)[DeviceKind];
 
 /** The `ade` command that drives each kind. */
 export const DEVICE_KIND_COMMAND: Readonly<Record<DeviceKind, string>> = {
@@ -60,30 +52,16 @@ export function isDeviceKind(value: unknown): value is DeviceKind {
   return typeof value === "string" && (DEVICE_KINDS as readonly string[]).includes(value);
 }
 
-/** The kind a domain drives, or null for any other domain. */
-export function deviceKindForDomain(domain: string): DeviceKind | null {
-  for (const kind of DEVICE_KINDS) if (DEVICE_KIND_DOMAIN[kind] === domain) return kind;
-  return null;
-}
-
 /**
- * Whether a machine on this platform can run the kind. The platform is a Node
- * platform or the account directory's spelling ("macos", "windows"); unknown
- * says yes, and the machine answers for itself.
+ * Whether a machine on this platform can run the kind. The platform is read by
+ * {@link remoteMachineHostPlatform} (a Node platform or the account
+ * directory's spelling); an unknown one says yes, and the machine answers for
+ * itself.
  */
 export function deviceKindRunsOnPlatform(kind: DeviceKind, platform: string | null | undefined): boolean {
   if (kind !== "ios") return true;
-  const value = platform?.trim().toLowerCase() ?? "";
-  if (!value) return true;
-  return value === "darwin" || value === "macos" || value === "mac";
-}
-
-/** The product name of the screen on a platform: Mac Desktop, Windows Desktop or Linux Desktop. */
-export function screenProductName(platform: string | null | undefined): string {
-  const value = platform?.trim().toLowerCase() ?? "";
-  if (value === "win32" || value === "windows") return "Windows Desktop";
-  if (value === "linux") return "Linux Desktop";
-  return "Mac Desktop";
+  const host = remoteMachineHostPlatform(platform);
+  return host === null || host === "darwin";
 }
 
 export type DeviceIdParse = { ok: true; id: DeviceId } | { ok: false; error: string };
@@ -108,14 +86,58 @@ export function parseDeviceId(text: string): DeviceIdParse {
   return { ok: true, id: { kind, source: { kind: "machine", machine: source } } };
 }
 
-export function formatDeviceSource(source: DeviceSource): string {
-  if (source.kind === "here") return DEVICE_SOURCE_HERE;
-  if (source.kind === "cloud") return DEVICE_SOURCE_CLOUD;
-  return source.machine;
+export function formatDeviceId(id: DeviceId): string {
+  const source = id.source.kind === "machine" ? id.source.machine : id.source.kind === "here" ? DEVICE_SOURCE_HERE : DEVICE_SOURCE_CLOUD;
+  return `${id.kind}@${source}`;
 }
 
-export function formatDeviceId(id: DeviceId): string {
-  return `${id.kind}@${formatDeviceSource(id.source)}`;
+/** `ade devices` subcommands, by the words that name them. */
+const DEVICES_SUBCOMMANDS: Readonly<Record<string, "list" | "use" | "current">> = {
+  list: "list",
+  ls: "list",
+  use: "use",
+  current: "current",
+};
+
+export type DevicesSubcommand = {
+  /** The subcommand: `list` when no word names one; null when the first word is not one. */
+  sub: "list" | "use" | "current" | null;
+  /** The first word as typed (lower case), or null. */
+  first: string | null;
+  /** The words after the subcommand (all of them for a list with no `list` word). */
+  rest: string[];
+  /** `--kind`'s value, or null. */
+  kind: string | null;
+  /** Every other flag, as typed. */
+  otherFlags: string[];
+};
+
+/**
+ * The words of `ade devices …` after the command word: the subcommand, its
+ * other words and `--kind`. The CLI and ADE MCP's command check both read
+ * it, so they never disagree on what a call does.
+ */
+export function devicesSubcommand(args: readonly string[]): DevicesSubcommand {
+  const words: string[] = [];
+  const otherFlags: string[] = [];
+  let kind: string | null = null;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--kind") {
+      kind = args[index + 1] ?? "";
+      index += 1;
+    } else if (token.startsWith("--kind=")) {
+      kind = token.slice("--kind=".length);
+    } else if (token.startsWith("-")) {
+      otherFlags.push(token);
+    } else {
+      words.push(token);
+    }
+  }
+  const first = words[0]?.toLowerCase() ?? null;
+  if (first === null) return { sub: "list", first, rest: [], kind, otherFlags };
+  const sub = Object.hasOwn(DEVICES_SUBCOMMANDS, first) ? DEVICES_SUBCOMMANDS[first]! : null;
+  return { sub, first, rest: words.slice(1), kind, otherFlags };
 }
 
 /**

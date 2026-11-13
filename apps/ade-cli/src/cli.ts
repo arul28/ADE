@@ -749,6 +749,7 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { DEVICES_HELP } from "./help/devicesHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -2107,36 +2108,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
   re-pairs as soon as it lands — no second command.
 `,
-  devices: `${ADE_BANNER}
-  ADE devices
+  devices: DEVICES_HELP,
 
-  A device is something an agent drives and watches: an iPhone simulator, an
-  Android emulator, a screen (Mac, Windows or Linux Desktop), an app under App
-  Control. Its source is where it runs: here (this machine) or another machine
-  on your ADE account. A device id is <kind>@<source>: ios@here,
-  "ios@MacBook Pro", "android@Windows PC", screen@build-box. Kinds: ios,
-  android, screen, app.
-
-    $ ade devices --text                       Every device this chat can use, on every machine
-    $ ade devices --kind ios --text            Only iPhones
-    $ ade devices use "ios@MacBook Pro"        This chat's iPhone is on the MacBook from now on
-    $ ade devices use ios@here                 Back to this machine
-    $ ade devices current --text               This chat's choices
-
-  The list reads only: it starts and copies nothing. Each row says what the
-  device is, its state (off, on, in use by a chat) and what it needs first
-  ("Android SDK missing there", "repository missing there: --clone").
-  A machine that did not answer is a row saying so. A machine that cannot run
-  a kind is not listed for it (iPhone simulators run on a Mac).
-
-  After use, the plain commands go there with no other flag: ade apple
-  launch, ade apple screenshot, ade android tap, ade screen open, ade
-  app-control launch all act on that machine's device, and a build sends your
-  code there first. --machine <name> on one command, or --lane, still wins.
-  The choice is kept by this chat (it survives a restart of ADE). ade shell
-  does not follow it: a command on another machine always names --machine.
-  use needs a chat; a terminal with no chat names --machine on each command.
-`,
   search: `${ADE_BANNER}
   ADE Search
 
@@ -5613,6 +5586,25 @@ function rejectFlagOperands(args: readonly string[], names: readonly string[]): 
   }
 }
 
+/**
+ * `chat handoff|move`: the machine the chat moves to, `--to <machine>` or
+ * `--machine`, its older spelling. Null when neither is given; both at once,
+ * twice, or with no machine is refused.
+ */
+function readMoveDestination(args: string[]): string | null {
+  const names = ["--to", "--machine"] as const;
+  const flags = flagNamesOutsideFreeText(args);
+  if (flags.has("--to") && flags.has("--machine")) {
+    throw new CliUsageError("--to and --machine name the same destination: use --to.");
+  }
+  const at = args.findIndex((token) => token === "--to" || token === "--machine");
+  const value = at >= 0 && args[at + 1]?.startsWith("--") ? "" : readValue(args, names);
+  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+  const left = flagNamesOutsideFreeText(args);
+  if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
+  return value;
+}
+
 export function readValue(args: string[], names: readonly string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -6833,7 +6825,7 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
 }
 
 /** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
-const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+export const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
 ]);
 
@@ -12167,7 +12159,7 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
-    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    rejectFlagOperands(args, ["--note", "--status", "--retry"]);
     const statusBatchId = readValue(args, ["--status"]);
     const retryBatchId = readValue(args, ["--retry"]);
     if (statusBatchId !== null && retryBatchId !== null) {
@@ -12188,8 +12180,8 @@ function buildChatPlan(args: string[]): CliPlan {
         steps: [actionStep("result", "chat", action, { batchId })],
       };
     }
-    const machine = readValue(args, ["--machine"]);
-    if (machine === null || !machine.trim()) {
+    const machine = readMoveDestination(args);
+    if (machine === null) {
       throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
@@ -13381,7 +13373,7 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "handoff" || sub === "fork") refuseRemovedFlags(args, REMOVED_HANDOFF_FLAGS);
   if (sub === "handoff") {
-    // The first control flag present wins. --machine with any of them is
+    // The first control flag present wins. --to (or --machine) with any of them is
     // refused earlier, by extractMachineTargeting.
     const controls = [
       { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
@@ -13390,10 +13382,7 @@ function buildChatPlan(args: string[]): CliPlan {
     ];
     const flagNames = flagNamesOutsideFreeText(args);
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
-    const handoffMachine = readValue(args, ["--machine"]);
-    if (handoffMachine !== null && !handoffMachine.trim()) {
-      throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
-    }
+    const handoffMachine = readMoveDestination(args);
     if (control) {
       return {
         kind: "execute",
@@ -13404,7 +13393,7 @@ function buildChatPlan(args: string[]): CliPlan {
     if (handoffMachine !== null) {
       // Move the chat to another machine on the account. The brain runs the
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
-      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Never forwarded: --to names the destination (cliMachineTargeting).
       // Free text first: a prompt of "--fork" is text, not a flag.
       const continuationPrompt = readValue(args, ["--prompt", "--note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
@@ -16096,12 +16085,7 @@ async function runChatHereThenElsewhere(
   if (match?.isThisMachine && match.scope.kind === "project" && match.scope.rootPath
     && !pathsEqual(path.resolve(match.scope.rootPath), path.resolve(resolveRoots(parsed.options).projectRoot))) {
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
-    const restoreShellScope = dropShellScopeForOtherProject(there.options);
-    try {
-      return await runParsedCli(there);
-    } finally {
-      restoreShellScope();
-    }
+    return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
@@ -23748,10 +23732,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
-  // `chat handoff` keeps --machine (it names the move's destination, so it
-  // is not extracted for forwarding); a session given after it must not be
-  // read as the machine's value.
+  // `chat handoff|move` keep --to and its alias --machine (they name the
+  // move's destination, so they are not extracted for forwarding); a session
+  // given after one must not be read as the machine's value.
   "--machine",
+  "--to",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -41774,8 +41759,7 @@ async function runCli(
   // device choice (`ade devices use`), exactly as --machine would.
   const parsed = extractMachineTargeting(await withChatDeviceChoice(parseCliArgs(argv)));
   await applyAccountProjectSelector(parsed.options);
-  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
-  try {
+  return await withShellScopeFor(parsed.options, async () => {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
     if (isDevicesCommand(parsed.command)) return await runDevicesCommand(parsed);
     if (!parsed.options.machine) {
@@ -41783,9 +41767,7 @@ async function runCli(
       return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);
     }
     return await runOnMachine(parsed);
-  } finally {
-    restoreShellScope();
-  }
+  });
 }
 
 /**
@@ -41879,46 +41861,62 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
  * worktree up as its default: the lane is not in the named project, and a
  * worktree there would route the call back to the shell's project. For this
  * run only, the shell's lane and worktree are dropped (an explicit
- * `--workspace-root` still wins). Returns the undo.
+ * `--workspace-root` still wins).
  */
-function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Promise<T> {
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
-  const saved: Array<[string, string | undefined]> = [];
-  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
-    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
-    saved.push([name, process.env[name]]);
-    delete process.env[name];
-  }
-  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return fn();
+  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(options.workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
+  if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
       `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
-  return () => {
+  return withoutShellEnv(names, fn);
+}
+
+/**
+ * Runs `fn` with the named variables of this shell out of the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withoutShellEnv<T>(names: readonly string[], fn: () => T): T {
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) delete process.env[name];
+  const restore = () => {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   };
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result instanceof Promise) return result.finally(restore) as T;
+  restore();
+  return result;
+}
+
+/**
+ * Runs `fn` without this shell's lane. That lane is a lane on THIS machine:
+ * a plan for another machine that defaulted to it would name a lane that
+ * machine has never heard of. There the caller says `--lane <id>` (from
+ * `ade lanes list --machine …`) or lets the target pick, as `ade chat launch`
+ * does with a new lane.
+ */
+export function withoutShellLane<T>(fn: () => T): T {
+  return withoutShellEnv(["ADE_LANE_ID"], fn);
 }
 
 async function runOnMachine(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
-  // This shell's lane is a lane on THIS machine. Plan builders that default
-  // to it would name a lane the other machine has never heard of; there the
-  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
-  // target pick, as `ade chat launch` does with a new lane. Only for this run.
-  const laneId = process.env.ADE_LANE_ID;
-  delete process.env.ADE_LANE_ID;
-  try {
-    return await runParsedCli(parsed);
-  } finally {
-    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
-  }
+  return await withoutShellLane(() => runParsedCli(parsed));
 }
 
 /**

@@ -1,16 +1,20 @@
 import os from "node:os";
 import { looseMachineNameMatches } from "../../desktop/src/shared/accountDirectory";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
+import { desktopProductName } from "../../desktop/src/shared/desktopSeat";
+import { remoteMachineHostPlatform } from "../../desktop/src/shared/machineIdentity";
+import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../desktop/src/shared/sessionActivity";
 import {
   ADE_CLOUD_IPHONE_UNAVAILABLE,
   DEVICE_KINDS,
   DEVICE_KIND_COMMAND,
   DEVICE_KIND_NOUN,
   deviceKindRunsOnPlatform,
+  devicesSubcommand,
+  formatDeviceId,
   isDeviceKind,
   normalizeChatDeviceSources,
   parseDeviceId,
-  screenProductName,
   type ChatDeviceSources,
   type DeviceKind,
 } from "../../desktop/src/shared/types/deviceSources";
@@ -19,6 +23,7 @@ import {
   CLI_COMMAND_ALIASES,
   CliToolError,
   CliUsageError,
+  SCREEN_COMMAND_NAMES,
   actionStep,
   asString,
   buildCliPlan,
@@ -32,6 +37,7 @@ import {
   renderTable,
   resolveRoots,
   unwrapActionEnvelope,
+  withoutShellLane,
   type CliPlan,
   type GlobalOptions,
   type JsonObject,

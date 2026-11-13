@@ -70,3 +70,18 @@ export function machineIdForBinding(
   if (binding?.kind === "remote") return binding.targetId;
   return THIS_MACHINE_ID;
 }
+
+/**
+ * A machine's platform as Node or the account directory names it ("darwin",
+ * "macos", "windows", "win32-x64", "linux"), or null when it says nothing
+ * usable. "darwin" is read first: it contains "win". The one platform rule for
+ * other machines: the device kinds a machine can run and the name of its
+ * screen both read it.
+ */
+export function remoteMachineHostPlatform(platform: string | null | undefined): NodeJS.Platform | null {
+  const value = platform?.trim().toLowerCase() ?? "";
+  if (/darwin|mac|osx/.test(value)) return "darwin";
+  if (/win/.test(value)) return "win32";
+  if (/linux/.test(value)) return "linux";
+  return null;
+}
