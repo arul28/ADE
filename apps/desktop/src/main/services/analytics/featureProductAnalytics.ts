@@ -344,7 +344,7 @@ export function capturePasswordsAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
   action: "passwords_switched" | "logins_imported" | "agent_signed_in" | "agent_signed_up" | "secrets_exec";
-  outcome: "enabled" | "disabled" | "completed" | "failed";
+  outcome: "enabled" | "disabled" | "completed" | "cancelled" | "failed";
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "passwords" });
 }

@@ -1,4 +1,5 @@
 import type { BuiltInBrowserAgentActionResult } from "../../../shared/types/builtInBrowser";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { captureError } from "../../../shared/sentry/capture";
 import type { PasswordLoginRequestResult } from "../../../shared/passwordLoginRequest";
 
@@ -80,7 +81,7 @@ export async function signInWithPasswords(
       signin: { ...first.signin, needsLogin: false, signInYourself: true },
     };
   }
-  throw new Error(`The person declined to sign in to ${site}.`);
+  throw new AdeExpectedError(`The person declined to sign in to ${site}.`, "user");
 }
 
 /**

@@ -1,4 +1,5 @@
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { capturePasswordsAnalytics } from "../analytics/featureProductAnalytics";
 import { createDomainArgReaders } from "../adeActions/domainArgs";
 import { requestPasswordLoginFromUser } from "./passwordLoginRequest";
@@ -30,7 +31,7 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
   const counted = async <T>(
     action: "passwords_switched" | "logins_imported" | "agent_signed_in" | "agent_signed_up",
     run: () => Promise<T>,
-    outcomeOf: (result: T) => "enabled" | "disabled" | "completed" | "failed" | null = () => "completed",
+    outcomeOf: (result: T) => "enabled" | "disabled" | "completed" | null = () => "completed",
   ): Promise<T> => {
     try {
       const result = await run();
@@ -38,7 +39,10 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
       if (outcome) capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action, outcome });
       return result;
     } catch (error) {
-      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action, outcome: "failed" });
+      // A person's no (a declined card, a page the agent should not fill) is
+      // not a failure of Passwords.
+      const outcome = error instanceof AdeExpectedError && error.adeExpected === "user" ? "cancelled" : "failed";
+      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action, outcome });
       throw error;
     }
   };
