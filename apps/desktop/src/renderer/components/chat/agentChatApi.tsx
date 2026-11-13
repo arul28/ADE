@@ -25,8 +25,15 @@ export type MachineBoundAgentChatApi = AgentChatApi & {
   getImageDataUrl(path: string): Promise<{ dataUrl: string }>;
 };
 
-/** What a pane is routed to. Absent means the project chat domain. */
-export type ChatPaneScope = {
+/**
+ * What a pane is routed to. Absent means the project chat domain. Every
+ * scope is bound to one place when it is made (a machine's personal chats, or
+ * one shared lane on the owner's computer), so the pane hides what only a
+ * project chat can do.
+ */
+export type ChatPaneScope = PersonalChatPaneScope | LaneShareGuestChatPaneScope;
+
+export type PersonalChatPaneScope = {
   kind: "personal";
   /** `agentChat`-shaped API backed by `personalChats.*`. */
   agentChat: MachineBoundAgentChatApi;
@@ -37,6 +44,24 @@ export type ChatPaneScope = {
    * lists every machine's chats); otherwise the window's machine.
    */
   machineName?: string | null;
+};
+
+/**
+ * A guest's view of a chat in a lane someone shared with them. Calls go to
+ * the owner's computer through the guest connection, where the owner's
+ * rights decide; `locks` says which controls the guest cannot change, and why.
+ */
+export type LaneShareGuestChatPaneScope = {
+  kind: "lane_share_guest";
+  agentChat: MachineBoundAgentChatApi;
+  modelCatalogScopeKey: string;
+  /** The owner's computer, or null when the owner hides machine names. */
+  machineName?: string | null;
+  grantId: string;
+  /** Why the guest cannot change the mode, or null when it can. */
+  permissionModeLockReason: string | null;
+  /** Why the guest cannot send now, or null when it can. */
+  sendBlockedReason: string | null;
 };
 
 const AgentChatApiContext = createContext<AgentChatApi | null>(null);

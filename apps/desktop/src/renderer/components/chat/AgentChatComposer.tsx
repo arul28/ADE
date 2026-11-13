@@ -2391,6 +2391,7 @@ function AgentChatComposerImpl({
   onModelPickerOpenRequestHandled,
   onOpenModelPickerRequest,
   permissionModeLocked = false,
+  permissionModeLockReason = null,
   hideNativeControls = false,
   hideModelControls = false,
   messagePlaceholder,
@@ -2669,6 +2670,8 @@ function AgentChatComposerImpl({
   /** Open the model picker from outside the control (a quick slot). */
   onOpenModelPickerRequest?: () => void;
   permissionModeLocked?: boolean;
+  /** Why the mode cannot change, shown on the locked control (a shared lane's rights). */
+  permissionModeLockReason?: string | null;
   hideNativeControls?: boolean;
   /** Hide model, reasoning, and fast-mode controls when the host surface owns them. */
   hideModelControls?: boolean;
@@ -3800,7 +3803,7 @@ function AgentChatComposerImpl({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, chatPaneScope?.kind === "personal"));
+      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, chatPaneScope != null));
       void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, warmPin)?.catch?.(() => {});
     } catch {
       // warming is best-effort
@@ -4041,7 +4044,7 @@ function AgentChatComposerImpl({
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
     // A personal pane's adapter knows its computer; it has no binding when no project is open.
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope != null);
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
@@ -4190,7 +4193,7 @@ function AgentChatComposerImpl({
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope != null);
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -8067,6 +8070,7 @@ function AgentChatComposerImpl({
               "[&_label]:flex [&_label]:h-6 [&_label]:max-h-6 [&_label]:min-h-6 [&_label]:items-center [&_label]:py-0",
               "[&_select]:h-6 [&_select]:max-h-6 [&_select]:min-h-6",
             )}
+            title={permissionModeLocked && permissionModeLockReason ? permissionModeLockReason : undefined}
           >
             {nativeControlPanel}
           </div>

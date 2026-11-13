@@ -25,8 +25,7 @@ import {
   useLaneShareGuestStore,
   useLaneShareGuestLaneName,
 } from "./laneShareGuestStore";
-import { LaneShareGuestChat, laneShareGuestModelLabel } from "./LaneShareGuestChat";
-import { plainTerminalText } from "./laneShareGuestTranscript";
+import { LaneShareGuestChatPane, laneShareGuestModelLabel } from "./LaneShareGuestChatPane";
 import { LaneShareGuestMoveCard, LaneShareGuestMoveOut } from "./LaneShareGuestMove";
 
 /**
@@ -37,6 +36,20 @@ import { LaneShareGuestMoveCard, LaneShareGuestMoveOut } from "./LaneShareGuestM
  */
 
 const EMPTY_SESSIONS: LaneShareGuestSession[] = [];
+
+/** A terminal transcript as plain text: escape sequences and control bytes removed. */
+function plainTerminalText(raw: string): string {
+  return raw
+    // OSC (title, hyperlinks): ESC ] … BEL or ESC \
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    // CSI and other ESC sequences
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[@-Z\\-_]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    // Other control characters except tab and newline
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+}
 const MAX_TERMINAL_CHARS = 200_000;
 const GUEST_STATE_REFRESH_MS = 60_000;
 
@@ -467,16 +480,20 @@ export function LaneShareGuestView({
       ) : null}
       <div className="min-h-0 flex-1">
         {selected && connection && (selected.kind === "chat" || selected.kind === "subagent") ? (
-          <LaneShareGuestChat
-            key={selected.sessionId}
-            connection={connection}
-            sessionId={selected.sessionId}
-            connected={connected}
-            selfUserId={connectionState?.kind === "connected" ? connectionState.selfUserId : null}
-            ownerLabel={ownerLabel}
-            guestState={guestState}
-            composerCard={moveCard}
-          />
+          <div className="flex h-full min-h-0 flex-col">
+            {moveCard ? <div className="mx-auto w-full max-w-[760px] shrink-0 px-4 pt-2 empty:hidden">{moveCard}</div> : null}
+            <div className="min-h-0 flex-1">
+              <LaneShareGuestChatPane
+                key={selected.sessionId}
+                connection={connection}
+                session={selected}
+                connected={connected}
+                ownerLabel={ownerLabel}
+                guestState={guestState}
+                machineName={machineName}
+              />
+            </div>
+          </div>
         ) : selected ? (
           <GuestTerminal
             key={selected.sessionId}

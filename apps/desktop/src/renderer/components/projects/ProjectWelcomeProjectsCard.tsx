@@ -4,7 +4,7 @@ import type { RecentProjectGroup } from "../app/projectTabGrouping";
 import type { AppState } from "../../state/appStore";
 import type { useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { FitList } from "../home/HomeFitList";
-import { LaneShareHomeFoot } from "../laneShare/guest/LaneShareHomeFoot";
+import { LaneShareHomeRows, useLaneShareHomeRows } from "../laneShare/guest/LaneShareHomeRows";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
@@ -111,6 +111,7 @@ export function ProjectsCard({
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
   const hasProjects = count > 0;
+  const sharedRows = useLaneShareHomeRows();
   const renderRows = () => rows.map((row) => <ProjectsCardRowView key={row.group.id} row={row} ctx={ctx} />);
   return (
     <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
@@ -127,7 +128,7 @@ export function ProjectsCard({
             {renderRows()}
           </FitList>
         </div>
-      ) : (
+      ) : sharedRows.length > 0 && !preview ? null : (
         <div className="ade-welcome-empty">
           <strong>No projects yet</strong>
           {ctx.webMode
@@ -135,7 +136,7 @@ export function ProjectsCard({
             : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
         </div>
       )}
-      {preview ? null : <LaneShareHomeFoot />}
+      {preview ? null : <LaneShareHomeRows rows={sharedRows} />}
     </section>
   );
 }

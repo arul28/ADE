@@ -379,7 +379,7 @@ export function ChatBuiltInBrowserPanel({
   // chat's own, not the active project's.
   const agentChatApi = useAgentChatApi();
   // A personal chat's adapter is bound to its machine; see `chatApiPin`.
-  const personalPane = useChatPaneScope()?.kind === "personal";
+  const personalPane = useChatPaneScope() != null;
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
