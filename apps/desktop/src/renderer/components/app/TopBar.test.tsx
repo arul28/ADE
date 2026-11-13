@@ -2113,8 +2113,13 @@ describe("TopBar", () => {
     expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("120");
   });
 
-  it("ADE Web: a computer that leaves moves its tab to another connected copy and keeps a tab with no other copy open", async () => {
+  it.each([
+    ["leaves the connection list", "forgotten"],
+    ["stops (still listed, away past the settle time) and comes back", "stopped"],
+  ] as const)("ADE Web: a computer that %s moves its tab to another connected copy and keeps a tab with no other copy open", async (_label, exit) => {
     (window as unknown as { __adeWebClient?: boolean }).__adeWebClient = true;
+    // Real time keeps running for waitFor; the settle timer is advanced by hand.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const project = (projectId: string, rootPath: string, displayName: string, origin: string) => ({
         projectId,
@@ -2171,16 +2176,54 @@ describe("TopBar", () => {
       await waitFor(() => expect(screen.getAllByText("solo").length).toBeGreaterThan(0));
       await waitFor(() => expect(emit).not.toBeNull());
 
-      // "Forget on this browser" (or a removal) drops the computer from the connection list.
-      await act(async () => {
-        emit!({ connections: [laptop], connectedCount: 1, updatedAt: 1_700_000_001 });
-      });
+      const studioAway = { ...studio, state: "connecting" };
+      if (exit === "forgotten") {
+        // "Forget on this browser" (or a removal) drops the computer from the connection list.
+        await act(async () => {
+          emit!({ connections: [laptop], connectedCount: 1, updatedAt: 1_700_000_001 });
+        });
+      } else {
+        // A project open passes through "connecting" for a moment (about 70 ms): no tab moves.
+        await act(async () => {
+          emit!({ connections: [studioAway, laptop], connectedCount: 1, updatedAt: 1_700_000_001 });
+        });
+        await act(async () => {
+          vi.advanceTimersByTime(100);
+        });
+        await act(async () => {
+          emit!({ connections: [studio, laptop], connectedCount: 2, updatedAt: 1_700_000_002 });
+        });
+        await act(async () => {
+          vi.advanceTimersByTime(3_500);
+        });
+        expect(switchRemoteProject).not.toHaveBeenCalled();
+        expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key)).toEqual([appOnStudio.key, soloOnStudio.key]);
+        // The computer stopped: still listed, still away after the settle time.
+        await act(async () => {
+          emit!({ connections: [studioAway, laptop], connectedCount: 1, updatedAt: 1_700_000_003 });
+        });
+        await act(async () => {
+          vi.advanceTimersByTime(3_500);
+        });
+      }
 
       await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledWith("laptop", "app-l"));
       const keys = useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key);
       expect(keys).toEqual(["remote:laptop:app-l"]);
       expect(useAppStore.getState().noMachineTabs.map((tab) => tab.displayName)).toEqual(["solo"]);
+
+      if (exit === "stopped") {
+        // Back: the tab that waited opens its copy again; the moved tab stays where it went.
+        await act(async () => {
+          emit!({ connections: [studio, laptop], connectedCount: 2, updatedAt: 1_700_000_004 });
+        });
+        await waitFor(() =>
+          expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key)).toEqual(["remote:laptop:app-l", soloOnStudio.key]),
+        );
+        await waitFor(() => expect(useAppStore.getState().noMachineTabs).toEqual([]));
+      }
     } finally {
+      vi.useRealTimers();
       delete (window as unknown as { __adeWebClient?: boolean }).__adeWebClient;
     }
   });

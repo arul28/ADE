@@ -517,9 +517,19 @@ Renderer — onboarding:
   greeting, the date, a one-line headline (`home/homeHeadline.ts`) and running /
   needs-you counts, over a row of actions (**Add project**, **Chat without a
   project**, **Browser**, and the recents side panel), above the widget grid.
-  Recents list recent local and remote projects, open or forget entries, and
-  launch project creation, clone, or folder selection before a project-bound
-  route is available. Each row carries the same right-click project menu as a
+  The Projects card lists the account's projects, one row per project, and
+  its count is the account's count (`ade projects list --account`), on every
+  client, with or without a computer connected (`homeProjectRows.ts`,
+  `useHomeAccountProjects.ts`). Folders on no account project follow under
+  "Only on <computer>" and do not count: this computer's from its brain's
+  catalog (`project.listThisComputer`, a this-computer IPC with no pin; it
+  reads again when the local brain connects), each connected computer's from
+  its connection catalog. An account row's computers chip opens the copies
+  menu. Its X opens the remove window with **From this list** first: Home on
+  this computer hides the row (`homeHiddenProjects.ts`, localStorage, by
+  account project id), it still counts, and "N hidden" shows it again; opening
+  the project lists it again. A local folder's X forgets it with Undo. The
+  card renders at most 40 rows inline; "N more" shows every row. Each row carries the same right-click project menu as a
   project tab — change icon, pin or unpin, and copy path — and a project with
   no checkout on this machine offers **Add a copy on this computer…**, which
   opens the Add project form with this computer ticked.
@@ -528,8 +538,10 @@ Renderer — onboarding:
   `/settings`, so a person with no project can still reach the settings that
   need none (see "Settings with no project" below).
 - `apps/desktop/src/renderer/components/projects/AddProjectForm.tsx` — **Add
-  project** from GitHub (the palette's clone flow and the start page). The
-  repository comes first, then one row per machine: this computer (not on
+  project** from GitHub (the palette's clone flow and the start page). Add
+  project opens on this form; **Open a folder…** and **New empty project…** sit
+  under it (`AddProjectMoreActions.tsx`), with a computer picker when other
+  computers are connected. The repository comes first, then one row per machine: this computer (not on
   hosted web) and every saved machine. An offline machine cannot be ticked, and
   the form never connects to or wakes one. A machine that already has a copy
   says "already here". Each ticked machine clones on its own
@@ -539,10 +551,13 @@ Renderer — onboarding:
   <machine>" offers **Open** instead, and a failure shows a toast that names
   the machine.
 - `apps/desktop/src/renderer/components/projects/ProjectCopiesMenu.tsx` — the
-  copies menu of a project tab, opened from the machine mark on a tab whose
-  work is on another machine, or from **Copies…** in the tab's right-click
-  menu. One row per machine: the copy in use, another copy (picking it moves
-  the tab there), "not here" with **Add a copy**, or offline. A project with no
+  copies menu of a project, opened from a Home row's computers chip or the
+  project sidebar's computers tag; the tab's right-click menu has a **Copies**
+  submenu with the same rows. One row per machine: the copy in use, another
+  copy (picking it moves the tab there with that copy's own binding), "not
+  here" with **Add a copy**, "Not connected" for a computer known only from the
+  account list, or offline. Every surface counts computers with one rule
+  (`copyComputers`). A project with no
   git origin says "This machine only" and offers Publish.
   `useProjectCopiesMenu.ts` owns the menu, the remove dialog's target and their
   models for the top bar; `projectCopies.ts` holds the pure rules every copy
