@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -172,6 +172,14 @@ export type CreateAppControlServiceArgs = {
    * lane's screen. The mirror of Mac Desktop's `appControlLaneForProcess`.
    */
   macDesktopLaneForProcess?: ((pid: number) => Promise<string | null> | string | null) | null;
+  /**
+   * Linux: the environment that puts a process's windows on the lane's own
+   * screen (Linux Desktop), starting that screen when `start` is set. Null off
+   * Linux or with no lane screen service in this process. Mac Desktop's
+   * `laneScreenLaunchEnv`.
+   */
+  laneScreenLaunchEnv?: ((args: { laneId: string; start: boolean }) =>
+    Promise<{ set: Record<string, string>; unset: string[] } | null>) | null;
 };
 
 /** How a call names its lane: directly, by the session it holds, or by its chat. */
@@ -2155,6 +2163,40 @@ export function createAppControlLaneController(context: AppControlLaneController
     });
   };
 
+  /**
+   * Linux: the screen the app's windows open on, as terminal env.
+   *
+   * ADE with no display of its own (a server, an ADE Cloud computer, a brain
+   * service) has nowhere to put them: Chrome and Electron exit with "Missing X
+   * server or $DISPLAY" before the debug port opens. There the launch runs on
+   * the lane's Linux Desktop screen, started for it, so `ade screen` sees the
+   * same window. The test is this process's own `DISPLAY`/`WAYLAND_DISPLAY`,
+   * because that is exactly what the app would inherit; a person's desktop
+   * keeps getting the app, as before, unless the lane's screen is already
+   * running, which is the lane's screen on any machine. A launch that sets
+   * `DISPLAY` or `WAYLAND_DISPLAY` itself keeps it. Cleared keys are set
+   * empty: the terminal merges this over the host's environment.
+   */
+  const laneScreenEnv = async (explicitEnv: Record<string, string>): Promise<Record<string, string>> => {
+    if (process.platform !== "linux" || !args.laneScreenLaunchEnv) return {};
+    const hasValue = (value: string | undefined): boolean => Boolean(value?.trim());
+    if (hasValue(explicitEnv.DISPLAY) || hasValue(explicitEnv.WAYLAND_DISPLAY)) return {};
+    const hostHasDisplay = hasValue(process.env.DISPLAY) || hasValue(process.env.WAYLAND_DISPLAY);
+    let screen: Awaited<ReturnType<NonNullable<CreateAppControlServiceArgs["laneScreenLaunchEnv"]>>>;
+    try {
+      screen = await args.laneScreenLaunchEnv({ laneId, start: !hostHasDisplay });
+    } catch (error) {
+      const reason = (error instanceof Error ? error.message : String(error))
+        .replace(/^MAC_DESKTOP_[A-Z_]+:\s*/, "");
+      const why = hostHasDisplay
+        ? "App Control runs the app on this lane's Linux Desktop screen, and that screen could not be reached."
+        : "This machine has no display for the app, so App Control runs it on the lane's Linux Desktop screen, and that screen did not start.";
+      throw carryExpected(error, new Error(`${why} ${reason}`, { cause: error }));
+    }
+    if (!screen) return {};
+    return { ...Object.fromEntries(screen.unset.map((key) => [key, ""])), ...screen.set };
+  };
+
   const launchInShell = async (
     ptyService: AppControlPtyService,
     launchArgs: AppControlLaunchArgs,
@@ -2163,6 +2205,12 @@ export function createAppControlLaneController(context: AppControlLaneController
     cdpAttachmentEpoch += 1;
     const debugPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort) ?? await findFreePort();
     const resolved = resolveLaunch(launchArgs, debugPort);
+    const launchEnv = Object.fromEntries(
+      Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
+    );
+    // Before the session exists: a lane screen that cannot start refuses the
+    // launch with its own reason, not a debug port that never opened.
+    const screenEnv = await laneScreenEnv({ ...launchEnv, ...(resolved.env ?? {}) });
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
     const session: AppControlSession = {
       id: randomUUID(),
@@ -2192,11 +2240,9 @@ export function createAppControlLaneController(context: AppControlLaneController
     const inheritedEnv = Object.fromEntries(
       Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
     );
-    const launchEnv = Object.fromEntries(
-      Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
-    );
     const env: Record<string, string> = {
       ...inheritedEnv,
+      ...screenEnv,
       ...launchEnv,
       ...(resolved.env ?? {}),
       ADE_APP_CONTROL: "1",
@@ -2210,6 +2256,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       cwd: resolved.cwd,
       command: resolved.commandForDisplay,
       debugPort,
+      ...(screenEnv.DISPLAY ? { laneScreenDisplay: screenEnv.DISPLAY } : {}),
     });
     emit({ type: "session-started", session });
     try {

@@ -314,12 +314,19 @@ export function readLocalHead(cwd: string): JsonObject {
  */
 function readLocalWorkSource(cwd: string): JsonObject {
   const { top, head, branch } = localCheckout(cwd);
-  const remoteRefs = gitText(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
+  const originRefsWithHead = (): string[] => gitText(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
     .split("\n").map((line) => line.trim()).filter((line) => line.startsWith("origin/") && line !== "origin/HEAD");
+  let remoteRefs = originRefsWithHead();
+  if (!remoteRefs.length) {
+    // Pushed from another checkout, or this one has not fetched since: ask
+    // origin once before refusing (the branch, or every branch when detached).
+    const fetched = spawnSync("git", ["fetch", "--quiet", "origin", ...(branch ? [branch] : [])], { cwd: top, windowsHide: true, timeout: 60_000 });
+    if (fetched.status === 0) remoteRefs = originRefsWithHead();
+  }
   if (!remoteRefs.length) {
     throw new CliUsageError(
-      `Commit ${head.slice(0, 12)} is not on origin yet, so the other machine cannot check it out. `
-      + "Push it first (git push); uncommitted changes travel by themselves.",
+      `Commit ${head.slice(0, 12)} is not on origin as far as this checkout knows, so the other machine cannot check it out. `
+      + "Push it (git push), or fetch if it was pushed from elsewhere (git fetch origin); uncommitted changes travel by themselves.",
     );
   }
   const fetchRef = (remoteRefs.find((ref) => ref === `origin/${branch}`) ?? remoteRefs[0]!).slice("origin/".length);

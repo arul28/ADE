@@ -153,6 +153,7 @@ import {
   reportLinuxScreenProblem,
   reportLinuxSetupOutcome,
 } from "../linuxDesktop/linuxScreenTelemetry";
+import { readLinuxLaneLaunchEnv, type LinuxLaneLaunchEnv } from "../linuxDesktop/linuxDesktopSeatProvider";
 
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
@@ -350,6 +351,14 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
    * events; the fan-out calls this on subscribe and while frames flow.
    */
   noteStreamActivity(laneId: string): void;
+  /**
+   * Linux only: the environment that puts a process's windows on the lane's
+   * screen, for an app ADE starts in a terminal (App Control). `start` brings
+   * the screen up first when it is not running; without it, a lane with no
+   * screen answers null. Null on every other seat. A screen that cannot start
+   * throws the screen's own error, which says what to install.
+   */
+  laneScreenLaunchEnv(args: { laneId: string; start: boolean }): Promise<LinuxLaneLaunchEnv | null>;
   readonly resolutionSettingKey: string;
   setResolution(preset: MacDesktopResolutionPreset): void;
   getResolution(): MacDesktopResolutionPreset;
@@ -466,6 +475,12 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
    * in flight; a display that dies on its own still reaches clients.
    */
   const destroyingLanes = new Set<string>();
+  /**
+   * Linux: laneId → the environment that puts a process on the lane's screen,
+   * from the helper's `display.create` reply. Written by every create, so an
+   * entry is the live display's whenever `ownership` has one for the lane.
+   */
+  const linuxLaunchEnvs = new Map<string, LinuxLaneLaunchEnv>();
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   let lastSweepAtMs = now();
 
@@ -1275,6 +1290,11 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
       ...(seatMode ? { seatMode } : {}),
     };
     driverLifecycle.setDisplayMode(display.mode);
+    if (isLinuxSeat) {
+      const launchEnv = readLinuxLaneLaunchEnv(reply);
+      if (launchEnv) linuxLaunchEnvs.set(laneId, launchEnv);
+      else linuxLaunchEnvs.delete(laneId);
+    }
     const movedTo = pendingDisplayPlacements.get(laneId);
     pendingDisplayPlacements.delete(laneId);
     const stored = ownership.setDisplay(movedTo ? { ...display, ...movedTo } : display, laneName);
@@ -2058,6 +2078,23 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
     },
     async releaseStreamSubscription(subscriptionId: string): Promise<void> {
       await streaming.releaseStreamSubscription(subscriptionId.trim());
+    },
+    async laneScreenLaunchEnv(args: { laneId: string; start: boolean }): Promise<LinuxLaneLaunchEnv | null> {
+      const laneId = args.laneId?.trim();
+      if (!laneId || !isLinuxSeat || !seatSupported) return null;
+      if (!args.start && !ownership.hasDisplay(laneId)) return null;
+      // Through `start` even for a running screen: it queues behind a stop in
+      // flight, and it drops a screen the helper no longer has, then makes it.
+      await api.start({ laneId });
+      const launchEnv = ownership.hasDisplay(laneId) ? linuxLaunchEnvs.get(laneId) ?? null : null;
+      if (!launchEnv) {
+        // A helper built before `linux.env`: the machine's install, not a fault.
+        throw markExpected(
+          new Error("This machine's Linux Desktop helper is older than ADE and cannot say how to open an app on the lane screen. Update ADE on this machine."),
+          "environment",
+        );
+      }
+      return launchEnv;
     },
     /**
      * The lane whose display holds this process's windows, or null. App

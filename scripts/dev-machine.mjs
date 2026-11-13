@@ -244,6 +244,15 @@ function computerName() {
   return os.hostname().replace(/\.(local|lan)$/i, "");
 }
 
+/** The device id this home signs in with (`secrets/sync-device-id`), or null before it has one. */
+function readHomeDeviceId(home) {
+  try {
+    return fs.readFileSync(path.join(home, "secrets", "sync-device-id"), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function login(paths, options) {
   if (!(await canConnectToSocket(paths.socketPath))) throw new Error("Start it first: npm run dev:machine -- start");
   if (authState(paths) !== "active") {
@@ -263,13 +272,14 @@ async function login(paths, options) {
     } catch {
       machines = [];
     }
-    // `isThisMachine` in one output shape, the home the row reports in the
-    // other. The whole path: every computer's test machine has a home with
-    // the same folder name, and matching on it renamed another computer's row.
-    const self = machines.find((machine) => machine.isThisMachine
-      || (typeof machine.adeHome === "string" && path.resolve(machine.adeHome) === path.resolve(paths.home)));
+    // This home's own row, by its device id. Not by `adeHome`: the account
+    // reports it as `~/.ade-dev-machine-<name>`, the same on every computer,
+    // and matching on it renamed another computer's test machine.
+    const deviceId = readHomeDeviceId(paths.home);
+    const self = machines.find((machine) => machine.isThisMachine || (deviceId && machine.deviceId === deviceId));
     if (self?.machineKey) {
-      if (self.name !== label) ade(paths, ["machines", "rename", self.machineKey, label]);
+      const shown = self.customName || self.name;
+      if (shown !== label) ade(paths, ["machines", "rename", self.machineKey, label]);
       process.stdout.write(`[ade] signed in and published as "${label}" (${self.machineKey})\n`);
       return;
     }

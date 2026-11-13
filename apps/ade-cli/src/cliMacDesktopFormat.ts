@@ -194,8 +194,23 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
  */
 export function macDesktopErrorHint(message: string, host: string | null = process.platform): string | null {
   const hint = MAC_DESKTOP_ERROR_HINTS.find(([code]) => message.includes(code))?.[1] ?? null;
-  if (typeof hint !== "function") return hint;
+  if (typeof hint !== "function") return host === null && hint ? withoutSharedDesktopAsk(hint) : hint;
   return host ? hint(host) : null;
+}
+
+/**
+ * The main (shared) Windows desktop is asked for in a chat on that PC, where
+ * the person answers the card. From another machine `--shared` is refused, so
+ * a hint that offers it says who can ask instead.
+ */
+function withoutSharedDesktopAsk(hint: string): string {
+  if (!hint.includes("--shared")) return hint;
+  const kept = hint
+    .replace(/,? ?or ask for (?:their|the) main desktop(?: instead)?: ade screen start --shared --reason "<what for>" --text/u, "")
+    .replace(/(?:Ask for the main desktop instead|Ask in this chat with): ade screen start --shared --reason "<what for>" --text/u, "")
+    .trim();
+  const ask = "Only a chat on that PC can ask the user for its main desktop.";
+  return kept ? `${kept.replace(/[.\s]*$/u, ".")} ${ask}` : ask;
 }
 
 

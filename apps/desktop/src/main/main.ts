@@ -6170,6 +6170,8 @@ app.whenReady().then(async () => {
       getChromiumDemoEngine: () => chromiumDemoEngine,
       // A lane may not attach to an app another lane's Mac Desktop holds.
       macDesktopLaneForProcess: (pid: number) => macDesktopService?.laneForProcess(pid) ?? null,
+      // Linux: a launch with no display here runs on the lane's own screen.
+      laneScreenLaunchEnv: async (request) => await macDesktopService?.laneScreenLaunchEnv(request) ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,

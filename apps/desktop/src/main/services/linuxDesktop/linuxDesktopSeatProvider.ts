@@ -89,6 +89,33 @@ function isXvfbMissing(error: unknown): error is Error {
     && /\bXvfb is not installed\b/.test(error.message);
 }
 
+/**
+ * What a process needs to open its windows on a lane's Linux screen: the
+ * variables to set (`DISPLAY`, `XAUTHORITY`, the lane's
+ * `DBUS_SESSION_BUS_ADDRESS`) and the ones to clear.
+ */
+export type LinuxLaneLaunchEnv = { set: Record<string, string>; unset: string[] };
+
+/**
+ * Reads `linux.env` / `linux.unsetEnv` off a `display.create` reply. Null when
+ * the helper sends none (a build older than the field) or no `DISPLAY`.
+ */
+export function readLinuxLaneLaunchEnv(reply: unknown): LinuxLaneLaunchEnv | null {
+  const linux = (reply as { linux?: unknown } | null)?.linux;
+  if (!linux || typeof linux !== "object") return null;
+  const facts = linux as { env?: unknown; unsetEnv?: unknown };
+  if (!facts.env || typeof facts.env !== "object" || Array.isArray(facts.env)) return null;
+  const set: Record<string, string> = {};
+  for (const [key, value] of Object.entries(facts.env as Record<string, unknown>)) {
+    if (typeof value === "string") set[key] = value;
+  }
+  if (!set.DISPLAY?.trim()) return null;
+  const unset = Array.isArray(facts.unsetEnv)
+    ? facts.unsetEnv.filter((key): key is string => typeof key === "string" && !(key in set))
+    : [];
+  return { set, unset };
+}
+
 /** A missing package is the machine's state (a log); a daemon that would not start is a defect (an issue). */
 function reportDegradedScreen(reply: unknown): void {
   const linux = (reply as { linux?: unknown } | null)?.linux;
