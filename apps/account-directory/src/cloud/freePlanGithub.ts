@@ -50,7 +50,10 @@ import { PAID_RULES_SQL, accountRules, isProduction, logCloud, reportCloudFailur
  * - A card removed, or a dispute, after an unlock changes nothing: the unlock
  *   stays (the GitHub claim still limits it to one free plan).
  * - Without the GitHub App configured (development, tests) nobody can connect
- *   GitHub, so the rules are off; in production that is reported.
+ *   GitHub, so the rules are off. In production that is reported and the
+ *   rules fail closed: a hold stays, and a new free account waits as
+ *   `github_checking`; one that claimed or is exempt keeps its hours. A settle
+ *   that throws in production does the same.
  */
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -103,15 +106,41 @@ async function readFacts(env: CloudEnv, userId: string): Promise<Facts> {
 
 let notConfiguredReported = false;
 
-/** Whether the rules apply here: only where people can connect GitHub (the GitHub App is configured). */
-async function rulesOn(env: CloudEnv): Promise<boolean> {
-  const runtime = await githubAppRuntime(env as unknown as GithubAppEnv).catch(() => null);
-  if (runtime) return true;
-  if (isProduction(env) && !notConfiguredReported) {
+/**
+ * Whether the rules apply here: `on` where people can connect GitHub (the
+ * GitHub App is configured), `off` outside production without it
+ * (development, tests), and `broken` in production when the GitHub App can't
+ * be read: the rules still hold there, nothing is granted until it works.
+ */
+async function rulesOn(env: CloudEnv): Promise<"on" | "off" | "broken"> {
+  let failure: string | null = null;
+  const runtime = await githubAppRuntime(env as unknown as GithubAppEnv).catch((error: unknown) => {
+    failure = error instanceof Error ? error.message : "unknown";
+    return null;
+  });
+  if (runtime) return "on";
+  if (!isProduction(env)) return "off";
+  if (!notConfiguredReported) {
     notConfiguredReported = true;
-    reportCloudFailure("cloud.free_plan.github_not_configured", {}, "cloud-free-plan");
+    reportCloudFailure("cloud.free_plan.github_not_configured", { message: failure ?? "not_configured" }, "cloud-free-plan");
   }
-  return false;
+  return "broken";
+}
+
+/** Whether the account has claimed a GitHub account for its free plan. */
+async function hasClaim(env: CloudEnv, userId: string): Promise<boolean> {
+  return (await env.DB.prepare("select 1 as one from cloud_free_github_claims where user_id = ?").bind(userId).first<{ one: number }>()) != null;
+}
+
+/**
+ * The rules couldn't be settled in production: an account that already
+ * claimed or is exempt keeps its hours; any other keeps its hold, or is held
+ * as `github_checking` (its first free hours wait until the check works).
+ */
+async function holdUnsettled(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<void> {
+  if (account.free_github_exempt === 1 || account.free_github_hold != null) return;
+  if (await hasClaim(env, account.user_id)) return;
+  await applyHold(env, account, "github_checking", ctx);
 }
 
 /** Whether the account's GitHub grant still gives a token: `unknown` when GitHub couldn't be asked. */
@@ -211,24 +240,35 @@ async function claimGithub(env: CloudEnv, account: AccountRow, githubUserId: num
 /**
  * Settles the GitHub rules for an account (see the top of this file). Runs
  * after the computer's settle and before the request's own hours check.
- * Never throws: a failure is reported and the request goes on as it would have.
+ * Never throws: a failure is reported and the request goes on, in production
+ * with a new free account's hours held (`holdUnsettled`).
  */
 export async function settleFreePlanGithub(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<void> {
   try {
     await settle(env, account, ctx);
   } catch (error) {
     reportCloudFailure("cloud.free_plan.github_settle_failed", { userId: account.user_id, message: error instanceof Error ? error.message : "unknown" }, "cloud-free-plan");
+    // In production a failed settle grants nothing: a free account with no claim and no exemption waits on hold.
+    if (!isProduction(env) || accountRules(account) !== "free") return;
+    try {
+      await holdUnsettled(env, account, ctx);
+    } catch (holdError) {
+      reportCloudFailure("cloud.free_plan.github_hold_failed", { userId: account.user_id, message: holdError instanceof Error ? holdError.message : "unknown" }, "cloud-free-plan");
+    }
   }
 }
 
 async function settle(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<void> {
   // Paid accounts use no free hours: nothing to claim or hold. A hold left from the free plan stays until it is settled there.
   if (accountRules(account) !== "free") return;
-  if (!(await rulesOn(env))) {
-    // Turned off (no GitHub App here): a hold from before gives its hours back.
+  const rules = await rulesOn(env);
+  if (rules === "off") {
+    // Turned off (no GitHub App outside production): a hold from before gives its hours back.
     if (account.free_github_hold != null) await applyHold(env, account, null, ctx);
     return;
   }
+  // In production without a working GitHub App, nothing is granted or released.
+  if (rules === "broken") return holdUnsettled(env, account, ctx);
   const facts = await readFacts(env, account.user_id);
   if (facts.own != null) return applyHold(env, account, null, ctx);
   if (account.free_github_exempt === 1) {

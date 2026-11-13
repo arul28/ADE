@@ -64,6 +64,7 @@ import {
   logCloud,
   reportCloudFailure,
   PENDING_TIMEOUT_MS,
+  AWAKE_CAP_COUNT_SQL,
   adoptionStatements,
   deleteComputer,
   goneFromProviderStatements,
@@ -165,8 +166,6 @@ const AWAKE_CAP_WAIT_MS = 12_000;
 const AWAKE_CAP_POLL_MS = 3_000;
 const TOO_MANY_AWAKE_MESSAGE = "Too many of your computers are awake at once. Put one you aren't using to sleep, then try again.";
 const tooManyAwake = (): Refused => ({ response: fail("too_many_awake", TOO_MANY_AWAKE_MESSAGE, 429), refusal: "awake_cap" });
-/** Awake, or a reservation still being made: what the cap counts, here and in `reserveComputer`'s one write. */
-const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status = 'provisioning' and created_at > ?))";
 
 /** How many of the account's computers count toward the cap now, `except` left out (the one about to wake). */
 async function awakeCount(env: CloudEnv, userId: string, now: number, except = ""): Promise<number> {
@@ -199,6 +198,21 @@ async function awakeRoom(env: CloudEnv, computer: ComputerRow, now: number, wait
     }
     await new Promise((resolve) => setTimeout(resolve, AWAKE_CAP_POLL_MS));
   }
+}
+
+const COMPUTER_DELETING_MESSAGE = "ADE Cloud is deleting this computer because it went unused. Its work was saved to its branch on GitHub, and its lane stays: your next message to the lane makes a new computer.";
+
+/**
+ * Marks real use for the idle cleanup before the person's request runs
+ * (`recordIdleUse`). A response when the request must not run: the cleanup
+ * already claimed the delete, or the use couldn't be recorded while its save
+ * holds the computer (the save would delete it without seeing this use).
+ */
+async function idleUseRefusal(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response | null> {
+  const use = await recordIdleUse(env, computer, now);
+  if (use === "deleting") return fail("computer_deleting", COMPUTER_DELETING_MESSAGE, 409);
+  if (use === "unrecorded") return fail("unavailable", "ADE Cloud couldn't record that you're using this computer, so it didn't run that. Try again in a moment.", 503);
+  return null;
 }
 
 /** A disk past what this size's disk can grow to. `moving` is a computer whose disk is already that big. */
@@ -486,6 +500,17 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   return createAnswerOf(await createComputer(env, userId, provider, { body }, ctx));
+}
+
+/**
+ * `createComputer` for a run nobody's request started (an automation's
+ * webhook delivery, a scheduled run): the GitHub rules of the free plan are
+ * settled first, as a launch's request settles them, so the hours check reads
+ * a settled hold.
+ */
+export async function createComputerSettled(env: CloudEnv, userId: string, provider: CloudProvider, extras: CreateComputerExtras, ctx: CloudRequestContext): Promise<CreateComputerOutcome> {
+  await settleFreePlanGithub(env, await loadAccount(env, userId, ctx.now), ctx);
+  return createComputer(env, userId, provider, extras, ctx);
 }
 
 /**
@@ -855,6 +880,12 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "person", key: computer.instance_id, refusedAction: "wake", now });
     return refuse(capped);
   }
+  // Before the provider is asked: an idle cleanup's save in flight sees this start before its
+  // delete (the status alone can't say it: the save's own wake has it running already).
+  if (!freeWake) {
+    const refused = await idleUseRefusal(env, computer, now);
+    if (refused) return refused;
+  }
   const status = await provider.startInstance(computer.instance_id);
   if (freeWake) {
     // A stretch already open is charged up to here, then it starts over after the free window.
@@ -879,8 +910,6 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     return json({ status });
   }
   await recordStatus(env, computer, status, now, "user");
-  // Already running for an idle cleanup's save: the status didn't change, but this is use.
-  await recordIdleUse(env, computer.instance_id, now);
   return json({ status });
 }
 
@@ -1001,15 +1030,20 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
   const timeoutMs = typeof body.timeoutMs === "number" && Number.isFinite(body.timeoutMs)
     ? Math.min(MAX_EXEC_TIMEOUT_MS, Math.max(1_000, Math.round(body.timeoutMs)))
     : undefined;
-  // A command wakes a sleeping computer.
-  if (!isMeteredStatus(computer.status)) {
+  const asleep = !isMeteredStatus(computer.status);
+  if (asleep) {
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
     if (blocked) return blocked.response;
     const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
     if (capped) return capped.response;
   }
   // A person's command during an idle cleanup's save calls its delete off.
-  await recordIdleUse(env, computer.instance_id, now);
+  const refused = await idleUseRefusal(env, computer, now);
+  if (refused) return refused;
+  if (computer.status === "sleeping" || computer.status === "stopped") {
+    // A command wakes a sleeping computer: woken here and its status saved, so the awake cap counts it.
+    await recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "exec");
+  }
   return json(await provider.exec(computer.instance_id, command, timeoutMs));
 }
 
@@ -1088,7 +1122,9 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   // "Keep it" on an idle cleanup warning: the idle clock restarts with no wake and no hours.
   "POST keep": async (_request, env, computer, _provider, { now, waitUntil }) => {
-    await keepIdleComputer(env, waitUntil, await loadAccount(env, computer.user_id, now), computer, now);
+    if (!(await keepIdleComputer(env, waitUntil, await loadAccount(env, computer.user_id, now), computer, now))) {
+      return fail("computer_deleting", `Too late to keep it. ${COMPUTER_DELETING_MESSAGE}`, 409);
+    }
     return json({ ok: true });
   },
   // The computer's own report of hours near full CPU with no chat turn or agent working: a line in the owner's daily report.
@@ -1336,7 +1372,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     return providerCall(() => handleAutomationDelivery(request, env, path, {
       provider,
       now,
-      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, { now, waitUntil }),
+      createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now, waitUntil }),
     }));
   }
   const caller = await authenticate(request, env);
@@ -1428,7 +1464,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
         const computer = await ownedComputer(env, caller.userId, instanceRoute.instanceId);
         if (!computer) return notFound();
         // Signing in on the computer is use, even during an idle cleanup's save.
-        await recordIdleUse(env, computer.instance_id, now);
+        const refused = await idleUseRefusal(env, computer, now);
+        if (refused) return refused;
         return routeSignIns(request, computer, instanceRoute.rest, {
           provider,
           isAwake: isMeteredStatus(computer.status),

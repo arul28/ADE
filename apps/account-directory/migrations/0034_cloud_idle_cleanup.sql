@@ -16,6 +16,10 @@ alter table cloud_computers add column idle_emailed_at integer;
 alter table cloud_computers add column idle_kept_at integer;
 -- A save-and-delete run holds this while it works, so overlapping ticks run it once.
 alter table cloud_computers add column idle_claimed_at integer;
+-- The run's claim to delete, taken in one conditional write just before the
+-- provider delete, only while the computer is still unused and not kept: a
+-- "Keep it" or a use after it is refused, one before it calls the delete off.
+alter table cloud_computers add column idle_deleting_at integer;
 -- The save didn't go through, so the computer was kept: when, and why in one sentence.
 alter table cloud_computers add column idle_held_at integer;
 alter table cloud_computers add column idle_held_reason text;

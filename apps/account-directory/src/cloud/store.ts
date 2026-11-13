@@ -156,6 +156,8 @@ export type ComputerRow = {
   idle_kept_at?: number | null;
   /** A save-and-delete run in flight. */
   idle_claimed_at?: number | null;
+  /** That run's claim to delete, taken just before the provider delete; "Keep it" is refused after it. */
+  idle_deleting_at?: number | null;
   /** The save didn't go through, so the computer was kept: when, and why. */
   idle_held_at?: number | null;
   idle_held_reason?: string | null;
@@ -215,6 +217,10 @@ export type AccountRow = {
   old_plan_terms?: number | null;
   /** When an account on the old terms that holds more than the new disk was told before its renewal (once; migration 0033). */
   old_terms_told_at?: number | null;
+  /** 1 while the subscription's extra-disk item is on the price from before Cloud 7 (`extraDiskCentsPer10GbMonthOf`; migration 0033). */
+  extra_disk_old_price?: number | null;
+  /** The hours of the paid period a failed payment cut short, restored with it (`restored_same_period`; migration 0033). */
+  past_due_included_milli?: number | null;
   /** Why the GitHub rules hold the free hours at 0 (`freePlanGithub.ts`, migration 0035); null while nothing is held. */
   free_github_hold: string | null;
   /** 1: used ADE Cloud before the GitHub rules shipped, so they don't apply. */
@@ -263,6 +269,13 @@ export function reportCloudFailure(event: string, meta: Record<string, unknown> 
 
 /** A reservation with no computer behind it after this long is given up on. */
 export const PENDING_TIMEOUT_MS = 15 * 60_000;
+/**
+ * What the awake cap counts (`AWAKE_COMPUTER_CAP`): awake, or a reservation
+ * still being made. Binds one `?`, the reservation cutoff (`now -
+ * PENDING_TIMEOUT_MS`). Shared by the wake and create checks (`routes.ts`) and
+ * the timed wakes (`cloudWake.ts`), so they all count the same computers.
+ */
+export const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status = 'provisioning' and created_at > ?))";
 const PENDING_PREFIX = "pending:";
 export const isPendingId = (id: string): boolean => id.startsWith(PENDING_PREFIX);
 export const newPendingId = (): string => `${PENDING_PREFIX}${crypto.randomUUID()}`;
@@ -675,7 +688,7 @@ function diskDayBillable(account: Pick<AccountRow, "plan" | "stripe_status" | "e
     && Boolean(account.stripe_customer_id && account.stripe_subscription_id);
 }
 
-export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" | "stripe_status" | "extra_disk_state" | "stripe_customer_id" | "stripe_subscription_id" | "old_plan_terms">;
+export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" | "stripe_status" | "extra_disk_state" | "stripe_customer_id" | "stripe_subscription_id" | "old_plan_terms" | "extra_disk_old_price">;
 
 /**
  * Raises today's peak disk for the account to what its computers hold now,
@@ -700,7 +713,7 @@ export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: num
 }
 
 /** This period's billable extra disk so far, in micros: the days already billed plus the ones not yet reported. */
-export async function extraDiskMicrosThisPeriod(env: CloudDb, account: Pick<AccountRow, "user_id" | "period_start" | "old_plan_terms">): Promise<number> {
+export async function extraDiskMicrosThisPeriod(env: CloudDb, account: Pick<AccountRow, "user_id" | "period_start" | "extra_disk_old_price">): Promise<number> {
   const row = await env.DB.prepare(`
     select coalesce(sum(case when billable = 1 then coalesce(billed_gb, max(0, peak_gb - plan_gb)) else 0 end), 0) as gb_days
     from cloud_disk_days where user_id = ? and day >= ?
@@ -931,8 +944,9 @@ function planTransition(
     const stashEnd = account.past_due_period_end;
     const end = change.periodEnd ?? stashEnd ?? free.end;
     return stashEnd != null && stashEnd > now && end === stashEnd
-      // The same period comes back with the hours it had: the old terms' if it began before Cloud 7.
-      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: planIncludedMilliFor(nextPaidPlan, account.old_plan_terms === 1) } }
+      // The same period comes back with the hours it had when the payment failed (an upgrade
+      // mid-period changed them); a stash from before that column falls back to the plan's.
+      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: account.past_due_included_milli ?? planIncludedMilliFor(nextPaidPlan, account.old_plan_terms === 1) } }
       : { kind: "restored_new_period", next: { plan: "paid", start: change.periodStart ?? now, end, included: paidIncluded } };
   }
   if (account.plan === "free" && nextPlan === "paid") {
@@ -992,7 +1006,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     const stashPeriodEnd = change.periodEnd ?? account.period_end;
     // Extra hours go off here, but what was already used is still owed.
     const owed = extraActive(account) ? extraOwedMilli(account, stashUsed) : account.extra_owed_milli;
-    extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["extra_enabled", 0], ["extra_owed_milli", owed]);
+    extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["past_due_included_milli", account.included_milli], ["extra_enabled", 0], ["extra_owed_milli", owed]);
   }
   const updates: D1PreparedStatement[] = [];
   switch (transition?.kind) {
@@ -1000,10 +1014,10 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       updates.push(env.DB.prepare("update cloud_accounts set used_milli = ? where user_id = ?").bind(account.past_due_used_milli ?? 0, userId));
       // The restored hours draw from earned hours again when this period ends, so what the cut drew comes back.
       updates.push(env.DB.prepare("update cloud_accounts set earned_used_milli = max(0, earned_used_milli - coalesce(past_due_earned_milli, 0)), past_due_earned_milli = null where user_id = ?").bind(userId));
-      extras.push(["past_due_used_milli", null], ["past_due_period_end", null], ["billing_restored_at", now]);
+      extras.push(["past_due_used_milli", null], ["past_due_period_end", null], ["past_due_included_milli", null], ["billing_restored_at", now]);
       break;
     case "restored_new_period":
-      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null], ["past_due_earned_milli", null], ["billing_restored_at", now]);
+      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null], ["past_due_included_milli", null], ["past_due_earned_milli", null], ["billing_restored_at", now]);
       break;
     case "to_paid":
     case "renewal":

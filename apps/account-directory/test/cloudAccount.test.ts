@@ -778,8 +778,10 @@ describe("ADE Cloud account", () => {
     // An account from before Cloud 7 keeps Plus's 40 GB until its next period starts.
     ["an account on the old terms keeps 40 GB until its next period", { extra_disk_state: "off", old_plan_terms: 1 }, 20, 36, 200, null],
     ["the same grow on the new terms asks first", { extra_disk_state: "off" }, 20, 36, 403, "needs_approval"],
-    // ...and the old $1 extra disk price its subscription still pays: $6 holds 60 GB past 40 for a month.
-    ["an account on the old terms is held to the old extra disk price", { extra_disk_state: "on", extra_disk_limit_cents: 600, old_plan_terms: 1, period_start: NOW, period_end: NOW + 30 * DAY }, 28, 100, 200, null],
+    // ...and the old $1 extra disk price its subscription's disk item still pays: $6 holds 60 GB past 40 for a month.
+    ["a disk item still on the old price is held to it", { extra_disk_state: "on", extra_disk_limit_cents: 600, old_plan_terms: 1, extra_disk_old_price: 1, period_start: NOW, period_end: NOW + 30 * DAY }, 28, 100, 200, null],
+    // An account on the old terms whose disk item was attached at the current price pays $2: $6 holds 30 GB past 40.
+    ["the old terms with a disk item on the current price is held to the current price", { extra_disk_state: "on", extra_disk_limit_cents: 600, old_plan_terms: 1, period_start: NOW, period_end: NOW + 30 * DAY }, 28, 100, 403, "monthly_limit"],
   ])("extra disk limit: %s", async (_label, overrides, fromGb, toGb, status, reason) => {
     Object.assign(harness.env, MONEY_ENV);
     seedAccount(harness, OWNER, { ...plusAccount, ...overrides });
@@ -791,6 +793,18 @@ describe("ADE Cloud account", () => {
     expect((await errorOf(response))?.reason ?? null).toBe(reason);
     expect(computer(harness).disk_gb).toBe(reason ? fromGb : toGb);
     expect(providerCalls(harness, /POST .*\/resize$/)).toHaveLength(reason ? 0 : 1);
+  });
+
+  it("a downgrade's room is priced at the extra disk price its next period pays, not the old one paid now", async () => {
+    Object.assign(harness.env, MONEY_ENV);
+    // Pro on the old terms with its disk item on the old $1 price and a $10 limit: Plus, from the
+    // renewal, has 30 GB and $10 of extra disk at $2 (50 GB), so 88 GB is over it.
+    seedAccount(harness, OWNER, { ...proAccount, old_plan_terms: 1, extra_disk_old_price: 1, extra_disk_state: "on", extra_disk_limit_cents: 1000 });
+    seedStopped([48, 40]);
+
+    const state = await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState;
+
+    expect(state.downgradePreviews?.plus).toMatchObject({ usedGb: 88, limitGb: 80 });
   });
 
   it.each<[string, Row, Row, number, string | null, boolean]>([
@@ -1235,14 +1249,18 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect((await stateOf()).earnedHours?.leftMilli).toBe(10_000);
   });
 
-  it("a failed payment and a paid invoice in the same period keep the terms from before Cloud 7 (40 GB, 500 hours)", async () => {
-    seedAccount(harness, OWNER, { ...plus, old_plan_terms: 1, included_milli: 500_000 });
+  it.each<[string, Row, number, number]>([
+    ["keep the terms from before Cloud 7 (40 GB, 500 hours)", { ...plus, old_plan_terms: 1, included_milli: 500_000 }, 500_000, 40],
+    // Upgraded to Pro mid-period: Pro's new 1,600 hours, still the old terms' disk.
+    ["give back the hours the period had after an upgrade, not the plan's old ones", { ...plus, paid_plan: "pro", old_plan_terms: 1, included_milli: 1_600_000 }, 1_600_000, 120],
+  ])("a failed payment and a paid invoice in the same period %s", async (_label, account, includedMilli, diskGb) => {
+    seedAccount(harness, OWNER, account);
 
     await applyCloudPlanChange(harness.env, OWNER, { stripeStatus: "past_due" }, clock);
     await applyCloudPlanChange(harness.env, OWNER, { stripeStatus: "active", plan: "paid" }, clock + HOUR);
 
-    expect(harness.row("select old_plan_terms, included_milli from cloud_accounts where user_id = ?", OWNER)).toEqual({ old_plan_terms: 1, included_milli: 500_000 });
-    expect((await stateOf()).disk.limitGb).toBe(40);
+    expect(harness.row("select old_plan_terms, included_milli from cloud_accounts where user_id = ?", OWNER)).toEqual({ old_plan_terms: 1, included_milli: includedMilli });
+    expect((await stateOf()).disk.limitGb).toBe(diskGb);
   });
 
   it("two accounts using one computer at once: one gets its free plan, the other gets 0 free hours", async () => {
@@ -1424,6 +1442,26 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     if (expected.state === "too_new") {
       expect(state.freePlan?.github).toMatchObject({ canUnlockWithCard: true, oldEnoughAt: clock + 20 * DAY });
     }
+  });
+
+  it.each<[string, () => void, { state: string; included: number }]>([
+    ["a new free account gets no free hours while GitHub can't be checked", () => {}, { state: "checking", included: 0 }],
+    ["a hold from before stays", () => harness.exec("update cloud_accounts set free_github_hold = 'no_github', included_milli = 0 where user_id = ?", OWNER), { state: "no_github", included: 0 }],
+    ["an account that already claimed its GitHub account keeps its hours", () => harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OWNER, claimed_at: NOW - DAY }), { state: "ok", included: 50_000 }],
+    ["an account that used ADE Cloud before the rules keeps its hours", () => harness.exec("update cloud_accounts set free_github_exempt = 1 where user_id = ?", OWNER), { state: "ok", included: 50_000 }],
+    ["a settle that throws holds a new free account's hours", () => {
+      withGithub();
+      // No GitHub connected, and the write of that hold fails: the settle throws.
+      harness.injectFault((sql, params) => /set free_github_hold = \?/.test(sql) && params[0] === "no_github");
+    }, { state: "checking", included: 0 }],
+  ])("in production, the GitHub rules fail closed: %s", async (_label, arrange, expected) => {
+    harness.env.SENTRY_ENVIRONMENT = "production";
+    seedAccount(harness, OWNER);
+    arrange();
+
+    const state = await stateOf();
+
+    expect({ state: state.freePlan?.github?.state, included: included() }).toEqual(expected);
   });
 
   it("two ADE accounts claiming one GitHub account at once: one gets the free plan, the other is refused", async () => {
@@ -1812,6 +1850,22 @@ describe("ADE Cloud idle cleanup", () => {
     expect(deletes()).toEqual([]);
     expect(computer(harness).deleted_at).toBeNull();
     expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual(["running", "running"]);
+  });
+
+  it("Keep it pressed once the delete is under way is refused, never answered and then ignored", async () => {
+    seedIdle(3 * DAY + HOUR, dueRow);
+    answerExecs(tally([lane()]), tally([lane()]));
+    let keep: Response | null = null;
+    // Lands as the delete reads the computer's last events, just before the provider delete.
+    harness.net.after.push({
+      match: new RegExp(`GET .*/instances/${INSTANCE}/events$`),
+      run: async () => { keep = await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/keep`); },
+    });
+
+    await run();
+
+    expect(keep!.status).toBe(409);
+    expect(computer(harness).deleted_at).toBe(NOW);
   });
 
   it("a delete the provider refuses after the save waits before it runs again, never every minute", async () => {

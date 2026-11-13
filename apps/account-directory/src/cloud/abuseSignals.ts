@@ -85,10 +85,20 @@ export function signupClientIp(payload: unknown): string | null {
   return typeof ip === "string" && ip.trim() && ip.length <= 64 ? ip.trim().toLowerCase() : null;
 }
 
-/** Stores the sign-up's hashed address, once per account. Never throws: a failure is reported and the webhook goes on. */
+let noKeyLogged = false;
+
+/** Stores the sign-up's hashed address, once per account (never without `CLOUD_CHAT_MASTER_KEY`). Never throws: a failure is reported and the webhook goes on. */
 export async function recordSignupIp(env: Pick<CloudEnv, "DB" | "CLOUD_CHAT_MASTER_KEY">, userId: string, ip: string | null, signedUpAt: number): Promise<void> {
   if (!ip) {
     logCloud("cloud.signup_ip_missing", { userId });
+    return;
+  }
+  // Without the secret the hash would be keyed with a public constant, which anyone could reverse over IPv4.
+  if (!env.CLOUD_CHAT_MASTER_KEY?.trim()) {
+    if (!noKeyLogged) {
+      noKeyLogged = true;
+      logCloud("cloud.signup_ip_not_recorded", { note: "CLOUD_CHAT_MASTER_KEY unset: sign-up addresses are not stored" });
+    }
     return;
   }
   try {

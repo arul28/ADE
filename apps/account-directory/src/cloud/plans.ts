@@ -114,10 +114,11 @@ export const AWAKE_COMPUTER_CAP = 25;
 /** Extra disk: $2 for each 10 GB a month, counted by the day on the GB above the plan's disk. */
 export const EXTRA_DISK_CENTS_PER_10GB_MONTH = 200;
 /**
- * Extra disk before Cloud 7: $1 for each 10 GB. A subscription bought before
- * then keeps Stripe's old disk price until its renewal moves it
- * (`moveMeteredItems`), the same moment `old_plan_terms` clears, so its limit
- * and its usage are priced at what Stripe actually charges it.
+ * Extra disk before Cloud 7: $1 for each 10 GB. A subscription whose disk item
+ * is still on that price (`extra_disk_old_price`, migration 0033) keeps it
+ * until its renewal moves it (`moveMeteredItems`), so its limit and its usage
+ * are priced at what Stripe actually charges it. An account on the old plan
+ * terms with no disk item gets the current price when extra disk turns on.
  */
 const EXTRA_DISK_CENTS_PER_10GB_MONTH_BEFORE_CLOUD_7 = 100;
 /** One cent in micros (1e-6 USD), the unit money is counted in. */
@@ -125,12 +126,16 @@ export const CENT_MICROS = 10_000;
 /** A month of extra disk, for "up to $X a month": the limit must hold for a full one. */
 export const EXTRA_DISK_MONTH_DAYS = 30;
 
-/** Whose extra disk price applies: an account on the terms from before Cloud 7 pays the old one. */
-export type ExtraDiskTerms = { old_plan_terms?: number | null };
+/**
+ * Whose extra disk price applies: an account whose subscription's disk item is
+ * on the price from before Cloud 7 pays the old one. Null (or a plan that
+ * starts later, with a new period) is the current price.
+ */
+export type ExtraDiskTerms = { extra_disk_old_price?: number | null };
 
 /** The extra disk price an account pays, in cents for each 10 GB a month. */
 export const extraDiskCentsPer10GbMonthOf = (terms?: ExtraDiskTerms | null): number =>
-  terms?.old_plan_terms === 1 ? EXTRA_DISK_CENTS_PER_10GB_MONTH_BEFORE_CLOUD_7 : EXTRA_DISK_CENTS_PER_10GB_MONTH;
+  terms?.extra_disk_old_price === 1 ? EXTRA_DISK_CENTS_PER_10GB_MONTH_BEFORE_CLOUD_7 : EXTRA_DISK_CENTS_PER_10GB_MONTH;
 
 /**
  * One GB-day of extra disk, in micros: a 30-day month of 10 GB is $2 (6,666.67

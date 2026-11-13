@@ -67,7 +67,9 @@ import {
  * keeps its claim (the in-app warning stands), so it never blocks the steps
  * after it. A person who starts, runs a command on, or signs in on the
  * computer while its save runs marks real use (`recordIdleUse`), and the
- * delete is called off.
+ * delete is called off. Just before the provider delete the run claims it in
+ * one conditional write (`claimDelete`): a Keep it, start, command or sign-in
+ * after that is refused with a plain sentence, never answered and ignored.
  */
 
 const MINUTE = 60_000;
@@ -105,6 +107,8 @@ const FAILED_RETRY_MS = HOUR;
 const FAILED_RETRY_MAX_MS = DAY;
 /** A run that died left its claim; it stops counting after this long. */
 const CLAIM_STALE_MS = 20 * MINUTE;
+/** No run holds the delete (one older than `CLAIM_STALE_MS` died): binds the stale cutoff. */
+const NOT_DELETING_SQL = "(idle_deleting_at is null or idle_deleting_at < ?)";
 /** Save-and-delete runs one tick starts (each can take minutes on the computer). */
 const SAVES_PER_TICK = 3;
 /** The youngest idle a computer can have and still need a warning (the free plan's). */
@@ -174,7 +178,8 @@ export function idleStateOf(computer: IdleColumns, account: AccountRow, liveUsed
   const needsFollowUp = !held && announced && emailed != null && emailed < lastEmailDue - EMAIL_SLACK_MS && now >= nextEmailAt(lastEmailDue, emailed, rule === IDLE_CLEANUP.paid);
   const deleteReady = !held && announced && now >= deletesAt && now >= failedUntil && emailed != null
     && emailed >= lastEmailDue - EMAIL_SLACK_MS && now - emailed >= rule.afterLastEmailMs;
-  const saveDue = deleteReady || (held != null && now >= held.retryAt && now >= failedUntil);
+  // A held retry waits for the deadline in force too: an upgrade since the hold moved it later.
+  const saveDue = deleteReady || (held != null && now >= held.retryAt && now >= failedUntil && now >= deletesAt);
   return { since, rule, deletesAt: Math.max(deletesAt, held?.retryAt ?? 0, failedUntil), announced, needsWarning, needsFollowUp, deleteReady, saveDue, held };
 }
 
@@ -400,16 +405,22 @@ async function followUp(env: CloudEnv, waitUntil: CloudWaitUntil, account: Accou
  * the warning and a kept-after-a-failed-save state; a save already running
  * sees it before its delete and stops.
  */
-export async function keepIdleComputer(env: CloudEnv, waitUntil: CloudWaitUntil, account: AccountRow, computer: ComputerRow, now: number): Promise<void> {
+export async function keepIdleComputer(env: CloudEnv, waitUntil: CloudWaitUntil, account: AccountRow, computer: ComputerRow, now: number): Promise<boolean> {
   const warned = computer.idle_warned_at != null || computer.idle_held_at != null;
-  await env.DB.prepare(`
+  // A run that already claimed the delete wins: Keep it is refused, never answered and then ignored.
+  const kept = await env.DB.prepare(`
     update cloud_computers set idle_kept_at = ?, idle_warned_at = null, idle_deletes_at = null, idle_emailed_at = null, idle_held_at = null, idle_held_reason = null,
       idle_held_count = null, idle_failed_at = null, idle_failed_count = null
-    where instance_id = ? and deleted_at is null
-  `).bind(now, computer.instance_id).run();
+    where instance_id = ? and deleted_at is null and ${NOT_DELETING_SQL}
+  `).bind(now, computer.instance_id, now - CLAIM_STALE_MS).run();
+  if ((kept.meta?.changes ?? 0) !== 1) {
+    logCloud("cloud.idle_cleanup_keep_too_late", { instanceId: computer.instance_id });
+    return false;
+  }
   logCloud("cloud.idle_cleanup_kept", { instanceId: computer.instance_id, how: "button", warned });
   await logStep(env, computer, "kept", "button", now);
   captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "kept", plan: planIdOf(account), how: "button" }, computer.instance_id, now);
+  return true;
 }
 
 /**
@@ -419,16 +430,31 @@ export async function keepIdleComputer(env: CloudEnv, waitUntil: CloudWaitUntil,
  * status and writes nothing else; this moves `last_awake_at`, which calls
  * the delete off (`cameBack`), keeps the computer awake for them, and makes
  * the free wake count as use when it closes. Outside a run it writes nothing:
- * the status change of a wake already counts.
+ * the status change of a wake already counts. Called before the person's
+ * request runs. `deleting`: the run already claimed the delete, so the
+ * request must not go on. `unrecorded`: the write failed while a run holds
+ * the computer, so the run can't see this use; the request must not go on
+ * either. With no run, a failed write is reported and the request goes on.
  */
-export async function recordIdleUse(env: CloudEnv, instanceId: string, now: number): Promise<void> {
+export async function recordIdleUse(env: CloudEnv, computer: Pick<ComputerRow, "instance_id" | "idle_claimed_at">, now: number): Promise<"ok" | "deleting" | "unrecorded"> {
+  const instanceId = computer.instance_id;
   try {
-    const marked = await env.DB.prepare("update cloud_computers set last_awake_at = ? where instance_id = ? and deleted_at is null and idle_claimed_at is not null")
-      .bind(now, instanceId).run();
-    if ((marked.meta?.changes ?? 0) > 0) logCloud("cloud.idle_cleanup_used_during_save", { instanceId });
+    const marked = await env.DB.prepare(`update cloud_computers set last_awake_at = ? where instance_id = ? and deleted_at is null and idle_claimed_at is not null and ${NOT_DELETING_SQL}`)
+      .bind(now, instanceId, now - CLAIM_STALE_MS).run();
+    if ((marked.meta?.changes ?? 0) > 0) {
+      logCloud("cloud.idle_cleanup_used_during_save", { instanceId });
+      return "ok";
+    }
+    const row = await env.DB.prepare("select idle_claimed_at, idle_deleting_at from cloud_computers where instance_id = ? and deleted_at is null")
+      .bind(instanceId).first<Pick<ComputerRow, "idle_claimed_at" | "idle_deleting_at">>();
+    return row?.idle_deleting_at != null && row.idle_deleting_at >= now - CLAIM_STALE_MS ? "deleting" : "ok";
   } catch (error) {
-    // The person's request goes on; the save's own checks still stop at Keep it or a status change.
     reportCloudFailure("cloud.idle_cleanup_use_mark_failed", { instanceId, message: error instanceof Error ? error.message : "unknown" });
+    // Whether a run holds the computer: read again, or the request's own read when that fails too.
+    const claimedAt = await env.DB.prepare("select idle_claimed_at from cloud_computers where instance_id = ?").bind(instanceId)
+      .first<Pick<ComputerRow, "idle_claimed_at">>()
+      .then((row) => row?.idle_claimed_at ?? null, () => computer.idle_claimed_at ?? null);
+    return claimedAt != null && claimedAt >= now - CLAIM_STALE_MS ? "unrecorded" : "ok";
   }
 }
 
@@ -494,9 +520,10 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
     try {
       const all = ownedBy.get(account.user_id) ?? [];
       const liveUsed = liveUsedMilli(account, all, now);
+      const movingSources = movingSourcesOf(all);
       for (const computer of byUser.get(account.user_id) ?? []) {
-        // A move or an update in flight changes which computer holds the lane: wait it out.
-        if (computer.moving_from != null || computer.update_state === "updating") continue;
+        // A move or an update in flight changes which computer holds the lane: wait it out (both ends of a move).
+        if (inMoveOrUpdate(computer, movingSources)) continue;
         const state = idleStateOf(computer, account, liveUsed, now);
         if (!state) continue;
         if (state.needsWarning) await warn(env, waitUntil, account, computer, state, now);
@@ -517,6 +544,14 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
 
 type Fresh = { computer: ComputerRow; account: AccountRow; state: IdleState };
 
+/** The computers a move is copying from (another row's `moving_from`), as `planCleanup.ts` `pickable` reads them. */
+const movingSourcesOf = (computers: Pick<ComputerRow, "moving_from">[]): Set<string> =>
+  new Set(computers.map((computer) => computer.moving_from).filter((id): id is string => id != null));
+
+/** A move's new computer, its source, or a computer mid-update: the cleanup leaves it alone. */
+const inMoveOrUpdate = (computer: ComputerRow, movingSources: Set<string>): boolean =>
+  computer.moving_from != null || movingSources.has(computer.instance_id) || computer.update_state === "updating";
+
 /** Whether the computer has a timed wake-up booked (a chat's scheduled wake-up, an automation's schedule). */
 async function hasTimedWake(env: CloudEnv, computer: Pick<ComputerRow, "instance_id" | "user_id">): Promise<boolean> {
   const row = await env.DB.prepare("select 1 as n from cloud_wakes where user_id = ? and instance_id = ? limit 1").bind(computer.user_id, computer.instance_id).first<{ n: number }>();
@@ -533,6 +568,7 @@ async function freshDue(env: CloudEnv, instanceId: string, now: number): Promise
     hasTimedWake(env, computer),
   ]);
   if (!account) return null;
+  if (inMoveOrUpdate(computer, movingSourcesOf(owned.results ?? []))) return null;
   const state = idleStateOf(computer, account, liveUsedMilli(account, owned.results ?? [], now), now, scheduled);
   if (!state?.saveDue) return null;
   return { computer, account, state };
@@ -583,6 +619,29 @@ async function cameBack(env: CloudEnv, fresh: Fresh): Promise<CameBack | null> {
   if (scheduled) return "scheduled";
   return null;
 }
+
+/**
+ * The run's claim to delete: one write that holds only while the row and the
+ * account still read as this run read them (not used, kept, given hours back,
+ * or booked a timed wake since) and the run still holds the save. The same
+ * facts `cameBack` reads, closed in one statement so nothing slips between.
+ */
+async function claimDelete(env: CloudEnv, fresh: Fresh, now: number): Promise<boolean> {
+  const { computer, account } = fresh;
+  const claimed = await env.DB.prepare(`
+    update cloud_computers set idle_deleting_at = ?
+    where instance_id = ? and deleted_at is null and idle_claimed_at = ? and ${NOT_DELETING_SQL}
+      and last_awake_at is ? and idle_kept_at is ?
+      and not exists (select 1 from cloud_wakes w where w.user_id = cloud_computers.user_id and w.instance_id = cloud_computers.instance_id)
+      and exists (select 1 from cloud_accounts a where a.user_id = cloud_computers.user_id and a.deleted_at is null and a.hours_restored_at is ?)
+  `).bind(now, computer.instance_id, now, now - CLAIM_STALE_MS, computer.last_awake_at ?? null, computer.idle_kept_at ?? null, account.hours_restored_at ?? null).run();
+  return (claimed.meta?.changes ?? 0) === 1;
+}
+
+/** A delete that didn't happen gives its claim back, so Keep it works again. */
+const unclaimDelete = (env: CloudEnv, instanceId: string, now: number): Promise<unknown> =>
+  env.DB.prepare("update cloud_computers set idle_deleting_at = null where instance_id = ? and idle_deleting_at = ?").bind(instanceId, now).run()
+    .catch((error: unknown) => reportCloudFailure("cloud.idle_cleanup_undelete_claim_failed", { instanceId, message: error instanceof Error ? error.message : "unknown" }));
 
 /**
  * A computer this run woke goes back to rest, unless the person started using
@@ -648,6 +707,13 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
       logCloud("cloud.idle_cleanup_came_back", { instanceId: computer.instance_id, how: back });
       return;
     }
+    // The delete is claimed in one write, only while nobody came back: a Keep it or a use after
+    // this is refused (`keepIdleComputer`, `recordIdleUse`), one before it calls the delete off.
+    if (!(await claimDelete(env, fresh, now))) {
+      await restIfUnused(env, provider, fresh, wake);
+      logCloud("cloud.idle_cleanup_came_back", { instanceId: computer.instance_id, how: "at_delete" });
+      return;
+    }
     const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(work.metadata));
     const own = work.pushed.lanes?.find((entry) => entry.laneId === lane.laneId) ?? null;
     if (own?.branchRef) lane.branch = own.branchRef;
@@ -656,6 +722,7 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
     try {
       await deleteComputer(env, provider, computer, { who: "system", reason: "idle_cleanup" }, Date.now());
     } catch (error) {
+      await unclaimDelete(env, computer.instance_id, now);
       if (laneKept) await unmarkKeepLaneStatement(env, computer.instance_id).run();
       await restIfUnused(env, provider, fresh, wake);
       // Its work is saved; the delete is tried again after a wait, never every minute.
@@ -671,6 +738,7 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
     await sendStepEmail(env, waitUntil, account, computer, "deleted", idleDeletedEmail(computer, lane.branch, laneKept, now - fresh.state.since), now);
   } catch (error) {
     reportCloudFailure("cloud.idle_cleanup_run_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
+    await unclaimDelete(env, computer.instance_id, now);
     await restIfUnused(env, provider, fresh, wake);
     await markFailed(env, waitUntil, fresh, "run_failed", now);
   } finally {

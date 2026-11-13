@@ -1,5 +1,5 @@
 import { runCloudWakes } from "./cloudWake";
-import { createComputer, handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { createComputerSettled, handleCloudRequest, isCloudRequest } from "./cloud/routes";
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
@@ -221,7 +221,8 @@ export default Sentry.withSentry(sentryOptions, {
           const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
           await runCloudAutomations(env, {
             provider,
-            createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
+            // The free plan's GitHub rules are settled first, as a launch's request settles them.
+            createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
           });
         }),
         // "Delete the project's cloud computers" jobs: a few computers a tick.

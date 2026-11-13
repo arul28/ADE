@@ -1,6 +1,7 @@
 import { captureCloudAction } from "./analytics";
 import {
   CLOUD_PLAN_SENTENCE_NAMES,
+  formatCloudCents,
   planCleanupDoneSentence,
   planCleanupSentence,
   type CloudPlanCleanup,
@@ -12,7 +13,7 @@ import {
 import { sendCloudEmail } from "./email";
 import { cloudAccessAllows } from "./http";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
-import { AWAKE_COMPUTER_CAP, CLOUD_PLANS, cloudSizeFor, extraDiskMonthMaxGb, isMeteredStatus, tierOf } from "./plans";
+import { AWAKE_COMPUTER_CAP, CLOUD_PLANS, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudSizeFor, extraDiskMonthMaxGb, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   boughtPlanIdOf,
@@ -132,21 +133,24 @@ export function waitingPlanOf(account: Pick<AccountRow, "plan" | "stripe_status"
 type PlanRoom = { planId: CloudPlanId; diskCapGb: number };
 
 /** What a cleanup reads of the account: its plan, its terms and its extra disk. */
-type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status" | "old_plan_terms" | "extra_disk_state" | "extra_disk_limit_cents">;
+type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status" | "old_plan_terms" | "extra_disk_old_price" | "extra_disk_state" | "extra_disk_limit_cents">;
 
 /**
  * What `planId` lets an account hold: disk only (no plan limits how many
  * computers). The plan in force keeps the account's terms (a period that
- * began before Cloud 7 keeps the old disk); any other plan starts with a new
- * period, on the new terms. On a paid plan with extra disk on and set up, the
- * cap grows by the most extra disk its monthly limit keeps for a full month.
- * The cap is the same for any set of computers, so a pick is checked against
- * what is left, not against the overage before it.
+ * began before Cloud 7 keeps the old disk, and a disk item still on the old
+ * price keeps that price); any other plan starts with a new period, on the
+ * new terms: the new disk and the current extra-disk price (the renewal moves
+ * the item). On a paid plan with extra disk on and set up, the cap grows by
+ * the most extra disk its monthly limit keeps for a full month. The cap is
+ * the same for any set of computers, so a pick is checked against what is
+ * left, not against the overage before it.
  */
 function roomOf(env: CloudEnv, account: CleanupAccount, planId: CloudPlanId): PlanRoom {
-  const diskGb = planId === cleanupPlanOf(account) ? planDiskGbOf(account, planId) : CLOUD_PLANS[planId].diskGb;
+  const inForce = planId === cleanupPlanOf(account);
+  const diskGb = inForce ? planDiskGbOf(account, planId) : CLOUD_PLANS[planId].diskGb;
   const extraGb = planId !== "free" && cloudOffers(env).extraDisk && account.extra_disk_state === "on" && account.extra_disk_limit_cents != null
-    ? extraDiskMonthMaxGb(account.extra_disk_limit_cents, account)
+    ? extraDiskMonthMaxGb(account.extra_disk_limit_cents, inForce ? account : null)
     : 0;
   return { planId, diskCapGb: diskGb + extraGb };
 }
@@ -431,38 +435,61 @@ async function tellPlanCleanupDone(env: CloudEnv, userId: string, done: CloudPla
 const OLD_TERMS_NOTICE_MS = 7 * 86_400_000;
 
 /**
- * An account on the terms from before Cloud 7 whose computers hold more than
- * its plan's new disk (Plus 40 → 30 GB, Pro 120 → 80 GB) is told once, in the
- * week before its renewal, that the new disk starts then. Without it the
- * renewal would refuse new computers (or bill extra disk) with no warning.
- * Nothing is freed. A downgrade or cancel waiting for the period end has its
- * own warning.
+ * An account on the terms from before Cloud 7 is told once, in the week
+ * before its renewal, when the new terms change what it gets: its computers
+ * hold more than its plan's new disk (Plus 40 → 30 GB, Pro 120 → 80 GB), or
+ * they still fit with extra disk on but the renewal makes more of their disk
+ * billable extra disk, or bills it at the current extra-disk price instead of
+ * the old one. Without it the renewal would refuse new computers, or bill
+ * more, with no warning. Nothing is freed. A downgrade or cancel waiting for
+ * the period end has its own warning. The claim is given back when the email
+ * didn't go out, so the next check tries again.
  */
 async function warnOldTermsEnding(env: CloudEnv, account: AccountRow, computers: ComputerRow[], now: number): Promise<void> {
   if (account.old_plan_terms !== 1 || account.old_terms_told_at != null) return;
   if (account.plan !== "paid" || account.stripe_status === "past_due" || account.cancel_at_period_end === 1 || account.paid_plan_next != null) return;
   if (account.period_end - now > OLD_TERMS_NOTICE_MS || account.period_end <= now) return;
   const planId = boughtPlanIdOf(account);
-  const cleanup = planCleanupFor(env, { ...account, old_plan_terms: 0 }, computers, planId);
-  if (!cleanup) return;
+  // After the renewal: the new disk, and the disk item moved to the current price.
+  const cleanup = planCleanupFor(env, { ...account, old_plan_terms: 0, extra_disk_old_price: 0 }, computers, planId);
+  const usedGb = countedDiskGb(computers);
+  const newDiskGb = CLOUD_PLANS[planId].diskGb;
+  const extraNowGb = Math.max(0, usedGb - planDiskGbOf(account, planId));
+  const extraThenGb = Math.max(0, usedGb - newDiskGb);
+  const extraCostsMore = !cleanup && cloudOffers(env).extraDisk && account.extra_disk_state === "on"
+    && (extraThenGb > extraNowGb || (extraThenGb > 0 && account.extra_disk_old_price === 1));
+  if (!cleanup && !extraCostsMore) return;
   // Claimed first, so overlapping checks send one email.
   const claimed = await env.DB.prepare("update cloud_accounts set old_terms_told_at = ? where user_id = ? and old_terms_told_at is null and old_plan_terms = 1")
     .bind(now, account.user_id).run();
   if (!claimed.meta.changes) return;
   const planName = CLOUD_PLAN_SENTENCE_NAMES[planId];
   const starts = utcDate(account.period_end);
-  logCloud("cloud.old_terms_warned", { userId: account.user_id, plan: planId, usedGb: cleanup.usedGb, limitGb: cleanup.limitGb });
-  const result = await sendCloudEmail(env, {
-    userId: account.user_id,
-    subject: `Your ADE Cloud ${planName} plan has ${cleanup.limitGb} GB of disk from ${starts}`,
-    text: [
-      `${planName}'s disk changes to ${cleanup.limitGb} GB when your plan renews on ${starts}. Until then you keep what you have now.`,
-      cleanup.sentence,
-      `From then, ADE can't make a new computer until your computers fit${account.extra_disk_state === "on" ? ", and the disk past it counts as extra disk" : ""}.`,
-      WAYS_OUT,
-    ].join("\n"),
-  });
-  if (result === "failed") reportCloudFailure("cloud.old_terms_warn_email_failed", { userId: account.user_id });
+  logCloud("cloud.old_terms_warned", { userId: account.user_id, plan: planId, usedGb, limitGb: cleanup?.limitGb ?? newDiskGb, extraDisk: extraCostsMore });
+  const result = cleanup
+    ? await sendCloudEmail(env, {
+      userId: account.user_id,
+      subject: `Your ADE Cloud ${planName} plan has ${cleanup.limitGb} GB of disk from ${starts}`,
+      text: [
+        `${planName}'s disk changes to ${cleanup.limitGb} GB when your plan renews on ${starts}. Until then you keep what you have now.`,
+        cleanup.sentence,
+        `From then, ADE can't make a new computer until your computers fit${account.extra_disk_state === "on" ? ", and the disk past it counts as extra disk" : ""}.`,
+        WAYS_OUT,
+      ].join("\n"),
+    })
+    : await sendCloudEmail(env, {
+      userId: account.user_id,
+      subject: `Your ADE Cloud ${planName} plan has ${newDiskGb} GB of disk from ${starts}`,
+      text: [
+        `${planName}'s disk changes to ${newDiskGb} GB when your plan renews on ${starts}. Until then you keep what you have now.`,
+        `Your computers hold ${usedGb} GB, so from then ${extraThenGb} GB of it counts as extra disk, at ${formatCloudCents(EXTRA_DISK_CENTS_PER_10GB_MONTH)} for each 10 GB a month, never more than the monthly limit you set.`,
+        "Delete computers you no longer use to keep it inside your plan's disk. Your computers and their work stay as they are.",
+      ].join("\n"),
+    });
+  if (result === "sent" || (result === "skipped" && !isProduction(env))) return;
+  // Not told: give the claim back (only this run's), so the next check tries again.
+  await env.DB.prepare("update cloud_accounts set old_terms_told_at = null where user_id = ? and old_terms_told_at = ?").bind(account.user_id, now).run();
+  reportCloudFailure("cloud.old_terms_warn_email_failed", { userId: account.user_id, email: result });
 }
 
 /* ---- Over the plan in force: told once, nothing freed ---- */
