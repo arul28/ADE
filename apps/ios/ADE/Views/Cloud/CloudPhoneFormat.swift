@@ -473,7 +473,13 @@ enum CloudPlanSeenStore {
   static let defaultsKey = "ade.cloud.planSeen.v1"
   private static let rank: [String: Int] = ["free": 0, "plus": 1, "pro": 2, "max": 3]
 
-  static func accountKey(_ account: CloudPhoneAccount) -> String { account.referral?.code ?? "account" }
+  /// The account's invite code; without one, a shared "account" key that
+  /// another account on this phone could have written, so it records but
+  /// never celebrates (`canCelebrate` false), as on the desktop.
+  static func accountKey(_ account: CloudPhoneAccount) -> (key: String, canCelebrate: Bool) {
+    if let code = account.referral?.code, !code.isEmpty { return (code, true) }
+    return ("account", false)
+  }
 
   /// Records what the account shows now and returns the moment to show, if the plan just went up.
   static func observe(_ account: CloudPhoneAccount, defaults: UserDefaults = .standard) -> CloudPlanMoment? {
@@ -481,7 +487,7 @@ enum CloudPlanSeenStore {
     let periodStart = account.billing?.periodStart ?? 0
     let key = "\(planId):\(Int(periodStart))"
     var all = defaults.dictionary(forKey: defaultsKey) as? [String: [String: Any]] ?? [:]
-    let accountKey = accountKey(account)
+    let (accountKey, canCelebrate) = accountKey(account)
     let previous = all[accountKey]
     let previousPlan = previous?["planId"] as? String
     let previousStart = previous?["periodStart"] as? Double
@@ -490,7 +496,7 @@ enum CloudPlanSeenStore {
     // Paid and in good standing: a failed payment is never a moment.
     let landed = planId != "free" && account.plan == "paid" && account.billing?.notice != "past_due"
     let wentUp = (rank[planId] ?? 0) > (rank[previousPlan ?? "free"] ?? 0)
-    let moment: CloudPlanMoment? = (previousPlan != nil && landed && celebrated != key && wentUp) ? CloudPlanMoment(
+    let moment: CloudPlanMoment? = (canCelebrate && previousPlan != nil && landed && celebrated != key && wentUp) ? CloudPlanMoment(
       key: key,
       planId: planId,
       includedMilli: account.hours.includedMilli,

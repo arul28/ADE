@@ -3,22 +3,7 @@ import { navigateToAppTarget } from "../../../lib/openExternal";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { CloudLogo } from "../../remoteTargets/cloudBrand";
 import { useCloudAccount } from "../../../state/cloudAccountStore";
-import { useCloudPlanMoment, type CloudPlanMoment } from "./cloudPlanMoment";
-
-/** The toast's id: the in-app "Move to Pro" answer and the moment replace each other in place. */
-export const CLOUD_PLAN_MOMENT_TOAST_ID = "cloud-plan-moment";
-
-/** "You're on Plus" and the one line under it, shared by the toast and the page's banner. */
-export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; detail: string } {
-  const hours = formatCloudHours(moment.includedMilli);
-  const replaced = moment.replacedFreeMilli != null
-    ? ` Your ${formatCloudHours(moment.replacedFreeMilli)} unused free hours were replaced by ${moment.label}'s ${hours}.`
-    : "";
-  return {
-    title: `You're on ${moment.label}`,
-    detail: `${hours} hours and ${formatCloudGb(moment.diskGb)} of disk a month. Renews ${formatCloudDate(moment.renewsAt)}.${replaced}`,
-  };
-}
+import { CLOUD_PLAN_MOMENT_TOAST_ID, cloudPlanMomentWords, cloudPlanReplacedSentence, useCloudPlanMoment, type CloudPlanMoment } from "./cloudPlanMoment";
 
 /** The three facts of the new plan, as the toast's body. */
 export function CloudPlanMomentFacts({ moment }: { moment: CloudPlanMoment }) {
@@ -45,15 +30,12 @@ function captureMoment(): void {
 }
 
 function showMoment(moment: CloudPlanMoment): void {
-  const words = cloudPlanMomentWords(moment);
   showToast({
     id: CLOUD_PLAN_MOMENT_TOAST_ID,
     tone: "success",
     icon: <CloudLogo size={14} glow />,
-    title: words.title,
-    message: moment.replacedFreeMilli != null
-      ? `Your ${formatCloudHours(moment.replacedFreeMilli)} unused free hours were replaced by ${moment.label}'s ${formatCloudHours(moment.includedMilli)}.`
-      : "Thanks for backing ADE. Your agents have room to work.",
+    title: cloudPlanMomentWords(moment).title,
+    message: cloudPlanReplacedSentence(moment) ?? "Thanks for backing ADE. Your agents have room to work.",
     content: <CloudPlanMomentFacts moment={moment} />,
     durationMs: READABLE_TOAST_DURATION_MS,
     actions: [{ label: "Open ADE Cloud", onClick: () => navigateToAppTarget({ kind: "settings", tab: "ade-cloud" }) }],

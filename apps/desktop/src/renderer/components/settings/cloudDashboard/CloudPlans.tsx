@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ArrowSquareOut, Clock, CreditCard, DeviceMobile, HardDrives, Info, Lightning, MoonStars, Sparkle } from "@phosphor-icons/react";
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
@@ -30,7 +30,8 @@ import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
 import { useStillWhenHidden } from "./CloudSky";
-import { CLOUD_PLAN_MOMENT_TOAST_ID } from "./CloudPlanMomentNotice";
+import { CLOUD_PLAN_MOMENT_TOAST_ID } from "./cloudPlanMoment";
+import "./cloudPlans.css";
 
 /** The monthly limits a person picks for extra disk, in dollars. */
 const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
@@ -46,6 +47,19 @@ type Column = { id: CloudPlanId; facts: CloudPlanFacts };
  * Reads nothing of its own: the account comes from the page's computer list.
  * Account level, so no pin.
  */
+/**
+ * A plan card's one tag: "Your plan", "From Dec 1" for the plan that takes
+ * over at the period's end, or "5× the hours" on the plan right above yours
+ * (`moreHours`, counted from yours; 0 elsewhere, since "3× the hours" on a
+ * plan further up would read as 3× yours). Null when none applies.
+ */
+function planCardTag({ isCurrent, startsLater, until, moreHours }: { isCurrent: boolean; startsLater: boolean; until: string; moreHours: number }): ReactNode {
+  if (isCurrent) return <span className="adecd-plancard-tag" data-tone="current">Your plan</span>;
+  if (startsLater) return <span className="adecd-plancard-tag">From {until}</span>;
+  if (moreHours >= 2) return <span className="adecd-plancard-tag" data-tone="next">{moreHours}× the hours</span>;
+  return null;
+}
+
 export function CloudPlans({ account, onChanged, newPlanId = null }: {
   account: CloudAccountState;
   onChanged: () => void;
@@ -263,11 +277,12 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
             const isNext = !isCurrent && CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 && action != null;
             const below = index > 0 ? columns[index - 1]! : null;
             const more = below && below.facts.includedMilli > 0 ? Math.floor(column.facts.includedMilli / below.facts.includedMilli) : 0;
-            const tag = isCurrent ? <span className="adecd-plancard-tag" data-tone="current">Your plan</span>
-              : nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free") ? <span className="adecd-plancard-tag">From {until}</span>
-              // Only the plan right above yours: "3× the hours" on a plan further up would read as 3× yours.
-              : isNext && more >= 2 ? <span className="adecd-plancard-tag" data-tone="next">{more}× the hours</span>
-              : null;
+            const tag = planCardTag({
+              isCurrent,
+              startsLater: nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free"),
+              until,
+              moreHours: isNext ? more : 0,
+            });
             return (
               <article
                 key={column.id}
