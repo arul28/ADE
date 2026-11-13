@@ -3249,27 +3249,48 @@ disk use over hours; a 15-minute window cannot show them.
 
 ### Home lists the account's projects (account list as the one source, 2026-11-12)
 
-Not the dev app: the dev desktop's first-run home was in use by another
-agent's app, so these numbers come from the Vite renderer preview (`vite
---port 5191`, the browser mock, a synthetic account list of 7 projects and
-the mock's 11 recents) in headless Chrome on the Mac Studio, load average
-about 21. Before is the base `e35917691` renderer checked out over the same
-tree in the same server and browser. They are not comparable with the dev-app
-rows above.
+Dev app on `ade/account-list-single-source` at `65ed38ee6`, against the base
+`e35917691` renderer checked out over the same tree, so both share the app,
+the brain and the load. Mac Studio M4 Max (not the baseline machine), an
+isolated home (own `ADE_HOME`, user data, socket and CDP port, sync off), a
+loopback account directory with 20 account projects over 5 computers (3
+offline), one project with two folders here, and 60 folders here that are on
+no account project. Three project tabs open, nothing streaming. Passes
+interleaved base, after, base, after; load average 10–16 for the rows below
+(passes at higher load are not used). Probes: scratch CDP scripts, 8 runs a
+pass, the first run after a reload is the cold one.
 
 | Row | Before (`e35917691`) | After | Ceiling |
 | --- | --- | --- | --- |
-| Home: "+" to the first Projects row, 8 runs, median | 60 ms | 52 ms (first run 93 ms, cold) | — |
-| Home "Add project" to its first screen painted, 7 runs, median | 125 ms (the location chooser) | 121 ms (the form itself) | — |
+| Home "Add project" to the add form ready (input, folder and options filled), warm median | 150 ms (first screen, the tiles, 141 ms; the form one press later); long task 129 ms | 36–37 ms (form shown 30–31 ms); no long task | — |
+| Home "Add project" to the add form ready, cold (first open after a reload) | 156–160 ms; long task 132–135 ms | 43–44 ms; no long task | — |
+| Home: "+" to the first Projects row (the S4 probe: one frame after the row), median | 39–40.5 ms; a long frame of 57–70 ms in 5–6 of 8 runs | 49.5–51.5 ms; no long frame | — |
+| Home: "+" to the first Projects row painted / to settled frames (6 frames under 20 ms), median of each pass | 30–31 ms / 151–161 ms; worst frame 65–80 ms | 28–47 ms / 90–149 ms; worst frame 0–67 ms | — |
+| Home page elements / Projects card elements | 2,417 / 1,866 (81 rows, most hidden) | 1,422 / 871 (40 rows) | — |
 
-The add window costs one long frame of about 125 ms in both: the Radix
-presence style read, the input focus and a motion scroll measure each force
-a style and layout pass of about 30 ms over the Home page behind the window.
-The form's own work is under 1 ms, and its reads (recents, default folders)
-are async after the first paint. The form is now the first screen, so adding
-a repository takes one window instead of two.
+The add window cost one long task of 120–200 ms on every open, in the base
+too. The palette set its mode from the open intent in an effect, so the
+window committed once in the default mode with the whole command list (288
+rows) and removed it in the next commit. Three forced style passes of the
+open (the input focus, the Radix presence animation read and a motion scroll
+measure) each covered those rows: 5,000–6,600 elements a pass in a trace. The
+mode now follows the open in the same render (`65ed38ee6`). With 27 project
+tabs open the same open took 157–192 ms, so the cost grew with the page as
+well as with the list.
 
-No timer, poll or subscription is added. Home and the top bar's copies menu
-build their copies from the snapshot and recents they already hold. The new
-computers tag on the project page reads the copies sources once on mount and
-on window focus (one `listRecent`).
+Home's Projects card renders at most 40 rows inline (`INLINE_ROW_CAP`); the
+"N more" dialog shows every row. A hidden row still costs style and layout on
+every pass over the page. A cap of 24 measured the same as 40.
+
+The "+" probe's first-row median is about 10 ms later than the base, and the
+spread between passes is about as large (28–47 ms across four after passes).
+The page settles sooner and has no long frame in most passes. No ceiling is
+set for these rows.
+
+No timer, poll or subscription is added. Home reads this computer's folders
+from the brain's project catalog (`project.listThisComputer`, one local IPC)
+on mount and when the recents change; the recents keep 24 folders, and the
+catalog lists all of them. Home and the top bar's copies menu build their
+copies from the snapshot and recents they already hold. The computers tag on
+the project page reads the copies sources once on mount and on window focus
+(one `listRecent`).
