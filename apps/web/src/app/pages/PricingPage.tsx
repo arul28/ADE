@@ -283,13 +283,14 @@ function PastYourPlanSection() {
                       <>Work stops at {formatCount(plan.hours)} hours</>
                     ) : (
                       <>
-                        <span className="font-mono text-base font-medium text-fg">{formatCents(plan.extraHourCents)}</span> an hour
+                        <span className="text-base font-semibold tabular-nums text-fg">{formatCents(plan.extraHourCents)}</span> an hour
                       </>
                     )}
                   </dd>
                 </div>
               ))}
             </dl>
+            <TurnOnNote />
           </Card>
         </Reveal>
         <Reveal delay={0.05} className="h-full">
@@ -307,10 +308,17 @@ function PastYourPlanSection() {
               <Rule small>You set the most it can cost each month.</Rule>
               <Rule small>Every computer shares it, like your plan's disk.</Rule>
             </ul>
+            <TurnOnNote />
           </Card>
         </Reveal>
       </div>
     </Section>
+  );
+}
+
+function TurnOnNote() {
+  return (
+    <p className="mt-auto pt-6 text-xs text-muted-fg">Turn it on in Settings › ADE Cloud, and off any time.</p>
   );
 }
 

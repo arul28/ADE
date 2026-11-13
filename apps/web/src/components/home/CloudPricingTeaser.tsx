@@ -10,7 +10,7 @@ import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
  */
 export function CloudPricingTeaser() {
   return (
-    <section id="ade-cloud" className="mx-auto max-w-[1320px] scroll-mt-24 px-5 pb-[clamp(40px,6vw,80px)] sm:px-8">
+    <section id="ade-cloud" className="mx-auto -mt-[clamp(24px,4vw,64px)] max-w-[1320px] scroll-mt-24 px-5 pb-[clamp(8px,2vw,24px)] sm:px-8">
       <div className="relative overflow-hidden rounded-[28px] border border-white/[0.07] bg-[#111116] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
         <div
           aria-hidden
@@ -32,7 +32,7 @@ export function CloudPricingTeaser() {
               <em className="italic text-[color:var(--color-violet-bright)]">with the lid closed.</em>
             </h2>
             <p className="mt-4 max-w-[440px] text-[clamp(14px,1.1vw,16px)] leading-[1.55] text-white/55">
-              Give every lane its own computer in the cloud. {formatCount(FREE_PLAN.hours)}&nbsp;hours free every month.
+              Give every lane its own computer in the cloud. {formatCount(FREE_PLAN.hours)} hours free every month.
             </p>
             <Link
               to="/pricing"
