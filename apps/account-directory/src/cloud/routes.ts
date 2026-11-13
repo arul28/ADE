@@ -26,7 +26,7 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
-import { CLOUD_LAUNCH_ENV, CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
@@ -104,6 +104,16 @@ const PREFIX = "/cloud";
 const INSTANCE_ID = /^[a-z0-9]{4,40}$/;
 const MAX_METADATA_ENTRIES = 32;
 const MAX_ENV_ENTRIES = 64;
+/**
+ * What a client may put in a new computer's env: only the ADE release it
+ * installs on boot (`ADE_MIN_VERSION`, infra/ade-cloud/template/ade-entrypoint.sh),
+ * as a version. Everything else is dropped: older desktops sent the person's
+ * saved ADE Cloud keys and Claude token here (`OPENAI_API_KEY`,
+ * `CLAUDE_CODE_OAUTH_TOKEN`, …), and the host keeps a computer's env in plain
+ * text for its whole life. A new computer's brain takes every sign-in from the
+ * account vault instead (Cloud 4 step 2b).
+ */
+const CLIENT_ENV = { ADE_MIN_VERSION: /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/ } as const satisfies Record<string, RegExp>;
 const MAX_STRING = 4096;
 const MAX_COMMAND = 100_000;
 const MAX_EXEC_TIMEOUT_MS = 15 * 60_000;
@@ -433,10 +443,18 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
   if (!clientMetadata || !requestedEnv || !publicPorts) return refused(badRequest(UNREADABLE_REQUEST_MESSAGE));
-  // The server's own entries only: a client can't name a launch or its join code.
-  delete requestedEnv[CLOUD_LAUNCH_ENV.launchId];
-  delete requestedEnv[CLOUD_LAUNCH_ENV.join];
-  const clientEnv = { ...requestedEnv, ...extras.serverEnv };
+  // The client's env is cut to `CLIENT_ENV`: no sign-in an older desktop
+  // sends reaches the host, and a client can't name a launch or its join code
+  // (the server's own entries). Only the dropped names are logged, never a value.
+  const keptEnv: Record<string, string> = {};
+  const droppedEnv: string[] = [];
+  for (const [envName, value] of Object.entries(requestedEnv)) {
+    const shape = Object.hasOwn(CLIENT_ENV, envName) ? CLIENT_ENV[envName as keyof typeof CLIENT_ENV] : null;
+    if (shape?.test(value)) keptEnv[envName] = value;
+    else droppedEnv.push(envName.slice(0, 64));
+  }
+  if (droppedEnv.length) logCloud("cloud.create_env_dropped", { userId, names: droppedEnv.sort() });
+  const clientEnv = { ...keptEnv, ...extras.serverEnv };
   // The app's own update track: the computer starts from that channel's image and follows it.
   const channel = body.channel === undefined ? "stable" : readUpdateChannel(body.channel);
   if (!channel) return refused(badRequest("That update channel isn't one ADE knows."));

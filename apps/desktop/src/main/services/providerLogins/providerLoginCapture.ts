@@ -19,6 +19,8 @@
 import fs from "node:fs";
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { PROVIDER_LOGINS_CLOUD_SETTING, cloudChoiceKey, readCloudSetting } from "../../../shared/providerLoginsCloudSetting";
+import { isRecord } from "../shared/utils";
 import type { ProviderLoginLocalState, ProviderLoginProvider } from "../../../shared/types/providerLogins";
 import { GH_BUNDLE_ID, GH_READ_PART, GH_TOKEN_PART, PROVIDER_LOGIN_CARRY, type CarryBundle, type CarryRow, type ParsedLogin } from "./providerLoginCarry";
 import { ghReadEnv, isClassicGitHubToken, readGhHostsGithubCom, runGhAuthToken, type GhTokenRead } from "./providerLoginGhCli";
@@ -43,6 +45,7 @@ import {
   GH_READ_ON_CLICK_MS,
   STABLE_AGE_MS,
   laterExpiry,
+  sameAccountCopyFor,
   type BundleObservation,
   type LoginMemo,
   type PushDecision,
@@ -56,6 +59,34 @@ export function createCapture(s: SyncShared) {
   const { captureOffReason, setLocal, loadState, metaFor } = s;
 
   const ghRunner = deps.ghTokenRunner ?? runGhAuthToken;
+
+  /**
+   * Before this computer's copy leaves the account at a sign-out here: a
+   * person's pick that names it moves to the freshest other copy of the same
+   * account (one card per account, B14-5), so ADE Cloud stays on that account
+   * instead of falling to the newest copy of any account. Written before the
+   * removal, so a cloud computer never sees the copy gone with the pick still
+   * on it. With no other copy of the account, the pick stays: the same
+   * sign-in made here again comes back under the same key, and the card says
+   * the picked sign-in left (adeCloudSignInModel.ts, T14/T15).
+   */
+  function movePickOffLeavingCopy(vault: ProviderLoginVault, row: VaultRow, provider: ProviderLoginProvider, slot: string): void {
+    const settings = deps.settings();
+    if (!settings?.set) return;
+    const raw = settings.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
+    const place = cloudChoiceKey(provider, slot);
+    if (!isRecord(raw) || !isRecord(raw.inUse) || raw.inUse[place] !== row.key) return;
+    const meta = metaFor(vault, row);
+    if (!meta) return;
+    const successor = sameAccountCopyFor(vault.list(ACCOUNT_SCOPE_ALL), { key: row.key, provider, slot, account: meta.account }, {
+      off: readCloudSetting(raw).off,
+      meta: (other) => metaFor(vault, other),
+    });
+    if (!successor) return;
+    const saved = settings.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING, { ...raw, inUse: { ...raw.inUse, [place]: successor } });
+    if (saved) deps.logger.info("provider_login.pick_moved", { provider, slot, reason: "signed_out_at_origin" });
+    else deps.logger.warn("provider_login.pick_move_failed", { provider, slot });
+  }
   let rerun: { providers: Set<ProviderLoginProvider> | null } | null = null;
 
   /** A file's mark; "unreadable" when the stat itself failed for another reason than "not there" (a lock, a permission). */
@@ -503,6 +534,7 @@ export function createCapture(s: SyncShared) {
       if (pushed.absentPasses < 2 || now() - pushed.absentSince < ABSENT_REMOVE_MS) continue;
       const row = rows.get(key);
       if (row && !row.deleted) {
+        movePickOffLeavingCopy(vault, row, parsedKey.provider, parsedKey.slot);
         if (vault.remove(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key)) {
           accountChanged = true;
           deps.logger.info("provider_login.removed", { provider: parsedKey.provider, slot: parsedKey.slot, reason: "signed_out_at_origin" });

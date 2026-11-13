@@ -8207,6 +8207,8 @@ function AgentChatComposerImpl({
             reasoningTiers={reasoningTiers}
             harness={activeHarnessPreset?.harness}
             reasoningEffort={reasoningEffort}
+            // An open chat shows its own level: the family's memory is another chat's pick (B14-34).
+            showFamilyDefault={!sessionId}
             squeezed={modelHint.chip != null}
             onChange={handleReasoningEffortPickerChange}
             disabled={effortSelectionLocked ?? modelSelectionLocked}

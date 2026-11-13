@@ -519,6 +519,27 @@ describe("ADE Cloud account", () => {
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/fork`, { metadata: { ade_request_id: "req-copy" } })).status).toBe(502);
       expect(harness.rows("select request_id from cloud_computers where instance_id like 'pending:%'")).toEqual([expect.objectContaining({ request_id: "req-copy" })]);
     }],
+    // An older desktop put the person's saved keys and Claude token in a new
+    // computer's env; the host keeps that env in plain text for the computer's life.
+    ["a create keeps only the client's ADE version in the new computer's env, never a sign-in or a launch's join", async () => {
+      const response = await harness.send(OWNER, "POST", "/cloud/instances", {
+        type: "default",
+        resources: { cpu: 2, memory: 4 },
+        env: {
+          ADE_MIN_VERSION: "1.4.2-beta.3",
+          OPENAI_API_KEY: "fixture-openai-value",
+          CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-value",
+          OPENROUTER_API_KEY: "fixture-openrouter-value",
+          ADE_LAUNCH_ID: "forged-launch",
+          ADE_LAUNCH_JOIN: "forged-join",
+        },
+      });
+      expect(response.status).toBe(201);
+      expect(providerCalls(harness, /POST .*\/instances$/)[0]?.body?.env).toEqual({ ADE_MIN_VERSION: "1.4.2-beta.3" });
+      // A version-named variable that is not a version is dropped too: the entrypoint passes it to an install.
+      await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, env: { ADE_MIN_VERSION: "1.0.0; curl x" } });
+      expect(providerCalls(harness, /POST .*\/instances$/)[1]?.body).not.toHaveProperty("env");
+    }],
     ["a provider that refuses ADE's key is ADE's problem, and leaves nothing behind", async () => {
       harness.net.once.push({ match: /POST .*\/instances$/, reply: harness.net.reply({ error: { code: "invalid_api_key" } }, 401) });
       const response = await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } });

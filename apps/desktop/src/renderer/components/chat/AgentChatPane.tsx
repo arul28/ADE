@@ -7161,14 +7161,19 @@ export function AgentChatPane({
    * a presentational component writing its parent's state on mount. A Custom
    * pick reads the source model's ladder; a plain chat reads its own row.
    */
+  // Only a draft falls back to the family's remembered effort. An open chat
+  // (or a launch's reserved one) runs on its own level, or the model default
+  // when it has none: the family's memory is the last pick in ANY chat, and
+  // showing it there read as the chat's effort changing by itself (B14-34).
+  const composerHasChat = Boolean(lockSessionId ?? selectedSessionId);
   const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
     tiers: reasoningTiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: reasoningDescriptor?.family
+    rememberedForFamily: !composerHasChat && reasoningDescriptor?.family
       ? getReasoningForFamily(reasoningDescriptor.family) ?? null
       : null,
     modelDefault: reasoningDescriptor?.defaultReasoningEffort ?? null,
-  }), [getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
+  }), [composerHasChat, getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -7684,7 +7689,11 @@ export function AgentChatPane({
         // still waiting for its chat shows the model it launches with.
         setModelId("");
       }
-      if (lockSessionId || transcriptModelId) {
+      // A chosen chat whose summary hasn't come (still loading, or its
+      // computer asleep) never takes the last launch's settings or the
+      // defaults: they are another chat's, and a send here would carry that
+      // chat's effort into this one (B14-34). Its summary sets them.
+      if (loadingSessionId) {
         return;
       }
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {

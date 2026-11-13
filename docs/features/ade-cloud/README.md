@@ -398,9 +398,13 @@ item of older versions, adopted as `claude-pass/legacy`) and `cloud-key-<provide
 env (only `ADE_MIN_VERSION`), so no sign-in value passes ADE's server or the
 host in plain text: its brain signs in to the account and takes every sign-in
 from the vault (`providerLoginApplyPass.ts` for the saved keys and carried
-logins, `claudePassSync.ts` for the passes). A computer an older ADE made keeps
-its env until it is deleted; its brain takes the variables out at the first
-apply. The old `cloud-ready` item is no longer read.
+logins, `claudePassSync.ts` for the passes). The Worker holds every client to
+that: the create route keeps only a version-shaped `ADE_MIN_VERSION` from the
+client's env and drops the rest (`CLIENT_ENV` in `cloud/routes.ts`; the names,
+never the values, are logged as `cloud.create_env_dropped`), so an older desktop
+that still sends the saved keys and the Claude token no longer puts them on a new
+computer. A computer made before that keeps its env until it is deleted; its
+brain takes the variables out at the first apply. The old `cloud-ready` item is no longer read.
 Kind `provider_login` holds the account's provider sign-ins: `<provider>/<origin>.<slot>`
 (the origin is 12 hex of the computer's machine key) and the Claude passes,
 `claude-pass/<12 hex>` (`claude-pass/legacy` for the item older versions saved).
@@ -426,7 +430,17 @@ place from the first pass that sees it (capture's `absentSince`), so this
 computer's own copy still leaves the account. The account's cards show one card
 per account for copies from several computers ("From 3 computers"), and the
 pick of one copy uses the freshest usable copy of the same account
-(`cloudPlacePicks`). The account is the email (`accountIdentityOf`), except
+(`cloudPlacePicks`). When a computer signs out of a sign-in (for some providers
+that also revokes the token its copy holds), its capture takes its copy out of
+the account after two passes 60 s apart; just before, a pick that names that
+copy moves to the freshest other live copy of the same account
+(`sameAccountCopyFor`, logged `provider_login.pick_moved`), so ADE Cloud stays on
+the account the person picked instead of the newest copy of any account. With
+no other copy of that account the pick stays (the same sign-in made there again
+comes back under the same key), and the provider's card says the sign-in was
+signed out on the computer it came from (T14 when nothing else is there, T15
+beside the other account's sign-in ADE Cloud uses meanwhile). A computer that
+signs out while ADE isn't running there takes its copy out at its next start. The account is the email (`accountIdentityOf`), except
 Codex: email and workspace id together, since one email can have several
 ChatGPT workspaces.
 Before a lane's computer is made, the launch's start runs `cloudGitPreflight`
