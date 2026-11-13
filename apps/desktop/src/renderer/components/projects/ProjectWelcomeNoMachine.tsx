@@ -23,20 +23,24 @@ import { useDirectHomePullRequests } from "./useDirectHomePullRequests";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { resolveMachinePresence } from "../../../shared/types/power";
+import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
 import "./ProjectWelcomePage.css";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
 function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
-  const project = list.state === "ready" ? list.projects.find((entry) => entry.id === tab.id) : undefined;
+  // A second folder of a repository on one computer keys its tab by that
+  // folder; the repository is named apart.
+  const repositoryId = tab.repositoryId ?? tab.id;
+  const project = list.state === "ready" ? list.projects.find((entry) => entry.id === repositoryId) : undefined;
   if (project) return repositoryTabFromAccountProject(project, { displayName: tab.displayName, iconDataUrl: tab.iconDataUrl });
-  const address = tab.id.startsWith("repo:") ? tab.id.slice("repo:".length) : tab.id;
+  const address = repositoryId.startsWith("repo:") ? repositoryId.slice("repo:".length) : repositoryId;
   return {
     kind: "account",
-    id: tab.id,
+    id: repositoryId,
     displayName: tab.displayName,
     iconDataUrl: tab.iconDataUrl,
     host: address.split("/")[0]?.toLowerCase() || "github.com",
-    repoKeys: [tab.id.startsWith("repo:") ? tab.id : `repo:${address}`],
+    repoKeys: [repositoryId.startsWith("repo:") ? repositoryId : `repo:${address}`],
   };
 }
 
@@ -100,13 +104,16 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     setOpenFailure(null);
     void openCopy(copy).catch((error: unknown) => setOpenFailure({ copy, detail: extractError(error) }));
   }, []);
-  const defaultAddress = resolveDefaultCopy({ copies });
+  // The copy the tab showed before its computer left comes back first.
+  const defaultAddress = resolveDefaultCopy({ copies, currentKey: tab.lastCopyKey ?? null });
   useEffect(() => {
     if (!defaultAddress || tried.current.has(defaultAddress.key)) return;
+    // ADE Web opens a tab it moved off a stopped computer again itself.
+    if (webMode && isWebResumeOwnedTab(tab.id)) return;
     tried.current.add(defaultAddress.key);
     const copy = copies.find((entry) => entry.address?.key === defaultAddress.key);
     if (copy) openCopyAndReport(copy);
-  }, [copies, defaultAddress, openCopyAndReport]);
+  }, [copies, defaultAddress, openCopyAndReport, tab.id, webMode]);
 
   const addLocalCopy = () => {
     const local = copyMachines(null, { includeLocal: true })[0];

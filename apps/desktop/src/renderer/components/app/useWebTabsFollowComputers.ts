@@ -4,6 +4,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { useAppStore } from "../../state/appStore";
 import { resolveProjectTabFallback, type ProjectTabGroup } from "./projectTabGrouping";
 import { renameInTabOrder } from "./useRepositoryTabs";
+import { setWebResumeOwnedTabs } from "./webResumeOwnedTabs";
 
 /**
  * The remote tab in front, for ADE Web's move off a computer that left. The
@@ -26,7 +27,13 @@ function frontRemoteTabKey(
 type FrontTabPlan = {
   tab: RemoteOpenProjectBinding;
   fallback: ReturnType<typeof resolveProjectTabFallback>;
-  noMachine: { id: string; displayName: string; iconDataUrl: string | null } | null;
+  noMachine: {
+    id: string;
+    displayName: string;
+    iconDataUrl: string | null;
+    lastCopyKey: string;
+    repositoryId: string | null;
+  } | null;
 };
 
 /**
@@ -147,8 +154,22 @@ export function useWebTabsFollowComputers({
       // or on one that is offline, leaves the tab on its no-machine page.
       const usable = fallback?.kind === "remote" && connectedTargetIds.has(fallback.binding.targetId) ? fallback : null;
       const group = tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === tab.key));
+      // A second folder of the repository on that computer has its own tab,
+      // keyed by the folder; the repository's tab (or its address) names it.
+      const keyedByFolder = group != null && group.machines.some((machine) => machine.bindingKey === group.id);
+      const repositoryId = group?.origin && keyedByFolder
+        ? tabGroupsRef.current.find((entry) => (
+            entry.origin === group.origin && !entry.machines.some((machine) => machine.bindingKey === entry.id)
+          ))?.id ?? `repo:${group.origin}`
+        : null;
       const noMachine = !usable && group?.origin
-        ? { id: group.id, displayName: recordNameForRef.current(group) ?? tab.displayName, iconDataUrl: tab.iconDataUrl ?? null }
+        ? {
+            id: group.id,
+            displayName: recordNameForRef.current(group) ?? tab.displayName,
+            iconDataUrl: tab.iconDataUrl ?? null,
+            lastCopyKey: tab.key,
+            repositoryId,
+          }
         : null;
       return { tab, fallback: usable, noMachine, groupId: group?.id ?? null };
     });
@@ -216,6 +237,12 @@ export function useWebTabsFollowComputers({
   // No-machine tabs made by a computer that stopped, by tab id, with the copy
   // each one had: the copy comes back when its computer connects again.
   const webStoppedTabsRef = useRef(new Map<string, RemoteOpenProjectBinding>());
+  // Waiting tabs whose copy is opening now.
+  const webResumeOpeningRef = useRef(new Set<string>());
+  const syncResumeOwned = useCallback(() => {
+    setWebResumeOwnedTabs([...webStoppedTabsRef.current.keys(), ...webResumeOpeningRef.current]);
+  }, []);
+  useEffect(() => () => setWebResumeOwnedTabs([]), []);
   // Computers whose copy failed to open again on their return: their waiting
   // tabs try again when the computer next connects, not on each snapshot.
   const webResumeAfterDropRef = useRef(new Set<string>());
@@ -266,36 +293,57 @@ export function useWebTabsFollowComputers({
         const latest = remoteSnapshotRef.current?.connections.find((connection) => connection.target.id === targetId);
         if (!latest || latest.state === "connected") return;
         webStoppedTargetsRef.current.add(targetId);
+        // The waiting tabs are saved before the move's first wait.
         void moveWebTabsOffGoneTargets(new Set([targetId]), webStoppedTabsRef.current);
+        syncResumeOwned();
       }, WEB_STOP_SETTLE_MS));
     }
     const resumable = new Set([...connected].filter((targetId) => !webResumeAfterDropRef.current.has(targetId)));
     const resumed = resumeWebStoppedTabs(webStoppedTabsRef.current, { connected: resumable, gone });
+    syncResumeOwned();
     if (resumed.length > 0) {
-      const restore = (bindings: readonly RemoteOpenProjectBinding[]) => {
+      // The copy rejoins the strip and its waiting tab closes. The cleanup by
+      // repository id cannot always do that: a tab that went waiting while its
+      // computer was offline can carry the copy's own key as its id.
+      const restore = (entries: ReadonlyArray<readonly [string, RemoteOpenProjectBinding]>) => {
+        if (entries.length === 0) return;
         const byKey = new Map(openRemoteProjectTabsRef.current.map((entry) => [entry.key, entry]));
-        for (const binding of bindings) byKey.set(binding.key, binding);
+        for (const [, binding] of entries) byKey.set(binding.key, binding);
         const nextRemoteTabs = [...byKey.values()];
         openRemoteProjectTabsRef.current = nextRemoteTabs;
         setOpenRemoteProjectTabs(nextRemoteTabs);
+        const store = useAppStore.getState();
+        const waitingIds = new Set(store.noMachineTabs.map((tab) => tab.id));
+        for (const [id] of entries) if (waitingIds.has(id)) store.closeNoMachineTab(id);
       };
-      // A waiting tab in front opens its own copy; another project can be the
-      // one under it. Its page stays until that copy is open, and only then
-      // does the copy rejoin the strip (which closes the waiting page): either
-      // one sooner shows the project under it while the open runs.
+      // A waiting tab in front opens its own copy again, also when the store
+      // still names that copy: its connection ended with the computer, so
+      // only a new open loads the project. Another project can be the one
+      // under it. Its page stays until that copy is open, and only then does
+      // the copy rejoin the strip (which closes the waiting page): either one
+      // sooner shows the project under it while the open runs.
       const store = useAppStore.getState();
       const frontId = store.activeNoMachineTabId;
-      const front = resumed.find(([id]) => id === frontId)?.[1];
-      const opensInFront = front != null && store.projectBinding?.key !== front.key;
-      restore(resumed.map(([, binding]) => binding).filter((binding) => !opensInFront || binding !== front));
-      if (opensInFront) {
+      const frontEntry = resumed.find(([id]) => id === frontId);
+      const front = frontEntry?.[1];
+      restore(resumed.filter((entry) => entry !== frontEntry));
+      if (frontEntry && front) {
+        const [openingId] = frontEntry;
+        webResumeOpeningRef.current.add(openingId);
+        syncResumeOwned();
         void store.switchRemoteProject(front.targetId, front.projectId, { keepNoMachineTab: true }).then(
           // Opened, or superseded by a later choice (the tab comes back behind it).
-          () => restore([front]),
+          () => {
+            webResumeOpeningRef.current.delete(openingId);
+            syncResumeOwned();
+            restore([frontEntry]);
+          },
           (error: unknown) => {
             // Not opened: the waiting page stays, with Open on that computer,
             // and keeps its copy for the computer's next return.
-            if (frontId != null) webStoppedTabsRef.current.set(frontId, front);
+            webResumeOpeningRef.current.delete(openingId);
+            webStoppedTabsRef.current.set(openingId, front);
+            syncResumeOwned();
             webResumeAfterDropRef.current.add(front.targetId);
             captureError(error, { fingerprint: ["repository-tabs", "web-resume-open"], level: "warning", handled: true });
           },
@@ -303,5 +351,5 @@ export function useWebTabsFollowComputers({
       }
     }
     if (gone.size > 0) void moveWebTabsOffGoneTargets(gone);
-  }, [moveWebTabsOffGoneTargets, openRemoteProjectTabsRef, remoteSnapshot, remoteSnapshotRef, setOpenRemoteProjectTabs, webMode]);
+  }, [moveWebTabsOffGoneTargets, openRemoteProjectTabsRef, remoteSnapshot, remoteSnapshotRef, setOpenRemoteProjectTabs, syncResumeOwned, webMode]);
 }
