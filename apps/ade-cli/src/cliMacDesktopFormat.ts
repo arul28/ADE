@@ -186,9 +186,16 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   ],
 ];
 
-export function macDesktopErrorHint(message: string, host: string = process.platform): string | null {
+/**
+ * `host` is the platform of the machine that refused, or null when it is
+ * another machine whose platform this process does not know (`--machine`):
+ * a hint that depends on the host is then left out, and the other machine's
+ * own sentence stands alone.
+ */
+export function macDesktopErrorHint(message: string, host: string | null = process.platform): string | null {
   const hint = MAC_DESKTOP_ERROR_HINTS.find(([code]) => message.includes(code))?.[1] ?? null;
-  return typeof hint === "function" ? hint(host) : hint;
+  if (typeof hint !== "function") return hint;
+  return host ? hint(host) : null;
 }
 
 

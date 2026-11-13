@@ -4,8 +4,8 @@
  * before ADE builds, so `ade apple launch|install|test` work on it like on any
  * Xcode project.
  *
- * Looked for where ADE looks for Xcode projects (the build root, `apps/`,
- * `apps/<name>/`). A folder is generated when it has a `project.yml` and
+ * Looked for in the build root, each folder in it, and each folder under
+ * `apps/`. A folder is generated when it has a `project.yml` and
  * either no `.xcodeproj`, or only ones git does not track (an earlier
  * generation, which a changed spec has to refresh; `--use-cache` makes an
  * unchanged spec a no-op). A tracked `.xcodeproj` is the project's own and is
@@ -50,9 +50,14 @@ async function gitTracks(dir: string, target: string): Promise<boolean> {
 /** Folders under `projectRoot` whose `project.yml` needs XcodeGen before a build. */
 export async function xcodeGenFoldersToGenerate(projectRoot: string): Promise<string[]> {
   const appsRoot = path.join(projectRoot, "apps");
-  const appFolders = (await listDir(appsRoot)).filter((entry) => entry.isDirectory()).map((entry) => path.join(appsRoot, entry.name));
+  const childFolders = async (dir: string): Promise<string[]> => (await listDir(dir))
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules")
+    .map((entry) => path.join(dir, entry.name));
+  // The root, each folder in it (`ios/`, `MyApp/`) and each app under `apps/`:
+  // where a person puts a small app's spec.
+  const candidates = [...new Set([projectRoot, ...await childFolders(projectRoot), ...await childFolders(appsRoot)])];
   const folders: string[] = [];
-  for (const dir of [projectRoot, appsRoot, ...appFolders]) {
+  for (const dir of candidates) {
     const entries = await listDir(dir);
     if (!entries.some((entry) => entry.isFile() && entry.name === XCODEGEN_SPEC)) continue;
     const projects = entries.filter((entry) => entry.isDirectory() && entry.name.endsWith(".xcodeproj"));

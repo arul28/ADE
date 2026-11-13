@@ -1,4 +1,4 @@
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, onRemoteWorkCopyReleased, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2613,6 +2613,35 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     );
   });
 
+  /**
+   * A work copy was deleted (`ade shell clean`, the sweep, its chat gone):
+   * what its lane held here goes with it, so nothing stays behind. Its app and
+   * device sessions end, a simulator a chat on another machine booted is
+   * powered off again (a person's own simulator that was already on stays
+   * on), and the device is given back.
+   */
+  const releaseWorkCopyDevice = async (laneId: string): Promise<void> => {
+    const runtime = runtimes.get(laneKey(laneId));
+    const owner = runtime?.activeSession?.chatSessionId ?? runtime?.hub?.getDeviceSession()?.chatSessionId ?? null;
+    if (owner) await releaseIfOwnedBy(owner).catch(() => undefined);
+    const device = laneDevices.get(laneId);
+    if (!device) return;
+    const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
+    if (!heldElsewhere && bootedForRemoteChat.has(device.udid)) {
+      bootedForRemoteChat.delete(device.udid);
+      await power.powerOffDevice(device.udid, "power-off").catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_device_power_off_failed", { laneId, udid: device.udid, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    await laneDevices.deviceDetach({ laneId, by: "agent" }).catch(() => null);
+    args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff: !heldElsewhere });
+  };
+  const offWorkCopyReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
+    void releaseWorkCopyDevice(laneId).catch((error: unknown) => {
+      args.logger.warn("apple.work_copy_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+    });
+  });
+
   const runtimeForKey = (key: string): LaneRuntime => {
     const existing = runtimes.get(key);
     if (existing) return existing;
@@ -3461,6 +3490,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * recording stop and the device-list refresh cannot be left out of a path.
    * Lambdas, because the functions they call are declared further down.
    */
+  /** Simulators a chat on another machine booted here, by udid (in memory). */
+  const bootedForRemoteChat = new Map<string, string>();
   const power = createSimulatorPower({
     run: (file, commandArgs, options) => run(file, commandArgs, options),
     waitForBootStatus: (device) => waitForSimulatorBootStatus(device),
@@ -3474,6 +3505,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // A shutdown leaves it: the shutdown can fail, and the record goes once
       // the device is seen off.
       if (reason === "boot") laneMaintenance().recordBootedBy(udid, agentCallChat.getStore() ?? null);
+      // A chat on another machine brought it up: when that chat's work copy
+      // goes, the device goes back powered off, as it was (`releaseWorkCopyDevice`).
+      if (reason === "boot") {
+        const chat = agentCallChat.getStore() ?? null;
+        if (chat?.startsWith("remote:")) bootedForRemoteChat.set(udid, chat);
+        else bootedForRemoteChat.delete(udid);
+      }
       return resetHelperDevice(udid, reason);
     },
     stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),
@@ -8482,6 +8520,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     dispose: () => {
       disposed = true;
       offWorkCopyDeviceCheck();
+      offWorkCopyReleased();
       deviceLeases.dispose();
       maintenance?.stop();
       runtimeManagerInstance?.dispose();

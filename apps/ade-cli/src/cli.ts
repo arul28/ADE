@@ -42198,7 +42198,10 @@ async function main(): Promise<void> {
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
-      const desktopHint = macDesktopErrorHint(error.message);
+      // A refusal from another machine (`--machine`) is about that machine,
+      // not this one.
+      const refusedOnOtherMachine = isRecord(error.details) && typeof error.details.machine === "string";
+      const desktopHint = macDesktopErrorHint(error.message, refusedOnOtherMachine ? null : process.platform);
       if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       const androidHint = androidEmulatorErrorHint(error.message);
       if (androidHint) await writeProcessOutput(process.stderr, `${androidHint}\n`);
