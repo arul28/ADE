@@ -4411,6 +4411,9 @@ final class SyncService: ObservableObject {
   /// Host-pushed invalidation for GitHub projection changes that do not touch
   /// replicated `pull_requests` rows (notably unmapped PR webhooks).
   @Published private(set) var prsRemoteRevision = 0
+  /// Host-pushed: the provider sign-ins changed there (a pass or key saved, a
+  /// sign-in applied). An open sign-ins card reads `providerLogins.status` again.
+  @Published private(set) var providerLoginsRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
@@ -22883,6 +22886,9 @@ final class SyncService: ObservableObject {
           updateProfile { $0.savedRelayCandidates = nil }
         }
       }
+      resolve(requestId: requestId, result: .success(payload))
+    case "provider_logins_changed":
+      providerLoginsRevision += 1
       resolve(requestId: requestId, result: .success(payload))
     case "prs_updated":
       // Coalesce at the view task boundary. The host sends only a tiny

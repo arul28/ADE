@@ -22,6 +22,7 @@ import { osLabel, platformWord, useMachineFacts, type MachineFacts } from "./mac
 import { useSettingsMachines } from "./settingsMachinesContext";
 import { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineSettings } from "./MachineSettings";
+import { machineLabelForMachine } from "../../../state/adeCloudLaneIndex";
 import "./machinesPage.css";
 
 /**
@@ -34,8 +35,10 @@ export function MachinesPage({ machine }: { machine: SettingsMachinePage | null 
   return detail && machine ? <MachineDetail scope={machine} /> : <MachinesList />;
 }
 
+/** This computer by its device name; a cloud lane computer as "Cloud · <lane>"; any other machine by its name. */
 function machineDisplayName(machine: ProjectMachine, thisMachineName: string | null): string {
-  return machine.isThisMachine ? (thisMachineName ?? THIS_MACHINE_NAME) : machine.machineName;
+  if (machine.isThisMachine) return thisMachineName ?? THIS_MACHINE_NAME;
+  return machineLabelForMachine({ hostname: machine.hostname, machineKey: machine.machineId, name: machine.machineName });
 }
 
 function MachinesList() {

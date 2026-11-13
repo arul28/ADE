@@ -61,6 +61,7 @@
               "lanes/overview",
               "lanes/creating",
               "lanes/environment",
+              "cloud/overview",
               "guides/multi-agent-setup"
             ]
           },

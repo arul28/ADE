@@ -11,13 +11,15 @@
  * plan (2 cents an hour on Plus, 1.5 on Pro, 1.2 on Max), all three prices on
  * the one meter; extra disk on a second meter, $2 for each 10 GB a month
  * counted by the day; and a billing portal setup (card, cancel at the period
- * end, invoices, and switching plans where Stripe allows it).
+ * end, invoices; plans change in ADE, never in the portal).
  *
- * Each of these is its own product, because Checkout names a line by its
- * product: "ADE Cloud Plus", "ADE Cloud Pro", "ADE Cloud Max", "Extra hours"
- * and "Extra disk", each with a one-line description of what it includes or
- * costs. Managed Payments refuses Checkout's `custom_text`, so the products
- * carry every word Checkout shows. A rerun brings names and descriptions up to
+ * Each of these is its own product, because Checkout, the portal and invoices
+ * name a line by its product: "ADE Cloud Plus", "ADE Cloud Pro", "ADE Cloud
+ * Max", "Extra hours" and "Extra disk", each with a short description Stripe
+ * shows in full (a long one is cut off on Checkout). Managed Payments refuses
+ * Checkout's `custom_text`, so the products carry every word Checkout shows.
+ * Checkout sells only the plan; the extra items join a subscription when the
+ * person turns them on in ADE (`billing.ts`). A rerun brings names and descriptions up to
  * date. A price can't change product: one found on the wrong product (or
  * shaped differently) gives its lookup key to a new one and is archived, and
  * subscriptions that already hold it keep billing on it.
@@ -39,8 +41,12 @@ const PLAN_NUMBERS = {
   pro: { hours: 1600, diskGb: 80, phoneMinutes: 160, extraHourCents: 1.5, cents: 2000 },
   max: { hours: 5000, diskGb: 175, phoneMinutes: 500, extraHourCents: 1.2, cents: 5000 },
 };
-const planDescription = ({ hours, diskGb, extraHourCents }) =>
-  `${hours.toLocaleString("en-US")} hours a month and ${diskGb} GB of disk, as many computers as you like, every size with Android and Docker. Extra hours ${extraHourCents}¢ each, only if you turn them on.`;
+/** Extra disk's price for 10 GB kept a month: `EXTRA_DISK_CENTS_PER_10GB_MONTH` in plans.ts, checked the same way. */
+const DISK_CENTS_PER_10GB_MONTH = 200;
+const dollars = (cents) => `$${cents % 100 === 0 ? cents / 100 : (cents / 100).toFixed(2)}`;
+/** "300 hours a month · 30 GB disk · as many computers as you like": short enough that Checkout shows it whole. */
+const planDescription = ({ hours, diskGb }) =>
+  `${hours.toLocaleString("en-US")} hours a month · ${diskGb} GB disk · as many computers as you like`;
 
 /**
  * Fails when `PLAN_NUMBERS` and `CLOUD_PLANS` differ, so Stripe never sells
@@ -49,13 +55,17 @@ const planDescription = ({ hours, diskGb, extraHourCents }) =>
  */
 async function checkPlanNumbers() {
   let plans;
+  let diskCents;
   try {
-    ({ CLOUD_PLANS: plans } = await import(new URL("../src/cloud/plans.ts", import.meta.url).href));
+    ({ CLOUD_PLANS: plans, EXTRA_DISK_CENTS_PER_10GB_MONTH: diskCents } = await import(new URL("../src/cloud/plans.ts", import.meta.url).href));
   } catch (error) {
     console.error(`Couldn't read src/cloud/plans.ts to check the plan numbers (needs Node 22.18 or newer): ${error instanceof Error ? error.message : error}`);
     process.exit(1);
   }
   const differences = [];
+  if (DISK_CENTS_PER_10GB_MONTH !== diskCents) {
+    differences.push(`extra disk: this script says ${DISK_CENTS_PER_10GB_MONTH} cents per 10 GB a month, plans.ts says ${diskCents}`);
+  }
   for (const [id, numbers] of Object.entries(PLAN_NUMBERS)) {
     const plan = plans[id];
     const expected = { hours: plan.includedMilli / 1000, diskGb: plan.diskGb, phoneMinutes: plan.phoneMinutes, extraHourCents: plan.extraHourCents, cents: plan.priceUsd * 100 };
@@ -92,13 +102,14 @@ const PRODUCTS = {
   extraHours: {
     id: "ade_cloud_extra_hours",
     name: "Extra hours",
-    description: `Hours past your plan's, per hour: ${PLAN_NUMBERS.plus.extraHourCents}¢ on Plus, ${PLAN_NUMBERS.pro.extraHourCents}¢ on Pro, ${PLAN_NUMBERS.max.extraHourCents}¢ on Max. You pay only if you turn extra hours on in ADE.`,
+    description: `Only if you turn them on · ${PLAN_NUMBERS.plus.extraHourCents}¢ an hour on Plus, ${PLAN_NUMBERS.pro.extraHourCents}¢ on Pro, ${PLAN_NUMBERS.max.extraHourCents}¢ on Max`,
     unitLabel: "hour",
   },
   extraDisk: {
     id: "ade_cloud_extra_disk",
     name: "Extra disk",
-    description: "$2 per 10 GB a month, counted by the day, on disk past your plan's. You pay only if you turn extra disk on in ADE.",
+    // Invoices show the price's own rate ("$0.02 for every 3 GB-days"): this line says what it means.
+    description: `Only if you turn it on · ${dollars(DISK_CENTS_PER_10GB_MONTH)} per 10 GB a month, counted by the day`,
     unitLabel: "GB-days",
   },
 };
@@ -241,30 +252,24 @@ const ensureDiskPrice = (product, meter) => ensurePrice(product, DISK_LOOKUP_KEY
 }, (price) => price.unit_amount === 2 && price.transform_quantity?.divide_by === 3 && price.recurring?.meter === meter.id);
 
 /**
- * The portal: switch between Plus, Pro and Max (upgrade now and invoiced at
- * once, downgrade at the period end) where Stripe allows it, change the card,
- * cancel at the period end, see invoices. ADE itself switches plans
- * (`billing.ts` `changePaidPlan`): Stripe refuses a portal switch on a
- * subscription with more than one item.
+ * The portal: change the card, cancel at the period end, see invoices. Plans
+ * change in ADE (`billing.ts` `changePaidPlan`), never here: ADE's switch is
+ * the one that checks a cheaper plan's limits and the person's cleanup pick,
+ * and a portal downgrade would leave a subscription schedule that refuses
+ * ADE's own changes. (Subscriptions with only the plan item would otherwise
+ * be switchable here since Checkout stopped adding the extra items.) The
+ * headline and links are what the person sees at the top of the page.
  */
-async function ensurePortalConfiguration(product, proProduct, maxProduct, plusPrice, proPrice, maxPrice) {
+async function ensurePortalConfiguration() {
   const params = {
-    "business_profile[headline]": "ADE Cloud",
+    "business_profile[headline]": "Manage your ADE Cloud plan",
+    "business_profile[privacy_policy_url]": "https://ade-app.dev/privacy",
+    "business_profile[terms_of_service_url]": "https://ade-app.dev/terms",
     "features[invoice_history][enabled]": "true",
-    // Stripe refuses plan switching without it.
     "features[payment_method_update][enabled]": "true",
     "features[subscription_cancel][enabled]": "true",
     "features[subscription_cancel][mode]": "at_period_end",
-    "features[subscription_update][enabled]": "true",
-    "features[subscription_update][default_allowed_updates][0]": "price",
-    "features[subscription_update][proration_behavior]": "always_invoice",
-    "features[subscription_update][products][0][product]": product.id,
-    "features[subscription_update][products][0][prices][0]": plusPrice.id,
-    "features[subscription_update][products][1][product]": proProduct.id,
-    "features[subscription_update][products][1][prices][0]": proPrice.id,
-    "features[subscription_update][products][2][product]": maxProduct.id,
-    "features[subscription_update][products][2][prices][0]": maxPrice.id,
-    "features[subscription_update][schedule_at_period_end][conditions][0][type]": "decreasing_item_amount",
+    "features[subscription_update][enabled]": "false",
     "metadata[ade_cloud]": PORTAL_METADATA,
   };
   const page = await stripe("GET", "/billing_portal/configurations?active=true&limit=100");
@@ -288,7 +293,7 @@ const extraPrices = {
   max: await ensureExtraPrice(extraProduct, meter, "max"),
 };
 const diskPrice = await ensureDiskPrice(diskProduct, diskMeter);
-const portal = await ensurePortalConfiguration(product, proProduct, maxProduct, planPrice, proPrice, maxPrice);
+const portal = await ensurePortalConfiguration();
 
 console.log(JSON.stringify({
   livemode: planPrice.livemode,

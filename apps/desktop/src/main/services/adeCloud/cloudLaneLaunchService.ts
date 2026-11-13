@@ -186,7 +186,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!stage) return;
     const at = nowIso();
     if (status === "running") {
-      stage.startedAt = at;
+      // A step resumed after ADE restarted keeps the start it had (`resume`
+      // left it on the pending row); a new or retried step starts now.
+      stage.startedAt = stage.status === "pending" && stage.startedAt ? stage.startedAt : at;
       stage.endedAt = null;
       stage.error = null;
       stage.percent = null;
@@ -316,7 +318,11 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // Progress ticks are many; only settled changes are written down.
     const settled = !event.launch.stages.some((stage) => stage.status === "running") || isChatLaunchTerminal(event.launch.phase);
     publish(record, { persist: settled });
-    if (isSettled(record)) stopFollowing(launchId);
+    // The AI name can land after the chat started: a finished launch is
+    // followed until it does (at most until the record expires), so the lane's
+    // name and renamed branch reach the card and the computer's metadata.
+    const namingAfterDone = record.snapshot.laneNaming && isChatLaunchTerminal(record.snapshot.phase);
+    if (isSettled(record) && !namingAfterDone) stopFollowing(launchId);
   };
 
   const stopFollowing = (launchId: string): void => {
@@ -972,7 +978,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (record.snapshot.phase !== "running") continue;
       // The step that was running when ADE quit runs again; each one checks what it already did.
       for (const stage of record.snapshot.stages) {
-        if (stage.status === "running") setStage(record, stage.id, "pending");
+        if (stage.status === "running") setStage(record, stage.id, "pending", { startedAt: stage.startedAt });
       }
       logger.info("cloud_lane_launch.resumed", { launchId });
       publish(record);

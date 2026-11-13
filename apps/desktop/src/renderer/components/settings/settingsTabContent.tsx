@@ -389,7 +389,7 @@ const TAB_GROUPS = {
   cloud: {
     title: ADE_CLOUD_NAME,
     description: "Cloud computers for your lanes, made and signed in from ADE.",
-    icon: <CloudMark size={15} bold />,
+    icon: <CloudMark size={15} brand />,
     tone: "slate",
   },
   mcp: {

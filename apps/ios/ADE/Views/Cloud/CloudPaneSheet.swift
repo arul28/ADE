@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -167,9 +168,17 @@ final class CloudPaneStore: ObservableObject {
 
   /// Fixture screens (`-adePreviewScreen duo-cloud…`) hold their data and read nothing.
   private var isFixture = false
+  private var signInsWatch: AnyCancellable?
 
   init(syncService: SyncService) {
     self.syncService = syncService
+    // A sign-in saved or applied on the machine shows at once (its push), not on the next open.
+    signInsWatch = syncService.$providerLoginsRevision
+      .dropFirst()
+      .removeDuplicates()
+      .sink { [weak self] _ in
+        Task { @MainActor in await self?.reloadSignIns() }
+      }
   }
 
   #if DEBUG
@@ -208,6 +217,7 @@ final class CloudPaneStore: ObservableObject {
       let list = try await syncService.cloudRead("list", args: ["detail": "full"], as: CloudPhoneList.self)
       now = Date()
       machines = Self.ordered(list.machines, now: now)
+      CloudLaneComputerLabels.note(list.machines)
       account = list.account
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded

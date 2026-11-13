@@ -39,7 +39,7 @@ import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
-import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, machineLabelForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 import {
   useAppStore,
   useRootAppStore,
@@ -292,6 +292,12 @@ export function buildAllMachineLanes(input: {
   };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
+  // What a person sees: a cloud lane computer reads "Cloud · <lane>" (only when
+  // the lane computers are passed); every other machine keeps its own name.
+  const shownName = (binding: OpenProjectBinding | null, machineId: string, name: string): string =>
+    input.adeCloud
+      ? machineLabelForMachine({ hostname: binding?.kind === "remote" ? binding.hostname ?? null : null, machineKey: machineId, name }, input.adeCloud.computers)
+      : name;
   const active = activeMachineFor(activeBinding);
   const activeSlice = input.machines[active.machineId];
   const connectionById = new Map((input.connections ?? []).map((connection) => [connection.target.id, connection]));
@@ -300,7 +306,7 @@ export function buildAllMachineLanes(input: {
 
   const activeMachine: LaneMachine = {
     machineId: active.machineId,
-    machineName: active.machineName,
+    machineName: shownName(activeBinding, active.machineId, active.machineName),
     // A local binding is reachable by definition. A remote one follows its
     // union slice; before the first read, the connection snapshot; before
     // that, reachable (the tab would not be bound to it otherwise).
@@ -347,7 +353,7 @@ export function buildAllMachineLanes(input: {
     const pin = binding;
     const machine: LaneMachine = {
       machineId: entry.machineId,
-      machineName: entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId,
+      machineName: shownName(binding, entry.machineId, entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId),
       online: entry.online,
       isThisMachine,
       isActiveBinding: false,

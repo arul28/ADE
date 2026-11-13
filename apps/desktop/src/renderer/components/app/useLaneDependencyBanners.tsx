@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Package } from "@phosphor-icons/react";
 import type { LaneDependencyStatus, LaneSummary, OpenProjectBinding } from "../../../shared/types";
-import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice/appBannerStore";
 import { showToast } from "./toast/toastStore";
 import { useAppStore } from "../../state/appStore";
@@ -67,7 +68,7 @@ export function useLaneDependencyBanners({
   const [watchUntil, setWatchUntil] = useState(0);
   const lastCheckRef = useRef(0);
   const updatingRef = useRef(false);
-  const machineName = machineNameForBinding(projectBinding);
+  const machineName = machineLabelForBinding(projectBinding);
   const projectName = useAppStore((state) => state.project?.displayName ?? null);
   // How the ADE Tips row names where this applies.
   const projectContext = [projectName, projectBinding?.kind === "remote" ? machineName : null].filter(Boolean).join(" · ") || null;

@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
+import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
 
 /**
  * The names usage shows for the computers that reported a reading.
@@ -84,7 +85,10 @@ const getNames = () => names;
 export function useUsageMachineName(): (machineKey: string | null | undefined, label: string) => string {
   const known = useSyncExternalStore(subscribe, getNames, getNames);
   return useCallback(
-    (machineKey, label) => (machineKey ? known.get(machineKey.trim()) : undefined) ?? withoutHostSuffix(label),
+    (machineKey, label) => machineLabelForMachine({
+      machineKey: machineKey?.trim() ?? null,
+      name: (machineKey ? known.get(machineKey.trim()) : undefined) ?? withoutHostSuffix(label),
+    }),
     [known],
   );
 }

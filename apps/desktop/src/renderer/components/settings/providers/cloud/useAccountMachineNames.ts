@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { accountMachineDisplayName } from "../../../../../shared/accountDirectory";
 import type { ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import { fetchAccountMachines } from "../../../../lib/account";
+import { machineLabelForMachine } from "../../../../state/adeCloudLaneIndex";
 
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
 
@@ -21,7 +22,9 @@ export function useAccountMachineNames(): ReadonlyMap<string, string> {
         if (cancelled || result.state !== "ok") return;
         const next = new Map<string, string>();
         for (const machine of result.machines) {
-          const name = accountMachineDisplayName(machine);
+          const own = accountMachineDisplayName(machine);
+          // A cloud lane computer reads "Cloud · <lane>", never its generated name.
+          const name = own ? machineLabelForMachine({ machineKey: machine.machineKey, hostname: machine.name, name: own }) : null;
           if (machine.machineKey && name) next.set(machine.machineKey, name);
         }
         setNames(next);

@@ -66,7 +66,7 @@ struct PrsRootInputs: Equatable {
       // the phone tried last.
       if let rootPath = project.rootPath,
          let copy = accountProject?.copies.first(where: { $0.rootPath == rootPath }) {
-        directComputerName = AccountService.shared.machines.first { $0.machineKey == copy.machineKey }?.displayName
+        directComputerName = AccountService.shared.machines.first { $0.machineKey == copy.machineKey }?.presentedName
       }
     }
   }

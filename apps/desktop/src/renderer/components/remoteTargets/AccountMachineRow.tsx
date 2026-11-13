@@ -48,6 +48,7 @@ import {
 
   subTextStyle,
 } from "./remoteTargetListStyles";
+import { machineLabelForMachine, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
@@ -151,6 +152,9 @@ export function AccountMachineRow({
 }: AccountMachineRowProps) {
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
+  // What the row shows: a cloud lane computer reads "Cloud · <lane>" (its own name stays in the tooltip and rename field).
+  const { computers: cloudComputers } = useAdeCloudLaneComputers();
+  const shownName = machineLabelForMachine({ machineKey: machine.machineKey, hostname: machine.name, name: displayName }, cloudComputers);
   const installLabel = accountMachineInstallLabel(machine);
   const installTag = installLabel && installLabel !== "ADE" ? installLabel : null;
   const [renaming, setRenaming] = useState(false);
@@ -202,7 +206,7 @@ export function AccountMachineRow({
         <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
           <MachineAvatar
             colorKey={machine.machineKey}
-            name={displayName}
+            name={shownName}
             platform={machinePlatform(machine.platform)}
             formFactor={machineFormFactor({ name: displayName, power: machine.power })}
             editable
@@ -262,8 +266,8 @@ export function AccountMachineRow({
                 </form>
               ) : (
                 <>
-                  <span className="ade-cx-machine-name" style={nameStyle} title={machine.adeHome ?? undefined}>
-                    {installTag ? accountMachineRowName(machine) ?? displayName : displayName}
+                  <span className="ade-cx-machine-name" style={nameStyle} title={shownName !== displayName ? displayName : machine.adeHome ?? undefined}>
+                    {shownName !== displayName ? shownName : installTag ? accountMachineRowName(machine) ?? displayName : displayName}
                   </span>
                   {/* The install is named only when it is not the regular
                       app, which is the case where two rows share a name. */}

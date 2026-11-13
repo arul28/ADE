@@ -1,0 +1,75 @@
+/*
+ * The dusk sky (CloudSky.tsx): behind the ADE Cloud hero and the current
+ * plan card. Its own keyframe names (adecd-sky-*), so the city's puff drift
+ * keeps its own. Still while out of view, hidden, or under reduced motion.
+ */
+
+.adecd-sky {
+  /* The sky is dusk in both themes. Its cloud colours, from the brand tokens where one matches. */
+  --adecd-sky-rim: #efe7ff;
+  --adecd-sky-cloud-top: #d8ccff;
+  --adecd-sky-cloud: var(--adec-400);
+  --adecd-sky-back-top: #6b2f7d;
+  --adecd-sky-back-mid: #2c1650;
+  --adecd-sky-back-low: #1a1138;
+  --adecd-sky-front-top: #4a3392;
+  --adecd-sky-front-mid: #24184f;
+  --adecd-sky-front-low: #120e2a;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.adecd-sky-defs { position: absolute; }
+.adecd-sky-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(60% 50% at 18% 0%, rgba(139, 92, 246, 0.16), transparent 70%);
+}
+.adecd-sky-stars {
+  position: absolute;
+  inset: 0 0 35% 0;
+  -webkit-mask-image: linear-gradient(to bottom, black 45%, transparent);
+  mask-image: linear-gradient(to bottom, black 45%, transparent);
+}
+.adecd-sky-stars i { position: absolute; border-radius: 50%; background: var(--adecd-star, #fff); opacity: 0.45; }
+.adecd-sky-stars i[data-twinkle] { animation: adecd-twinkle 4.5s ease-in-out infinite; }
+@keyframes adecd-twinkle { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.95; } }
+.adecd-sky-moon {
+  position: absolute;
+  top: 64px;
+  right: 8%;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 34%, var(--adec-lamp-hot) 0%, var(--adec-lamp) 78%);
+  box-shadow: 0 0 40px 8px rgba(255, 210, 122, 0.24), 0 0 120px 30px rgba(255, 210, 122, 0.08);
+  opacity: 0.92;
+}
+.adecd-sky-drift { position: absolute; will-change: transform; animation: adecd-sky-drift 110s ease-in-out infinite alternate; }
+.adecd-sky-drift svg { display: block; width: 100%; height: auto; }
+@keyframes adecd-sky-drift { from { transform: translate3d(-5%, 0, 0); } to { transform: translate3d(5%, -6px, 0); } }
+.adecd-sky-bank {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 34%;
+  -webkit-mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+  opacity: 0.85;
+}
+.adecd-sky-bankglow {
+  position: absolute;
+  inset: 20% 8% 20% 8%;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(244, 114, 182, 0.28), transparent 70%);
+}
+.adecd-sky-bankrow { position: absolute; inset: auto -6% 0 -6%; display: flex; align-items: flex-end; justify-content: center; }
+.adecd-sky-bankrow svg { display: block; flex: none; margin: 0 -2.5%; aspect-ratio: 30 / 13; height: auto; }
+.adecd-sky-bankrow-back { bottom: 22%; animation: adecd-sky-drift 150s ease-in-out infinite alternate; will-change: transform; }
+.adecd-sky-bankrow-front { bottom: -18%; }
+[data-still="true"] .adecd-sky * { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  .adecd-sky * { animation: none !important; }
+}
+html[data-motion="reduced"] .adecd-sky * { animation: none !important; }
