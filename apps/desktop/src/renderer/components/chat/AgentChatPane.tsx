@@ -7656,6 +7656,8 @@ export function AgentChatPane({
     setCursorConfigValues({ ...nextCursorConfigValues });
   }, [setFastModeState]);
 
+  /** The chat whose summary last set the composer's effort; null for a draft. */
+  const composerEffortSessionIdRef = useRef<string | null>(null);
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
       // A chat whose summary is still loading (or failing). Locked Work chats
@@ -7694,8 +7696,18 @@ export function AgentChatPane({
       // defaults: they are another chat's, and a send here would carry that
       // chat's effort into this one (B14-34). Its summary sets them.
       if (loadingSessionId) {
+        // The effort still on screen is the chat shown before the switch (a
+        // transcript can name this chat's model before its summary comes):
+        // show none until the summary says this chat's own. A draft's effort
+        // stays, since it is the effort the chat it just started runs on.
+        const effortOwner = composerEffortSessionIdRef.current;
+        if (effortOwner && effortOwner !== loadingSessionId) {
+          composerEffortSessionIdRef.current = loadingSessionId;
+          setReasoningEffort(null);
+        }
         return;
       }
+      composerEffortSessionIdRef.current = null;
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
         return;
       }
@@ -7749,6 +7761,7 @@ export function AgentChatPane({
     if (nextModelId) {
       setModelId(nextModelId);
     }
+    composerEffortSessionIdRef.current = session.sessionId;
     setReasoningEffort(session.reasoningEffort ?? null);
     // The owning brain's answer on this chat wins over this window's last
     // account read — it is the machine that will enforce it.

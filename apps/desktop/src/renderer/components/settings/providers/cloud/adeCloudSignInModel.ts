@@ -414,7 +414,7 @@ function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSign
  * another copy of the same account when there is one).
  * T14: nothing else is there to use. T15: ADE Cloud uses another account's.
  */
-const PICK_GONE_TEXT = "The sign-in you picked was signed out on the computer it came from. Sign in on a computer to use it here";
+const PICK_GONE_TEXT = "The sign-in you picked was signed out on the computer it came from. Sign in on a computer to use it here.";
 const PICK_GONE_IN_PLACE_TEXT = "Used in place of the sign-in you picked, which was signed out on the computer it came from";
 
 function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus | null): Omit<AdeCloudTile, "provider"> {
