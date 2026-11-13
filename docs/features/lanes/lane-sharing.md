@@ -472,6 +472,8 @@ still refuses each typed line and each first line with
 | `apps/ade-cli/src/services/sync/laneShareHostService.ts` | The `lane_share` owner actions on the host. |
 | `apps/ade-cli/src/services/sync/laneShareGrantService.ts` | The host's grant list and ticket redemption. Fail closed. |
 | `apps/ade-cli/src/services/sync/laneShareGuestHost.ts`, `laneShareGuestGates.ts`, `laneShareGuestTypes.ts` | Guest peers, roles and per-envelope gates. |
+| `apps/ade-cli/src/services/sync/laneShareGuestHello.ts` | The guest hello: refusals, the ticket redeem, the hand-off to the lane's project, and admission. |
+| `apps/ade-cli/src/services/sync/laneShareGuestRouter.ts` | Picks the project host for a handed-off guest (registry origin, then live origin; open projects only for an unredeemed socket). |
 | `apps/ade-cli/src/services/sync/laneShareGuestPolicy.ts` | Default-refuse lists of envelopes and commands, locks, file reads, rate limit. |
 | `apps/ade-cli/src/services/sync/laneShareGuestCommandPrep.ts` | Checks that need host services; sets the author. |
 | `apps/ade-cli/src/services/sync/laneShareGuestScrub.ts` | What the host removes from a guest's payload. |
