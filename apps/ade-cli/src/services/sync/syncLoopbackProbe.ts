@@ -127,10 +127,12 @@ export function programNameFromCommandLine(command: string | null | undefined): 
   if (!trimmed) return null;
   const quoted = /^"([^"]+)"/.exec(trimmed);
   // An unquoted macOS bundle path can hold spaces ("Docker Desktop.app/
-  // Contents/MacOS/Docker Desktop --flag"): take the executable after
-  // Contents/MacOS/ up to its arguments.
-  const bundle = quoted ? null : /\.app\/Contents\/MacOS\/([^/]+?)(?:\s+-|$)/.exec(trimmed);
-  const first = quoted ? quoted[1]! : bundle ? bundle[1]! : trimmed.split(/\s+/)[0]!;
+  // Contents/MacOS/Docker Desktop --flag"), so the first space is not where
+  // the executable ends. The bundle's own name is the program name and
+  // never includes arguments.
+  const bundle = quoted ? null : /([^/]+)\.app\/Contents\/MacOS\//.exec(trimmed);
+  if (bundle?.[1]) return bundle[1].length <= 64 ? bundle[1] : null;
+  const first = quoted ? quoted[1]! : trimmed.split(/\s+/)[0]!;
   const base = first.split(/[\\/]/).pop()?.replace(/\.exe$/i, "") ?? "";
   return base.length > 0 && base.length <= 64 ? base : null;
 }
