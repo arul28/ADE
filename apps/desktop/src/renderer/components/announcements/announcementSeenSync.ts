@@ -99,6 +99,11 @@ async function onePass(): Promise<void> {
   const own = Object.fromEntries(Object.entries(merged).filter(([id]) => !foreign.has(id) || id in remote));
   if (seenAnnouncementsCover(remote, own)) return;
   if (!web && brainSyncedFor !== userId && Object.keys(remote).length === 0) return;
+  // The sync and the read above can span a sign-in change. Write only while
+  // the same account is still signed in, so this pass's filter never reaches
+  // another account.
+  const still = await fetchAccountStatus().catch(() => null);
+  if ((still?.signedIn ? still.userId?.trim() || null : null) !== userId) return;
   await api.set({ scope: ACCOUNT_SCOPE_ALL, key: ANNOUNCEMENTS_SEEN_SETTING_KEY, value: own });
 }
 
