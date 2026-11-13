@@ -1,5 +1,6 @@
 import { captureCloudAction, captureCloudIdleCleanup, type CloudIdleCleanupEvent, type CloudWaitUntil } from "./analytics";
 import {
+  CLOUD_IDLE_CLEANUP_DAYS,
   CLOUD_IGNORED_FILES_MAX_PATHS,
   IDLE_CLEANUP_HELD_NEXT,
   idleCleanupSaveSentence,
@@ -80,8 +81,8 @@ type IdleRule = {
 };
 
 export const IDLE_CLEANUP: Readonly<Record<"free" | "paid", IdleRule>> = {
-  free: { afterMs: 3 * DAY, leadMs: DAY, lastEmailMs: 6 * HOUR, afterLastEmailMs: 5 * HOUR, days: 3 },
-  paid: { afterMs: 10 * DAY, leadMs: 3 * DAY, lastEmailMs: DAY, afterLastEmailMs: 20 * HOUR, days: 10 },
+  free: { afterMs: CLOUD_IDLE_CLEANUP_DAYS.free * DAY, leadMs: DAY, lastEmailMs: 6 * HOUR, afterLastEmailMs: 5 * HOUR, days: CLOUD_IDLE_CLEANUP_DAYS.free },
+  paid: { afterMs: CLOUD_IDLE_CLEANUP_DAYS.paid * DAY, leadMs: 3 * DAY, lastEmailMs: DAY, afterLastEmailMs: 20 * HOUR, days: CLOUD_IDLE_CLEANUP_DAYS.paid },
 };
 
 /** The commit message for work the computer hadn't committed. */

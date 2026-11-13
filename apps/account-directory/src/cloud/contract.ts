@@ -826,6 +826,13 @@ export function idleCleanupWhen(deletesAt: number, now: number): string {
   return `deleted in ${days} ${days === 1 ? "day" : "days"}`;
 }
 
+/**
+ * Days a computer may go unused before the idle cleanup deletes it (its work
+ * pushed first): the free plan's, and every paid plan's. The website's
+ * pricing page reads these too.
+ */
+export const CLOUD_IDLE_CLEANUP_DAYS: Readonly<Record<"free" | "paid", number>> = { free: 3, paid: 10 };
+
 /** What happens before the delete, in ADE and the emails. */
 export function idleCleanupSaveSentence(branch: string | null | undefined): string {
   return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
