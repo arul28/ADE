@@ -1035,3 +1035,12 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 /* In the right column (B14-2) the invite card is half width: text on top, the three numbers in one row under it. */
 .adecd-stack .adecd-invite-body { grid-template-columns: 1fr; }
 .adecd-stack .adecd-invite-stats dd { font-size: 15px; white-space: nowrap; }
+
+/* A filled button on the ADE Cloud page (Copy link): the brand's violet to rose, never the theme's cream ink. */
+.kit-btn.kit-btn-primary.adecd-brandbtn {
+  border-color: transparent;
+  background: linear-gradient(135deg, #7c4ddf 0%, #9b4fd6 55%, #d1407f 100%);
+  color: #fff;
+  box-shadow: 0 6px 18px -10px rgba(139, 92, 246, 0.8);
+}
+.kit-btn.kit-btn-primary.adecd-brandbtn:hover:not(:disabled) { filter: brightness(1.08); }
