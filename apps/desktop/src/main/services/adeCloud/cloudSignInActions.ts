@@ -26,6 +26,7 @@ import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/serv
 import type { UsageSnapshot } from "../../../shared/types/usage";
 import { claudePassAccountUse } from "../claudePass/claudePassUse";
 import { pinnedLoginCliState } from "../pty/pinnedProviderCli";
+import { notifyProviderLoginsChanged } from "../providerLogins/providerLoginHooks";
 import { spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
@@ -78,6 +79,8 @@ function claudeSignIn(logger: Logger, verify: ClaudeVerify): CloudClaudeSignIn {
     spawnPty: spawnLoginPty,
     stopPty: stopLoginPty,
     verify,
+    // Every client of this brain (each window, the phone) reads the new pass now.
+    onSaved: notifyProviderLoginsChanged,
     logger,
   });
   machineClaudeSignIn = created;
@@ -326,6 +329,7 @@ export function buildCloudSignInActions(deps: {
         throw new Error(`ADE couldn't save your ${spec.keyName} to your account. Try again.`);
       }
       deps.logger?.info?.("cloud.cloud_key_saved", { id });
+      notifyProviderLoginsChanged();
       return await status();
     },
 
@@ -344,6 +348,7 @@ export function buildCloudSignInActions(deps: {
         throw new Error("ADE couldn't remove it from your account. Try again.");
       }
       deps.logger?.info?.("cloud.cloud_sign_in_removed", { id });
+      notifyProviderLoginsChanged();
       return await status();
     },
   };

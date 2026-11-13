@@ -9,7 +9,8 @@
         "apps/desktop/src/main/services/localRuntime/**",
         "apps/desktop/src/main/services/account/**",
         "apps/ade-cli/src/services/account/**",
-        "apps/desktop/src/main/services/updates/**"
+        "apps/desktop/src/main/services/updates/**",
+        "apps/desktop/src/main/services/adeCloud/**"
       ],
       "pages": [
         "concepts/machines-and-clients",
@@ -17,7 +18,8 @@
         "getting-started/ade-beta",
         "getting-started/connect-machine",
         "getting-started/windows",
-        "getting-started/linux"
+        "getting-started/linux",
+        "cloud/overview"
       ]
     },
     {

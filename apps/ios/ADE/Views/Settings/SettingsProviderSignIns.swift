@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// The account's provider sign-ins on the phone (Cloud 4): the mirror of the
@@ -410,8 +411,9 @@ struct ProviderSignInCardView: View {
 // MARK: - The model
 
 /// The account's sign-ins as one page reads them, on the machine the phone
-/// drives: read on open and after each write (the write's answer is the new
-/// status). No timer and no poll.
+/// drives: read on open, after each write (the write's answer is the new
+/// status) and when the machine pushes `provider_logins_changed`. No timer and
+/// no poll.
 @MainActor
 final class ProviderLoginsModel: ObservableObject {
   @Published private(set) var status: ProviderLoginsPhoneStatus?
@@ -421,9 +423,16 @@ final class ProviderLoginsModel: ObservableObject {
   @Published var error: String?
 
   private let host: SyncService?
+  private var changeWatch: AnyCancellable?
 
   init(host: SyncService) {
     self.host = host
+    changeWatch = host.$providerLoginsRevision
+      .dropFirst()
+      .removeDuplicates()
+      .sink { [weak self] _ in
+        Task { @MainActor in await self?.load() }
+      }
   }
 
   #if DEBUG

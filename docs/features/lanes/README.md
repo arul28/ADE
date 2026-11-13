@@ -445,7 +445,8 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   state simply keeps the deterministic name. The host command is
   deliberately not queueable so an offline phone fails fast to the
   deterministic name instead of queueing a stale suggestion. Covers
-  both the Chat and CLI auto-create paths; the all-projects hub
+  both the Chat and CLI auto-create paths, and new lanes on ADE Cloud (the
+  brain on the lane's computer runs the same naming); the all-projects hub
   composer (`HubComposerDrawer.swift`) runs the same background naming
   with `targetProjectId`/`targetProjectRootPath` scope so it works for
   foreign-project launches.

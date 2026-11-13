@@ -8,7 +8,9 @@
  *    reporting cloud computer's pin.
  *
  * The account part draws the tiles at once; the cloud part fills in when it
- * answers. Reads run on open, on `providerLogins.onChanged` and on Re-check.
+ * answers. Reads run on open, on each machine's own `providerLogins.onChanged`
+ * (through its pin) and on Re-check. When the account's sign-ins change, the
+ * reporting cloud computer is asked once to pull and apply them now.
  * No timer and no poll. Every effect keys on a pin's key, and a result that
  * arrives for an old key is dropped. The account read is
  * `usePinnedProviderLoginStatus`.
@@ -52,6 +54,21 @@ export type AdeCloudSignInsState = {
   /** Read the reporting computer's AI status again (after a sign-in there). */
   refreshCloudAi: () => void;
 };
+
+/**
+ * What of the account's sign-ins a cloud computer applies: each sign-in and
+ * pass by key with its switches and dates, and the account setting. A change
+ * here is worth asking the cloud computer to pull; a fresh read with the same
+ * sign-ins is not.
+ */
+function accountSignInsPrint(status: ProviderLoginStatus): string {
+  return JSON.stringify([
+    status.cloud.enabled,
+    Object.entries(status.cloud.inUse).sort(([a], [b]) => a.localeCompare(b)),
+    status.signIns.map((signIn) => [signIn.key, signIn.onForCloud, signIn.inUseOnCloud, signIn.capturedAt, signIn.renewedAt]),
+    (status.claudePasses ?? []).map((pass) => (pass.unreadable ? [pass.key] : [pass.key, pass.on, pass.newChats, pass.upload, pass.state, pass.renewedAt])),
+  ]);
+}
 
 /** The connection target id behind a remote machine, for its account machine key. */
 function targetIdOf(machine: ProjectMachine): string | null {
@@ -141,15 +158,19 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
   const [cloudAi, setCloudAi] = useState<{ key: string; ai: AiSettingsStatus | null } | null>(null);
   const [signInStatus, setSignInStatus] = useState<CloudSignInStatus | null>(null);
   const saved = signInStatus && !signInStatus.unknown ? signInStatus.saved : null;
-  // Bumped by `providerLogins.onChanged`: the cloud status read runs again (the account read listens on its own).
+  // Bumped by the reporting computer's `providerLogins.onChanged`: its status read runs again (the account read listens on its own pin).
   const [statusTick, setStatusTick] = useState(0);
   // Bumped by Re-check and on open only: the AI read is the heavier one.
   const [aiTick, setAiTick] = useState(0);
 
+  // The reporting cloud computer's own change events: the moment it applies a
+  // sign-in, its read runs again. Keyed on its pin key, never the tab's machine.
   useEffect(() => {
-    const off = window.ade?.providerLogins?.onChanged?.(() => setStatusTick((tick) => tick + 1));
+    const machine = reportingRef.current;
+    if (!cloudKey || !machine) return undefined;
+    const off = window.ade?.providerLogins?.onChanged?.(() => setStatusTick((tick) => tick + 1), machine.pin);
     return () => off?.();
-  }, []);
+  }, [cloudKey]);
 
   /** One status read on the reporting cloud computer, kept under its pin key. */
   const readCloudStatus = useCallback(async (machine: ProjectMachine, key: string, stale: () => boolean) => {
@@ -192,6 +213,35 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
       cancelled = true;
     };
   }, [cloudKey, readCloudStatus, statusTick]);
+
+  // The account's sign-ins changed (a pass or key saved, a sign-in captured,
+  // a switch): read the saved keys and passes again, and ask the reporting
+  // cloud computer to pull the account and apply it now rather than on its
+  // next heartbeat (up to a minute). One call per change, no timer.
+  const accountPrint = accountRead.status ? accountSignInsPrint(accountRead.status) : null;
+  const lastAccountPrintRef = useRef<{ key: string | null; print: string } | null>(null);
+  useEffect(() => {
+    if (accountPrint == null) return undefined;
+    const pinKey = accountPinRef.current?.key ?? null;
+    const last = lastAccountPrintRef.current;
+    lastAccountPrintRef.current = { key: pinKey, print: accountPrint };
+    if (!last || last.key !== pinKey || last.print === accountPrint) return undefined;
+    void reloadSignInStatus();
+    const machine = reportingRef.current;
+    const key = reportingKey(machine);
+    const capture = window.ade?.providerLogins?.captureNow;
+    if (!machine || !key || typeof capture !== "function") return undefined;
+    let cancelled = false;
+    void withMachineTimeout(capture({}, machine.pin), machine.machineName).then(
+      (status) => {
+        if (!cancelled && status && reportingKey(reportingRef.current) === key) setCloudStatus({ key, status, failed: false });
+      },
+      (error: unknown) => console.warn("[providers] asking the cloud computer to take the new sign-in failed", error),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [accountPrint, reloadSignInStatus]);
 
   useEffect(() => {
     const machine = reportingRef.current;
