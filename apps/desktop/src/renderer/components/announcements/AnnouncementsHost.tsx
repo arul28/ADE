@@ -19,6 +19,7 @@ import {
   markShowing,
   useSeenAnnouncements,
 } from "./announcementSeen";
+import { reconcileSeenAnnouncements, useAnnouncementSeenSync } from "./announcementSeenSync";
 import { releaseNotesDigest, type ReleaseNotesDigest } from "./releaseNotesDigest";
 import { ReleaseNotesPage } from "./ReleaseNotesPage";
 import "./announcements.css";
@@ -48,7 +49,8 @@ import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
  *   newest first, then this version's notes.
  *
  * A catalogue page counts as seen once it is on screen, whichever way it
- * opened, and never shows by itself again (`announcementSeen.ts`).
+ * opened, and never shows by itself again (`announcementSeen.ts`), on this
+ * computer or anywhere else the account is used (`announcementSeenSync.ts`).
  *
  * Cost: with nothing due (the usual case) this renders nothing and holds one
  * storage subscription. With pages due it checks the conditions every few
@@ -102,6 +104,7 @@ export function openWhatsNewAfterUpdate(detail: AfterUpdateDetail): void {
 }
 
 export function AnnouncementsHost() {
+  useAnnouncementSeenSync();
   const seen = useSeenAnnouncements();
   const due = useMemo(() => dueAnnouncements(seen), [seen]);
   const inProject = useAppStore((state) => Boolean(state.project) && !state.showWelcome);
@@ -155,8 +158,14 @@ export function AnnouncementsHost() {
     const noteInput = () => { lastInputAt = Date.now(); };
     window.addEventListener("keydown", noteInput, { capture: true, passive: true });
     window.addEventListener("pointerdown", noteInput, { capture: true, passive: true });
+    // Pages seen on another computer or in ADE Web are not due here: the
+    // account's copy is read (or given up on) before anything shows.
+    let accountRead = false;
+    void reconcileSeenAnnouncements().then(() => {
+      accountRead = true;
+    });
     const check = () => {
-      if (document.hidden || Date.now() - since < SETTLE_MS) return;
+      if (!accountRead || document.hidden || Date.now() - since < SETTLE_MS) return;
       if (Date.now() - lastInputAt < INPUT_QUIET_MS || editingTextNow()) return;
       if (!onboardingSettledBeforeThisLaunch() || floatingLayerBusy() || launchGateOpen()) return;
       setShownThisLaunch(true);

@@ -8,6 +8,9 @@ import {
   type BrowserAccountSnapshot,
   type BrowserAccountState,
 } from "../account/client";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { ANNOUNCEMENTS_SEEN_SETTING_KEY } from "../../../shared/announcementsSeen";
+import type { AdapterInfra } from "./types";
 
 function loginStatus(state: BrowserAccountState): "pending" | "signed_in" | "expired" {
   if (browserAccountIsSignedIn(state)) return "signed_in";
@@ -101,24 +104,58 @@ export function createAccountNamespace(
 }
 
 /**
- * The hosted web client has no brain to reach, so the account settings store is
- * reported unavailable rather than stubbed with a lie.
+ * The hosted web client has no account settings store of its own, so the
+ * store is reported unavailable rather than stubbed with a lie.
  *
  * An "ok, empty" answer would read as "your account has no saved settings" and
  * would let the hydrator overwrite nothing while the write-through silently
  * dropped every change. Unavailable is the truthful shape, and it is the one
  * the offline desktop path already handles: keep the local copy.
+ *
+ * One key is the exception: the "What's new" seen pages
+ * (`announcementSeenSync.ts`). They are read from, and added to, the connected
+ * computer's brain, which serves only that key and only grows it (its write
+ * is a union, never a replace). A lane-share guest's brain refuses both, and
+ * the page keeps its local copy.
  */
-export function createAccountSettingsNamespace(): NonNullable<Window["ade"]["accountSettings"]> {
+export function createAccountSettingsNamespace(
+  infra?: Pick<AdapterInfra, "commands">,
+): NonNullable<Window["ade"]["accountSettings"]> {
   const unavailable = {
     ok: false as const,
     unavailable: true as const,
     message: "Account settings sync needs the ADE desktop app on this computer.",
   };
+  const isSeenKey = (args: { scope: string; key: string }) =>
+    args.scope === ACCOUNT_SCOPE_ALL && args.key === ANNOUNCEMENTS_SEEN_SETTING_KEY;
   return {
     list: async () => unavailable,
-    get: async () => unavailable,
-    set: async () => unavailable,
+    get: async (args) => {
+      if (!infra || !isSeenKey(args)) return unavailable;
+      try {
+        const result = await infra.commands.call<{ available?: boolean; value?: unknown }>(
+          "announcements.getSeen",
+          {},
+          { fallback: { available: false }, requireProject: false, authoritative: true, cacheTtlMs: 0 },
+        );
+        return result?.available ? { ok: true as const, value: result.value } : unavailable;
+      } catch {
+        return unavailable;
+      }
+    },
+    set: async (args) => {
+      if (!infra || !isSeenKey(args)) return unavailable;
+      try {
+        const result = await infra.commands.call<{ ok?: boolean }>(
+          "announcements.markSeen",
+          { seen: args.value },
+          { idempotent: false, requireProject: false, authoritative: true },
+        );
+        return result?.ok ? { ok: true as const, value: null } : unavailable;
+      } catch {
+        return unavailable;
+      }
+    },
     sync: async () => unavailable,
   };
 }
