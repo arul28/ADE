@@ -267,6 +267,20 @@ export function registerCloudIpc(args: {
     knownClient: () => knownCloudProvider(credentials),
     removeAccountMachine: args.removeAccountMachine,
     onInstancesRead: (instances) => laneFollower.note(instances),
+    accountId: () => credentials.accountId(),
+    // A computer made or deleted elsewhere (another device, the server's own
+    // cleanup): this computer's saved connections to one that is gone go, and
+    // every window reads the list again (the dashboard, the machine lists).
+    onMachinesChanged: ({ gone }) => {
+      for (const machine of gone) {
+        try {
+          args.forgetMachineConnections?.(machine);
+        } catch (error) {
+          logger.warn("cloud.gone_machine_forget_failed", { instanceId: machine.instanceId, error: getErrorMessage(error) });
+        }
+      }
+      sendToAllWindows(IPC.cloudStatusChanged);
+    },
     logger,
   });
   readMachinesNow = async () => (await machines.list()).state === "ok";
@@ -281,7 +295,16 @@ export function registerCloudIpc(args: {
     return await laneFollower.follow(typeof request.laneId === "string" ? request.laneId : "", { connect: request.connect !== false });
   });
   // Off the list this asks nothing: access is read at sign-in and on focus only.
-  startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
+  startCloudSleepWatch({
+    client: async () => knownCloudProvider(credentials),
+    logger,
+    firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000,
+    // Its read is one more good read of the list: a computer deleted from another device shows there.
+    onInstancesRead: () => {
+      const read = machines.startRead();
+      return (instances) => machines.noteInstances(instances, read);
+    },
+  });
   // Remote connections wake a sleeping box the person is about to use. Only a
   // machine known as a cloud box is looked up (`knowsBox`: at most one bounded
   // read for an unknown one), so a Connect to a laptop barely waits.
