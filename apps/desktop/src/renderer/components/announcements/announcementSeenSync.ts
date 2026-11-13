@@ -109,9 +109,22 @@ async function onePass(): Promise<void> {
 export function reconcileSeenAnnouncements(): Promise<void> {
   if (running) {
     rerun = true;
-    return running;
+  } else {
+    running = startPasses().finally(() => {
+      running = null;
+    });
   }
-  const pass = (async () => {
+  // A caller that joins a pass already running waits no longer than one that
+  // started it.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, PASS_TIMEOUT_MS);
+  });
+  return Promise.race([running, timeout]).finally(() => clearTimeout(timer));
+}
+
+function startPasses(): Promise<void> {
+  return (async () => {
     do {
       rerun = false;
       try {
@@ -126,14 +139,6 @@ export function reconcileSeenAnnouncements(): Promise<void> {
       }
     } while (rerun);
   })();
-  running = pass.finally(() => {
-    running = null;
-  });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, PASS_TIMEOUT_MS);
-  });
-  return Promise.race([running, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
