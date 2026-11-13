@@ -10,7 +10,15 @@
 import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
+/** Hours to the tenth, rounded down, as the desktop writes them: 299.8 left reads "299.8", never "300". */
 function cloudHoursText(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? (Math.floor(Math.max(0, value) * 10 + 1e-9) / 10).toLocaleString("en-US", { maximumFractionDigits: 1 })
+    : "—";
+}
+
+/** A disk figure to the tenth (rounded, as the disk meter does). */
+function cloudGbText(value: unknown): string {
   return typeof value === "number" ? (Math.round(value * 10) / 10).toLocaleString("en-US") : "—";
 }
 
@@ -61,7 +69,7 @@ export function formatCloudStatus(value: unknown): string {
     rows.push(["Hours", `${cloudHoursText(hours.left)} of ${cloudHoursText(hours.included)} left · resets ${resets}${extra}`]);
   }
   const disk = isRecord(status.disk) ? status.disk : null;
-  if (disk) rows.push(["Disk", `${cloudHoursText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
+  if (disk) rows.push(["Disk", `${cloudGbText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
   const computers = isRecord(status.computers) ? status.computers : null;
   // No plan limits how many computers an account has: a count, never "of N" (an older app may still send max).
   if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} ${computers.inUse === 1 ? "computer" : "computers"} · ${String(computers.awake ?? 0)} awake`]);

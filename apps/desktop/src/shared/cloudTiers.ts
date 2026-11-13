@@ -180,6 +180,3 @@ export function cloudTierHoursAt(tier: Pick<CloudTier, "multiplierMilli">, leftM
   const shown = hours >= 10 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
   return `${shown} h`;
 }
-
-/** The one line under the sizes: what an hour is. Hours count while awake, and a computer sleeps soon after its agent stops. */
-export const CLOUD_AWAKE_TIME_LINE = "Hours count only while a computer is awake. It falls asleep a few minutes after its agent stops.";

@@ -161,6 +161,8 @@ export function planName(account: CloudAccountState): string {
 export function hoursForecast(account: CloudAccountState, now: number): string | null {
   const recent = account.recentUse;
   if (!recent || recent.days <= 0 || recent.usedMilli <= 0) return null;
+  // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
+  if (account.hours.usedMilli <= 0) return null;
   const perDay = recent.usedMilli / recent.days;
   const left = cloudHoursLeftMilli(account);
   if (left <= 0) return null;

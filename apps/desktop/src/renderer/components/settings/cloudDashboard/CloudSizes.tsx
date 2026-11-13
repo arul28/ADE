@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Cpu } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudExtraHourCentsOf, cloudHoursLeftMilli, cloudPlanIdOf, type CloudAccountState } from "../../../../shared/adeCloud";
-import { CLOUD_AWAKE_TIME_LINE, cloudTiers } from "../../../../shared/cloudTiers";
+import { cloudTiers } from "../../../../shared/cloudTiers";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeCards } from "./CloudSizeCards";
@@ -37,7 +37,6 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
           markLabel="Default"
           ariaLabel="Size for new cloud lanes"
         />
-        <p className="adecd-sizes-note">{CLOUD_AWAKE_TIME_LINE}</p>
       </div>
     </section>
   );
