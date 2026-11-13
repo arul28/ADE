@@ -1576,6 +1576,10 @@ export function createBuiltInBrowserService(args: {
     ...fallbackServices.values(),
   ];
 
+  /** The collection that holds this tab (ids are unique across collections), else the usual pick. */
+  const serviceOwningTab = (input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): WindowBrowserService =>
+    allWindowServices().find((service) => service.listTabIds().includes(input.tabId)) ?? serviceForInput(input, sourceWindow);
+
   /**
    * Picks the collection a detected dev server belongs to.
    *
@@ -2147,14 +2151,16 @@ export function createBuiltInBrowserService(args: {
         if (service.handleLoginSubmission(wc, mainFrame, submission)) return;
       }
     },
+    // The key button names only a tab: the collection that owns it answers
+    // (the personal Browser's tabs live outside the window's project).
     savedLoginsForTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null) {
-      return serviceForInput(input, sourceWindow).savedLoginsForTab(input);
+      return serviceOwningTab(input, sourceWindow).savedLoginsForTab(input);
     },
     fillSavedLogin(input: BuiltInBrowserTabArgs & { itemId: string }, sourceWindow?: BrowserWindow | null) {
-      return serviceForInput(input, sourceWindow).fillSavedLogin(input);
+      return serviceOwningTab(input, sourceWindow).fillSavedLogin(input);
     },
     loginOfferForTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null) {
-      return serviceForInput(input, sourceWindow).loginOfferForTab(input.tabId);
+      return serviceOwningTab(input, sourceWindow).loginOfferForTab(input.tabId);
     },
     async acceptLoginOffer(input: { offerId: string }): Promise<{ saved: boolean }> {
       for (const service of allWindowServices()) {

@@ -573,16 +573,10 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // account directory); edits of a share go to the machine that holds it.
   sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  // Passwords follows one machine: the switch is that computer's, the vault
-  // is the account's. Every call carries the page's pin.
-  passwords: [
-    {
-      entryIds: "tab",
-      render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>,
-      machine: "routed",
-      title: "Passwords",
-    },
-  ],
+  // Passwords is the account's, so it carries no machine kind and shows with
+  // no project open (this computer's brain answers through `passwords.call`).
+  // A machine picked on the page still pins every call to that machine.
+  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn> }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 
