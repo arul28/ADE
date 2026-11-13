@@ -58,6 +58,8 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_DISK_METER_EVENT?: string;
   /** The billing portal setup (card, cancel at period end, invoices). */
   STRIPE_PORTAL_CONFIG_ID?: string;
+  /** A clean https origin on this Worker for Stripe's return pages (`https://account.ade-app.dev`). Unset: the request's own origin. */
+  BILLING_RETURN_ORIGIN?: string;
   /** Server-side product analytics (`analytics.ts`); unset sends nothing. */
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;

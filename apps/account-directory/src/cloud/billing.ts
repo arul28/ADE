@@ -1,9 +1,10 @@
-import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "../brandPage";
+import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { formatCloudCents, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
+import { cloudReturnPageHtml } from "./returnPage";
 import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
 import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
 import {
@@ -53,6 +54,14 @@ const MAX_REPORTS_PER_ACCOUNT_TICK = 60;
 
 const RETURN_PATH = "/billing/return";
 const WEBHOOK_PATH = "/webhooks/stripe";
+
+/**
+ * Where Stripe sends the person back: `BILLING_RETURN_ORIGIN` (a clean domain
+ * on this Worker, e.g. https://account.ade-app.dev) when set, else the origin
+ * the request came in on. Only an exact https origin is taken.
+ */
+const returnUrl = (env: CloudEnv, origin: string, query: string): string =>
+  `${trustedHttpsOrigin(env.BILLING_RETURN_ORIGIN, { requireExactOrigin: true }) ?? origin}${RETURN_PATH}?${query}`;
 
 /** A refusal the client shows as is. */
 export class CloudBillingError extends Error {
@@ -236,8 +245,9 @@ export async function createCheckoutUrl(
       "line_items[0][quantity]": "1",
       "metadata[ade_user_id]": userId,
       "subscription_data[metadata][ade_user_id]": userId,
-      success_url: `${origin}${RETURN_PATH}?to=done`,
-      cancel_url: `${origin}${RETURN_PATH}?to=cancelled`,
+      // The plan rides along so the page can say what was bought; it only picks words, never grants anything.
+      success_url: returnUrl(env, origin, `to=done&plan=${plan}`),
+      cancel_url: returnUrl(env, origin, "to=cancelled"),
     });
     const url = textOf(session.url);
     if (!url) throw unavailable();
@@ -297,8 +307,8 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, origin:
       "metadata[ade_purpose]": FREE_UNLOCK_PURPOSE,
       "setup_intent_data[metadata][ade_user_id]": userId,
       "setup_intent_data[metadata][ade_purpose]": FREE_UNLOCK_PURPOSE,
-      success_url: `${origin}${RETURN_PATH}?to=card`,
-      cancel_url: `${origin}${RETURN_PATH}?to=card_cancelled`,
+      success_url: returnUrl(env, origin, "to=card"),
+      cancel_url: returnUrl(env, origin, "to=card_cancelled"),
     });
     const url = textOf(session.url);
     if (!url) throw unavailable();
@@ -606,7 +616,7 @@ export async function createPortalUrl(env: CloudEnv, userId: string, origin: str
   try {
     const session = await stripeRequest(env, "POST", "/billing_portal/sessions", {
       customer: account.stripe_customer_id,
-      return_url: `${origin}${RETURN_PATH}?to=portal`,
+      return_url: returnUrl(env, origin, "to=portal"),
       ...portalConfigParams(env),
     });
     const url = textOf(session.url);
@@ -1086,29 +1096,15 @@ async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: C
 
 /* ---- Public routes ---- */
 
-const RETURN_MESSAGES: Record<string, { heading: string; line: string }> = {
-  done: { heading: "You're all set", line: "Your plan will show in ADE in a moment." },
-  cancelled: { heading: "Nothing changed", line: "You left checkout before paying." },
-  portal: { heading: "Back to ADE", line: "Any changes you made will show in ADE in a moment." },
-  card: { heading: "Card saved", line: "You weren't charged. Your free hours will show in ADE in a moment." },
-  card_cancelled: { heading: "Nothing changed", line: "You left before saving a card. Your free hours start when your GitHub account is 30 days old." },
-};
-
 function returnPage(url: URL, method: string): Response {
   if (method !== "GET") return json({ error: "method not allowed" }, 405);
-  // Own keys only: `?to=constructor` or `?to=__proto__` must not read an inherited value.
-  const to = url.searchParams.get("to") ?? "";
-  const message = Object.hasOwn(RETURN_MESSAGES, to) ? RETURN_MESSAGES[to] : RETURN_MESSAGES.portal;
-  const html = brandDocument({
-    title: message.heading,
-    card: `<p class="sub">${escapeHtml(message.line)}</p>`,
-    foot: "You can close this page and go back to ADE.",
-  });
+  const html = cloudReturnPageHtml(url.searchParams.get("to") ?? "", url.searchParams.get("plan"));
   return new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; ${BRAND_IMG_SRC}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+      // Inline styles and inline SVG only: no script, no image, nothing from the network.
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "referrer-policy": "no-referrer",
     },
   });
