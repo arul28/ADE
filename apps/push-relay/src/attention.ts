@@ -6,6 +6,7 @@ import {
 import { handleAccountSettingsRoute } from "./accountSettings";
 import { withCloudflareRetry } from "./cloudflareTransient";
 import { handleAccountVaultRoute } from "./accountVault";
+import { handlePasswordsRoute } from "./passwords";
 import {
   AttentionAuthVerificationUnavailableError,
   inspectAttentionAuthConfiguration,
@@ -4537,6 +4538,10 @@ async function handleAuthorizedAttentionAccountRequest(
   // credential from ever being returned by a settings query.
   const vault = await handleAccountVaultRoute(request, env, url, userId, route);
   if (vault) return vault;
+  // Passwords: sealed items and the wrapped vault key; also its own module,
+  // for the same reason as the vault.
+  const passwords = await handlePasswordsRoute(request, env, url, userId, route);
+  if (passwords) return passwords;
   if (route.length === 1 && route[0] === "snapshot" && request.method === "GET") {
     return await handleSnapshot(env, userId, url);
   }

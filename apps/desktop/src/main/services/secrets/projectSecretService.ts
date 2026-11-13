@@ -713,6 +713,30 @@ export function createProjectSecretService(projectRoot: string, options: Project
       return writeSecrets(Array.isArray(args?.secrets) ? args.secrets : []);
     },
 
+    /**
+     * Every secret's value, for the environment of a process ADE starts
+     * (`ade secrets exec`). Never an action: the action allowlist does not
+     * name it, and nothing returns it to a caller.
+     */
+    valuesForProcess(): Record<string, string> {
+      const out: Record<string, string> = {};
+      if (!fs.existsSync(credentialsPath)) return out;
+      store.updateSync((values) => {
+        const index = parseIndex(values[INDEX_KEY] ?? null);
+        for (const { name } of sortSummaries(index.entries)) {
+          const value = values[valueKey(name)];
+          if (value != null) out[name] = value;
+        }
+        return false;
+      });
+      return out;
+    },
+
+    /** The account scope this project's secrets are grouped under in Passwords. */
+    accountScope(): string | null {
+      return getAccountScope();
+    },
+
     exportEnv(): ProjectSecretsExportResult {
       let secrets: Array<{ name: string; value: string }> = [];
       if (fs.existsSync(credentialsPath)) {

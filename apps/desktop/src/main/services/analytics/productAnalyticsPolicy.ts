@@ -274,6 +274,15 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // settles it. Never the login, the account, or an error.
   "github_app_connected",
   "github_app_disconnected",
+  // Passwords (feature "passwords"): turned on or off here (enabled |
+  // disabled), a CSV import, and an agent's sign-in, sign-up or
+  // `secrets exec` (completed | failed). Never the site, account, item,
+  // command, a count, or an error.
+  "passwords_switched",
+  "logins_imported",
+  "agent_signed_in",
+  "agent_signed_up",
+  "secrets_exec",
   // "New cloud machine" (feature "connections"): whether installations make
   // cloud boxes from ADE at all, and how often a create fails. completed (it
   // joined) | partial (signed in, still starting) | cancelled | failed. Never
@@ -690,6 +699,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "cloud_invite",
     // The first-run cards of the launch gate (actions "onboarding_*").
     "onboarding",
+    // Passwords: on/off per computer, imports, and agents' sign-ins,
+    // sign-ups and `secrets exec`.
+    "passwords",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

@@ -503,6 +503,9 @@
 		E2000000000000000000DE0E /* HubAccountCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0E /* HubAccountCards.swift */; };
 		E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0F /* HubPhoneLayout.swift */; };
 		E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE10 /* GitHubAccountCredential.swift */; };
+		FA55A0000000000000000B01 /* PasswordsVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA55A0000000000000000A01 /* PasswordsVault.swift */; };
+		FA55A0000000000000000B02 /* PasswordsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA55A0000000000000000A02 /* PasswordsViews.swift */; };
+		FA55A0000000000000000B03 /* PasswordsVaultTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA55A0000000000000000A03 /* PasswordsVaultTests.swift */; };
 		E2000000000000000000DE11 /* GitHubDirectClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE11 /* GitHubDirectClient.swift */; };
 		E2000000000000000000DE12 /* PrDirectViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE12 /* PrDirectViews.swift */; };
 		E2000000000000000000DE0A /* StartOnPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0A /* StartOnPicker.swift */; };
@@ -1040,6 +1043,9 @@
 		D2000000000000000000DE0E /* HubAccountCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountCards.swift; path = ADE/Views/Hub/HubAccountCards.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0F /* HubPhoneLayout.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubPhoneLayout.swift; path = ADE/Views/Hub/HubPhoneLayout.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE10 /* GitHubAccountCredential.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubAccountCredential.swift; path = ADE/Services/GitHubAccountCredential.swift; sourceTree = "<group>"; };
+		FA55A0000000000000000A01 /* PasswordsVault.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PasswordsVault.swift; path = ADE/Services/PasswordsVault.swift; sourceTree = "<group>"; };
+		FA55A0000000000000000A02 /* PasswordsViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PasswordsViews.swift; path = ADE/Views/Account/PasswordsViews.swift; sourceTree = "<group>"; };
+		FA55A0000000000000000A03 /* PasswordsVaultTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PasswordsVaultTests.swift; path = ADETests/PasswordsVaultTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE11 /* GitHubDirectClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubDirectClient.swift; path = ADE/Services/GitHubDirectClient.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE12 /* PrDirectViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDirectViews.swift; path = ADE/Views/PRs/PrDirectViews.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0A /* StartOnPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StartOnPicker.swift; path = ADE/Views/Components/StartOnPicker.swift; sourceTree = "<group>"; };
@@ -1519,6 +1525,7 @@
 			children = (
 				AD0000000000000000000A03 /* AccountSignInView.swift */,
 				AD0000000000000000000A04 /* AccountConnectionsSection.swift */,
+				FA55A0000000000000000A02 /* PasswordsViews.swift */,
 				C5A000000000000000000009 /* MobileAccessGateView.swift */,
 				C5A00000000000000000000A /* MobileAccessGateSheet.swift */,
 				D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */,
@@ -1615,6 +1622,7 @@
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
 				D2000000000000000000DE07 /* AccountProjects.swift */,
 				D2000000000000000000DE10 /* GitHubAccountCredential.swift */,
+				FA55A0000000000000000A01 /* PasswordsVault.swift */,
 				D2000000000000000000DE11 /* GitHubDirectClient.swift */,
 				D2000000000000000000DE01 /* DeviceSignInApproval.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
@@ -1820,6 +1828,7 @@
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
 				AC7500000000000000000AF1 /* AccountProjectsJoinTests.swift */,
+				FA55A0000000000000000A03 /* PasswordsVaultTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
 				AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */,
 				AC71000000000000000000B7 /* ProviderAccountsMachineTests.swift */,
@@ -2357,6 +2366,8 @@
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
 				E2000000000000000000DE07 /* AccountProjects.swift in Sources */,
 				E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */,
+				FA55A0000000000000000B01 /* PasswordsVault.swift in Sources */,
+				FA55A0000000000000000B02 /* PasswordsViews.swift in Sources */,
 				E2000000000000000000DE11 /* GitHubDirectClient.swift in Sources */,
 				E2000000000000000000DE12 /* PrDirectViews.swift in Sources */,
 				E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */,
@@ -2597,6 +2608,7 @@
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
 				AC7600000000000000000AF1 /* AccountProjectsJoinTests.swift in Sources */,
+				FA55A0000000000000000B03 /* PasswordsVaultTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
 				AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */,
 				AC72000000000000000000B7 /* ProviderAccountsMachineTests.swift in Sources */,

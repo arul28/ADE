@@ -254,6 +254,7 @@ import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
 import { McpServerRequestReceipt } from "./McpServerCard";
 import { MachineRemovalReceipt } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestReceipt } from "./PasswordLoginCard";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -4419,6 +4420,17 @@ function renderEvent(
       // The connect card's record: the provider and the method only.
       return (
         <IntegrationConnectReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    if (nativeCard?.kind === "login") {
+      // The secure sign-in card's record: the site and the outcome only.
+      return (
+        <PasswordLoginRequestReceipt
           card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}

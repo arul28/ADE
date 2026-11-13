@@ -1,4 +1,7 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
+import { createLocalPasswordsAccess, registerBrowserTabPasswordsIpc } from "./services/passwords/localPasswordsBridge";
+import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
+import { readMessagesInWorker, sendMessage, terminateMessagesReadWorkers } from "./services/messages";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
@@ -2197,9 +2200,25 @@ app.whenReady().then(async () => {
   // desktop, shared by the built-in browser's recorder, App Control and the
   // runtime daemon (over the bridge below), so jobs queue on one hidden renderer.
   const chromiumDemoEngine = createChromiumDemoEngine({ logger: builtInBrowserBridgeLogger });
+  // Passwords live in this computer's brain, account-wide (`passwords.call`,
+  // no project needed). Values come back only for a fill, into main.
+  const localPasswords = createLocalPasswordsAccess(async (action, args) =>
+    (await localRuntimePool.callSync<{ result?: unknown }>("passwords.call", { action, args }))?.result);
+  // Messages on this Mac: its database through a worker (Full Disk Access is
+  // ADE's), sending through the Messages app. No reader off macOS: the
+  // service then says Messages is Mac-only.
+  const messagesIntegration = createMessagesIntegrationService({
+    userDataDir: app.getPath("userData"),
+    reader: process.platform === "darwin"
+      ? { read: (request) => readMessagesInWorker(request), send: (input) => sendMessage(input) }
+      : null,
+    logger: { info: (event, data) => localRuntimeLogger.info(event, data), warn: (event, data) => localRuntimeLogger.warn(event, data) },
+  });
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
     demoEngine: chromiumDemoEngine,
+    messages: messagesIntegration,
+    passwords: localPasswords,
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
@@ -2342,6 +2361,11 @@ app.whenReady().then(async () => {
         return { sessionService: null, agentChatService: null };
       },
     }),
+  });
+  registerBrowserTabPasswordsIpc({
+    passwords: localPasswords,
+    isBrowserTab: (contents) => builtInBrowserService.locateWebContents(contents) !== null,
+    onLoginSubmitted: (contents, mainFrame, submission) => builtInBrowserService.handleLoginSubmission(contents, mainFrame, submission),
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy
@@ -8829,6 +8853,12 @@ app.whenReady().then(async () => {
       terminateLoginImportReadWorkers();
     } catch {
       // ignore if module not loaded
+    }
+    // A Messages read has its own 20 s limit; quitting cuts it short too.
+    try {
+      terminateMessagesReadWorkers();
+    } catch {
+      // nothing running
     }
   };
 
