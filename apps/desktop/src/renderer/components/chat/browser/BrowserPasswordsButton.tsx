@@ -2,8 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Key } from "@phosphor-icons/react";
 import type { BuiltInBrowserSaveLoginOffer } from "../../../../shared/types/builtInBrowserLoginCapture";
+import { ipcErrorMessage } from "../../../lib/format";
 import { navigateToAppTarget } from "../../../lib/openExternal";
+import { passwordFillTarget } from "../../../../shared/passwordFillTarget";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../../ui/paneMenuTokens";
 import { CHROME_GHOST, CHROME_GHOST_ON, CHROME_ICON_SIZE, CHROME_STATE_DOT, TOOLBAR_FOCUS, TOOLBAR_MOTION } from "./browserChrome";
 
@@ -34,7 +37,7 @@ export function BrowserPasswordsButton({ tabId, currentUrl }: { tabId: string | 
     let cancelled = false;
     setLogins([]);
     setError(null);
-    if (!tabId || !api?.savedLoginsForTab || !/^https:|^http:\/\/(localhost|127\.0\.0\.1)/.test(currentUrl)) return;
+    if (!tabId || !api?.savedLoginsForTab || !passwordFillTarget(currentUrl)) return;
     void api.savedLoginsForTab({ tabId })
       .then((rows) => { if (!cancelled) setLogins(Array.isArray(rows) ? rows : []); })
       .catch(() => { if (!cancelled) setLogins([]); });
@@ -68,7 +71,7 @@ export function BrowserPasswordsButton({ tabId, currentUrl }: { tabId: string | 
     setError(null);
     void api.fillSavedLogin({ tabId, itemId })
       .then(() => setOpen(false))
-      .catch((failure: unknown) => setError(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "ADE could not fill that login."))
+      .catch((failure: unknown) => setError(ipcErrorMessage(failure) || "ADE could not fill that login."))
       .finally(() => setBusy(false));
   }, [api, tabId]);
 
@@ -84,7 +87,7 @@ export function BrowserPasswordsButton({ tabId, currentUrl }: { tabId: string | 
         setOpen(false);
         if (save && tabId) void api.savedLoginsForTab?.({ tabId }).then((rows) => setLogins(Array.isArray(rows) ? rows : []));
       })
-      .catch((failure: unknown) => setError(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "ADE could not save that login."))
+      .catch((failure: unknown) => setError(ipcErrorMessage(failure) || "ADE could not save that login."))
       .finally(() => setBusy(false));
   }, [api, offer, tabId]);
 
@@ -138,7 +141,7 @@ export function BrowserPasswordsButton({ tabId, currentUrl }: { tabId: string | 
               <span className="ml-auto pl-3 text-[11px] text-muted-fg">{login.sites[0] ?? ""}</span>
             </DropdownMenu.Item>
           ))}
-          {error ? <div className="px-2 py-1 text-[11px] text-rose-300" role="alert">{error}</div> : null}
+          {error ? <Banner layout="inline" model={{ id: "browser-passwords-error", tone: "error", title: error, report: false }} /> : null}
           <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => navigateToAppTarget({ kind: "settings", entryId: "passwords.logins" })}>
             Manage passwords…

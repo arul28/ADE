@@ -37,8 +37,7 @@ import {
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import {
-  ChangePasswordDialog,
-  ChangeSecretValueDialog,
+  ChangeValueDialog,
   NewLoginDialog,
   NewSecretDialog,
   ResetPasswordsDialog,
@@ -65,8 +64,7 @@ const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
 type DialogState =
   | { kind: "new-login" }
   | { kind: "new-secret" }
-  | { kind: "change-password"; item: PasswordItemSummary }
-  | { kind: "change-secret"; item: PasswordItemSummary }
+  | { kind: "change-value"; item: PasswordItemSummary }
   | { kind: "reset" }
   | null;
 
@@ -543,7 +541,7 @@ export function PasswordsSection() {
                             {selectedLogin.kind === "passkey" ? (
                               <Fact label="Passkey:">saved in ADE · used by ADE's browser after Touch ID</Fact>
                             ) : (
-                              <Fact label="Password:"><RevealValue itemId={selectedLogin.id} field="password" label={selectedLogin.title} /></Fact>
+                              <Fact label="Password:"><RevealValue key={selectedLogin.id} itemId={selectedLogin.id} field="password" label={selectedLogin.title} /></Fact>
                             )}
                             {selectedLogin.hasTotp ? <Fact label="Authenticator code:"><LiveCode itemId={selectedLogin.id} pin={pin} /></Fact> : null}
                             <Fact label="Updated:">{formatUpdatedAt(selectedLogin.updatedAt)}</Fact>
@@ -553,7 +551,7 @@ export function PasswordsSection() {
                               <button
                                 type="button"
                                 className="ade-modern-btn"
-                                onClick={() => setDialog({ kind: "change-password", item: selectedLogin })}
+                                onClick={() => setDialog({ kind: "change-value", item: selectedLogin })}
                               >
                                 <Password size={13} /> Change password…
                               </button>
@@ -585,14 +583,14 @@ export function PasswordsSection() {
                         <div className="ade-pw-facts">
                           <Fact label="Name:">{selectedSecret.title}</Fact>
                           <Fact label="Project:">{selectedSecret.projectScope ?? "All projects"}</Fact>
-                          <Fact label="Value:"><RevealValue itemId={selectedSecret.id} field="value" label={selectedSecret.title} /></Fact>
+                          <Fact label="Value:"><RevealValue key={selectedSecret.id} itemId={selectedSecret.id} field="value" label={selectedSecret.title} /></Fact>
                           <Fact label="Updated:">{formatUpdatedAt(selectedSecret.updatedAt)}</Fact>
                         </div>
                         <div className="ade-pw-detail-actions">
                           <button
                             type="button"
                             className="ade-modern-btn"
-                            onClick={() => setDialog({ kind: "change-secret", item: selectedSecret })}
+                            onClick={() => setDialog({ kind: "change-value", item: selectedSecret })}
                           >
                             <Key size={13} /> Change value…
                           </button>
@@ -669,16 +667,8 @@ export function PasswordsSection() {
           onSaved={(saved) => void handleSaved(saved)}
         />
       ) : null}
-      {dialog?.kind === "change-password" ? (
-        <ChangePasswordDialog
-          item={dialog.item}
-          pin={pin}
-          onClose={() => setDialog(null)}
-          onSaved={(saved) => void handleSaved(saved)}
-        />
-      ) : null}
-      {dialog?.kind === "change-secret" ? (
-        <ChangeSecretValueDialog
+      {dialog?.kind === "change-value" ? (
+        <ChangeValueDialog
           item={dialog.item}
           pin={pin}
           onClose={() => setDialog(null)}
@@ -745,14 +735,15 @@ function LiveCode({ itemId, pin }: { itemId: string; pin: OpenProjectBinding | n
  * after Touch ID / Windows Hello in desktop main. A copy never passes through
  * this page; the clipboard is cleared after 90 s.
  */
+/**
+ * Show / Copy one saved value after the person check. Keyed by item where it
+ * is used, so an answer that arrives after the selection moved on lands in the
+ * old (unmounted) row, never under another item.
+ */
 function RevealValue({ itemId, field, label }: { itemId: string; field: "password" | "value"; label: string }) {
   const [shown, setShown] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    setShown(null);
-    setNote(null);
-  }, [itemId]);
   useEffect(() => {
     if (shown === null) return;
     const timer = setTimeout(() => setShown(null), 30_000);

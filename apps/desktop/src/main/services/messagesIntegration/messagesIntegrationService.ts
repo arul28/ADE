@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../../../shared/types/messagesIntegration";
+import type { ChatRecord, MessageRecord, MessagesReadResponse, ReadRecentMessagesOptions, SendMessageResult } from "../messages";
 
 /**
  * The Messages integration on a Mac: agents read the person's texts (a
@@ -19,14 +20,13 @@ import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../
  * (`messages.send`), not here: this only enforces the switches. Text bodies,
  * codes and phone numbers are never logged.
  *
- * Windows and Linux: unsupported; every call says so.
+ * Windows and Linux get a service with no reader: `status()` says
+ * `supported: false` and every other call says Messages is Mac-only.
  */
 
 export type MessagesReader = {
-  access(): Promise<{ ok: true } | { ok: false; code: string; message: string }>;
-  recent(options: Record<string, unknown>): Promise<unknown>;
-  chats(options: { limit?: number }): Promise<unknown>;
-  send(input: { to: string; text: string }): Promise<{ ok: true } | { ok: false; code: string; message: string }>;
+  read(request: { op: "access" } | ({ op: "recent" } & ReadRecentMessagesOptions) | { op: "chats"; limit?: number }): Promise<MessagesReadResponse>;
+  send(input: { to: string; text: string }): Promise<SendMessageResult>;
 };
 
 const DEFAULT_SETTINGS: MessagesIntegrationSettings = {
@@ -36,15 +36,14 @@ const DEFAULT_SETTINGS: MessagesIntegrationSettings = {
   sendWithoutAsking: false,
 };
 
+const SETTING_KEYS = ["connected", "readTexts", "sendTexts", "sendWithoutAsking"] as const;
+
 export function createMessagesIntegrationService(args: {
   userDataDir: string;
-  /** The reader core (`services/messages`); null where it cannot run. */
+  /** The reader core (`services/messages`); null where it cannot run (off macOS). */
   reader: MessagesReader | null;
-  platform?: NodeJS.Platform;
   logger?: { info: (event: string, data?: Record<string, unknown>) => void; warn: (event: string, data?: Record<string, unknown>) => void };
 }) {
-  const platform = args.platform ?? process.platform;
-  const supported = platform === "darwin" && args.reader !== null;
   const settingsPath = path.join(args.userDataDir, "messages-integration.json");
 
   const readSettings = (): MessagesIntegrationSettings => {
@@ -61,47 +60,51 @@ export function createMessagesIntegrationService(args: {
     }
   };
 
-  const unsupported = () => new AdeExpectedError("Messages is on Macs only. Connect it in Settings › Integrations › Messages on a Mac.", "user");
-
-  const requireOn = (what: "read" | "send"): MessagesIntegrationSettings => {
-    if (!supported) throw unsupported();
+  /** The reader, with the switches checked; throws the person-readable reason when it is not allowed. */
+  const readerFor = (what: "read" | "send" | "settings"): MessagesReader => {
+    const reader = args.reader;
+    if (!reader) throw new AdeExpectedError("Messages is on Macs only. Connect it in Settings › Integrations › Messages on a Mac.", "user");
+    if (what === "settings") return reader;
     const settings = readSettings();
     if (!settings.connected) {
       throw new AdeExpectedError("Messages isn't connected on this Mac. The person can connect it in Settings › Integrations › Messages.", "user");
     }
     if (what === "read" && !settings.readTexts) throw new AdeExpectedError("Reading texts is off. The person can turn on Read Texts in Settings › Integrations › Messages.", "user");
     if (what === "send" && !settings.sendTexts) throw new AdeExpectedError("Sending texts is off. The person can turn on Send Texts in Settings › Integrations › Messages.", "user");
-    return settings;
+    return reader;
   };
 
-  const readOrThrow = async <T>(run: () => Promise<unknown>): Promise<T> => {
-    const result = await run() as { ok?: boolean; code?: string; message?: string } & T;
-    if (result && result.ok === false) {
-      if (result.code === "needs_full_disk_access") {
-        throw new AdeExpectedError("ADE needs Full Disk Access to read Messages. The person can grant it in System Settings › Privacy & Security › Full Disk Access (Settings › Integrations › Messages has a button).", "user");
-      }
-      throw new AdeExpectedError(result.message || "Messages could not be read.", "user");
+  const readOrThrow = async (request: Parameters<MessagesReader["read"]>[0]): Promise<Extract<MessagesReadResponse, { ok: true }>> => {
+    const result = await readerFor("read").read(request);
+    if (result.ok) return result;
+    if (result.code === "needs_full_disk_access") {
+      throw new AdeExpectedError("ADE needs Full Disk Access to read Messages. The person can grant it in System Settings › Privacy & Security › Full Disk Access (Settings › Integrations › Messages has a button).", "user");
     }
-    return result;
+    throw new AdeExpectedError(result.message || "Messages could not be read.", "user");
   };
 
   return {
     async status(): Promise<MessagesIntegrationStatus> {
       const settings = readSettings();
-      if (!supported) return { ...settings, supported: false, access: "unsupported" };
-      const access = await args.reader!.access().catch(() => ({ ok: false as const, code: "error", message: "" }));
+      const reader = args.reader;
+      if (!reader) return { ...settings, supported: false, access: "unsupported" };
+      const access = await reader.read({ op: "access" }).catch((error: unknown) => {
+        args.logger?.warn("messages_integration.access_check_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      });
       return {
         ...settings,
         supported: true,
-        access: access.ok ? "ok" : access.code === "needs_full_disk_access" ? "needs_full_disk_access" : access.code === "no_database" ? "no_database" : "error",
+        access: !access ? "error" : access.ok ? "ok" : access.code === "needs_full_disk_access" ? "needs_full_disk_access" : access.code === "no_database" ? "no_database" : "error",
       };
     },
 
-    async setSettings(next: Partial<MessagesIntegrationSettings>): Promise<MessagesIntegrationStatus> {
-      if (!supported) throw unsupported();
+    /** Any of the four switches, as booleans; anything else in `next` is ignored. */
+    async setSettings(next: Record<string, unknown>): Promise<MessagesIntegrationStatus> {
+      readerFor("settings");
       const merged = { ...readSettings() };
-      for (const key of ["connected", "readTexts", "sendTexts", "sendWithoutAsking"] as const) {
-        if (typeof next[key] === "boolean") merged[key] = next[key]!;
+      for (const key of SETTING_KEYS) {
+        if (typeof next[key] === "boolean") merged[key] = next[key] as boolean;
       }
       fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
@@ -109,22 +112,22 @@ export function createMessagesIntegrationService(args: {
       return await this.status();
     },
 
-    async recent(options: Record<string, unknown>): Promise<unknown> {
-      requireOn("read");
-      return await readOrThrow(() => args.reader!.recent(options));
+    async recent(options: ReadRecentMessagesOptions): Promise<MessageRecord[]> {
+      const result = await readOrThrow({ op: "recent", ...options });
+      return result.op === "recent" ? [...result.messages] : [];
     },
 
-    async chats(options: { limit?: number }): Promise<unknown> {
-      requireOn("read");
-      return await readOrThrow(() => args.reader!.chats(options));
+    async chats(options: { limit?: number }): Promise<ChatRecord[]> {
+      const result = await readOrThrow({ op: "chats", limit: options.limit });
+      return result.op === "chats" ? [...result.chats] : [];
     },
 
     /** Sends one text. The caller (the brain) has already had it approved unless Send Without Asking is on. */
     async send(input: { to: string; text: string }): Promise<{ sent: true; to: string }> {
-      requireOn("send");
+      const reader = readerFor("send");
       const to = input.to.trim();
       if (!to || !input.text) throw new AdeExpectedError("A text needs a recipient (phone number or email) and a message.", "user");
-      const result = await args.reader!.send({ to, text: input.text });
+      const result = await reader.send({ to, text: input.text });
       if (!result.ok) {
         if (result.code === "needs_automation_permission") {
           throw new AdeExpectedError("ADE needs permission to control Messages. The person can allow it in System Settings › Privacy & Security › Automation.", "user");

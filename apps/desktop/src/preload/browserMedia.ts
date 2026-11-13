@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, type BuiltInBrowserLoginSubmission } from "../shared/types/builtInBrowserLoginCapture";
-import { BUILT_IN_BROWSER_WEBAUTHN_CHANNEL } from "../shared/types/builtInBrowserPasskeys";
+import { BUILT_IN_BROWSER_WEBAUTHN_CANCEL_CHANNEL, BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, type WebAuthnPageAnswer, type WebAuthnPageRequest } from "../shared/types/builtInBrowserPasskeys";
 
 /**
  * The built-in browser's media hook, a session preload for every browser tab.
@@ -258,23 +258,48 @@ function installAdePasskeyHook(): void {
     return bytes.buffer;
   };
   let sequence = 0;
-  const ask = (request: Record<string, unknown>): Promise<Record<string, unknown>> => new Promise((resolve) => {
+  // Type imports are erased, so this function still runs alone in the page.
+  // The page's AbortSignal and timeout end the wait (the browser's limits:
+  // 10 s to 10 min, 5 min when none is given), and tell ADE to stop: nothing
+  // is signed or saved for a request the page gave up on.
+  const ask = (request: WebAuthnPageRequest, signal: AbortSignal | null | undefined, timeoutMs: number | undefined): Promise<WebAuthnPageAnswer> => new Promise((resolve, reject) => {
+    const aborted = () => (signal?.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
+    if (signal?.aborted) {
+      reject(aborted());
+      return;
+    }
     const id = `${Date.now()}-${(sequence += 1)}-${Math.random().toString(36).slice(2)}`;
+    let done = false;
+    const end = (settle: () => void) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("__ade_webauthn_answer", onAnswer);
+      signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
+      settle();
+    };
+    const giveUp = (error: Error) => end(() => {
+      window.dispatchEvent(new CustomEvent("__ade_webauthn_cancel", { detail: JSON.stringify({ id }) }));
+      reject(error);
+    });
+    const onAbort = () => giveUp(aborted());
     const onAnswer = (event: Event) => {
-      let detail: Record<string, unknown>;
+      let detail: { id?: unknown; answer?: WebAuthnPageAnswer };
       try {
-        detail = JSON.parse(String((event as CustomEvent).detail)) as Record<string, unknown>;
+        detail = JSON.parse(String((event as CustomEvent).detail)) as { id?: unknown; answer?: WebAuthnPageAnswer };
       } catch {
         return;
       }
       if (detail.id !== id) return;
-      window.removeEventListener("__ade_webauthn_answer", onAnswer);
-      resolve(detail.answer as Record<string, unknown>);
+      end(() => resolve(detail.answer ?? { fallback: true }));
     };
+    const limit = typeof timeoutMs === "number" && timeoutMs > 0 ? Math.min(Math.max(timeoutMs, 10_000), 600_000) : 300_000;
+    const timer = setTimeout(() => giveUp(new DOMException("The operation either timed out or was not allowed.", "NotAllowedError")), limit);
+    signal?.addEventListener("abort", onAbort, { once: true });
     window.addEventListener("__ade_webauthn_answer", onAnswer);
     window.dispatchEvent(new CustomEvent("__ade_webauthn_ask", { detail: JSON.stringify({ id, request }) }));
   });
-  const fail = (answer: Record<string, unknown>) => new DOMException(String(answer.message ?? "The operation was not allowed."), String(answer.error ?? "NotAllowedError"));
+  const notAllowed = () => new DOMException("The operation was not allowed.", "NotAllowedError");
   const credential = (fields: Record<string, PropertyDescriptor>, responseProto: object, responseFields: Record<string, PropertyDescriptor>) => {
     const response = Object.create(responseProto) as object;
     Object.defineProperties(response, responseFields);
@@ -296,27 +321,28 @@ function installAdePasskeyHook(): void {
       excludeCredentialIds: (publicKey.excludeCredentials ?? []).map((entry) => b64u(entry.id)),
       algorithms: (publicKey.pubKeyCredParams ?? []).map((entry) => entry.alg),
       userVerification: publicKey.authenticatorSelection?.userVerification ?? "preferred",
-      wantsCredProps: Boolean((publicKey.extensions as Record<string, unknown> | undefined)?.credProps),
-    });
-    if (answer.fallback) return originalCreate(options);
-    if (answer.error) throw fail(answer);
-    const rawId = fromB64u(String(answer.credentialId));
-    const transports = Array.isArray(answer.transports) ? answer.transports.map(String) : ["internal", "hybrid"];
+      wantsCredProps: Boolean((publicKey.extensions as { credProps?: unknown } | undefined)?.credProps),
+    }, options?.signal, publicKey.timeout);
+    if ("fallback" in answer) return originalCreate(options);
+    if ("error" in answer) throw new DOMException(answer.message, answer.error);
+    if (answer.kind !== "create") throw notAllowed();
+    const rawId = fromB64u(answer.credentialId);
+    const transports = answer.transports;
     return credential(
       {
-        id: { value: String(answer.credentialId), enumerable: true },
+        id: { value: answer.credentialId, enumerable: true },
         rawId: { value: rawId, enumerable: true },
         getClientExtensionResults: { value: () => (answer.credProps ? { credProps: { rk: true } } : {}) },
         toJSON: { value: () => ({ id: answer.credentialId, rawId: answer.credentialId, type: "public-key", authenticatorAttachment: "platform", response: { clientDataJSON: answer.clientDataJSON, attestationObject: answer.attestationObject, authenticatorData: answer.authenticatorData, publicKey: answer.publicKey, publicKeyAlgorithm: answer.publicKeyAlgorithm, transports }, clientExtensionResults: answer.credProps ? { credProps: { rk: true } } : {} }) },
       },
       window.AuthenticatorAttestationResponse.prototype,
       {
-        clientDataJSON: { value: fromB64u(String(answer.clientDataJSON)), enumerable: true },
-        attestationObject: { value: fromB64u(String(answer.attestationObject)), enumerable: true },
+        clientDataJSON: { value: fromB64u(answer.clientDataJSON), enumerable: true },
+        attestationObject: { value: fromB64u(answer.attestationObject), enumerable: true },
         getTransports: { value: () => transports.slice() },
-        getAuthenticatorData: { value: () => fromB64u(String(answer.authenticatorData)) },
-        getPublicKey: { value: () => fromB64u(String(answer.publicKey)) },
-        getPublicKeyAlgorithm: { value: () => Number(answer.publicKeyAlgorithm) },
+        getAuthenticatorData: { value: () => fromB64u(answer.authenticatorData) },
+        getPublicKey: { value: () => fromB64u(answer.publicKey) },
+        getPublicKeyAlgorithm: { value: () => answer.publicKeyAlgorithm },
       },
     );
   };
@@ -330,23 +356,24 @@ function installAdePasskeyHook(): void {
       allowCredentialIds: (publicKey.allowCredentials ?? []).map((entry) => b64u(entry.id)),
       userVerification: publicKey.userVerification ?? "preferred",
       mediation: typeof options?.mediation === "string" ? options.mediation : null,
-    });
-    if (answer.fallback) return originalGet(options);
-    if (answer.error) throw fail(answer);
-    const rawId = fromB64u(String(answer.credentialId));
+    }, options?.signal, publicKey.timeout);
+    if ("fallback" in answer) return originalGet(options);
+    if ("error" in answer) throw new DOMException(answer.message, answer.error);
+    if (answer.kind !== "get") throw notAllowed();
+    const rawId = fromB64u(answer.credentialId);
     return credential(
       {
-        id: { value: String(answer.credentialId), enumerable: true },
+        id: { value: answer.credentialId, enumerable: true },
         rawId: { value: rawId, enumerable: true },
         getClientExtensionResults: { value: () => ({}) },
         toJSON: { value: () => ({ id: answer.credentialId, rawId: answer.credentialId, type: "public-key", authenticatorAttachment: "platform", response: { clientDataJSON: answer.clientDataJSON, authenticatorData: answer.authenticatorData, signature: answer.signature, userHandle: answer.userHandle }, clientExtensionResults: {} }) },
       },
       window.AuthenticatorAssertionResponse.prototype,
       {
-        clientDataJSON: { value: fromB64u(String(answer.clientDataJSON)), enumerable: true },
-        authenticatorData: { value: fromB64u(String(answer.authenticatorData)), enumerable: true },
-        signature: { value: fromB64u(String(answer.signature)), enumerable: true },
-        userHandle: { value: answer.userHandle ? fromB64u(String(answer.userHandle)) : null, enumerable: true },
+        clientDataJSON: { value: fromB64u(answer.clientDataJSON), enumerable: true },
+        authenticatorData: { value: fromB64u(answer.authenticatorData), enumerable: true },
+        signature: { value: fromB64u(answer.signature), enumerable: true },
+        userHandle: { value: answer.userHandle ? fromB64u(answer.userHandle) : null, enumerable: true },
       },
     );
   };
@@ -363,10 +390,19 @@ function installPasskeyBridge(): void {
     }
     if (typeof parsed.id !== "string") return;
     const reply = (answer: unknown) => window.dispatchEvent(new CustomEvent("__ade_webauthn_answer", { detail: JSON.stringify({ id: parsed.id, answer }) }));
-    ipcRenderer.invoke(BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, parsed.request)
+    ipcRenderer.invoke(BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, parsed.request, parsed.id)
       .then(reply)
       // ADE could not answer: the browser's own WebAuthn takes the request.
       .catch(() => reply({ fallback: true }));
+  });
+  window.addEventListener("__ade_webauthn_cancel", (event) => {
+    let parsed: { id?: unknown };
+    try {
+      parsed = JSON.parse(String((event as CustomEvent).detail)) as { id?: unknown };
+    } catch {
+      return;
+    }
+    if (typeof parsed.id === "string") ipcRenderer.send(BUILT_IN_BROWSER_WEBAUTHN_CANCEL_CHANNEL, parsed.id);
   });
 }
 

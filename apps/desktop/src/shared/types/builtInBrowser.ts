@@ -1073,6 +1073,10 @@ export type BuiltInBrowserSigninArgs = BuiltInBrowserTabTargetArgs & {
   itemId?: string | null;
   /** Which saved login to use when the site has more than one. */
   username?: string | null;
+  /** `--site`: refuse unless the tab's page is on this host (checked on the tab that is filled). */
+  expectedSite?: string | null;
+  /** Only a login saved for the page's exact origin (an agent's sign-in always sets it). */
+  exactOrigin?: boolean;
 };
 
 export type BuiltInBrowserClearArgs = BuiltInBrowserAgentActionArgs & BuiltInBrowserElementTargetArgs;
@@ -1115,6 +1119,10 @@ export type BuiltInBrowserAgentActionResult = {
     needsLogin?: boolean;
     /** The tab's page, with `needsLogin`, so the sign-in card names that exact site. */
     pageUrl?: string;
+    /** The person chose to sign in in the tab themselves; nothing was filled. */
+    signInYourself?: boolean;
+    /** `signup`: a new password was made, saved to Passwords, and typed into the form. */
+    created?: boolean;
   };
   /**
    * Set when the action ran but the observation after it failed. The action

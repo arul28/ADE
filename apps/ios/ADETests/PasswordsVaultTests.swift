@@ -13,7 +13,7 @@ final class PasswordsVaultTests: XCTestCase {
   private let itemId = "pw_fixture_01ABCD"
   private let epoch = 3
   private let envelopeJSON = #"{"v":1,"epoch":3,"nonce":"FLtLKwhqmCSGFDJr","ct":"AJ6rJeUcMWMM/wF8i0jVbYLLELRhkNZOM94APnCexZfB41oiBsU4X5nc1lYuWnps6vC1wv5oZ0+W0EB730iwbw4lRHDyBD+DfkV9rLEF9iJA9lZTp34idrXUweX2ZwIePVaArHWu8fA88H3gW+68a91c9Kw2o/Zm/E6W3CGCE66UoUX7Jp0pgZBNjM3HQEmEPQAdFwJAy2mcF5laJkuoB7mYhq12u/c4TsBZiTNQLQuwgVUswNVZoo7i8VD8IOMFScT2tZPfUDKEUraPbtMmcvnj9WEqchd2MSQiGUJK6ejlr6El/repQ0THVN1ZQ908aMZDmwkDavf9BKvKXQMW7zXM1WRz88BuDOPE7jg/p7f9mx3SNU/TgAuVJkCgtXaLJV6TPKDmRfieW650GSq+HGCAzEa5O+i8vt3EvwObT6bUoB3jUAq61AMwvlJlci4x1aXuZgmkmd0a"}"#
-  private let plaintext = #"{"kind":"login","title":"Fixture Site","origins":["https://fixture.example"],"username":"fixture@example.com","password":"correct-horse-battery-staple","notes":"Fixture notes","totpUri":"otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ","createdAt":"2026-11-01T00:00:00.000Z","updatedAt":"2026-11-02T00:00:00.000Z"}"#
+  private let plaintext = #"{"kind":"login","title":"Fixture Site","origins":["https://fixture.example"],"username":"fixture@example.com","password":"correct-horse-battery-staple","notes":"Fixture notes","totpUri":"otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ","createdAt":"2026-11-01T00:00:00.000Z","updatedAt":"2026-11-02T00:00:00.000Z"}"# // gitleaks:allow (fixture, RFC 6238 test key)
 
   func testOpensAnItemSealedByTheBrains() throws {
     let envelope = try XCTUnwrap(PasswordCrypto.parseEnvelope(envelopeJSON))
@@ -27,7 +27,7 @@ final class PasswordsVaultTests: XCTestCase {
       username: "fixture@example.com",
       password: "correct-horse-battery-staple",
       notes: "Fixture notes",
-      totpUri: "otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+      totpUri: "otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" // gitleaks:allow (RFC 6238 test key)
     )))
   }
 
@@ -65,8 +65,8 @@ final class PasswordsVaultTests: XCTestCase {
 
   /// RFC 6238 appendix B, through an `otpauth://` URI as logins store them.
   func testAuthenticatorCodesMatchRFC6238() throws {
-    let sha1 = "otpauth://totp/ADE:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8"
-    let sha256 = "otpauth://totp/ADE%20Test:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA&digits=8&algorithm=SHA256"
+    let sha1 = "otpauth://totp/ADE:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=8" // gitleaks:allow (RFC 6238 test key)
+    let sha256 = "otpauth://totp/ADE%20Test:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA&digits=8&algorithm=SHA256" // gitleaks:allow (RFC 6238 test key)
     let vectors: [(String, TimeInterval, String, Int)] = [
       (sha1, 59, "94287082", 1),
       (sha1, 1_111_111_109, "07081804", 1),

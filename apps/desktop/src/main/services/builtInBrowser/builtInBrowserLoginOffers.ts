@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { passwordFillTarget } from "../../../shared/passwordFillTarget";
 import type { BuiltInBrowserLoginSubmission, BuiltInBrowserSaveLoginOffer } from "../../../shared/types/builtInBrowserLoginCapture";
 
 /**
@@ -29,16 +30,8 @@ type Pending = BuiltInBrowserSaveLoginOffer & { origin: string; password: string
 
 /** The page's origin and the site to show, or null when Passwords won't save for it. */
 export function loginOfferTarget(pageUrl: string): { origin: string; site: string } | null {
-  let url: URL;
-  try {
-    url = new URL(pageUrl);
-  } catch {
-    return null;
-  }
-  if (url.username || url.password) return null;
-  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) return null;
-  return { origin: url.origin, site: url.hostname.replace(/^www\./, "") };
+  const target = passwordFillTarget(pageUrl);
+  return target ? { origin: target.origin, site: target.host.replace(/^www\./, "") } : null;
 }
 
 export function createBuiltInBrowserLoginOffers(deps: {
@@ -46,9 +39,8 @@ export function createBuiltInBrowserLoginOffers(deps: {
   /** Tell the window showing the tab about a new offer (or that it is gone: null). */
   emit: (tabId: string, offer: BuiltInBrowserSaveLoginOffer | null) => void;
   warn: (event: string, data?: Record<string, unknown>) => void;
-  now?: () => number;
 }) {
-  const now = deps.now ?? (() => Date.now());
+  const now = () => Date.now();
   const offersByTab = new Map<string, Pending>();
   const usernameSteps = new Map<string, { origin: string; username: string; at: number }>();
 

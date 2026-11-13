@@ -81,6 +81,22 @@ async function keyService(env: PasswordsEnv, path: "/v1/create" | "/v1/unwrap", 
   }
 }
 
+/** The account's current key epoch, or null before its first key. */
+async function currentEpoch(env: PasswordsEnv, userId: string): Promise<number | null> {
+  const row = await env.DB.prepare("select epoch from password_keys where user_id = ?").bind(userId).first<{ epoch: number }>();
+  return typeof row?.epoch === "number" ? row.epoch : null;
+}
+
+/** The key epoch a sealed envelope names (it is plaintext in the envelope), or null. */
+function envelopeEpoch(ciphertext: string): number | null {
+  try {
+    const parsed = JSON.parse(ciphertext) as { epoch?: unknown };
+    return typeof parsed?.epoch === "number" && Number.isSafeInteger(parsed.epoch) ? parsed.epoch : null;
+  } catch {
+    return null;
+  }
+}
+
 async function handleRead(env: PasswordsEnv, userId: string, url: URL): Promise<Response> {
   const cursor = parseSinceParam(url);
   const query = buildAccountPageQuery({ userId, cursor, scope: null, keyColumns: KEY_COLUMNS, limit: MAX_ITEMS_PER_READ });
@@ -103,6 +119,8 @@ async function handleRead(env: PasswordsEnv, userId: string, url: URL): Promise<
     })),
     truncated: paged.truncated,
     cursor: paged.cursor,
+    // A client holding an older key learns a reset happened elsewhere.
+    epoch: await currentEpoch(env, userId),
   });
 }
 
@@ -121,7 +139,8 @@ async function handleWrite(request: Request, env: PasswordsEnv, userId: string):
   if (items.length > MAX_ITEMS_PER_WRITE) return badRequest("too many items");
   const deviceId = typeof body?.deviceId === "string" && DEVICE_ID_PATTERN.test(body.deviceId) ? body.deviceId : null;
   const now = new Date().toISOString();
-  const results: Array<{ id: string; status: "ok" | "stale" | "invalid"; revision?: string | null }> = [];
+  const results: Array<{ id: string; status: "ok" | "stale" | "invalid" | "stale_key"; revision?: string | null; epoch?: number }> = [];
+  const epoch = await currentEpoch(env, userId);
 
   for (const raw of items) {
     const item = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -131,6 +150,13 @@ async function handleWrite(request: Request, env: PasswordsEnv, userId: string):
     const ifRevision = typeof item.ifRevision === "string" ? item.ifRevision : null;
     if (!ITEM_ID_PATTERN.test(id) || (!deleted && (!ciphertext || ciphertext.length > MAX_CIPHERTEXT_CHARS))) {
       results.push({ id, status: "invalid" });
+      continue;
+    }
+    // A write sealed under a key from before the last reset would be unreadable
+    // to every computer that holds the new key: refused, and told the epoch.
+    const sealedEpoch = deleted ? null : envelopeEpoch(ciphertext);
+    if (!deleted && epoch !== null && (sealedEpoch === null || sealedEpoch < epoch)) {
+      results.push({ id, status: "stale_key", epoch });
       continue;
     }
     const stored = deleted ? "" : ciphertext;

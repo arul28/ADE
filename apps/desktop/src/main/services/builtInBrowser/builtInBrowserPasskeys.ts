@@ -1,4 +1,5 @@
 import type { WebAuthnPageAnswer, WebAuthnPageRequest } from "../../../shared/types/builtInBrowserPasskeys";
+import { captureError } from "../../../shared/sentry/capture";
 import type { PasswordPasskeySecret } from "../../../shared/types/passwords";
 import { createPasskey, getAssertion, rpIdAllowedForOrigin, WEBAUTHN_ALGORITHM_ES256 } from "./passkeys";
 import type { PersonCheck } from "../passwords/personCheck";
@@ -39,7 +40,12 @@ export async function answerWebAuthnRequest(input: {
   topOrigin: string;
   passwords: PasskeyPasswordsAccess | null;
   checkPerson: (reason: string, actionLabel: string) => Promise<PersonCheck | null>;
+  /** Which saved account to use when several match; null when the person cancels. */
+  chooseAccount: (rpId: string, accounts: string[]) => Promise<number | null>;
+  /** True once the page gave up on this request: nothing is signed or saved after that. */
+  cancelled?: () => boolean;
 }): Promise<WebAuthnPageAnswer> {
+  const gaveUp: WebAuthnPageAnswer = { error: "NotAllowedError", message: "The page cancelled the request." };
   const { request, frameOrigin } = input;
   if (!input.passwords) return { fallback: true };
   if (frameOrigin !== input.topOrigin) return { fallback: true };
@@ -53,17 +59,30 @@ export async function answerWebAuthnRequest(input: {
   if (!rpIdAllowedForOrigin(rpId, frameOrigin)) {
     return { error: "SecurityError", message: `${rpId} is not a valid relying party for ${frameOrigin}.` };
   }
-  if (!(await input.passwords.enabled().catch(() => false))) return { fallback: true };
+  const failed = (what: string) => (error: unknown) => {
+    captureError(error, { tags: { area: "passwords", op: `passkeys_${what}` } });
+    return null;
+  };
+  if (!(await input.passwords.enabled().catch(failed("enabled")))) return { fallback: true };
 
   if (request.kind === "get") {
     if (request.mediation === "conditional" || request.mediation === "silent") return { fallback: true };
-    const saved = await input.passwords.passkeysForRp(rpId).catch(() => []);
-    const allowed = request.allowCredentialIds.length
+    const saved = (await input.passwords.passkeysForRp(rpId).catch(failed("lookup"))) ?? [];
+    const matching = request.allowCredentialIds.length
       ? saved.filter((passkey) => request.allowCredentialIds.includes(passkey.credentialId))
       : saved;
-    if (!allowed.length) return { fallback: true };
+    if (!matching.length) return { fallback: true };
+    // Several accounts on one site (work and personal): the person picks one,
+    // so a sign-in never quietly uses whichever was saved first.
+    let allowed = matching;
+    if (matching.length > 1) {
+      const picked = await input.chooseAccount(rpId, matching.map((passkey) => passkey.userDisplayName || passkey.userName || "Unnamed account"));
+      if (picked === null || !matching[picked]) return { error: "NotAllowedError", message: "The person cancelled the passkey sign-in." };
+      allowed = [matching[picked]];
+    }
     const check = await input.checkPerson(`sign in to ${rpId} with a passkey saved in ADE`, "Sign in");
     if (!check) return { error: "NotAllowedError", message: "The person cancelled the passkey sign-in." };
+    if (input.cancelled?.()) return gaveUp;
     if (request.userVerification === "required" && check !== "biometric") return { fallback: true };
     const result = getAssertion({
       rpId,
@@ -75,7 +94,7 @@ export async function answerWebAuthnRequest(input: {
     });
     if ("error" in result) return { error: result.error, message: "No saved passkey matched." };
     const used = allowed.find((passkey) => passkey.credentialId === result.credentialId);
-    if (used) void input.passwords.recordUse?.({ itemId: used.id, target: rpId }).catch(() => undefined);
+    if (used) void input.passwords.recordUse?.({ itemId: used.id, target: rpId }).catch(failed("activity"));
     return {
       kind: "get",
       credentialId: result.credentialId,
@@ -90,13 +109,14 @@ export async function answerWebAuthnRequest(input: {
   if (request.algorithms.length && !request.algorithms.includes(WEBAUTHN_ALGORITHM_ES256)) {
     return { error: "NotSupportedError", message: "ADE's passkeys use ES256, which this site does not accept." };
   }
-  const existing = await input.passwords.passkeysForRp(rpId).catch(() => []);
+  const existing = (await input.passwords.passkeysForRp(rpId).catch(failed("lookup"))) ?? [];
   if (request.excludeCredentialIds.some((id) => existing.some((passkey) => passkey.credentialId === id))) {
     return { error: "InvalidStateError", message: "A passkey for this account is already saved in ADE." };
   }
   const who = request.userName || request.userDisplayName || "this account";
   const check = await input.checkPerson(`save a passkey for ${who} on ${rpId} in ADE Passwords`, "Save passkey");
   if (!check) return { error: "NotAllowedError", message: "The person cancelled saving the passkey." };
+  if (input.cancelled?.()) return gaveUp;
   if (request.userVerification === "required" && check !== "biometric") return { fallback: true };
   const made = createPasskey({
     rpId,

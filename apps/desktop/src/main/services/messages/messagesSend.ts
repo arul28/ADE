@@ -15,17 +15,10 @@
  */
 import { execFile } from "node:child_process";
 
-export type MessagesSendService = "auto" | "iMessage" | "SMS";
-
 export type SendMessageInput = {
   /** Phone number or email. */
   readonly to: string;
   readonly text: string;
-  /**
-   * `auto` (default) tries iMessage first and falls back to SMS; `iMessage` and
-   * `SMS` pin one account.
-   */
-  readonly service?: MessagesSendService;
 };
 
 export type SendMessageFailureCode =
@@ -104,8 +97,8 @@ function sendWithAccount(
 }
 
 /**
- * Sends one text. Defaults to `service: "auto"`: iMessage first, then the SMS
- * account. A TCC denial is not retried — the same prompt covers both accounts.
+ * Sends one text: iMessage first, then the SMS account. A TCC denial is not
+ * retried — the same prompt covers both accounts.
  */
 export async function sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
   if (process.platform !== "darwin") {
@@ -116,11 +109,6 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
   const text = input.text;
   if (to === "" || text === "") {
     return failure("error", "A text needs a recipient (phone number or email) and a message.");
-  }
-
-  const service = input.service ?? "auto";
-  if (service === "iMessage" || service === "SMS") {
-    return await sendWithAccount(service, to, text);
   }
 
   const iMessageResult = await sendWithAccount("iMessage", to, text);

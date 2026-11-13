@@ -9,6 +9,8 @@
  * conditional request).
  */
 export const BUILT_IN_BROWSER_WEBAUTHN_CHANNEL = "ade:built-in-browser:webauthn" as const;
+/** The page gave up on a request (its AbortSignal, or the timeout): `(requestId)`. */
+export const BUILT_IN_BROWSER_WEBAUTHN_CANCEL_CHANNEL = "ade:built-in-browser:webauthn-cancel" as const;
 
 export type WebAuthnPageRequest =
   | {

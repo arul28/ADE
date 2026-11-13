@@ -79710,9 +79710,6 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Create a blocking pending-input request for a chat session. Returns the user's answer.
-   */
-  /**
    * A quiet info line in one chat (no wake, no turn): what ADE did on the
    * chat's behalf, e.g. "Signed in to vercel.com with a saved login". False
    * when the chat is gone or runs on another brain.
@@ -79731,6 +79728,9 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Create a blocking pending-input request for a chat session. Returns the user's answer.
+   */
   const requestChatInput = async (args: RequestChatInputArgs): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
     const inferQuestionsFromBody = (bodyText: string): PendingInputQuestion[] | null => {
       const normalizedBody = bodyText.replace(/\r/g, "").trim();

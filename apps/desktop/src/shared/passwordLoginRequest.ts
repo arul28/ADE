@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "./types/chat";
+import { passwordFillTarget } from "./passwordFillTarget";
 
 /**
  * The secure sign-in card: an agent needs to sign in to a site that has no
@@ -56,6 +57,9 @@ export function readPasswordLoginRequestCard(
   if (!record) return null;
   const site = typeof record.site === "string" ? record.site.trim() : "";
   const origin = typeof record.origin === "string" ? record.origin.trim() : "";
-  if (!site || !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return null;
+  // The same pages Passwords fills: https, or http on this computer (any
+  // loopback form), and the origin exactly as a page's would read.
+  const target = origin ? passwordFillTarget(origin) : null;
+  if (!site || !target || target.origin !== origin) return null;
   return { site, origin, reason: typeof record.reason === "string" ? record.reason.trim() : "" };
 }

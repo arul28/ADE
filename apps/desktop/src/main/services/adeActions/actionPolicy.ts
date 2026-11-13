@@ -1195,7 +1195,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request", "exec"],
   // Passwords: `list`/`loginsForPage` return summaries only (agents use them
   // to pick a login); every write and `resolveForFill` are user-only below.
-  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse"],
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse"],
   messages: ["status", "recent", "chats", "send", "codeWait"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,

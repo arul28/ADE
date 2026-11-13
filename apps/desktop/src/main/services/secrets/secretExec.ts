@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { resolveWindowsCmdInvocation, shouldUseWindowsCmdWrapper } from "../shared/processExecution";
+import { destroyChildProcessStreams, signalChildProcessTree, signalProcessGroup } from "../shared/utils";
 
 /**
  * `ade secrets exec -- <command>`: run a command with the project's secrets in
@@ -93,6 +94,9 @@ export async function runWithSecrets(input: {
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      // Its own process group off Windows, so a timeout reaches everything it
+      // started (each of which holds the secrets in its environment).
+      detached: process.platform !== "win32",
       windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
@@ -115,16 +119,43 @@ export async function runWithSecrets(input: {
     child.stderr?.on("data", take("stderr"));
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      signalChildProcessTree(child, "SIGTERM");
+      setTimeout(() => {
+        if (process.platform === "win32") {
+          signalChildProcessTree(child, "SIGKILL");
+          return;
+        }
+        // The whole group, even when the command itself already exited: a
+        // process it started may have ignored SIGTERM, still holding the secrets.
+        try {
+          if (child.pid) signalProcessGroup(child.pid, "SIGKILL");
+        } catch {
+          // ESRCH: the group is already gone.
+        }
+      }, 5_000).unref();
     }, timeoutMs);
     child.on("error", (error) => {
       clearTimeout(timer);
       // The spawn error names the command, never a value.
       reject(new Error(`Could not start ${file}: ${error.message}`));
     });
-    child.on("close", (code, signal) => {
+    let settled = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    // A grandchild that keeps the pipes open would hold back "close" forever;
+    // after the command itself exits, its output gets two seconds more.
+    child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+      setTimeout(() => finish(code, signal), 2_000).unref();
+    });
+    child.on("close", (code, signal) => finish(code ?? exitCode, signal ?? exitSignal));
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      // Whatever still holds the pipes gets no more of our memory.
+      destroyChildProcessStreams(child);
       // Masked on the whole text, so a value split across two chunks is still
       // found. A stream cut at the limit also loses its last few characters:
       // a value cut in half there would not match any form.
@@ -145,6 +176,6 @@ export async function runWithSecrets(input: {
         injected: names,
         unmasked: names.filter((name) => (input.secrets[name] ?? "").length < MIN_MASKED_LENGTH),
       });
-    });
+    };
   });
 }

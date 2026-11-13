@@ -70,9 +70,9 @@ export const PUSH_RELAY_FOREGROUND_DEADLINE_MS = 20_000;
 /** Per-call options `getAttentionSnapshot` accepts. */
 /** Passwords: one sealed item as the relay stores it. */
 export type PasswordRelayItem = { id: string; ciphertext: string | null; revision: string; deleted: boolean };
-export type PasswordRelayPage = { items: PasswordRelayItem[]; cursor: string | null; truncated: boolean };
+export type PasswordRelayPage = { items: PasswordRelayItem[]; cursor: string | null; truncated: boolean; epoch: number | null };
 export type PasswordRelayWrite = { id: string; ciphertext?: string; ifRevision?: string; deleted?: boolean };
-export type PasswordRelayWriteResult = { id: string; status: "ok" | "stale" | "invalid"; revision: string | null };
+export type PasswordRelayWriteResult = { id: string; status: "ok" | "stale" | "invalid" | "stale_key"; revision: string | null };
 export type PasswordMachineKind = "desktop" | "phone" | "cloud" | "web" | "cli";
 
 export type PushRelayCallOptions = {
@@ -1225,7 +1225,12 @@ export function createPushRelayClient(args: {
           deleted: row.deleted === true,
         });
       }
-      return { items, cursor: typeof body.cursor === "string" ? body.cursor : null, truncated: body.truncated === true };
+      return {
+        items,
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+        epoch: typeof body.epoch === "number" ? body.epoch : null,
+      };
     },
 
     /** Passwords: write sealed items; each answer is ok, stale (with the stored revision) or invalid. */
@@ -1243,7 +1248,7 @@ export function createPushRelayClient(args: {
       for (const raw of Array.isArray(result.body.results) ? result.body.results : []) {
         const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
         if (!row || typeof row.id !== "string") continue;
-        const status = row.status === "ok" || row.status === "stale" ? row.status : "invalid";
+        const status = row.status === "ok" || row.status === "stale" || row.status === "stale_key" ? row.status : "invalid";
         out.push({ id: row.id, status, revision: typeof row.revision === "string" ? row.revision : null });
       }
       return out;

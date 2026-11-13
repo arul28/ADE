@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MESSAGES_READ_WORKER_TIMEOUT_MS,
@@ -37,7 +37,16 @@ function optionsFor(child: FakeChild) {
   };
 }
 
+const realPlatform = process.platform;
+function setPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+}
+
+// The worker only runs on a Mac; these tests drive a fake one on any host.
+beforeEach(() => setPlatform("darwin"));
+
 afterEach(() => {
+  setPlatform(realPlatform);
   vi.useRealTimers();
   terminateMessagesReadWorkers();
 });
@@ -154,17 +163,21 @@ describe("readMessagesInWorker", () => {
     expect(child.kill).toHaveBeenCalled();
   });
 
-  it("answers unsupported_platform without spawning when the worker file is absent", async () => {
+  it.each([
     // Off macOS the client refuses before touching the filesystem; on macOS a
     // missing bundled worker is a build error, not a permission problem.
+    ["linux", "unsupported_platform"],
+    ["win32", "unsupported_platform"],
+    ["darwin", "error"],
+  ] as const)("on %s with no worker file it answers %s without spawning", async (platform, code) => {
+    setPlatform(platform);
+    const spawnWorker = vi.fn();
     const pending = readMessagesInWorker({ op: "access" }, {
       workerPath: "/definitely/not/a/real/messages-worker.cjs",
+      ...(platform === "darwin" ? {} : { spawnWorker: spawnWorker as never }),
     });
-    if (process.platform === "darwin") {
-      await expect(pending).resolves.toMatchObject({ ok: false, code: "error" });
-    } else {
-      await expect(pending).resolves.toMatchObject({ ok: false, code: "unsupported_platform" });
-    }
+    await expect(pending).resolves.toMatchObject({ ok: false, code });
+    expect(spawnWorker).not.toHaveBeenCalled();
   });
 
   it("kills every in-flight child at app quit", async () => {

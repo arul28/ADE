@@ -2199,6 +2199,14 @@ ADE browser
   Never ask for a password in chat. --site <host> is only a check that the tab
   is on the site you expect; the site is always the tab's own page.
 
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, saves the login to Passwords
+  first, then types it into the password (and confirm) boxes. You never see it.
+  Submit the form yourself; later sign-ins use `ade browser signin`.
+  --account names the username when the form has none filled in.
+
   Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
@@ -2235,6 +2243,7 @@ ADE browser
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
     $ ade browser signin --tab <tab-id> --text
     $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"

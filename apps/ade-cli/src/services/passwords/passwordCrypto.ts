@@ -52,10 +52,6 @@ function assertKey(key: Buffer): void {
   if (!Buffer.isBuffer(key) || key.length !== KEY_BYTES) throw new Error("Invalid password vault key.");
 }
 
-/** A fresh vault key. Only the key service and tests make one. */
-export function generatePasswordVaultKey(): Buffer {
-  return crypto.randomBytes(KEY_BYTES);
-}
 
 /** Seal one item's JSON. A fresh random nonce every time. */
 export function sealPasswordItem(key: Buffer, binding: PasswordItemBinding, plaintext: unknown): PasswordEnvelope {

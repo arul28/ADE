@@ -19,7 +19,7 @@ const plaintext = {
   username: "fixture@example.com",
   password: "correct-horse-battery-staple",
   notes: "Fixture notes",
-  totpUri: "otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+  totpUri: "otpauth://totp/Fixture?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", // gitleaks:allow (RFC 6238 test key)
   createdAt: "2026-11-01T00:00:00.000Z",
   updatedAt: "2026-11-02T00:00:00.000Z",
 };

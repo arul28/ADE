@@ -80,6 +80,7 @@ the browser's fill use with no project open.
 | --- | --- |
 | `ade passwords list` / `status` / `sync` | Sites, usernames and kinds; whether Passwords is on here. Never a value. |
 | `ade browser signin [--account <username>]` | Fills a saved login into the open page: only on the tab's own https origin (localhost allowed), never in a cross-origin frame, and never after the page moved to another site mid-fill. On a code page it fills the current authenticator code. With no saved login it raises the secure sign-in card in the agent's own chat and waits (`passwords.signin`). Each fill adds an Activity row and a quiet line in the chat ("Signed in to vercel.com as … with a saved login."). |
+| `ade browser signup [--account <username>]` | On a sign-up form: makes a strong password (sized to the field's limit; a box that takes fewer than 12 characters is refused), types it into the new-password and confirm boxes, checks the form kept all of it, then saves the login to Passwords for the tab's exact origin (`passwords.signup`). A failed check or save clears the boxes and saves nothing; a second login for the same account is refused. The username is `--account`, else what the form's email/username field holds. Same page rules as `signin`; an Activity row and a quiet chat line ("Made a new password for … and saved it to Passwords."). |
 | `ade code --site <host>` | The site's current authenticator code (never the key). |
 | `ade code wait --site <host> [--from messages]` | The authenticator code at once when the site has one, else the next code texted to the person's Mac (Messages) after the ask. |
 | `ade secrets exec [--env NAME] -- <command>` | Runs the command on this computer with the project's secrets (and Passwords' secrets for the project) in its environment, and returns its output with every value masked. |
@@ -101,7 +102,16 @@ a value) also answers only this computer's own desktop app.
 
 Agent page observations never carry a value ADE filled from Passwords
 (`data-ade-vault-filled`), a password field, or a field marked as a password,
-one-time code or card number (`agentObservation.ts`).
+one-time code or card number (`agentObservation.ts`). A password ADE filled
+stays drawn as dots (`-webkit-text-security`) even after the page's own "show
+password" switch makes it a text field, so a screenshot an agent takes does
+not show it either. A page script could still read a field's value; ADE's
+agents have no command that runs page script.
+
+`ade secrets exec` stops the command's whole process tree when it times out
+(its own process group on macOS and Linux, `taskkill /T` on Windows), and
+returns once the command exits even if something it started still holds the
+output open.
 
 ## Secrets: use, never read
 

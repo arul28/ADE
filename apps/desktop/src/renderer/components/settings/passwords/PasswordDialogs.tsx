@@ -332,7 +332,11 @@ export function NewSecretDialog({
   );
 }
 
-export function ChangePasswordDialog({
+/**
+ * Change a saved item's one secret part: a login's password or a secret's
+ * value. Only that is sent; the brain keeps the rest of the item as it is.
+ */
+export function ChangeValueDialog({
   item,
   pin,
   onClose,
@@ -343,75 +347,8 @@ export function ChangePasswordDialog({
   onClose: () => void;
   onSaved: (item: PasswordItemSummary) => void;
 }) {
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const submit = async () => {
-    if (saving) return;
-    if (!password) {
-      setError("Enter the new password.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      // Only the password: the brain keeps the login's exact sites,
-      // username, title, notes and code.
-      const saved = await window.ade.passwords.saveLogin({ id: item.id, password }, pin);
-      setPassword("");
-      onSaved(saved);
-    } catch (err) {
-      setPassword("");
-      setError(errorText(err, "ADE couldn't change this password."));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog
-      open
-      onOpenChange={(open) => { if (!open && !saving) onClose(); }}
-      title={`Change password for ${item.title}`}
-      description="The site, username and title stay as they are. Agents that sign in will use the new password."
-      icon={<Password size={16} weight="duotone" />}
-      tone="accent"
-      size="md"
-      dismissible={!saving}
-      actions={[
-        { label: saving ? "Saving…" : "Change password", variant: "solid", onClick: () => void submit(), disabled: saving, busy: saving },
-        { label: "Cancel", variant: "secondary", onClick: onClose, disabled: saving },
-      ]}
-    >
-      <form
-        className="ade-pw-form"
-        onSubmit={(event) => { event.preventDefault(); void submit(); }}
-      >
-        <div className="ade-pw-field">
-          <span>New password</span>
-          <SecretField value={password} onChange={setPassword} placeholder="New password" autoFocus />
-        </div>
-        {error ? (
-          <Banner layout="inline" model={{ id: "passwords-change-password-error", tone: "error", title: error, report: false }} />
-        ) : null}
-        <button type="submit" hidden aria-hidden tabIndex={-1} />
-      </form>
-    </Dialog>
-  );
-}
-
-export function ChangeSecretValueDialog({
-  item,
-  pin,
-  onClose,
-  onSaved,
-}: {
-  item: PasswordItemSummary;
-  pin: OpenProjectBinding | null;
-  onClose: () => void;
-  onSaved: (item: PasswordItemSummary) => void;
-}) {
+  const isLogin = item.kind === "login";
+  const noun = isLogin ? "password" : "value";
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -419,23 +356,20 @@ export function ChangeSecretValueDialog({
   const submit = async () => {
     if (saving) return;
     if (!value) {
-      setError("Enter the new value.");
+      setError(`Enter the new ${noun}.`);
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      const saved = await window.ade.passwords.saveSecret({
-        id: item.id,
-        name: item.title,
-        value,
-        projectScope: item.projectScope,
-      }, pin);
+      const saved = isLogin
+        ? await window.ade.passwords.saveLogin({ id: item.id, password: value }, pin)
+        : await window.ade.passwords.saveSecret({ id: item.id, name: item.title, value, projectScope: item.projectScope }, pin);
       setValue("");
       onSaved(saved);
     } catch (err) {
       setValue("");
-      setError(errorText(err, "ADE couldn't change this secret."));
+      setError(errorText(err, isLogin ? "ADE couldn't change this password." : "ADE couldn't change this secret."));
     } finally {
       setSaving(false);
     }
@@ -445,14 +379,16 @@ export function ChangeSecretValueDialog({
     <Dialog
       open
       onOpenChange={(open) => { if (!open && !saving) onClose(); }}
-      title={`Change ${item.title}`}
-      description="Every command that uses this secret gets the new value. Agents never see it."
-      icon={<Key size={16} weight="duotone" />}
+      title={isLogin ? `Change password for ${item.title}` : `Change ${item.title}`}
+      description={isLogin
+        ? "The site, username and title stay as they are. Agents that sign in will use the new password."
+        : "Every command that uses this secret gets the new value. Agents never see it."}
+      icon={isLogin ? <Password size={16} weight="duotone" /> : <Key size={16} weight="duotone" />}
       tone="accent"
       size="md"
       dismissible={!saving}
       actions={[
-        { label: saving ? "Saving…" : "Change value", variant: "solid", onClick: () => void submit(), disabled: saving, busy: saving },
+        { label: saving ? "Saving…" : `Change ${noun}`, variant: "solid", onClick: () => void submit(), disabled: saving, busy: saving },
         { label: "Cancel", variant: "secondary", onClick: onClose, disabled: saving },
       ]}
     >
@@ -461,11 +397,11 @@ export function ChangeSecretValueDialog({
         onSubmit={(event) => { event.preventDefault(); void submit(); }}
       >
         <div className="ade-pw-field">
-          <span>New value</span>
-          <SecretField value={value} onChange={setValue} placeholder="New value" autoFocus />
+          <span>{isLogin ? "New password" : "New value"}</span>
+          <SecretField value={value} onChange={setValue} placeholder={isLogin ? "New password" : "New value"} autoFocus />
         </div>
         {error ? (
-          <Banner layout="inline" model={{ id: "passwords-change-secret-error", tone: "error", title: error, report: false }} />
+          <Banner layout="inline" model={{ id: "passwords-change-value-error", tone: "error", title: error, report: false }} />
         ) : null}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
       </form>

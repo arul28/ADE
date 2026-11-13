@@ -3,7 +3,7 @@ import type {
   BuiltInBrowserRemoteTabFrame,
 } from "../../../../desktop/src/shared/types/builtInBrowser";
 import type { BuiltInBrowserService } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
-import type { BuiltInBrowserRemoteCallMethod } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
+import { BUILT_IN_BROWSER_MESSAGES_METHODS, type BuiltInBrowserRemoteCallMethod } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
 import {
   BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
   type BuiltInBrowserRuntimeStatus,
@@ -68,13 +68,11 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "scroll",
   "fill",
   "signin",
+  "signup",
   // The Messages integration on the Mac the person sits at. Reached only
-  // through the brain's \`messages\` domain (the RPC server refuses them on
-  // \`built_in_browser\`), which raises the send approval card first.
-  "messagesStatus",
-  "messagesRecent",
-  "messagesChats",
-  "messagesSend",
+  // through the brain's `messages` domain (the RPC server refuses them on
+  // `built_in_browser`), which raises the send approval card first.
+  ...BUILT_IN_BROWSER_MESSAGES_METHODS,
   "clear",
   "wait",
   "startInspect",
@@ -167,6 +165,7 @@ export const BUILT_IN_BROWSER_METHOD_ROUTES = {
   scroll: "user-desktop",
   fill: "user-desktop",
   signin: "user-desktop",
+  signup: "user-desktop",
   messagesStatus: "user-desktop",
   messagesRecent: "user-desktop",
   messagesChats: "user-desktop",

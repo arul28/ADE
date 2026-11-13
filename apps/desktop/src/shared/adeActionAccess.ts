@@ -350,12 +350,16 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   // writes and the one value read (`resolveForFill`) are the person's, and
   // `resolveForFill` only for this computer's own desktop app.
   passwords: {
+    // Sign-in needs the running brain's browser bridge and chats.
+    live: ["signin", "signup", "requestLogin"],
     read: ["status", "activity", "code", "list", "loginsForPage"],
-    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   },
   // Messages on the Mac the person sits at: reading follows its Read Texts
   // switch; each text an agent sends is approved on a card first.
   messages: {
+    // Every call reaches the Mac the person sits at, through the running brain.
+    live: "all",
     read: ["status", "recent", "chats", "codeWait"],
     write: ["send"],
   },
@@ -702,12 +706,15 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
       "listDownloads", "waitForDownload", "readClipboard",
+      // Messages on the person's Mac: reached only through the `messages`
+      // domain; the RPC server refuses them as browser actions.
+      "messagesStatus", "messagesRecent", "messagesChats",
     ],
     write: [
       "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
       "endSession", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab",
       "reload", "goBack", "goForward", "stop", "observe", "click", "typeText", "dispatchKey",
-      "scroll", "fill", "signin", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
+      "scroll", "fill", "signin", "signup", "messagesSend", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
       "selectOption", "uploadFile", "dropFiles", "paste", "writeClipboard", "startRecording", "stopRecording", "noteDemoStep",

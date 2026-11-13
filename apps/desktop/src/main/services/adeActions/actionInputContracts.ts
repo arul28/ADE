@@ -340,9 +340,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade secrets list --text",
     },
     get: {
-      description: "Read one ADE project secret value when the user explicitly asked for that secret.",
+      description: "Read one ADE project secret value. The person only, in the desktop app; agents run a command with the secrets instead (`project_secret.exec`, `ade secrets exec -- <command>`).",
       input: "object { name: string }",
-      example: "ade secrets get STRIPE_API_KEY --text",
+      example: "ade secrets exec -- ./scripts/deploy.sh",
     },
     set: {
       description: "Create or replace one ADE project secret.",

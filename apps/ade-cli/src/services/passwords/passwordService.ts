@@ -53,7 +53,8 @@ import { matchLoginsForOrigin, normalizeLoginOrigin } from "./passwordMatching";
 import { normalizeTotpInput, parseTotp, totpCode } from "./passwordTotp";
 
 export type PasswordsRelay = {
-  getPasswordItems(options?: { since?: string | null }): Promise<{ items: PasswordRelayItem[]; cursor: string | null; truncated: boolean } | null>;
+  /** `epoch`: the account's current key epoch (a newer one means another computer reset Passwords). */
+  getPasswordItems(options?: { since?: string | null }): Promise<{ items: PasswordRelayItem[]; cursor: string | null; truncated: boolean; epoch?: number | null } | null>;
   putPasswordItems(items: PasswordRelayWrite[], deviceId: string | null): Promise<PasswordRelayWriteResult[] | null>;
   requestPasswordKey(args: { deviceId: string; machineKind: PasswordMachineKind; reset?: boolean }): Promise<{ dek: string; epoch: number } | null>;
 };
@@ -74,6 +75,8 @@ const ACTIVITY_KEY = "passwords.activity.v1";
 const ACTIVITY_LIMIT = 500;
 const ITEM_ID_BYTES = 12;
 const SYNC_INTERVAL_MS = 60_000;
+/** The most items the relay takes in one write (`MAX_ITEMS_PER_WRITE` there). */
+const RELAY_WRITE_BATCH = 200;
 
 export class PasswordsUnavailableError extends Error {
   constructor(message: string) {
@@ -87,6 +90,12 @@ function totpOrThrow(value: string | null, label: string): string | null {
   const normalized = normalizeTotpInput(value, label);
   if (!normalized) throw new Error("That authenticator key isn't one ADE can read. Paste the otpauth:// link or the key the site shows.");
   return normalized;
+}
+
+/** Whether a login was saved for this page's exact origin (scheme, host and port). */
+function savedForExactOrigin(secret: PasswordLoginSecret, pageUrl: string): boolean {
+  const page = normalizeLoginOrigin(pageUrl)?.origin;
+  return Boolean(page) && secret.origins.includes(page!);
 }
 
 function newItemId(): string {
@@ -227,7 +236,7 @@ export function createPasswordService(args: {
             return memoryKey;
           }
         } catch {
-          // fall through to the relay
+          logger.warn("passwords.key_cache_unreadable", {});
         }
       }
     }
@@ -239,6 +248,17 @@ export function createPasswordService(args: {
     if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
     logger.info("passwords.key_ready", { epoch: released.epoch, source: "relay" });
     return memoryKey;
+  }
+
+  /** The epoch of the key cached on disk, without asking the relay. */
+  async function cachedKeyEpoch(accountId: string): Promise<{ epoch: number } | null> {
+    if (!keepKeyOnDisk) return null;
+    try {
+      const parsed = JSON.parse((await store.get(KEY_CACHE_KEY)) ?? "null") as { accountId?: string; epoch?: number } | null;
+      return parsed?.accountId === accountId && typeof parsed.epoch === "number" ? { epoch: parsed.epoch } : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Forget the cached key, so the next use asks the relay for the current one. */
@@ -290,65 +310,132 @@ export function createPasswordService(args: {
     return accountId;
   }
 
+  /**
+   * Every read-modify-write of this computer's cache (and of Activity) runs
+   * through this one queue, so a save that lands while a sync talks to the
+   * relay is never written over by the sync's older copy.
+   */
+  let cacheQueue: Promise<unknown> = Promise.resolve();
+  function withCache<T>(run: () => Promise<T>): Promise<T> {
+    const next = cacheQueue.then(run, run);
+    cacheQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  /**
+   * Re-seal pending writes made under an older key (another computer reset
+   * Passwords while this one held the old key): the relay refuses them, and
+   * every other computer would skip them.
+   */
+  function resealStale(accountId: string, cache: CacheShape, key: { key: Buffer; epoch: number }): void {
+    cache.pending = cache.pending.flatMap((write) => {
+      if (write.deleted || !write.envelope) return [write];
+      const envelope = parsePasswordEnvelope(write.envelope);
+      if (envelope && envelope.epoch === key.epoch) return [write];
+      const secret = opened.get(write.id);
+      if (!secret) {
+        logger.warn("passwords.stale_write_dropped", { itemId: write.id });
+        return [];
+      }
+      return [{ ...write, envelope: JSON.stringify(sealPasswordItem(key.key, { accountId, itemId: write.id, epoch: key.epoch }, secret)), ifRevision: null }];
+    });
+  }
+
   /** Pull new revisions, push pending writes, and reopen. Safe to call often; one at a time. */
   async function sync(): Promise<void> {
     if (syncing) return syncing;
     syncing = (async () => {
       const accountId = args.getAccountUserId();
-      if (!accountId || !args.relay) return;
+      const relay = args.relay;
+      if (!accountId || !relay) return;
       if (!isEnabled()) {
         // Turned off (here, or the cloud switch from another machine): keep nothing.
         if (memoryKey || openedFor) await purgeLocal();
         return;
       }
-      const cache = await readCache(accountId);
-      // Pull.
-      let cursor = cache.cursor;
+      // Pull, outside the queue: the network can be slow, saves must not wait on it.
+      const startCursor = (await withCache(() => readCache(accountId))).cursor;
+      let cursor = startCursor;
+      let relayEpoch: number | null = null;
+      const pulled = new Map<string, StoredItem>();
       for (let page = 0; page < 50; page += 1) {
-        const result = await args.relay.getPasswordItems({ since: cursor });
+        const result = await relay.getPasswordItems({ since: cursor });
         if (!result) break;
-        const byId = new Map(cache.items.map((item) => [item.id, item]));
-        for (const row of result.items) {
-          byId.set(row.id, { id: row.id, revision: row.revision, deleted: row.deleted, envelope: row.ciphertext });
-        }
-        cache.items = [...byId.values()];
+        if (typeof result.epoch === "number") relayEpoch = result.epoch;
+        for (const row of result.items) pulled.set(row.id, { id: row.id, revision: row.revision, deleted: row.deleted, envelope: row.ciphertext });
         cursor = result.cursor ?? cursor;
         if (!result.truncated) break;
       }
-      cache.cursor = cursor;
-      // Push.
-      if (cache.pending.length) {
-        const results = await args.relay.putPasswordItems(
-          cache.pending.map((write) => ({
-            id: write.id,
-            ...(write.deleted ? { deleted: true } : { ciphertext: write.envelope ?? "" }),
-            ...(write.ifRevision ? { ifRevision: write.ifRevision } : { ifRevision: "absent" }),
-          })),
-          args.getDeviceId(),
-        );
-        if (results) {
+      // A reset on another computer: this one's key is stale. Drop it, so the
+      // next use asks the relay for the current one, and re-seal unsent writes.
+      // Only a key this computer already holds: asking the relay would create a vault.
+      const known = memoryKey ?? await cachedKeyEpoch(accountId);
+      const keyIsStale = relayEpoch !== null && known !== null && relayEpoch > known.epoch;
+      if (keyIsStale) {
+        logger.info("passwords.key_epoch_advanced", { from: known.epoch, to: relayEpoch });
+        await dropKey();
+      }
+      const toPush = await withCache(async () => {
+        const cache = await readCache(accountId);
+        const byId = new Map(cache.items.map((item) => [item.id, item]));
+        for (const [id, row] of pulled) byId.set(id, row);
+        cache.items = [...byId.values()];
+        cache.cursor = cursor;
+        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId));
+        await writeCache(cache);
+        return cache.pending.map((write) => ({ ...write }));
+      });
+      // Push, also outside the queue.
+      if (toPush.length) {
+        // In batches the relay accepts (a big import made offline is many);
+        // a batch with no answer, or a newer key, stops the rest for now.
+        const results: PasswordRelayWriteResult[] = [];
+        for (let start = 0; start < toPush.length; start += RELAY_WRITE_BATCH) {
+          const batch = await relay.putPasswordItems(
+            toPush.slice(start, start + RELAY_WRITE_BATCH).map((write) => ({
+              id: write.id,
+              ...(write.deleted ? { deleted: true } : { ciphertext: write.envelope ?? "" }),
+              ...(write.ifRevision ? { ifRevision: write.ifRevision } : { ifRevision: "absent" }),
+            })),
+            args.getDeviceId(),
+          );
+          if (!batch) break;
+          results.push(...batch);
+          if (batch.some((result) => result.status === "stale_key")) break;
+        }
+        if (results.length) {
           const answered = new Map(results.map((result) => [result.id, result]));
-          const stillPending: PendingWrite[] = [];
-          for (const write of cache.pending) {
-            const answer = answered.get(write.id);
-            if (answer?.status === "ok") {
-              const existing = cache.items.find((item) => item.id === write.id);
-              const updated: StoredItem = { id: write.id, revision: answer.revision, deleted: write.deleted, envelope: write.envelope };
-              if (existing) Object.assign(existing, updated);
-              else cache.items.push(updated);
-            } else if (answer?.status === "stale") {
-              // Another machine changed it first: theirs stands, this edit is dropped and said so.
-              logger.warn("passwords.write_superseded", { itemId: write.id });
-            } else if (!answer) {
-              stillPending.push(write);
-            } else {
-              logger.warn("passwords.write_refused", { itemId: write.id });
-            }
-          }
-          cache.pending = stillPending;
+          const sent = new Map(toPush.map((write) => [write.id, write]));
+          // The relay has a newer key than the one these were sealed with.
+          const staleKey = results.some((result) => result.status === "stale_key");
+          if (staleKey) await dropKey();
+          await withCache(async () => {
+            const cache = await readCache(accountId);
+            cache.pending = cache.pending.filter((write) => {
+              const pushed = sent.get(write.id);
+              // A newer save of the same item, made while this push was out: keep it.
+              if (!pushed || pushed.envelope !== write.envelope || pushed.deleted !== write.deleted) return true;
+              const answer = answered.get(write.id);
+              if (!answer || answer.status === "stale_key") return true;
+              if (answer.status === "ok") {
+                const updated: StoredItem = { id: write.id, revision: answer.revision, deleted: write.deleted, envelope: write.envelope };
+                const existing = cache.items.find((item) => item.id === write.id);
+                if (existing) Object.assign(existing, updated);
+                else cache.items.push(updated);
+              } else if (answer.status === "stale") {
+                // Another machine changed it first: theirs stands, this edit is dropped and said so.
+                logger.warn("passwords.write_superseded", { itemId: write.id });
+              } else {
+                logger.warn("passwords.write_refused", { itemId: write.id });
+              }
+              return false;
+            });
+            // Kept writes are sealed again under the current key; the next sync sends them.
+            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId));
+            await writeCache(cache);
+          });
         }
       }
-      await writeCache(cache);
       openedFor = null;
     })().finally(() => {
       syncing = null;
@@ -358,13 +445,15 @@ export function createPasswordService(args: {
 
   async function writeItem(id: string, secret: PasswordItemSecret | null): Promise<void> {
     const accountId = await ensureOpened();
-    const cache = await readCache(accountId);
     const { key, epoch } = await vaultKey(accountId);
-    const known = cache.items.find((item) => item.id === id);
     const envelope = secret ? JSON.stringify(sealPasswordItem(key, { accountId, itemId: id, epoch }, secret)) : null;
-    cache.pending = cache.pending.filter((write) => write.id !== id);
-    cache.pending.push({ id, envelope, deleted: secret === null, ifRevision: known?.revision ?? null });
-    await writeCache(cache);
+    await withCache(async () => {
+      const cache = await readCache(accountId);
+      const known = cache.items.find((item) => item.id === id);
+      cache.pending = cache.pending.filter((write) => write.id !== id);
+      cache.pending.push({ id, envelope, deleted: secret === null, ifRevision: known?.revision ?? null });
+      await writeCache(cache);
+    });
     if (secret) opened.set(id, secret);
     else opened.delete(id);
     void sync().catch((error: unknown) => {
@@ -373,11 +462,13 @@ export function createPasswordService(args: {
   }
 
   async function purgeLocal(): Promise<void> {
-    await dropKey();
-    opened = new Map();
-    openedFor = null;
-    await store.delete(CACHE_KEY);
-    await store.delete(ACTIVITY_KEY);
+    await withCache(async () => {
+      await dropKey();
+      opened = new Map();
+      openedFor = null;
+      await store.delete(CACHE_KEY);
+      await store.delete(ACTIVITY_KEY);
+    });
     logger.info("passwords.purged", {});
   }
 
@@ -398,16 +489,18 @@ export function createPasswordService(args: {
         machineName: input.machineName ?? os.hostname(),
         at: now().toISOString(),
       };
-      let list: PasswordUseRecord[] = [];
-      try {
-        const raw = await store.get(ACTIVITY_KEY);
-        const parsed = raw ? JSON.parse(raw) as { accountId?: string; uses?: PasswordUseRecord[] } : null;
-        if (parsed?.accountId === accountId && Array.isArray(parsed.uses)) list = parsed.uses;
-      } catch {
-        list = [];
-      }
-      list.unshift(record);
-      await store.set(ACTIVITY_KEY, JSON.stringify({ accountId, uses: list.slice(0, ACTIVITY_LIMIT) }));
+      await withCache(async () => {
+        let list: PasswordUseRecord[] = [];
+        try {
+          const raw = await store.get(ACTIVITY_KEY);
+          const parsed = raw ? JSON.parse(raw) as { accountId?: string; uses?: PasswordUseRecord[] } : null;
+          if (parsed?.accountId === accountId && Array.isArray(parsed.uses)) list = parsed.uses;
+        } catch {
+          logger.warn("passwords.activity_unreadable", {});
+        }
+        list.unshift(record);
+        await store.set(ACTIVITY_KEY, JSON.stringify({ accountId, uses: list.slice(0, ACTIVITY_LIMIT) }));
+      });
     },
 
     /** This computer's recorded uses, newest first. */
@@ -419,6 +512,7 @@ export function createPasswordService(args: {
         const parsed = raw ? JSON.parse(raw) as { accountId?: string; uses?: PasswordUseRecord[] } : null;
         return parsed?.accountId === accountId && Array.isArray(parsed.uses) ? parsed.uses : [];
       } catch {
+        logger.warn("passwords.activity_unreadable", {});
         return [];
       }
     },
@@ -432,7 +526,8 @@ export function createPasswordService(args: {
         try {
           await ensureOpened();
           itemCount = opened.size;
-        } catch {
+        } catch (error) {
+          logger.warn("passwords.status_open_failed", { error: error instanceof Error ? error.message : String(error) });
           itemCount = null;
         }
       }
@@ -510,10 +605,16 @@ export function createPasswordService(args: {
     },
 
     /** Saved logins for the site a page is on, best match first. Summaries only. */
-    async loginsForPage(pageUrl: string): Promise<PasswordItemSummary[]> {
+    /**
+     * `exactOrigin`: only logins saved for this exact address (scheme, host,
+     * port). An agent's fill asks for that, so a login is never typed into
+     * another subdomain of its site; the person's key button matches the site.
+     */
+    async loginsForPage(pageUrl: string, options: { exactOrigin?: boolean } = {}): Promise<PasswordItemSummary[]> {
       await ensureOpened();
       const logins = [...opened.entries()]
         .filter((entry): entry is [string, PasswordLoginSecret] => entry[1].kind === "login")
+        .filter(([, secret]) => !options.exactOrigin || savedForExactOrigin(secret, pageUrl))
         .map(([id, secret]) => ({ id, origins: secret.origins, secret }));
       return matchLoginsForOrigin(logins, pageUrl).map((entry) => summarize(entry.id, entry.secret));
     },
@@ -523,10 +624,11 @@ export function createPasswordService(args: {
      * only: the page URL is the tab's own, and the item must belong to its
      * site. Returns null when it does not.
      */
-    async resolveForFill(input: { itemId: string; pageUrl: string }): Promise<{ username: string; password: string; code: string | null } | null> {
+    async resolveForFill(input: { itemId: string; pageUrl: string; exactOrigin?: boolean }): Promise<{ username: string; password: string; code: string | null } | null> {
       await ensureOpened();
       const secret = opened.get(input.itemId);
       if (!secret || secret.kind !== "login") return null;
+      if (input.exactOrigin && !savedForExactOrigin(secret, input.pageUrl)) return null;
       const matches = matchLoginsForOrigin([{ origins: secret.origins }], input.pageUrl);
       if (matches.length === 0) return null;
       // The current code, never the authenticator key itself.

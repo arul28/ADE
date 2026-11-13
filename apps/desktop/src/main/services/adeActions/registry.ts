@@ -311,10 +311,9 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
-import { requestPasswordLoginFromUser } from "../passwords/passwordLoginRequest";
 import { runWithSecrets } from "../secrets/secretExec";
+import { buildPasswordsDomainService } from "../passwords/passwordsDomain";
 import { buildMessagesDomain, type MessagesBridge } from "../messagesIntegration/messagesDomain";
-import { signInWithPasswords, type BrowserSignin } from "../passwords/passwordSignin";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
@@ -4262,127 +4261,6 @@ export function buildProviderInstancesDomainService(
  * secret through the private secret card. `request` needs the chat service,
  * so it is absent on a runtime without one.
  */
-/**
- * Passwords. Each method takes one plain object; `resolveForFill` is the only
- * one that returns a value, and the policy tables keep it for this computer's
- * own desktop app (user-only, this-desktop-only, secret-bearing).
- */
-function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "passwordService" | "agentChatService" | "builtInBrowserService">>): OpaqueService | null {
-  const passwords = runtime.passwordService;
-  if (!passwords) return null;
-  const objectArg = (args: unknown): Record<string, unknown> => (args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {});
-  const text = (value: unknown): string => (typeof value === "string" ? value : "");
-  return {
-    status: () => passwords.status(),
-    activity: () => passwords.activity(),
-    passkeysForRp: (args?: unknown) => passwords.passkeysForRp(text(objectArg(args).rpId)),
-    savePasskey: (args?: unknown) => {
-      const input = objectArg(args);
-      return passwords.savePasskey({
-        rpId: text(input.rpId),
-        credentialId: text(input.credentialId),
-        userHandle: text(input.userHandle),
-        userName: text(input.userName),
-        userDisplayName: text(input.userDisplayName),
-        privateKeyPkcs8: text(input.privateKeyPkcs8),
-        signCount: typeof input.signCount === "number" ? input.signCount : 0,
-      });
-    },
-    revealValue: (args?: unknown) => {
-      const input = objectArg(args);
-      const field = input.field === "username" || input.field === "value" || input.field === "notes" ? input.field : "password";
-      return passwords.revealValue({ itemId: text(input.itemId), field });
-    },
-    // An authenticator code (never the key): agents may read it, it lasts seconds.
-    code: (args?: unknown) => {
-      const input = objectArg(args);
-      return passwords.currentCode({
-        itemId: typeof input.itemId === "string" ? input.itemId : null,
-        site: typeof input.site === "string" ? input.site : null,
-        username: typeof input.username === "string" ? input.username : null,
-      });
-    },
-    // The person's own fills (the key button). Agent uses are recorded by `signin` itself.
-    recordUse: (args?: unknown) => {
-      const input = objectArg(args);
-      const kind = input.kind === "secret" ? "secret" : "login";
-      return passwords.recordUse({ itemId: text(input.itemId), kind, target: text(input.target), by: "person", chatSessionId: null });
-    },
-    setEnabled: (args?: unknown) => passwords.setEnabled(objectArg(args).enabled === true),
-    setCloudEnabled: (args?: unknown) => passwords.setCloudEnabled(objectArg(args).enabled === true),
-    reset: (args?: unknown) => {
-      // The person typed it: a stray call can't wipe the account's vault.
-      if (objectArg(args).confirm !== "reset") throw new Error("Reset Passwords needs confirm: \"reset\".");
-      return passwords.reset();
-    },
-    list: () => passwords.listSummaries(),
-    loginsForPage: (args?: unknown) => passwords.loginsForPage(text(objectArg(args).pageUrl)),
-    saveLogin: (args?: unknown) => {
-      const input = objectArg(args);
-      // Only what the caller names: a change by id keeps the rest.
-      return passwords.saveLogin({
-        ...(typeof input.id === "string" ? { id: input.id } : {}),
-        ...(typeof input.title === "string" ? { title: input.title } : {}),
-        ...(Array.isArray(input.origins) ? { origins: input.origins.filter((origin): origin is string => typeof origin === "string") } : {}),
-        ...(typeof input.username === "string" ? { username: input.username } : {}),
-        password: text(input.password),
-        ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-        ...(typeof input.totpUri === "string" || input.totpUri === null ? { totpUri: input.totpUri as string | null } : {}),
-      });
-    },
-    saveSecret: (args?: unknown) => {
-      const input = objectArg(args);
-      return passwords.saveSecret({
-        ...(typeof input.id === "string" ? { id: input.id } : {}),
-        name: text(input.name),
-        value: text(input.value),
-        projectScope: typeof input.projectScope === "string" ? input.projectScope : null,
-        ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-      });
-    },
-    remove: (args?: unknown) => passwords.remove(text(objectArg(args).id)),
-    importCsv: (args?: unknown) => passwords.importCsv(text(objectArg(args).text)),
-    sync: () => passwords.sync(),
-    resolveForFill: (args?: unknown) => {
-      const input = objectArg(args);
-      return passwords.resolveForFill({ itemId: text(input.itemId), pageUrl: text(input.pageUrl) });
-    },
-    // The secure sign-in card, in the agent's own chat (a runtime with chats only).
-    ...(runtime.agentChatService
-      ? {
-          requestLogin: (args?: unknown) => {
-            const agentChatService = runtime.agentChatService!;
-            return requestPasswordLoginFromUser({
-              requestChatInput: (input) => agentChatService.requestChatInput(input),
-              passwords,
-            }, args);
-          },
-        }
-      : {}),
-    // `ade browser signin`: fill a saved login; with none, ask the person in
-    // the agent's own chat (the RPC server stamps it), save, and fill.
-    ...(runtime.builtInBrowserService
-      ? {
-          signin: (args?: unknown) => signInWithPasswords({
-            browser: runtime.builtInBrowserService as unknown as BrowserSignin,
-            passwords,
-            noteUse: async (use) => {
-              await passwords.recordUse({ itemId: use.itemId, kind: "login", target: use.site, by: "agent", chatSessionId: use.chatSessionId });
-              if (use.chatSessionId) {
-                runtime.agentChatService?.postQuietNotice?.(use.chatSessionId, `Signed in to ${use.site}${use.username ? ` as ${use.username}` : ""} with a saved login.`);
-              }
-            },
-            requestLogin: runtime.agentChatService
-              ? (input) => requestPasswordLoginFromUser({
-                  requestChatInput: (request) => runtime.agentChatService!.requestChatInput(request),
-                  passwords,
-                }, input)
-              : null,
-          }, objectArg(args)),
-        }
-      : {}),
-  } as unknown as OpaqueService;
-}
 
 function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectSecretService = runtime.projectSecretService;
@@ -4401,9 +4279,15 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
       const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
       const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
       const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : runtime.projectRoot;
-      const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+      const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch((error: unknown) => {
+        runtime.logger.warn("project_secret.exec_lanes_failed", { error: getErrorMessage(error) });
+        return [];
+      });
       const scope = projectSecretService.accountScope();
-      const fromPasswords = await runtime.passwordService?.secretValuesForProject(scope).catch(() => ({})) ?? {};
+      const fromPasswords = await runtime.passwordService?.secretValuesForProject(scope).catch((error: unknown) => {
+        runtime.logger.warn("project_secret.exec_passwords_secrets_failed", { error: getErrorMessage(error) });
+        return {};
+      }) ?? {};
       // A project secret of the same name wins: it is the one this project set.
       const secrets = { ...fromPasswords, ...projectSecretService.valuesForProcess() };
       const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
@@ -4419,8 +4303,15 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
       });
       const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : null;
       // One Activity row per run: which names, and the command they went to.
+      // Who ran it is stamped by the RPC server, never taken from the caller.
       if (result.injected.length) {
-        void runtime.passwordService?.recordUse({ itemId: result.injected.join(", "), kind: "secret", target: command.join(" ").slice(0, 200), by: chatSessionId ? "agent" : "person", chatSessionId }).catch(() => undefined);
+        void runtime.passwordService?.recordUse({
+          itemId: result.injected.join(", "),
+          kind: "secret",
+          target: command.join(" ").slice(0, 200),
+          by: input.calledBy === "person" ? "person" : "agent",
+          chatSessionId,
+        }).catch((error: unknown) => runtime.logger.warn("project_secret.exec_activity_failed", { error: getErrorMessage(error) }));
       }
       return result;
     },
@@ -4914,10 +4805,10 @@ export function getAdeActionDomainServices(
     passwords: toService(buildPasswordsDomainService(runtime)),
     messages: runtime.builtInBrowserService
       ? toService(buildMessagesDomain({
-          bridge: runtime.builtInBrowserService as unknown as MessagesBridge,
+          bridge: runtime.builtInBrowserService,
           requestChatInput: runtime.agentChatService ? (input) => runtime.agentChatService!.requestChatInput(input) : null,
           authenticatorCode: runtime.passwordService
-            ? async (site) => await runtime.passwordService!.currentCode({ site }).catch(() => null)
+            ? async (site, username) => await runtime.passwordService!.currentCode({ site, username })
             : undefined,
         }))
       : null,

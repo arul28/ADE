@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { captureProblem } from "../../../shared/sentry/capture";
 import { BrowserWindow, dialog, systemPreferences } from "electron";
 
 /**
@@ -36,7 +37,16 @@ function windowsHello(reason: string): Promise<"verified" | "denied" | "unavaila
       // The reason goes in the environment, never into the script text.
       { env: { ...process.env, ADE_HELLO_REASON: reason }, windowsHide: true, timeout: 120_000 },
       (error, stdout) => {
-        if (error) return resolve("unavailable");
+        if (error) {
+          // Falls back to the confirm dialog; reported so a broken Hello is
+          // seen. A timeout (`killed`: nobody answered) is not a fault.
+          if (!error.killed) captureProblem("Windows Hello check could not run", {
+            tags: { area: "passwords" },
+            extra: { reason: error.message },
+            fingerprint: ["passwords", "windows-hello-failed"],
+          });
+          return resolve("unavailable");
+        }
         const answer = String(stdout).trim();
         resolve(answer === "Verified" ? "verified" : answer === "unavailable" ? "unavailable" : "denied");
       },
@@ -58,6 +68,25 @@ async function confirmDialog(reason: string, actionLabel: string): Promise<boole
   return response === 0;
 }
 
+/**
+ * Which of several saved accounts to use (a site with more than one passkey):
+ * a dialog with one button per account. The index, or null for Cancel.
+ */
+export async function chooseAccount(site: string, accounts: string[]): Promise<number | null> {
+  const shown = accounts.slice(0, 8);
+  const parent = BrowserWindow.getFocusedWindow() ?? undefined;
+  const options = {
+    type: "question" as const,
+    buttons: [...shown, "Cancel"],
+    defaultId: 0,
+    cancelId: shown.length,
+    message: `Sign in to ${site} as…`,
+    detail: "ADE Passwords has more than one passkey for this site.",
+  };
+  const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+  return response < shown.length ? response : null;
+}
+
 /** `reason` completes "ADE wants to …" on Touch ID's sheet, e.g. "show the password for github.com". */
 export async function checkPerson(reason: string, actionLabel = "Continue"): Promise<PersonCheck | null> {
   if (process.platform === "darwin" && systemPreferences.canPromptTouchID()) {
@@ -65,6 +94,7 @@ export async function checkPerson(reason: string, actionLabel = "Continue"): Pro
       await systemPreferences.promptTouchID(reason);
       return "biometric";
     } catch {
+      // Cancelled (or failed to show): either way, not confirmed.
       return null;
     }
   }

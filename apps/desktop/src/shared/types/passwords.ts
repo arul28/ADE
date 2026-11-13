@@ -114,12 +114,6 @@ export type PasswordSecretSaveInput = {
   notes?: string;
 };
 
-/** Account-level settings, synced as plain account settings (no secrets). */
-export type PasswordsSettings = {
-  enabled: boolean;
-  /** ADE Cloud computers on this account may unlock Passwords. On by default once enabled. */
-  cloudEnabled: boolean;
-};
 
 /** Whether Passwords is on for one computer, for Settings and `ade passwords status`. */
 export type PasswordsStatus = {

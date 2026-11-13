@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { ChatCircleText } from "@phosphor-icons/react";
 import type { MessagesIntegrationStatus, MessagesIntegrationSettings } from "../../../../shared/types/messagesIntegration";
 import { ipcErrorMessage } from "../../../lib/format";
+import { Button } from "../../ui/Button";
+import { Banner } from "../../ui/notice";
+import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "../primitives";
 
 /**
  * Settings › Integrations › Messages, on a Mac.
@@ -46,70 +49,76 @@ export function MessagesIntegrationCard() {
   }, [api, busy]);
 
   if (!status?.supported) return null;
-  const switchRow = (key: keyof MessagesIntegrationSettings, title: string, hint: string, disabled = false) => (
-    <div className="ade-ig-msg-row" key={key}>
-      <span className="ade-ig-msg-text">
-        <span className="ade-ig-msg-title">{title}</span>
-        <span className="ade-ig-msg-hint">{hint}</span>
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={status[key]}
-        aria-label={title}
-        data-testid={`messages-switch-${key}`}
-        className="ade-ig-msg-switch"
-        data-on={status[key] ? "true" : "false"}
-        disabled={busy || disabled}
-        onClick={() => void set({ [key]: !status[key] })}
-      >
-        <span className="ade-ig-msg-knob" />
-      </button>
-    </div>
+  const toggle = (key: keyof MessagesIntegrationSettings, title: string, hint: string, disabled = false) => (
+    <ModernRow
+      key={key}
+      title={title}
+      hint={hint}
+      control={(
+        <SettingsToggle
+          checked={status[key]}
+          onChange={(next) => void set({ [key]: next })}
+          disabled={busy || disabled}
+          label={title}
+        />
+      )}
+    />
   );
 
   return (
-    <section className="ade-ix-section ade-ig-msg" aria-label="Messages" data-settings-group="messages" data-testid="messages-integration">
-      <div className="ade-ig-msg-head">
-        <span className="ade-ig-msg-logo" aria-hidden><ChatCircleText size={18} weight="fill" /></span>
-        <span className="ade-ig-msg-text">
-          <span className="ade-ig-msg-title">Messages</span>
-          <span className="ade-ig-msg-hint">
-            Let agents read your texts (sign-in codes, conversations) and send texts you approve, on this Mac.
-            Cloud lanes ask the Mac you're using.
-          </span>
-        </span>
-        {!status.connected ? (
-          <button type="button" className="ade-ig-msg-connect" disabled={busy} data-testid="messages-connect" onClick={() => void set({ connected: true })}>
-            Connect
-          </button>
-        ) : (
-          <button type="button" className="ade-ig-msg-disconnect" disabled={busy} data-testid="messages-disconnect" onClick={() => void set({ connected: false })}>
-            Disconnect
-          </button>
+    <div data-testid="messages-integration">
+      <ModernSection
+        group="messages"
+        title="Messages"
+        hint="Let agents read your texts (sign-in codes, conversations) and send texts you approve, on this Mac. Cloud lanes ask the Mac you're using."
+        icon={<ChatCircleText size={16} weight="fill" />}
+        actions={(
+          <Button
+            size="sm"
+            variant={status.connected ? "outline" : "primary"}
+            disabled={busy}
+            data-testid={status.connected ? "messages-disconnect" : "messages-connect"}
+            onClick={() => void set({ connected: !status.connected })}
+          >
+            {status.connected ? "Disconnect" : "Connect"}
+          </Button>
         )}
-      </div>
-      {status.connected ? (
-        <div className="ade-ig-msg-rows">
-          {status.access === "needs_full_disk_access" ? (
-            <div className="ade-ig-msg-warn" role="alert">
-              ADE needs Full Disk Access to read Messages.
-              <button type="button" onClick={() => void window.ade.app.openSystemSettingsPane("macos-full-disk-access")}>Open Full Disk Access</button>
-              <button type="button" onClick={() => void load()}>Check again</button>
-            </div>
-          ) : status.access === "no_database" ? (
-            <div className="ade-ig-msg-warn" role="alert">Messages isn't set up on this Mac (no messages found).</div>
-          ) : null}
-          {switchRow("readTexts", "Read texts", "Agents can read your conversations and attachments, for example to find a sign-in code.")}
-          {switchRow("sendTexts", "Send texts", "Agents can send a text. You approve each one first, unless the next switch is on.")}
-          {switchRow("sendWithoutAsking", "Send without asking", "Texts go out without an approval card.", !status.sendTexts)}
-          <div className="ade-ig-msg-foot">
-            Sending uses the Messages app; macOS asks once to let ADE control it.
-            <button type="button" onClick={() => void window.ade.app.openSystemSettingsPane("macos-automation")}>Automation settings</button>
-          </div>
-        </div>
-      ) : null}
-      {error ? <div className="ade-ig-msg-warn" role="alert">{error}</div> : null}
-    </section>
+      >
+        {status.connected && status.access === "needs_full_disk_access" ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "messages-full-disk-access",
+              tone: "warning",
+              title: "ADE needs Full Disk Access to read Messages.",
+              actions: [
+                { label: "Open Full Disk Access", onClick: () => void window.ade.app.openSystemSettingsPane("macos-full-disk-access") },
+                { label: "Check again", variant: "secondary", onClick: () => void load() },
+              ],
+            }}
+          />
+        ) : null}
+        {status.connected && status.access === "no_database" ? (
+          <Banner layout="inline" model={{ id: "messages-no-database", tone: "warning", title: "Messages isn't set up on this Mac (no messages found)." }} />
+        ) : null}
+        {status.connected ? (
+          <ModernRows>
+            {toggle("readTexts", "Read texts", "Agents can read your conversations and attachments, for example to find a sign-in code.")}
+            {toggle("sendTexts", "Send texts", "Agents can send a text. You approve each one first, unless the next switch is on.")}
+            {toggle("sendWithoutAsking", "Send without asking", "Texts go out without an approval card.", !status.sendTexts)}
+            <ModernRow
+              title="Sending uses the Messages app"
+              hint="macOS asks once to let ADE control it."
+              control={(
+                <Button size="sm" variant="outline" onClick={() => void window.ade.app.openSystemSettingsPane("macos-automation")}>
+                  Automation settings
+                </Button>
+              )}
+            />
+          </ModernRows>
+        ) : null}
+        {error ? <Banner layout="inline" model={{ id: "messages-integration-error", tone: "error", title: error, report: false }} /> : null}
+      </ModernSection>
+    </div>
   );
 }

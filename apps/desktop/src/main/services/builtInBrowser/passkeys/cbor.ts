@@ -20,9 +20,7 @@ export type CborMap = Map<CborMapKey, CborValue>;
 export type CborValue = number | string | Uint8Array | boolean | null | CborValue[] | CborMap;
 
 const MAX_DEPTH = 32;
-const MAX_CONTAINER_LENGTH = 65_536;
 const utf8Encoder = new TextEncoder();
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 /** Encode one value. Throws for anything outside the CTAP2 subset. */
 export function encodeCbor(value: CborValue): Buffer {
@@ -113,114 +111,4 @@ function encodeHead(major: number, length: number): Buffer {
   bytes[0] = prefix | 27;
   bytes.writeBigUInt64BE(BigInt(length), 1);
   return bytes;
-}
-
-/** Decode exactly one CBOR value; trailing bytes are an error. */
-export function decodeCbor(bytes: Uint8Array): CborValue {
-  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const { value, offset } = decodeValue(buf, 0, 0);
-  if (offset !== buf.length) throw new RangeError("Trailing bytes after the CBOR value.");
-  return value;
-}
-
-function decodeValue(buf: Buffer, offset: number, depth: number): { value: CborValue; offset: number } {
-  if (depth > MAX_DEPTH) throw new RangeError("CBOR value is nested too deeply.");
-  if (offset >= buf.length) throw new RangeError("Truncated CBOR value.");
-  const initial = buf[offset]!;
-  const major = initial >> 5;
-  const info = initial & 0x1f;
-
-  switch (major) {
-    case 0: {
-      const { length, next } = readArgument(buf, offset, info);
-      return { value: length, offset: next };
-    }
-    case 1: {
-      const { length, next } = readArgument(buf, offset, info);
-      return { value: -1 - length, offset: next };
-    }
-    case 2: {
-      const { length, next } = readArgument(buf, offset, info);
-      return readBytes(buf, next, length);
-    }
-    case 3: {
-      const { length, next } = readArgument(buf, offset, info);
-      const result = readBytes(buf, next, length);
-      let text: string;
-      try {
-        text = utf8Decoder.decode(result.value as Buffer);
-      } catch {
-        throw new RangeError("Invalid UTF-8 in CBOR text.");
-      }
-      return { value: text, offset: result.offset };
-    }
-    case 4: {
-      const { length, next } = readArgument(buf, offset, info);
-      if (length > MAX_CONTAINER_LENGTH) throw new RangeError("CBOR array is too long.");
-      const items: CborValue[] = [];
-      let cursor = next;
-      for (let index = 0; index < length; index += 1) {
-        const decoded = decodeValue(buf, cursor, depth + 1);
-        items.push(decoded.value);
-        cursor = decoded.offset;
-      }
-      return { value: items, offset: cursor };
-    }
-    case 5: {
-      const { length, next } = readArgument(buf, offset, info);
-      if (length > MAX_CONTAINER_LENGTH) throw new RangeError("CBOR map is too long.");
-      const map: CborMap = new Map();
-      let cursor = next;
-      for (let index = 0; index < length; index += 1) {
-        const key = decodeValue(buf, cursor, depth + 1);
-        if (typeof key.value !== "number" && typeof key.value !== "string") {
-          throw new RangeError("CBOR map keys must be integers or text.");
-        }
-        const entry = decodeValue(buf, key.offset, depth + 1);
-        if (map.has(key.value)) throw new RangeError("CBOR map has a duplicate key.");
-        map.set(key.value, entry.value);
-        cursor = entry.offset;
-      }
-      return { value: map, offset: cursor };
-    }
-    case 7: {
-      if (info === 20) return { value: false, offset: offset + 1 };
-      if (info === 21) return { value: true, offset: offset + 1 };
-      if (info === 22) return { value: null, offset: offset + 1 };
-      throw new RangeError("Unsupported CBOR simple value.");
-    }
-    default:
-      throw new RangeError("Unsupported CBOR major type.");
-  }
-}
-
-function readBytes(buf: Buffer, offset: number, length: number): { value: Buffer; offset: number } {
-  if (length > buf.length - offset) throw new RangeError("Truncated CBOR value.");
-  return { value: buf.subarray(offset, offset + length), offset: offset + length };
-}
-
-function readArgument(buf: Buffer, offset: number, info: number): { length: number; next: number } {
-  if (info < 24) return { length: info, next: offset + 1 };
-  const need = (bytes: number): void => {
-    if (offset + bytes > buf.length) throw new RangeError("Truncated CBOR value.");
-  };
-  if (info === 24) {
-    need(2);
-    return { length: buf[offset + 1]!, next: offset + 2 };
-  }
-  if (info === 25) {
-    need(3);
-    return { length: buf.readUInt16BE(offset + 1), next: offset + 3 };
-  }
-  if (info === 26) {
-    need(5);
-    return { length: buf.readUInt32BE(offset + 1), next: offset + 5 };
-  }
-  if (info === 27) {
-    need(9);
-    const value = buf.readBigUInt64BE(offset + 1);
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("CBOR integer is too large.");
-    return { length: Number(value), next: offset + 9 };
-  }
-  throw new RangeError("Unsupported CBOR additional information.");
 }

@@ -2618,9 +2618,31 @@ function callProviderLogins<T>(action: string, args: Record<string, unknown>, pi
  * boundary: no method here returns a saved value, and `resolveForFill` is
  * never wired (the browser fills pages in main, not in a renderer).
  */
-function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
-  return callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () =>
-    ipcRenderer.invoke(IPC.passwordsCall, { action, args: { ...args } }));
+/**
+ * Passwords actions that carry a value or wipe the vault always run on this
+ * computer's own brain, through main: a value never travels to the machine
+ * the page follows (the vault is the account's, so it syncs from here), and a
+ * reset always gets main's Touch ID / Windows Hello check first.
+ */
+const PASSWORDS_THIS_COMPUTER_ACTIONS = new Set(["saveLogin", "saveSecret", "importCsv", "reset"]);
+
+async function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  const local = (name: string, input: Record<string, unknown>) => ipcRenderer.invoke(IPC.passwordsCall, { action: name, args: { ...input } }) as Promise<T>;
+  if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
+    return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
+  }
+  // An edit by id needs the item on this computer: pull first. A failure here
+  // surfaces as the write's own error just below.
+  if (typeof args.id === "string" && args.id) {
+    await local("sync", {}).catch((error: unknown) => console.warn("[preload] Passwords sync before an edit failed", error));
+  }
+  const result = await local(action, args);
+  // The page lists the pinned machine's copy: it pulls this write now.
+  if (pin && !isBoundCopyPin(pin)) {
+    await callPinnedOrBoundRuntimeActionOr<unknown>(pin, "passwords", "sync", { args: {} }, async () => undefined)
+      .catch((error: unknown) => console.warn("[preload] the pinned machine could not pull Passwords yet", error));
+  }
+  return result;
 }
 
 /**

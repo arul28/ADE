@@ -16,6 +16,7 @@
  * `localhost`, `*.localhost`, `127.0.0.1` and `[::1]`, which browsers treat as
  * secure contexts anyway.
  */
+import { isLoopbackHost } from "../../../../desktop/src/shared/passwordFillTarget";
 import { getDomain } from "tldts";
 
 export type NormalizedLoginOrigin = {
@@ -99,9 +100,7 @@ function registrableSite(host: string): string {
   return getDomain(host, TLD_OPTIONS) ?? host;
 }
 
-function isLocalHost(host: string): boolean {
-  return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "::1";
-}
+const isLocalHost = isLoopbackHost;
 
 /** A local name or an IP address: its port is part of which app it is. */
 function isLocalSite(host: string): boolean {

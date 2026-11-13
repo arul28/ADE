@@ -1316,8 +1316,8 @@ Runtime support files outside `services/sync/`:
   machine adds tomorrow still has to arrive, and the one-shot migration can
   never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
   Secrets > Pull from account) forces a vault sync with the relay and then runs
-  the same pull. `project_secret.get` / `list` (agents, `ade secrets get|list`,
-  the Secrets page) refresh from the account first — at most one request per
+  the same pull. `project_secret.get` / `list` / `exec` (`ade secrets list|exec`, the
+  person's own `get`, the Secrets page) refresh from the account first — at most one request per
   10 s, and waiting at most 3 s before answering from this machine's copy — so
   a secret added on another machine moments ago is found. A miss says whether
   the account was checked or could not be reached. Rows this machine saved

@@ -49,14 +49,14 @@
  * hardware and does not want a stable identifier shared across sites. The
  * relying party trusts the credential by registration, not by attestation.
  *
- * RP ID matching is deliberately simple and self-contained: the ASCII rules
- * below reject bare labels and a short denylist of common public suffixes. It
- * is not the Public Suffix List. The shared, PSL-backed matcher lives in
- * `apps/ade-cli/src/services/passwords/passwordMatching.ts`; when it is
- * available to desktop main (today `tldts` is an ade-cli dependency only), the
- * wiring can swap it in without changing this module's contract.
+ * RP ID matching follows the browser rule: the RP ID is the page's host or a
+ * parent domain of it, and never a public suffix. Public suffixes come from
+ * the Public Suffix List (`tldts`), private suffixes included, so a page on
+ * `alice.github.io` can never claim `github.io` — the same list Passwords'
+ * site matching uses (`passwordMatching.ts`).
  */
 import crypto from "node:crypto";
+import { getPublicSuffix } from "tldts";
 import { encodeCbor, type CborMap, type CborMapKey, type CborValue } from "./cbor";
 
 /** ES256 with SHA-256, the one algorithm every platform authenticator supports. */
@@ -80,77 +80,6 @@ const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
-/**
- * Common multi-label public suffixes and shared-hosting suffixes. A bare
- * single-label name (a TLD) is rejected separately. This is not the PSL; see
- * the file header for the swap-in path.
- */
-const PUBLIC_SUFFIXES = new Set([
-  "co.uk",
-  "org.uk",
-  "me.uk",
-  "ltd.uk",
-  "plc.uk",
-  "net.uk",
-  "ac.uk",
-  "gov.uk",
-  "com.au",
-  "net.au",
-  "org.au",
-  "edu.au",
-  "gov.au",
-  "id.au",
-  "co.nz",
-  "net.nz",
-  "org.nz",
-  "co.jp",
-  "ne.jp",
-  "or.jp",
-  "ac.jp",
-  "go.jp",
-  "co.in",
-  "net.in",
-  "org.in",
-  "firm.in",
-  "gen.in",
-  "ind.in",
-  "com.br",
-  "net.br",
-  "org.br",
-  "com.cn",
-  "net.cn",
-  "org.cn",
-  "gov.cn",
-  "com.mx",
-  "com.ar",
-  "com.tr",
-  "com.sg",
-  "com.hk",
-  "com.tw",
-  "co.za",
-  "co.kr",
-  "co.il",
-  "github.io",
-  "gitlab.io",
-  "pages.dev",
-  "workers.dev",
-  "vercel.app",
-  "netlify.app",
-  "web.app",
-  "firebaseapp.com",
-  "appspot.com",
-  "herokuapp.com",
-  "cloudfront.net",
-  "azurewebsites.net",
-  "blogspot.com",
-  "tumblr.com",
-  "glitch.me",
-  "repl.co",
-  "ngrok.io",
-  "ngrok.app",
-  "loca.lt",
-  "trycloudflare.com",
-]);
 
 export type StoredPasskey = {
   /** Base64url, as it appears in the WebAuthn response. */
@@ -244,7 +173,7 @@ export function rpIdAllowedForOrigin(rpId: string, origin: string): boolean {
   const normalizedRpId = normalizeRpId(rpId);
   const url = parseWebAuthnOrigin(origin);
   if (!normalizedRpId || !url) return false;
-  if (PUBLIC_SUFFIXES.has(normalizedRpId)) return false;
+  if (normalizedRpId !== "localhost" && getPublicSuffix(normalizedRpId, { allowPrivateDomains: true }) === normalizedRpId) return false;
 
   const host = stripIpv6Brackets(url.hostname.toLowerCase());
 

@@ -13,40 +13,11 @@
  *
  * @module messages
  */
-export { decodeAttributedBody } from "./attributedBody";
-export { extractSignInCode, type ExtractedSignInCode } from "./messageCodes";
+export type { ChatRecord, MessageRecord, ReadRecentMessagesOptions } from "./messagesDatabase";
 export {
-  appleMessageDateToIso,
-  checkMessagesDatabaseAccess,
-  defaultMessagesDatabasePath,
-  handlesMatch,
-  isFullDiskAccessDenial,
-  listChats,
-  normalizeHandle,
-  openMessagesDatabase,
-  readRecentMessages,
-  type ChatRecord,
-  type ListChatsOptions,
-  type MessageAttachment,
-  type MessageRecord,
-  type MessageService,
-  type MessagesAccessFailure,
-  type MessagesAccessResult,
-  type ReadRecentMessagesOptions,
-} from "./messagesDatabase";
-export {
-  MESSAGES_READ_WORKER_TIMEOUT_MS,
   readMessagesInWorker,
   terminateMessagesReadWorkers,
-  type MessagesReadFailureCode,
   type MessagesReadRequest,
   type MessagesReadResponse,
-  type MessagesReadWorkerOptions,
 } from "./messagesReadWorkerClient";
-export {
-  sendMessage,
-  type MessagesSendService,
-  type SendMessageFailureCode,
-  type SendMessageInput,
-  type SendMessageResult,
-} from "./messagesSend";
+export { sendMessage, type SendMessageResult } from "./messagesSend";

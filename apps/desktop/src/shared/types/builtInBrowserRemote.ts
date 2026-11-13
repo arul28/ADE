@@ -109,6 +109,13 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_EVENT = "built_in_browser_remote_call"
  * other bridge method its machine; a method can be sent here only when it is
  * in this list.
  */
+/**
+ * The Messages integration's methods on the desktop bridge. Only the brain's
+ * `messages` domain calls them (it raises the send approval card first); the
+ * RPC server refuses them as `built_in_browser` actions.
+ */
+export const BUILT_IN_BROWSER_MESSAGES_METHODS = ["messagesStatus", "messagesRecent", "messagesChats", "messagesSend"] as const;
+
 export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "navigate",
   "createTab",
@@ -134,10 +141,8 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "scroll",
   "fill",
   "signin",
-  "messagesStatus",
-  "messagesRecent",
-  "messagesChats",
-  "messagesSend",
+  "signup",
+  ...BUILT_IN_BROWSER_MESSAGES_METHODS,
   "clear",
   "wait",
   "captureScreenshot",

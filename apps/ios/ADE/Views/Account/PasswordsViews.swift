@@ -546,7 +546,7 @@ enum PasswordsPreviewData {
       username: "sam-rivera",
       password: "fixture-Pa55word-not-real",
       notes: "Recovery codes are in the safe.",
-      totpUri: "otpauth://totp/GitHub:sam-rivera?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=GitHub"
+      totpUri: "otpauth://totp/GitHub:sam-rivera?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=GitHub" // gitleaks:allow (RFC 6238 test key)
     ))),
     PasswordsVaultItem(id: "preview-vercel", secret: .login(.init(
       title: "Vercel",

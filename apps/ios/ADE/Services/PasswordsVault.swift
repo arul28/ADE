@@ -388,6 +388,22 @@ struct PasswordsRelayClient {
 /// unlocked, never in a backup restored elsewhere, never synced to iCloud.
 /// One item per account id; every one goes on sign-out.
 enum PasswordsKeyStore {
+  /// One serial queue for every Keychain change, so a sign-out's delete and a
+  /// key save run in the order they were asked for.
+  private static let queue = DispatchQueue(label: "ade.passwords.keystore", qos: .utility)
+
+  /// Queues `body` and does not wait.
+  static func run(_ body: @escaping @Sendable () -> Void) {
+    queue.async(execute: body)
+  }
+
+  /// Queues `body` and waits for its result.
+  static func perform<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+      queue.async { continuation.resume(returning: body()) }
+    }
+  }
+
   private static let service = "com.ade.ios.passwords"
   private static let accountPrefix = "vault-key:"
 
@@ -523,7 +539,7 @@ final class PasswordsVault: ObservableObject {
     items = []
     unopenableCount = 0
     phase = .inactive
-    Task.detached(priority: .utility) { PasswordsKeyStore.deleteAll(keeping: userId) }
+    PasswordsKeyStore.run { PasswordsKeyStore.deleteAll(keeping: userId) }
   }
 
   /// Signed out: every key and every opened item go.
@@ -537,7 +553,7 @@ final class PasswordsVault: ObservableObject {
 #if DEBUG
     if isPreviewSeeded { return }
 #endif
-    Task.detached(priority: .utility) { PasswordsKeyStore.deleteAll() }
+    PasswordsKeyStore.run { PasswordsKeyStore.deleteAll() }
   }
 
   /// Reads and opens the account's items. A read already running is joined.
@@ -591,10 +607,13 @@ final class PasswordsVault: ObservableObject {
       }
       let client = self.client
       let key: () async throws -> PasswordsRelayClient.ReleasedKey = {
-        let cached = await Task.detached { PasswordsKeyStore.load(accountId: accountId) }.value
+        let cached = await PasswordsKeyStore.perform { PasswordsKeyStore.load(accountId: accountId) }
         if let cached { return cached }
         let released = try await client.requestKey(baseURL: baseURL, token: session.token, deviceId: deviceId, refreshToken: refreshToken)
-        _ = await Task.detached { PasswordsKeyStore.save(released, accountId: accountId) }.value
+        // Checked on the main actor, then queued behind any sign-out's delete
+        // already on the key-store queue: a key never outlives its account.
+        guard self.userId == accountId, !Task.isCancelled else { throw CancellationError() }
+        _ = await PasswordsKeyStore.perform { PasswordsKeyStore.save(released, accountId: accountId) }
         passwordsLog.info("passwords.key_ready epoch=\(released.epoch, privacy: .public)")
         return released
       }
@@ -602,7 +621,7 @@ final class PasswordsVault: ObservableObject {
       if opened.needsNewerKey {
         // Reset on another machine: this key is stale. Fetch it again, once.
         passwordsLog.info("passwords.key_epoch_advanced")
-        await Task.detached { PasswordsKeyStore.delete(accountId: accountId) }.value
+        await PasswordsKeyStore.perform { PasswordsKeyStore.delete(accountId: accountId) }
         guard userId == accountId, !Task.isCancelled else { return }
         opened = Self.open(live, key: try await key(), accountId: accountId)
       }

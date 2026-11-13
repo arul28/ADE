@@ -1,9 +1,22 @@
 import type { BuiltInBrowserAgentActionResult } from "../../../shared/types/builtInBrowser";
+import { captureError } from "../../../shared/sentry/capture";
 import type { PasswordLoginRequestResult } from "../../../shared/passwordLoginRequest";
 
 export type BrowserSignin = {
   signin(args: Record<string, unknown>): Promise<BuiltInBrowserAgentActionResult>;
 };
+
+export type BrowserSignup = {
+  signup(args: Record<string, unknown>): Promise<BuiltInBrowserAgentActionResult>;
+};
+
+/** One fill, for Activity and the chat's quiet line (never a value). `by` is stamped by the RPC server. */
+export type PasswordAgentUse = { itemId: string; site: string; username: string | null; chatSessionId: string | null; by: "agent" | "person" };
+
+/** Who called, as the RPC server stamped it (`calledBy`); anything else counts as an agent. */
+function calledBy(args: Record<string, unknown>): "agent" | "person" {
+  return args.calledBy === "person" ? "person" : "agent";
+}
 
 /**
  * `passwords.signin` — what `ade browser signin` runs.
@@ -24,20 +37,24 @@ export async function signInWithPasswords(
     browser: BrowserSignin;
     passwords: { sync(): Promise<void> };
     /** Activity and the chat's quiet line, after a fill. Failures never fail the sign-in. */
-    noteUse?: (use: { itemId: string; site: string; username: string | null; chatSessionId: string | null }) => Promise<void>;
+    noteUse?: (use: PasswordAgentUse) => Promise<void>;
     requestLogin: ((args: Record<string, unknown>) => Promise<PasswordLoginRequestResult>) | null;
   },
   args: Record<string, unknown>,
-): Promise<BuiltInBrowserAgentActionResult & { signin?: Record<string, unknown> }> {
+): Promise<BuiltInBrowserAgentActionResult> {
   // The browser call carries the caller's stamped identity (its chat and
   // lane own the tab); `reason` and `timeoutMs` are only for the card.
-  const { reason, timeoutMs, ...browserArgs } = args;
+  const { reason, timeoutMs, calledBy: _stamped, ...callerArgs } = args;
+  // An agent's sign-in fills only on a login's exact saved address, whatever
+  // the caller asked: never on another subdomain of the site.
+  const browserArgs = { ...callerArgs, exactOrigin: true };
   const chatSessionId = args.chatSessionId;
   const chat = typeof chatSessionId === "string" && chatSessionId ? chatSessionId : null;
   const noted = async <T extends BuiltInBrowserAgentActionResult>(result: T): Promise<T> => {
     const done = result.signin;
     if (done && !done.needsLogin && done.itemId && done.filled.length) {
-      await deps.noteUse?.({ itemId: done.itemId, site: done.site, username: done.username, chatSessionId: chat }).catch(() => undefined);
+      await deps.noteUse?.({ itemId: done.itemId, site: done.site, username: done.username, chatSessionId: chat, by: calledBy(args) })
+        .catch((error: unknown) => captureError(error, { tags: { area: "passwords", op: "signin_activity" } }));
     }
     return result;
   };
@@ -64,4 +81,29 @@ export async function signInWithPasswords(
     };
   }
   throw new Error(`The person declined to sign in to ${site}.`);
+}
+
+/**
+ * `passwords.signup` — what `ade browser signup` runs: the desktop that shows
+ * the tab makes a password, types it into the sign-up form, and saves the
+ * login once the form holds all of it (`built_in_browser.signup`). The result
+ * names the site and account.
+ */
+export async function signUpWithPasswords(
+  deps: {
+    browser: BrowserSignup;
+    /** Activity and the chat's quiet line. Failures never fail the sign-up. */
+    noteUse?: (use: PasswordAgentUse) => Promise<void>;
+  },
+  args: Record<string, unknown>,
+): Promise<BuiltInBrowserAgentActionResult> {
+  const chatSessionId = typeof args.chatSessionId === "string" && args.chatSessionId ? args.chatSessionId : null;
+  const { calledBy: _stamped, ...browserArgs } = args;
+  const result = await deps.browser.signup(browserArgs);
+  const made = result.signin;
+  if (made?.itemId) {
+    await deps.noteUse?.({ itemId: made.itemId, site: made.site, username: made.username, chatSessionId, by: calledBy(args) })
+      .catch((error: unknown) => captureError(error, { tags: { area: "passwords", op: "signup_activity" } }));
+  }
+  return result;
 }

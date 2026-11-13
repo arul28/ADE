@@ -2,7 +2,6 @@ import fs from "node:fs";
 
 import { createPasswordService, getSharedPasswordService, passwordsCloudSwitch, type PasswordService, type PasswordsRelay } from "../passwords/passwordService";
 import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
-/** How often Passwords pulls other machines' changes. */
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   createAccountStoreResultHelpers,
@@ -63,7 +62,8 @@ export type AccountRuntimeLifecycleOptions = {
   getAccountAccessToken: (options?: AccountAccessTokenOptions) => Promise<string | null>;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   teardown: { push(release: () => void): void };
-  relay?: AccountSettingsRelay & AccountVaultRelay;
+  /** A test's relay; it speaks Passwords only when it has the Passwords calls. */
+  relay?: AccountSettingsRelay & AccountVaultRelay & Partial<PasswordsRelay>;
   purgeAccountApiKeys?: () => void;
   onAccountSettingsChanged?: () => void;
 };
@@ -132,6 +132,12 @@ export function createHeadlessAccountVaultBridge(
   };
 }
 
+function speaksPasswords<T extends Partial<PasswordsRelay>>(relay: T): relay is T & PasswordsRelay {
+  return typeof relay.getPasswordItems === "function"
+    && typeof relay.putPasswordItems === "function"
+    && typeof relay.requestPasswordKey === "function";
+}
+
 export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOptions) {
   const accountStoreUserId = (): string | null => {
     const status = options.accountAuthService.getStatus();
@@ -189,8 +195,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     const settingsForPasswords = accountSettingsStore;
     passwordService = getSharedPasswordService(options.accountStoreAdeDir, () => createPasswordService({
       adeDir: options.accountStoreAdeDir,
-      // A test's injected relay may not speak Passwords; then it has none.
-      relay: "getPasswordItems" in accountStoreRelay ? accountStoreRelay as unknown as PasswordsRelay : null,
+      relay: speaksPasswords(accountStoreRelay) ? accountStoreRelay : null,
       getAccountUserId: accountStoreUserId,
       getDeviceId: accountStoreDeviceId,
       machineKind: isAdeCloudComputer() ? "cloud" : "desktop",

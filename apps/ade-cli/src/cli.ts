@@ -71,6 +71,7 @@ import {
 import { buildGithubIssuePlan } from "./cliGithubIssue";
 import { buildJiraPlan } from "./cliJira";
 import { buildIssuePlan } from "./cliIssue";
+import { buildCodePlan, buildMessagesPlan, buildPasswordsPlan, formatPasswords, formatPasswordsCode, formatSecretsExec } from "./cliPasswords";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -4320,6 +4321,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Never ask for a password in chat. --site <host> is only a check that the tab
   is on the site you expect; the site is always the tab's own page.
 
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, types it into the password
+  (and confirm) boxes, and saves the login once the form holds all of it.
+  You never see it. Submit the form yourself; later sign-ins use \`ade browser signin\`.
+  --account names the username when the form has none filled in.
+
   Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
@@ -4356,6 +4365,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
     $ ade browser signin --tab <tab-id> --text
     $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -4892,8 +4902,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   To sign in to a site, open its sign-in page and run \`ade browser signin\`:
   ADE types the saved login into the page. With no saved login, the person is
-  asked in your chat. Adding, changing and removing items is the person's, in
-  Settings › Passwords.
+  asked in your chat. To create an account, run \`ade browser signup\` on the
+  sign-up form: ADE makes the password, saves it, and types it in. Changing
+  and removing items is the person's, in Settings › Passwords.
 `,
   code: `${ADE_BANNER}
   ADE sign-in codes
@@ -5588,7 +5599,7 @@ function parseScheduledWorkDelaySeconds(value: string): number {
  * live in `sessionSnoozeDuration.ts`; this wrapper only turns its result union
  * into the `CliUsageError` the argv layer already knows how to report.
  */
-function parseSnoozeDurationMs(value: string): number {
+export function parseSnoozeDurationMs(value: string): number {
   const parsed = parseSnoozeDuration(value);
   if (!parsed.ok) throw new CliUsageError(parsed.message);
   return parsed.ms;
@@ -18587,6 +18598,7 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   type: ["type", "type-text"],
   fill: ["fill"],
   signin: ["signin"],
+  signup: ["signup"],
   // `clear` is deliberately ambiguous at the CLI: with an element target it
   // clears a field, without one it clears the selection. `buildBrowserPlan`
   // keeps that branch written out because the disambiguation is a flag test,
@@ -19452,107 +19464,29 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       ],
     };
   }
-  if (sub === "signin") {
+  if (sub === "signin" || sub === "signup") {
     // The site is always the tab's own top-frame page. `--site` only checks
-    // that the tab is where the caller thinks it is, before any login is typed.
+    // that the tab is where the caller thinks it is; the browser checks it on
+    // the exact tab it fills, before any login is typed. `signup` makes a new
+    // password, saves the login, and types it into the sign-up form.
     const site = readValue(args, ["--site"])?.trim() || null;
-    const account = readValue(args, ["--account"])?.trim() || null;
+    const account = readValue(args, ["--account", "--username", "--email"])?.trim() || null;
+    const expectedSite = site ? browserSiteHost(site) : null;
+    if (site && !expectedSite) {
+      throw new CliUsageError(`browser ${sub} --site must be a host name like example.com, not "${site}".`);
+    }
     const actionArgs = readBrowserAgentActionArgs(args);
     const signinArgs: JsonObject = {
       ...actionArgs,
       ...(account ? { username: account } : {}),
+      ...(expectedSite ? { expectedSite } : {}),
     };
-    const collectedSigninArgs = collectGenericObjectArgs(args, signinArgs);
-    const explicitTabId = typeof collectedSigninArgs.tabId === "string" ? collectedSigninArgs.tabId : null;
-    if (!site) {
-      return {
-        kind: "execute",
-        label: "browser signin",
-        // With no saved login, the person is asked in the chat; wait for them.
-        minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000,
-        steps: [
-          actionStep(
-            "result",
-            "passwords",
-            "signin",
-            collectedSigninArgs,
-          ),
-        ],
-      };
-    }
-    const wantedHost = browserSiteHost(site);
-    if (!wantedHost) {
-      throw new CliUsageError(
-        `browser signin --site must be a host name like example.com, not "${site}".`,
-      );
-    }
     return {
       kind: "execute",
-      label: "browser signin",
-      minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000,
-      steps: [
-        actionStep(
-          "status",
-          "built_in_browser",
-          "getStatus",
-          collectGenericObjectArgs(args, actionArgs),
-        ),
-        {
-          key: "result",
-          method: "ade/actions/call",
-          unwrapToolResult: true,
-          params: (values) => {
-            const rawStatus = unwrapActionEnvelope(values.status);
-            const status = isRecord(rawStatus) ? rawStatus : {};
-            const tabs = firstArray(status, ["tabs"]);
-            const activeTabId = asString(status.activeTabId);
-            // The tab signin itself targets: the one named, else the chat's
-            // active tab, else the only tab it can see. Multiple candidate tabs
-            // are accepted only when they all agree on the host, because a
-            // guess could approve a fill into the wrong site.
-            const scopedTabs = tabs.filter((entry) => entry.heldByOtherChat !== true);
-            const namedTab = explicitTabId
-              ? tabs.find((entry) => asString(entry.id) === explicitTabId) ?? null
-              : activeTabId
-                ? scopedTabs.find((entry) => asString(entry.id) === activeTabId) ?? null
-                : scopedTabs.length === 1
-                  ? scopedTabs[0]!
-                  : null;
-            const candidateUrls = namedTab
-              ? [asString(namedTab.url)]
-              : scopedTabs.map((entry) => asString(entry.url));
-            const hosts = [...new Set(
-              candidateUrls
-                .filter((url): url is string => Boolean(url))
-                .map(browserSiteHost)
-                .filter((host): host is string => Boolean(host)),
-            )];
-            if (hosts.length === 0) {
-              throw new CliUsageError(
-                `browser signin could not read the open tab's address to check --site ${site}. Open the sign-in page in this chat's tab, or drop --site: the site is always the tab's own page.`,
-              );
-            }
-            if (hosts.length > 1) {
-              throw new CliUsageError(
-                `browser signin cannot tell which tab this chat will use to check --site ${site}. Pass --tab <id> naming the sign-in page, or drop --site: the site is always the tab's own page.`,
-              );
-            }
-            if (hosts[0] !== wantedHost) {
-              throw new CliUsageError(
-                `browser signin --site ${site} does not match the tab's page (${hosts[0]}). The site is always the tab's own page; drop --site or open ${site} in the tab.`,
-              );
-            }
-            return {
-              name: "run_ade_action",
-              arguments: {
-                domain: "passwords",
-                action: "signin",
-                args: collectedSigninArgs,
-              },
-            };
-          },
-        },
-      ],
+      label: `browser ${sub}`,
+      // With no saved login, signin asks the person in the chat; wait for them.
+      ...(sub === "signin" ? { minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000 } : {}),
+      steps: [actionStep("result", "passwords", sub, collectGenericObjectArgs(args, signinArgs))],
     };
   }
   if (
@@ -21680,150 +21614,6 @@ function buildMcpServersPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
-}
-
-/**
- * `ade code [wait] --site <host>`: a sign-in code for a site. Today's source is
- * the saved login's authenticator (immediate); Messages joins when it is on.
- */
-function buildCodePlan(args: string[]): CliPlan {
-  if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.code ?? topLevelHelpText() };
-  const site = readValue(args, ["--site"])?.trim() || null;
-  const account = readValue(args, ["--account"])?.trim() || null;
-  if (firstPositional(args) === "wait") {
-    const fromValue = readValue(args, ["--from"])?.trim() || "any";
-    if (!["any", "messages", "authenticator"].includes(fromValue)) {
-      throw new CliUsageError("--from is messages, authenticator or any.");
-    }
-    const timeoutValue = readValue(args, ["--timeout"]);
-    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 2 * 60_000;
-    return {
-      kind: "execute",
-      label: "code wait",
-      formatter: "passwords-code",
-      steps: [actionStep("result", "messages", "codeWait", {
-        ...(site ? { site } : {}),
-        from: fromValue,
-        timeoutMs,
-        sinceMs: Date.now(),
-      })],
-      minTimeoutMs: timeoutMs + 30_000,
-      progressNotice: `Waiting for a sign-in code${site ? ` for ${site}` : ""}…`,
-    };
-  }
-  if (!site) throw new CliUsageError("ade code needs --site <host>, e.g. ade code --site github.com");
-  return {
-    kind: "execute",
-    label: "code",
-    formatter: "passwords-code",
-    steps: [actionStep("result", "passwords", "code", { site, ...(account ? { username: account } : {}) })],
-  };
-}
-
-/** `ade messages …`: the person's texts on their Mac (Settings › Integrations › Messages). */
-function buildMessagesPlan(args: string[]): CliPlan {
-  if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.messages ?? topLevelHelpText() };
-  const sub = firstPositional(args) ?? "recent";
-  if (sub === "status") {
-    return { kind: "execute", label: "messages status", steps: [actionStep("result", "messages", "status", {})] };
-  }
-  if (sub === "chats") {
-    const limit = Number(readValue(args, ["--limit"]) ?? 20);
-    return { kind: "execute", label: "messages chats", steps: [actionStep("result", "messages", "chats", { limit })] };
-  }
-  if (sub === "recent" || sub === "read" || sub === "list") {
-    const from = readValue(args, ["--from"])?.trim() || null;
-    const chat = readValue(args, ["--chat"])?.trim() || null;
-    const sinceValue = readValue(args, ["--since"]);
-    const limit = Number(readValue(args, ["--limit"]) ?? 20);
-    return {
-      kind: "execute",
-      label: "messages recent",
-      steps: [actionStep("result", "messages", "recent", {
-        limit,
-        ...(from ? { handle: from } : {}),
-        ...(chat ? { chatGuid: chat } : {}),
-        ...(sinceValue ? { sinceMs: Date.now() - parseSnoozeDurationMs(sinceValue) } : {}),
-      })],
-    };
-  }
-  if (sub === "send") {
-    const to = readValue(args, ["--to"])?.trim() || null;
-    const text = readValue(args, ["--text", "--message"]);
-    if (!to || !text) throw new CliUsageError("messages send needs --to <phone or email> and --text \"…\".");
-    return {
-      kind: "execute",
-      label: "messages send",
-      steps: [actionStep("result", "messages", "send", { to, text })],
-      minTimeoutMs: 31 * 60_000,
-      progressNotice: `Asked the person to approve a text to ${to}…`,
-    };
-  }
-  throw new CliUsageError(`Unknown messages command "${sub}". Use status, recent, chats or send.`);
-}
-
-function buildPasswordsPlan(args: string[]): CliPlan {
-  if (hasHelpFlag(args)) {
-    return { kind: "help", text: HELP_BY_COMMAND.passwords ?? topLevelHelpText() };
-  }
-  const sub = firstPositional(args) ?? "list";
-  const action = sub === "list" || sub === "ls"
-    ? "list"
-    : sub === "status"
-      ? "status"
-      : sub === "sync" || sub === "pull"
-        ? "sync"
-        : null;
-  if (!action) {
-    throw new CliUsageError(`Unknown passwords command "${sub}". Use list, status or sync; the person adds and changes items in Settings › Passwords.`);
-  }
-  return {
-    kind: "execute",
-    label: `passwords ${action}`,
-    formatter: "passwords",
-    steps: [actionStep("result", "passwords", action, {})],
-  };
-}
-
-/** `ade secrets exec` in text: the command's own output (already masked), then one status line. */
-function formatSecretsExec(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  if (!isRecord(result)) return "";
-  const out = [asString(result.stdout) ?? "", asString(result.stderr) ?? ""].filter(Boolean).join("\n").replace(/\n+$/, "");
-  const injected = Array.isArray(result.injected) ? result.injected.filter((name): name is string => typeof name === "string") : [];
-  const unmasked = Array.isArray(result.unmasked) ? result.unmasked.filter((name): name is string => typeof name === "string") : [];
-  const status = result.timedOut === true ? "timed out" : `exit ${result.exitCode ?? asString(result.signal) ?? "?"}`;
-  const lines = [
-    out,
-    `[ade secrets exec: ${status}; secrets in its environment: ${injected.join(", ") || "none"}${result.truncated === true ? "; output cut at 1 MB" : ""}]`,
-  ];
-  if (unmasked.length) lines.push(`[too short to mask in output: ${unmasked.join(", ")}]`);
-  return lines.filter(Boolean).join("\n");
-}
-
-/** `ade passwords …` in text: summaries or the on/off status, never a value. */
-function formatPasswords(value: unknown): string {
-  const result = unwrapActionEnvelope(value);
-  if (Array.isArray(result)) {
-    if (result.length === 0) return "No saved logins or secrets. The person adds them in Settings › Passwords.";
-    return result.filter(isRecord).map((item) => {
-      if (item.kind === "secret") {
-        return `secret  ${asString(item.title) ?? "?"}${typeof item.projectScope === "string" ? `  (project ${item.projectScope})` : "  (all projects)"}`;
-      }
-      const sites = Array.isArray(item.sites) ? item.sites.filter((site): site is string => typeof site === "string").join(", ") : "";
-      return `login   ${sites || asString(item.title) || "?"}  ${asString(item.username) ?? "(no username)"}${item.hasTotp === true ? "  +code" : ""}`;
-    }).join("\n");
-  }
-  if (isRecord(result) && typeof result.enabled === "boolean") {
-    const here = result.machineKind === "cloud" ? "ADE Cloud computers" : "this computer";
-    const lines = [
-      `Passwords: ${result.signedIn === false ? "signed out" : result.enabled ? "on" : "off"} for ${here}`,
-      `ADE Cloud computers: ${result.cloudEnabled === false ? "off" : result.cloudEnabled === true ? "on" : "not set"}`,
-    ];
-    if (typeof result.itemCount === "number") lines.push(`Saved items: ${result.itemCount}`);
-    return lines.join("\n");
-  }
-  return "Passwords is up to date.";
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
@@ -24151,7 +23941,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
  * terminator, so scanning `browser upload --selector input --upload -- --help`
  * with the global set stopped at the `--` and hid a real `--help`.
  */
-function hasHelpFlag(
+export function hasHelpFlag(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): boolean {
@@ -37854,9 +37644,11 @@ function formatBrowserAction(value: unknown): string {
   const signinSite = asString(signin?.site) ?? "the page";
   const signinLine = !signin
     ? null
-    : signin.signInYourself === true
-      ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
-      : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
+    : signin.created === true
+      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`ade browser signin\` uses it from now on.`
+      : signin.signInYourself === true
+        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+        : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
     ...(signinLine ? [signinLine] : []),
     ...formatActionAnswerLines(result, {
@@ -39486,17 +39278,8 @@ function formatTextOutput(
       return formatPasswords(value);
     case "secrets-exec":
       return formatSecretsExec(value);
-    case "passwords-code": {
-      const result = unwrapActionEnvelope(value);
-      if (isRecord(result) && result.source === "messages") {
-        return `${asString(result.code) ?? ""}  (texted${asString(result.from) ? ` by ${asString(result.from)}` : ""}${asString(result.receivedAt) ? ` at ${asString(result.receivedAt)}` : ""})`;
-      }
-      if (isRecord(result) && result.source === "authenticator") {
-        return `${asString(result.code) ?? ""}  (authenticator; valid ${String(result.secondsLeft ?? "?")} s more)`;
-      }
-      if (!isRecord(result)) return "No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords, or the code comes by text or email (open the mail in the ADE browser).";
-      return `${asString(result.code) ?? ""}  (${asString(result.site) ?? ""}${asString(result.username) ? ` as ${asString(result.username)}` : ""}; valid ${String(result.secondsLeft ?? "?")} s more)`;
-    }
+    case "passwords-code":
+      return formatPasswordsCode(value);
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":
@@ -39761,6 +39544,7 @@ function inferFormatter(
     label === "browser scroll" ||
     label === "browser fill" ||
     label === "browser signin" ||
+    label === "browser signup" ||
     label === "browser clear" ||
     label === "browser wait" ||
     label === "browser hover" ||
@@ -42717,7 +42501,6 @@ export {
   MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
-  parseSnoozeDurationMs,
   resolveSnoozeUntilIso,
   checkLinearReadiness,
   findProjectRoots,

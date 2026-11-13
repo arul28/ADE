@@ -25,16 +25,16 @@ describe("authenticator codes", () => {
     [59, "SHA512", SHA512, "90693936"],
     [20000000000, "SHA512", SHA512, "47863826"],
   ])("matches RFC 6238 at t=%i with %s", (seconds, algorithm, secret, expected) => {
-    const params = parseTotp(`otpauth://totp/x?secret=${secret}&digits=8&algorithm=${algorithm}`);
+    const params = parseTotp(`otpauth://totp/x?secret=${secret}&digits=8&algorithm=${algorithm}`); // gitleaks:allow (RFC 6238 test key)
     expect(params).not.toBeNull();
     expect(totpCode(params!, seconds * 1000).code).toBe(expected);
   });
 
   it.each([
     ["not a key", null],
-    ["otpauth://hotp/x?secret=GEZDGNBVGY3TQOJQ", null],
-    ["otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=5", null],
-    ["otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&algorithm=MD5", null],
+    ["otpauth://hotp/x?secret=GEZDGNBVGY3TQOJQ", null], // gitleaks:allow (RFC 6238 test key)
+    ["otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=5", null], // gitleaks:allow (RFC 6238 test key)
+    ["otpauth://totp/x?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&algorithm=MD5", null], // gitleaks:allow (RFC 6238 test key)
   ])("refuses %s", (input, expected) => {
     expect(parseTotp(input)).toBe(expected);
   });

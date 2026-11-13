@@ -225,6 +225,17 @@ ade browser signin --tab <tab-id> --text
 ade browser signin --tab <tab-id> --account me@example.com --text
 ```
 
+To create an account, fill the email or username yourself, then run `ade
+browser signup` on the sign-up form. ADE makes a strong password, types it
+into the password and confirm boxes, and saves the login to Passwords once the
+form holds all of it; you never see it. Submit the form yourself. From then on `ade browser signin`
+uses that login.
+
+```bash
+ade browser signup --tab <tab-id> --text
+ade browser signup --tab <tab-id> --account me@example.com --text
+```
+
 Stop when a page needs a CAPTCHA, HTTP/proxy
 authentication, or a client-certificate choice. Hand off the exact tab with an
 actionable `--reason`.

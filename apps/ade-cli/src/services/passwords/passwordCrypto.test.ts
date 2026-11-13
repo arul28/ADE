@@ -1,6 +1,6 @@
+import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  generatePasswordVaultKey,
   generateSitePassword,
   openPasswordItem,
   parsePasswordEnvelope,
@@ -13,7 +13,7 @@ const item = { kind: "login", origins: ["https://example.com"], username: "arul"
 
 describe("password item sealing", () => {
   it("opens what it sealed, and nothing readable is left in the envelope", () => {
-    const key = generatePasswordVaultKey();
+    const key = crypto.randomBytes(32);
     const envelope = sealPasswordItem(key, binding, item);
     expect(openPasswordItem(key, binding, envelope)).toEqual(item);
     const stored = JSON.stringify(envelope);
@@ -28,7 +28,7 @@ describe("password item sealing", () => {
     ["another account", (key, envelope) => [key, { ...binding, accountId: "user_other" }, envelope]],
     ["another item", (key, envelope) => [key, { ...binding, itemId: "item_other" }, envelope]],
     ["an envelope from an older key epoch", (key, envelope) => [key, { ...binding, epoch: 2 }, envelope]],
-    ["a different vault key", (_key, envelope) => [generatePasswordVaultKey(), binding, envelope]],
+    ["a different vault key", (_key, envelope) => [crypto.randomBytes(32), binding, envelope]],
     ["one flipped ciphertext byte", (key, envelope) => {
       const body = Buffer.from(envelope.ct, "base64");
       body[0] = body[0]! ^ 0x01;
@@ -37,7 +37,7 @@ describe("password item sealing", () => {
   ];
 
   it.each(tamperCases)("refuses to open it under %s, without quoting the content", (_label, mutate) => {
-    const key = generatePasswordVaultKey();
+    const key = crypto.randomBytes(32);
     const [useKey, useBinding, useEnvelope] = mutate(key, sealPasswordItem(key, binding, item));
     let message = "";
     try {
