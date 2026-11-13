@@ -99,8 +99,6 @@ export const MARKETING_CTA_POSITIONS = {
   INSTALL_DIALOG: "install_dialog",
   INVITE_PAGE: "invite_page",
   PRICING_PAGE: "pricing_page",
-  /** The ADE Cloud prices teaser on the home page. */
-  HOME_PRICING: "home_pricing",
 } as const;
 
 export type MarketingCtaPosition =

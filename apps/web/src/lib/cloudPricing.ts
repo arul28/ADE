@@ -66,6 +66,9 @@ export const HIGHLIGHTED_PLAN: CloudPlanId = "pro";
 
 export const FREE_PLAN = PRICING_PLANS[0]!;
 
+/** Days an unused computer is kept on every paid plan. */
+export const PAID_IDLE_DAYS = CLOUD_IDLE_CLEANUP_DAYS.paid;
+
 export type PricingSize = {
   id: CloudTierId;
   label: string;
