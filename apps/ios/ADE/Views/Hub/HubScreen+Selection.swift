@@ -241,13 +241,12 @@ extension HubScreen {
         add(removalCopy(hubCardComputer(phoneKey: location.machineKey, project: location.project)))
       }
     }
-    // The folder the card shows, on the computer the phone reaches it on
+    // The folder the card shows, on a computer the phone reaches it on
     // (desktop: the tab's copy). An account-only card shows none.
-    let current: HubRemovalCopy? = {
-      guard accountOnly == nil else { return nil }
-      let computer = cardComputer(cardId)
-      return computer.reachable ? removalCopy(computer) : nil
-    }()
+    // Its owner when reachable, else another reachable computer that holds it.
+    let current: HubRemovalCopy? = accountOnly == nil
+      ? reachableHolders(cardId).first.map(removalCopy)
+      : nil
     if accountOnly == nil { addCard(cardId) }
     if let accountId {
       for duplicate in duplicatePresentations where accountJoin.duplicateCardIds[duplicate.project.id] == accountId {

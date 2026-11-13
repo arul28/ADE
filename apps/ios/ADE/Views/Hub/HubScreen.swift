@@ -852,12 +852,22 @@ struct HubScreen: View {
   private var hubRosterFilterCounts: [HubRosterFilter: Int] {
     Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { filter in
       // The local folders are filtered too, so their chats count.
-      (filter, hubRosterFilterCount(hubProjectPresentations + localSections.flatMap(\.presentations), filter: filter))
+      // A project's second folders are folded into its tile; their chats count.
+      (filter, hubRosterFilterCount(hubProjectPresentations + duplicatePresentations + localSections.flatMap(\.presentations), filter: filter))
     })
   }
 
   var filteredHubProjectPresentations: [HubProjectPresentation] {
-    hubProjectPresentations.compactMap { hubProjectPresentation($0, matching: effectiveRosterFilter) }
+    let filter = effectiveRosterFilter
+    return hubProjectPresentations.compactMap { tile in
+      if let shown = hubProjectPresentation(tile, matching: filter) { return shown }
+      // A second folder of the project, folded into this tile, matches: the
+      // tile stays. Its chats open from the agent page, on their own folder.
+      let folders = accountJoin.accountIdByCardId[tile.project.id].map { accountId in
+        duplicatePresentations.filter { accountJoin.duplicateCardIds[$0.project.id] == accountId }
+      } ?? []
+      return folders.contains { hubProjectPresentation($0, matching: filter) != nil } ? tile : nil
+    }
   }
 
   /// The "Only on" sections under the status filter; a section with no
@@ -1079,8 +1089,9 @@ struct HubScreen: View {
       for presentation in pass.localPresentations {
         let key = folderHideKey(presentation.project.id)
         if hidden.contains(key) {
-          let computer = cardComputer(presentation.project.id, merge: merge)
-          if computer.reachable {
+          // Listed while any computer that holds it is reachable, as the
+          // "Only on" row is.
+          if let computer = reachableHolders(presentation.project.id, merge: merge).first {
             hiddenMatched.append(HubHiddenEntry(key: key, name: "\(presentation.project.displayName) on \(computer.name)", computerKey: computer.key))
           }
         } else {
