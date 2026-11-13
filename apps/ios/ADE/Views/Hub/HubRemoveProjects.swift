@@ -655,11 +655,13 @@ struct HubRemoveProjectsSheet: View {
           if let status = error.status, status >= 500 {
             CrashReporting.capture(error, context: ["area": "hub-remove-account-project"])
           }
+          // Only a read that started after this answer counts; one already
+          // running may predate the removal.
           let store = AccountProjectStore.shared
-          let listedBefore = store.lastSuccessAt
-          await store.refresh()
+          let answeredAt = Date()
+          await store.refresh(startingNow: true)
           let settled = accountUser != nil && store.activeUserId == accountUser
-            && store.lastSuccessAt != nil && store.lastSuccessAt != listedBefore
+            && (store.lastSuccessStartedAt.map { $0 >= answeredAt } ?? false)
           if !settled {
             accountSteps[project.id] = .unknown
             unconfirmed += 1

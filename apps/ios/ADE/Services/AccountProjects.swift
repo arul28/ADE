@@ -401,6 +401,10 @@ final class AccountProjectStore: ObservableObject {
   @Published private(set) var display: [String: AccountProjectDisplay] = [:]
   /// When a read last succeeded (from the cache on launch). Nil = never.
   @Published private(set) var lastSuccessAt: Date?
+  /// When the last successful read of this session started. A caller that
+  /// needs a list newer than some moment compares against this, not
+  /// `lastSuccessAt`: a read that started earlier can end later.
+  private(set) var lastSuccessStartedAt: Date?
   /// Bumps on every change the Hub must rebuild for.
   @Published private(set) var revision = 0
 
@@ -458,6 +462,7 @@ final class AccountProjectStore: ObservableObject {
     awaitingSession = beforeSession
     inFlight?.cancel()
     inFlight = nil
+    lastSuccessStartedAt = nil
     pendingChanges = [:]
     self.userId = userId
     lastAttemptAt = nil
@@ -481,6 +486,7 @@ final class AccountProjectStore: ObservableObject {
     awaitingSession = false
     inFlight?.cancel()
     inFlight = nil
+    lastSuccessStartedAt = nil
     pendingChanges = [:]
     if let ownerId { deleteCache(userId: ownerId) }
     userId = nil
@@ -533,11 +539,13 @@ final class AccountProjectStore: ObservableObject {
   /// Reads the changes since the cursor now. A read already running is
   /// joined rather than doubled. With `changeCursor` (the cursor after a
   /// change this phone made), a joined read that ends before that cursor
-  /// started too early, so one more read follows.
-  func refresh(after changeCursor: Int? = nil) async {
+  /// started too early, so one more read follows. With `startingNow`, a
+  /// read that was already running never counts: one starts after it.
+  func refresh(after changeCursor: Int? = nil, startingNow: Bool = false) async {
     while let running = inFlight {
       await running.value
       if inFlight == running { inFlight = nil }
+      if startingNow { continue }
       guard let changeCursor, (state.cursor ?? Int.min) < changeCursor else { return }
     }
     let task = Task { await self.performRefresh() }
@@ -575,7 +583,8 @@ final class AccountProjectStore: ObservableObject {
       phase = .unconfigured
       return
     }
-    lastAttemptAt = Date()
+    let startedAt = Date()
+    lastAttemptAt = startedAt
     let account = AccountService.shared
     guard let session = await account.pairingSession(),
           session.authorization.ownerId == requestedUserId,
@@ -605,6 +614,7 @@ final class AccountProjectStore: ObservableObject {
         }
       }
       let changed = next != state || phase != .ready
+      lastSuccessStartedAt = startedAt
       publish(state: next, display: display, lastSuccessAt: Date(), phase: .ready)
       // An unchanged list (most foreground reads) writes nothing: the cache
       // only needs a time to say it holds a list.
