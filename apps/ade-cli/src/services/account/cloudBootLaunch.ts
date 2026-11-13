@@ -180,12 +180,17 @@ function stagesOf(snapshot: ChatLaunchSnapshot): CloudLaunchStage[] {
   return snapshot.stages.map((stage) => ({ id: stage.id, status: stage.status, detail: stage.detail, error: stage.error }));
 }
 
-/** The lane recipe: always from the pushed copy of its branch, as every ADE Cloud lane starts. */
+/**
+ * The lane recipe: always from the pushed copy of its branch, as every ADE
+ * Cloud lane starts. A name from the prompt (`autoName`) is renamed with the AI
+ * name, the lane and its branch, as a lane on the person's own computer is.
+ */
 function laneConfigOf(request: CloudServerLaunchRequest): ChatLaunchLaneConfig {
   if (request.lane.existingBranch) return { mode: "existing", branchRef: request.lane.existingBranch };
   return {
     mode: "new",
     start: request.lane.from ? { from: "branch", branch: request.lane.from, on: "remote" } : { from: "default", on: "remote" },
+    ...(request.lane.autoName === true ? { autoName: true } : {}),
   };
 }
 

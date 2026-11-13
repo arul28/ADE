@@ -885,6 +885,9 @@ ADE's server, and the new computer runs its own launch
   create's request id: the same id answers the same launch and never makes a
   second computer. The create is the one create path (`createComputer` in
   `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
+  A caller whose lane name came from the prompt sends `lane.autoName: true`:
+  the computer's brain then names the lane and its branch with the AI name, as
+  a local lane is named.
 - **Join.** The computer's env carries `ADE_LAUNCH_ID` and an
   `ADE_LAUNCH_JOIN` code. The code is an HMAC under the Worker secret
   `CLOUD_LAUNCH_JOIN_KEY` of the launch id and a salt the row keeps from the
