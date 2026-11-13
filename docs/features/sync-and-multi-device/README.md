@@ -3666,6 +3666,32 @@ so this stops the ordinary agent path, not a process that strips its
 environment. The desktop Account page and the web client remove through the
 directory directly, behind their own dialogs.
 
+**Removing a computer from a chat.** A caller that names a chat
+(`ade machines remove <name|key|id>` from an agent's shell) does not get the
+refusal. The brain that holds the chat raises a card in it
+(`apps/ade-cli/src/services/account/machineRemovalRequest.ts`) and the command
+waits for the answer:
+
+- The card shows the computer's name, platform, install, last-seen time and
+  online state, and what removal does. The buttons are Keep and Remove.
+- An online computer, or the computer that runs the chat, needs a second
+  "Remove anyway". Remove without it keeps the card open.
+- The card is user-only (`MACHINE_REMOVAL_REQUEST_METADATA_KEY` in
+  `isUserOnlyConsentCard`): an agent, a peer chat, the CTO tools, a lane-share
+  guest and the subagent relay are refused, and the card takes no typed answer.
+- The removal runs inside the person's accepted answer, on the brain that holds
+  the chat, with the same directory call as the person's own removal. The
+  answer travels to that brain with the chat's pin, so "this computer" on the
+  card means the chat's computer, not the window's.
+- The command exits 0 for `removed`, 2 for `kept` or `timed_out`, and 3 for
+  `pending_approval` (another chat already has a card open for that computer;
+  the same chat asking again joins its card).
+- Stopping the turn, deleting the chat or archiving it closes the card, and the
+  agent gets `kept`. A removal that the person started before the card closed
+  still reports `removed`.
+- A brain that does not hold the chat refuses with a message that sends the
+  person to the Account page.
+
 A refusal must not read like an outage. When the directory reaches a decision it
 answers a `403` with a machine-readable code — `machine_revoked` or
 `pairing_authentication_required` — carried on the publisher health's

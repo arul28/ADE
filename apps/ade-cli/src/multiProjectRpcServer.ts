@@ -115,6 +115,7 @@ import { buildSendNotificationAction } from "../../desktop/src/main/services/ade
 import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { requestMachineRemovalFromUser } from "./services/account/machineRemovalRequest";
+import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
 import {
@@ -1716,7 +1717,11 @@ export function createMultiProjectRpcRequestHandler(
       return createSyncCloudRelayStore({
         filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
       }).getMachineIdentity().machineKey.trim() || null;
-    } catch {
+    } catch (error) {
+      // Without the key a removal card cannot mark this computer, so say why.
+      machineProjectLogger.warn("account.local_machine_key_unreadable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   };
@@ -2887,6 +2892,10 @@ export function createMultiProjectRpcRequestHandler(
         }
         reconcileAccountOwnership(currentAccountOwnerUserId());
         const removalDirectory = accountMachineDirectory();
+        // How the card ended, like the brain's other agent cards. A second chat
+        // that was told another card is open asked nothing, so it is not counted.
+        const captureRemovalCard = (outcome: "completed" | "cancelled" | "failed") =>
+          captureAgentCardAnalytics({ analytics: located?.runtime.productAnalyticsService, surface: "api", card: "machine_removal", outcome });
         try {
           const result = await requestMachineRemovalFromUser({
             requestChatInput: (input) => chatService.requestChatInput(input),
@@ -2898,8 +2907,12 @@ export function createMultiProjectRpcRequestHandler(
             machine: typeof removalArgs.machine === "string" ? removalArgs.machine : "",
             ...(typeof removalArgs.timeoutMs === "number" ? { timeoutMs: removalArgs.timeoutMs } : {}),
           });
+          if (result.status !== "pending_approval") {
+            captureRemovalCard(result.status === "removed" ? "completed" : result.status === "kept" ? "cancelled" : "failed");
+          }
           return { domain: "account", action, result, statusHints: {} };
         } catch (error) {
+          captureRemovalCard("failed");
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
             error instanceof Error ? error.message : String(error),

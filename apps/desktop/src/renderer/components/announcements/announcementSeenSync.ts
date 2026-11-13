@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   ANNOUNCEMENTS_SEEN_SETTING_KEY,
   normalizeSeenAnnouncements,
@@ -41,6 +42,7 @@ const PASS_TIMEOUT_MS = 8_000;
 
 let running: Promise<void> | null = null;
 let rerun = false;
+let reportedFailure = false;
 /** The account whose settings the desktop brain pulled fresh this session. */
 let brainSyncedFor: string | null = null;
 
@@ -114,8 +116,13 @@ export function reconcileSeenAnnouncements(): Promise<void> {
       rerun = false;
       try {
         await onePass();
-      } catch {
-        // The local copy stands; the next trigger tries again.
+      } catch (error) {
+        // The local copy stands; the next trigger tries again. Report the
+        // first failure only: the triggers repeat.
+        if (!reportedFailure) {
+          reportedFailure = true;
+          captureError(error, { fingerprint: ["announcements", "seen-sync"], level: "warning", handled: true });
+        }
       }
     } while (rerun);
   })();
