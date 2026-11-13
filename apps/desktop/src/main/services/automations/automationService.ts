@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { createHash, randomUUID } from "node:crypto";
 import { automationCloudHomeProblem, automationCloudProblem, automationCloudTarget, localTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import { AUTOMATION_WEBHOOK_UNTRUSTED_NOTICE, type CloudAutomationSpec, type CloudAutomationTrigger } from "../../../../../account-directory/src/cloud/contract";
@@ -4194,7 +4195,8 @@ export function createAutomationService({
     const target = automationCloudTarget(execution);
     if (!execution || !target) throw new Error("This rule doesn't run on ADE Cloud.");
     const problem = automationCloudProblem(execution);
-    if (problem) throw new Error(problem);
+    // The rule's own settings, with the sentence that fixes them.
+    if (problem) throw new AdeExpectedError(problem, "user");
     const setupActionId = insertAction(args.runId, -1, "lane-setup");
     const fail = (message: string): never => {
       finishAction({ id: setupActionId, status: "failed", errorMessage: message });

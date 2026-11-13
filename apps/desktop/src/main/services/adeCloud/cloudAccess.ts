@@ -13,6 +13,7 @@ import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/
 import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/account/hardwareAnchor";
 import { isAdeCloudComputer } from "./cloudComputerRules";
 import { getErrorMessage } from "../shared/utils";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider, type CloudComputerSignal } from "./cloudServerProvider";
 import { CLOUD_COMPUTER_UNREADABLE } from "../../../../../account-directory/src/cloud/contract";
@@ -315,7 +316,11 @@ export async function cloudNoProviderSentence(deps: CloudAccessDeps): Promise<st
 /** ADE Cloud for this account; throws a plain sentence when there is none. */
 export async function requireCloudProvider(deps: CloudAccessDeps): Promise<CloudProvider> {
   const access = await readCloudAccess(deps);
-  if (access.state !== "ready") throw new Error(NO_PROVIDER_SENTENCE[access.state]);
+  // The account's state (no ADE Cloud yet, signed out) or a check that could
+  // not reach the account service: an answer the sentence explains.
+  if (access.state !== "ready") {
+    throw new AdeExpectedError(NO_PROVIDER_SENTENCE[access.state], access.state === "unreadable" ? "network" : "user");
+  }
   return access.provider;
 }
 

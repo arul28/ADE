@@ -14,6 +14,7 @@ import {
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { coerceSavedWindowRepositoryTabs, type SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import { flushSentry } from "../shared/sentry/capture";
+import { scrubFreeTextThenCut } from "../shared/sentry/scrub";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
 import { loadMachineTelemetryId, machineTelemetryIdReader, peekMachineTelemetryId } from "./services/analytics/machineTelemetryId";
@@ -4126,11 +4127,16 @@ app.whenReady().then(async () => {
           });
           return;
         }
-        const failedStep = result.steps.find((step) => step.status === "failed")?.id ?? null;
+        const failed = result.steps.find((step) => step.status === "failed") ?? null;
+        const failedStep = failed?.id ?? null;
         updateLogger.error("autoUpdate.transaction_failed", {
           version: result.version,
           failedStep,
           failureMessage: result.failureMessage,
+          // The failed step's own reason at the top level: Sentry keeps three
+          // levels of `extra`, so inside `steps` it arrived as "[Object]".
+          // Scrubbed of paths, emails and secrets, and cut short.
+          failedReason: failed?.detail ? scrubFreeTextThenCut(failed.detail, 300) : null,
           steps: result.steps,
         });
         // The new brain did not come up: when it also recorded a crash during
@@ -9073,10 +9079,26 @@ app.whenReady().then(async () => {
     }
 
     const forceAfterMs = args.forceAfterMs ?? 8_000;
+    // The shutdown step that is running, so a force exit names what held quit
+    // (ADE-DESKTOP-B3 said only that the timer fired). Fixed step names only.
+    const shutdownStartedAt = Date.now();
+    let shutdownStep = "start";
+    let shutdownStepStartedAt = shutdownStartedAt;
+    const enterShutdownStep = (step: string): void => {
+      shutdownStep = step;
+      shutdownStepStartedAt = Date.now();
+    };
+    // The parts of the last flush that have not answered yet.
+    const pendingFinalParts = new Set<string>();
     shutdownForceTimer = setTimeout(() => {
+      const now = Date.now();
       shutdownLogger.error("app.shutdown_force_exit", {
         reason: args.reason,
         forceAfterMs,
+        step: shutdownStep,
+        stepElapsedMs: now - shutdownStepStartedAt,
+        elapsedMs: now - shutdownStartedAt,
+        ...(pendingFinalParts.size > 0 ? { pendingParts: [...pendingFinalParts].join(",") } : {}),
       });
       localRuntimePool.killOwnedRuntimeNow();
       runImmediateProcessCleanup(`forced:${args.reason}`);
@@ -9098,6 +9120,7 @@ app.whenReady().then(async () => {
       // sits first so a slow browser-storage flush cannot eat its budget; the
       // force timer still bounds the whole sequence.
       try {
+        enterShutdownStep("staged_board_moves");
         await flushStagedBoardMoves();
       } catch (error) {
         shutdownLogger.error("app.staged_board_move_flush_failed", {
@@ -9121,6 +9144,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       try {
+        enterShutdownStep("browser_storage_flush");
         await builtInBrowserService.flushStorage();
       } catch (error) {
         shutdownLogger.error("app.browser_storage_flush_failed", {
@@ -9153,6 +9177,7 @@ app.whenReady().then(async () => {
       replaceDormantContext(previousRoot);
 
       try {
+        enterShutdownStep("close_project_contexts");
         await closeAllProjectContexts();
       } catch (error) {
         shutdownLogger.error("app.shutdown_cleanup_failed", {
@@ -9173,17 +9198,25 @@ app.whenReady().then(async () => {
         // with "the pool is disposed", an internal invariant reported to Sentry
         // as a defect. Bounded, so a brain that never answers still cannot hold
         // quit past the force timer.
+        enterShutdownStep("destroy_windows");
         destroyWindowsForExit();
+        enterShutdownStep("runtime_drain");
         await localRuntimePool.drain({ timeoutMs: 2_000 });
         // Sentry flushes alongside analytics: a crash that triggered this
         // shutdown is the report that must not be lost to the exit. On Windows the
         // brain this desktop spawned is asked to shut down in the same window, and
         // force-killed if it is still up after 3 s.
+        enterShutdownStep("final_flush");
+        const finalPart = <T,>(name: string, run: () => Promise<T>): Promise<T> => {
+          pendingFinalParts.add(name);
+          return run().finally(() => pendingFinalParts.delete(name));
+        };
         await Promise.all([
-          productAnalyticsService.shutdown(),
-          flushSentry(2_000),
-          localRuntimePool.stopOwnedRuntimeCooperatively(),
+          finalPart("analytics", () => productAnalyticsService.shutdown()),
+          finalPart("sentry", () => flushSentry(2_000)),
+          finalPart("owned_runtime_stop", () => localRuntimePool.stopOwnedRuntimeCooperatively()),
         ]);
+        enterShutdownStep("process_cleanup");
         runImmediateProcessCleanup(`complete:${args.reason}`);
       }
     })().finally(() => {

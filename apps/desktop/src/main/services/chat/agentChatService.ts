@@ -1756,6 +1756,7 @@ import {
   sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
+import { classifyProviderAccountRefusal, presentProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
@@ -23736,7 +23737,10 @@ export function createAgentChatService(args: {
     if (isAgentBinaryMissingError(text, provider) || isPinnedToolNotReadyMessage(text)) {
       return { ...base, category: "missing" as const };
     }
-    if (isAcpAuthError(text)) return { ...base, category: "unauthenticated" as const };
+    // A plan refusal says "authentication required" too; it gets the plan card.
+    if (isAcpAuthError(text) && classifyProviderAccountRefusal(text) !== "plan") {
+      return { ...base, category: "unauthenticated" as const };
+    }
     return null;
   };
 
@@ -23748,6 +23752,31 @@ export function createAgentChatService(args: {
     if (existingInfo?.agentCli) return event;
 
     const text = `${event.message}\n${event.detail ?? ""}`;
+    // Signed in, but the plan or the model is the refusal: no button fixes
+    // it, so the card says so in plain words instead of a crash frame. A card
+    // the runtime already built keeps its own words.
+    const refusal = existingInfo?.presentation ? null : classifyProviderAccountRefusal(text);
+    if (refusal === "plan" || refusal === "model") {
+      const providerLabel = existingInfo?.provider
+        ?? providerDisplayLabel(managed.session.provider, String(managed.session.provider));
+      const presentation = presentProviderAccountRefusal({
+        refusal,
+        provider: providerLabel,
+        message: event.message,
+        detail: event.detail ?? null,
+      });
+      return {
+        ...event,
+        message: presentation.body,
+        ...(presentation.technicalDetail ? { detail: presentation.technicalDetail } : {}),
+        errorInfo: {
+          category: existingInfo?.category ?? "unknown",
+          provider: providerLabel,
+          ...(existingInfo?.model ? { model: existingInfo.model } : {}),
+          presentation,
+        },
+      };
+    }
     const match = classifyAgentCliError(text, managed.session.provider)
       // The agent-CLI registry that classifier reads is the TUI's, and it has
       // no entries for the ACP providers. Without this the calm "sign in and
@@ -47153,6 +47182,24 @@ export function createAgentChatService(args: {
       settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
     };
 
+    // A quiet exit (a clean stop, a closed chat, a shared process another chat
+    // stopped) reports nothing, but the chat must still forget the dead
+    // process: a kept runtime is handed back by ensureCodexSessionRuntime and
+    // every later request fails with "stdin is not writable". The idle-style
+    // teardown keeps the thread id, so the next send resumes the same thread.
+    const forgetThisRuntimeIfStillCurrent = (reason: "exited" | "process_error"): void => {
+      if (managed.runtime !== runtime) return;
+      logger.info("agent_chat.codex_dead_runtime_dropped", {
+        sessionId: managed.session.id,
+        reason,
+        closed: managed.closed,
+      });
+      teardownRuntime(
+        managed,
+        managed.session.status === "ended" ? "ended_session" : managed.closed ? "handle_close" : "idle_ttl",
+      );
+    };
+
     const onProcessError = (error: Error) => {
       const redactedError = redactCallerMcpText(
         error instanceof Error ? error.message : String(error),
@@ -47171,7 +47218,10 @@ export function createAgentChatService(args: {
       settleThisRuntimesCardsIfStillCurrent();
       runtime.suppressExitError = true;
 
-      if (managed.closed || managed.session.status === "ended") return;
+      if (managed.closed || managed.session.status === "ended") {
+        forgetThisRuntimeIfStillCurrent("process_error");
+        return;
+      }
       keepChatSessionOpen(managed, {
         message,
         turnId: runtime.activeTurnId,
@@ -47183,7 +47233,10 @@ export function createAgentChatService(args: {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
       codexVoice.onRuntimeExit(managed, runtime);
       const hadPendingRequests = pending.size > 0;
-      const cleanExit = code === 0 && signal == null && !hadPendingRequests;
+      // A turn still running when the process ends is never clean: nothing
+      // else would end it, and the user must see why it stopped.
+      const cleanExit = code === 0 && signal == null && !hadPendingRequests
+        && !runtime.activeTurnId && managed.session.status !== "active";
       if (runtime.killTimer) {
         clearTimeout(runtime.killTimer);
         runtime.killTimer = null;
@@ -47193,9 +47246,10 @@ export function createAgentChatService(args: {
 
       settleThisRuntimesCardsIfStillCurrent();
 
-      if (runtime.suppressExitError) return;
-      if (cleanExit) return;
-      if (managed.closed || managed.session.status === "ended") return;
+      if (runtime.suppressExitError || cleanExit || managed.closed || managed.session.status === "ended") {
+        forgetThisRuntimeIfStillCurrent("exited");
+        return;
+      }
       keepChatSessionOpen(managed, {
         message,
         turnId: runtime.activeTurnId,
@@ -47323,10 +47377,27 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  /** False once the app-server behind this runtime has exited or closed its input. */
+  const isCodexRuntimeProcessAlive = (runtime: CodexRuntime): boolean => {
+    if (codexHostByRuntime.get(runtime)?.host.isGone()) return false;
+    const proc = runtime.process;
+    return proc.exitCode == null && proc.signalCode == null && proc.stdin.writable;
+  };
+
   const codexRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CodexRuntime> }>();
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     refreshRuntimeCompactionSettings(managed);
-    if (managed.runtime?.kind === "codex") return managed.runtime;
+    if (managed.runtime?.kind === "codex") {
+      if (isCodexRuntimeProcessAlive(managed.runtime)) return managed.runtime;
+      // The exit handler normally drops a dead runtime first; this covers the
+      // gap between stdin closing and the exit event.
+      logger.info("agent_chat.codex_dead_runtime_dropped", {
+        sessionId: managed.session.id,
+        reason: "not_alive_on_reuse",
+        closed: managed.closed,
+      });
+      teardownRuntime(managed, "idle_ttl");
+    }
     return joinRuntimeStart(codexRuntimeStarts, managed, () => attachNewCodexRuntime(managed));
   };
 
@@ -53130,7 +53201,11 @@ export function createAgentChatService(args: {
     droid: { ensureRuntime: (managed) => ensureDroidRuntime(managed) },
     copilot: { ensureRuntime: (managed) => ensureCopilotRuntime(managed) },
     muse: { ensureRuntime: (managed) => ensureMuseRuntime(managed) },
-    pi: { runtimeOf: async (managed) => (managed.runtime?.kind === "pi" ? managed.runtime : await startPiRuntime(managed)) },
+    pi: {
+      runtimeOf: async (managed) => (managed.runtime?.kind === "pi" && isPiSdkPooledAlive(managed.runtime.sdk)
+        ? managed.runtime
+        : await startPiRuntime(managed)),
+    },
     kimi: { ensureRuntime: (managed) => ensureAcpSessionRuntime(managed) },
   });
 
@@ -64380,7 +64455,19 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "droid") {
       const existing = managed.runtime;
-      if (existing.poolKey !== poolKey) {
+      const workerAlive = existing.sdk.process.exitCode == null
+        && !existing.sdk.process.killed
+        && existing.sdk.process.connected !== false;
+      if (existing.poolKey === poolKey && !workerAlive) {
+        // The worker died between turns. Reusing the runtime would send the
+        // next turn to a dead process; the pool starts a fresh worker.
+        logger.warn("agent_chat.droid_sdk_dead_runtime_reacquire", {
+          sessionId: managed.session.id,
+          exitCode: existing.sdk.process.exitCode,
+          killed: existing.sdk.process.killed,
+        });
+      }
+      if (existing.poolKey !== poolKey || !workerAlive) {
         settleDroidPermissionWaiters(
           managed,
           existing,
@@ -75766,8 +75853,18 @@ export function createAgentChatService(args: {
       const exemptionStale = claimsWorkload
         && isRuntimeWorkloadExemptionStale(managed.runtime, silentForMs);
       if (claimsWorkload && !exemptionStale) continue;
-      if (exemptionStale) announceExpiredWorkloadExemption(managed, silentForMs);
-      teardownRuntime(managed, "idle_ttl");
+      try {
+        if (exemptionStale) announceExpiredWorkloadExemption(managed, silentForMs);
+        teardownRuntime(managed, "idle_ttl");
+      } catch (error) {
+        // The teardown saves the chat; a project folder that stops answering
+        // throws there. A throw from this timer is uncaught and would skip
+        // every later chat, so log it and let the next tick try again.
+        logger.warn("agent_chat.idle_teardown_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }, SESSION_CLEANUP_INTERVAL_MS);
   // Allow the process to exit even if the timer is still scheduled
@@ -78996,13 +79093,16 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatCodexPlugin[]> => {
     const sessionId = args.sessionId?.trim() ?? "";
     const laneId = args.laneId?.trim() ?? "";
-    const liveCodex = [...managedSessions.values()].filter((session) => session.runtime?.kind === "codex");
+    // Only a runtime whose app-server still runs can answer; a dead one is
+    // dropped by its exit handler and is never a reason to fail this list.
+    const liveCodex = [...managedSessions.values()].filter((session) =>
+      session.runtime?.kind === "codex" && isCodexRuntimeProcessAlive(session.runtime));
     const managed = sessionId
       ? managedSessions.get(sessionId) ?? null
       : laneId
         ? liveCodex.find((session) => session.session.laneId === laneId) ?? null
         : liveCodex[0] ?? null;
-    const runtime = managed?.runtime?.kind === "codex" ? managed.runtime : null;
+    const runtime = managed?.runtime?.kind === "codex" && isCodexRuntimeProcessAlive(managed.runtime) ? managed.runtime : null;
     if (!runtime) return [];
     try {
       await runtime.request("plugin/reconcile", {});
@@ -79013,6 +79113,8 @@ export function createAgentChatService(args: {
       return parseCodexPluginList(await runtime.request("plugin/list", {}));
     } catch (error) {
       if (isCodexRpcMethodNotFound(error)) return [];
+      // The app-server exited mid-request: no plugins to list from it.
+      if (!isCodexRuntimeProcessAlive(runtime)) return [];
       throw error;
     }
   };

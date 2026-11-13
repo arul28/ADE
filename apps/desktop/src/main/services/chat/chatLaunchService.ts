@@ -199,6 +199,21 @@ class LaunchCancelledError extends Error {
 
 const MAX_QUEUED_MESSAGES = 10;
 const CANCEL_PIPELINE_WAIT_MS = 15_000;
+
+/** A closed name for why a cancelled launch's cleanup step failed. Never the text, which holds paths. */
+function cancelCleanupFailureKind(error: unknown): string {
+  const text = getErrorMessage(error);
+  if (/not found/i.test(text)) return "not_found";
+  if (/already running|already in progress/i.test(text)) return "already_running";
+  if (/index\.lock|another git process/i.test(text)) return "git_lock";
+  if (/not answering/i.test(text)) return "storage_wait";
+  if (/\b(?:EBUSY|EPERM|EACCES)\b|resource busy|permission denied|access is denied/i.test(text)) return "file_in_use";
+  if (/timed out|timeout|made no progress/i.test(text)) return "timeout";
+  if (/primary lane/i.test(text)) return "primary_lane";
+  if (/worktree/i.test(text)) return "worktree";
+  if (/branch/i.test(text)) return "branch";
+  return "other";
+}
 const PROGRESS_EMIT_INTERVAL_MS = 120;
 const DEFAULT_FINISHED_RETENTION_MS = 10 * 60_000;
 
@@ -1051,9 +1066,17 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       .map((record) => cloneSnapshot(record.snapshot))
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 
-  /** Delete whatever a cancelled launch created. Flags flip only once their deletion succeeded. */
-  const cleanupCancelled = async (record: LaunchRecord): Promise<string[]> => {
+  /**
+   * Delete whatever a cancelled launch created. Flags flip only once their
+   * deletion succeeded. `final` is false for the pass that runs while the
+   * launch's own checkout may still be writing the lane: a failure there is
+   * expected (the lane is still being made) and the pass after the pipeline
+   * settles tries again, so only a final failure is an error.
+   */
+  const cleanupCancelled = async (record: LaunchRecord, opts: { final: boolean }): Promise<string[]> => {
     const failures: string[] = [];
+    // Closed kinds for the log: the failure text holds paths and branch names.
+    const failureKinds: string[] = [];
     const sessionId = record.snapshot.sessionId;
     if (record.snapshot.sessionCreated && sessionId) {
       try {
@@ -1061,6 +1084,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         record.snapshot.sessionCreated = false;
       } catch (error) {
         failures.push(`chat: ${getErrorMessage(error)}`);
+        failureKinds.push(`chat:${cancelCleanupFailureKind(error)}`);
       }
     }
     // A lane whose create inserted its row but never returned (restart
@@ -1081,10 +1105,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         record.snapshot.laneCreated = false;
       } catch (error) {
         failures.push(`lane: ${getErrorMessage(error)}`);
+        failureKinds.push(`lane:${cancelCleanupFailureKind(error)}`);
       }
     }
     if (failures.length) {
-      logger.error("chat_launch.cancel_cleanup_incomplete", { launchId: record.snapshot.launchId, failures });
+      const detail = { launchId: record.snapshot.launchId, failureKinds, final: opts.final };
+      if (opts.final) logger.error("chat_launch.cancel_cleanup_incomplete", detail);
+      else logger.warn("chat_launch.cancel_cleanup_deferred", detail);
     }
     return failures;
   };
@@ -1128,16 +1155,24 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (pipeline) {
       await Promise.race([pipeline.then(() => { pipelineSettled = true; }), delay(CANCEL_PIPELINE_WAIT_MS)]);
     }
-    const failures = await cleanupCancelled(record);
+    const failures = await cleanupCancelled(record, { final: pipelineSettled });
     record.snapshot.error = failures.length ? `Cleanup incomplete — ${failures.join("; ")}` : null;
     record.snapshot.endedAt = nowIso();
     publish(record);
     if (!pipelineSettled && pipeline) {
       // The pipeline outlived the wait; whatever it creates from here on (a
       // lane whose checkout finished, a chat) is still this cancel's to delete.
+      // That includes a lane whose create inserted its row and then threw on
+      // the abort, which leaves laneCreated false.
       void pipeline.then(async () => {
-        if (!record.snapshot.laneCreated && !record.snapshot.sessionCreated) return;
-        const late = await cleanupCancelled(record);
+        if (!record.snapshot.laneCreated && !record.snapshot.sessionCreated && !findInterruptedLane(record)) {
+          if (failures.length) {
+            record.snapshot.error = null;
+            publish(record);
+          }
+          return;
+        }
+        const late = await cleanupCancelled(record, { final: true });
         record.snapshot.error = late.length ? `Cleanup incomplete — ${late.join("; ")}` : null;
         publish(record);
       });

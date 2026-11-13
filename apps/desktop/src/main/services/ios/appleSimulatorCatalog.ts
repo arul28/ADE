@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -249,7 +250,7 @@ export function pickAppleDeviceSpec(input: {
     const source = installed.find((device) => device.udid === from)
       ?? installed.find((device) => matchesSimulatorName(device, from));
     if (!source) {
-      throw new Error(`No installed simulator matches ${from}. Run device-list --installed to see what this Mac has.`);
+      throw new AdeExpectedError(`No installed simulator matches ${from}. Run device-list --installed to see what this Mac has.`, "user");
     }
     wantedRuntime ??= source.runtime;
     wantedType ??= source.deviceTypeIdentifier;

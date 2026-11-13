@@ -77,6 +77,14 @@ export type PendingInstallUpdate = {
    * onto a later, unrelated update.
    */
   resumedChats?: UpdateInterruptedChat[];
+  /**
+   * How far the quit that installs got, so a launch that finds the install did
+   * not land can say where it stopped: `quit_started` (the updater was asked to
+   * quit), `native_staged` (macOS Squirrel staged the new bundle), or
+   * `quit_escalated_<reason>` (ADE force-quit a quit that would not finish).
+   * Fixed values only, never a path.
+   */
+  handoffStep?: string;
 };
 
 // Consecutive installs of the same version that quit without landing. The

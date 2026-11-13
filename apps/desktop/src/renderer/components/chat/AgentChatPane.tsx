@@ -10373,7 +10373,7 @@ export function AgentChatPane({
     const retainedBinding = chatRuntimePin;
     return () => {
       retainChatSession(selectedSessionId, {
-        subscribe: (listener) => (retainedBinding
+        subscribe: (listener) => (retainedBinding && typeof agentChatApiRef.current?.onEvent === "function"
           ? agentChatApiRef.current.onEvent(listener, retainedBinding, { forcePinned: true })
           : () => undefined),
       });
@@ -10864,7 +10864,10 @@ export function AgentChatPane({
     type ChatEventListener = Parameters<typeof agentChatApiRef.current.onEvent>[0];
     const subscribe: ((listener: ChatEventListener) => () => void) | null = personalScope
       ? (listener) => personalScope.agentChat.onEvent(listener)
-      : chatRuntimePin
+      // ADE Web can render the pane before its bridge has the chat API
+      // (ADE-WEB-7): no feed yet, rather than a TypeError that takes the pane
+      // down. The effect runs again when the pin or visibility changes.
+      : chatRuntimePin && typeof agentChatApiRef.current?.onEvent === "function"
         ? (listener) => agentChatApiRef.current.onEvent(listener, chatRuntimePin)
         : null;
     if (!subscribe) return undefined;

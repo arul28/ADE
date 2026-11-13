@@ -47,7 +47,8 @@ export function logActivityRelayFailure(args: {
  * carries a full key, a token, or a grant in any form.
  *
  * Workers observability keeps only a sample of requests, so the line alone
- * can be gone. Each refusal is also a Sentry warning, one issue per event and
+ * can be gone. Each refused register or remove is also a Sentry warning (a
+ * kept duplicate is only the line, see below), one issue per event and
  * code, with the correlation id and the prefixes but no account id (the
  * client's own log holds the same correlation id). The Worker's Sentry budget
  * (`admitEvent`) bounds a burst.
@@ -73,6 +74,12 @@ export function logDirectoryRefusal(args: {
     correlationId: args.correlationId,
     ...(args.reason ? { reason: args.reason.slice(0, 300) } : {}),
   }));
+  // A kept duplicate is not a refusal: the machine registered, and the line
+  // above answers "why is my Mac listed twice". Registration rides the
+  // heartbeat, so a warning per call made one issue per minute per machine
+  // (ADE-WORKERS-17, 700 events in two days). The line stays; Sentry gets
+  // only the refusals a user is actually stuck behind.
+  if (args.event === "directory.supersede_refused") return;
   Sentry.captureMessage(`${args.event}: ${args.code}`, {
     level: "warning",
     fingerprint: [args.event, args.code],

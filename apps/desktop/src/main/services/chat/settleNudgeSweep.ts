@@ -258,7 +258,15 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
       }, SETTLE_NUDGE_START_DELAY_MS);
       interval = setInterval(() => void sweep(), SETTLE_NUDGE_SWEEP_INTERVAL_MS);
       settingWatch = setInterval(() => {
-        const enabled = deps.isEnabled();
+        let enabled: boolean;
+        try {
+          // A synchronous config read: a project folder that stops answering
+          // throws a storage wait here, and a throw from a timer is uncaught.
+          enabled = deps.isEnabled();
+        } catch {
+          // Skip this check; the next minute reads the setting again.
+          return;
+        }
         if (lastEnabled != null && enabled !== lastEnabled) {
           // A sweep already running would skip this one: try again next minute.
           if (running) return;

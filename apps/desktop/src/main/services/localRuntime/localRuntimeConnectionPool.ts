@@ -3758,8 +3758,15 @@ export class LocalRuntimeConnectionPool {
         // sends the person to a Repair that cannot change the answer.
         recoveryCode = "background_item_blocked";
       } else if (
-        this.serviceInstallStatus.state === "failed"
-        || this.serviceHealthStatus.state === "not_installed"
+        // A service its manager reports as running is installed, even when
+        // the last install attempt failed: the endpoint check below says
+        // whether it answers. "Not installed" there sent the person to a
+        // Repair that had just failed (ADE-DESKTOP-61, Windows).
+        this.serviceHealthStatus.running !== true
+        && (
+          this.serviceInstallStatus.state === "failed"
+          || this.serviceHealthStatus.state === "not_installed"
+        )
       ) {
         recoveryCode = "brain_not_installed";
       } else if (!await probeSocketHasOwner(socketPath)) {
@@ -3776,8 +3783,13 @@ export class LocalRuntimeConnectionPool {
         : "";
       // What the service manager said, so a report shows why no fallback ran.
       const install = this.serviceInstallStatus;
+      // The installer's own reason for a failed install; it used to reach only the log.
+      const installReason = install.state === "failed" && install.message
+        ? ` Installer said: ${install.message.trim().slice(0, 300)}`
+        : "";
       const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
-        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`;
+        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`
+        + installReason;
       throw codedRecoveryError(
         `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,

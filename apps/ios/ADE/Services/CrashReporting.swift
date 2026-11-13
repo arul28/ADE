@@ -258,14 +258,26 @@ enum CrashReporting {
   /// the main thread was: the innermost ADE function when the phone named
   /// one, else the library it was blocked in (SQLite, SwiftUI, …), so hangs
   /// with different causes stay apart.
+  ///
+  /// The OS's own hang reports (MetricKit's `MXHangDiagnostic`) get the same
+  /// treatment: their title carries the duration ("hangDuration:2.4 sec"), so
+  /// each one opened its own issue. They group as `mx_hang` plus the same site.
   private static func groupAppHang(_ event: Sentry.Event) {
-    guard let exception = event.exceptions?.last,
-          let type = exception.type, type.contains("App Hang") else { return }
+    guard let exception = event.exceptions?.last, let type = exception.type else { return }
+    let isMetricKitHang = type == "MXHangDiagnostic"
+    guard isMetricKitHang || type.contains("App Hang") else { return }
+    // A MetricKit report may mark no thread as current; its first thread with
+    // frames is then the hung one (MetricKit lists the main thread first).
     let stacktrace = exception.stacktrace
       ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+      ?? (isMetricKitHang ? event.threads?.first(where: { $0.stacktrace?.frames.isEmpty == false })?.stacktrace : nil)
     let frames = stacktrace?.frames ?? []
     let site = innermostAppFunction(frames) ?? innermostBlockingLibrary(frames)
-    event.fingerprint = ["ios", "app_hang", type] + (site.map { [$0] } ?? [])
+    let kind = isMetricKitHang ? ["ios", "mx_hang"] : ["ios", "app_hang", type]
+    event.fingerprint = kind + (site.map { [$0] } ?? [])
+    // A MetricKit report arrives a day later, so this launch's publish counts
+    // say nothing about it.
+    if isMetricKitHang { return }
     // What fed the main thread before the hang. Many hangs hold no ADE frame
     // at all: the stack is SwiftUI working through view updates (ADE-IOS-27,
     // 8 seconds after launch) and says nothing about which state kept

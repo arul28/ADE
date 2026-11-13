@@ -759,7 +759,8 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     const match = installed.find((device) => device.udid === wanted)
       ?? installed.find((device) => matchesSimulatorName(device, wanted));
     if (!match) {
-      throw new Error(`No installed simulator matches ${wanted}. Run device-list --installed to see what this Mac has.`);
+      // A simulator name or udid this Mac does not have: the caller's input.
+      throw new AdeExpectedError(`No installed simulator matches ${wanted}. Run device-list --installed to see what this Mac has.`, "user");
     }
     // A lane's extra device is never anyone's own device, its lane's included:
     // binding it twice is how one row deletes it under the other.

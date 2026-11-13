@@ -1,3 +1,4 @@
+import { markExpected } from "../../../shared/expectedError";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -289,6 +290,10 @@ export class OpenCodeLaunchError extends Error {
     super(renderOpenCodeDiagnostic(diagnostic));
     this.name = "OpenCodeLaunchError";
     this.diagnostic = diagnostic;
+    // Each known kind is the machine's state (no binary, a busy port, a
+    // Gatekeeper block, a slow or hung opencode), and the message names the
+    // fix. Only an unclassified failure stays a Sentry issue.
+    if (diagnostic.kind !== "unknown") markExpected(this, "environment");
   }
 }
 

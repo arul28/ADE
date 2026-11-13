@@ -52,7 +52,7 @@ import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 import { nonAsarFs } from "../shared/nonAsarFs";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 
 export type FileServiceLaneAdapter = Pick<
@@ -696,7 +696,8 @@ export function createFileService({
   ): string => `${rootPath}::${parentPath}::${includeIgnored ? "ignored" : "tracked"}`;
 
   const resolveWorkspace = (workspaceId: string) => {
-    if (typeof workspaceId !== "string" || !workspaceId.trim()) throw new Error("workspaceId is required.");
+    // A caller (often an agent) that left out its workspace: it fixes the call.
+    if (typeof workspaceId !== "string" || !workspaceId.trim()) throw new AdeExpectedError("workspaceId is required.", "user");
     return externalWorkspaces?.resolve(workspaceId) ?? laneService.resolveWorkspaceById(workspaceId);
   };
 

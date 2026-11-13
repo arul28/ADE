@@ -42,7 +42,7 @@ import { acpProbeConfigHome } from "../../ai/acpAuthProbe";
 import { resolveAcpExecutable } from "../../ai/acpExecutables";
 import { pinnedToolNotReadyError } from "../../ai/pinnedProviderTools";
 import { prepareAcpProbeSpawnPlan } from "../../ai/acpProbeSpawnPlan";
-import { createAcpConnection, initializeAcpConnection } from "./acpConnection";
+import { ACP_HANDSHAKE_TIMEOUT_MS, createAcpConnection, initializeAcpConnection } from "./acpConnection";
 import { acpDialectFor } from "./acpDialects";
 import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
 import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
@@ -64,6 +64,12 @@ const CATALOG_TTL_MS = 6 * 60 * 60_000;
  */
 const RETRY_AFTER_FAILURE_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 20_000;
+/**
+ * `initialize` waits as long as a chat's does: a cold start (an agent that
+ * unpacks itself, a Windows virus scan of a fresh Node) took longer than 20 s
+ * on real machines, and each such miss backed the list off for minutes.
+ */
+const PROBE_INITIALIZE_TIMEOUT_MS = ACP_HANDSHAKE_TIMEOUT_MS;
 const CACHE_FILE_VERSION = 1;
 /** A chat re-reporting the same list rewrites the file at most this often. */
 const SESSION_REWRITE_MIN_MS = 30 * 60_000;
@@ -260,7 +266,7 @@ async function probeAcpModels(provider: Exclude<AcpModelProviderGroup, "devin">,
   }));
   const connection = createAcpConnection({ dialect, spawnPlan });
   try {
-    const init = await initializeAcpConnection({ connection, dialect, timeoutMs: PROBE_TIMEOUT_MS });
+    const init = await initializeAcpConnection({ connection, dialect, timeoutMs: PROBE_INITIALIZE_TIMEOUT_MS });
     const created = await connection.request<Record<string, unknown>>(
       ACP_METHOD.sessionNew,
       { cwd, mcpServers: [] },

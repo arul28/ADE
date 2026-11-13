@@ -67,6 +67,35 @@ async function gitOut(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 }
 
 /**
+ * Waits between tries when another live git holds the lane's `index.lock`
+ * (an editor's status refresh, ADE's own git panel). `runGit` only clears a
+ * lock that is stale; a live one is released within moments.
+ */
+const INDEX_LOCK_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+
+function isIndexLockBusyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /index\.lock/.test(message) && /File exists|Another git process seems to be running/i.test(message);
+}
+
+/**
+ * A step that writes the lane's index (fast-forward, checkout, reset). Git
+ * refuses before it changes anything when it cannot take the lock, so the
+ * same step can simply run again.
+ */
+async function gitWriteOut(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await gitOut(cwd, args, env);
+    } catch (error) {
+      const delay = INDEX_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isIndexLockBusyError(error)) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/**
  * The first added path that would overwrite or delete a file only this
  * machine has. A path `commit` tracks (a directory the change turns into a
  * file, say) is git's to replace, unless an untracked or ignored local file
@@ -490,7 +519,7 @@ export async function applyHandoffGitBundle(args: {
             `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
           );
         }
-        await gitOut(worktreePath, ["merge", "--ff-only", "--quiet", tip]);
+        await gitWriteOut(worktreePath, ["merge", "--ff-only", "--quiet", tip]);
       }
       // The lane was clean, so a hard reset back loses nothing of the user's.
       landedOnExistingLane = true;
@@ -558,8 +587,8 @@ export async function applyHandoffGitBundle(args: {
       }
       // The working tree as it was, then the index back on the tip so every
       // change shows as uncommitted.
-      await gitOut(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]));
-      await gitOut(worktreePath, g(["reset", "--quiet", tip]));
+      await gitWriteOut(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]));
+      await gitWriteOut(worktreePath, g(["reset", "--quiet", tip]));
     }
     undo.length = 0;
   } catch (error) {

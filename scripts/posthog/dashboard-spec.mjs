@@ -126,6 +126,7 @@ export const PROPERTIES = Object.freeze({
   CODE: "code",
   ACTION_DOMAIN: "action_domain",
   BRAIN_ACTION: "brain_action",
+  EXPECTED_KIND: "expected_kind",
   KIND: "kind",
   SEVERITY: "severity",
   EXCEPTION_FINGERPRINT: "$exception_fingerprint",
@@ -247,6 +248,15 @@ const eventProperty = (key, value, operator = "exact") => ({
   operator,
   type: "event",
 });
+
+/**
+ * A brain action failure ADE already classed as an answer (a missing lane, no
+ * GitHub sign-in, a user's input): `expected_kind` other than `unexpected`.
+ * The triage cards count only the rest, the defects. `is_not` keeps events
+ * that lack the property (builds before it existed).
+ */
+const EXPECTED_BRAIN_FAILURE_KINDS = Object.freeze(["expected", "user", "environment", "network"]);
+const EXCLUDE_EXPECTED_BRAIN_FAILURES = eventProperty(PROPERTIES.EXPECTED_KIND, [...EXPECTED_BRAIN_FAILURE_KINDS], "is_not");
 
 /**
  * Leaves out the `/open` link page. Link-preview and link-safety scanners
@@ -852,11 +862,11 @@ export const dashboardSpec = Object.freeze({
         ),
         insight(
           "unrecoverable-errors",
-          "Errors by action",
-          "Allowlisted error counts split by the coarse action category; raw messages and stack traces are excluded.",
+          "Errors by feature and action",
+          "Allowlisted error counts split by feature, then by the coarse action category where the error has one (chat turn failures carry only the feature). Raw messages and stack traces are excluded.",
           trends({
             series: [eventNode(EVENTS.ERROR, "Errors")],
-            breakdown: PROPERTIES.ACTION,
+            breakdowns: [PROPERTIES.FEATURE, PROPERTIES.ACTION],
           }),
         ),
         insight(
@@ -1192,9 +1202,9 @@ export const dashboardSpec = Object.freeze({
         insight(
           "brain-failures-by-code-and-channel",
           "Brain action failures by code and channel",
-          `Machines whose brain refused or failed an action, per error code and release channel, over the last 14 days. \`unknown\` is a failure that carries no code; a code that appears only on beta is the next stable's regression.${MINIMUM_VOLUME_NOTE}`,
+          `Machines whose brain refused or failed an action, per error code and release channel, over the last 14 days. Failures ADE already classes as an answer (\`expected_kind\` other than \`unexpected\`) are left out. \`unknown\` is a failure that carries no code; a code that appears only on beta is the next stable's regression.${MINIMUM_VOLUME_NOTE}`,
           trends({
-            series: [eventNode(EVENTS.BRAIN_ACTION_FAILED, "Machines", MACHINES)],
+            series: [eventNode(EVENTS.BRAIN_ACTION_FAILED, "Machines", { ...MACHINES, properties: [EXCLUDE_EXPECTED_BRAIN_FAILURES] })],
             breakdowns: [PROPERTIES.ERROR_CODE, PROPERTIES.RELEASE_CHANNEL],
             dateFrom: "-14d",
             interval: "day",
@@ -1205,13 +1215,14 @@ export const dashboardSpec = Object.freeze({
         insight(
           "brain-failures-first-seen",
           "Newest failing brain actions",
-          "Each failing domain and action with the build it first failed on, newest first: a row whose first build is the current beta is new. Events and machines over the last 30 days; ADE's own installs and accounts left out.",
+          "Each failing domain and action with the build it first failed on, newest first: a row whose first build is the current beta is new. Events and machines over the last 30 days; ADE's own installs and accounts, and failures classed as an answer, left out.",
           hogqlTable([
             `select properties.${PROPERTIES.ACTION_DOMAIN} as domain, properties.${PROPERTIES.BRAIN_ACTION} as action,`,
             `  argMin(properties.${PROPERTIES.APP_VERSION}, timestamp) as first_seen_version, min(timestamp) as first_seen,`,
             `  count() as events, count(distinct coalesce(properties.${PROPERTIES.MACHINE_ID}, distinct_id)) as machines`,
             "from events",
             `where event = '${EVENTS.BRAIN_ACTION_FAILED}' and timestamp > now() - interval 30 day`,
+            `  and ifNull(toString(properties.${PROPERTIES.EXPECTED_KIND}), '') not in (${EXPECTED_BRAIN_FAILURE_KINDS.map((kind) => `'${kind}'`).join(", ")})`,
             `  and ifNull(toString(properties.${PROPERTIES.IS_INTERNAL}), '') != 'true'`,
             `  and ifNull(toString(person.properties.${PROPERTIES.IS_INTERNAL}), '') != 'true'`,
             "group by domain, action",
@@ -1246,7 +1257,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "failed-turns-by-provider-and-kind",
           "Failed agent turns by provider and kind",
-          "Failed turns (`$ai_generation` with `$ai_is_error`) over the last 14 days, by provider and the turn's closed `error_kind`: timeout, server_overloaded, context_too_long, model_unavailable, process_exited, rate_limit, permission, network and the rest. Builds before this kind existed have none.",
+          "Failed turns (`$ai_generation` with `$ai_is_error`) over the last 14 days, by provider and the turn's closed `error_kind`: timeout, server_overloaded, context_too_long, model_unavailable, process_exited, plan, rate_limit, permission, network and the rest. Builds before this kind existed have none.",
           trends({
             series: [eventNode(EVENTS.AI_GENERATION, "Failed turns", { properties: [eventProperty(PROPERTIES.AI_IS_ERROR, "true")] })],
             breakdowns: [PROPERTIES.AI_PROVIDER, PROPERTIES.ERROR_KIND],

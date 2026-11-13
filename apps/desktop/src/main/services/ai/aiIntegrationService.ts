@@ -89,7 +89,7 @@ import {
   initialize as initModelsDevService,
   getLastFetchedAt as getModelsDevLastFetchedAt,
 } from "./modelsDevService";
-import { isRecord, toOptionalString } from "../shared/utils";
+import { getErrorMessage, isRecord, toOptionalString } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
@@ -147,7 +147,7 @@ import {
 } from "../usage/cursorUsageMapping";
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
 import { pinnedToolInstallGeneration, retryPinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import {
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
@@ -1409,21 +1409,47 @@ export function createAiIntegrationService(args: {
   // shared while in flight, and a success is kept for a few minutes. A failure
   // is not kept, and `refresh` (the composer's Retry) skips the cache.
   const CURSOR_REPOS_CACHE_MS = 5 * 60_000;
+  // A refusal that asking again cannot change soon: a plan without Cloud
+  // Agents, or Cursor's own rate limit. Kept for a minute, so composers that
+  // ask on every open do not spend the five requests a minute on the same
+  // answer and then hit the limit (ADE-DESKTOP-AG, ADE-DESKTOP-BG). Retry
+  // (`refresh`) still asks.
+  const CURSOR_REPOS_REFUSAL_CACHE_MS = 60_000;
+  const CURSOR_REPOS_RATE_LIMIT = /\bexceeded the rate limit\b/i;
   let cursorReposCache: { apiKey: string; at: number; repos: CursorCloudRepository[] } | null = null;
+  let cursorReposRefusal: { apiKey: string; at: number; error: Error } | null = null;
   let cursorReposInFlight: { apiKey: string; request: Promise<CursorCloudRepository[]> } | null = null;
   const listCursorCloudRepositories = async (args?: { refresh?: boolean }): Promise<CursorCloudRepository[]> => {
     const apiKey = await requireCursorCloudApiKey();
     if (!args?.refresh && cursorReposCache?.apiKey === apiKey && Date.now() - cursorReposCache.at < CURSOR_REPOS_CACHE_MS) {
       return cursorReposCache.repos;
     }
+    if (!args?.refresh && cursorReposRefusal?.apiKey === apiKey && Date.now() - cursorReposRefusal.at < CURSOR_REPOS_REFUSAL_CACHE_MS) {
+      throw cursorReposRefusal.error;
+    }
     if (cursorReposInFlight?.apiKey === apiKey) return cursorReposInFlight.request;
     const request = (async () => {
       const { Cursor } = await loadCursorSdk();
-      const repos = (await Cursor.repositories.list({ apiKey }))
-        .map((repo) => ({ url: String(repo.url ?? "").trim() }))
-        .filter((repo) => repo.url.length > 0);
-      cursorReposCache = { apiKey, at: Date.now(), repos };
-      return repos;
+      try {
+        const repos = (await Cursor.repositories.list({ apiKey }))
+          .map((repo) => ({ url: String(repo.url ?? "").trim() }))
+          .filter((repo) => repo.url.length > 0);
+        cursorReposCache = { apiKey, at: Date.now(), repos };
+        cursorReposRefusal = null;
+        return repos;
+      } catch (error) {
+        const message = getErrorMessage(error);
+        const planRefusal = message.includes("[plan_required]");
+        const rateLimited = CURSOR_REPOS_RATE_LIMIT.test(message);
+        if (planRefusal || rateLimited) {
+          // The account's plan, or Cursor's limit: an answer, not a defect.
+          const refusal = error instanceof Error ? error : new Error(message);
+          markExpected(refusal, planRefusal ? "user" : "network");
+          cursorReposRefusal = { apiKey, at: Date.now(), error: refusal };
+          throw refusal;
+        }
+        throw error;
+      }
     })().finally(() => {
       if (cursorReposInFlight?.request === request) cursorReposInFlight = null;
     });
@@ -2119,6 +2145,8 @@ export function createAiIntegrationService(args: {
     loginGeneration: number;
   } | null = null;
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
+  /** The step a status read is in now, for a caller whose wait ran out (`getStatusReadPhase`). */
+  let statusReadPhase: string | null = null;
   let providerReadinessCacheGeneration = 0;
   let seenLoginGeneration = providerLoginGeneration();
 
@@ -2325,6 +2353,7 @@ export function createAiIntegrationService(args: {
         };
         const timePhase = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
           const startedAt = Date.now();
+          statusReadPhase = name;
           try {
             return await fn();
           } finally {
@@ -2333,6 +2362,7 @@ export function createAiIntegrationService(args: {
         };
         const timeSyncPhase = <T>(name: string, fn: () => T): T => {
           const startedAt = Date.now();
+          statusReadPhase = name;
           try {
             return fn();
           } finally {
@@ -2602,8 +2632,12 @@ export function createAiIntegrationService(args: {
         if (statusRequestsInFlight.get(requestKey) === request) {
           statusRequestsInFlight.delete(requestKey);
         }
+        if (statusRequestsInFlight.size === 0) statusReadPhase = null;
       }
     },
+
+    /** The step a status read in flight is in, or null when none runs. */
+    getStatusReadPhase: (): string | null => statusReadPhase,
 
     executeTask,
 

@@ -31,13 +31,24 @@
  * can lose a start, a reused pid reads as alive, and a brain the computer
  * killed by restarting is not counted (it started before this boot).
  */
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
 import { isPidAlive } from "../serviceManager/common";
+import { resolveWindowsServicePidPath } from "../serviceManager/installWindows";
+import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
+import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
 import { brainLogAttachment, desktopLogsAttachment } from "./brainServiceDiagnostics";
-import { BRAIN_STARTS_FILE, readStartsFile, writeStartsFile, type BrainStart, type BrainStartsState } from "./brainStartsFile";
+import {
+  BRAIN_STARTS_FILE,
+  readStartsFile,
+  writeStartsFile,
+  type BrainStart,
+  type BrainStartCause,
+  type BrainStartsState,
+} from "./brainStartsFile";
 
 const RESTART_LOOP_THRESHOLD = 3;
 const RESTART_LOOP_WINDOW_MS = 10 * 60_000;
@@ -77,10 +88,12 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   if (!isSentryActive()) return;
   const nowMs = Date.now();
   const startsPath = path.join(options.runtimeDir, BRAIN_STARTS_FILE);
-  const { state, loopFoundAtMs } = recordStart(readStartsFile(startsPath), {
+  const previousState = readStartsFile(startsPath);
+  const { state, loopFoundAtMs } = recordStart(previousState, {
     pid: process.pid,
     build: options.build,
     nowMs,
+    cause: readStartCause(options.runtimeDir, previousState.starts.at(-1)),
   });
   (globalThis as RestartLoopFlagHolder)[RESTART_LOOP_FLAG] =
     countedStartsInWindow(state.starts, nowMs) >= RESTART_LOOP_THRESHOLD;
@@ -114,7 +127,7 @@ export function markBrainStoppedCleanly(): void {
 /** The file with this start added, and when the loop waiting for a report was found (null: none). */
 function recordStart(
   state: BrainStartsState,
-  start: { pid: number; build: string | null; nowMs: number },
+  start: { pid: number; build: string | null; nowMs: number; cause: BrainStartCause },
 ): { state: BrainStartsState; loopFoundAtMs: number | null } {
   const { nowMs } = start;
   // A start "after" now means the clock went back; it counts for nothing.
@@ -142,7 +155,7 @@ function recordStart(
   const counted = Boolean(previous && inWindow(previous) && (buildFlipFlop || previousCrashed));
   const starts = [
     ...state.starts,
-    { pid: start.pid, at: new Date(nowMs).toISOString(), build: start.build, counted, buildFlipFlop },
+    { pid: start.pid, at: new Date(nowMs).toISOString(), build: start.build, counted, buildFlipFlop, cause: start.cause },
   ].slice(-STARTS_KEPT);
 
   // A pending loop is kept until some brain sends it, unless it is far older
@@ -167,6 +180,65 @@ function recordStart(
   };
 }
 
+/**
+ * Who started this brain and what ended the brain before it, as far as the
+ * files on disk say. Read before this brain's own watchdog moves the wedge
+ * breadcrumb aside. Never throws: a fact it cannot read is null.
+ */
+function readStartCause(runtimeDir: string, previous: BrainStart | undefined): BrainStartCause {
+  const previousAtMs = previous ? Date.parse(previous.at) : Number.NaN;
+  // Written after the previous brain started, so it is about that brain.
+  const sincePrevious = (at: unknown): boolean =>
+    typeof at === "string" && Number.isFinite(previousAtMs) && Date.parse(at) >= previousAtMs;
+  const cause: BrainStartCause = {
+    startedBy: "other",
+    supervisorPid: null,
+    supervisorRestartCount: null,
+    previousExitCode: null,
+    previousWedge: null,
+    previousFailureCode: null,
+  };
+  try {
+    if (process.platform === "win32") {
+      const record = readWindowsServicePidRecord(resolveWindowsServicePidPath());
+      if (record) {
+        cause.supervisorPid = record.supervisorPid;
+        if (record.supervisorPid === process.ppid) {
+          cause.startedBy = "supervisor";
+          cause.supervisorRestartCount = record.restartCount;
+          cause.previousExitCode = record.lastExitCode;
+        }
+      }
+    } else if (process.env.INVOCATION_ID) {
+      cause.startedBy = "systemd";
+    } else if (process.platform === "darwin" && process.ppid === 1) {
+      cause.startedBy = "launchd";
+    }
+  } catch {
+    // Unknown stays null.
+  }
+  const wedge = readJsonRecord(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE));
+  // The brain's own watchdog names its pid; the Windows supervisor's kill
+  // record has no pid, only its time.
+  if (wedge && previous && (wedge.pid === previous.pid || (wedge.pid === undefined && sincePrevious(wedge.ts)))) {
+    cause.previousWedge = typeof wedge.lastCommand === "string" ? wedge.lastCommand.slice(0, 80) : "unknown";
+  }
+  const failure = readJsonRecord(path.join(runtimeDir, "last-failure.json"));
+  if (failure && typeof failure.code === "string" && sincePrevious(failure.at)) {
+    cause.previousFailureCode = failure.code.slice(0, 80);
+  }
+  return cause;
+}
+
+function readJsonRecord(filePath: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
 function countedStartsInWindow(starts: readonly BrainStart[], nowMs: number): number {
   return starts.filter((entry) => {
     const ageMs = nowMs - Date.parse(entry.at);
@@ -186,11 +258,19 @@ function sendLoopReport(startsPath: string): void {
   const starts = state.starts.filter((start) => Date.parse(start.at) >= since);
   const counted = starts.filter((start) => start.counted);
   try {
+    const supervisorPids = new Set(counted.map((start) => start.cause?.supervisorPid).filter((pid) => pid != null));
     captureProblem("The brain kept restarting", {
       level: "warning",
       fingerprint: [...RESTART_LOOP_FINGERPRINT, process.platform],
-      tags: { "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop) },
-      extra: { restartCount: counted.length, foundAt, starts },
+      tags: {
+        "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop),
+        // What ended most of the counted brains, so the issue groups by cause.
+        "brain.restart_loop.cause": mostCommon(counted.map(previousEndCause)),
+        // More than one: a reinstall or a second supervisor (ADE-160) started brains in the loop.
+        "brain.restart_loop.supervisors": supervisorPids.size,
+      },
+      // Flat: Sentry keeps three levels of `extra`, so a nested `cause` would arrive as "[Object]".
+      extra: { restartCount: counted.length, foundAt, starts: starts.map(flattenStart) },
     });
     // A brain in a loop may not live long enough for the SDK's own send.
     void flushSentry(2_000);
@@ -198,6 +278,35 @@ function sendLoopReport(startsPath: string): void {
     process.stderr.write(`ADE brain could not report its restart loop: ${errorText(error)}
 `);
   }
+}
+
+/** What ended the brain before `start`, as one word for the report's tag. */
+function previousEndCause(start: BrainStart): string {
+  const cause = start.cause;
+  if (!cause) return "unknown";
+  if (cause.previousWedge) return "wedge";
+  if (cause.previousFailureCode) return "startup_failure";
+  if (cause.previousExitCode != null) return `exit_${cause.previousExitCode}`;
+  return "unknown";
+}
+
+function mostCommon(values: readonly string[]): string {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  let best = "unknown";
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count > bestCount) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function flattenStart(start: BrainStart): Record<string, unknown> {
+  const { cause, ...rest } = start;
+  return { ...rest, ...(cause ?? {}), previousEnd: previousEndCause(start) };
 }
 
 function reportedRecently(state: BrainStartsState, nowMs: number): boolean {

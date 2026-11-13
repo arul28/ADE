@@ -11,6 +11,7 @@ import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopServ
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 import { derivedEventId } from "./analyticsEventId";
 import { detectInstallSource } from "./installSource";
+import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
@@ -465,7 +466,7 @@ const TURN_ERROR_KIND: Readonly<Record<AgentChatTurnErrorCategory, TurnFailureKi
 
 /**
  * The closed set a failed turn's `error_kind` takes (`ade_error`, and
- * `$ai_generation`). The provider classifier's categories, plus five read off
+ * `$ai_generation`). The provider classifier's categories, plus six read off
  * the error's own words where the classifier has no category for them: most
  * failed turns were `network` or `other`, which hid the overloaded server and
  * the conversation that outgrew its model behind one bucket.
@@ -473,6 +474,10 @@ const TURN_ERROR_KIND: Readonly<Record<AgentChatTurnErrorCategory, TurnFailureKi
 export const TURN_FAILURE_KINDS = [
   "permission", "rate_limit", "budget", "network", "busy", "cli_missing",
   "timeout", "server_overloaded", "context_too_long", "model_unavailable", "process_exited",
+  // The provider is signed in but the plan does not include this (Kimi Code,
+  // Cursor Cloud Agents). Read before the category: these refusals also say
+  // "authentication required" and carry a 403.
+  "plan",
   "other",
 ] as const;
 export type TurnFailureKind = (typeof TURN_FAILURE_KINDS)[number];
@@ -499,9 +504,13 @@ const TEXT_KINDS: ReadonlyArray<readonly [RegExp, TurnFailureKind]> = [
   // A local model server that is not running.
   [/connection ?refused|ECONNREFUSED|unable to connect|no models are currently loaded|is the computer able to access/i, "network"],
   [/overloaded|\b(?:500|502|503|529)\b|service unavailable|bad gateway|internal server error|server error|over capacity/i, "server_overloaded"],
-  [/exited with (?:code|signal)|process exited|exited unexpectedly|terminated unexpectedly|was killed|\bSIG(?:KILL|TERM|SEGV|ABRT)\b|crashed/i, "process_exited"],
-  // Last: many of the errors above also say that something timed out.
-  [/timed? ?out|timeout|deadline exceeded|ETIMEDOUT/i, "timeout"],
+  // "Codex app-server exited (code=1, signal=null)", an ACP agent whose pipe closed, a dead SDK worker.
+  [/exited with (?:code|signal)|process exited|exited unexpectedly|terminated unexpectedly|was killed|\bSIG(?:KILL|TERM|SEGV|ABRT)\b|crashed|\bexited \((?:code|signal)=|worker exited|ACP connection closed|stdin is not writable|\bEPIPE\b/i, "process_exited"],
+  // Cut connections the classifier did not name.
+  [/ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network (?:error|request failed)|getaddrinfo/i, "network"],
+  // Last: many of the errors above also say that something timed out. ADE's
+  // own waits say "did not answer within".
+  [/timed? ?out|timeout|deadline exceeded|ETIMEDOUT|did not answer within|did not (?:become ready|respond) in time/i, "timeout"],
 ];
 
 /**
@@ -513,12 +522,22 @@ export function turnFailureKind(
   category: AgentChatTurnErrorCategory | null | undefined,
   text: string | null | undefined,
 ): TurnFailureKind {
+  const words = text ?? "";
+  const refusal = classifyProviderAccountRefusal(words);
+  // A plan refusal reads as a sign-in to the classifier (a 403, "authentication
+  // required"), but signing in again does not fix it.
+  if (refusal === "plan") return "plan";
   const fromCategory = category ? TURN_ERROR_KIND[category] : "other";
   // A category the classifier is sure of (a sign-in, a rate limit) wins; the
   // words only refine its two catch-alls.
   if (fromCategory !== "network" && fromCategory !== "other") return fromCategory;
-  const words = text ?? "";
-  return TEXT_KINDS.find(([pattern]) => pattern.test(words))?.[1] ?? fromCategory;
+  // The same sign-in words provider health reads (an invalid token, a 401 in
+  // any wording), for turns whose runtime gave no category.
+  if (refusal === "auth") return "permission";
+  const fromText = TEXT_KINDS.find(([pattern]) => pattern.test(words))?.[1];
+  if (fromText) return fromText;
+  if (refusal === "model") return "model_unavailable";
+  return fromCategory;
 }
 
 function failedTurnKind(event: AgentChatTurnSettledEvent): TurnFailureKind {

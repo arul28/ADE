@@ -452,6 +452,8 @@ function reconcilePersistedUpdateState(args: {
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
   failedInstall: { targetVersion: string; attempt: number } | null;
+  /** Where the failed install's quit stopped, and how long before this launch it began. */
+  failedInstallHandoff: { step: string | null; ageMs: number | null } | null;
   /**
    * This launch is the one that found `failedInstall` (its pending install did
    * not land). False when the failure is only carried over from an earlier
@@ -470,6 +472,7 @@ function reconcilePersistedUpdateState(args: {
   let cacheCleanupReason: string | null = null;
   let failedInstall: { targetVersion: string; attempt: number } | null = null;
   let failedInstallFoundNow = false;
+  let failedInstallHandoff: { step: string | null; ageMs: number | null } | null = null;
 
   if (
     nextState.recentlyInstalledUpdate
@@ -542,6 +545,14 @@ function reconcilePersistedUpdateState(args: {
       };
       failedInstall = { targetVersion: pendingInstall.targetVersion, attempt };
       failedInstallFoundNow = true;
+      const requestedAtMs = Date.parse(pendingInstall.requestedAt);
+      const nowMsValue = Date.parse(args.now);
+      failedInstallHandoff = {
+        step: typeof pendingInstall.handoffStep === "string" ? pendingInstall.handoffStep : null,
+        ageMs: Number.isFinite(requestedAtMs) && Number.isFinite(nowMsValue)
+          ? Math.max(0, nowMsValue - requestedAtMs)
+          : null,
+      };
       // First failure: the archive passed its checksum before it ever went
       // "ready", so the quit lost a race rather than the bytes being bad.
       // Keeping it turns a retry into a click instead of a fresh download of
@@ -576,6 +587,7 @@ function reconcilePersistedUpdateState(args: {
     cacheCleanupReason,
     failedInstall,
     failedInstallFoundNow,
+    failedInstallHandoff,
     landedQuitInstall,
     landedTrackSwitch,
   };
@@ -732,11 +744,21 @@ export function createAutoUpdateService({
       currentVersion,
       attempt: initialState.failedInstall.attempt,
       downloadPreserved: initialState.cacheCleanupReason == null,
+      // Where the quit stopped: no step means the updater was never asked to
+      // quit (ADE closed another way first); `quit_started` without
+      // `native_staged` on macOS means Squirrel never staged the bundle;
+      // `native_staged` means the installer ran after the quit and failed.
+      handoffStep: initialState.failedInstallHandoff?.step ?? "none",
+      handoffAgeMs: initialState.failedInstallHandoff?.ageMs ?? null,
+      platform,
     });
     productAnalyticsService?.captureInternal({
       event: "ade_update_install_did_not_land",
       surface: "desktop",
-      properties: { attempt: initialState.failedInstall.attempt },
+      properties: {
+        attempt: initialState.failedInstall.attempt,
+        handoff_step: initialState.failedInstallHandoff?.step ?? "none",
+      },
     });
   }
 
@@ -905,6 +927,21 @@ export function createAutoUpdateService({
     emit();
     if (snapshot.status === "ready" && previousStatus !== "ready") {
       scheduleAutoApply(0);
+    }
+  }
+
+  /** Record how far the install's quit got in the pending record (see `PendingInstallUpdate.handoffStep`). */
+  function notePendingInstallHandoff(step: string): void {
+    try {
+      const currentState = readGlobalState(globalStatePath);
+      const pending = currentState.pendingInstallUpdate;
+      if (!pending || pending.handoffStep === step) return;
+      writeGlobalState(globalStatePath, {
+        ...currentState,
+        pendingInstallUpdate: { ...pending, handoffStep: step },
+      });
+    } catch {
+      // A note for the next launch's report; the install never waits on it.
     }
   }
 
@@ -2244,6 +2281,7 @@ export function createAutoUpdateService({
         native_staging_completed: nativeStagingCompleted,
       },
     });
+    notePendingInstallHandoff(`quit_escalated_${reason}`);
     // forceQuit ends the process outright, and log writes are batched onto an
     // async stream — without this the record above dies with the process and
     // the escalation leaves no trace at all.
@@ -2271,6 +2309,7 @@ export function createAutoUpdateService({
     if (!installQuitArmed || nativeStagingCompleted) return;
     nativeStagingCompleted = true;
     logger.info("autoUpdate.native_staging_complete", { elapsedMs: quitBlockedMs() });
+    notePendingInstallHandoff("native_staged");
     armEscalation(quitPostStagingDeadlineMs, "post_staging");
   }
 
@@ -2499,6 +2538,7 @@ export function createAutoUpdateService({
         // synchronously, and ADE's before-quit handler must recognize this
         // consented path instead of opening the normal quit confirmation.
         armQuitDeadline();
+        notePendingInstallHandoff("quit_started");
         // NSIS BaseUpdater latches quitAndInstallCalled on the first call and
         // silently ignores later ones. A parked retry or stale-handoff recovery
         // must clear that latch or Windows never launches the installer again.

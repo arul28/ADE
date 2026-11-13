@@ -4288,6 +4288,8 @@ final class SyncService: ObservableObject {
   @Published private(set) var activeProjectHostIdentity: String?
   @Published private(set) var projectSwitchInFlightRootPath: String?
   @Published private(set) var discoveredHosts: [DiscoveredSyncHost] = []
+  /// The pending merge of a burst of discovery callbacks (`scheduleDiscoveredHostsPublish`).
+  private var discoveredHostsPublishTask: Task<Void, Never>?
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(
     uniqueKeysWithValues: SyncDomain.allCases.map { ($0, .disconnected) }
   )
@@ -7073,16 +7075,14 @@ final class SyncService: ObservableObject {
     discoveryBrowser.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
         self?.bonjourDiscoveredHosts = hosts
-        self?.publishMergedDiscoveredHosts()
-        self?.considerTransportUpgrade()
+        self?.scheduleDiscoveredHostsPublish()
       }
     }
     discoveryBrowser.start()
     tailnetDiscovery.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
         self?.tailnetDiscoveredHosts = hosts
-        self?.publishMergedDiscoveredHosts()
-        self?.considerTransportUpgrade()
+        self?.scheduleDiscoveredHostsPublish()
       }
     }
     tailnetDiscovery.preferredPortsProvider = { [weak self] in
@@ -7739,6 +7739,23 @@ final class SyncService: ObservableObject {
 
   private func publishMergedDiscoveredHosts() {
     applyDiscoveredHosts(bonjourDiscoveredHosts + tailnetDiscoveredHosts)
+  }
+
+  /// One merge for a burst of discovery callbacks. Bonjour reports each
+  /// service it resolves, and the tailnet scan reports each port, so a wake
+  /// or a network change sent many callbacks in a row. Each one ran a full
+  /// merge, a saved-profile pass and a publish on the main thread, and the
+  /// run of them held the main thread long enough for the watchdog to end the
+  /// app (ADE-IOS-27). The merge reads the latest lists when it runs.
+  private func scheduleDiscoveredHostsPublish() {
+    guard discoveredHostsPublishTask == nil else { return }
+    discoveredHostsPublishTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(150))
+      guard let self else { return }
+      self.discoveredHostsPublishTask = nil
+      self.publishMergedDiscoveredHosts()
+      self.considerTransportUpgrade()
+    }
   }
 
   /// Discovery seeing the machine on the local network is the honest signal
@@ -20887,17 +20904,22 @@ final class SyncService: ObservableObject {
       guard !matching.isEmpty else { continue }
       let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
       guard updated != profile else { continue }
-      let token: String?
-      switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
-      case .value(let stored): token = stored
-      case .absent: token = nil
-      case .failed:
-        // Moving the profile without its secret would lose the secret.
-        pairingSecretReadFailed = true
-        continue
+      let updatedKey = profileStorageKey(updated) ?? key
+      // The secret moves only when the profile is re-keyed. A new address or
+      // port (most discovery updates) keeps the key, and reading the keychain
+      // here ran on the main thread for every such update (ADE-IOS-27).
+      var token: String?
+      if updatedKey != key {
+        switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
+        case .value(let stored): token = stored
+        case .absent: token = nil
+        case .failed:
+          // Moving the profile without its secret would lose the secret.
+          pairingSecretReadFailed = true
+          continue
+        }
       }
       profiles.removeValue(forKey: key)
-      let updatedKey = profileStorageKey(updated) ?? key
       profiles[updatedKey] = updated
       if let token, updatedKey != key {
         // Move the valid token to the new key, overwriting any stale token that

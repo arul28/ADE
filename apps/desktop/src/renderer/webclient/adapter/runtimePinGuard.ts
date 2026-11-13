@@ -1,3 +1,4 @@
+import { markExpected } from "../../../shared/expectedError";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AdeSyncClient } from "../sync";
 import type { AdapterProjectState } from "./infra/projectState";
@@ -54,6 +55,9 @@ export class WebRuntimePinUnroutableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "WebRuntimePinUnroutableError";
+    // The browser has no path to that machine: a fact about where the chat
+    // runs, which the caller shows or works around. Never a defect report.
+    markExpected(this, "environment");
   }
 }
 

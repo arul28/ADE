@@ -25,6 +25,7 @@ import {
   LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS } from "../remoteRuntime/remoteEventSetup";
+import { REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS } from "../remoteRuntime/pairedRuntimeRoutes";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -264,9 +265,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeListMyGitHubRepos:
     case IPC.remoteRuntimeOpenProject:
     case IPC.remoteRuntimeListActionRegistry:
-    case IPC.remoteRuntimeCallSync:
     case IPC.remoteRuntimeEnsurePortForward:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
+    // Short `sync.*` and `modelPicker.*` calls. The call has its own deadline
+    // (REMOTE_RUNTIME_SYNC_DEADLINE_MS) that names the method and the step,
+    // and this sits just above it.
+    case IPC.remoteRuntimeCallSync:
+      return REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS;
     // An event poll answers with a batch, or once its subscription is
     // acknowledged; it never stays open for the stream. Its own ceiling
     // (REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS) names the step that hung, and

@@ -466,6 +466,16 @@ export function createGitOperationsService({
     );
   }
 
+  /** The lane, or null when no lane has this id (deleted or archived while a view held it). */
+  function readLaneOrNull(laneId: string): LaneInfo | null {
+    try {
+      return laneService.getLaneBaseAndBranch(laneId);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Lane not found: ")) return null;
+      throw error;
+    }
+  }
+
   // Every git operation checks its lane folder first.
   async function assertLaneWorktreeRoot(lane: LaneInfo): Promise<void> {
     if (!(await isGitWorktreeRoot(lane.worktreePath))) throw laneWorktreeMissingError(lane);
@@ -1909,8 +1919,15 @@ export function createGitOperationsService({
       const fallback: GitOriginRemoteSummary = { remoteUrl: null, branch: null };
       const laneId = args.laneId.trim();
       if (!laneId) return fallback;
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      await assertLaneWorktreeRoot(lane);
+      // A lane deleted while a view held its id, or one whose worktree is gone
+      // (an unmounted drive), has no remote; the lane row still knows its
+      // branch. The same answer the desktop IPC handler gives, so a chat on
+      // another machine does not get an error where a local one gets "none".
+      const lane = readLaneOrNull(laneId);
+      if (!lane) return fallback;
+      if (!(await isGitWorktreeRoot(lane.worktreePath))) {
+        return { remoteUrl: null, branch: lane.branchRef?.trim() || null };
+      }
       const [remoteRes, branchRes] = await Promise.all([
         // Worktree-keyed for the same reason as the identity read above:
         // `extensions.worktreeConfig` lets a lane override `remote.origin.url`.
@@ -1953,8 +1970,9 @@ export function createGitOperationsService({
       const fallback: GitOpenPrSummary = { prUrl: null, prNumber: null, title: null, headRefName: null };
       const laneId = args.laneId.trim();
       if (!laneId) return fallback;
-      const lane = laneService.getLaneBaseAndBranch(laneId);
-      await assertLaneWorktreeRoot(lane);
+      // No lane, or no worktree to ask `gh` from, is "no open PR", as in the IPC handler.
+      const lane = readLaneOrNull(laneId);
+      if (!lane || !(await isGitWorktreeRoot(lane.worktreePath))) return fallback;
       const branch = args.branch?.trim() || lane.branchRef?.trim() || "";
       if (!branch) return fallback;
 

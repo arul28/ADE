@@ -477,7 +477,8 @@ export class AttentionAccountCoordinator {
       }
       const pool = this.options.localRuntimeConnectionPool;
       if (!pool) {
-        throw new Error("Machine Activity is unavailable until this computer's ADE brain is ready.");
+        // A state of this computer (no brain to ask yet), not a defect; the same for the throws below.
+        throw markExpected(new Error("Machine Activity is unavailable until this computer's ADE brain is ready."), "environment");
       }
       // The host caps a batch at the same 64, so chunk here too rather than
       // report success for ids that were never sent. It answers per CHUNK, not
@@ -738,7 +739,7 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (!this.options.localRuntimeConnectionPool) {
-      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+      throw markExpected(new Error("Account Activity is unavailable until this computer's ADE brain is ready."), "environment");
     }
     await this.options.localRuntimeConnectionPool.callAttention<void>(
       "putPreferences",
@@ -768,7 +769,7 @@ export class AttentionAccountCoordinator {
       !this.options.accountAttentionClient
       || !this.options.accountAttentionClient.putActivityMachinePreferences
     ) {
-      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+      throw markExpected(new Error("Account Activity is unavailable until this computer's ADE brain is ready."), "environment");
     }
     await this.options.accountAttentionClient.putActivityMachinePreferences(
       accountOwnerId,
@@ -798,7 +799,7 @@ export class AttentionAccountCoordinator {
       throw new Error("Sign in to mute a chat's notifications.");
     }
     if (!this.options.accountAttentionClient?.setAttentionSessionMuted) {
-      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+      throw markExpected(new Error("Account Activity is unavailable until this computer's ADE brain is ready."), "environment");
     }
     await this.options.accountAttentionClient.setAttentionSessionMuted(
       accountOwnerId,

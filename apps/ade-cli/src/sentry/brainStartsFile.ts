@@ -30,6 +30,37 @@ export type BrainStart = {
   /** Counts toward a loop (see `brainRestartLoop.ts`). */
   counted: boolean;
   buildFlipFlop: boolean;
+  /**
+   * Who started this brain and what it found about the brain before it.
+   * Absent on starts recorded before this field existed.
+   */
+  cause?: BrainStartCause;
+};
+
+/**
+ * The facts a start can read about its own start and about the brain before
+ * it. A restart-loop report lists them for each start, so the report says
+ * what ended each brain. Without them the 1.2.129 Windows reports
+ * (ADE-BRAIN-69) showed only that brains died, not why. Every field is null
+ * when the start could not read it.
+ */
+export type BrainStartCause = {
+  /** The process that started this brain. */
+  startedBy: "supervisor" | "launchd" | "systemd" | "other";
+  /** Windows: the supervisor that started this brain. A new pid means a reinstall or a second supervisor. */
+  supervisorPid: number | null;
+  /** Windows: how many times in a row that supervisor restarted a brain that lived less than a minute. */
+  supervisorRestartCount: number | null;
+  /**
+   * Windows: the exit code of the brain this supervisor ran before. 1 with no
+   * last output line is a kill from outside (taskkill or a Node kill), -1 is a
+   * .NET kill, and an exit with output is the brain's own failure.
+   */
+  previousExitCode: number | null;
+  /** The previous brain was killed for being wedged; the value is the command it was stuck in ("external-watchdog" for the supervisor's kill). */
+  previousWedge: string | null;
+  /** The previous brain recorded a startup failure with this code before it ended. */
+  previousFailureCode: string | null;
 };
 
 export type BrainStartsState = {
