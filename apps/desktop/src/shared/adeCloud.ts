@@ -171,7 +171,7 @@ export function cloudCatalogHasMax(catalog: CloudCatalog): catalog is CloudCatal
 }
 
 const PAID_PLAN_IDS: readonly CloudPaidPlanId[] = ["plus", "pro", "max"];
-const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => (PAID_PLAN_IDS as readonly unknown[]).includes(value);
+export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => (PAID_PLAN_IDS as readonly unknown[]).includes(value);
 
 /** Which plan the account has: `plus` for a paid account from a server that predates Pro, or one naming a plan this build doesn't know. */
 export function cloudPlanIdOf(account: Pick<CloudAccountState, "plan" | "planId">): CloudPlanId {

@@ -109,8 +109,12 @@ export const EXTRA_DISK_CENTS_PER_10GB_MONTH = 200;
 export const CENT_MICROS = 10_000;
 /** A month of extra disk, for "up to $X a month": the limit must hold for a full one. */
 export const EXTRA_DISK_MONTH_DAYS = 30;
-/** One GB-day of extra disk, in micros: a 30-day month of 10 GB is $2. */
-export const EXTRA_DISK_MICROS_PER_GB_DAY = Math.round((EXTRA_DISK_CENTS_PER_10GB_MONTH * CENT_MICROS) / 10 / EXTRA_DISK_MONTH_DAYS);
+/**
+ * One GB-day of extra disk, in micros: a 30-day month of 10 GB is $2 (6,666.67
+ * micros a GB-day). Rounded down, so a limit of $X always admits X/2 × 10 GB
+ * for a full month; Stripe bills from its own price, never from this.
+ */
+export const EXTRA_DISK_MICROS_PER_GB_DAY = Math.floor((EXTRA_DISK_CENTS_PER_10GB_MONTH * CENT_MICROS) / 10 / EXTRA_DISK_MONTH_DAYS);
 
 /** What `gb` of extra disk kept a full month costs, in micros: the amount a monthly limit must cover. */
 export const extraDiskMonthMicros = (gb: number): number => gb * EXTRA_DISK_MICROS_PER_GB_DAY * EXTRA_DISK_MONTH_DAYS;
