@@ -7,6 +7,7 @@
 import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../shared/types/core";
+import type { LaneSummary } from "../../shared/types/lanes";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
 import { isRuntimeTransportTimeoutError } from "../../shared/runtimeErrors";
@@ -276,6 +277,44 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         });
       }
     }
+    // A lane computer of this project that is asleep or not connected here,
+    // with no saved chat: its lane still belongs in the list (dimmed, not
+    // connected). Opening it reaches the computer by its key, which wakes it.
+    for (const computer of adeCloudLaneComputersNow()) {
+      const machineKey = computer.machineKey;
+      if (!machineKey || byMachine.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      if (!computer.projectOrigin || computer.projectOrigin !== context.projectKey) continue;
+      const connection = connectionFor(context.connections, machineKey, computer.instanceId);
+      if (connection?.state === "connected") continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
+      // A connection's slice from its live reads keeps its own lanes.
+      if (previous && previous.lanes.length > 0 && !isSavedChatsMachineId(machineId)) continue;
+      if (!connection) keptSyntheticIds.add(machineId);
+      const machineName = connection?.target.name ?? computer.laneName;
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${computer.projectOrigin}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        hostname: computer.instanceId,
+        projectId: computer.projectOrigin,
+        rootPath: "",
+        displayName: machineName,
+      };
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        lanes: [laneComputerLane(computer, previous?.lanes.find((lane) => lane.id === computer.laneId))],
+        sessions: previous?.sessions ?? [],
+        error: null,
+      });
+    }
     replaceSavedChatLocations(nextLocations);
     const staleSynthetic = Object.keys(store.crossMachineLanesByMachineId)
       .filter((machineId) => isSavedChatsMachineId(machineId) && !keptSyntheticIds.has(machineId));
@@ -289,6 +328,27 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     queuedContext = null;
     if (next) void refreshCloudSavedChats(next);
   }
+}
+
+/**
+ * The one lane an ADE Cloud lane computer holds, as a row while the computer
+ * can't answer. Keeps the row's first-seen time so the list does not reorder.
+ */
+function laneComputerLane(computer: { laneId: string; laneName: string }, previous: LaneSummary | undefined): LaneSummary {
+  return {
+    id: computer.laneId,
+    name: computer.laneName,
+    laneType: "worktree",
+    baseRef: "",
+    branchRef: "",
+    worktreePath: "",
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    createdAt: previous?.createdAt ?? new Date().toISOString(),
+  };
 }
 
 const machineOnline = (machineId: string): boolean =>

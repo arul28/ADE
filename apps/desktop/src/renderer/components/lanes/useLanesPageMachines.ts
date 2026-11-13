@@ -13,6 +13,33 @@ import {
   type MachineChipModel,
   type MachineLane,
 } from "../../state/laneMachineRouting";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
+import { connectMachine } from "../../lib/machineConnect";
+
+/** Wakes in flight, by machine key: a second click on the lane does not ask again. */
+const restingCloudReaches = new Set<string>();
+
+/**
+ * A lane of an ADE Cloud computer that is asleep or not connected here: reach
+ * the computer by its account key (contract C2), which wakes it and connects
+ * it. Its lanes and chats then come from the computer itself. Any other
+ * offline machine is left alone: nothing here can start it.
+ */
+function reachRestingCloudLane(row: MachineLane): void {
+  const computer = adeCloudLaneComputerForMachine({
+    hostname: row.hostname,
+    machineKey: savedChatsMachineKey(row.machineId),
+  });
+  const machineKey = computer?.machineKey ?? null;
+  if (!machineKey || restingCloudReaches.has(machineKey)) return;
+  restingCloudReaches.add(machineKey);
+  void connectMachine(machineKey)
+    .catch((error: unknown) => {
+      console.warn("[lanes] waking the lane's ADE Cloud computer failed", error instanceof Error ? error.message : String(error));
+    })
+    .finally(() => restingCloudReaches.delete(machineKey));
+}
 
 /**
  * A lane on another machine is selected here, never in the store's
@@ -187,10 +214,16 @@ export function useLanesPageMachines({
   const selectedLaneId = foreignSelectedKey && foreignRowByKey.has(foreignSelectedKey)
     ? foreignSelectedKey
     : storeSelectedLaneId;
-  /** Select a row key: foreign rows stay in page state, local ids go to the store. */
+  /**
+   * Select a row key: foreign rows stay in page state, local ids go to the
+   * store. Opening a lane of an ADE Cloud computer that is asleep or not
+   * connected here reaches that computer by its key, which wakes it.
+   */
   const selectLane = useCallback((key: string | null) => {
-    if (key && foreignRowByKeyRef.current.has(key)) {
+    const foreignRow = key ? foreignRowByKeyRef.current.get(key) : undefined;
+    if (key && foreignRow) {
       setForeignSelectedKey(key);
+      if (!foreignRow.online) reachRestingCloudLane(foreignRow);
       return;
     }
     setForeignSelectedKey(null);
