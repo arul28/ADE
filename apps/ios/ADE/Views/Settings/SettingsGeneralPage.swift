@@ -5,7 +5,7 @@ private let settingsGeneralLog = Logger(subsystem: "com.ade.ios", category: "Set
 
 // Settings › General, where Settings opens. The desktop's General page
 // (`GeneralPage.tsx`) on the phone, in the same order: what needs attention,
-// then "You" and "Primary machine" (the desktop's "This machine": on the
+// then "You" and "Machines" (the desktop's "This machine": on the
 // phone that name reads as the phone; side by side where the window is wide
 // enough), then ADE itself with every machine's version. Each block is one
 // panel of rows, as on every other Settings page: a lead row that says who or
@@ -147,10 +147,10 @@ struct SettingsGeneralPage: View {
     .accessibilityLabel(weekTotals.map { "\(adeUsageCompact($0.reduce(0, +))) tokens" } ?? "No usage yet")
   }
 
-  // MARK: Primary machine
+  // MARK: Machines
 
   private var machineSection: some View {
-    ADESettingsSection("Primary machine") {
+    ADESettingsSection("Machines") {
       ADESettingsRows {
         ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
           SettingsGeneralLeadRow(title: primary?.name ?? "No machine yet", subtitle: machineSubtitle) {

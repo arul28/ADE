@@ -754,12 +754,18 @@ struct WorkSessionRow: View, Equatable {
         // No lane header names the machine here: the row does, while the list
         // spans machines.
         if showsLaneIdentity, let machineName, !machineName.isEmpty {
-          Label(machineName, systemImage: "desktopcomputer")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .labelStyle(.titleAndIcon)
-            .lineLimit(1)
-            .layoutPriority(-1)
+          // Above the lane chip: the chip fills the rest of the line, so a
+          // lower priority left the badge only its glyph.
+          HStack(spacing: 3) {
+            Image(systemName: "desktopcomputer")
+              .font(.system(size: 9, weight: .medium))
+            Text(machineName)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .layoutPriority(1)
         }
         lineageMark(font: .caption2)
         subagentMarkView
