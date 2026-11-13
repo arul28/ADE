@@ -999,6 +999,7 @@ export function formatCloudDate(ms: number): string {
 
 /** The account banner while the free plan's GitHub rules hold its hours (the dashboard's plan card says it there). */
 export const CLOUD_FREE_GITHUB_BANNER_ID = "cloud-free-github";
+export const CLOUD_FREE_REFUSED_BANNER_ID = "cloud-free-refused";
 
 /** "You're out of hours", "You've used 95%", a failed payment: one banner, the most urgent. */
 export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
@@ -1021,6 +1022,11 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
   const github = account.rules === "free" ? cloudFreePlanOf(account).github : undefined;
   if (account.hours.state === "zero" && github && github.state !== "ok" && github.sentence) {
     return { id: CLOUD_FREE_GITHUB_BANNER_ID, tone: "warning", title: "Free hours wait on GitHub", detail: github.sentence };
+  }
+  // Another account already used this computer's free plan: those hours never come back at the reset, so never say "until Dec 1".
+  const freePlan = account.rules === "free" ? cloudFreePlanOf(account) : undefined;
+  if (account.hours.state === "zero" && freePlan?.state === "refused" && freePlan.sentence) {
+    return { id: CLOUD_FREE_REFUSED_BANNER_ID, tone: "warning", title: "No free hours on this account", detail: freePlan.sentence };
   }
   if (account.hours.state === "zero") {
     return {

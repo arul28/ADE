@@ -3,6 +3,7 @@ import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phospho
 import {
   CLOUD_DISK_WARN_SHARE,
   CLOUD_FREE_GITHUB_BANNER_ID,
+  CLOUD_FREE_REFUSED_BANNER_ID,
   CLOUD_PLAN_LABELS,
   cloudAccountBanner,
   cloudEarnedHoursOf,
@@ -46,6 +47,7 @@ import {
   hoursForecast,
   lastRunText,
   planName,
+  removedReasonText,
   prefersReducedMotion,
   type DashLane,
 } from "./cloudDashboardModel";
@@ -231,9 +233,16 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const accountBanner = cloudAccountBanner(account);
   const overPlan = account.planCleanup != null || accountBanner?.id === "cloud-over-plan-disk";
   // The free plan's GitHub hold: the hero's line and the plan card's notice say it, with what to do.
-  const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID ? null : accountBanner;
+  const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID || accountBanner?.id === CLOUD_FREE_REFUSED_BANNER_ID ? null : accountBanner;
   const diskLimit = account.disk.limitGb ?? 0;
   const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
+  const openBillingPortal = async () => {
+    try {
+      await window.ade.cloud?.openBillingPortal?.();
+    } catch (error) {
+      showToast({ tone: "error", title: "Couldn't open billing", message: errorText(error) });
+    }
+  };
 
   return (
     <div id={CLOUD_DASHBOARD_ID} className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
@@ -247,7 +256,19 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         now={now}
       />
 
-      {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
+      {banner ? (
+        <Banner
+          layout="inline"
+          model={{
+            ...banner,
+            // A failed payment says to update the card: the way there, on the notice.
+            ...(banner.id === "cloud-hours-past-due" && window.ade.cloud?.openBillingPortal
+              ? { actions: [{ label: "Update card", variant: "primary" as const, onClick: () => void openBillingPortal() }] }
+              : {}),
+            report: false,
+          }}
+        />
+      ) : null}
       <PlanNotices account={account} onChanged={refresh} />
       <CloudIdleCleanupNotices account={account} now={now} onChanged={refresh} />
       {!overPlan && diskShare >= CLOUD_DISK_WARN_SHARE ? (
@@ -382,7 +403,10 @@ function CloudHero({
             <span className="adecd-label">Hours left this month</span>
             <div className="adecd-hours-num">
               <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
-              <span>of {formatCloudHours(hours.includedMilli)} h, {resets}</span>
+              {/* Free hours held (GitHub rules, or another account used them here): the plan's hours, on hold, never "of 0 h". */}
+              <span>{hours.includedMilli <= 0 && (githubLine || blockedSentence) && account.plan === "free"
+                ? `of ${formatCloudHours(cloudCatalogOf(account).plans.free.includedMilli)} h, on hold`
+                : `of ${formatCloudHours(hours.includedMilli)} h, ${resets}`}</span>
             </div>
             <div className="kit-meter adecd-meter" data-level={usageLeftLevel(hoursPct)}>
               <span style={{ width: `${Math.max(0, Math.min(100, hoursPct))}%` }} />
@@ -563,7 +587,7 @@ function LaneTable({
               ) : (
                 <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
               )}
-              <span className="adecd-when">{lastRunText(lane, now)}</span>
+              <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
             </div>

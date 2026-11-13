@@ -8,6 +8,7 @@ import {
   cloudCatalogHasPro,
   cloudCatalogOf,
   cloudExtraHourCentsOf,
+  cloudFreePlanOf,
   cloudPlanIdOf,
   cloudPlanLabelOf,
   formatCloudCents,
@@ -83,6 +84,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     : null;
   const keepsOldTerms = oldTerms != null && (oldTerms.hoursMilli != null || oldTerms.diskGb != null);
   const until = formatCloudDate(billing.periodEnd);
+  const githubState = account.rules === "free" ? cloudFreePlanOf(account).github?.state : undefined;
+  const githubHeld = githubState != null && githubState !== "ok";
 
   const run = async (work: (() => Promise<unknown>) | undefined) => {
     if (!work) return;
@@ -183,7 +186,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     if (pastDue || billing.cancelAtPeriodEnd) return null;
     if (!paid) return { label: `Get ${CLOUD_PLAN_LABELS[column.id]}`, primary: column.id === "plus" };
     if (nextPlanId === column.id) return null;
-    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] > CLOUD_PLAN_RANK[current] };
+    // One filled button per card: the next plan up.
+    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 };
   };
 
   // Extra disk (paid only, and only when the server sells it).
@@ -196,10 +200,13 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   const diskLimitOptions = (EXTRA_DISK_LIMITS.includes(shownDiskLimit) ? EXTRA_DISK_LIMITS : [...EXTRA_DISK_LIMITS, shownDiskLimit].sort((a, b) => Number(a) - Number(b)))
     .map((value) => ({ value, label: `Up to $${value} a month` }));
 
+  // No button in any column (a cancel waiting, a failed payment, Max with nothing above): no empty button row.
+  const anyAction = columns.some((column) => actionFor(column) != null);
+
   const statusLine = pastDue
     ? "Your last payment failed. Update your card in Manage billing."
     : billing.cancelAtPeriodEnd
-      ? `Your plan ends ${until}. You're on Free after that.`
+      ? `Your plan ends ${until}, then you're on Free. To keep it, use Manage billing.`
       : nextPlanId
         ? `You move to ${CLOUD_PLAN_LABELS[nextPlanId]} on ${until}.`
         : paid
@@ -220,14 +227,14 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
       </header>
       <div className="kit-card-body">
         <CloudFreeGithubNotice account={account} onChanged={onChanged} />
-        <div className="adecd-plans" style={{ ["--adecd-plan-cols" as string]: columns.length, ["--adecd-plan-facts" as string]: showPhoneMinutes ? 4 : 3 }}>
+        <div className="adecd-plans" style={{ ["--adecd-plan-cols" as string]: columns.length, ["--adecd-plan-facts" as string]: showPhoneMinutes ? 4 : 3, ["--adecd-plan-foot" as string]: anyAction ? "48px" : "12px" }}>
           <div className="adecd-plan-col adecd-plan-keys" aria-hidden="true">
             <span className="adecd-plan-top" />
             <span>Price</span>
             <span>Hours a month</span>
             <span>Disk</span>
             {showPhoneMinutes ? <span>Phone minutes</span> : null}
-            <span className="adecd-plan-wrap">Past your hours</span>
+            <span className="adecd-plan-wrap">Extra hours</span>
             <span className="adecd-plan-foot" />
           </div>
           {columns.map((column) => {
@@ -258,7 +265,10 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
                 ) : null}
                 <span className="adecd-plan-wrap">{(() => {
                   const cents = cloudExtraHourCentsOf(column.id, catalog);
-                  return cents == null ? <small>Work stops until the next month</small> : <small>{formatCloudCentsPerHour(cents)} an hour, if you turn it on</small>;
+                  // The row is "Extra hours": a price per hour (on only if you turn it on, below), or none on Free.
+                  return cents == null
+                    ? <small title="Work stops until your hours reset">None: work stops</small>
+                    : <span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b><small> an hour</small></span>;
                 })()}</span>
                 <span className="adecd-plan-foot">
                   {action ? (
@@ -278,8 +288,9 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
           })}
         </div>
         {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
-          <p className="adecd-plan-fine" data-tone="warn">
-            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until their disk fits; you clean up or pick what ADE frees here.
+          // A what-if, not a state: quiet text, not a warning colour.
+          <p className="adecd-plan-fine">
+            If you cancel: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ADE frees here.
           </p>
         ) : null}
         {keepsOldTerms && currentFacts ? (
@@ -287,7 +298,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
             {CLOUD_PLAN_LABELS[current]} keeps your old {[oldTerms?.hoursMilli != null ? `${formatCloudHours(oldTerms.hoursMilli)} hours` : null, oldTerms?.diskGb != null ? `${oldTerms.diskGb} GB` : null].filter(Boolean).join(" and ")} until {until}. From then it has {[oldTerms?.hoursMilli != null ? `${formatCloudHours(currentFacts.includedMilli)} hours` : null, oldTerms?.diskGb != null ? `${currentFacts.diskGb} GB` : null].filter(Boolean).join(" and ")}, as in the table.
           </p>
         ) : null}
-        {!paid ? (
+        {/* The rule, unless the GitHub notice above already says how it applies to you. */}
+        {!paid && !githubHeld ? (
           <p className="adecd-plan-fine">
             Free needs a GitHub account at least {CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old, or a card on file (no charge). One free plan per GitHub account and per computer.
           </p>

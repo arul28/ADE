@@ -16,17 +16,17 @@ import { Banner } from "../../ui/notice";
 
 const GITHUB_SETTINGS_ROUTE = settingsRouteFor("integrations.github");
 
-/** The hero's one line under the hours while the GitHub rules hold the free hours (the plan card's notice says the rest). */
+/** The hero's one short line while the GitHub rules hold the free hours; the plan card's notice says why and what to do. */
 export function cloudFreeGithubHeroLine(github: CloudFreePlanGithub): string | null {
   switch (github.state) {
     case "no_github":
-      return "No free hours until you connect GitHub.";
+      return "Free hours wait for GitHub.";
     case "too_new":
       return github.oldEnoughAt != null
-        ? `Free hours start ${formatCloudFreeGithubDay(github.oldEnoughAt)}, or now with a card (no charge).`
-        : "Free hours start when your GitHub account is 30 days old, or now with a card (no charge).";
+        ? `Free hours start ${formatCloudFreeGithubDay(github.oldEnoughAt)}.`
+        : `Free hours start when your GitHub account is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old.`;
     case "used":
-      return "This GitHub account's free plan is on another ADE account.";
+      return "No free hours on this account yet.";
     case "checking":
       return "Checking your GitHub account for free hours.";
     default:
