@@ -748,6 +748,15 @@ step that works in a lane here (`automationCloudProblem`). A safe test run
 stays here. Every `ade-action` step that calls the `cloud` domain gets the
 same automation approval, whatever its args say.
 
+**Names.** A new lane on ADE Cloud is named exactly as a lane on this
+computer: it starts on the name from the prompt and a placeholder branch in
+the project's pattern, and the brain on its computer asks for the AI name and
+renames the lane and its branch (`cloudLaneConfig` keeps `autoName` whenever a
+local launch would be auto-named; a name the person chose is kept). The desktop
+follows a finished launch until that name lands, so the card and the
+computer's branch metadata get it. The computer's own name is set from the
+first name and stays internal.
+
 **Renames.** A cloud computer's brain writes a lane's new name to its
 computer's `ade_lane_name` metadata when that lane is the one the computer was
 made for (`cloudLaneNameSync.ts`). The write goes through the account server
