@@ -60,6 +60,15 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Everything after "--" is passed to the app as launch arguments (put --text
   before it). The summary names the configuration it built.
 
+  A build root with an XcodeGen project.yml and no .xcodeproj (or only one
+  git does not track) runs XcodeGen first and says so; without XcodeGen the
+  error says how to install it (brew install xcodegen). Same for install and test.
+
+  --machine <name> (no --lane) builds in this chat's work copy there; a cold
+  build waits as long as it would here and prints "still running" lines to
+  stderr meanwhile. --clone sets this repo up there first. The simulator
+  session there is let go when this chat's turn ends (the device stays on).
+
   Flags:
     --device, --udid <id>       Simulator device.
     --target, --target-id <id>  Target id from "apple apps".

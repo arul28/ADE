@@ -15,12 +15,22 @@ ade terminal list --machine "Windows PC" --text   # this chat's shells there
 ade shell clean --machine "Windows PC"            # delete the work copy when done
 ```
 
+- No repository there, or a command that needs none (`nvidia-smi`, a GPU
+  job, a system check): `ade shell start --machine "Windows PC" --scratch --wait -- nvidia-smi`
+  runs in an empty folder there, removed when the shell ends. No commit,
+  push or checkout needed. `--clone` instead sets this repository up there
+  first (for `shell`, `apple`, `android` and `files`).
 - Put all the steps in one call: `--wait -- sh -c "npm ci && npm test"`, or
   write a script and run it once. Each call opens a new shell there and syncs
   the work copy again, so one call per command is slow. Do not do that.
 - The shell runs in the background there: no list on that machine shows it
   (it is archived from the start). Read it with `ade terminal read --machine …`.
 - The command uses that machine's shell (PowerShell on Windows).
+- A file made there that git does not track (generated code, a pushed
+  fixture) stays through the next sync. Edits there to tracked files still
+  stop a sync until you `--no-sync` or `--discard`.
+- Devices and screens work the same way (`ade apple|android|screen|app-control
+  … --machine`); see ade-computer-use `references/other-machines.md`.
 - The simulator works the same way: `ade apple launch --machine "Mac Studio"`
   with no `--lane` builds this chat's work copy there and runs it on a free
   simulator that machine already has (a new one only when none is free).
@@ -31,8 +41,9 @@ ade shell clean --machine "Windows PC"            # delete the work copy when do
   `ade files pull --machine "Windows PC" build/out.log ./logs/`. Paths there
   are relative to the work copy; up to 256 MiB, checked by sha256. Never send a
   file as base64 or `echo` inside shell commands: that takes several shells per
-  file. A pushed file counts as work made there, so the next shell needs
-  `--no-sync` (keep it) or `--discard` (drop it).
+  file. A pushed file that git does not track stays through the next sync;
+  one that overwrites a tracked file counts as work made there (`--no-sync`
+  keeps it, `--discard` drops it).
 - Git moves code between the machines. To keep work you did there, commit and
   push from there (`ade shell start --machine … --no-sync -- git push origin HEAD:<branch>`),
   then pull here. A sync refuses while the copy holds unpushed work; `--no-sync`

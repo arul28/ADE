@@ -1,4 +1,4 @@
-import { activeRemoteWorkOnRow, remoteAndroidEmulatorUses, remoteSimulatorUses } from "../../../shared/chatRemoteWork";
+import { activeRemoteWorkOnRow, remoteAndroidEmulatorUses, remoteSimulatorUses, remoteWorkUsesOf } from "../../../shared/chatRemoteWork";
 import {
   useCallback,
   useEffect,
@@ -44,6 +44,8 @@ import {
   isAvailableWorkSidebarTab,
   isDesktopWorkTool,
   isHostMismatchWorkTool,
+  laneScreenPlatform,
+  remoteMachineHostPlatform,
   workToolContextLabel,
   workToolLabel,
   type WorkToolContext,
@@ -210,15 +212,36 @@ export function WorkSidebar({
   const hasSideChat = sideChat.kind !== "none";
   const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
   const hasRemoteAndroidEmulator = remoteAndroidEmulatorUses(activeSession).length > 0;
-  const toolContext = useMemo(
+  // The other machines' screens this chat drives, by the tool that shows each.
+  const remoteDesktopPlatforms = remoteWorkUsesOf(activeSession, "usesDesktop")
+    .map((use) => remoteMachineHostPlatform(use.machinePlatform));
+  const hasRemoteWindowsDesktop = remoteDesktopPlatforms.includes("win32");
+  // An unknown platform shows in the Mac Desktop pane, which reads the host's own.
+  const remoteMacDesktopPlatform = remoteDesktopPlatforms.includes("darwin") || remoteDesktopPlatforms.includes(null)
+    ? "darwin"
+    : remoteDesktopPlatforms.includes("linux") ? "linux" : null;
+  const hasRemoteAppControl = remoteWorkUsesOf(activeSession, "usesAppControl").length > 0;
+  const toolContext = useMemo<WorkToolContext>(
     () => ({
       ...feedsToolContext,
       ...(laneCloud ? { cloudLane: laneCloud } : {}),
       hasSideChat,
       ...(hasRemoteSimulator ? { hasRemoteSimulator } : {}),
       ...(hasRemoteAndroidEmulator ? { hasRemoteAndroidEmulator } : {}),
+      ...(remoteMacDesktopPlatform ? { remoteMacDesktopPlatform } : {}),
+      ...(hasRemoteWindowsDesktop ? { hasRemoteWindowsDesktop } : {}),
+      ...(hasRemoteAppControl ? { hasRemoteAppControl } : {}),
     }),
-    [feedsToolContext, hasSideChat, hasRemoteAndroidEmulator, hasRemoteSimulator, laneCloud],
+    [
+      feedsToolContext,
+      hasSideChat,
+      hasRemoteAndroidEmulator,
+      hasRemoteAppControl,
+      hasRemoteSimulator,
+      hasRemoteWindowsDesktop,
+      laneCloud,
+      remoteMacDesktopPlatform,
+    ],
   );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a
@@ -822,7 +845,7 @@ export function WorkSidebar({
               key={effectiveTool}
               role="tabpanel"
               id={workToolPanelId(effectiveTool)}
-              aria-label={workToolLabel(effectiveTool, toolContext.hostPlatform ?? null)}
+              aria-label={workToolLabel(effectiveTool, laneScreenPlatform(toolContext))}
               className="absolute inset-0 z-[1] min-h-0"
               initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
               animate={{ opacity: 1, y: 0 }}

@@ -6,12 +6,23 @@ import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
 import { CLOUD_LANE_MACHINE, followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
 import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
+import {
+  pullFileFromWorkCopy,
+  pushFileToWorkCopy,
+  withRemoteAndroidArgs,
+  withRemoteAppControlArgs,
+  withRemoteAppleArgs,
+  withRemoteScreenArgs,
+  withRemoteShellArgs,
+} from "./cliRemoteWork";
+import { JsonRpcError } from "./jsonrpc";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
+import { MAC_DESKTOP_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/macDesktop";
+import { remoteMachineLongCallBudgetMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { androidStoreShotCaption } from "../../desktop/src/shared/androidDevicePresentation";
 import {
   CLI_COMMAND_ALIASES,
@@ -58,6 +69,8 @@ import {
 
 /** `ade apple` verbs that build the app: with --machine and no --lane they sync the work copy first. */
 const APPLE_BUILD_VERBS: ReadonlySet<string> = new Set(["launch", "open", "install", "install-app", "test", "tests"]);
+/** `ade app-control` verbs that run the app: with --machine and no --lane they sync the work copy first. */
+const APP_CONTROL_LAUNCH_VERBS: ReadonlySet<string> = new Set(["launch", "open", "start"]);
 
 /** Commands that can run on another machine with `--machine`. */
 const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
@@ -86,6 +99,12 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
  * machine, the machine `ade machines` acts on). They keep the flag.
  */
 const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help"]);
+/**
+ * Where `--clone` sets this repository up on that machine first (GitHub only,
+ * `machines.cloneForAgent` there): a chat there, or a command, device or file
+ * copy in this chat's work copy there.
+ */
+const MACHINE_CLONE_PRIMARIES: ReadonlySet<string> = new Set(["chat", "shell", "apple", "android", "files"]);
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
@@ -171,6 +190,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let machineClone = false;
   let cloudSize: string | null = null;
   let workCopySync: "none" | "discard" | null = null;
+  let scratch = false;
   let terminatorArgs: string[] | null = null;
   const command = parsed.command;
   // A shell start or an Apple build with --machine runs in this chat's work
@@ -181,7 +201,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   const subcommand = firstStandalonePositional(command.slice(1))?.toLowerCase() ?? "";
   const workCopyVerb = commandFlags.has("--machine")
     && ((primary === "shell" && (subcommand === "start" || subcommand === "create"))
-      || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand)));
+      || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand))
+      || (primary === "app-control" && APP_CONTROL_LAUNCH_VERBS.has(subcommand)));
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
     if (token === "--") {
@@ -208,7 +229,9 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine") { machine = takeValue(); continue; }
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
-    if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
+    if (flag === "--clone" && inline == null && MACHINE_CLONE_PRIMARIES.has(primary)) { machineClone = true; continue; }
+    // A one-off command that needs no code: no work copy, no repository there.
+    if (flag === "--scratch" && inline == null && workCopyVerb && primary === "shell") { scratch = true; continue; }
     // The size of a new ADE Cloud computer (`--machine cloud`); no chat or lane verb has a --size of its own.
     if (flag === "--size" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) { cloudSize = takeValue(); continue; }
     if ((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) {
@@ -230,6 +253,12 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   const usesWorkCopy = workCopyVerb && !commandFlags.has("--lane") && !commandFlags.has("--lane-id");
   if (workCopySync && !usesWorkCopy) {
     throw new CliUsageError("--no-sync and --discard are for this chat's work copy there; leave out --lane to use it.");
+  }
+  if (scratch) {
+    if (!usesWorkCopy) throw new CliUsageError("--scratch runs in a temporary folder there, not a lane: leave out --lane.");
+    if (workCopySync) throw new CliUsageError("--scratch has no work copy to sync: leave out --no-sync and --discard.");
+    if (machineClone) throw new CliUsageError("--scratch needs no repository there: leave out --clone.");
+    if (!terminatorArgs?.length) throw new CliUsageError("--scratch runs one command: ade shell start --machine <name> --scratch [--wait] -- <command>.");
   }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   const cloudLane = isCloudLaneMachineSelector(machine);
@@ -254,7 +283,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (subcommand === "clean") {
       throw new CliUsageError("ade shell clean deletes this chat's work copy on another machine: add --machine <name>.");
     }
-    const workCopyFlag = ["--no-sync", "--discard", "--wait"].find((flag) => flags.has(flag));
+    const workCopyFlag = ["--no-sync", "--discard", "--wait", "--scratch"].find((flag) => flags.has(flag));
     if (workCopyFlag) {
       throw new CliUsageError(`${workCopyFlag} is for a command on another machine: add --machine <name>. Here, run the command in your own shell.`);
     }
@@ -277,6 +306,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
               // A shell command's argv (after `--`), sent as argv so the other
               // machine renders it for its own shell.
               argv: primary === "shell" ? terminatorArgs : null,
+              ...(scratch ? { scratch: true } : {}),
             },
           }
         : {}),
@@ -300,7 +330,8 @@ function machineCallScopeFor(
   if (method.startsWith("projects.")) return { kind: "machine" };
   const selector = options.machineProject?.trim();
   if (selector) return { kind: "project", selector };
-  if (isMachineWideAction(method, params)) {
+  if (isMachineWideAction(method, params) || isScratchShell(method, params)) {
+    // A scratch command needs no code, so any project there can run it.
     // The machine's quota is the same from every project there, so a machine
     // without this repository can still answer. Sent as a `repo` scope that
     // allows any project: a brain older than `anyProject` still reads the repo
@@ -322,6 +353,13 @@ function machineCallScopeFor(
  * its projects they run in.
  */
 const MACHINE_WIDE_ACTIONS: ReadonlySet<string> = new Set(["usage.getUsageLimits", "usage.getUsageSnapshot"]);
+
+/** `ade shell start --machine … --scratch`: a command that needs no checkout there. */
+function isScratchShell(method: string, params: JsonObject | undefined): boolean {
+  if (method !== "ade/actions/call" || !params || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+  const { domain, action, args } = params.arguments;
+  return domain === "pty" && action === "create" && isRecord(args) && isRecord(args.remoteWork) && args.remoteWork.scratch === true;
+}
 
 function isMachineWideAction(method: string, params: JsonObject | undefined): boolean {
   if (method !== "ade/actions/call" || !params || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
@@ -346,6 +384,32 @@ function withoutLocalPaths(params: JsonObject | undefined): JsonObject {
   const toolArgs = strip(params.arguments);
   if (isRecord(toolArgs.args)) toolArgs.args = strip(toolArgs.args);
   return { ...params, arguments: toolArgs };
+}
+
+/** `domain.action` of an action call, the name the other machine's budgets use; null for anything else. */
+function remoteCallLabel(method: string, params: JsonObject | undefined): string | null {
+  if (method !== "ade/actions/call" || !params || !isRecord(params.arguments)) return null;
+  const { domain, action } = params.arguments;
+  return typeof domain === "string" && typeof action === "string" ? `${domain}.${action}` : null;
+}
+
+/** How often a long call to another machine says it is still waiting. */
+const REMOTE_WAIT_PROGRESS_EVERY_MS = 30_000;
+
+/**
+ * "· still running ios_simulator.launch on MacBook Pro (97)… 2m30s" on
+ * stderr every 30 s while a long call waits, so an agent reading the output
+ * knows the build goes on there. Returns the stop.
+ */
+function startRemoteWaitProgress(label: string, machine: string): () => void {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s` : `${seconds}s`;
+    process.stderr.write(`· still running ${label} on ${machine}… ${elapsed}\n`);
+  }, REMOTE_WAIT_PROGRESS_EVERY_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 /**
@@ -376,15 +440,27 @@ export async function createMachineRemoteConnection(
 
   /** The other machine's answer, and its display name when the brain says it. */
   const callRemoteAnswer = async (method: string, params?: JsonObject): Promise<{ result: unknown; machineName: string | null }> => {
-    const answer = await socketClient.request("machines.call", {
-      machine,
-      scope: machineCallScopeFor(method, params, options, localOriginUrl),
-      request: { method, params: withoutLocalPaths(params) },
-      timeoutMs: options.timeoutMs,
-      ...(options.machineClone ? { clone: true } : {}),
-    });
-    const machineName = isRecord(answer) && isRecord(answer.machine) ? asString(answer.machine.name) : null;
-    return { result: isRecord(answer) && "result" in answer ? answer.result : answer, machineName };
+    // A verb that runs long there too (an iOS build, a Gradle install, a test
+    // run): this brain waits that verb's own budget for it, so this end
+    // waits a minute longer still, and says on stderr that it is waiting.
+    const label = remoteCallLabel(method, params);
+    const longBudgetMs = remoteMachineLongCallBudgetMs(label);
+    const progress = longBudgetMs != null && label ? startRemoteWaitProgress(label, machine) : null;
+    try {
+      const answer = await socketClient.request("machines.call", {
+        machine,
+        scope: machineCallScopeFor(method, params, options, localOriginUrl),
+        request: { method, params: withoutLocalPaths(params) },
+        timeoutMs: options.timeoutMs,
+        ...(options.machineClone ? { clone: true } : {}),
+      }, longBudgetMs != null ? { timeoutMs: Math.max(options.timeoutMs, longBudgetMs + 60_000) } : undefined);
+      const machineName = isRecord(answer) && isRecord(answer.machine) ? asString(answer.machine.name) : null;
+      return { result: isRecord(answer) && "result" in answer ? answer.result : answer, machineName };
+    } catch (error) {
+      throw machineRefusal(error, machine);
+    } finally {
+      progress?.();
+    }
   };
   const callRemote = async (method: string, params?: JsonObject): Promise<unknown> =>
     (await callRemoteAnswer(method, params)).result;
@@ -757,6 +833,63 @@ export async function createMachineRemoteConnection(
     return withAppleActionResult(answer, { ...record, proofArtifactIds: ids });
   };
 
+  /**
+   * `ade screen record stop --machine` and `ade app-control record stop
+   * --machine`: a captioned recording files itself where it ran, which is
+   * the other machine's drawer. So the stop runs there with `proof: false`,
+   * the video is read back, and it is filed in THIS chat's drawer under the
+   * caption it was started with; the answer carries the id filed here.
+   */
+  const fileRemoteRecordingHere = async (
+    params: JsonObject,
+    surface: { backendName: string; toolName: string; label: string },
+  ): Promise<unknown> => {
+    const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+    const actionArgs = isRecord(toolArgs.args) ? toolArgs.args : {};
+    const { result: answer, machineName } = await callRemoteAnswer("ade/actions/call", {
+      ...params,
+      arguments: { ...toolArgs, args: { ...actionArgs, proof: false } },
+    });
+    if (isRecord(answer) && (answer.isError === true || answer.ok === false)) return answer;
+    const record = appleActionResult(answer);
+    const filePath = record ? asString(record.filePath) : null;
+    const caption = record ? asString(record.caption) : null;
+    // No caption is a scratch recording, here as there: nothing is filed.
+    if (!record || !filePath || !caption || asString(record.lastError)) return answer;
+    const where = machineName ?? machine;
+    let proofArtifactId: string | null = null;
+    try {
+      const filed = unwrapToolResult(await fileRemoteCapturesHere({
+        name: "ingest_computer_use_artifacts",
+        arguments: {
+          backendStyle: "manual",
+          backendName: surface.backendName,
+          toolName: surface.toolName,
+          inputs: [{
+            kind: "video_recording",
+            title: caption,
+            description: `${surface.label} recording on ${where}.`,
+            path: filePath,
+            mimeType: "video/mp4",
+            metadata: {
+              durationMs: typeof record.durationMs === "number" ? record.durationMs : null,
+              ...(typeof record.wallDurationMs === "number" ? { wallDurationMs: record.wallDurationMs } : {}),
+              ...(typeof record.idleCutMs === "number" ? { idleCutMs: record.idleCutMs } : {}),
+            },
+          }],
+        },
+      }));
+      proofArtifactId = firstFiledArtifactId(filed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      proofArtifactId = message.includes(PROOF_DUPLICATE_CODE)
+        ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
+        : null;
+      if (!proofArtifactId) process.stderr.write(`Could not file the ${surface.toolName} recording from ${where} as proof here: ${message}\n`);
+    }
+    return withAppleActionResult(answer, { ...record, proofArtifactId });
+  };
+
   return {
     mode: "runtime-socket",
     projectRoot: roots.projectRoot,
@@ -772,7 +905,8 @@ export async function createMachineRemoteConnection(
         return await fileRemoteCapturesHere(params);
       }
       if (method === "ade/actions/call" && params && isAppControlCaptureProof(params)) {
-        return await fileRemoteAppControlProofHere(params);
+        // Observed in this chat's work copy's session there.
+        return await fileRemoteAppControlProofHere(withRemoteAppControlArgs(params, roots.workspaceRoot, null));
       }
       if (method === "ade/actions/call" && params?.name === "work_copy_file" && isRecord(params.arguments)
         && (params.arguments.op === "push" || params.arguments.op === "pull")) {
@@ -826,6 +960,21 @@ export async function createMachineRemoteConnection(
         if (proofAction) return await fileRemoteAndroidProofHere(androidParams, proofAction);
         return await callRemote(method, androidParams);
       }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "mac_desktop") {
+        // The screen there is this chat's work copy's (Mac, Windows or Linux Desktop).
+        const screenParams = withRemoteScreenArgs(params, roots.workspaceRoot);
+        if (recordingStopFiledAsProof(screenParams)) {
+          return await fileRemoteRecordingHere(screenParams, { backendName: MAC_DESKTOP_PROOF_BACKEND_NAME, toolName: "desktop record", label: "Desktop screen" });
+        }
+        return await callRemote(method, screenParams);
+      }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "app_control") {
+        const appControlParams = withRemoteAppControlArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
+        if (recordingStopFiledAsProof(appControlParams)) {
+          return await fileRemoteRecordingHere(appControlParams, { backendName: "ade-app-control" /* APP_CONTROL_PROOF_BACKEND_NAME */, toolName: "app-control record", label: "App Control" });
+        }
+        return await callRemote(method, appControlParams);
+      }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a
         // review reads proof from it: this one.
@@ -840,6 +989,18 @@ export async function createMachineRemoteConnection(
     },
     close: () => socketClient.close(),
   };
+}
+
+/**
+ * A JSON-RPC error from `machines.call` is an answer, not a broken connection
+ * here: the other machine (or this brain, about reaching it) said no, and its
+ * sentence is the whole message. As a `CliToolError` naming the machine it is
+ * printed as it is; otherwise the CLI added "run ade doctor … or retry with
+ * --socket", which is about this machine and fixes nothing there.
+ */
+function machineRefusal(error: unknown, machine: string): unknown {
+  if (!(error instanceof JsonRpcError)) return error;
+  return new CliToolError(error.message, { machine, ...(error.data !== undefined ? { data: error.data as JsonObject } : {}) });
 }
 
 function isShellOrTerminalAction(params: JsonObject): boolean {
@@ -901,6 +1062,13 @@ function firstFiledArtifactId(value: unknown): string | null {
   const artifacts = record && Array.isArray(record.artifacts) ? record.artifacts : [];
   const first = artifacts.find(isRecord);
   return first ? asString(first.artifactId) ?? asString(first.id) : null;
+}
+
+/** A recording stop the other machine would file as proof; `proof: false` files nothing at all. */
+function recordingStopFiledAsProof(params: JsonObject): boolean {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  const args = toolArgs && isRecord(toolArgs.args) ? toolArgs.args : null;
+  return params.name === "run_ade_action" && toolArgs?.action === "stopRecording" && args?.proof !== false;
 }
 
 function isAppControlCaptureProof(params: JsonObject | undefined): boolean {

@@ -136,6 +136,12 @@ import { createMacDesktopStreaming } from "./macDesktopStreaming";
 import { createMacDesktopWindows } from "./macDesktopWindows";
 import { createWindowsDesktopOperations } from "../windowsDesktop/windowsDesktopOperations";
 import {
+  isRemoteWorkLaneId,
+  onRemoteWorkCopyReleased,
+  registerRemoteWorkDeviceCheck,
+  remoteWorkLaneSummary,
+} from "../remoteWork/remoteWorkCopyService";
+import {
   installLinuxDesktopPackages,
   linuxDesktopInstallCommand,
   LINUX_DESKTOP_ENCODER_MESSAGE,
@@ -346,7 +352,24 @@ export type MacDesktopRuntimeService = MacDesktopServiceApi & {
   getResolution(): MacDesktopResolutionPreset;
 };
 
-export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktopRuntimeService {
+export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): MacDesktopRuntimeService {
+  // A chat on another machine stands in for a lane with its work copy here
+  // (`remote-work-…`, `ade screen … --machine`): the copy is the lane's
+  // folder, and it is named for that chat's machine.
+  const { resolveLaneWorktreePath: laneWorktreePath, resolveLaneName: laneName } = serviceDeps;
+  const deps: MacDesktopServiceDeps = {
+    ...serviceDeps,
+    resolveLaneWorktreePath: laneWorktreePath
+      ? (laneId) => (isRemoteWorkLaneId(laneId)
+        ? remoteWorkLaneSummary(serviceDeps.projectRoot, laneId)?.path ?? null
+        : laneWorktreePath(laneId))
+      : laneWorktreePath,
+    resolveLaneName: laneName
+      ? (laneId) => (isRemoteWorkLaneId(laneId)
+        ? remoteWorkLaneSummary(serviceDeps.projectRoot, laneId)?.name ?? null
+        : laneName(laneId))
+      : laneName,
+  };
   const platform = deps.platform ?? process.platform;
   const now = deps.now ?? (() => Date.now());
   /**
@@ -1813,7 +1836,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return await recording.startRecording(args);
     },
 
-    async stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus> {
+    async stopRecording(args: { laneId: string; chatSessionId?: string | null; proof?: boolean | null }): Promise<MacDesktopRecordingStatus> {
       assertSupported();
       return await recording.stopRecording(args);
     },
@@ -1964,9 +1987,24 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       ownership.clear();
       lifecycleTails.clear();
       recording.clear();
+      offRemoteWorkLanes();
     },
   };
 
+  // A chat's work copy holding this screen (a display or the input lease) is
+  // in use, so the idle and low-disk cleanups keep it; a copy that goes
+  // (`ade shell clean --machine`, the sweep, its chat gone) takes its screen,
+  // its lease and its apps with it.
+  const offRemoteWorkDeviceCheck = registerRemoteWorkDeviceCheck(deps.projectRoot, (laneId) =>
+    isRemoteWorkLaneId(laneId) && seatSupported && (ownership.hasDisplay(laneId) || leases.get(laneId) != null));
+  const offRemoteWorkReleased = onRemoteWorkCopyReleased(deps.projectRoot, (laneId) => {
+    if (disposed) return;
+    void api.destroyForLane(laneId);
+  });
+  function offRemoteWorkLanes(): void {
+    offRemoteWorkDeviceCheck();
+    offRemoteWorkReleased();
+  }
 
   return Object.assign(api, {
     /** The sync half of `getDisplay`, for the prompt gate and the lane marker. */

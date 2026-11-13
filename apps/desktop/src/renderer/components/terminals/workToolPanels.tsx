@@ -24,10 +24,18 @@ import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import { AndroidDevicePane } from "../android/AndroidDevicePane";
-import { remoteAndroidEmulatorUses, remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
+import {
+  remoteAndroidEmulatorUses,
+  remoteSimulatorUses,
+  remoteWorkUseKey,
+  remoteWorkUsesOf,
+} from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
+import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { useRemoteWorkReach } from "../../lib/remoteWorkPins";
 import { RemoteTargetSwitcher, useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { Banner } from "../ui/notice/Banner";
+import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import {
   getAppleMiniPlayerLaneDevice,
   handoffAppleMiniPlayerAsync,
@@ -45,7 +53,13 @@ import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
-import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
+import {
+  desktopToolForMachinePlatform,
+  isReadOnlyWorkTool,
+  remoteMachineHostPlatform,
+  type DesktopWorkTool,
+  type WorkToolContext,
+} from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
@@ -156,6 +170,82 @@ function NativePanelFrame({
       </div>
     </div>
   );
+}
+
+type RemoteWorkTargetUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
+
+/**
+ * A tool's view of the chat's work copy on another machine, once this window
+ * can reach that machine.
+ *
+ * The agent's commands go brain to brain, so the chat can drive a machine
+ * this window never connected to. Mounted only while the tool is on screen,
+ * this connects to it then (and on Retry), says so while it does, and hands
+ * the pin for that machine to `children` once it can.
+ */
+function RemoteWorkReachGate({
+  use,
+  children,
+}: {
+  use: RemoteWorkTargetUse;
+  children: (pin: OpenProjectBinding) => ReactNode;
+}) {
+  const reach = useRemoteWorkReach(use, true);
+  if (reach.kind === "pin") return <>{children(reach.pin)}</>;
+  if (reach.kind === "connecting") {
+    return <WorkToolEmptyLine title={`Connecting to ${use.machineName}…`} testId="remote-work-connecting" />;
+  }
+  if (reach.kind === "failed") {
+    return (
+      <div className="p-3" data-testid="remote-work-connect-failed">
+        <Banner
+          layout="inline"
+          model={{
+            id: `remote-work-connect-${remoteWorkUseKey(use)}`,
+            tone: "warning",
+            title: `Couldn't connect to ${use.machineName}`,
+            detail: reach.message,
+            actions: [{ label: "Retry", onClick: reach.retry }],
+            // A machine that is off or out of reach is not an ADE fault.
+            report: false,
+          }}
+        />
+      </div>
+    );
+  }
+  if (reach.kind === "disconnected") {
+    return (
+      <WorkToolEmptyLine
+        title={`${use.machineName} is disconnected in this window`}
+        testId="remote-work-disconnected"
+        action={(
+          <button type="button" className={WORK_TOOL_CHROME_CHIP} onClick={reach.retry}>
+            Connect
+          </button>
+        )}
+      />
+    );
+  }
+  return <WorkToolEmptyLine title={`Update ADE on ${use.machineName} to see this chat's work there`} />;
+}
+
+/**
+ * The chat the pane serves, as a driver of a device: its title, and the
+ * machine it runs on only when that is not this computer. Lets the pane say
+ * which chat is driving instead of naming a computer by its platform.
+ */
+function useDriverChat(
+  props: Pick<WorkToolPanelProps, "activeSession" | "panelSessionId" | "runtimePin">,
+): AppleDriverChat | null {
+  const bound = useAppStore((s) => s.projectBinding);
+  const { activeSession, panelSessionId, runtimePin } = props;
+  if (!panelSessionId) return null;
+  const binding = runtimePin ?? bound;
+  return {
+    sessionId: panelSessionId,
+    title: activeSession?.id === panelSessionId ? activeSession.title?.trim() || null : null,
+    machineName: binding?.kind === "remote" ? machineNameForBinding(binding) : null,
+  };
 }
 
 /* ── Panels ───────────────────────────────────────────────────────────────── */
@@ -356,11 +446,12 @@ function hasDecodedFrame(canvas: HTMLCanvasElement): boolean {
  */
 function WorkIosTool(props: WorkToolPanelProps) {
   const { activeSession, laneId, toolContext } = props;
-  const { options, chosen, choose, resolvePin } = useRemoteTargetChoice(
+  const { options, chosen, choose } = useRemoteTargetChoice(
     remoteSimulatorUses(activeSession),
     Boolean(laneId && toolContext.supportsIosSimulator),
   );
-  if (!chosen) return <WorkIosDevice {...props} />;
+  const driverChat = useDriverChat(props);
+  if (!chosen) return <WorkIosDevice {...props} driverChat={driverChat} />;
   const switcher = (
     <RemoteTargetSwitcher
       options={options}
@@ -374,21 +465,26 @@ function WorkIosTool(props: WorkToolPanelProps) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         {switcher}
-        <div className="min-h-0 flex-1"><WorkIosDevice {...props} /></div>
+        <div className="min-h-0 flex-1"><WorkIosDevice {...props} driverChat={driverChat} /></div>
       </div>
     );
   }
   const use = chosen.use;
-  const remotePin = resolvePin(use);
   return (
     <div className="flex h-full min-h-0 flex-col">
       {switcher}
       <div className="min-h-0 flex-1">
-        {remotePin === "unreachable" ? (
-          <WorkToolEmptyState title={`This window is not connected to ${use.machineName}`} />
-        ) : (
-          <RemoteWorkSimulator key={`${remotePin.key}:${use.workCopyLaneId}`} {...props} use={use} remotePin={remotePin} />
-        )}
+        <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
+          {(remotePin) => (
+            <RemoteWorkSimulator
+              key={`${remotePin.key}:${use.workCopyLaneId}`}
+              {...props}
+              use={use}
+              remotePin={remotePin}
+              driverChat={driverChat}
+            />
+          )}
+        </RemoteWorkReachGate>
       </div>
     </div>
   );
@@ -401,6 +497,7 @@ function WorkIosTool(props: WorkToolPanelProps) {
 function RemoteWorkSimulator(props: WorkToolPanelProps & {
   use: AgentChatRemoteWorkUse & { workCopyLaneId: string };
   remotePin: OpenProjectBinding;
+  driverChat: AppleDriverChat | null;
 }) {
   const { use, remotePin } = props;
   const laneId = use.workCopyLaneId;
@@ -451,7 +548,8 @@ function WorkIosDevice({
   canInsertContext,
   onAddIosContext,
   onInsertDraft,
-}: WorkToolPanelProps) {
+  driverChat,
+}: WorkToolPanelProps & { driverChat: AppleDriverChat | null }) {
   const mountScope = useWorkToolMountScope(runtimePin);
   /**
    * The device follows the pane out of the door.
@@ -591,6 +689,7 @@ function WorkIosDevice({
           runtimePin={runtimePin}
           projectRoot={laneRoot}
           ignoreChatOwnership
+          driverChat={driverChat}
           onAddContext={canInsertContext ? onAddIosContext : undefined}
           onInsertDraft={canInsertContext ? onInsertDraft : undefined}
         />
@@ -612,7 +711,7 @@ function WorkIosDevice({
  */
 function WorkAndroidTool(props: WorkToolPanelProps) {
   const { activeSession, laneId, runtimePin, toolContext } = props;
-  const { options, chosen, choose, resolvePin } = useRemoteTargetChoice(
+  const { options, chosen, choose } = useRemoteTargetChoice(
     remoteAndroidEmulatorUses(activeSession),
     Boolean(laneId && toolContext.supportsAndroidEmulator !== false),
   );
@@ -631,15 +730,15 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
     />
   );
   const use = chosen?.use ?? null;
-  const remotePin = use ? resolvePin(use) : null;
-  let body: ReactNode;
-  if (!use) {
-    body = <WorkAndroidDevice {...props} laneName={props.activeLane?.name ?? null} />;
-  } else if (remotePin === "unreachable" || !remotePin) {
-    body = <WorkToolEmptyState title={`This window is not connected to ${use.machineName}`} />;
-  } else {
-    body = <RemoteWorkAndroid key={`${remotePin.key}:${use.workCopyLaneId}`} {...props} use={use} remotePin={remotePin} />;
-  }
+  const body: ReactNode = use ? (
+    <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
+      {(remotePin) => (
+        <RemoteWorkAndroid key={`${remotePin.key}:${use.workCopyLaneId}`} {...props} use={use} remotePin={remotePin} />
+      )}
+    </RemoteWorkReachGate>
+  ) : (
+    <WorkAndroidDevice {...props} laneName={props.activeLane?.name ?? null} />
+  );
   // Not padded, for the Apple pane's reason: the device fills its host.
   return (
     <NativePanelFrame frameRef={mountRef}>
@@ -761,46 +860,83 @@ function WorkAndroidDevice({
   );
 }
 
-function WorkAppControlTool({
-  laneId,
-  laneRoot,
-  activeLane,
-  toolContext,
-  panelSessionId,
-  runtimePin,
-  canInsertContext,
-  shouldPersistPanelAttachment,
-  onAddAttachment,
-  onAddAppControlContext,
-  onInsertDraft,
-}: WorkToolPanelProps) {
+/**
+ * A tool that shows this lane's surface, or the one this chat drives on
+ * another machine through its work copy there (`ade screen … --machine`,
+ * `ade app-control … --machine`), chosen with one row when there is more than
+ * one. The other machine's surface is read through that machine's pin, keyed
+ * by the work copy's lane, once this window can reach it.
+ */
+function RemoteOrLaneTool({
+  uses,
+  laneAvailable,
+  remoteLabel,
+  testId,
+  renderLane,
+  renderRemote,
+}: {
+  uses: RemoteWorkTargetUse[];
+  laneAvailable: boolean;
+  remoteLabel: string;
+  testId: string;
+  renderLane: () => ReactNode;
+  renderRemote: (use: RemoteWorkTargetUse, pin: OpenProjectBinding) => ReactNode;
+}) {
+  const { options, chosen, choose } = useRemoteTargetChoice(uses, laneAvailable);
+  const use = chosen?.use ?? null;
+  if (!use && options.length <= 1) return <>{renderLane()}</>;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <RemoteTargetSwitcher
+        options={options}
+        chosenKey={chosen?.key ?? null}
+        onChoose={choose}
+        remoteLabel={remoteLabel}
+        testId={testId}
+      />
+      <div className="min-h-0 flex-1">
+        {use ? (
+          <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
+            {(pin) => renderRemote(use, pin)}
+          </RemoteWorkReachGate>
+        ) : renderLane()}
+      </div>
+    </div>
+  );
+}
+
+function WorkAppControlTool(props: WorkToolPanelProps) {
+  const {
+    laneId,
+    laneRoot,
+    activeLane,
+    activeSession,
+    toolContext,
+    panelSessionId,
+    runtimePin,
+    canInsertContext,
+    shouldPersistPanelAttachment,
+    onAddAttachment,
+    onAddAppControlContext,
+    onInsertDraft,
+  } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
   // `ade app-control show` answers "shown" only once this is on screen, and
   // the floating App Control player stays hidden while it is.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("app-control", mountScope, laneId) : null);
-  // Before the lane gate, and before the panel: a read-only surface has
-  // something to say whether or not a lane is selected, and must not mount a
-  // stubbed namespace.
-  if (isReadOnlyWorkTool("app-control", toolContext)) {
-    return (
-      <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="app-control" laneId={laneId} runtimePin={runtimePin} />
-      </div>
-    );
-  }
-  if (!laneId) return <NoLaneEmptyLine />;
-  return (
+  const remoteUses = remoteWorkUsesOf(activeSession, "usesAppControl");
+  const panel = (key: string, args: { laneId: string; pin: OpenProjectBinding | null; projectRoot: string | null }) => (
     <NativePanelFrame padded>
       <Suspense fallback={null}>
         <div ref={mountRef} className="h-full min-h-0">
           <ChatAppControlPanel
             // One session per lane: another lane is another session, read afresh.
-            key={`work-appcontrol:${mountScope}:${laneId}`}
+            key={key}
             sessionId={panelSessionId}
-            laneId={laneId}
+            laneId={args.laneId}
             laneName={activeLane?.name ?? null}
-            runtimePin={runtimePin}
-            projectRoot={laneRoot}
+            runtimePin={args.pin}
+            projectRoot={args.projectRoot}
             controlDisabledReason={null}
             onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
             onAddContext={canInsertContext ? onAddAppControlContext : undefined}
@@ -809,6 +945,34 @@ function WorkAppControlTool({
         </div>
       </Suspense>
     </NativePanelFrame>
+  );
+  const renderLane = () => {
+    // Before the lane gate, and before the panel: a read-only surface has
+    // something to say whether or not a lane is selected, and must not mount a
+    // stubbed namespace.
+    if (isReadOnlyWorkTool("app-control", toolContext)) {
+      return (
+        <div ref={mountRef} className="contents">
+          <WorkToolReadOnlyView tool="app-control" laneId={laneId} runtimePin={runtimePin} />
+        </div>
+      );
+    }
+    if (!laneId) return <NoLaneEmptyLine />;
+    return panel(`work-appcontrol:${mountScope}:${laneId}`, { laneId, pin: runtimePin, projectRoot: laneRoot });
+  };
+  return (
+    <RemoteOrLaneTool
+      uses={remoteUses}
+      laneAvailable={Boolean(laneId)}
+      remoteLabel="App Control"
+      testId="app-control-target-switcher"
+      renderLane={renderLane}
+      // The work copy's folder is on that machine; its service resolves it from the lane.
+      renderRemote={(use, pin) => panel(
+        `work-appcontrol:${pin.key}:${use.workCopyLaneId}`,
+        { laneId: use.workCopyLaneId, pin, projectRoot: null },
+      )}
+    />
   );
 }
 
@@ -826,8 +990,18 @@ function webClientHasFullDesktopPane(runtimePin: WorkToolPanelProps["runtimePin"
   return macDesktopWebApi()?.supportsFullPane?.(runtimePin ?? undefined) === true;
 }
 
+/** The lane's host can show this lane-screen tool (unanswered counts as yes). */
+function laneHostRunsDesktopTool(tool: DesktopWorkTool, toolContext: WorkToolContext): boolean {
+  const platform = toolContext.hostPlatform ?? null;
+  if (tool === "windows-desktop") {
+    return toolContext.supportsWindowsDesktop !== false && (platform === null || platform === "win32");
+  }
+  return toolContext.supportsMacDesktop !== false && (platform === null || platform === "darwin" || platform === "linux");
+}
+
 /**
- * The lane's private macOS screen.
+ * The lane's private screen: Mac Desktop (Linux Desktop on a Linux host) or
+ * Windows Desktop, one pane for both.
  *
  * On the hosted web client this is the same full panel when the host serves
  * it (`webClientHasFullDesktopPane`): the picture over the sync push stream,
@@ -836,69 +1010,74 @@ function webClientHasFullDesktopPane(runtimePin: WorkToolPanelProps["runtimePin"
  * pane. Everywhere else — including a Windows or Linux desktop watching a
  * Mac-hosted lane — this is the full panel: the display lives on the runtime
  * host, so the viewer's own platform never enters into it.
+ *
+ * A chat that drives another machine's screen through its work copy there
+ * (`ade screen … --machine`) shows that screen here too, on the tool named
+ * for that machine: a Windows PC shows a Mac's screen in Mac Desktop.
  */
-function WorkMacDesktopTool({
-  laneId,
-  activeLane,
-  toolContext,
-  panelSessionId,
-  runtimePin,
-}: WorkToolPanelProps) {
+function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: DesktopWorkTool }) {
+  const { laneId, activeLane, activeSession, toolContext, panelSessionId, runtimePin } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
-  // `ade mac-desktop show` answers "shown" only once this is on screen.
-  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("mac-desktop", mountScope, laneId) : null);
-  if (isReadOnlyWorkTool("mac-desktop", toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
+  // `ade screen show` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey(tool, mountScope, laneId) : null);
+  const remoteUses = remoteWorkUsesOf(activeSession, "usesDesktop")
+    .filter((use) => desktopToolForMachinePlatform(use.machinePlatform) === tool);
+  const renderLane = () => {
+    if (isReadOnlyWorkTool(tool, toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
+      return (
+        <div ref={mountRef} className="contents">
+          <WorkToolReadOnlyView tool={tool} laneId={laneId} runtimePin={runtimePin} />
+        </div>
+      );
+    }
+    if (!laneId) return <NoLaneEmptyLine />;
+    // The Windows tool reuses the Mac Desktop pane: it reads the lane's seat
+    // from the runtime and renders the Windows cards when
+    // `status.windowsDesktop` is present.
     return (
-      <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} runtimePin={runtimePin} />
-      </div>
+      <NativePanelFrame padded frameRef={mountRef}>
+        <ChatMacDesktopPanel
+          key={`work-${tool}:${mountScope}`}
+          desktopTool={tool}
+          laneId={laneId}
+          laneName={activeLane?.name ?? null}
+          sessionId={panelSessionId}
+          runtimePin={runtimePin}
+          hostPlatform={toolContext.hostPlatform ?? null}
+        />
+      </NativePanelFrame>
     );
-  }
-  if (!laneId) return <NoLaneEmptyLine />;
+  };
   return (
-    <NativePanelFrame padded frameRef={mountRef}>
-      <ChatMacDesktopPanel
-        key={`work-mac-desktop:${mountScope}`}
-        laneId={laneId}
-        laneName={activeLane?.name ?? null}
-        sessionId={panelSessionId}
-        runtimePin={runtimePin}
-        hostPlatform={toolContext.hostPlatform ?? null}
-      />
-    </NativePanelFrame>
+    <RemoteOrLaneTool
+      uses={remoteUses}
+      laneAvailable={Boolean(laneId) && laneHostRunsDesktopTool(tool, toolContext)}
+      remoteLabel="Screen"
+      testId={`${tool}-target-switcher`}
+      renderLane={renderLane}
+      renderRemote={(use, pin) => (
+        <NativePanelFrame padded frameRef={mountRef}>
+          <ChatMacDesktopPanel
+            key={`work-${tool}:${pin.key}:${use.workCopyLaneId}`}
+            desktopTool={tool}
+            laneId={use.workCopyLaneId}
+            laneName={activeLane?.name ?? null}
+            sessionId={panelSessionId}
+            runtimePin={pin}
+            hostPlatform={remoteMachineHostPlatform(use.machinePlatform)}
+          />
+        </NativePanelFrame>
+      )}
+    />
   );
 }
 
+function WorkMacDesktopTool(props: WorkToolPanelProps) {
+  return <WorkDesktopTool {...props} tool="mac-desktop" />;
+}
+
 function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
-  const { laneId, activeLane, toolContext, panelSessionId, runtimePin } = props;
-  const mountScope = useWorkToolMountScope(runtimePin);
-  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(
-    laneId ? workSurfaceKey("windows-desktop", mountScope, laneId) : null,
-  );
-  if (isReadOnlyWorkTool("windows-desktop", toolContext) && !webClientHasFullDesktopPane(runtimePin)) {
-    return (
-      <div ref={mountRef} className="contents">
-        <WorkToolReadOnlyView tool="windows-desktop" laneId={laneId} runtimePin={runtimePin} />
-      </div>
-    );
-  }
-  if (!laneId) return <NoLaneEmptyLine />;
-  // Reuses the Mac Desktop pane: it reads the lane's seat from the runtime and
-  // renders the Windows cards when `status.windowsDesktop` is present. Only one
-  // of the two panes is ever available, because the host platform picks one.
-  return (
-    <NativePanelFrame padded frameRef={mountRef}>
-      <ChatMacDesktopPanel
-        key={`work-windows-desktop:${mountScope}`}
-        desktopTool="windows-desktop"
-        laneId={laneId}
-        laneName={activeLane?.name ?? null}
-        sessionId={panelSessionId}
-        runtimePin={runtimePin}
-        hostPlatform={toolContext.hostPlatform ?? null}
-      />
-    </NativePanelFrame>
-  );
+  return <WorkDesktopTool {...props} tool="windows-desktop" />;
 }
 
 function WorkPrTool({

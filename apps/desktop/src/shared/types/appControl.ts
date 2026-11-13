@@ -623,7 +623,10 @@ export type AppControlRecordStartArgs = AppControlLaneArgs & {
   fps?: number | null;
 };
 
-export type AppControlRecordStopArgs = AppControlLaneArgs;
+export type AppControlRecordStopArgs = AppControlLaneArgs & {
+  /** False files nothing where it ran: a caller on another machine files the video in its own drawer. */
+  proof?: boolean | null;
+};
 
 export type AppControlRecordingStatusArgs = AppControlLaneArgs;
 

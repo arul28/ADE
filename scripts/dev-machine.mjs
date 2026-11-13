@@ -263,9 +263,11 @@ async function login(paths, options) {
     } catch {
       machines = [];
     }
-    // `isThisMachine` in one output shape, the home the row reports in the other.
+    // `isThisMachine` in one output shape, the home the row reports in the
+    // other. The whole path: every computer's test machine has a home with
+    // the same folder name, and matching on it renamed another computer's row.
     const self = machines.find((machine) => machine.isThisMachine
-      || (typeof machine.adeHome === "string" && machine.adeHome.endsWith(path.basename(paths.home))));
+      || (typeof machine.adeHome === "string" && path.resolve(machine.adeHome) === path.resolve(paths.home)));
     if (self?.machineKey) {
       if (self.name !== label) ade(paths, ["machines", "rename", self.machineKey, label]);
       process.stdout.write(`[ade] signed in and published as "${label}" (${self.machineKey})\n`);

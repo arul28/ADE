@@ -85,6 +85,12 @@ export type RemoteWorkPrepareResult = {
   created: boolean;
   synced: boolean;
   /**
+   * Files made in the copy here (untracked, not ignored, not written by a
+   * sync: a generated `.xcodeproj`, a pushed file) that a sync kept in place
+   * rather than refusing or deleting them. Empty for most calls.
+   */
+  keptFiles: string[];
+  /**
    * Call once the command this copy was readied for has started (its shell is
    * registered) or, for a call that runs to the end, once it returns. Until
    * then the copy counts as busy.
@@ -104,8 +110,13 @@ export class RemoteWorkError extends Error {
 const REMOTE_WORK_IDLE_MS = 7 * 24 * 60 * 60_000;
 /** Below this much free disk, older copies are deleted before a new one is made. */
 const REMOTE_WORK_RECLAIM_FREE_BYTES = 20 * 1024 ** 3;
-/** Below this much free disk, no new copy is made. */
-const REMOTE_WORK_MIN_FREE_BYTES = 5 * 1024 ** 3;
+/**
+ * Below this much free disk, no new copy is made. A copy is a worktree that
+ * shares the main checkout's objects (ADE's own is about 300 MB), so this
+ * leaves room for one plus a small build; a small ADE Cloud computer has a
+ * few GB free once the lane is set up, and 5 GB refused every copy there.
+ */
+const REMOTE_WORK_MIN_FREE_BYTES = 1.5 * 1024 ** 3;
 
 const SHA = /^[0-9a-f]{40}$/i;
 const REGISTRY_FILE = "copies.json";
@@ -113,6 +124,14 @@ const GIT_TIMEOUT_MS = 120_000;
 /** Stops the project's checkout hooks running in a throwaway copy. Git finds no hook at this path. */
 const WORK_COPY_NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
 const WORK_COPY_CLEAN_PASSES = 5;
+/**
+ * At most this many files made in a copy are kept through a sync, and at most
+ * this many characters of their names (each goes to `git clean` as one `-e`
+ * argument; Windows caps a command line at 32,767). More than that counts as
+ * work made there, which refuses the sync as before.
+ */
+const KEPT_FILES_MAX = 200;
+const KEPT_FILES_MAX_CHARS = 16_000;
 const FETCH_TIMEOUT_MS = 300_000;
 
 /**
@@ -124,6 +143,15 @@ const FETCH_TIMEOUT_MS = 300_000;
 const REMOTE_WORK_FIRST_COPY_WAIT_MS = 20_000;
 /** A background make that failed keeps its error for the next call this long, then a call tries again. */
 const FAILED_MAKE_RETENTION_MS = 10 * 60_000;
+
+/**
+ * A `git clean -e` pattern that matches exactly one path from the top of the
+ * copy: anchored, with the characters gitignore reads specially escaped.
+ */
+function literalRootPattern(file: string): string {
+  const escaped = file.replace(/[\\*?[]/g, (char) => `\\${char}`).replace(/ +$/, (spaces) => spaces.replace(/ /g, "\\ "));
+  return `/${escaped}`;
+}
 
 function ownerHash(owner: string): string {
   return createHash("sha256").update(owner).digest("hex").slice(0, 12);
@@ -195,6 +223,18 @@ export function findRemoteWorkCopyForLane(projectRoot: string, laneId: string): 
     console.warn(`[remote_work] ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
+}
+
+/**
+ * A `remote-work-…` lane as a lane lookup needs it (Mac Desktop, App
+ * Control): the copy's folder, and a name for captions and status. Null for
+ * any other lane id, or when the copy is gone.
+ */
+export function remoteWorkLaneSummary(projectRoot: string, laneId: string): { path: string; name: string } | null {
+  const copy = findRemoteWorkCopyForLane(projectRoot, laneId);
+  if (!copy) return null;
+  const machine = copy.machineName?.trim();
+  return { path: copy.path, name: machine ? `${machine} chat's work copy` : "Work copy of a chat on another machine" };
 }
 
 export type RemoteWorkLogger = {
@@ -418,9 +458,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * `git add -A`, without touching the copy's own index: a copy of the index
    * keeps the stat cache, so only changed files are hashed.
    */
-  const workingTree = async (copyPath: string): Promise<string> => {
+  const workingTree = async (copyPath: string, leaveOut: readonly string[] = []): Promise<string> => {
     const indexPath = await gitOrThrow(["rev-parse", "--path-format=absolute", "--git-path", "index"], copyPath, "Could not find the work copy's index");
     const tempIndex = path.join(os.tmpdir(), `ade-remote-work-index-${randomUUID()}`);
+    const pathspecFile = leaveOut.length ? path.join(os.tmpdir(), `ade-remote-work-paths-${randomUUID()}`) : null;
     try {
       try {
         fs.copyFileSync(indexPath, tempIndex);
@@ -429,17 +470,95 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       }
       const env = { ...process.env, GIT_INDEX_FILE: tempIndex };
       await gitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A"], copyPath, "Could not read the work copy", { env });
+      if (pathspecFile) {
+        // Files a sync kept in place (made here) are not what it wrote: left
+        // out, the next sync still finds them made here and keeps them again.
+        fs.writeFileSync(pathspecFile, `${leaveOut.join("\0")}\0`);
+        await gitOrThrow(
+          ["rm", "--cached", "-q", "--ignore-unmatch", `--pathspec-from-file=${pathspecFile}`, "--pathspec-file-nul"],
+          copyPath,
+          "Could not read the work copy",
+          { env: { ...env, GIT_LITERAL_PATHSPECS: "1" } },
+        );
+      }
       return await gitOrThrow(["write-tree"], copyPath, "Could not read the work copy", { env });
     } finally {
       fs.rmSync(tempIndex, { force: true });
+      if (pathspecFile) fs.rmSync(pathspecFile, { force: true });
     }
+  };
+
+  /**
+   * Files made in the copy here since its last sync that a sync can keep in
+   * place: untracked and not ignored (`git add -A` would take them, so they
+   * count as changes), and not written by that sync (not in `syncedTree`):
+   * a generated `.xcodeproj`, a file `ade files push` put there. A file the
+   * sync wrote and someone changed here is not one of them: that is a change
+   * to the chat's own file, and still refuses the sync. Empty for a copy never
+   * synced here (adopted), and when there are too many to keep.
+   */
+  const filesMadeHere = async (copy: RemoteWorkCopy): Promise<string[]> => {
+    if (!copy.syncedTree) return [];
+    const split = (text: string): string[] => text.split("\0").filter(Boolean);
+    const untracked = split(await gitOrThrow(["ls-files", "--others", "--exclude-standard", "-z"], copy.path, "Could not read the work copy"));
+    if (!untracked.length) return [];
+    const synced = new Set(split(await gitOrThrow(["ls-tree", "-r", "--name-only", "-z", copy.syncedTree], copy.path, "Could not read the work copy")));
+    const made = untracked.filter((file) => !synced.has(file));
+    const chars = made.reduce((total, file) => total + file.length + 4, 0);
+    if (made.length > KEPT_FILES_MAX || chars > KEPT_FILES_MAX_CHARS) {
+      logger?.info("remote_work.too_many_files_made_here", { owner: copy.owner, count: made.length });
+      return [];
+    }
+    return made;
+  };
+
+  /** The paths a patch file creates (`create mode` lines), or null when git cannot read it. */
+  const patchCreatedPaths = async (copyPath: string, patchFile: string): Promise<string[] | null> => {
+    // `-z` prints names as they are (unquoted), one `create mode` line each.
+    const summary = await git(["apply", "--summary", "-z", "--", patchFile], copyPath);
+    if (summary.exitCode !== 0) return null; // `git apply` itself reports a bad patch next.
+    const created: string[] = [];
+    for (const line of summary.stdout.split("\n")) {
+      const match = /^ create mode \d{6} (.+)$/.exec(line);
+      if (match) created.push(match[1]!);
+    }
+    return created;
+  };
+
+  /**
+   * Files made here that the sync would overwrite: the chat's commit tracks
+   * the same path (or a folder or file in its way), or its patch creates it.
+   * Checked before the sync touches anything, so such a file is never lost.
+   */
+  const keptFilesInTheWay = async (copyPath: string, head: string, patchFile: string | null, kept: readonly string[]): Promise<string[]> => {
+    // Compared as the disk does: case-folded where it folds case (macOS, Windows).
+    const key = process.platform === "darwin" || process.platform === "win32"
+      ? (file: string) => file.toLowerCase()
+      : (file: string) => file;
+    // Every file the sync writes: the commit's, then the patch's new ones.
+    const incoming = new Set(
+      (await gitOrThrow(["ls-tree", "-r", "--name-only", "-z", head], copyPath, "Could not read the chat's commit"))
+        .split("\0").filter(Boolean).map(key),
+    );
+    for (const file of patchFile ? (await patchCreatedPaths(copyPath, patchFile)) ?? [] : []) incoming.add(key(file));
+    const parents = (file: string): string[] => {
+      const folders: string[] = [];
+      for (let slash = file.indexOf("/"); slash > 0; slash = file.indexOf("/", slash + 1)) folders.push(file.slice(0, slash));
+      return folders;
+    };
+    const incomingFolders = new Set([...incoming].flatMap(parents));
+    // The same path, a folder where the file is, or a file where its folder is.
+    return kept.filter((file) => {
+      const own = key(file);
+      return incoming.has(own) || incomingFolders.has(own) || parents(own).some((folder) => incoming.has(folder));
+    });
   };
 
   /**
    * Why a sync would lose work in this copy, or null when it would not. Work
    * that reached origin is safe; work nobody synced in and nobody pushed is not.
    */
-  const unsyncedWork = async (copy: RemoteWorkCopy): Promise<string | null> => {
+  const unsyncedWork = async (copy: RemoteWorkCopy, keptInPlace: ReadonlySet<string> = new Set()): Promise<string | null> => {
     const head = await gitOrThrow(["rev-parse", "HEAD"], copy.path, "Could not read the work copy");
     // An adopted copy (never synced here) may hold commits made before it was lost from the list.
     if (copy.syncedTree === null || head.toLowerCase() !== copy.head.toLowerCase()) {
@@ -458,9 +577,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         .split("\0").filter(Boolean),
     );
     const sinceCommit = await changedPaths(committed);
-    const atRisk = copy.syncedTree
+    // A file made here that the sync keeps in place (`filesMadeHere`) loses nothing.
+    const atRisk = (copy.syncedTree
       ? [...(await changedPaths(copy.syncedTree))].filter((file) => sinceCommit.has(file))
-      : [...sinceCommit];
+      : [...sinceCommit]).filter((file) => !keptInPlace.has(file));
     if (atRisk.length) {
       const named = atRisk.slice(0, 3).join(", ") + (atRisk.length > 3 ? ` and ${atRisk.length - 3} more` : "");
       return `it has changes made there that are not committed and pushed (${named})`;
@@ -468,28 +588,48 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     return null;
   };
 
-  const syncCopy = async (copyPath: string, source: RemoteWorkSource, patch: Buffer | null): Promise<string> => {
-    // A work copy is ADE's own throwaway: the project's checkout hooks are not for it.
-    await gitOrThrow([...WORK_COPY_NO_HOOKS, "checkout", "--force", "--detach", source.head], copyPath, "Could not check out the chat's commit");
-    // No -x: ignored files (installed deps, build output) survive between runs.
-    // Removing a `.gitignore` can uncover files it was hiding, so go until clean.
-    for (let pass = 0; pass < WORK_COPY_CLEAN_PASSES; pass += 1) {
-      const removed = await gitOrThrow(["clean", "-fd"], copyPath, "Could not clean the work copy");
-      if (!removed.trim()) break;
-    }
-    if (patch && patch.length > 0) {
-      // A file, not a string on stdin: the patch is bytes, and a text file in
-      // another encoding must arrive as it was.
-      const patchFile = path.join(os.tmpdir(), `ade-remote-work-patch-${randomUUID()}.patch`);
-      try {
-        fs.writeFileSync(patchFile, patch);
+  /**
+   * Reset the copy to the chat's commit and changes. `keep` are files made
+   * here (`filesMadeHere`) that stay as they are: refused first if the sync
+   * would write over one, then left out of `git clean` and of the tree
+   * recorded as synced.
+   */
+  const syncCopy = async (copyPath: string, source: RemoteWorkSource, patch: Buffer | null, keep: readonly string[] = []): Promise<string> => {
+    // A file, not a string on stdin: the patch is bytes, and a text file in
+    // another encoding must arrive as it was.
+    const patchFile = patch && patch.length > 0 ? path.join(os.tmpdir(), `ade-remote-work-patch-${randomUUID()}.patch`) : null;
+    try {
+      if (patchFile) fs.writeFileSync(patchFile, patch!);
+      if (keep.length) {
+        const inTheWay = await keptFilesInTheWay(copyPath, source.head, patchFile, keep);
+        if (inTheWay.length) {
+          const named = inTheWay.slice(0, 3).join(", ") + (inTheWay.length > 3 ? ` and ${inTheWay.length - 3} more` : "");
+          throw new RemoteWorkError(
+            "copy_has_unsynced_work",
+            `This chat's work copy here was not synced because files made there (${named}) would be overwritten by the chat's own `
+            + "files of the same name. Pass --no-sync to use the copy as it is, or --discard to throw them away.",
+          );
+        }
+      }
+      // A work copy is ADE's own throwaway: the project's checkout hooks are not for it.
+      await gitOrThrow([...WORK_COPY_NO_HOOKS, "checkout", "--force", "--detach", source.head], copyPath, "Could not check out the chat's commit");
+      // No -x: ignored files (installed deps, build output) survive between runs.
+      // Files made here are kept the same way: as patterns that match only them.
+      const keepPatterns = keep.flatMap((file) => ["-e", literalRootPattern(file)]);
+      // Removing a `.gitignore` can uncover files it was hiding, so go until clean.
+      for (let pass = 0; pass < WORK_COPY_CLEAN_PASSES; pass += 1) {
+        const removed = await gitOrThrow(["clean", "-fd", ...keepPatterns], copyPath, "Could not clean the work copy");
+        if (!removed.trim()) break;
+      }
+      if (patchFile) {
         await removeIgnoredLeftoversThePatchCreates(copyPath, patchFile);
         await gitOrThrow(["apply", "--binary", "--whitespace=nowarn", "--", patchFile], copyPath, "Could not apply the chat's uncommitted changes");
-      } finally {
-        fs.rmSync(patchFile, { force: true });
       }
+    } finally {
+      if (patchFile) fs.rmSync(patchFile, { force: true });
     }
-    return await workingTree(copyPath);
+    if (keep.length) logger?.info("remote_work.kept_files_made_here", { count: keep.length });
+    return await workingTree(copyPath, keep);
   };
 
   /**
@@ -502,16 +642,12 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * elsewhere stays (no `clean -x`).
    */
   const removeIgnoredLeftoversThePatchCreates = async (copyPath: string, patchFile: string): Promise<void> => {
-    // `-z` prints names as they are (unquoted), one `create mode` line each.
-    const summary = await git(["apply", "--summary", "-z", "--", patchFile], copyPath);
-    if (summary.exitCode !== 0) return; // `git apply` itself reports a bad patch next.
+    const created = await patchCreatedPaths(copyPath, patchFile);
+    if (!created) return; // `git apply` itself reports a bad patch next.
     const root = fs.realpathSync(copyPath);
     // Strictly inside: the copy itself is never a leftover to remove.
     const inside = (candidate: string): boolean => !pathsEqual(candidate, root) && isPathInside(candidate, root);
-    for (const line of summary.stdout.split("\n")) {
-      const match = /^ create mode \d{6} (.+)$/.exec(line);
-      if (!match) continue;
-      const relative = match[1]!;
+    for (const relative of created) {
       const target = path.resolve(root, relative);
       if (!inside(target)) {
         logger?.warn("remote_work.patch_path_outside_copy", { path: relative });
@@ -700,7 +836,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         const adopted = await adoptUnlistedCopy(owner, source, timestamp);
         if (!adopted) {
           const created = await createCopy(owner, source, patch, timestamp);
-          return { path: created.path, created: true, synced: true, done: markStarting(owner) };
+          return { path: created.path, created: true, synced: true, keptFiles: [], done: markStarting(owner) };
         }
         copy = adopted;
       }
@@ -709,7 +845,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         if (now() - Date.parse(copy.lastUsedAt) > 60_000) {
           updateCopy(owner, (current) => (current ? { ...current, lastUsedAt: timestamp } : current));
         }
-        return { path: copy.path, created: false, synced: false, done: markStarting(owner) };
+        return { path: copy.path, created: false, synced: false, keptFiles: [], done: markStarting(owner) };
       }
       if (inUse(owner)) {
         throw new RemoteWorkError(
@@ -718,8 +854,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           + "(`ade terminal list --machine <this machine>` shows it). To use the copy as it is, pass --no-sync.",
         );
       }
+      // Files made here (a generated project, a pushed file) stay in place
+      // through the sync instead of refusing it; `--discard` still removes them.
+      const keptFiles = mode === "discard" ? [] : await filesMadeHere(copy);
       if (mode !== "discard") {
-        const reason = await unsyncedWork(copy);
+        const reason = await unsyncedWork(copy, new Set(keptFiles));
         if (reason) {
           throw new RemoteWorkError(
             "copy_has_unsynced_work",
@@ -730,7 +869,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         }
       }
       await ensureCommit(source);
-      const syncedTree = await syncCopy(copy.path, source, patch);
+      const syncedTree = await syncCopy(copy.path, source, patch, keptFiles);
       updateCopy(owner, (current) => (current ? {
         ...current,
         head: source.head,
@@ -739,7 +878,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         syncedTree,
         lastUsedAt: timestamp,
       } : current));
-      return { path: copy.path, created: false, synced: true, done: markStarting(owner) };
+      return { path: copy.path, created: false, synced: true, keptFiles, done: markStarting(owner) };
     });
   };
 
@@ -951,6 +1090,7 @@ export async function sweepMachineRemoteWork(sweepOptions: {
   ownerGone?: (owner: string) => Promise<{ gone: boolean; archived: boolean } | null>;
 } = {}): Promise<number> {
   let released = 0;
+  sweepRemoteWorkScratch(sweepOptions.adeHome ?? defaultAdeHome(), sweepOptions.logger);
   for (const entry of readMachineIndex(sweepOptions.adeHome ?? defaultAdeHome(), sweepOptions.logger).projects) {
     try {
       released += await createRemoteWorkCopyService({ projectRoot: entry.projectRoot, adeHome: sweepOptions.adeHome, logger: sweepOptions.logger })
@@ -960,6 +1100,64 @@ export async function sweepMachineRemoteWork(sweepOptions: {
     }
   }
   return released;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Scratch folders: `ade shell start --machine <this machine> --scratch -- <cmd>`
+   runs a command that needs no code (nvidia-smi, a disk check) in an empty
+   temporary folder under ADE's own home, with no work copy and no git. The
+   folder goes when the command's shell ends; the sweep removes any a
+   restart left behind.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** A scratch folder older than this is left over (its shell ended while no brain ran) and goes in the sweep. */
+const REMOTE_WORK_SCRATCH_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
+function scratchRoot(adeHome: string): string {
+  return path.join(adeHome, "remote-work", "scratch");
+}
+
+/** A new, empty scratch folder for `owner`'s one command. */
+export function createRemoteWorkScratchDir(owner: string, adeHome: string = defaultAdeHome()): string {
+  const root = scratchRoot(adeHome);
+  fs.mkdirSync(root, { recursive: true });
+  return fs.mkdtempSync(path.join(root, `${ownerHash(owner)}-`));
+}
+
+/** Remove a scratch folder. Anything outside the scratch root is refused (logged, kept). */
+export function removeRemoteWorkScratchDir(dir: string, adeHome: string = defaultAdeHome(), logger?: RemoteWorkLogger): void {
+  const root = scratchRoot(adeHome);
+  if (pathsEqual(dir, root) || !isPathInside(dir, root)) {
+    logger?.warn("remote_work.scratch_outside_root", { dir });
+    return;
+  }
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  } catch (error) {
+    // A file still held open (Windows); the sweep tries again.
+    logger?.warn("remote_work.scratch_remove_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/** Remove scratch folders older than a week. */
+function sweepRemoteWorkScratch(adeHome: string, logger?: RemoteWorkLogger): void {
+  const root = scratchRoot(adeHome);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - REMOTE_WORK_SCRATCH_MAX_AGE_MS;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(root, entry.name);
+    try {
+      if (fs.statSync(dir).mtimeMs < cutoff) removeRemoteWorkScratchDir(dir, adeHome, logger);
+    } catch {
+      // Gone meanwhile.
+    }
+  }
 }
 
 function isCopy(value: unknown): value is RemoteWorkCopy {

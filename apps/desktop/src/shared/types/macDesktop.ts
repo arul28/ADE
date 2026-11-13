@@ -2111,7 +2111,8 @@ export type MacDesktopServiceApi = {
 
   screenshot(args: MacDesktopScreenshotArgs): Promise<MacDesktopScreenshotResult>;
   startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus>;
-  stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus>;
+  /** `proof: false` files nothing here (a caller on another machine files it in its own drawer). */
+  stopRecording(args: { laneId: string; chatSessionId?: string | null; proof?: boolean | null }): Promise<MacDesktopRecordingStatus>;
 
   /** The only call that hands out the stream token. */
   startStream(args: MacDesktopStartStreamArgs): Promise<MacDesktopStreamStatus>;

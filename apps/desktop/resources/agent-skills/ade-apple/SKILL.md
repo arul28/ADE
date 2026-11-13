@@ -137,6 +137,10 @@ claim the drawer session. Add `--open-drawer` when a human asked to watch.
 So you do **not** run `xcodebuild` by hand to put an app on a screen, and you
 do not need to know the scheme. Run `"$ADE_CLI_PATH" apple apps --text` first only
 when you must choose between several targets, then pass `--target <id>`.
+A project that has only a `project.yml` (XcodeGen) is generated before the
+build when `xcodegen` is installed there; if it is not, the error says how.
+From a machine with no simulator (Windows, Linux), the same commands take
+`--machine "<Mac>"`; see ade-computer-use `references/other-machines.md`.
 
 Use `--no-build` when the app is already installed and you only want it in
 front. Use `relaunch` or `terminate` for an app that is already there.

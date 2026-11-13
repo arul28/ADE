@@ -2638,6 +2638,11 @@ struct WorkSessionDestinationView: View {
     // older cache entry.
     // The brain's explicit clear drops the live record too; a merely absent
     // cached record (an older host) does not.
+    // The machines this chat works on, folded from a live event: the cache is
+    // the newer answer (a fetched summary also lands there).
+    if let cachedRemoteWork = cached.remoteWork, current.remoteWork != cachedRemoteWork {
+      current.remoteWork = cachedRemoteWork
+    }
     if cached.crossMachineHandoff == nil, syncService.crossMachineHandoffClears[sessionId] != nil {
       current.crossMachineHandoff = nil
     } else {

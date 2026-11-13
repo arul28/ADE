@@ -1074,6 +1074,8 @@ export async function createAdeRuntime(args: {
   syncRuntime?: AdeRuntimeSyncOptions;
   /** The brain's way to another machine, for moving a chat there. */
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /** The brain's way to let go of what a chat holds on other machines when its turn ends. */
+  releaseRemoteWorkDevices?: (event: { sessionId: string; uses: Array<{ machineKey: string; machineName: string; projectId: string | null }> }) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /**
@@ -2451,6 +2453,8 @@ export async function createAdeRuntime(args: {
           const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
           return lane?.worktreePath ?? null;
         },
+        // A chat on another machine runs its app in this lane's terminal, in its work copy.
+        resolvePrimaryLaneId: () => laneService.getPrimaryLane()?.laneId ?? null,
         // No fallback lane: a session whose lane cannot be resolved is refused.
         resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
           laneId,
@@ -3309,6 +3313,9 @@ export async function createAdeRuntime(args: {
         }),
         // This brain forwards the chat's calls to the other machine, so it
         // records that the chat used one.
+        ...(typeof args !== "string" && args.releaseRemoteWorkDevices
+          ? { onRemoteWorkTurnSettled: args.releaseRemoteWorkDevices }
+          : {}),
         onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
           analytics: productAnalyticsService,
           projectId,

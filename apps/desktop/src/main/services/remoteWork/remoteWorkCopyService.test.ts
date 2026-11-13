@@ -38,18 +38,26 @@ describe("remote work copy", () => {
       first.done();
       expect(first.created).toBe(true);
 
-      // An agent edits a file in the copy and commits it there, without a push.
-      fs.writeFileSync(path.join(first.path, "made-there.txt"), "work\n");
+      // A file made there that git does not track (an xcodegen project) is
+      // not work to protect from a sync: it stays, and the sync goes ahead.
+      fs.writeFileSync(path.join(first.path, "generated.txt"), "made by a tool\n");
+      const kept = await service.prepare(owner, source);
+      kept.done();
+      expect(kept.synced).toBe(true);
+      expect(fs.readFileSync(path.join(first.path, "generated.txt"), "utf8")).toBe("made by a tool\n");
+
+      // An agent edits a tracked file in the copy and commits it there, without a push.
+      fs.writeFileSync(path.join(first.path, "app.txt"), "work\n");
       await expect(service.prepare(owner, source)).rejects.toMatchObject({
         code: "copy_has_unsynced_work",
-        message: expect.stringContaining("made-there.txt"),
+        message: expect.stringContaining("app.txt"),
       });
       git(first.path, "add", "-A");
       git(first.path, "commit", "-m", "made there");
       await expect(service.prepare(owner, source)).rejects.toMatchObject({ code: "copy_has_unsynced_work" });
       // An automatic cleanup keeps it too.
       await expect(service.release(owner, { keepUnsynced: true })).resolves.toBe(false);
-      expect(fs.readFileSync(path.join(first.path, "made-there.txt"), "utf8")).toBe("work\n");
+      expect(fs.readFileSync(path.join(first.path, "app.txt"), "utf8")).toBe("work\n");
 
       // Pushed, the work is safe on origin: the sync goes ahead and resets the copy.
       git(first.path, "push", "origin", "HEAD:refs/heads/made-there");
@@ -57,7 +65,8 @@ describe("remote work copy", () => {
       synced.done();
       expect(synced).toMatchObject({ created: false, synced: true, path: first.path });
       expect(git(first.path, "rev-parse", "HEAD")).toBe(head);
-      expect(fs.existsSync(path.join(first.path, "made-there.txt"))).toBe(false);
+      // trimEnd: a Windows checkout writes it back with CRLF.
+      expect(fs.readFileSync(path.join(first.path, "app.txt"), "utf8").trimEnd()).toBe("v1");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

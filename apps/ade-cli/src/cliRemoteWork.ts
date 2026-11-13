@@ -29,14 +29,21 @@ import { fileSha256 } from "./services/tools/download";
 export type MachineWorkCopySync = "none" | "discard" | null;
 
 /** What `cliMachineTargeting` reads for a call that runs in the work copy. */
-export type MachineWorkCopy = { sync: MachineWorkCopySync; argv?: string[] | null };
+export type MachineWorkCopy = {
+  sync: MachineWorkCopySync;
+  argv?: string[] | null;
+  /** `ade shell start --machine … --scratch`: no work copy and no repo; a temp folder there, removed after. */
+  scratch?: boolean;
+};
 
 /**
  * Apple actions about the machine, not a lane: they never need a work copy.
- * The lane-free reads match the brain's (`APPLE_LANE_FREE_ACTIONS` in adeRpcServer.ts).
+ * The lane-free reads match the brain's (`APPLE_LANE_FREE_ACTIONS` in adeRpcServer.ts),
+ * except `listLaunchTargets`: the apps to launch are the ones in this chat's
+ * work copy there, so it is made (at this commit) when missing.
  */
 const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set([
-  "getStatus", "runtimeList", "listDevices", "listLaunchTargets", "deviceList", "getStreamStatus",
+  "getStatus", "runtimeList", "listDevices", "deviceList", "getStreamStatus",
 ]);
 
 /**
@@ -54,13 +61,20 @@ export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: M
     const { laneId: _defaultLane, ...rest } = args;
     nextArgs = {
       ...rest,
-      remoteWork: {
-        ...(workCopy.sync === "none" ? readLocalHead(cwd) : readLocalWorkSource(cwd)),
-        ...(workCopy.sync ? { sync: workCopy.sync } : {}),
-        ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
-        // A command there ends its shell, so the next command can sync.
-        ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
-      },
+      remoteWork: workCopy.scratch
+        // No commit, no patch, no git at all: the command needs no code.
+        ? {
+          scratch: true,
+          ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
+          ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
+        }
+        : {
+          ...(workCopy.sync === "none" ? readLocalHead(cwd) : readLocalWorkSource(cwd)),
+          ...(workCopy.sync ? { sync: workCopy.sync } : {}),
+          ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
+          // A command there ends its shell, so the next command can sync.
+          ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
+        },
     };
   }
   return { ...params, arguments: { ...toolArgs, args: nextArgs } };
@@ -92,6 +106,96 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
       },
     },
   };
+}
+
+/**
+ * The lane-free reads of `ade screen` (`mac_desktop`) and `ade app-control`
+ * (`app_control`): they send no commit and make no copy there, and name this
+ * chat's screen or session only when its copy is there already. They match
+ * the brain's (`MAC_DESKTOP_READ_ONLY_ACTIONS`, `APP_CONTROL_LANE_FREE_ACTIONS`
+ * in adeRpcServer.ts).
+ */
+const SCREEN_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "listWindows", "getStreamStatus"]);
+const APP_CONTROL_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "listDrivers"]);
+/** App Control verbs that run this chat's code there: the copy is synced to this checkout first. */
+const APP_CONTROL_CODE_SYNC_ACTIONS: ReadonlySet<string> = new Set(["launch", "launchInTerminal"]);
+
+/**
+ * `ade screen … --machine` (Mac, Windows or Linux Desktop there): the screen
+ * there is this chat's work copy's, which stands in for a lane. A status or
+ * window list sends no commit and makes no copy; every other verb sends this
+ * commit, so a `start` or `open` can make the copy at it (the screen needs no
+ * code, so the copy is never synced for it). The chat id is the other
+ * machine's to set, from the caller's identity; a `--lane` is passed on, and
+ * the other machine refuses a lane that is not the copy's.
+ */
+export function withRemoteScreenArgs(params: JsonObject, cwd: string): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  if (!isRecord(toolArgs.args)) return params;
+  const action = asString(toolArgs.action) ?? "";
+  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
+  return {
+    ...params,
+    arguments: {
+      ...toolArgs,
+      args: {
+        ...args,
+        remoteWork: SCREEN_MACHINE_ACTIONS.has(action) ? { sync: "none" } : { ...readLocalHead(cwd), sync: "none" },
+      },
+    },
+  };
+}
+
+/**
+ * `ade app-control … --machine`: the App Control session there is this
+ * chat's work copy's. A launch syncs the copy to this checkout first (the app
+ * there is this code, uncommitted changes included) unless `--no-sync`, and
+ * its `--cwd`, which must be inside this checkout, becomes the same folder in
+ * the copy. A status or driver list sends no commit and makes no copy; every
+ * other verb uses the copy as it is.
+ */
+export function withRemoteAppControlArgs(params: JsonObject, cwd: string, workCopy: MachineWorkCopy | null): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  if (!isRecord(toolArgs.args)) return params;
+  const action = asString(toolArgs.action) ?? "";
+  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
+  const runsCode = APP_CONTROL_CODE_SYNC_ACTIONS.has(action);
+  const sync = workCopy?.sync ?? null;
+  const launchCwd = runsCode ? asString(args.cwd) : null;
+  return {
+    ...params,
+    arguments: {
+      ...toolArgs,
+      args: {
+        ...args,
+        ...(launchCwd ? { cwd: checkoutRelativePath(launchCwd, cwd, "--cwd") } : {}),
+        remoteWork: APP_CONTROL_MACHINE_ACTIONS.has(action)
+          ? { sync: "none" }
+          : runsCode && sync !== "none"
+            ? { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) }
+            : { ...readLocalHead(cwd), sync: "none" },
+      },
+    },
+  };
+}
+
+/**
+ * A folder inside this checkout as the other machine finds it in the chat's
+ * work copy: relative to the checkout's top, `/`-separated ("" is the top).
+ */
+function checkoutRelativePath(target: string, cwd: string, flag: string): string {
+  const { top } = localCheckout(cwd);
+  const typed = path.resolve(cwd, target);
+  let relative: string;
+  try {
+    relative = path.relative(fs.realpathSync.native(top), fs.realpathSync.native(typed));
+  } catch {
+    throw new CliUsageError(`${flag} ${target}: no such folder here.`);
+  }
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new CliUsageError(`${flag} ${target} is outside this checkout (${top}), so it means nothing on the other machine.`);
+  }
+  return relative.split(path.sep).join("/");
 }
 
 /**

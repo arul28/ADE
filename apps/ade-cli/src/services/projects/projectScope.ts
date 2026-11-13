@@ -267,6 +267,8 @@ export class ProjectScopeRegistry {
        * the bridge is built after this registry.
        */
       crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+      /** Lets go of the devices a chat drove on other machines when its turn ends (the brain owns the bridge). */
+      releaseRemoteWorkDevices?: (event: { sessionId: string; uses: Array<{ machineKey: string; machineName: string; projectId: string | null }> }) => void;
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
       /** The brain's phone input ledger, shared with each project's sync host. */
@@ -596,6 +598,9 @@ export class ProjectScopeRegistry {
         ...(syncRuntime ? { syncRuntime } : {}),
         ...(this.options.crossMachineHandoffTransport
           ? { crossMachineHandoffTransport: this.options.crossMachineHandoffTransport }
+          : {}),
+        ...(this.options.releaseRemoteWorkDevices
+          ? { releaseRemoteWorkDevices: this.options.releaseRemoteWorkDevices }
           : {}),
         ...(this.options.keepAwakeService
           ? { keepAwakeService: this.options.keepAwakeService }

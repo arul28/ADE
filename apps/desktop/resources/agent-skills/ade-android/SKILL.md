@@ -260,6 +260,8 @@ must be on origin). `install`/`launch` with `--gradle` or `--apk` send your
 uncommitted changes first. An APK that git ignores does not travel: use
 `--gradle`. `preview` and `test` send them too. Screenshots, recordings,
 proof bundles and preview images are filed in this chat's proof drawer.
+More (long builds, end of turn, cleanup): ade-computer-use
+`references/other-machines.md`.
 
 ## The SDK
 

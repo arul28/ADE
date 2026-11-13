@@ -32,6 +32,8 @@ import {
 import {
   isRemoteWorkSyncMode,
   createRemoteWorkCopyService,
+  createRemoteWorkScratchDir,
+  removeRemoteWorkScratchDir,
   findRemoteWorkCopyForLane,
   remoteWorkLaneIdFor,
   RemoteWorkError,
@@ -1746,6 +1748,8 @@ const MUTATION_TOOLS = new Set([
   "saveMemory",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
+  // A chat on another machine whose turn ended letting go of the devices it holds here.
+  "release_remote_work_devices",
   // A chat on another machine copying a file into or out of its own work copy here.
   "work_copy_file",
   "create_lane",
@@ -3155,13 +3159,116 @@ function remoteWorkDeviceScope(
   const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = deviceArgs;
   const laneId = remoteWorkLaneIdFor(workCopyOwner(session));
   const request = { ...(remoteWork as Record<string, unknown>), ...(sync ? { sync } : {}) };
+  // Files made in the copy that its sync kept in place, for the answer.
+  let keptFiles: string[] = [];
   return {
     rest,
     laneId,
     copyExists: (): boolean => findRemoteWorkCopyForLane(runtime.projectRoot, laneId) !== null,
-    prepare: async (): Promise<() => void> => (await prepareCallerWorkCopy(runtime, session, request)).prepared.done,
-    withWorkCopy: (value: unknown): unknown => (isRecord(value) ? { ...value, workCopy: { laneId } } : value),
+    prepare: async (): Promise<() => void> => {
+      const { prepared } = await prepareCallerWorkCopy(runtime, session, request);
+      keptFiles = prepared.keptFiles;
+      return prepared.done;
+    },
+    withWorkCopy: (value: unknown): unknown => (isRecord(value)
+      ? { ...value, workCopy: { laneId, ...(keptFiles.length ? { keptFiles: keptFiles.slice(0, 20) } : {}) } }
+      : value),
   };
+}
+
+/** `mac_desktop` actions from another machine that make the chat's work copy here when it has none. */
+const MAC_DESKTOP_WORK_COPY_MAKING_ACTIONS = new Set<string>(["start", "open"]);
+
+/**
+ * `mac_desktop` actions a chat on another machine is refused: each asks the
+ * user with a card in the calling chat, and that chat is not on this machine.
+ */
+const MAC_DESKTOP_REMOTE_REFUSED_ACTIONS: Readonly<Record<string, string>> = {
+  requestInputLease: "real input on this machine's screen is granted with a card in a chat on this machine, and this chat is on another one. "
+    + "Use the default (accessibility) input, or ask the user to take control from the Desktop panel",
+  requestSharedDesktop: "the main desktop is shared with a card in a chat on this machine, and this chat is on another one. "
+    + "Use this chat's own screen there (ade screen start --machine <name>)",
+};
+
+/** `app_control` actions from another machine that make the chat's work copy here when it has none. */
+const APP_CONTROL_WORK_COPY_MAKING_ACTIONS = new Set<string>(["launch", "launchInTerminal", "connect"]);
+
+/** `app_control` actions from another machine that sync the work copy to the caller's code first (a launch builds and runs it). */
+const APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS = new Set<string>(["launch", "launchInTerminal"]);
+
+/** No `mac_desktop` action needs the caller's code: the screen shows what runs here. */
+const NO_CODE_SYNC_ACTIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * A `mac_desktop` or `app_control` action from a chat on another machine with
+ * no lane here (`ade screen … --machine`, `ade app-control … --machine`): its
+ * work copy's lane stands in for the lane, as for a device, so the display,
+ * lease, windows and session belong to that lane, and the chat stays their
+ * owner (`chatSessionId` is still the caller's own, set by the scope function).
+ *
+ * - A lane-free read (status, window and driver lists) makes no copy: it
+ *   names the copy's lane only when the copy is here already.
+ * - A copy-making action (start, open, launch, connect) makes the copy at the
+ *   caller's commit when it is missing; a launch also gets the caller's code.
+ * - Anything else acts on the copy's lane; with no copy here the service says
+ *   there is nothing on it, and no copy is made for that.
+ * - Naming another lane is refused, naming both, as for a chat on this machine.
+ *
+ * `prepare` (null when no copy is used) readies the copy and resolves to its
+ * `done`; `answer` adds `workCopy.laneId` so the caller's machine learns the lane.
+ */
+function remoteWorkSurfaceScope(
+  runtime: AdeRuntime,
+  session: SessionState,
+  domain: "mac_desktop" | "app_control",
+  action: string,
+  surfaceArgs: Record<string, unknown>,
+  rules: { laneFree: ReadonlySet<string>; copyMaking: ReadonlySet<string>; codeSync: ReadonlySet<string> },
+): {
+  args: Record<string, unknown>;
+  laneId: string | null;
+  prepare: (() => Promise<() => void>) | null;
+  answer: ((value: unknown) => unknown) | null;
+} {
+  const method = `run_ade_action:${domain}.${action}`;
+  const remote = remoteWorkDeviceScope(runtime, session, surfaceArgs, rules.codeSync.has(action) ? undefined : "none");
+  const requestedLaneId = asOptionalTrimmedString(surfaceArgs.laneId);
+  if (requestedLaneId && requestedLaneId !== remote.laneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `A chat on another machine uses its work copy here (lane ${remote.laneId}) as its lane; --lane ${requestedLaneId} was refused. `
+        + "Leave out --lane.",
+      { kind: "lane_bound", method, callerLaneId: remote.laneId, requestedLaneId },
+    );
+  }
+  const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
+  const copyExists = remote.copyExists();
+  if (rules.laneFree.has(action)) {
+    return { args: remote.rest, laneId: copyExists ? remote.laneId : null, prepare: null, answer: copyExists ? answer : null };
+  }
+  const usesCopy = rules.copyMaking.has(action) || copyExists;
+  return { args: remote.rest, laneId: remote.laneId, prepare: usesCopy ? remote.prepare : null, answer: usesCopy ? answer : null };
+}
+
+/**
+ * An App Control launch's `cwd` from another machine is relative to the
+ * caller's checkout (`withRemoteAppControlArgs`); here it is the same folder
+ * in the chat's work copy. An absolute path names the caller's machine and is
+ * refused, as is a folder outside the copy.
+ */
+function remoteWorkLaunchCwd(runtime: AdeRuntime, laneId: string, cwd: unknown): string | null {
+  const relative = asOptionalTrimmedString(cwd);
+  if (!relative) return null;
+  if (path.isAbsolute(relative) || /^[a-zA-Z]:/.test(relative)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--cwd from another machine must be a folder inside the checkout, relative to its top.");
+  }
+  const copyPath = findRemoteWorkCopyForLane(runtime.projectRoot, laneId)?.path;
+  if (!copyPath) return null;
+  const resolved = path.resolve(copyPath, relative);
+  if (!isPathWithinAuthorizedRoot(copyPath, resolved)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `--cwd ${relative} is outside this chat's work copy.`);
+  }
+  return resolved;
 }
 
 /**
@@ -3175,7 +3282,13 @@ async function prepareRemoteWorkShell(
   runtime: AdeRuntime,
   session: SessionState,
   ptyArgs: Record<string, unknown>,
-): Promise<{ args: Record<string, unknown>; workCopy: { path: string; created: boolean; synced: boolean; laneId: string }; done: () => void }> {
+): Promise<{
+  args: Record<string, unknown>;
+  workCopy: { path: string; created: boolean; synced: boolean; laneId: string; keptFiles?: string[]; scratch?: true };
+  done: () => void;
+  /** A `--scratch` run's temporary folder, removed when its shell ends. */
+  scratchDir: string | null;
+}> {
   const primary = runtime.laneService.getPrimaryLane();
   if (!primary) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This project has no primary lane here to run the command in.");
@@ -3206,9 +3319,35 @@ async function prepareRemoteWorkShell(
     if (tooLong) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, tooLong, { code: "command_too_long" });
     launch = { command: runOnce.command, args: runOnce.args, ...(runOnce.env ? { env: runOnce.env } : {}) };
   }
-  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
   const cols = typeof ptyArgs.cols === "number" ? ptyArgs.cols : 120;
   const rows = typeof ptyArgs.rows === "number" ? ptyArgs.rows : 36;
+  if (remoteWork.scratch === true) {
+    // `--scratch`: one command that needs no code, in an empty folder under
+    // ADE's home, with no work copy and no git; the folder goes when it ends.
+    if (remoteWork.exitWhenDone !== true || !command) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--scratch runs one command: ade shell start --machine <name> --scratch -- <command>.");
+    }
+    const owner = workCopyOwner(session);
+    const scratchDir = createRemoteWorkScratchDir(owner);
+    return {
+      args: {
+        ...launch,
+        title: asOptionalTrimmedString(ptyArgs.title) ?? command.slice(0, 120),
+        cols,
+        rows,
+        laneId: primary.laneId,
+        cwd: scratchDir,
+        allowExternalCwd: true,
+        chatSessionId: owner,
+        toolType: "shell",
+        tracked: true,
+      },
+      workCopy: { path: scratchDir, created: true, synced: false, laneId: remoteWorkLaneIdFor(owner), scratch: true },
+      done: () => {},
+      scratchDir,
+    };
+  }
+  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
   return {
     args: {
       ...launch,
@@ -3223,9 +3362,38 @@ async function prepareRemoteWorkShell(
       toolType: "shell",
       tracked: true,
     },
-    workCopy: { path: prepared.path, created: prepared.created, synced: prepared.synced, laneId },
+    workCopy: {
+      path: prepared.path,
+      created: prepared.created,
+      synced: prepared.synced,
+      laneId,
+      ...(prepared.keptFiles.length ? { keptFiles: prepared.keptFiles.slice(0, 20) } : {}),
+    },
     done: prepared.done,
+    scratchDir: null,
   };
+}
+
+/**
+ * Remove a `--scratch` run's folder once its shell has ended: now when it
+ * already has (or never started), else on its exit.
+ */
+function removeScratchDirWhenShellEnds(runtime: AdeRuntime, scratchDir: string, terminalId: string | null): void {
+  const remove = () => removeRemoteWorkScratchDir(scratchDir, undefined, runtime.logger);
+  if (!terminalId) {
+    remove();
+    return;
+  }
+  const stop = runtime.ptyService.onExit((event) => {
+    if (event.sessionId !== terminalId) return;
+    stop();
+    remove();
+  });
+  // A command that ended before the listener was added.
+  if (!runtime.ptyService.hasLivePty(terminalId)) {
+    stop();
+    remove();
+  }
 }
 
 const remoteCallerCaptureRegistries = new WeakMap<AdeRuntime, RemoteCallerCaptures>();
@@ -4604,6 +4772,10 @@ export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
  * lanes and the reason. Nothing changes for a caller that names its own lane,
  * which is what an agent that passes `--lane` at all normally does.
  *
+ * A chat on another machine has no lane here: its work copy's lane
+ * (`workCopyLaneId`, from `remoteWorkSurfaceScope`) is its lane, under every
+ * rule above.
+ *
  * Exported for the scope tests: the refusal is a contract, not an implementation
  * detail, and the full RPC dispatch is the wrong size for proving one sentence.
  */
@@ -4613,6 +4785,7 @@ export function scopeMacDesktopAdeActionArgs(
   isUserClient: boolean,
   action: string,
   macDesktopArgs: Record<string, unknown>,
+  workCopyLaneId: string | null = null,
 ): Record<string, unknown> {
   if (isUserClient) return macDesktopArgs;
   // The role gate alone is not enough: a chat identity is clamped to `agent`,
@@ -4645,7 +4818,7 @@ export function scopeMacDesktopAdeActionArgs(
     ...rest
   } = macDesktopArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  const sessionLaneId = workCopyLaneId ?? resolveChatSessionLaneId(runtime, session);
   if (!sessionLaneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
     scopeAccessDenied(
       "mac_desktop actions need a resolvable lane for this caller",
@@ -5122,6 +5295,9 @@ function appControlLaneBoundError(
  *   `listDrivers`). Every other action is refused: with no lane there is no
  *   session it may own, and the service must never fall back to some lane.
  *
+ * A chat on another machine has no lane here: its work copy's lane
+ * (`workCopyLaneId`, from `remoteWorkSurfaceScope`) is its lane.
+ *
  * User clients never reach this; `scopeUnboundAppControlAdeActionArgs` covers
  * an `ade` process with no chat identity.
  */
@@ -5130,6 +5306,7 @@ export function scopeAppControlAdeActionArgs(
   session: SessionState,
   action: string,
   appControlArgs: Record<string, unknown>,
+  workCopyLaneId: string | null = null,
 ): Record<string, unknown> {
   const method = `run_ade_action:app_control.${action}`;
   if (isCtoOnlyAdeAction("app_control", action)) {
@@ -5144,7 +5321,7 @@ export function scopeAppControlAdeActionArgs(
     ...rest
   } = appControlArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  const sessionLaneId = workCopyLaneId ?? resolveChatSessionLaneId(runtime, session);
   if (!sessionLaneId && APP_CONTROL_LANE_BOUND_ACTIONS.has(action)) {
     scopeAccessDenied("app_control actions need a resolvable lane for this caller", method);
   }
@@ -6920,7 +7097,13 @@ async function runTool(args: {
       } else if (action === "create" && isRecord(scopedObjectArgs.remoteWork)) {
         const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
         scopedObjectArgs = prepared.args;
-        afterScopedCall = prepared.done;
+        afterScopedCall = prepared.scratchDir
+          ? () => {
+            // Runs whether or not the shell started; `result` is set only when it did.
+            const scratchDir = prepared.scratchDir!;
+            removeScratchDirWhenShellEnds(runtime, scratchDir, isRecord(result) ? asOptionalTrimmedString(result.sessionId) : null);
+          }
+          : prepared.done;
         transformScopedResult = (value) => {
           // Background work for a chat on another machine: archived from the
           // start, so no list on this machine shows it (one row per command
@@ -7084,12 +7267,37 @@ async function runTool(args: {
       // clients are branched around entirely rather than returned early from the
       // scoping function, so this adds no object-args requirement to a surface
       // that was already free to call the domain however it liked.
+      let macDesktopArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      let workCopyLaneId: string | null = null;
+      // A chat on another machine with no lane here: its work copy's lane is
+      // its lane (`ade screen … --machine`).
+      if (isRecord(macDesktopArgs.remoteWork)) {
+        const remote = remoteWorkSurfaceScope(runtime, session, domain, action, macDesktopArgs, {
+          laneFree: MAC_DESKTOP_READ_ONLY_ACTIONS,
+          copyMaking: MAC_DESKTOP_WORK_COPY_MAKING_ACTIONS,
+          codeSync: NO_CODE_SYNC_ACTIONS,
+        });
+        const refusal = MAC_DESKTOP_REMOTE_REFUSED_ACTIONS[action];
+        if (refusal) scopeAccessDenied(refusal, `run_ade_action:mac_desktop.${action}`);
+        macDesktopArgs = remote.args;
+        workCopyLaneId = remote.laneId;
+        const prepare = remote.prepare;
+        // Readied last, right before the call, so a refusal on the way leaves
+        // nothing busy; busy until the call returns.
+        if (prepare) {
+          prepareBeforeCall = async () => {
+            afterScopedCall = await prepare();
+          };
+        }
+        transformScopedResult = remote.answer;
+      }
       scopedObjectArgs = scopeMacDesktopAdeActionArgs(
         runtime,
         session,
         isUserClient,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        macDesktopArgs,
+        workCopyLaneId,
       );
     } else if (domain === "mac_desktop" && isUnboundAdeCliCaller(session)) {
       // A user client by shape, but possibly an agent whose shell has no chat
@@ -7114,11 +7322,38 @@ async function runTool(args: {
       scopedObjectArgs = scopeTrustedChatlessMacDesktopAdeActionArgs(rawObjectArgs);
     } else if (domain === "app_control" && !isUserClient) {
       // A bound agent acts only on its chat's lane session, as its own chat.
+      let appControlArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      let workCopyLaneId: string | null = null;
+      // A chat on another machine with no lane here: its work copy's lane is
+      // its lane (`ade app-control … --machine`); a launch runs the caller's code.
+      if (isRecord(appControlArgs.remoteWork)) {
+        const remote = remoteWorkSurfaceScope(runtime, session, domain, action, appControlArgs, {
+          laneFree: APP_CONTROL_LANE_FREE_ACTIONS,
+          copyMaking: APP_CONTROL_WORK_COPY_MAKING_ACTIONS,
+          codeSync: APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS,
+        });
+        const { cwd: callerCwd, ...withoutCwd } = remote.args;
+        // The caller's `--cwd` is the same folder in the copy, which exists
+        // only once it is readied; with no copy to find it in it is dropped.
+        appControlArgs = withoutCwd;
+        workCopyLaneId = remote.laneId;
+        const prepare = remote.prepare;
+        const laneId = remote.laneId;
+        if (prepare && laneId) {
+          prepareBeforeCall = async () => {
+            afterScopedCall = await prepare();
+            const cwd = remoteWorkLaunchCwd(runtime, laneId, callerCwd);
+            if (cwd) scopedObjectArgs = { ...scopedObjectArgs, cwd };
+          };
+        }
+        transformScopedResult = remote.answer;
+      }
       scopedObjectArgs = scopeAppControlAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        appControlArgs,
+        workCopyLaneId,
       );
     } else if (domain === "app_control" && isUnboundAdeCliCaller(session)) {
       // Placed by the lane worktree it stands in, and acting as no chat.
@@ -8364,6 +8599,40 @@ async function runTool(args: {
       if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });
       throw error;
     }
+  }
+
+  if (name === "release_remote_work_devices") {
+    // A chat on another machine whose turn ended (its own brain sends this):
+    // it lets go of what it holds here, as a chat here does when it ends,
+    // but nothing is powered off or quit. Only its own claims: every release
+    // below is keyed on the caller's own foreign id.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const released: string[] = [];
+    const release = async (device: string, run: () => Promise<boolean>): Promise<void> => {
+      try {
+        if (await run()) released.push(device);
+      } catch (error) {
+        runtime.logger.warn("remote_work.device_release_failed", { device, error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    // Leases, the app session and the device session; the simulator stays on.
+    await release("simulator", async () => {
+      const ios = runtime.iosSimulatorService;
+      return ios ? (await ios.releaseIfOwnedBy(owner, { keepRunning: true })).released : false;
+    });
+    // Its recordings stop (filed as proof) and its leases pass on; the emulator stays on.
+    await release("android_emulator", async () => {
+      if (!runtime.androidEmulatorService) return false;
+      await runtime.androidEmulatorService.releaseIfOwnedBy(owner);
+      return true;
+    });
+    // The real-input lease on this machine's screen.
+    await release("desktop", async () => (await runtime.macDesktopService?.releaseIfOwnedBy(owner))?.released === true);
+    if (released.length) runtime.logger.info("remote_work.devices_released_after_turn", { released });
+    return { released };
   }
 
   if (name === "work_copy_file") {

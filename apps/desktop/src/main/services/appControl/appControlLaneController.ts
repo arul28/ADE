@@ -133,6 +133,12 @@ export type CreateAppControlServiceArgs = {
    * agent used to start the primary checkout's app instead of its own.
    */
   resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The project's primary lane. A chat on another machine (`remote-work-…`)
+   * runs its app in a terminal of this lane, in its work copy, as
+   * `ade shell start --machine` does; without it such a launch is refused.
+   */
+  resolvePrimaryLaneId?: (() => string | null) | null;
   onEvent?: ((payload: AppControlEventPayload) => void) | null;
   /**
    * macOS recording engine. Defaults to a private `ade-desktop-driver` that is

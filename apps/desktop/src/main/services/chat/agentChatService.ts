@@ -12403,6 +12403,16 @@ export function createAgentChatService(args: {
    */
   onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
   /**
+   * A chat that drove a device on another machine through its work copy there
+   * (`noteRemoteWork`) finished a turn: the brain asks each such machine to let
+   * go of what the chat holds there (leases, sessions; nothing powered off).
+   * `uses` are the machines and projects whose devices it used.
+   */
+  onRemoteWorkTurnSettled?: (event: {
+    sessionId: string;
+    uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
+  }) => void;
+  /**
    * Content-free hook fired after a session-metadata generation: on request,
    * or `automatic` when ADE refreshed the status line after a turn.
    */
@@ -12529,6 +12539,7 @@ export function createAgentChatService(args: {
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
     onRemoteWorkStarted,
+    onRemoteWorkTurnSettled,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
@@ -25019,6 +25030,24 @@ export function createAgentChatService(args: {
       if (serviceDisposed) return;
       crossMachineHandoff?.onTurnSettled(settledSessionId);
     });
+    // Devices this chat drove on other machines are let go of when its turn
+    // ends, as a local chat's are when it ends (those machines never see this
+    // chat end). Shells there keep running: they are background work. Only
+    // machines this turn used: an earlier turn's end already let go there.
+    const turnStartedMs = pendingTurnStartMsBySession.get(settledSessionId);
+    const deviceUses = (remoteWorkBySession.get(settledSessionId) ?? []).filter((use) =>
+      (use.usesSimulator || use.usesAndroidEmulator || use.usesDesktop || use.usesAppControl)
+      && (turnStartedMs === undefined || !(Date.parse(use.lastStartedAt) < turnStartedMs)));
+    if (onRemoteWorkTurnSettled && deviceUses.length) {
+      try {
+        onRemoteWorkTurnSettled({
+          sessionId: settledSessionId,
+          uses: deviceUses.map((use) => ({ machineKey: use.machineKey, machineName: use.machineName, projectId: use.projectId })),
+        });
+      } catch (error) {
+        logger.warn("agent_chat.remote_work_turn_release_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     try {
       recordTurnUsage(managed, event);
     } catch (error) {
@@ -81143,6 +81172,8 @@ export function createAgentChatService(args: {
     workCopyLaneId: string | null;
     usesSimulator: boolean;
     usesAndroidEmulator?: boolean;
+    usesDesktop?: boolean;
+    usesAppControl?: boolean;
   }): void => {
     const sessionId = args.sessionId.trim();
     if (!sessionId || !args.machineKey.trim()) return;
@@ -81167,6 +81198,8 @@ export function createAgentChatService(args: {
       workCopyLaneId: args.workCopyLaneId ?? previous?.workCopyLaneId ?? null,
       usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
       ...(args.usesAndroidEmulator === true || previous?.usesAndroidEmulator === true ? { usesAndroidEmulator: true } : {}),
+      ...(args.usesDesktop === true || previous?.usesDesktop === true ? { usesDesktop: true } : {}),
+      ...(args.usesAppControl === true || previous?.usesAppControl === true ? { usesAppControl: true } : {}),
       lastStartedAt: new Date().toISOString(),
     };
     // At most six. The oldest entry without a device goes first, so the iOS
@@ -81174,7 +81207,7 @@ export function createAgentChatService(args: {
     // always stays.
     const list = [...uses.filter((use) => !sameUse(use)), next];
     while (list.length > 6) {
-      const withoutDevice = list.slice(0, -1).findIndex((use) => !use.usesSimulator && !use.usesAndroidEmulator);
+      const withoutDevice = list.slice(0, -1).findIndex((use) => !use.usesSimulator && !use.usesAndroidEmulator && !use.usesDesktop && !use.usesAppControl);
       list.splice(withoutDevice >= 0 ? withoutDevice : 0, 1);
     }
     remoteWorkBySession.set(sessionId, list);

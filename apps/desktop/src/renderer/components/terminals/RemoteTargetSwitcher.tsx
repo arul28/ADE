@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import { cn } from "../ui/cn";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW } from "./workToolChrome";
@@ -21,17 +20,19 @@ type RemoteTargetOption = {
  * the chat used comes first, unless the user picked another.
  */
 export function useRemoteTargetChoice(remoteUses: RemoteWorkTargetUse[], laneAvailable: boolean) {
-  const resolvePin = useRemoteWorkPinResolver(remoteUses.length > 0);
   const options: RemoteTargetOption[] = [
     ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
     ...(laneAvailable ? [{ key: "lane", label: "This lane", use: null }] : []),
   ];
   const [chosenKey, setChosenKey] = useState<string | null>(null);
   const chosen = options.find((option) => option.key === chosenKey) ?? options[0] ?? null;
-  return { options, chosen, choose: setChosenKey, resolvePin };
+  return { options, chosen, choose: setChosenKey };
 }
 
-/** One chip per target, shown only when there is more than one. */
+/**
+ * One chip per target, shown when there is more than one, or when the only
+ * one is another machine's: then the chip is what says whose device it is.
+ */
 export function RemoteTargetSwitcher({
   options,
   chosenKey,
@@ -46,7 +47,7 @@ export function RemoteTargetSwitcher({
   remoteLabel: string;
   testId: string;
 }) {
-  if (options.length <= 1) return null;
+  if (options.length === 0 || (options.length === 1 && !options[0]!.use)) return null;
   return (
     <div className={WORK_TOOL_CHROME_ROW} data-testid={testId}>
       {options.map((option) => (

@@ -332,6 +332,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   var isSideChat = false
   /// The composer offers `/side` (a Work chat on a provider that can fork).
   var offersSideChat = false
+  /// The chat's work copies on other machines whose simulator, emulator or
+  /// screen it drives (`workRemoteWorkDevices`): their pills sit beside the
+  /// lane's own tools.
+  var remoteDevices: [WorkRemoteWorkDevice] = []
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -424,6 +428,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
     self.isSideChat = summary.sideChatParentSessionId?
       .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    self.remoteDevices = workRemoteWorkDevices(summary.remoteWork)
   }
 
   var currentModelId: String {
@@ -1342,9 +1347,16 @@ struct WorkChatSessionView: View {
         }
         if showsComposerLaneToolChips {
           ForEach(laneTools.chips) { chip in
-            WorkLaneToolChipView(chip: chip, isSelected: pillSelection(chip.duoToolTab, selected)) {
+            // A device on another machine is never the pane's tab: it opens
+            // on the live stage from every layout.
+            WorkLaneToolChipView(
+              chip: chip,
+              isSelected: chip.remote == nil ? pillSelection(chip.duoToolTab, selected) : (duoPane == nil ? nil : false)
+            ) {
               ADEHaptics.light()
-              if let duoPane {
+              if chip.remote != nil {
+                laneTools.open(chip, macDesktopStream: true)
+              } else if let duoPane {
                 // Wide display: the tool opens beside the thread, seeded from
                 // the state this chip is already showing; tapped again, away.
                 if selected == chip.duoToolTab {
@@ -2853,6 +2865,7 @@ struct WorkChatSessionView: View {
       chatSessionId: session.id,
       // A side chat's lane tools are its main chat's, already polled there.
       enabled: !isPersonalChat && !chatSummaryContext.isSideChat,
+      remoteDevices: chatSummaryContext.remoteDevices,
       duoPane: duoPane,
       relay: toolsRelay
     )

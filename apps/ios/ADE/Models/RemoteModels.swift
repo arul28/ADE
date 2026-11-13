@@ -1442,6 +1442,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// This chat's move to another machine, owned by the source brain. Absent on
   /// older hosts and for a chat that never moved.
   var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
+  /// Other machines this chat works on (`ade shell|apple|android|screen … --machine`),
+  /// kept live by the chat's own brain. Older brains and a chat that never
+  /// worked elsewhere omit it.
+  var remoteWork: [AgentChatRemoteWorkUse]? = nil
   /// Batch move awaiting the person's decision in this caller chat. Older brains omit it.
   var crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval? = nil
 
@@ -1537,7 +1541,74 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.sideChatParentSessionId == rhs.sideChatParentSessionId
       && lhs.sideChatSessionId == rhs.sideChatSessionId
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff
+      && lhs.remoteWork == rhs.remoteWork
       && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
+  }
+}
+
+/// Another machine a chat works on (desktop `AgentChatRemoteWorkUse`): the
+/// project there, and the work copy's lane its simulator, emulator and screen
+/// are keyed by. `machineKey` is the account directory's key for that machine.
+///
+/// Lenient: a malformed entry decodes with empty fields rather than failing
+/// the whole chat summary.
+struct AgentChatRemoteWorkUse: Codable, Equatable, Hashable {
+  var machineKey: String
+  var machineName: String
+  var machinePlatform: String?
+  var projectId: String?
+  var projectRootPath: String?
+  var workCopyLaneId: String?
+  var usesSimulator: Bool
+  var usesAndroidEmulator: Bool
+  var usesDesktop: Bool
+  var usesAppControl: Bool
+  var lastStartedAt: String?
+
+  init(
+    machineKey: String,
+    machineName: String,
+    machinePlatform: String? = nil,
+    projectId: String? = nil,
+    projectRootPath: String? = nil,
+    workCopyLaneId: String? = nil,
+    usesSimulator: Bool = false,
+    usesAndroidEmulator: Bool = false,
+    usesDesktop: Bool = false,
+    usesAppControl: Bool = false,
+    lastStartedAt: String? = nil
+  ) {
+    self.machineKey = machineKey
+    self.machineName = machineName
+    self.machinePlatform = machinePlatform
+    self.projectId = projectId
+    self.projectRootPath = projectRootPath
+    self.workCopyLaneId = workCopyLaneId
+    self.usesSimulator = usesSimulator
+    self.usesAndroidEmulator = usesAndroidEmulator
+    self.usesDesktop = usesDesktop
+    self.usesAppControl = usesAppControl
+    self.lastStartedAt = lastStartedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case machineKey, machineName, machinePlatform, projectId, projectRootPath, workCopyLaneId
+    case usesSimulator, usesAndroidEmulator, usesDesktop, usesAppControl, lastStartedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    machineKey = (try? c.decodeIfPresent(String.self, forKey: .machineKey)) ?? ""
+    machineName = (try? c.decodeIfPresent(String.self, forKey: .machineName)) ?? ""
+    machinePlatform = try? c.decodeIfPresent(String.self, forKey: .machinePlatform)
+    projectId = try? c.decodeIfPresent(String.self, forKey: .projectId)
+    projectRootPath = try? c.decodeIfPresent(String.self, forKey: .projectRootPath)
+    workCopyLaneId = try? c.decodeIfPresent(String.self, forKey: .workCopyLaneId)
+    usesSimulator = (try? c.decodeIfPresent(Bool.self, forKey: .usesSimulator)) == true
+    usesAndroidEmulator = (try? c.decodeIfPresent(Bool.self, forKey: .usesAndroidEmulator)) == true
+    usesDesktop = (try? c.decodeIfPresent(Bool.self, forKey: .usesDesktop)) == true
+    usesAppControl = (try? c.decodeIfPresent(Bool.self, forKey: .usesAppControl)) == true
+    lastStartedAt = try? c.decodeIfPresent(String.self, forKey: .lastStartedAt)
   }
 }
 

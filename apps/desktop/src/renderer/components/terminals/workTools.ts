@@ -315,6 +315,20 @@ export type WorkToolContext = {
    */
   hasRemoteAndroidEmulator?: boolean;
   /**
+   * The chat drives a Mac or Linux screen on another machine through its work
+   * copy (`ade screen … --machine`): that machine's platform. The lane-screen
+   * tool then shows that screen, so it stays even on a host that cannot run
+   * one (a Windows PC showing a Mac's desktop), and is named for it.
+   */
+  remoteMacDesktopPlatform?: "darwin" | "linux" | null;
+  /** The same for a Windows machine's screen: the Windows Desktop tool shows it. */
+  hasRemoteWindowsDesktop?: boolean;
+  /**
+   * The chat drives an App Control session on another machine through its
+   * work copy (`ade app-control … --machine`). The App Control tool shows it.
+   */
+  hasRemoteAppControl?: boolean;
+  /**
    * The lane's RUNTIME HOST can run the Android emulator at all
    * (`androidEmulator.getStatus().platformSupported`). A missing SDK is still
    * `true`: the panel shows the setup card. Same tri-state and the same "show
@@ -403,6 +417,9 @@ export function workToolAvailability(
   // short-circuit: a Mac-hosted lane must not offer a Windows screen even to a
   // web client that could watch one. The Mac rule below keeps its existing
   // behavior, including the web client's watch-only case.
+  if (id === "windows-desktop" && context.hasRemoteWindowsDesktop) return AVAILABLE;
+  if (id === "mac-desktop" && context.remoteMacDesktopPlatform) return AVAILABLE;
+  if (id === "app-control" && context.hasRemoteAppControl) return AVAILABLE;
   if (id === "windows-desktop" && context.supportsWindowsDesktop === false) {
     const reason = context.windowsDesktopUnsupportedReason?.trim();
     return { available: false, reason: reason || "This lane's host isn't Windows" };
@@ -452,9 +469,9 @@ export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolCont
   if (context.cloudLane) return false;
   const platform = context.hostPlatform ?? null;
   if (!platform) return false;
-  if (id === "windows-desktop") return platform !== "win32";
+  if (id === "windows-desktop") return platform !== "win32" && context.hasRemoteWindowsDesktop !== true;
   // A Linux host's lane screen is the Mac Desktop pane, named for Linux.
-  if (id === "mac-desktop") return platform !== "darwin" && platform !== "linux";
+  if (id === "mac-desktop") return platform !== "darwin" && platform !== "linux" && !context.remoteMacDesktopPlatform;
   if (id === "ios") return platform !== "darwin" && context.hasRemoteSimulator !== true;
   return false;
 }
@@ -464,9 +481,39 @@ export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WOR
   return WORK_TOOL_DEFINITIONS.filter((definition) => !isHostMismatchWorkTool(definition.id, context)
     && (definition.id !== "side-chat" || context.hasSideChat === true))
     .map((definition) => {
-      const label = hostLaneScreenLabel(definition.id, context.hostPlatform ?? null);
+      const label = hostLaneScreenLabel(definition.id, laneScreenPlatform(context));
       return label ? { ...definition, label, hint: `${label} is off` } : definition;
     });
+}
+
+/**
+ * The platform the Mac Desktop tool is named for: the host's when it runs
+ * one, else the other machine's whose screen the chat drives.
+ */
+export function laneScreenPlatform(
+  context: Pick<WorkToolContext, "hostPlatform" | "remoteMacDesktopPlatform">,
+): NodeJS.Platform | null {
+  const host = context.hostPlatform ?? null;
+  if (host === "darwin" || host === "linux") return host;
+  return context.remoteMacDesktopPlatform ?? host;
+}
+
+/**
+ * A machine's platform as the account directory names it ("darwin",
+ * "windows", "win32-x64", "linux"), or null when it says nothing usable.
+ * "darwin" is read first: it contains "win".
+ */
+export function remoteMachineHostPlatform(platform: string | null | undefined): NodeJS.Platform | null {
+  const value = platform?.trim().toLowerCase() ?? "";
+  if (/darwin|mac|osx/.test(value)) return "darwin";
+  if (/win/.test(value)) return "win32";
+  if (/linux/.test(value)) return "linux";
+  return null;
+}
+
+/** The lane-screen tool that shows a machine's screen: Windows Desktop for Windows, else Mac Desktop. */
+export function desktopToolForMachinePlatform(platform: string | null | undefined): DesktopWorkTool {
+  return remoteMachineHostPlatform(platform) === "win32" ? "windows-desktop" : "mac-desktop";
 }
 
 /** The lane-screen tools: one per host platform, never both. */

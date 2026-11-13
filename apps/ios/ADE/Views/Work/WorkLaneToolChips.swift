@@ -40,9 +40,20 @@ enum WorkToolChipKind: Equatable {
   }
 }
 
+/// A chip for a device the chat drives on another machine through its work
+/// copy there (`ade apple|android|screen … --machine`), not the lane's own.
+struct WorkToolChipRemote: Equatable, Hashable {
+  /// The work copy's lane, namespaced to its machine (`remoteWorkCopyLaneId`):
+  /// what the viewer streams and drives.
+  let laneId: String
+  let machineName: String
+}
+
 struct WorkToolChip: Equatable, Identifiable {
   let kind: WorkToolChipKind
   var desktopPlatformLabel: String? = nil
+  /// Set for a device on another machine; nil for the lane's own tool.
+  var remote: WorkToolChipRemote? = nil
 
   /// The chip's full name, derived from `kind` so the two cannot drift.
   var label: String {
@@ -66,19 +77,74 @@ struct WorkToolChip: Equatable, Identifiable {
   /// so it drops the family word: "iPhone 16 Pro" shows as "16 Pro". VoiceOver
   /// still reads the full `label`.
   var displayLabel: String {
-    guard case .simulator(let name, _) = kind else { return label }
-    return appleDeviceChipModelName(name)
+    let local: String
+    if case .simulator(let name, _) = kind {
+      local = appleDeviceChipModelName(name)
+    } else {
+      local = label
+    }
+    // A device on another machine names that machine: "16 Pro · MacBook Pro".
+    guard let remote, !remote.machineName.isEmpty else { return local }
+    return "\(local) · \(remote.machineName)"
   }
 
   var id: String {
+    let base: String
     switch kind {
-    case .simulator: return "simulator"
-    case .browser: return "browser"
-    case .appControl: return "app-control"
-    case .macDesktop: return "mac-desktop"
-    case .android: return "android"
+    case .simulator: base = "simulator"
+    case .browser: base = "browser"
+    case .appControl: base = "app-control"
+    case .macDesktop: base = "mac-desktop"
+    case .android: base = "android"
     }
+    guard let remote else { return base }
+    return "\(base)|\(remote.laneId)"
   }
+}
+
+/// One of a chat's work copies on another machine whose device the chat
+/// drives, from the chat summary's `remoteWork` (desktop `remoteSimulatorUses`,
+/// `remoteAndroidEmulatorUses`, `remoteWorkUsesOf(…, "usesDesktop")`). The
+/// time of the last use is left out, so the list changes only when a device
+/// does.
+struct WorkRemoteWorkDevice: Equatable, Hashable {
+  /// The account directory's key for that machine.
+  let machineKey: String
+  let machineName: String
+  let projectId: String
+  let projectRootPath: String?
+  let workCopyLaneId: String
+  let simulator: Bool
+  let android: Bool
+  let desktop: Bool
+}
+
+/// The chat's work copies elsewhere that drive a device the phone can show,
+/// newest use first. Only those whose machine named the copy's lane and its
+/// project (current ADE there). App Control is left out: its frames reach the
+/// phone only from the focused machine.
+func workRemoteWorkDevices(_ uses: [AgentChatRemoteWorkUse]?) -> [WorkRemoteWorkDevice] {
+  var seen: Set<String> = []
+  return (uses ?? [])
+    .sorted { ($0.lastStartedAt ?? "") > ($1.lastStartedAt ?? "") }
+    .compactMap { use -> WorkRemoteWorkDevice? in
+      guard use.usesSimulator || use.usesAndroidEmulator || use.usesDesktop,
+            !use.machineKey.isEmpty,
+            let lane = nonEmptyTrimmed(use.workCopyLaneId),
+            let projectId = nonEmptyTrimmed(use.projectId),
+            seen.insert("\(use.machineKey)|\(lane)").inserted
+      else { return nil }
+      return WorkRemoteWorkDevice(
+        machineKey: use.machineKey,
+        machineName: use.machineName.trimmingCharacters(in: .whitespacesAndNewlines),
+        projectId: projectId,
+        projectRootPath: nonEmptyTrimmed(use.projectRootPath),
+        workCopyLaneId: lane,
+        simulator: use.usesSimulator,
+        android: use.usesAndroidEmulator,
+        desktop: use.usesDesktop
+      )
+    }
 }
 
 /// The lane's tool chips for the chat's floating badge row, in order:
@@ -120,6 +186,28 @@ func workToolChips(
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
      !appName.isEmpty {
     chips.append(WorkToolChip(kind: .appControl(appName: appName, live: appControlIsLive(state?.appControl))))
+  }
+  return chips
+}
+
+/// The chips of the chat's devices on other machines, in the order of the
+/// reads (newest use first): the simulator while it is up, the Android
+/// emulator while the copy has one, the screen while it has a display. Each
+/// names its machine and opens its own lane there.
+func workRemoteToolChips(_ reads: [WorkLaneToolsModel.RemoteRead]) -> [WorkToolChip] {
+  var chips: [WorkToolChip] = []
+  for read in reads {
+    if let name = appleDeviceRunningName(read.apple) {
+      chips.append(WorkToolChip(kind: .simulator(name: name, family: read.apple?.device?.family), remote: read.remote))
+    }
+    if var chip = androidToolChip(read.android) {
+      chip.remote = read.remote
+      chips.append(chip)
+    }
+    if var chip = macDesktopToolChip(read.macDesktop) {
+      chip.remote = read.remote
+      chips.append(chip)
+    }
   }
   return chips
 }
@@ -271,6 +359,16 @@ final class WorkLaneToolsModel: ObservableObject {
     case toolSheet(WorkToolsSheet.Tool)
     /// Live App Control frames, when the host is streaming.
     case appControl
+    /// A device the chat drives on another machine (`WorkToolChip.remote`).
+    case remote(WorkToolChip)
+  }
+
+  /// One poll of a work copy's devices on another machine.
+  struct RemoteRead: Equatable {
+    let remote: WorkToolChipRemote
+    var apple: AppleDeviceStatus?
+    var android: AndroidDeviceStatus?
+    var macDesktop: WorkToolsMacDesktopState?
   }
 
   @Published private(set) var chips: [WorkToolChip] = []
@@ -289,6 +387,11 @@ final class WorkLaneToolsModel: ObservableObject {
   /// The last lane state the Mac answered with. A read that fails or times
   /// out keeps it, so one slow reply does not blank every chip.
   private var lastTools: WorkToolsLaneState?
+  /// The chat's work copies on other machines whose devices it drives.
+  private var remoteDevices: [WorkRemoteWorkDevice] = []
+  /// The last read of each of those, by namespaced lane id: the seed of a
+  /// remote chip's viewer. Not published.
+  private(set) var remoteReads: [String: RemoteRead] = [:]
 
   /// True while a tool sheet or a live stream is up (a stream lives on the
   /// stage, not in `presented`). Both poll the same reads faster and are the
@@ -300,6 +403,12 @@ final class WorkLaneToolsModel: ObservableObject {
   /// without the live stream can still describe the screen, so the sheet shows
   /// its last still in the macOS sheet instead of a viewer that could only fail.
   func open(_ chip: WorkToolChip, macDesktopStream: Bool) {
+    // Another machine's device always goes on the live stage, on every
+    // layout: the tools pane and its sheets show the lane's own tools.
+    if chip.remote != nil {
+      presented = .remote(chip)
+      return
+    }
     switch chip.kind {
     case .simulator: presented = .appleDevice
     case .android: presented = .androidDevice
@@ -316,13 +425,28 @@ final class WorkLaneToolsModel: ObservableObject {
     )
   }
 
-  func run(laneId: String, syncService: SyncService) async {
+  /// The live-stage seed of a remote chip, from its last read. Nil for a
+  /// chip with nothing to open on the stage.
+  func remoteSeed(for chip: WorkToolChip) -> LiveStage.Seed? {
+    guard let remote = chip.remote else { return nil }
+    let read = remoteReads[remote.laneId]
+    switch chip.kind {
+    case .simulator: return .simulator(read?.apple)
+    case .android: return .android(read?.android)
+    case .macDesktop: return .macDesktop(read?.macDesktop)
+    case .browser, .appControl: return nil
+    }
+  }
+
+  func run(laneId: String, remoteDevices: [WorkRemoteWorkDevice] = [], syncService: SyncService) async {
     chips = []
     appleStatus = nil
     androidStatus = nil
     macDesktopState = nil
     appControlState = nil
     lastTools = nil
+    remoteReads = [:]
+    self.remoteDevices = remoteDevices
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     await refresh(laneId: trimmed, syncService: syncService)
@@ -343,6 +467,7 @@ final class WorkLaneToolsModel: ObservableObject {
     let readApple = syncService.supportsAppleDeviceStatus(laneId: laneId)
     // Android is offered only where the host can also mint a stream ticket.
     let readAndroid = syncService.supportsAndroidDevice(laneId: laneId)
+    async let nextRemote = readRemoteDevices(syncService: syncService)
     async let nextState: WorkToolsLaneState? = readTools
       ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
       : nil
@@ -352,8 +477,9 @@ final class WorkLaneToolsModel: ObservableObject {
     async let nextAndroid: AndroidDeviceStatus? = readAndroid
       ? (try? await syncService.fetchAndroidDeviceStatus(laneId: laneId))
       : nil
-    let (fetched, apple, android) = await (nextState, nextApple, nextAndroid)
+    let (fetched, apple, android, remote) = await (nextState, nextApple, nextAndroid, nextRemote)
     guard !Task.isCancelled else { return }
+    remoteReads = Dictionary(remote.map { ($0.remote.laneId, $0) }, uniquingKeysWith: { first, _ in first })
     let tools = workToolsStateAfterRead(fetched: fetched, previous: lastTools, supported: readTools)
     lastTools = tools
     appleStatus = apple
@@ -362,7 +488,35 @@ final class WorkLaneToolsModel: ObservableObject {
     appControlState = tools?.appControl
     appControlStream = syncService.supportsAppControlStream
     let next = workToolChips(state: tools, appleDevice: apple, android: android)
+      + workRemoteToolChips(remote)
     if next != chips { chips = next }
+  }
+
+  /// Each work copy's devices on its machine, read there. A machine the phone
+  /// cannot reach (`remoteWorkCopyLaneId` nil), or one that does not advertise
+  /// a read, gets no read and so no chip. A failed read keeps the last answer,
+  /// as the lane's own chips do. Only the devices the chat drove are read.
+  private func readRemoteDevices(syncService: SyncService) async -> [RemoteRead] {
+    var reads: [RemoteRead] = []
+    for device in remoteDevices {
+      guard !Task.isCancelled else { break }
+      guard let laneId = syncService.remoteWorkCopyLaneId(device) else { continue }
+      let previous = remoteReads[laneId]
+      var read = RemoteRead(remote: WorkToolChipRemote(laneId: laneId, machineName: device.machineName))
+      if device.simulator, syncService.supportsAppleDeviceStatus(laneId: laneId) {
+        read.apple = (try? await syncService.fetchAppleDeviceStatus(laneId: laneId)) ?? previous?.apple
+      }
+      if device.android, syncService.supportsAndroidDevice(laneId: laneId) {
+        read.android = (try? await syncService.fetchAndroidDeviceStatus(laneId: laneId)) ?? previous?.android
+      }
+      // The screen opens only on the live stage, so it needs the stream there.
+      if device.desktop, syncService.supportsWorkToolsState(laneId: laneId),
+         syncService.supportsMacDesktopStream(laneId: laneId) {
+        read.macDesktop = (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))?.macDesktop ?? previous?.macDesktop
+      }
+      reads.append(read)
+    }
+    return reads
   }
 
   #if DEBUG
@@ -392,6 +546,13 @@ struct WorkLaneToolsPreview {
 }
 #endif
 
+/// What restarts the chips' poll: another lane, or another set of devices on
+/// other machines.
+struct WorkLaneToolsTaskKey: Equatable {
+  let laneId: String
+  let remoteDevices: [WorkRemoteWorkDevice]
+}
+
 /// The lane tool chips, handed up from the chat view (which owns their poll)
 /// to the destination around it, whose header lists the same tools. Publishes
 /// only when the chip set changes.
@@ -419,6 +580,9 @@ struct WorkLaneToolsPresenter: ViewModifier {
   var chatSessionId: String?
   /// False for a personal chat, which has no lane.
   let enabled: Bool
+  /// The chat's work copies on other machines whose devices it drives
+  /// (`workRemoteWorkDevices`). Their chips follow the lane's own.
+  var remoteDevices: [WorkRemoteWorkDevice] = []
   /// The wide display's tools column. While the chips poll, it publishes which
   /// tool tabs exist; the chip tap opens the pane instead of a cover.
   var duoPane: DuoWorkPaneModel?
@@ -433,7 +597,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
 
   func body(content: Content) -> some View {
     content
-      .task(id: laneId) {
+      .task(id: WorkLaneToolsTaskKey(laneId: laneId, remoteDevices: remoteDevices)) {
         #if DEBUG
         if let preview {
           model.installPreview(state: preview.state, appleStatus: preview.appleStatus, androidStatus: preview.androidStatus)
@@ -441,7 +605,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
         }
         #endif
         guard enabled else { return }
-        await model.run(laneId: laneId, syncService: syncService)
+        await model.run(laneId: laneId, remoteDevices: remoteDevices, syncService: syncService)
       }
       // Which tools exist is the same answer the chips give; the pane only
       // needs the identities, and this fires only when the chip set changes.
@@ -455,7 +619,10 @@ struct WorkLaneToolsPresenter: ViewModifier {
           model?.open(chip, macDesktopStream: macDesktopStream)
         }
       }
-      .onChange(of: model.chips, initial: true) { _, chips in
+      .onChange(of: model.chips, initial: true) { _, allChips in
+        // The Tools menus and the pane list the lane's own tools by tab; a
+        // device on another machine is a pill only (it opens on the stage).
+        let chips = allChips.filter { $0.remote == nil }
         relay?.publish(chips)
         var seed = DuoToolSeed(
           appleStatus: model.appleStatus,
@@ -489,13 +656,28 @@ struct WorkLaneToolsPresenter: ViewModifier {
       // state so the first frame is not an empty viewer. The stage outlives
       // this chat's layout, so folding the phone keeps it.
       .onChange(of: model.presented) { _, surface in
+        // A device on another machine: its own lane (namespaced to that
+        // machine), so the viewer streams and drives it there.
+        if case .remote(let chip)? = surface {
+          model.presented = nil
+          guard let remote = chip.remote, let seed = model.remoteSeed(for: chip) else { return }
+          LiveStage.shared.open(
+            seed,
+            laneId: remote.laneId,
+            chatSessionId: chatSessionId,
+            fromPane: false,
+            onClose: nil,
+            preview: nil
+          )
+          return
+        }
         let seed: LiveStage.Seed
         switch surface {
         case .appleDevice: seed = .simulator(model.appleStatus)
         case .androidDevice: seed = .android(model.androidStatus)
         case .macDesktop: seed = .macDesktop(model.macDesktopState)
         case .appControl: seed = .appControl(model.appControlState)
-        case .toolSheet, nil: return
+        case .toolSheet, .remote, nil: return
         }
         model.presented = nil
         var stagePreview: LiveStagePreview?
@@ -583,6 +765,15 @@ struct WorkLaneToolChipView: View {
 
 /// What VoiceOver reads for a chip.
 func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
+  if let remote = chip.remote {
+    let machine = remote.machineName.isEmpty ? "another computer" : remote.machineName
+    switch chip.kind {
+    case .simulator: return "\(chip.label) running on \(machine) for this chat. Tap to watch."
+    case .android: return "\(chip.label), Android emulator on \(machine) for this chat. Tap to watch."
+    case .macDesktop: return "The desktop this chat drives on \(machine). Tap to watch."
+    case .browser, .appControl: return "\(chip.label) on \(machine). Tap to watch."
+    }
+  }
   switch chip.kind {
   case .simulator:
     return "\(chip.label) running on your Mac. Tap to watch."

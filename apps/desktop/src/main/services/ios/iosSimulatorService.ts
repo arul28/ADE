@@ -179,6 +179,7 @@ import { readAppleDeviceMarker } from "./appleDeviceMarker";
 
 import { appleAppOnDevice, appleLaneDerivedDataPath, healMovedDerivedData } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
+import { generateXcodeGenProjects } from "./xcodeGenProjects";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
   createLaneDeviceMaintenance,
@@ -544,6 +545,8 @@ type ResolvedLaunchTarget = {
   appBundlePath: string | null;
   shouldBuild: boolean;
   shouldInstall: boolean;
+  /** Folders whose `project.yml` XcodeGen turned into a project just before this (`xcodeGenProjects.ts`). */
+  generatedXcodeProjects?: string[];
 };
 
 type PbxApplicationTarget = {
@@ -4664,7 +4667,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return { ok: true, path: openPath };
   };
 
+  /**
+   * The target a build uses, after XcodeGen has made the project of any
+   * `project.yml` that has none (or refreshed its own earlier one). Not for a
+   * prebuilt `.app` or a call that does not build.
+   */
   const resolveLaunchTarget = async (launchArgs: IosSimulatorLaunchArgs, deviceUdid: string, projectRoot: string): Promise<ResolvedLaunchTarget> => {
+    const generatedXcodeProjects = launchArgs.appBundlePath || launchArgs.build === false
+      ? []
+      : await generateXcodeGenProjects(projectRoot, run);
+    const resolved = await resolveLaunchTargetFromProjects(launchArgs, deviceUdid, projectRoot);
+    return generatedXcodeProjects.length ? { ...resolved, generatedXcodeProjects } : resolved;
+  };
+
+  const resolveLaunchTargetFromProjects = async (launchArgs: IosSimulatorLaunchArgs, deviceUdid: string, projectRoot: string): Promise<ResolvedLaunchTarget> => {
     const targets = await listLaunchTargets({ deviceUdid, projectRoot });
     const explicitAppBundle = launchArgs.appBundlePath
       ? path.isAbsolute(launchArgs.appBundlePath)
@@ -5247,6 +5263,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         buildRoot: projectRoot,
         usedInstalledBinary,
         capabilities: currentCapabilities(),
+        ...(target.generatedXcodeProjects ? { generatedXcodeProjects: target.generatedXcodeProjects } : {}),
       };
     } catch (error) {
       emitLaunchProgress(
@@ -6062,7 +6079,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * session on one lane and a device session on another, and a per-lane release
    * would leave the second one claimed forever.
    */
-  const releaseIfOwnedBy = async (chatSessionId: string | null | undefined): Promise<IosSimulatorShutdownResult> => {
+  const releaseIfOwnedBy = async (
+    chatSessionId: string | null | undefined,
+    /**
+     * `keepRunning`: let go of what the chat holds (leases, the app and device
+     * sessions) but leave the simulator on and the app open. A chat on
+     * another machine whose turn ended asks for this (`release_remote_work_devices`).
+     */
+    options: { keepRunning?: boolean } = {},
+  ): Promise<IosSimulatorShutdownResult> => {
     const trimmed = chatSessionId?.trim() || null;
     if (!trimmed) return { released: false, previousSession: null };
     // A chat's turn ending also ends the recordings it started automatically.
@@ -6082,7 +6107,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // device half is released on its own terms. Without this a closed chat
       // left its simulator claimed and no other chat could open one.
       if (runtime.hub) {
-        await runtime.hub.releaseDeviceIfOwnedBy(trimmed).catch((error: unknown) => {
+        await runtime.hub.releaseDeviceIfOwnedBy(trimmed, { keepRunning: options.keepRunning === true }).catch((error: unknown) => {
           args.logger.debug("ios_simulator.device_release_failed", {
             chatSessionId: trimmed,
             laneId: runtime.laneId,
@@ -7697,6 +7722,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         installed: true,
         launched: Boolean(installArgs.launch),
         ...(installArgs.launch ? { pid } : {}),
+        ...(target.generatedXcodeProjects ? { generatedXcodeProjects: target.generatedXcodeProjects } : {}),
       };
     } finally {
       laneAppInstalls.delete(runtime.key);
@@ -7786,6 +7812,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const runTestsClaimed = async (testArgs: AppleRunTestsArgs, runtime: LaneRuntime): Promise<AppleRunTestsResult> => {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
+    // A `project.yml` with no project gets one from XcodeGen first, as for a launch.
+    const generatedXcodeProjects = await generateXcodeGenProjects(projectRoot, run);
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
     testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}, scheme ${scheme}` };
@@ -7826,7 +7854,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       testsFailed: result.testsFailed,
       durationMs: result.durationMs,
     });
-    return result;
+    return generatedXcodeProjects.length ? { ...result, generatedXcodeProjects } : result;
   };
 
   /* ───────────────────────── recording ───────────────────────── */

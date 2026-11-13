@@ -88,9 +88,10 @@ Note: `ade desktop` is a different command. It launches the ADE desktop app.
 
 ## A device on another machine
 
-`ade apple`, `ade screen` and `ade app-control` take `--machine <name>` to
-drive that machine's simulator, screen or app. The person at that Mac sees
-your session and can end it; stop it yourself when done. Flags, where proof
+`ade apple`, `ade android`, `ade screen` and `ade app-control` take
+`--machine <name>` to drive that machine's simulator, emulator, screen (Mac,
+Windows or Linux Desktop) or app, with no lane there. The person at that
+machine sees your session and can end it; stop it yourself when done. Flags, where proof
 lands, and building there: `references/other-machines.md`.
 
 ## The same answer on every surface

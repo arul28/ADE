@@ -112,6 +112,11 @@ export type MachineCallRequest = {
    * (`--clone`). Only for the `repo` scope; the target applies its own rules.
    */
   clone?: boolean;
+  /**
+   * False: a sleeping ADE Cloud machine is left asleep and the call fails as
+   * offline. For housekeeping nobody waits on (a turn's device release).
+   */
+  wake?: boolean;
 };
 
 export type MachineCallResult = {
@@ -348,7 +353,8 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     assertForwardable(method, params);
     let machine = await pool.selectMachine(input.machine);
     if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
-    const woke = !machine.online ? await wakeIfSleepingCloudMachine(machine) : null;
+    const mayWake = input.wake !== false;
+    const woke = !machine.online && mayWake ? await wakeIfSleepingCloudMachine(machine) : null;
     if (woke) machine = woke;
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
 
@@ -358,7 +364,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     } catch (error) {
       // The account still lists a cloud machine online for a few minutes after
       // it falls asleep, so the first dial times out. Wake it then, once.
-      const late = woke ? null : await wakeIfSleepingCloudMachine(machine);
+      const late = woke || !mayWake ? null : await wakeIfSleepingCloudMachine(machine);
       if (!late) throw error;
       machine = late;
       entry = await acquireWokenMachine(machine);
@@ -421,7 +427,9 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       && typeof params.arguments.domain === "string" && typeof params.arguments.action === "string"
       ? `${params.arguments.domain}.${params.arguments.action}`
       : method;
-    const timeoutMs = clampMachineCallTimeout(input.timeoutMs);
+    // A long verb (an iOS build, a Gradle install, a test run) gets the
+    // budget it has on that machine itself, not the three-minute cap.
+    const timeoutMs = clampMachineCallTimeout(input.timeoutMs, label);
     const raw = await pool.request(machine, entry, label, method, params, timeoutMs);
     // An action answer is checked (refusal and size) by the pool; any other
     // answer gets the same size cap here.

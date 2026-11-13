@@ -46,6 +46,12 @@ import type {
 } from "../../../shared/types";
 import { APP_CONTROL_PROOF_BACKEND_NAME, createAppControlRecording } from "./appControlRecording";
 import { createAppControlWindowRecorder } from "./appControlWindowRecorder";
+import {
+  isRemoteWorkLaneId,
+  onRemoteWorkCopyReleased,
+  registerRemoteWorkDeviceCheck,
+  remoteWorkLaneSummary,
+} from "../remoteWork/remoteWorkCopyService";
 import type { ComputerUseArtifactIngestionResult, ComputerUseArtifactOwner } from "../../../shared/types/computerUseArtifacts";
 import {
   asPositiveInt,
@@ -64,7 +70,44 @@ import {
 
 export type AppControlService = ReturnType<typeof createAppControlService>;
 
-export function createAppControlService(args: CreateAppControlServiceArgs) {
+/**
+ * A chat on another machine stands in for a lane with its work copy here
+ * (`remote-work-…`, `ade app-control … --machine`): the copy is the lane's
+ * folder, named for that chat's machine. Its app runs in a terminal of the
+ * primary lane, in the copy, as `ade shell start --machine` runs a command,
+ * and that terminal is owned by the caller's chat, so the copy counts as
+ * busy while the app runs.
+ */
+function withRemoteWorkLanes(serviceArgs: CreateAppControlServiceArgs): CreateAppControlServiceArgs {
+  const { projectRoot, resolveLaneWorktreePath, resolveLaneName, ptyService, resolvePrimaryLaneId } = serviceArgs;
+  const copyOf = (laneId: string) => (isRemoteWorkLaneId(laneId) ? remoteWorkLaneSummary(projectRoot, laneId) : null);
+  return {
+    ...serviceArgs,
+    resolveLaneWorktreePath: (laneId) => (isRemoteWorkLaneId(laneId) ? copyOf(laneId)?.path ?? null : resolveLaneWorktreePath?.(laneId) ?? null),
+    resolveLaneName: (laneId) => (isRemoteWorkLaneId(laneId) ? copyOf(laneId)?.name ?? null : resolveLaneName?.(laneId) ?? null),
+    ptyService: ptyService
+      ? {
+        ...ptyService,
+        create: async (createArgs: Parameters<typeof ptyService.create>[0]) => {
+          if (!isRemoteWorkLaneId(createArgs.laneId)) return await ptyService.create(createArgs);
+          const copy = copyOf(createArgs.laneId);
+          if (!copy) throw new Error("This chat has no work copy on this machine any more, so its app cannot start here. Run the command again to make it.");
+          const primaryLaneId = resolvePrimaryLaneId?.() ?? null;
+          if (!primaryLaneId) throw new Error("This project has no primary lane here to run the app's terminal in.");
+          return await ptyService.create({
+            ...createArgs,
+            laneId: primaryLaneId,
+            cwd: createArgs.cwd?.trim() || copy.path,
+            allowExternalCwd: true,
+          });
+        },
+      }
+      : ptyService,
+  };
+}
+
+export function createAppControlService(serviceArgs: CreateAppControlServiceArgs) {
+  const args = withRemoteWorkLanes(serviceArgs);
   // Bounded LRU cache scoped to this service instance — dies with the service,
   // so rebuilding the project naturally invalidates stale paths. Capped to
   // SOURCE_FILE_CACHE_MAX entries to keep growth bounded.
@@ -389,6 +432,18 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     recording.forgetLane(id);
   };
 
+  // A chat's work copy with a live App Control session or recording here is in
+  // use, so the idle and low-disk cleanups keep it; a copy that goes
+  // (`ade shell clean --machine`, the sweep, its chat gone) stops its session.
+  const offRemoteWorkDeviceCheck = registerRemoteWorkDeviceCheck(args.projectRoot, (laneId) => {
+    if (!isRemoteWorkLaneId(laneId)) return false;
+    const session = controllers.get(laneId)?.getSession();
+    return recording.isRecording(laneId) || Boolean(session && !["stopped", "exited", "failed"].includes(session.status));
+  });
+  const offRemoteWorkReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
+    if (controllers.has(laneId)) void stopForLane(laneId);
+  });
+
   const onLane = <T,>(action: string, run: (controller: AppControlLaneController) => Promise<T> | T) =>
     async (ref: AppControlLaneRef = {}): Promise<T> => await run(await sessionController(ref, action));
 
@@ -410,7 +465,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
 
   const stopRecording = async (recordArgs: AppControlRecordStopArgs = {}): Promise<AppControlRecordingStatus> => {
     const laneId = await requireLaneId(recordArgs, "stopRecording");
-    return await recording.stopRecording(laneId, cleanClaimId(recordArgs.chatSessionId));
+    return await recording.stopRecording(laneId, cleanClaimId(recordArgs.chatSessionId), recordArgs.proof !== false);
   };
 
   const getRecordingStatus = async (recordArgs: AppControlRecordingStatusArgs = {}): Promise<AppControlRecordingStatus> => {
@@ -531,6 +586,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       return laneId ? controllers.get(laneId)?.getLastSelectedItem() ?? null : null;
     },
     dispose: () => {
+      offRemoteWorkDeviceCheck();
+      offRemoteWorkReleased();
       for (const controller of controllers.values()) controller.dispose();
       controllers.clear();
       recording.dispose();

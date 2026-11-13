@@ -584,6 +584,7 @@ import {
   formatAppleTests,
   formatAppleWindow,
   shapeAppleLeaseAnswer,
+  xcodeGenNote,
 } from "./cliAppleFormat";
 import { formatCloudStatus } from "./cliCloudStatus";
 import {
@@ -2786,8 +2787,13 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
     $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
     $ ade shell clean --machine <name>               Delete this chat's work copy there
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --scratch --wait -- nvidia-smi   No repo needed: an empty temp folder there, removed after
   Each call opens a new shell there and syncs the copy again, so put all the
   steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --scratch needs no checkout, commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
@@ -2857,8 +2863,9 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--discard drops it); one that replaces a file of the
+  repo is a change made there, so the next sync needs --no-sync or --discard.
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -3769,6 +3776,19 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
 
+  Another machine: --machine <name> drives that machine's screen (Mac,
+  Windows or Linux Desktop) with no lane there. The screen works for this
+  chat's work copy there (a hidden worktree at your commit, made by the first
+  start or open; the commit must be on origin), and this chat owns it, as
+  for a lane. status, windows and stream status make no copy. --lane is
+  refused (the copy is the lane). screen proof and a captioned recording are
+  filed in this chat's proof drawer. lease and start --shared ask in a chat
+  on that machine, so they are refused; use the default input instead.
+  ade shell clean --machine <name> removes the copy and closes its screen.
+    $ ade screen start --machine "MacBook Pro" --text
+    $ ade screen open TextEdit --machine "MacBook Pro" --text
+    $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
+
   Errors (each prints its next step):
     WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
     WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ADE did not start); ask
@@ -4029,7 +4049,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
   --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  first (an APK that git ignores does not travel: use --gradle). A Gradle
+  build or a boot there waits as long as it would here and prints "still
+  running" lines to stderr meanwhile. --clone sets this repo up there first.
+  The emulator's lease is let go when this chat's turn ends (it stays on).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -4160,6 +4183,19 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The session works for this chat's work copy there (a hidden worktree
+  at your commit; the commit must be on origin), and this chat owns it, as for
+  a lane. launch sends your checkout and its uncommitted changes first
+  (--no-sync runs the copy as it is, --discard drops work made there) and runs
+  in a terminal there; --cwd must be inside this checkout and is the same
+  folder in the copy. status and drivers make no copy. --lane is refused (the
+  copy is the lane). proof and a captioned recording are filed in this chat's
+  proof drawer. ade shell clean --machine <name> removes the copy and stops
+  its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -25298,7 +25334,8 @@ class SocketJsonRpcClient {
     );
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  /** `requestOptions.timeoutMs` overrides the connection's wait for this one call. */
+  request(method: string, params?: unknown, requestOptions?: { timeoutMs?: number }): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
@@ -25315,7 +25352,7 @@ class SocketJsonRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Timed out waiting for ${method}.`));
-      }, this.timeoutMs);
+      }, requestOptions?.timeoutMs ?? this.timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timer });
       this.socket.write(body, "utf8", (error) => {
         if (!error) return;
@@ -30614,6 +30651,9 @@ async function runServe(
   // Bound once the agents' machine bridge exists (below); a move asked for
   // before then is refused as "can't reach other machines".
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
+  /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
+  type RemoteWorkTurnRelease = { sessionId: string; uses: Array<{ machineKey: string; machineName: string; projectId: string | null }> };
+  let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     openStrikes: projectOpenStrikes,
@@ -30633,6 +30673,7 @@ async function runServe(
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
+    ...(embedded ? {} : { releaseRemoteWorkDevices: (event: RemoteWorkTurnRelease) => releaseRemoteWorkDevices?.(event) }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -30868,6 +30909,31 @@ async function runServe(
 
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
+  // A chat that drove a simulator, emulator or screen on another machine
+  // through its work copy lets go of it there when its turn ends (that
+  // machine never sees the chat end). `release_remote_work_devices` there
+  // frees only this chat's own claims and powers nothing off. Best effort:
+  // a machine that is offline or asleep is skipped (never woken), and the
+  // device leases there still time out by themselves.
+  if (!embedded) {
+    releaseRemoteWorkDevices = ({ sessionId, uses }) => {
+      void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+        machine: use.machineKey,
+        scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+        method: "ade/actions/call",
+        params: { name: "release_remote_work_devices", arguments: {} },
+        caller: { chatSessionId: sessionId, permissionLevel: null },
+        timeoutMs: 30_000,
+        wake: false,
+      }).catch((error: unknown) => {
+        headlessProjectLogger.info("remote_work.turn_release_skipped", {
+          machineKey: use.machineKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })))).catch(() => undefined);
+    };
+  }
+
   if (!embedded) {
     crossMachineHandoffTransport = {
       listMachines: async (options) => {
@@ -36221,6 +36287,8 @@ function formatIosSimLaunch(value: unknown): string {
       "warning: launched a prebuilt binary — current changes not included.",
     );
   }
+  const generated = xcodeGenNote(session.generatedXcodeProjects);
+  if (generated) lines.push(generated);
   return lines.join("\n");
 }
 
