@@ -71,6 +71,7 @@ import {
 import { buildGithubIssuePlan } from "./cliGithubIssue";
 import { buildJiraPlan } from "./cliJira";
 import { buildIssuePlan } from "./cliIssue";
+import { buildCodePlan, buildMessagesPlan, buildPasswordsPlan, formatPasswords, formatPasswordsCode, formatSecretsExec } from "./cliPasswords";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -709,7 +710,20 @@ import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
-import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import {
+  brainUnplannedRestart,
+  markBrainRunStoppedCleanly,
+  recordBrainRunStart,
+} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import {
+  closeLiveTurnProjectsRecord,
+  dropLiveTurnProjectsAfterCrash,
+  enableLiveTurnProjectsRecord,
+  noteLiveTurnProjectOpening,
+  settleLiveTurnProjectAfterCrash,
+  takeLiveTurnProjectsFromStoppedBrains,
+} from "../../desktop/src/main/services/runtime/liveTurnProjects";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -1087,7 +1101,10 @@ export type FormatterId =
   | "models-sheet"
   | "update-status"
   | "notify"
-  | "remote-mcp";
+  | "remote-mcp"
+  | "passwords"
+  | "secrets-exec"
+  | "passwords-code";
 
 type ChatWaitTarget =
   | "idle"
@@ -1652,6 +1669,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -2031,6 +2051,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
+    $ ade machines remove <name|machine-key|device-id>   From a chat: asks the person (Remove / Keep card)
     $ ade machines reconnect
     $ ade machines connect <machine-key|device-id|unambiguous-name>
 
@@ -2056,6 +2077,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   requires \`--confirm REMOVE\`. The removed machine can only rejoin when someone
   confirms it on that computer (see \`reconnect\`); nothing this machine runs can
   bring it back.
+
+  Agents cannot remove a computer. Run from a chat, \`remove\` asks the person
+  instead: the chat shows a card with the computer's name, platform, last seen
+  time and online state, and Remove / Keep buttons (an online computer, or the
+  one the chat runs on, needs a second yes). The command waits for the answer
+  (--timeout 30m by default) and prints {status, removed, machine, next}:
+  status "removed" exits 0, "kept" or "timed_out" exits 2, and
+  "pending_approval" (another chat already asked about that computer) exits 3.
+  Only the person can answer the card; stopping the turn closes it.
 
   \`reconnect\` re-pairs THIS machine after it was removed from the account
   (takes no selector). Removal is terminal by design — heartbeats never
@@ -4278,9 +4308,28 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
   they click Allow, so do not re-issue the open to retry it. Page actions
-  (observe/click/fill/screenshot) are not forwarded and still fail here.
+  (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
-  Login handoff (you cannot sign in; a person must):
+  Signing in with Passwords:
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ADE types the
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run \`ade browser handoff\` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
+
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, types it into the password
+  (and confirm) boxes, and saves the login once the form holds all of it.
+  You never see it. Submit the form yourself; later sign-ins use \`ade browser signin\`.
+  --account names the username when the form has none filled in.
+
+  Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
@@ -4314,6 +4363,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
     $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -4395,6 +4447,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
     --value <text>       Explicit value for browser fill, including an empty string,
                          or the text for browser clipboard write.
+    --site <host>        Browser signin: check that the open tab is on this host.
+    --account <username>
+                         Browser signin: which saved login to use.
     --html <markup>      HTML flavor for browser clipboard write.
     --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
@@ -4798,12 +4853,19 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Account-linked projects default to account storage, but only when the account
   vault is reachable: otherwise the secret is saved for this machine and the
   list says so. List output never reveals values and shows where each secret
-  lives; use get only for the specific secret you need.
+  lives.
+
+  Agents use secrets, they never read them: \`ade secrets exec\` runs a command
+  with the project's secrets (and Passwords' secrets for it) in its
+  environment, on this computer, and prints its output with every value masked
+  (also in base64 and URL-encoded form; values under 8 characters are not
+  masked, and it says which). \`get\` and \`export\` are the person's, in the ADE
+  desktop app. --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
     $ ade secrets pull --text                       Take account secrets from the vault
-    $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
-    $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
+    $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
+    $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
     $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
     $ ade secrets set TOKEN --value local --storage device
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
@@ -4827,6 +4889,54 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
       Your commands can read it, so never print it. Deleted when the chat is
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
+`,
+  passwords: `${ADE_BANNER}
+  ADE Passwords
+
+  Saved logins and API keys, encrypted on the person's account. Agents use
+  them and never see them: nothing here prints a password or a secret value.
+
+    $ ade passwords list --text      Sites, usernames and kinds of saved items
+    $ ade passwords status --text    Whether Passwords is on for this computer
+    $ ade passwords sync --text      Pull what other computers saved
+
+  To sign in to a site, open its sign-in page and run \`ade browser signin\`:
+  ADE types the saved login into the page. With no saved login, the person is
+  asked in your chat. To create an account, run \`ade browser signup\` on the
+  sign-up form: ADE makes the password, saves it, and types it in. Changing
+  and removing items is the person's, in Settings › Passwords.
+`,
+  code: `${ADE_BANNER}
+  ADE sign-in codes
+
+    $ ade code --site github.com --text                The current authenticator code
+    $ ade code --site github.com --account me@x.com --text
+    $ ade code wait --site github.com --text           The authenticator, else the next texted code
+    $ ade code wait --from messages --timeout 3m --text
+
+  \`code wait\` returns the site's saved authenticator code at once when it has
+  one; otherwise it waits for the newest code texted to the person's Mac
+  (Messages must be connected there) after you ask, up to --timeout (2m).
+
+  The code comes from the authenticator saved with the site's login in
+  Passwords; you get the code (it lasts seconds), never the key. \`ade browser
+  signin\` also fills it by itself on a page that asks for one. A code sent by
+  email: open the mail in the ADE browser (already signed in) and read it.
+`,
+  messages: `${ADE_BANNER}
+  ADE Messages (the person's texts, on their Mac)
+
+    $ ade messages status --text
+    $ ade messages recent --limit 10 --text          Newest texts (yours and theirs)
+    $ ade messages recent --from +15551234567 --since 1h --text
+    $ ade messages chats --text                      Recent conversations
+    $ ade messages send --to +15551234567 --text "On my way"
+
+  Off until the person connects Messages in Settings › Integrations ›
+  Messages on a Mac (ADE needs Full Disk Access there to read). Reading
+  follows its Read Texts switch. Every text you send is shown to the person
+  on a card in your chat first, unless they turned on Send Without Asking.
+  From a cloud lane, these reach the Mac the person is using.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -5489,7 +5599,7 @@ function parseScheduledWorkDelaySeconds(value: string): number {
  * live in `sessionSnoozeDuration.ts`; this wrapper only turns its result union
  * into the `CliUsageError` the argv layer already knows how to report.
  */
-function parseSnoozeDurationMs(value: string): number {
+export function parseSnoozeDurationMs(value: string): number {
   const parsed = parseSnoozeDuration(value);
   if (!parsed.ok) throw new CliUsageError(parsed.message);
   return parsed.ms;
@@ -15809,7 +15919,8 @@ function iosSimulatorRootArgs(
  * may simply live on another machine on the account. The runtime answers with
  * the same "not found" for both, and an agent handed a deep link to a chat on
  * the Windows box read that as "the chat does not exist". Every `chat`
- * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
+ * subcommand except `handoff` and `move` takes `--machine` as its target, so
+ * the hint can name the fix.
  * Null when the command already targets a machine, or is not a `chat` command.
  */
 function chatOtherMachineHint(argv: string[]): string | null {
@@ -15819,7 +15930,8 @@ function chatOtherMachineHint(argv: string[]): string | null {
   } catch {
     return null;
   }
-  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
+  const chatSub = command[1]?.toLowerCase();
+  if (command[0]?.toLowerCase() !== "chat" || chatSub === "handoff" || chatSub === "move") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
   // Through ADE MCP the app names a computer with `machine`, and ADE MCP
@@ -18485,6 +18597,8 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   click: ["click"],
   type: ["type", "type-text"],
   fill: ["fill"],
+  signin: ["signin"],
+  signup: ["signup"],
   // `clear` is deliberately ambiguous at the CLI: with an element target it
   // clears a field, without one it clears the selection. `buildBrowserPlan`
   // keeps that branch written out because the disambiguation is a flag test,
@@ -18760,6 +18874,21 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
       ? undefined
       : `Handed the browser tab to the human: ${reason}. Waiting for Hand back…`,
   };
+}
+
+/**
+ * The host a `--site` value or a page URL names, lowercased. `--site` is only
+ * a check: signin always uses the tab's own page, so an unreadable value is
+ * refused before the browser is called rather than guessed at.
+ */
+function browserSiteHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -19333,6 +19462,31 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           }),
         ),
       ],
+    };
+  }
+  if (sub === "signin" || sub === "signup") {
+    // The site is always the tab's own top-frame page. `--site` only checks
+    // that the tab is where the caller thinks it is; the browser checks it on
+    // the exact tab it fills, before any login is typed. `signup` makes a new
+    // password, saves the login, and types it into the sign-up form.
+    const site = readValue(args, ["--site"])?.trim() || null;
+    const account = readValue(args, ["--account", "--username", "--email"])?.trim() || null;
+    const expectedSite = site ? browserSiteHost(site) : null;
+    if (site && !expectedSite) {
+      throw new CliUsageError(`browser ${sub} --site must be a host name like example.com, not "${site}".`);
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const signinArgs: JsonObject = {
+      ...actionArgs,
+      ...(account ? { username: account } : {}),
+      ...(expectedSite ? { expectedSite } : {}),
+    };
+    return {
+      kind: "execute",
+      label: `browser ${sub}`,
+      // With no saved login, signin asks the person in the chat; wait for them.
+      ...(sub === "signin" ? { minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000 } : {}),
+      steps: [actionStep("result", "passwords", sub, collectGenericObjectArgs(args, signinArgs))],
     };
   }
   if (
@@ -21463,10 +21617,32 @@ function buildMcpServersPlan(args: string[]): CliPlan {
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
+  // The command after `--` first: its own flags (`--help` included) are its own.
+  const execTail = args[0] === "exec" || args[0] === "run" ? takeArgsAfterTerminator(args) : null;
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
   }
   const sub = firstPositional(args) ?? "list";
+  if (sub === "exec" || sub === "run") {
+    if (!execTail?.length) {
+      throw new CliUsageError("secrets exec needs the command after `--`: ade secrets exec [--env NAME] -- npm run deploy");
+    }
+    const names = readRepeatedValues(args, ["--env", "--name"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 10 * 60_000;
+    return {
+      kind: "execute",
+      label: "secrets exec",
+      formatter: "secrets-exec",
+      steps: [actionStep("result", "project_secret", "exec", {
+        command: execTail,
+        cwd: process.cwd(),
+        ...(names.length ? { names } : {}),
+        timeoutMs,
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+    };
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
@@ -23310,6 +23486,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
  * is a boolean `readFlag` anywhere, so this table can never widen the CLI.
  */
 const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--account",
   "--action",
   // `collectGenericObjectArgs` is called straight out of the browser plan and
   // consumes these, so they carry a value here like any other browser flag —
@@ -23407,6 +23584,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--session",
   "--session-id",
   "--settle-ms",
+  "--site",
   "--state",
   "--steps",
   "--tab",
@@ -23763,7 +23941,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
  * terminator, so scanning `browser upload --selector input --upload -- --help`
  * with the global set stopped at the `--` and hid a real `--help`.
  */
-function hasHelpFlag(
+export function hasHelpFlag(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): boolean {
@@ -24232,6 +24410,12 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "passwords" || primary === "password")
+    return buildPasswordsPlan(args);
+  if (primary === "code" || primary === "codes")
+    return buildCodePlan(args);
+  if (primary === "messages" || primary === "texts" || primary === "imessage")
+    return buildMessagesPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -26134,12 +26318,17 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
     // machine key and complain that --confirm has no value.
     const confirmation = readValue(args, ["--confirm", "--confirmation"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
+    // From a chat, an agent cannot remove a computer: the brain asks the
+    // person in that chat (a Remove / Keep card) and waits for them. The card
+    // is the confirmation, so --confirm is not needed there.
+    const fromChat = Boolean(process.env.ADE_CHAT_SESSION_ID?.trim());
     if (!machine?.trim()) {
-      throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
+      throw new CliUsageError(`machines ${sub} requires ${fromChat ? "a machine key, device id or name" : "a stable machine key"}.`);
     }
-    if (confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
+    if (!fromChat && confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
         `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
@@ -26147,6 +26336,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
     if (firstStandalonePositional(args)) {
       throw new CliUsageError(`machines ${sub} accepts one machine key.`);
     }
+    const timeoutMs = fromChat
+      ? (timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS)
+      : null;
     return {
       kind: "execute",
       label: "account machine remove",
@@ -26158,8 +26350,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
         machine: machine.trim(),
         // The action checks the same token again: an RPC caller that skips
         // this command must still say it.
-        confirmation,
+        ...(confirmation ? { confirmation } : {}),
+        ...(timeoutMs != null ? { timeoutMs } : {}),
       })],
+      ...(timeoutMs != null
+        ? {
+            // The wait for the person is the point of the command; the
+            // transport must outlive it.
+            minTimeoutMs: timeoutMs + 30_000,
+            progressNotice: `Pending approval: removing ${machine.trim()} from the ADE account needs the person's yes. Waiting for their Remove or Keep…`,
+            exitCodeFromResult: (result: unknown) => {
+              const answer = unwrapActionEnvelope(result);
+              const status = isRecord(answer) ? answer.status : undefined;
+              if (status === undefined || status === "removed") return 0;
+              return status === "pending_approval" ? 3 : 2;
+            },
+          }
+        : {}),
     };
   }
   if (sub === "reconnect" || sub === "repair") {
@@ -30677,7 +30884,11 @@ async function runServe(
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
-    if (!stoppingOnFailure) markBrainStoppedCleanly();
+    if (!stoppingOnFailure) {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     resolveDone?.();
   };
 
@@ -30930,6 +31141,10 @@ async function runServe(
   // a brain with sync off (a test brain) never opens the account's vault. One
   // runtime object, so a background make keeps its maker.
   let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
+  const startedPasswords = <T extends { startPeriodicSync(): void }>(service: T): T => {
+    service.startPeriodicSync();
+    return service;
+  };
   const machineAccountDomains = async () => {
     const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
     return buildMachineAccountDomainServices(await getMachineAccountRuntime());
@@ -30973,6 +31188,7 @@ async function runServe(
         accountVaultStore: vault,
         // Read from its local copy only (cloud.status reads the default lane size).
         accountSettingsStore: stores?.settings ?? null,
+        passwordService: stores ? startedPasswords(stores.passwords) : null,
         productAnalyticsService: brainProductAnalytics,
       };
     })();
@@ -31205,6 +31421,7 @@ async function runServe(
             lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+          lastUnplannedRestart: brainUnplannedRestart(),
         };
       },
       disposeScopesOnDispose: false,
@@ -31411,7 +31628,11 @@ async function runServe(
   startSyncHostOnDemand = () => startSyncHost();
   // Stops the account project sync of the brain (set where that sync is built).
   let stopAccountProjectSync: (() => void) | null = null;
+  // Set first thing in shutdown: the projects-after-crash opens stop, so no
+  // project opens after `disposeAll` took its list of open scopes.
+  let serveShutdownStarted = false;
   const disposeServeResources = async () => {
+    serveShutdownStarted = true;
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
@@ -31801,6 +32022,32 @@ async function runServe(
     } catch {}
   }
 
+  /**
+   * Whether this brain came back after an unplanned stop (the window's
+   * restart banner), and the record of projects with a running turn that the
+   * next brain opens after a crash. Only now, with the endpoint bound: a brain
+   * that loses the race for the socket must not replace the record of the
+   * brain that crashed.
+   *
+   * Every brain reads and takes what the brain before it left, including a
+   * brain an app started because the service brain was gone. Only a brain no
+   * other process owns (the service on any platform, a hand-run `ade serve`)
+   * writes its own record: an app can end the brain it started with a kill
+   * when the app quits, which is not a crash.
+   */
+  const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (!embedded) {
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    recordBrainRunStart({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+      writeOwnRecord: writesBrainRun,
+    });
+    if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
+  }
+
   let tcpUrl: string | null = null;
   if (port != null) {
     const tcpState = createHeadlessRpcServer(createHandler);
@@ -32171,6 +32418,57 @@ async function runServe(
     platform: process.platform,
     arch: process.arch,
   });
+  if (!embedded) {
+    /**
+     * Open, one at a time, the projects in which the brain before this one
+     * had a chat or CLI turn running when it stopped unplanned. Opening a
+     * project is what runs its CLI reopen and chat restart recovery, so they
+     * continue within seconds instead of when a window or phone next opens
+     * the project. Only those projects: no other project database is opened.
+     * Nothing opens in a restart loop or with "Continue chats after restarts"
+     * off; the files are claimed either way.
+     */
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const roots = takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath: serveSocketPath });
+    if (roots.length > 0) {
+      const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
+      if (hold) {
+        headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
+        dropLiveTurnProjectsAfterCrash();
+      } else {
+        void (async () => {
+          const startedMs = Date.now();
+          let opened = 0;
+          for (const root of roots) {
+            if (serveShutdownStarted) break;
+            const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
+            if (!record) {
+              settleLiveTurnProjectAfterCrash(root);
+              continue;
+            }
+            noteLiveTurnProjectOpening(root);
+            try {
+              await scopeRegistry.get(record.projectId);
+              opened += 1;
+              settleLiveTurnProjectAfterCrash(root);
+            } catch (error) {
+              // Kept on disk: if this brain crashes too, the next one tries it again.
+              noteLiveTurnProjectOpening(null);
+              headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
+                projectId: record.projectId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          headlessProjectLogger.info("brain.projects_opened_after_crash", {
+            projects: roots.length,
+            opened,
+            durationMs: Date.now() - startedMs,
+          });
+        })();
+      }
+    }
+  }
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
   scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
@@ -32514,7 +32812,11 @@ async function runServe(
             : "unknown";
     // A live brain already holds the endpoint (an update's handover, a second
     // start): this one leaving is not a crash for the restart-loop report.
-    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
+    if (code === "socket_owned_by_other") {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
@@ -37333,8 +37635,28 @@ function domElementTable(elements: JsonObject[]): string {
 function formatBrowserAction(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const trace = firstRecord(result, ["trace"]);
+  const signin = firstRecord(result, ["signin"]);
+  const signinFilled = Array.isArray(signin?.filled)
+    ? signin.filled.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  // The result names the site, the account and which fields were filled —
+  // never a value. The password stays inside the page.
+  const signinSite = asString(signin?.site) ?? "the page";
+  const signinLine = !signin
+    ? null
+    : signin.created === true
+      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`ade browser signin\` uses it from now on.`
+      : signin.signInYourself === true
+        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+        : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
-    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    ...(signinLine ? [signinLine] : []),
+    ...formatActionAnswerLines(result, {
+      action: asString(trace?.action),
+      // signin targets no single element: it types into whichever login fields
+      // the page presented, and the `signed in` line already says which.
+      ...(signin ? { noElement: "the page's login fields" } : {}),
+    }),
     "",
     formatBrowserObservation(value),
   ].join("\n");
@@ -38631,6 +38953,17 @@ function formatTextOutput(
       return describeReconnectOutcome(result).message;
     }
     case "account-machine-remove": {
+      // From a chat: the person's answer to the Remove / Keep card.
+      const answer = unwrapActionEnvelope(value);
+      if (isRecord(answer) && typeof answer.status === "string" && typeof answer.next === "string") {
+        const machine = isRecord(answer.machine) ? asString(answer.machine.name) ?? asString(answer.machine.machineKey) : null;
+        const head = answer.status === "removed"
+          ? `Removed ${machine ?? "the computer"} from the ADE account.`
+          : answer.status === "pending_approval"
+            ? `Pending approval: ${machine ?? "the computer"} was not removed.`
+            : `Not removed: ${machine ?? "the computer"} stays on the ADE account.`;
+        return `${head}\n${answer.next}`;
+      }
       const removed = isRecord(value) ? asString(value.machineKey) : null;
       // The directory purges the removed machine's Activity as part of the same
       // request, so a plain success here means both landed; a partial removal
@@ -38941,6 +39274,12 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "passwords":
+      return formatPasswords(value);
+    case "secrets-exec":
+      return formatSecretsExec(value);
+    case "passwords-code":
+      return formatPasswordsCode(value);
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":
@@ -39204,6 +39543,8 @@ function inferFormatter(
     label === "browser key" ||
     label === "browser scroll" ||
     label === "browser fill" ||
+    label === "browser signin" ||
+    label === "browser signup" ||
     label === "browser clear" ||
     label === "browser wait" ||
     label === "browser hover" ||
@@ -42160,7 +42501,6 @@ export {
   MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
-  parseSnoozeDurationMs,
   resolveSnoozeUntilIso,
   checkLinearReadiness,
   findProjectRoots,

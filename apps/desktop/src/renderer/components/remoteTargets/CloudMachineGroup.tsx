@@ -115,7 +115,7 @@ export function CloudGroupBanners({
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_disk";
+  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_disk" || error.blocker === "over_plan_limits";
   return needsPlan && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 
@@ -277,7 +277,7 @@ export function CloudBoxOnlyRow({
           <CloudMark size={18} bold />
         </span>
         <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
-          <span style={nameStyle}>{name}</span>
+          <span className="ade-cx-machine-name" style={nameStyle}>{name}</span>
           <span style={subTextStyle}>{line}</span>
         </div>
         <MachineActionsMenu label={`Actions for ${name}`} actions={actions} />

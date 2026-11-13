@@ -71,6 +71,7 @@ import { cn } from "../ui/cn";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { isRestartInterruptedNotice } from "../../../shared/chatAutoResume";
 import { subscribeToTicker } from "../../lib/ticker";
 import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
@@ -251,7 +252,9 @@ import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts
 import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
 import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
 import { McpServerRequestReceipt } from "./McpServerCard";
+import { MachineRemovalReceipt } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestReceipt } from "./PasswordLoginCard";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -1564,9 +1567,12 @@ function stripLeadingWarningGlyph(message: string): string {
 function QuietNoticeRow({
   event,
   siblings,
+  timeLabel,
 }: {
   event: SystemNoticeEvent;
   siblings?: readonly QuietNoticeSibling[];
+  /** Shown after the message: when it happened (the restart notice). */
+  timeLabel?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -1585,6 +1591,11 @@ function QuietNoticeRow({
       <span className={QUIET_LINE_TEXT_CLASS} title={event.message}>
         {event.message}
       </span>
+      {timeLabel ? (
+        <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/35">
+          {timeLabel}
+        </span>
+      ) : null}
       {extraCount > 0 ? (
         <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/28">
           +{extraCount}
@@ -4205,7 +4216,13 @@ function renderEvent(
     // message, and the detail behind a click. Neighbouring receipts share the
     // line (`+N`), folded in `filterVisibleTranscriptRows`.
     if (isQuietNoticeEvent(event)) {
-      return <QuietNoticeRow event={event} siblings={envelope.quietNoticeSiblings} />;
+      return (
+        <QuietNoticeRow
+          event={event}
+          siblings={envelope.quietNoticeSiblings}
+          timeLabel={isRestartInterruptedNotice(event.message) ? formatTime(envelope.timestamp) : null}
+        />
+      );
     }
 
     if (hasDetail) {
@@ -4410,10 +4427,32 @@ function renderEvent(
       );
     }
 
+    if (nativeCard?.kind === "login") {
+      // The secure sign-in card's record: the site and the outcome only.
+      return (
+        <PasswordLoginRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
     if (nativeCard?.kind === "mcp-server") {
       // The MCP server card's record: the definition and the approval only.
       return (
         <McpServerRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    if (nativeCard?.kind === "machine-removal") {
+      // The computer removal card's record: which computer, and the answer.
+      return (
+        <MachineRemovalReceipt
           card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}

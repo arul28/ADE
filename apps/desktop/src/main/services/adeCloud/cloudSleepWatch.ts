@@ -1,7 +1,7 @@
 /** The desktop's sleep watch for cloud machines (see `startCloudSleepWatch`). */
 
 import { app } from "electron";
-import type { CloudProvider } from "./cloudProvider";
+import type { CloudInstance, CloudProvider } from "./cloudProvider";
 import { getErrorMessage } from "../shared/utils";
 import { enableCloudSleepWherePending } from "./cloudSleep";
 
@@ -17,6 +17,12 @@ export function startCloudSleepWatch(deps: {
   logger: { warn(event: string, meta?: Record<string, unknown>): void; info?(event: string, meta?: Record<string, unknown>): void };
   /** Off the boot path. */
   firstPassDelayMs: number;
+  /**
+   * Called just before each pass's read of the computers, and with what that
+   * read listed when it worked: the machine list compares it with the last
+   * one (`cloudMachines.noteInstances`), at no extra call.
+   */
+  onInstancesRead?: () => (instances: CloudInstance[]) => void;
 }): void {
   /** Boxes whose ADE was too old to keep itself awake: asked again after an hour, not every pass. */
   const tooOldUntil = new Map<string, number>();
@@ -24,10 +30,19 @@ export function startCloudSleepWatch(deps: {
     const client = await deps.client().catch(() => null);
     if (!client) return;
     const now = Date.now();
-    const instances = await client.listInstances().catch((error: unknown) => {
+    const noteRead = deps.onInstancesRead?.() ?? null;
+    let instances: CloudInstance[];
+    try {
+      instances = await client.listInstances();
+    } catch (error) {
       deps.logger.warn("cloud.sleep_watch_list_failed", { error: getErrorMessage(error) });
-      return [];
-    });
+      return;
+    }
+    try {
+      noteRead?.(instances);
+    } catch (error) {
+      deps.logger.warn("cloud.sleep_watch_note_failed", { error: getErrorMessage(error) });
+    }
     const enabled = await enableCloudSleepWherePending(client, instances, {
       logger: deps.logger,
       skip: (instance) => (tooOldUntil.get(instance.id) ?? 0) > now,

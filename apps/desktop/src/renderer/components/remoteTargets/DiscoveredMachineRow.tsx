@@ -50,7 +50,7 @@ export function DiscoveredMachineRow({
             <WifiHigh size={17} weight="bold" />
           </span>
           <div style={{ minWidth: 0, display: "grid", gap: 3 }}>
-            <div style={nameStyle}>{machine.machineName}</div>
+            <div className="ade-cx-machine-name" style={nameStyle}>{machine.machineName}</div>
             <div style={unavailable ? helperTextStyle : subTextStyle}>
               {unavailable && machine.unsupportedReason
                 ? machine.unsupportedReason

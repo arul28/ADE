@@ -6,6 +6,7 @@ import type { BrowserAccountClient } from "../../account/client";
 import type { AdeSyncClient } from "../../sync";
 import type { WebMachineSessionManager } from "../../workspace/WebMachineSessionManager";
 import { createFederatedWebAdapter } from "../federated";
+import { createReconnectHold } from "../reconnectHold";
 
 const adapters = vi.hoisted(() => new Map<object, {
   ade: Window["ade"];
@@ -344,6 +345,38 @@ describe("createFederatedWebAdapter", () => {
       { forcePinned: true },
     );
     expect(fixture.targetB.onAgentChatEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["usage", "getAdeStats"],
+    ["cloudAccess", "read"],
+    ["cloud", "listMachines"],
+    ["cloud", "machineAction"],
+  ] as const)("sends the account-wide %s.%s to a connected computer while the displayed one is down", async (namespace, member) => {
+    const fixture = managerFixture();
+    (fixture.fallbackClient as unknown as { getStatus: () => unknown }).getStatus = () => ({ state: "disconnected" });
+    vi.mocked(fixture.manager.getConnectionSnapshot).mockReturnValue({
+      connections: [{ state: "connected", target: { id: "machine-b" } }],
+      connectedCount: 1,
+      updatedAt: 0,
+    } as unknown as ReturnType<WebMachineSessionManager["getConnectionSnapshot"]>);
+    const onDown = vi.fn(async () => "from the computer that dropped");
+    const onB = vi.fn(async () => "from machine-b");
+    const surface = (adapter: { ade: Window["ade"] }, fn: typeof onDown) => {
+      (adapter.ade as unknown as Record<string, unknown>)[namespace] = { [member]: fn };
+    };
+    surface(fixture.fallback.adapter, onDown);
+    surface(fixture.targetB.adapter, onB);
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: `account-wide-${namespace}-${member}`,
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    const call = (federated.ade as unknown as Record<string, Record<string, () => Promise<unknown>>>)[namespace][member];
+    await expect(call()).resolves.toBe("from machine-b");
+    expect(onDown).not.toHaveBeenCalled();
   });
 
   it("invokes proxied subscription functions without resolving their apply member", () => {
@@ -882,5 +915,59 @@ describe("createFederatedWebAdapter", () => {
     federated.activateHub();
 
     expect(fixture.manager.setProtectedTargetId).toHaveBeenLastCalledWith("machine-a");
+  });
+});
+
+describe("createReconnectHold", () => {
+  const snapshotOf = (states: Record<string, "connected" | "connecting" | "error" | "parked">) => ({
+    connections: Object.entries(states).map(([id, state]) => ({ target: { id }, state })),
+    connectedCount: Object.values(states).filter((state) => state === "connected").length,
+    updatedAt: 0,
+  }) as unknown as Parameters<ReturnType<typeof createReconnectHold>["apply"]>[0];
+  const stateOf = (snapshot: { connections: Array<{ target: { id: string }; state: string }> }, id: string) =>
+    snapshot.connections.find((connection) => connection.target.id === id)?.state;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(document, "visibilityState");
+  });
+
+  it("holds a reconnecting machine for 30 s in front, then lets it go until it connects again", () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const clientStates: Record<string, string> = { a: "reconnecting", fresh: "connecting", refused: "error" };
+    const onExpire = vi.fn();
+    const hold = createReconnectHold((id) => clientStates[id] ?? null, onExpire);
+
+    hold.apply(snapshotOf({ a: "connected", fresh: "connecting", refused: "connected" }));
+    const dropped = hold.apply(snapshotOf({ a: "connecting", fresh: "connecting", refused: "error" }));
+    // Only a reconnect is held: never a first connect, never a refusal.
+    expect(stateOf(dropped, "a")).toBe("connected");
+    expect(stateOf(dropped, "fresh")).toBe("connecting");
+    expect(stateOf(dropped, "refused")).toBe("error");
+    expect(dropped.connectedCount).toBe(1);
+
+    // Time in the background does not count.
+    vi.advanceTimersByTime(20_000);
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(60_000);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connected");
+
+    onExpire.mockClear();
+    vi.advanceTimersByTime(10_100);
+    expect(onExpire).toHaveBeenCalled();
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connecting");
+    // A spent hold does not start again on the next change or return to the page.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connecting");
+
+    // Connected again, the next drop is held again.
+    hold.apply(snapshotOf({ a: "connected" }));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connected");
+    hold.dispose();
   });
 });

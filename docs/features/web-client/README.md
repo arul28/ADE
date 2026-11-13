@@ -95,16 +95,30 @@ Build and static host:
 Browser sync client:
 
 - `apps/desktop/src/renderer/webclient/account/client.ts` - Clerk
-  OAuth authorization-code + PKCE session for the static client. Access tokens
-  remain in module memory; the refresh credential plus exact OAuth issuer/client
-  identity persist in IndexedDB so reload boot can restore and refresh before
+  OAuth authorization-code + PKCE session for the static client. The refresh
+  credential, the last access token with its expiry, and the exact OAuth
+  issuer/client identity persist in IndexedDB. A reload within the stored
+  access token's life reads the directory with it and skips the refresh and
+  the profile read; when the directory turns that token down, boot refreshes
+  once and reads again. Without a usable token, boot refreshes before
   directory access. Profile identity is enriched through a bounded, best-effort
   OAuth userinfo request. The callback is scrubbed from the address bar before
   directory loading, and account requests use exact trusted origins with omitted
   browser credentials and referrers.
 - `apps/desktop/src/renderer/webclient/account/sessionStore.ts` - versioned
-  IndexedDB refresh-session record. Explicit sign-out and confirmed auth expiry
-  clear it; OAuth access tokens are never persisted.
+  IndexedDB session record: the refresh token, and the last access token with
+  its expiry (absent in a record saved by an older build).
+  `usablePersistedAccessToken` returns the stored token only while it has more
+  than the given skew to live. Explicit sign-out and confirmed auth expiry
+  clear the record.
+- `apps/desktop/src/renderer/webclient/linkStatus/main.ts` and
+  `link-status.html` - the hidden `/link-status` page that the link page
+  (`apps/web` `OpenPage.tsx`) frames. It reads the account's online computers
+  with the stored access token only and never refreshes the session, because
+  the refresh token rotates on every use. It posts one `ade-link-status`
+  message (signed in, and the names of the online computers or null) only to
+  the ade-app.dev origins, and `_headers` allows only those origins to frame
+  it.
 - `apps/desktop/src/renderer/webclient/account/leaseMonitor.ts` - live account
   lifetime enforcement for account-owned environments and active Relay
   sockets. A 30-second check refreshes the in-memory token; confirmed expiry,
@@ -121,6 +135,11 @@ Browser sync client:
   trim overlaps, and perform one guarded `sinceOffset` resubscribe when a gap
   appears. Delta snapshots append only the missing suffix; full snapshots are
   authoritative replacements even when their end offset equals the watermark.
+  Terminal input waits for each frame's acknowledgement. Keys typed meanwhile
+  for the same session join the next unsent frame (at most 16 KB). A frame
+  that was sent once never changes, so a retry resends its id with the same
+  bytes. `isRetryingDial` tells a dial round that failed and retries apart
+  from a refusal.
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
   lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
@@ -303,6 +322,10 @@ Browser `window.ade` adapter:
   was in flight across a write does not store its answer as a fallback.
   `invalidateCache` clears the whole cache or a set of action prefixes so a
   sync-driven refresh drops stale reads.
+- `apps/desktop/src/renderer/webclient/adapter/infra/bootPriority.ts` - on a
+  page that opens on a chat, heavy startup reads (usage, model catalog,
+  provider status and similar) wait until the chat history paints, until the
+  session list shows no chat, or for at most 12 s. Writes never wait.
 - `apps/desktop/src/renderer/webclient/adapter/infra/coalescingReadCache.ts`
   and `infra/cacheKey.ts` - the shared coalescing/TTL cache primitive and a
   deterministic argument-serializer used to key it. The cache keeps concurrent
@@ -600,7 +623,18 @@ Browser `window.ade` adapter:
   originating project even after the visible tab changes. Switching the active
   adapter notifies `WebClientRoot`, which remounts the shared renderer so
   unpinned long-lived subscriptions cannot remain attached to the prior
-  machine.
+  machine. Account-wide members (`usage.getAdeStats`,
+  `usage.getGithubContributions`, `usage.onUpdate`, and every `cloud` and
+  `cloudAccess` member) go to a connected computer when the displayed adapter
+  is a disconnected fallback, and their subscriptions move with the adapter
+  that serves those reads. So the Connections panel keeps the cloud status and
+  Wake while the computer that dropped is still the displayed one.
+- `apps/desktop/src/renderer/webclient/adapter/reconnectHold.ts` - keeps a
+  machine that was connected reading as connected for up to 30 s of time in
+  front while its connection comes back, so Work keeps the open chat after a
+  suspended tab returns. A first connect, a refusal and a parked machine are
+  not held. Time in the background does not count. A spent hold is gone until
+  the machine connects again.
 
 Browser shell and routes:
 
@@ -694,16 +728,16 @@ Browser shell and routes:
   target id; `forgetMachineCatalog` drops a machine's cached projects.
   `useOptionalWebWorkspace` is how shared desktop components ask whether they
   are running inside ADE Web instead of assuming.
-- `apps/desktop/src/renderer/webclient/workspace/WebConnectionsChip.tsx` - the
-  top bar's machine control and the surface that replaced the Hub's management
-  pane. ADE Web has no "This Mac", so which machine you are on is the shell's
-  most load-bearing fact and gets a permanent chip rather than a route. Its
-  popover lists every machine with live status and a per-row menu: **Connect**,
-  **Rename**, **Remove from account**, **Forget on this browser**, over the
-  footer hint that a new Mac is added by signing in to ADE on it. A row shows
-  `webMachineRowLabel` (the directory's "MacBook Pro · ADE Alpha" label from
-  `webWorkspaceModel.ts`, with the ADE home on hover), so two installs on one
-  Mac do not look like a duplicate.
+- `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` (hosted
+  mode) - ADE Web uses the desktop Connections chip and panel: the account
+  header and the machine list, without the This computer card, the pairing
+  code, or the Phone and Web tabs. **Connect** on an account machine connects
+  it through the tab's `WebMachineSessionManager`, and reuses a pairing this
+  browser saved when it has one. When the tab already holds
+  `WEB_MACHINE_SESSION_LIMIT` machines, the panel says so. The panel loads that
+  limit on demand, so the desktop bundle never pulls in the hosted workspace.
+  Pages outside the top bar open the panel with the
+  `ade-web:open-connections` window event.
 - `apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx` and
   `shellTokens.ts` - the minimal startup/error frame and standalone shell design
   tokens. Machine and project selection live inside the reused app shell's
@@ -767,11 +801,9 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` - the single desktop Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
-  and directs signed-out users to account sign-in; the entire native control is
-  omitted from the hosted web-client shell. In hosted mode, `TopBar` renders the
-  `WebConnectionsChip` in the desktop chip's place and logical repository tabs
-  in the tab strip. The chip is loaded with `React.lazy`, so the desktop bundle
-  never pulls in the hosted workspace. Checkouts with the same repository origin
+  and directs signed-out users to account sign-in. In hosted mode, `TopBar`
+  renders the same chip and panel with the hosted sections only (see
+  `ConnectionsPanel.tsx` above), and logical repository tabs in the tab strip. Checkouts with the same repository origin
   collapse into one tab; when that repository exists on multiple machines, the
   machine becomes a compact selector inside the tab. Parked and offline bindings
   remain visible and reconnect when chosen.

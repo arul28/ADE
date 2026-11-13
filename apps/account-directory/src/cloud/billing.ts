@@ -1,9 +1,9 @@
 import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "../brandPage";
 import { captureCloudAction, type CloudWaitUntil } from "./analytics";
-import { formatCloudCents, type CloudCheckoutResult } from "./contract";
+import { formatCloudCents, type CloudCheckoutResult, type CloudPlanCleanupPick } from "./contract";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
-import { PLAN_CLEANUP_GRACE_MS, planCleanupFor, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
+import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
 import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
 import {
   accountDiskGb,
@@ -179,7 +179,10 @@ async function expireOpenCheckouts(env: CloudEnv, customer: string): Promise<voi
   }
 }
 
-/** Checkout for a plan. A paid account asking for its other plan changes it in place (`changePaidPlan`). */
+/**
+ * Checkout for a plan. A paid account asking for its other plan changes it in
+ * place (`changePaidPlan`); a downgrade carries the person's pick (`cleanup`).
+ */
 export async function createCheckoutUrl(
   env: CloudEnv,
   userId: string,
@@ -187,6 +190,7 @@ export async function createCheckoutUrl(
   now: number,
   requested?: CloudPaidPlanId,
   waitUntil?: CloudWaitUntil,
+  cleanup?: CloudPlanCleanupPick,
 ): Promise<CloudCheckoutResult> {
   const plan = requested ?? "plus";
   const { planPrice, extraPrice, diskPrice } = billingConfig(env, plan);
@@ -198,7 +202,7 @@ export async function createCheckoutUrl(
     const pending = account.paid_plan_next;
     if (current === plan && pending == null) throw new CloudBillingError("already_paid", "You're already on that plan.", 409);
     if (pending === plan) throw new CloudBillingError("already_paid", "Your plan already changes to that at the end of this period.", 409);
-    return changePaidPlan(env, account, plan, planPrice, now, waitUntil);
+    return changePaidPlan(env, account, plan, planPrice, now, waitUntil, cleanup);
   }
   try {
     const customer = await ensureCustomer(env, account, now);
@@ -272,14 +276,33 @@ async function hasDiskItem(env: CloudEnv, items: SubscriptionItem[], diskPrice: 
  * - Upgrade: charged now for the rest of the period; a declined card changes
  *   nothing. Pro's hours apply at once, the hours used stay.
  * - Downgrade: no refund and no charge; the next invoice is Plus. Pro's hours
- *   and limits stay until the period ends (`applyCloudPlanChange`).
+ *   and limits stay until the period ends (`applyCloudPlanChange`). Over
+ *   Plus's limits, the person's pick (`cleanup`) is checked before Stripe is
+ *   asked, so a pick that doesn't fit changes nothing; once the plan changed,
+ *   the pick is recorded and the minute cron frees exactly those computers.
  * - Back to Pro before a downgrade took effect: the item goes back, uncharged.
  * The webhook that follows applies the same change again, which is a no-op.
  */
-async function changePaidPlan(env: CloudEnv, account: AccountRow, to: CloudPaidPlanId, toPrice: string, now: number, waitUntil: CloudWaitUntil): Promise<CloudCheckoutResult> {
+async function changePaidPlan(
+  env: CloudEnv,
+  account: AccountRow,
+  to: CloudPaidPlanId,
+  toPrice: string,
+  now: number,
+  waitUntil: CloudWaitUntil,
+  cleanup?: CloudPlanCleanupPick,
+): Promise<CloudCheckoutResult> {
   if (!account.stripe_subscription_id) throw unavailable();
   if (account.stripe_status === "past_due") {
     throw new CloudBillingError("past_due", "Your last payment didn't go through. Update your card in Manage, then change your plan.", 409);
+  }
+  // A downgrade's pick is checked before Stripe: one that doesn't fit changes nothing.
+  const computers = to === "plus" ? await listComputers(env, account.user_id) : [];
+  let picked: CloudPlanCleanupPick | null = null;
+  if (to === "plus" && cleanup) {
+    const check = checkPlanCleanupPick(env, account, computers, "plus", cleanup);
+    if (!check.ok && check.code !== "nothing_to_free") throw new CloudBillingError(check.code, check.message, check.code === "bad_request" ? 400 : 409);
+    if (check.ok) picked = { push: cleanup.push, instanceIds: check.instanceIds };
   }
   const undoDowngrade = to === "pro" && account.paid_plan === "pro" && account.paid_plan_next === "plus";
   const charged = to === "pro" && !undoDowngrade;
@@ -337,15 +360,40 @@ async function changePaidPlan(env: CloudEnv, account: AccountRow, to: CloudPaidP
     }
   }
   try {
-    await applyAndAnnounce(env, account, { paidPlan: to }, now, waitUntil);
+    // A pick answers the over-the-limits email's question already: it isn't sent.
+    await applyAndAnnounce(env, account, { paidPlan: to }, now, waitUntil, { pickMade: picked != null });
   } catch (error) {
     // Stripe switched; the webhook that follows saves the same change.
     reportCloudFailure("cloud.plan_change_unsaved", { userId: account.user_id, to, message: error instanceof Error ? error.message : "unknown" });
   }
   if (to === "pro") return { url: null, change: "now" };
-  // Never refused for being over Plus: the answer says what Plus's limits will free, for ADE's warning.
-  const cleanup = planCleanupFor(env, account, await listComputers(env, account.user_id), "plus");
-  return { url: null, change: "next_period", ...(cleanup ? { cleanup: { ...cleanup, dueAt: account.period_end + PLAN_CLEANUP_GRACE_MS } } : {}) };
+  if (picked) {
+    if (await recordPlanCleanupPick(env, account.user_id, "plus", picked, now)) return { url: null, change: "next_period", freeing: picked.instanceIds };
+    // Another pick started meanwhile: the plan changed, and nothing of this one is freed.
+    reportCloudFailure("cloud.plan_cleanup_pick_lost", { userId: account.user_id });
+  }
+  // No pick (an older build): nothing is deleted; the answer says what goes over Plus.
+  const over = planCleanupFor(env, account, computers, "plus");
+  return { url: null, change: "next_period", ...(over ? { cleanup: { ...over, startsAt: account.period_end, freeing: null } } : {}) };
+}
+
+/**
+ * `POST /cloud/billing/plan-cleanup`: the person's pick for an account already
+ * over a cheaper plan (the plan in force, or the one a downgrade or a cancel
+ * made outside ADE waits for). The same check as a downgrade's pick, then the
+ * same freeing.
+ */
+export async function pickPlanCleanup(env: CloudEnv, userId: string, planId: unknown, pick: CloudPlanCleanupPick, now: number): Promise<void> {
+  const account = await loadAccount(env, userId, now);
+  const computers = await listComputers(env, userId);
+  const target = planCleanupTargetOf(env, account, computers);
+  if (!target) throw new CloudBillingError("nothing_to_free", "Your computers already fit your plan.", 409);
+  if (planId !== target) throw new CloudBillingError("cleanup_changed", "Your plan changed since ADE showed this. Look again.", 409);
+  const check = checkPlanCleanupPick(env, account, computers, target, pick);
+  if (!check.ok) throw new CloudBillingError(check.code, check.message, check.code === "bad_request" ? 400 : 409);
+  if (!(await recordPlanCleanupPick(env, userId, target, { push: pick.push, instanceIds: check.instanceIds }, now))) {
+    throw new CloudBillingError("cleanup_running", "ADE is still freeing the computers you picked. Try again when it's done.", 409);
+  }
 }
 
 export async function createPortalUrl(env: CloudEnv, userId: string, origin: string, now: number): Promise<{ url: string }> {
@@ -539,10 +587,10 @@ async function userForSubscription(env: CloudEnv, subscription: SubscriptionFact
  * limits, the email naming what those limits will free (a cancel from the
  * billing portal is never seen in ADE first).
  */
-async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow): Promise<void> {
+async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow, options: { pickMade?: boolean } = {}): Promise<void> {
   const waitingBefore = waitingPlanOf(before);
   const waitingAfter = waitingPlanOf(after);
-  if (waitingAfter && waitingAfter !== waitingBefore) {
+  if (waitingAfter && waitingAfter !== waitingBefore && !options.pickMade) {
     // Its own failure must not cost the past-due or restored email below: Stripe's retry sees no change and never sends it.
     try {
       await warnPlanCleanupAhead(env, after, await listComputers(env, after.user_id), waitingAfter);
@@ -571,9 +619,9 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
   }
 }
 
-async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
+async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number, waitUntil?: CloudWaitUntil, options: { pickMade?: boolean } = {}): Promise<void> {
   const after = await applyCloudPlanChange(env, before.user_id, change, now);
-  await announceChange(env, before, after);
+  await announceChange(env, before, after, options);
   const plan = boughtPlanIdOf(after);
   if (plan !== boughtPlanIdOf(before)) {
     logCloud("cloud.plan_changed", { userId: after.user_id, from: boughtPlanIdOf(before), to: plan });

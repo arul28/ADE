@@ -174,6 +174,14 @@ function shortString(value: unknown, max: number): string | null {
   return trimmed && trimmed.length <= max ? trimmed : null;
 }
 
+/** Words for a person (a stage's detail or error, a launch's error): a long one is cut, never dropped. */
+function clippedText(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.replace(/[\u0000-\u001f]/g, " ").trim();
+  if (!trimmed) return null;
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1).trimEnd()}…`;
+}
+
 function parseAttachments(value: unknown): CloudLaunchAttachment[] | string {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > CLOUD_LAUNCH_MAX_FILES) return `A launch takes at most ${CLOUD_LAUNCH_MAX_FILES} files.`;
@@ -508,7 +516,7 @@ function parseStages(value: unknown): CloudLaunchStage[] | null {
     const id = typeof record?.id === "string" && STAGE_ID.test(record.id) ? record.id : null;
     const status = typeof record?.status === "string" && STAGE_STATUSES.has(record.status as CloudLaunchStageStatus) ? record.status as CloudLaunchStageStatus : null;
     if (!id || !status) return null;
-    out.push({ id, status, detail: shortString(record?.detail, 300), error: shortString(record?.error, 300) });
+    out.push({ id, status, detail: clippedText(record?.detail, 300), error: clippedText(record?.error, 300) });
   }
   return out;
 }
@@ -525,7 +533,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   // A finished launch stays finished: a report that left the computer before the last one can land after it.
   if (row.state === "done" && state !== "done") return fail("launch_closed", "This launch already finished.", 409);
   const sessionId = body.sessionId === undefined ? undefined : shortString(body.sessionId, 120);
-  const error = body.error === undefined ? undefined : shortString(body.error, 400);
+  const error = body.error === undefined ? undefined : clippedText(body.error, 400);
   await env.DB.prepare(`
     update cloud_launches set
       state = coalesce(?, state),

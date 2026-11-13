@@ -198,8 +198,8 @@ struct CloudNotices: View {
         if let disk = account.disk, let limit = disk.limitGb, limit > 0, disk.usedGb / limit >= 0.8 {
           ADESettingsNotice(message: "Your disk is \(Int((disk.usedGb / limit * 100).rounded()))% full. Free some space in the ADE desktop app before your lanes need more.", tone: .warn)
         }
-        if let cleanup = account.planCleanup, let sentence = cloudPhoneWords(cleanup.sentence) {
-          ADESettingsNotice(message: [sentence, cleanup.dueAt.map { "This happens on \(cloudDate($0)). To choose which go, delete computers yourself before then." }].compactMap { $0 }.joined(separator: " "), tone: .warn)
+        if let cleanup = account.planCleanup, let message = cloudPlanCleanupMessage(cleanup) {
+          ADESettingsNotice(message: message, tone: .warn)
         }
         if let done = account.planCleanupDone, let sentence = cloudPlanCleanupDoneSentence(done) {
           ADESettingsNotice(message: "ADE freed computers for your plan. \(sentence)", tone: .neutral)

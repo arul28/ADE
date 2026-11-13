@@ -823,7 +823,7 @@ describe("registerRuntimeBridge", () => {
       cleanup: ReturnType<typeof vi.fn>;
     };
 
-    function recordingLocalRuntimePool() {
+    function recordingLocalRuntimePool(subscribeEpochs: string[] = []) {
       const subscriptions: RecordedSubscription[] = [];
       const pool = {
         subscribeEventsForRoot: vi.fn(
@@ -835,7 +835,8 @@ describe("registerRuntimeBridge", () => {
             onSubscribed?: (result: Record<string, unknown>) => void,
           ) => {
             const cleanup = vi.fn();
-            onSubscribed?.({ nextCursor: request.cursor ?? 0, hasMore: false });
+            const eventEpoch = subscribeEpochs[subscriptions.length];
+            onSubscribed?.({ nextCursor: request.cursor ?? 0, hasMore: false, ...(eventEpoch ? { eventEpoch } : {}) });
             subscriptions.push({
               rootPath,
               request,
@@ -934,6 +935,30 @@ describe("registerRuntimeBridge", () => {
 
       subscriptions[1].emit(ptyEvent(3), "epoch-1");
       expect(active.webContents.send).toHaveBeenCalledTimes(3);
+    });
+
+    it("gives every pump that shares a subscription the epoch of a restarted runtime", async () => {
+      // The bound pump and a chat pinned to the same copy send the same request,
+      // so they share one subscription and only the first sees its answer. A
+      // pump that never learns the new epoch drops every event the restarted
+      // runtime sends, and the open chat stops updating until a reload.
+      const { subscriptions, pool } = recordingLocalRuntimePool(["epoch-1", "epoch-2"]);
+      const stream = registerWithPool(pool);
+      const window = destroyableSender(215);
+      const poll = () =>
+        stream(eventForSender(window.webContents), { rootPath: "/repo", request: activePumpRequest });
+
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-1" });
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-1" });
+
+      subscriptions[0].end();
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-2" });
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-2" });
+      expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(2);
+
+      // An epoch that arrives with a pushed event counts too.
+      subscriptions[1].emit(ptyEvent(1), "epoch-3");
+      await expect(poll()).resolves.toMatchObject({ eventEpoch: "epoch-3" });
     });
 
     it("refuses a subscription that names a category a renderer may not have", async () => {

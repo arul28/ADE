@@ -15,6 +15,14 @@ export type PersistedBrowserAccountSession = {
   email: string | null;
   name: string | null;
   imageUrl: string | null;
+  /**
+   * The last access token and when it expires. A reload within its life skips
+   * the refresh and the profile read, and the link page reads the computers
+   * with it without touching the refresh token (which rotates on every use).
+   * Absent in a session saved by an older build.
+   */
+  accessToken?: string | null;
+  accessTokenExpiresAtMs?: number | null;
 };
 
 export type BrowserAccountSessionPersistence = {
@@ -54,7 +62,24 @@ function parsePersistedSession(value: unknown): PersistedBrowserAccountSession |
     email: optionalString(record.email),
     name: optionalString(record.name),
     imageUrl: optionalString(record.imageUrl),
+    accessToken: optionalString(record.accessToken),
+    accessTokenExpiresAtMs: typeof record.accessTokenExpiresAtMs === "number"
+      && Number.isFinite(record.accessTokenExpiresAtMs)
+      ? record.accessTokenExpiresAtMs
+      : null,
   };
+}
+
+/** The stored access token while it has more than `skewMs` to live, else null. */
+export function usablePersistedAccessToken(
+  session: PersistedBrowserAccountSession,
+  nowMs: number,
+  skewMs: number,
+): { accessToken: string; expiresAtMs: number } | null {
+  const accessToken = session.accessToken ?? null;
+  const expiresAtMs = session.accessTokenExpiresAtMs ?? null;
+  if (!accessToken || expiresAtMs == null || expiresAtMs - nowMs <= skewMs) return null;
+  return { accessToken, expiresAtMs };
 }
 
 export class BrowserAccountSessionStore implements BrowserAccountSessionPersistence {

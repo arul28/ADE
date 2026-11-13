@@ -22,10 +22,13 @@
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { PASSWORD_LOGIN_REQUEST_METADATA_KEY } from "../passwordLoginRequest";
+import { MESSAGES_SEND_APPROVAL_METADATA_KEY } from "../messagesSendApproval";
 import { INTEGRATION_CONNECT_METADATA_KEY } from "../integrationConnect";
 import { MCP_SERVER_REMOVE_METADATA_KEY, MCP_SERVER_REQUEST_METADATA_KEY } from "../mcpServerRequest";
 import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 import { ADE_CLOUD_APPROVAL_METADATA_KEY } from "../adeCloud";
+import { MACHINE_REMOVAL_REQUEST_METADATA_KEY } from "../machineRemovalRequest";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -1982,8 +1985,8 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 /**
  * True for a pending-input card only the user may answer: the shared-seat
  * consent, the real-input lease, the private secret card, the connect card,
- * the MCP server cards (add and remove), an MCP App's tool call, and every
- * ADE Cloud approval. The answer IS the permission (or the secret), so an
+ * the MCP server cards (add and remove), an MCP App's tool call, every
+ * ADE Cloud approval, and the computer removal card. The answer IS the permission (or the secret), so an
  * agent caller (session-bound, unbound, or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
@@ -1992,9 +1995,12 @@ export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> 
     || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
     || providerMetadata?.[ADE_CLOUD_APPROVAL_METADATA_KEY] === true
     || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[PASSWORD_LOGIN_REQUEST_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[MESSAGES_SEND_APPROVAL_METADATA_KEY])
     || isNonNullRecord(providerMetadata?.[INTEGRATION_CONNECT_METADATA_KEY])
     || isNonNullRecord(providerMetadata?.[MCP_SERVER_REQUEST_METADATA_KEY])
-    || isNonNullRecord(providerMetadata?.[MCP_SERVER_REMOVE_METADATA_KEY]);
+    || isNonNullRecord(providerMetadata?.[MCP_SERVER_REMOVE_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[MACHINE_REMOVAL_REQUEST_METADATA_KEY]);
 }
 
 function isNonNullRecord(value: unknown): boolean {

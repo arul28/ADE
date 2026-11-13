@@ -1479,8 +1479,18 @@ Renderer surfaces:
   shared reduced-motion-aware pending label (`NamingPendingLabel`) with three
   animated dots; chat title, lane name, and status line pass their own
   pending copy so visible and accessible labels stay consistent.
+- `apps/desktop/src/renderer/components/terminals/terminalPreviewRows.ts` —
+  `previewRowsFromTranscript` replays an ended session's transcript in a
+  headless terminal at the terminal's own height (10 to 300 rows, default 40),
+  without the alternate-screen switches, and returns the rows the CLI drew.
+  The desktop ended pane and the ADE Web preview share it.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
-  tabs/grid/single Work view. The empty new-chat surface paints
+  tabs/grid/single Work view. The ended pane of an agent CLI
+  (`ClosedCliSessionSurface`) replays the transcript when the snapshot rows
+  are not shown and the transcript used the alternate screen, so a full-screen
+  CLI shows the screen it drew, not every frame in sequence. It shows nothing
+  while the replay runs, keeps the plain text when the replay fails, and drops
+  a replay that finishes after the pane moved to another session. The empty new-chat surface paints
   `WorkToolPickerBackdrop` behind the draft (the chat shell is
   transparent there). It marks the Work draft surface and Chat/CLI mode
   switcher for the first-send handoff; while the new chat's composer docks,

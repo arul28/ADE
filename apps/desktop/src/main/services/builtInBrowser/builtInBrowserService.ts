@@ -3,6 +3,12 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import { existsSync, mkdirSync } from "node:fs";
 import { Menu, WebContentsView, app, clipboard, nativeImage, screen, session } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
+import type { BuiltInBrowserLoginSubmission } from "../../../shared/types/builtInBrowserLoginCapture";
+import { createBuiltInBrowserLoginOffers, loginOfferTarget } from "./builtInBrowserLoginOffers";
+import { passwordFillTarget } from "../../../shared/passwordFillTarget";
+import { generateSitePassword } from "../../../../../ade-cli/src/services/passwords/passwordCrypto";
+import type { MessagesIntegrationService } from "../messagesIntegration/messagesIntegrationService";
+import type { ReadRecentMessagesOptions } from "../messages";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -76,6 +82,7 @@ import type {
   BuiltInBrowserTraceResult,
   BuiltInBrowserWaitArgs,
   BuiltInBrowserFillArgs,
+  BuiltInBrowserSigninArgs,
   BuiltInBrowserTypeTextArgs,
   BuiltInBrowserDevToolsMode,
   BuiltInBrowserDevToolsResult,
@@ -333,7 +340,97 @@ const DOWNLOAD_TRIGGER_ACTIONS = new Set([
  * tab sees is the agent's; `wait` sends none, so a person's clicks during it
  * still make the tab theirs.
  */
-const AGENT_INPUT_ACTIONS = new Set([...DOWNLOAD_TRIGGER_ACTIONS, "scroll", "clear"]);
+const AGENT_INPUT_ACTIONS = new Set([...DOWNLOAD_TRIGGER_ACTIONS, "scroll", "clear", "signin", "signup"]);
+
+/** The isolated world the login-field finder runs in (any id unused by ADE's other page scripts). */
+const BUILT_IN_BROWSER_LOGIN_WORLD_ID = 1_071_141;
+
+/**
+ * Finds the page's login fields and marks them, in an isolated world of the
+ * top frame only (a cross-origin iframe is never searched, never filled): the
+ * first visible password field, and the visible text/email field before it.
+ * A username-only step (the password comes on the next page) marks just that.
+ * Every field it marks also carries `data-ade-vault-filled`, which agent
+ * observations always mask, and the password stays drawn as dots.
+ */
+const LOGIN_FIELD_FINDER = `(() => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none" && !el.disabled && !el.readOnly;
+  };
+  for (const el of document.querySelectorAll("[data-ade-fill-target]")) el.removeAttribute("data-ade-fill-target");
+  const inputs = Array.from(document.querySelectorAll("input")).filter(visible);
+  const password = inputs.find((el) => el.type === "password" && el.autocomplete !== "new-password")
+    || inputs.find((el) => el.type === "password");
+  const userish = (el) => ["text", "email", "tel", ""].includes(el.type)
+    && /user|email|login|account|name|phone|identifier/i.test([el.name, el.id, el.autocomplete, el.placeholder, el.getAttribute("aria-label")].join(" "));
+  let username = null;
+  if (password) {
+    const before = inputs.slice(0, inputs.indexOf(password)).reverse();
+    username = before.find((el) => el.autocomplete === "username" || el.type === "email") || before.find(userish) || null;
+  } else {
+    username = inputs.find((el) => el.autocomplete === "username") || inputs.find((el) => el.type === "email") || inputs.find(userish) || null;
+  }
+  // The authenticator step: a one-time-code field, or a row of one-digit boxes
+  // (typing the code into the first moves along them). Only with no password
+  // on the page, so a login form's other fields are never mistaken for it.
+  let code = null;
+  if (!password) {
+    const codeish = (el) => ["text", "tel", "number", ""].includes(el.type)
+      && (el.autocomplete === "one-time-code"
+        || /otp|one.?time|2fa|mfa|totp|verif|auth.*code|security.?code|^code$/i.test([el.name, el.id, el.placeholder, el.getAttribute("aria-label")].join(" ")));
+    code = inputs.find((el) => el.autocomplete === "one-time-code") || inputs.find(codeish) || null;
+    if (!code) {
+      const boxes = inputs.filter((el) => el.maxLength === 1 && ["text", "tel", "number", ""].includes(el.type));
+      if (boxes.length >= 6 && boxes.length <= 8) code = boxes[0];
+    }
+    if (code) username = null;
+  }
+  for (const [el, role] of [[username, "username"], [password, "password"], [code, "code"]]) {
+    if (!el) continue;
+    el.setAttribute("data-ade-fill-target", role);
+    el.setAttribute("data-ade-vault-filled", "");
+  }
+  // Drawn as dots even after the page's own "show password" switch turns it
+  // into a text field, so a screenshot an agent takes never shows it.
+  if (password) password.style.setProperty("-webkit-text-security", "disc", "important");
+  return { username: Boolean(username), password: Boolean(password), code: Boolean(code) };
+})()`;
+/**
+ * The sign-up form's fields, in the same isolated world: every visible
+ * new-password field (the password and its "confirm" box), and the
+ * username/email field before the first one, whose value the agent typed.
+ * The password fields are marked, masked from observations and drawn as dots.
+ */
+const SIGNUP_FIELD_FINDER = `(() => {
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none" && !el.disabled && !el.readOnly;
+  };
+  for (const el of document.querySelectorAll("[data-ade-fill-target]")) el.removeAttribute("data-ade-fill-target");
+  const inputs = Array.from(document.querySelectorAll("input")).filter(visible);
+  const all = inputs.filter((el) => el.type === "password");
+  const fresh = all.filter((el) => el.autocomplete === "new-password");
+  const passwords = (fresh.length ? fresh : all).slice(0, 2);
+  let maxLength = 0;
+  passwords.forEach((el, index) => {
+    el.setAttribute("data-ade-fill-target", "new-password-" + index);
+    el.setAttribute("data-ade-vault-filled", "");
+    el.style.setProperty("-webkit-text-security", "disc", "important");
+    if (el.maxLength > 0) maxLength = maxLength ? Math.min(maxLength, el.maxLength) : el.maxLength;
+  });
+  let username = null;
+  if (passwords.length) {
+    const before = inputs.slice(0, inputs.indexOf(passwords[0])).reverse();
+    const userish = (el) => ["text", "email", "tel", ""].includes(el.type)
+      && /user|email|login|account|name|phone|identifier/i.test([el.name, el.id, el.autocomplete, el.placeholder, el.getAttribute("aria-label")].join(" "));
+    const field = before.find((el) => el.autocomplete === "username" || el.autocomplete === "email" || el.type === "email") || before.find(userish) || null;
+    username = field && field.value.trim() ? field.value.trim().slice(0, 256) : null;
+  }
+  return { passwords: passwords.length, maxLength, username };
+})()`;
 const DEFAULT_DOWNLOAD_WAIT_MS = 60_000;
 const MAX_DOWNLOAD_WAIT_MS = 120_000;
 /**
@@ -867,10 +964,33 @@ export function isBuiltInBrowserNoTabError(error: unknown): error is BuiltInBrow
     || (error instanceof Error && error.name === "BuiltInBrowserNoTabError" && "tabId" in error);
 }
 
+/** What the browser needs from Passwords to fill a login: summaries to choose, then one login's values. */
+export type BuiltInBrowserPasswordsAccess = {
+  loginsForPage(pageUrl: string, options?: { exactOrigin?: boolean }): Promise<Array<{ id: string; username: string | null; sites: string[] }>>;
+  resolveForFill(input: { itemId: string; pageUrl: string; exactOrigin?: boolean }): Promise<{ username: string; password: string; code: string | null } | null>;
+  /** Pull what other computers saved (a login the sign-in card just saved elsewhere). */
+  sync(): Promise<void>;
+  /** Whether Passwords is on here: "Save to Passwords?" is offered only then. */
+  enabled(): Promise<boolean>;
+  /** Activity: the person filled a saved login with the key button. */
+  recordUse(input: { itemId: string; target: string }): Promise<unknown>;
+  /** The person's "Save to Passwords?" answer. */
+  /** The saved item's id; null when this computer's brain did not answer. */
+  saveLogin(input: { id?: string; origins?: string[]; username?: string; password: string }): Promise<{ id: string } | null>;
+};
+
 export function createBuiltInBrowserService(args: {
   getLogger?: () => Logger;
   /** Makes a recording's demo video. Without one, a recording fails at its stop. */
   demoEngine?: DemoEngine | null;
+  /**
+   * Passwords on this computer (its local brain's `passwords` actions). The
+   * values only ever come back here, to fill the page in front of the person;
+   * null when Passwords is not available on this computer.
+   */
+  passwords?: BuiltInBrowserPasswordsAccess | null;
+  /** The Messages integration on this Mac (null elsewhere). */
+  messages?: MessagesIntegrationService | null;
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   /**
@@ -1117,6 +1237,7 @@ export function createBuiltInBrowserService(args: {
       createRecordingWindow: args.createRecordingWindow ?? null,
       createTabRecorder: args.createTabRecorder ?? null,
       demoEngine: args.demoEngine ?? null,
+      passwords: args.passwords ?? null,
     });
 
   /**
@@ -1343,6 +1464,7 @@ export function createBuiltInBrowserService(args: {
         createRecordingWindow: args.createRecordingWindow ?? null,
         createTabRecorder: args.createTabRecorder ?? null,
         demoEngine: args.demoEngine ?? null,
+        passwords: args.passwords ?? null,
       });
       fallbackServices.set("window", fallbackService);
     }
@@ -1411,6 +1533,7 @@ export function createBuiltInBrowserService(args: {
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
           onHandoff: args.onHandoff ?? null,
           presenceHolds: presenceRouter,
+          passwords: args.passwords ?? null,
         });
         fallbackServices.set("personal", fallbackService);
       }
@@ -1509,10 +1632,20 @@ export function createBuiltInBrowserService(args: {
 
   const allWindowEntries = (): WindowBrowserEntry[] => [...windowServices.values()];
 
+  /** The Messages integration (main always gives one; a test host may not). */
+  const messagesIntegration = (): MessagesIntegrationService => {
+    if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+    return args.messages;
+  };
+
   const allWindowServices = (): WindowBrowserService[] => [
     ...[...windowServices.values()].map((entry) => entry.service),
     ...fallbackServices.values(),
   ];
+
+  /** The collection that holds this tab (ids are unique across collections), else the usual pick. */
+  const serviceOwningTab = (input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): WindowBrowserService =>
+    allWindowServices().find((service) => service.listTabIds().includes(input.tabId)) ?? serviceForInput(input, sourceWindow);
 
   /**
    * Picks the collection a detected dev server belongs to.
@@ -2076,6 +2209,45 @@ export function createBuiltInBrowserService(args: {
     fill(input: BuiltInBrowserFillArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
       return serviceForInput(input, sourceWindow).fill(input);
     },
+    signin(input: BuiltInBrowserSigninArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).signin(input);
+    },
+    signup(input: BuiltInBrowserSigninArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
+      return serviceForInput(input, sourceWindow).signup(input);
+    },
+    // The Messages integration on this Mac, for the brain's `messages` domain.
+    messagesStatus: () => messagesIntegration().status(),
+    messagesSetSettings: (next: Record<string, unknown>) => messagesIntegration().setSettings(next),
+    messagesRecent: (input: ReadRecentMessagesOptions = {}) => messagesIntegration().recent(input),
+    messagesChats: (input: { limit?: number } = {}) => messagesIntegration().chats(input),
+    messagesSend: (input: { to: string; text: string }) => messagesIntegration().send(input),
+    /** A login form the person sent in a tab (the tab preload's message); the tab's own window handles it. */
+    handleLoginSubmission(wc: WebContents, mainFrame: boolean, submission: BuiltInBrowserLoginSubmission): void {
+      for (const service of allWindowServices()) {
+        if (service.handleLoginSubmission(wc, mainFrame, submission)) return;
+      }
+    },
+    // The key button names only a tab: the collection that owns it answers
+    // (the personal Browser's tabs live outside the window's project).
+    savedLoginsForTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null) {
+      return serviceOwningTab(input, sourceWindow).savedLoginsForTab(input);
+    },
+    fillSavedLogin(input: BuiltInBrowserTabArgs & { itemId: string }, sourceWindow?: BrowserWindow | null) {
+      return serviceOwningTab(input, sourceWindow).fillSavedLogin(input);
+    },
+    loginOfferForTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null) {
+      return serviceOwningTab(input, sourceWindow).loginOfferForTab(input.tabId);
+    },
+    async acceptLoginOffer(input: { offerId: string }): Promise<{ saved: boolean }> {
+      for (const service of allWindowServices()) {
+        const result = await service.acceptLoginOffer(input.offerId);
+        if (result.saved) return result;
+      }
+      return { saved: false };
+    },
+    dismissLoginOffer(input: { offerId: string }): void {
+      for (const service of allWindowServices()) service.dismissLoginOffer(input.offerId);
+    },
     clear(input: BuiltInBrowserClearArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
       return serviceForInput(input, sourceWindow).clear(input);
     },
@@ -2454,6 +2626,12 @@ function createBuiltInBrowserWindowService(args: {
   createTabRecorder?: BuiltInBrowserRecorderFactory | null;
   /** Makes a recording's demo video. */
   demoEngine?: DemoEngine | null;
+  /**
+   * Passwords on this computer (its local brain's `passwords` actions). The
+   * values only ever come back here, to fill the page in front of the person;
+   * null when Passwords is not available on this computer.
+   */
+  passwords?: BuiltInBrowserPasswordsAccess | null;
 }) {
   const presenceHolds = args.presenceHolds ?? builtInBrowserAgentPresence;
   let win: BrowserWindow | null = null;
@@ -6424,6 +6602,7 @@ function createBuiltInBrowserWindowService(args: {
     const [removed] = tabs.splice(index, 1);
     if (removed) {
       parkedTabIds.delete(removed.id);
+      loginOffers.forgetTab(removed.id);
       // The close path removes the view itself rather than going through
       // `removeTabViewFromWindow`, so it has to drop the same warming state:
       // an armed timer fires after the tab is gone, re-adds a dead id to
@@ -6911,6 +7090,238 @@ function createBuiltInBrowserWindowService(args: {
       emitStatus();
       return actionResult(tab, input);
     });
+  }
+
+  /**
+   * Sign in to the tab's site with a saved login from Passwords.
+   *
+   * The site is the tab's own top-frame URL, never one the caller names, and
+   * the login must belong to it (Passwords checks the site again). Values go
+   * from this computer's brain straight into the page; the result names the
+   * site, the account and which fields were filled, never a value.
+   */
+  async function signin(input: BuiltInBrowserSigninArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open the site's sign-in page first.");
+    const passwords = args.passwords;
+    if (!passwords) throw new AdeExpectedError("Passwords isn't available on this computer.", "user");
+    return runTracedAgentAction(tab, "signin", input, async () => {
+      const pageUrl = tab.webContents.getURL();
+      const target = passwordFillTarget(pageUrl);
+      if (!target) {
+        throw new AdeExpectedError(/^https?:/i.test(pageUrl) ? "Saved logins are only filled on https pages." : "Open the site's sign-in page first.", "user");
+      }
+      const site = target.host;
+      const expectedSite = stringOrNull(input.expectedSite)?.toLowerCase() ?? null;
+      if (expectedSite && expectedSite !== site) {
+        throw new AdeExpectedError(`browser signin --site ${expectedSite} does not match the tab's page (${site}). The site is always the tab's own page; drop --site or open ${expectedSite} in the tab.`, "user");
+      }
+      const wanted = stringOrNull(input.username);
+      // An agent's sign-in (`passwords.signin`) asks for the login's exact
+      // saved address; the person's key button matches the whole site.
+      const exactOrigin = input.exactOrigin === true;
+      const askedItemId = stringOrNull(input.itemId);
+      // A login saved a moment ago on another computer (the sign-in card
+      // saves on the chat's machine) reaches this one on its next sync, so a
+      // miss syncs once before it says there is none.
+      const pick = async () => {
+        if (askedItemId) {
+          const values = await passwords.resolveForFill({ itemId: askedItemId, pageUrl, exactOrigin });
+          return values ? { values, username: null as string | null, itemId: askedItemId } : null;
+        }
+        const logins = await passwords.loginsForPage(pageUrl, { exactOrigin });
+        const chosen = (wanted ? logins.find((login) => login.username === wanted) : null) ?? (wanted ? null : logins[0] ?? null);
+        if (!chosen) return null;
+        const values = await passwords.resolveForFill({ itemId: chosen.id, pageUrl, exactOrigin });
+        return values ? { values, username: chosen.username, itemId: chosen.id } : null;
+      };
+      let picked = await pick();
+      if (!picked) {
+        await passwords.sync();
+        picked = await pick();
+      }
+      if (!picked) {
+        // Not an error: the caller (passwords.signin) may ask the person.
+        emitStatus();
+        const result = await actionResult(tab, input);
+        return { ...result, signin: { site, username: wanted, filled: [], needsLogin: true, pageUrl } } as BuiltInBrowserAgentActionResult;
+      }
+      const { values } = picked;
+      const username = picked.username;
+      const pageOrigin = target.origin;
+      // The page must still be the one the login was picked for: a redirect
+      // mid-fill must not receive the password.
+      const assertSamePage = () => {
+        let current: string | null = null;
+        try {
+          current = new URL(tab.webContents.getURL()).origin;
+        } catch {
+          current = null;
+        }
+        if (current !== pageOrigin) throw new AdeExpectedError(`The page left ${site} before ADE could sign in. Nothing was filled.`, "user");
+      };
+      const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: LOGIN_FIELD_FINDER }]) as { username: boolean; password: boolean; code?: boolean } | null;
+      const filled: string[] = [];
+      if (fields?.username && values.username) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="username"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.username, null);
+        filled.push("username");
+      }
+      if (fields?.password) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="password"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.password, null);
+        filled.push("password");
+      }
+      if (fields?.code && values.code) {
+        assertSamePage();
+        await focusElementTarget(tab, { selector: '[data-ade-fill-target="code"]' }, { select: true, clear: true });
+        await insertTextForAction(tab, values.code, null);
+        filled.push("code");
+      }
+      if (filled.length === 0) {
+        throw new AdeExpectedError(fields?.code
+          ? `${site} asks for a code, and the saved login has no authenticator. Read the code from Messages or email (\`ade code wait\`), then type it.`
+          : `No sign-in fields were found on ${site}.`, "user");
+      }
+      logger()?.info("built_in_browser.signin_filled", { tabId: tab.id, fields: filled.join(",") });
+      emitStatus();
+      const result = await actionResult(tab, input);
+      return { ...result, signin: { site, username: username ?? values.username, filled, itemId: picked.itemId } } as BuiltInBrowserAgentActionResult;
+    });
+  }
+
+  /**
+   * Make a new account's password: generate one, type it into the tab's
+   * sign-up form (the password and its confirm box), check the form kept all
+   * of it, then save the login to Passwords. The site is the tab's own page,
+   * as for `signin`; the result names the site and the account, never the
+   * password. Nothing is submitted: the agent sends the form.
+   */
+  async function signup(input: BuiltInBrowserSigninArgs): Promise<BuiltInBrowserAgentActionResult> {
+    const tab = targetTabFromInput(input, "No active browser tab. Open the site's sign-up page first.");
+    const passwords = args.passwords;
+    if (!passwords) throw new AdeExpectedError("Passwords isn't available on this computer.", "user");
+    return runTracedAgentAction(tab, "signup", input, async () => {
+      if (!(await passwords.enabled())) {
+        throw new AdeExpectedError("Passwords is off on this computer. The person can turn it on in Settings › Passwords.", "user");
+      }
+      const pageUrl = tab.webContents.getURL();
+      const target = passwordFillTarget(pageUrl);
+      if (!target) {
+        throw new AdeExpectedError(/^https?:/i.test(pageUrl) ? "New passwords are only made on https pages." : "Open the site's sign-up page first.", "user");
+      }
+      const site = target.host;
+      const expectedSite = stringOrNull(input.expectedSite)?.toLowerCase() ?? null;
+      if (expectedSite && expectedSite !== site) {
+        throw new AdeExpectedError(`browser signup --site ${expectedSite} does not match the tab's page (${site}). The site is always the tab's own page; drop --site or open ${expectedSite} in the tab.`, "user");
+      }
+      const fields = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{ code: SIGNUP_FIELD_FINDER }]) as { passwords: number; maxLength: number; username: string | null } | null;
+      if (!fields?.passwords) throw new AdeExpectedError(`No new-password field was found on ${site}. Open the sign-up form first.`, "user");
+      if (fields.maxLength > 0 && fields.maxLength < 12) {
+        throw new AdeExpectedError(`${site}'s password box takes at most ${fields.maxLength} characters, and ADE makes passwords of at least 12. Nothing was filled; hand the tab to the person to choose one.`, "user");
+      }
+      const username = stringOrNull(input.username) ?? fields.username;
+      if (username && (await passwords.loginsForPage(pageUrl, { exactOrigin: true })).some((login) => login.username === username)) {
+        throw new AdeExpectedError(`Passwords already has a login for ${username} on ${site}. Sign in with \`ade browser signin\`; the person can change it in Settings › Passwords.`, "user");
+      }
+      const password = generateSitePassword(fields.maxLength >= 12 ? Math.min(20, fields.maxLength) : 20);
+      const fieldSelector = (index: number) => `[data-ade-fill-target="new-password-${index}"]`;
+      const clearFields = async () => {
+        for (let index = 0; index < fields.passwords; index += 1) {
+          // Best effort while already failing: the error says the form is not to be sent.
+          await focusElementTarget(tab, { selector: fieldSelector(index) }, { select: true, clear: true })
+            .catch((error: unknown) => logger()?.warn("built_in_browser.signup_clear_failed", { err: error instanceof Error ? error.message : String(error) }));
+        }
+      };
+      const filled: string[] = [];
+      for (let index = 0; index < fields.passwords; index += 1) {
+        let current: string | null = null;
+        try {
+          current = new URL(tab.webContents.getURL()).origin;
+        } catch {
+          current = null;
+        }
+        if (current !== target.origin) {
+          throw new AdeExpectedError(`The page left ${site} before ADE finished. Nothing was saved; open the sign-up form again.`, "user");
+        }
+        await focusElementTarget(tab, { selector: fieldSelector(index) }, { select: true, clear: true });
+        await insertTextForAction(tab, password, null);
+        filled.push(index === 0 ? "password" : "confirm password");
+      }
+      // Saved only once the form holds exactly that password (a page script
+      // can trim, refuse or change characters): what Passwords keeps is what
+      // the site gets. Compared as SHA-256 in ADE's isolated world; neither
+      // the value nor its hash comes back, only whether each box matches.
+      const passwordHash = createHash("sha256").update(password, "utf8").digest("hex");
+      const kept = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{
+        code: `(async () => {
+          const hex = (buffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          const boxes = Array.from(document.querySelectorAll('[data-ade-fill-target^="new-password-"]'));
+          const matches = [];
+          for (const box of boxes) matches.push(hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(box.value))) === ${JSON.stringify(passwordHash)});
+          return matches;
+        })()`,
+      }]) as boolean[] | null;
+      if (!Array.isArray(kept) || kept.length !== fields.passwords || kept.some((matches) => matches !== true)) {
+        await clearFields();
+        throw new AdeExpectedError(`${site}'s form changed the new password, so nothing was saved and the boxes were cleared. Hand the tab to the person to choose one.`, "user");
+      }
+      let itemId: string;
+      try {
+        const saved = await passwords.saveLogin({ origins: [target.origin], ...(username ? { username } : {}), password });
+        if (!saved) throw new Error("Passwords did not answer.");
+        itemId = saved.id;
+      } catch (error) {
+        await clearFields();
+        throw new AdeExpectedError(`ADE could not save the new password for ${site}, so the boxes were cleared; do not submit the form. ${error instanceof Error ? error.message : ""}`.trim(), "user");
+      }
+      logger()?.info("built_in_browser.signup_filled", { tabId: tab.id, fields: filled.join(",") });
+      emitStatus();
+      const result = await actionResult(tab, input);
+      return { ...result, signin: { site, username, filled, itemId, created: true } };
+    });
+  }
+
+  /* ── Passwords for the person: the key button and "Save to Passwords?" ── */
+
+  const loginOffers = createBuiltInBrowserLoginOffers({
+    passwords: args.passwords ?? null,
+    emit: (tabId, offer) => emit({ type: "login-offer", tabId, offer }),
+    warn: (event, data) => logger()?.warn(event, data),
+  });
+
+  /** A login form the person sent in one of this window's tabs; false when the tab is not ours. */
+  function handleLoginSubmission(wc: WebContents, mainFrame: boolean, submission: BuiltInBrowserLoginSubmission): boolean {
+    const tab = tabForWebContents(wc);
+    if (!tab) return false;
+    // An agent's own click or key that sent the form is not the person
+    // signing in (ADE's fills are skipped in the tab already).
+    if (tab.lastActionAtMs !== null && Date.now() - tab.lastActionAtMs < 3_000) return true;
+    void loginOffers.handleSubmission({ tabId: tab.id, pageUrl: wc.getURL(), mainFrame, submission });
+    return true;
+  }
+
+  /** The key button: saved logins for the tab's own page (never a value). */
+  async function savedLoginsForTab(input: BuiltInBrowserTabArgs): Promise<Array<{ id: string; username: string | null; sites: string[] }>> {
+    const tab = tabs.find((entry) => entry.id === input.tabId) ?? null;
+    if (!tab || !args.passwords) return [];
+    const pageUrl = tab.webContents.getURL();
+    if (!loginOfferTarget(pageUrl)) return [];
+    if (!(await args.passwords.enabled())) return [];
+    return (await args.passwords.loginsForPage(pageUrl)).map((login) => ({ id: login.id, username: login.username, sites: login.sites }));
+  }
+
+  /** The key button's pick: fill that login into the tab's own page. */
+  async function fillSavedLogin(input: BuiltInBrowserTabArgs & { itemId: string }): Promise<{ filled: string[] }> {
+    const result = await signin({ tabId: input.tabId, itemId: input.itemId });
+    if (result.signin?.needsLogin) throw new AdeExpectedError("That saved login is not for this page.", "user");
+    const filled = result.signin?.filled ?? [];
+    if (filled.length && result.signin) {
+      void args.passwords?.recordUse({ itemId: input.itemId, target: result.signin.site })
+        .catch((error: unknown) => logger()?.warn("built_in_browser.passwords_activity_failed", { err: error instanceof Error ? error.message : String(error) }));
+    }
+    return { filled };
   }
 
   async function clear(input: BuiltInBrowserClearArgs): Promise<BuiltInBrowserAgentActionResult> {
@@ -8117,6 +8528,14 @@ function createBuiltInBrowserWindowService(args: {
     dispatchKey,
     scroll,
     fill,
+    signin,
+    signup,
+    handleLoginSubmission,
+    savedLoginsForTab,
+    fillSavedLogin,
+    loginOfferForTab: (tabId: string) => loginOffers.offerForTab(tabId),
+    acceptLoginOffer: (offerId: string) => loginOffers.accept(offerId),
+    dismissLoginOffer: (offerId: string) => loginOffers.dismiss(offerId),
     clear,
     wait,
     startInspect,

@@ -4600,6 +4600,18 @@ export type AgentChatImportExternalSessionArgs = {
   sourceModel?: string | null;
   /** The thinking level the source session ran with; kept when the model is. */
   sourceReasoningEffort?: string | null;
+  /**
+   * The provider account the imported ADE chat should run on, when the user
+   * picked one. Omitted keeps the chat on ADE's default account for the
+   * provider; the transcript is moved into whichever account the chat uses.
+   */
+  instanceId?: string | null;
+  /**
+   * The config home the source transcript was found in, when the host knows it.
+   * A source outside the default home (an ADE account) is read from there
+   * instead of being looked up under `~/.claude` / `~/.codex`.
+   */
+  configHome?: string | null;
 };
 
 export type AgentChatImportExternalSessionResult = {

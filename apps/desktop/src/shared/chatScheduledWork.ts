@@ -35,6 +35,21 @@ export type ChatScheduledWorkSnapshot = {
 
 type ScheduledWorkUpdateEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
 
+/** Id prefix of the resume ADE arms after a restart (`updateResumeScheduleId`). */
+export const UPDATE_RESUME_ID_PREFIX = "update-resume:";
+
+/**
+ * The resume ADE arms after any restart (an update, a crash) uses the fixed
+ * id, so a transcript event names it by its schedule id, old transcripts too.
+ * It is not scheduled work the user set up, so no surface draws it: no wake
+ * line, wake divider or wake message in the transcript, and no Schedule row.
+ * The restart notice already says the agent continues
+ * (`isRestartInterruptedNotice`).
+ */
+export function isRestartResumeScheduleId(scheduleId: string | null | undefined): boolean {
+  return typeof scheduleId === "string" && scheduleId.startsWith(UPDATE_RESUME_ID_PREFIX);
+}
+
 /** Scheduled work that has not fired, stopped, or failed yet. */
 export const SCHEDULED_WORK_PENDING_STATUSES: ReadonlySet<AgentChatScheduledWorkStatus> = new Set([
   "scheduled",
@@ -121,6 +136,7 @@ export function deriveScheduledWorkSnapshots(events: AgentChatEventEnvelope[]): 
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type !== "scheduled_work_update") continue;
+    if (isRestartResumeScheduleId(event.id)) continue;
     const existing = snapshots.get(event.id);
     const deliveredNotCancelled = cancelRecordsDelivery(existing, event, envelope.timestamp);
     snapshots.set(event.id, {
@@ -175,6 +191,7 @@ export function mergeManagedScheduledWorkSnapshots(
   );
 
   for (const item of managedWork ?? []) {
+    if (isRestartResumeScheduleId(item.id)) continue;
     snapshots.set(item.id, {
       id: item.id,
       kind: item.kind,

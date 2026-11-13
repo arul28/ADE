@@ -212,7 +212,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage",
       "recoverContinuity", "restoreCancelledQueue", "killDroidWorker", "launchCli",
       "launchHeadless", "startLaunch", "cancelLaunch", "retryLaunch", "startLaunchNow",
-      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume",
+      "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume", "releaseChatRuntime",
       "createDraft", "updateDraft", "deleteDraft", "claimDraft", "sendDraftNow",
       "createThreadComment", "updateThreadComment", "deleteThreadComment", "messageSession",
       "typeIntoCli", "actOnClaudePluginUi",
@@ -343,8 +343,25 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount",
-      "request",
+      "request", "exec",
     ],
+  },
+  // Passwords: agents read summaries (sites, usernames, never a value). The
+  // writes and the one value read (`resolveForFill`) are the person's, and
+  // `resolveForFill` only for this computer's own desktop app.
+  passwords: {
+    // Sign-in needs the running brain's browser bridge and chats.
+    live: ["signin", "signup", "requestLogin"],
+    read: ["status", "activity", "code", "list", "loginsForPage"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+  },
+  // Messages on the Mac the person sits at: reading follows its Read Texts
+  // switch; each text an agent sends is approved on a card first.
+  messages: {
+    // Every call reaches the Mac the person sits at, through the running brain.
+    live: "all",
+    read: ["status", "recent", "chats", "codeWait"],
+    write: ["send"],
   },
   integration_connect: {
     read: ["status"],
@@ -689,12 +706,15 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: [
       "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
       "listDownloads", "waitForDownload", "readClipboard",
+      // Messages on the person's Mac: reached only through the `messages`
+      // domain; the RPC server refuses them as browser actions.
+      "messagesStatus", "messagesRecent", "messagesChats",
     ],
     write: [
       "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
       "endSession", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab",
       "reload", "goBack", "goForward", "stop", "observe", "click", "typeText", "dispatchKey",
-      "scroll", "fill", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
+      "scroll", "fill", "signin", "signup", "messagesSend", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
       "selectOption", "uploadFile", "dropFiles", "paste", "writeClipboard", "startRecording", "stopRecording", "noteDemoStep",
@@ -784,6 +804,12 @@ export function adeActionAccess(domain: string, action: string): AdeActionAccess
  * the brain.
  */
 export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  passwords: {
+    resolveForFill: "Saved logins are filled by ADE on the computer whose browser shows the page.",
+    revealValue: "A saved value is shown only in ADE on the computer you are using, after Touch ID or Windows Hello.",
+    passkeysForRp: "Passkeys are used by ADE's browser on the computer you are using.",
+    savePasskey: "Passkeys are saved by ADE's browser on the computer you are using.",
+  },
   provider_logins: {
     allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",
   },

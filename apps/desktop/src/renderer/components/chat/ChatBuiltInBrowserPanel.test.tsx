@@ -128,7 +128,8 @@ function statusWith(overrides: Partial<BuiltInBrowserStatus>): BuiltInBrowserSta
 }
 
 function installBrowserApi() {
-  let eventListener: ((event: unknown) => void) | null = null;
+  // Several parts of the panel listen (the panel, the key button), as in the preload.
+  const eventListeners = new Set<(event: unknown) => void>();
   let remoteRequestListener: ((event: unknown) => void) | null = null;
   const api = {
     getStatus: vi.fn().mockResolvedValue(browserStatus),
@@ -268,9 +269,9 @@ function installBrowserApi() {
       import: vi.fn(),
     },
     onEvent: vi.fn((listener: (event: unknown) => void) => {
-      eventListener = listener;
+      eventListeners.add(listener);
       return () => {
-        eventListener = null;
+        eventListeners.delete(listener);
       };
     }),
     localizeRemoteUrl: vi.fn(async ({ url }: { url: string }) => ({
@@ -339,7 +340,9 @@ function installBrowserApi() {
   });
   return {
     api,
-    emit: (event: unknown) => eventListener?.(event),
+    emit: (event: unknown) => {
+      for (const listener of [...eventListeners]) listener(event);
+    },
   };
 }
 

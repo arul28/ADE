@@ -94,6 +94,8 @@
   </array>
   <key>NSCameraUsageDescription</key>
   <string>ADE scans your computer's pairing code to connect.</string>
+  <key>NSFaceIDUsageDescription</key>
+  <string>ADE uses Face ID before it shows or copies a saved password.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Discover ADE hosts on your local network and reconnect without rescanning.</string>
   <key>NSMicrophoneUsageDescription</key>

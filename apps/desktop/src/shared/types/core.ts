@@ -51,6 +51,19 @@ export type LocalRuntimeStatus = {
     lastCommand: string;
     blockedMs: number;
     ts: string;
+    /** Who froze the loop: the brain itself, or the machine past the wait ceiling. */
+    freezeCause?: "self" | "memory" | "drive";
+  } | null;
+  /**
+   * The brain started after the one before it on this endpoint stopped
+   * without an orderly stop (a crash, a kill) and the service started it
+   * again. Not set for an update, a restart someone asked for, or a reboot.
+   * The window shows one banner per `ts` (`BrainRestartNotice`).
+   */
+  lastUnplannedRestart?: {
+    ts: string;
+    chats: number;
+    cliSessions: number;
   } | null;
   /**
    * "isolated" means the desktop fell back to an app-owned no-sync brain

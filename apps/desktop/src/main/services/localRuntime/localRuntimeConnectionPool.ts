@@ -18,6 +18,7 @@ import {
   isRuntimeProtocolCompatible,
   parseRuntimeLastWedge,
   parseRuntimePublishHealth,
+  parseRuntimeUnplannedRestart,
 } from "../../../shared/adeRuntimeProtocol";
 import type {
   RemoteRuntimeActionRequest,
@@ -778,6 +779,7 @@ export function readLocalRuntimeInfo(value: unknown): {
   syncPort: number | null;
   publishHealth: LocalRuntimeStatus["publishHealth"];
   lastWedge: LocalRuntimeStatus["lastWedge"];
+  lastUnplannedRestart: LocalRuntimeStatus["lastUnplannedRestart"];
   minCompatibleProtocol: number | null;
   protocolVersion: number | null;
 } {
@@ -789,6 +791,7 @@ export function readLocalRuntimeInfo(value: unknown): {
     syncPort: null,
     publishHealth: null,
     lastWedge: null,
+    lastUnplannedRestart: null,
     minCompatibleProtocol: null,
     protocolVersion: null,
   } satisfies ReturnType<typeof readLocalRuntimeInfo>;
@@ -831,6 +834,7 @@ export function readLocalRuntimeInfo(value: unknown): {
           }
         : null,
     lastWedge: parseRuntimeLastWedge(info.lastWedge),
+    lastUnplannedRestart: parseRuntimeUnplannedRestart(info.lastUnplannedRestart),
     minCompatibleProtocol:
       typeof minCompatibleProtocol === "number"
       && Number.isInteger(minCompatibleProtocol)
@@ -1266,6 +1270,9 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimeSyncPort: number | null = null;
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
   private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
+  private activeRuntimeLastUnplannedRestart: LocalRuntimeStatus["lastUnplannedRestart"] = null;
+  /** One-shot re-reads after connecting to a brain that just came back from a crash (its counts settle). */
+  private restartFactRefreshTimers: ReturnType<typeof setTimeout>[] = [];
   private ownedRuntimeChild: ChildProcess | null = null;
   /** The endpoint belongs to the child, even after its active connection resets. */
   private ownedRuntimeSocketPath: string | null = null;
@@ -1484,6 +1491,7 @@ export class LocalRuntimeConnectionPool {
           }
         : null,
       lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
+      lastUnplannedRestart: this.activeRuntimeLastUnplannedRestart ? { ...this.activeRuntimeLastUnplannedRestart } : null,
       runtimeMode: this.runtimeMode(),
       appFallback: this.appFallback ? { ...this.appFallback } : null,
       versionSkew: { ...this.versionSkewStatus },
@@ -1495,6 +1503,28 @@ export class LocalRuntimeConnectionPool {
   async getFreshStatus(): Promise<LocalRuntimeStatus> {
     await this.refreshRuntimeDiagnostics();
     return this.getStatus();
+  }
+
+  /**
+   * A brain that came back from a crash counts the chats and CLI sessions it
+   * continued during its first seconds, after this window connected. Two
+   * one-shot re-reads pick up the counts for the restart banner; nothing
+   * polls. Only while the restart is young.
+   */
+  private scheduleRestartFactRefresh(restart: LocalRuntimeStatus["lastUnplannedRestart"]): void {
+    for (const timer of this.restartFactRefreshTimers) clearTimeout(timer);
+    this.restartFactRefreshTimers = [];
+    if (!restart) return;
+    const ageMs = Date.now() - Date.parse(restart.ts);
+    if (!Number.isFinite(ageMs) || ageMs > 3 * 60_000) return;
+    for (const delayMs of [12_000, 45_000]) {
+      const timer = setTimeout(() => {
+        this.restartFactRefreshTimers = this.restartFactRefreshTimers.filter((entry) => entry !== timer);
+        void this.refreshRuntimeDiagnostics();
+      }, delayMs);
+      timer.unref?.();
+      this.restartFactRefreshTimers.push(timer);
+    }
   }
 
   private async refreshRuntimeDiagnostics(): Promise<void> {
@@ -1516,6 +1546,7 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimeSyncPort = runtimeInfo.syncPort;
         this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
         this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+        this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
         this.emitRuntimeStatusChange();
       } catch (error) {
         this.logger.debug("local_runtime.status_refresh_failed", {
@@ -3121,6 +3152,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
+    this.activeRuntimeLastUnplannedRestart = null;
     this.ownedRuntimeChild = null;
     this.ownedRuntimeSocketPath = null;
     disposeOwnedRuntimeChild(ownedChild, ownedSocket);
@@ -3156,6 +3188,7 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimeSyncPort = null;
         this.activeRuntimePublishHealth = null;
         this.activeRuntimeLastWedge = null;
+        this.activeRuntimeLastUnplannedRestart = null;
       }
       throw error;
     });
@@ -3187,6 +3220,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
+    this.activeRuntimeLastUnplannedRestart = null;
     this.projectsByRoot.clear();
     this.staleProjectReregisteredAtByRoot.clear();
     return true;
@@ -4273,7 +4307,9 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
     this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+    this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
     this.emitRuntimeStatusChange();
+    this.scheduleRestartFactRefresh(runtimeInfo.lastUnplannedRestart);
     client.onDisconnect((error) => {
       if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
@@ -4288,6 +4324,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
+      this.activeRuntimeLastUnplannedRestart = null;
       this.projectsByRoot.clear();
       this.staleProjectReregisteredAtByRoot.clear();
       this.emitRuntimeStatusChange();
@@ -4417,6 +4454,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
+      this.activeRuntimeLastUnplannedRestart = null;
       this.projectsByRoot.clear();
       this.staleProjectReregisteredAtByRoot.clear();
       if (client) closeRuntimeClient(client);

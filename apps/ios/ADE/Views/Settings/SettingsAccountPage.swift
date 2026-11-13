@@ -62,6 +62,7 @@ struct SettingsAccountPage: View {
         heroSection(identity)
         githubAccountSection
         computersSection
+        SettingsPasswordsSection()
         detailsSection(identity)
         inviteSection
       } else {

@@ -156,6 +156,35 @@ export function pickFreshestOfAccount<T>(
     ?? newestFirst[0];
 }
 
+/**
+ * The copy a person's pick moves to when the copy it names leaves the account
+ * (its computer signed out of it, which for some providers also revokes that
+ * copy's token): the freshest other live, readable, switched-on copy of the
+ * same account in the same place, or null when none is left. Without the
+ * move, the pick names a key that is gone and the pick rule falls to the
+ * newest copy of any account.
+ */
+export function sameAccountCopyFor(
+  rows: Iterable<VaultRow>,
+  leaving: { key: string; provider: ProviderLoginProvider; slot: string; account: NonNullable<LoginMeta>["account"] },
+  read: { off: readonly string[]; meta(row: VaultRow): LoginMeta },
+): string | null {
+  const identity = accountIdentityOf(leaving.provider, leaving.account);
+  if (!identity) return null;
+  const place = cloudChoiceKey(leaving.provider, leaving.slot);
+  let best: { key: string; at: number } | null = null;
+  for (const row of rows) {
+    if (row.kind !== PROVIDER_LOGIN_VAULT_KIND || row.deleted || !row.readable || row.key === leaving.key || read.off.includes(row.key)) continue;
+    const parsedKey = parseProviderLoginKey(row.key);
+    if (!parsedKey || parsedKey.provider !== leaving.provider || cloudChoiceKey(parsedKey.provider, parsedKey.slot) !== place) continue;
+    const meta = read.meta(row);
+    if (!meta || accountIdentityOf(leaving.provider, meta.account) !== identity) continue;
+    const at = meta.renewedAt ?? meta.capturedAt;
+    if (!best || at > best.at) best = { key: row.key, at };
+  }
+  return best?.key ?? null;
+}
+
 /** One carried sign-in that is on for ADE Cloud, as the pick rule sees it. */
 export type CloudPlaceCandidate<R> = { row: R; meta: NonNullable<LoginMeta>; provider: ProviderLoginProvider; slot: string };
 /** A place's pick: the saved key, or one of its sign-ins. */

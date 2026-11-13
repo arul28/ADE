@@ -348,6 +348,11 @@ function(inputArg) {
     const tag = node && node.tagName ? node.tagName.toLowerCase() : "";
     if (tag !== "input" && tag !== "textarea" && tag !== "select") return null;
     if (tag === "input" && String(node.type || "").toLowerCase() === "password") return null;
+    // Never a value ADE filled from Passwords (even once a "show password"
+    // toggle makes it a text field), a one-time code or a card number.
+    if (node.hasAttribute && node.hasAttribute("data-ade-vault-filled")) return null;
+    const autocomplete = String(node.getAttribute && node.getAttribute("autocomplete") || "").toLowerCase();
+    if (/(^|\s)(current-password|new-password|one-time-code|cc-number|cc-csc)(\s|$)/.test(autocomplete)) return null;
     return String(node.value || "").slice(0, 300) || null;
   };
   const disabledFor = (node) => "disabled" in node ? Boolean(node.disabled) : null;

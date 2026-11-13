@@ -9,6 +9,7 @@ import type {
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { PROJECT_SECRET_DELIVERY_QUESTION_ID } from "../../../shared/projectSecretRequest";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestComposer, passwordLoginSelfAnswers } from "../chat/PasswordLoginCard";
 import { useAppStore } from "../../state/appStore";
 import { ChatRuntimeScopeProvider } from "../chat/ChatRuntimeScope";
 import { ChatSubagentsPanel } from "../chat/ChatSubagentsPanel";
@@ -22,6 +23,7 @@ import {
 } from "../chat/ProjectSecretCard";
 import { IntegrationConnectComposer } from "../chat/IntegrationConnectCard";
 import { McpServerRequestComposer } from "../chat/McpServerCard";
+import { MachineRemovalComposer } from "../chat/MachineRemovalCard";
 import { useChatMachineSessions, useCliParentChildRows } from "../chat/chatSubagentRoster";
 import type { ChatSubagentSnapshot } from "../chat/chatExecutionSummary";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
@@ -497,6 +499,20 @@ function CliCard({
       />
     );
   }
+  if (nativeCard?.kind === "login") {
+    return (
+      <PasswordLoginRequestComposer
+        request={request}
+        card={nativeCard.card}
+        responding={responding}
+        error={null}
+        chatProvider={provider}
+        onSave={(answers) => { void onAnswer(request, "accept", answers); }}
+        onSelf={() => { void onAnswer(request, "accept", passwordLoginSelfAnswers()); }}
+        onDecline={decline}
+      />
+    );
+  }
   if (nativeCard?.kind === "mcp-server") {
     return (
       <McpServerRequestComposer
@@ -507,6 +523,18 @@ function CliCard({
         chatProvider={provider}
         onAdd={(answers) => { void onAnswer(request, "accept", answers); }}
         onDecline={decline}
+      />
+    );
+  }
+  if (nativeCard?.kind === "machine-removal") {
+    return (
+      <MachineRemovalComposer
+        request={request}
+        card={nativeCard.card}
+        responding={responding}
+        error={null}
+        chatProvider={provider}
+        onAnswer={(answers) => { void onAnswer(request, "accept", answers); }}
       />
     );
   }

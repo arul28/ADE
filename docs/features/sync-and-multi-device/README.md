@@ -803,7 +803,7 @@ Runtime support files outside `services/sync/`:
   and `workspace/webWorkspaceModel.ts` — hosted-browser directory/session
   projection. `mergeWebMachines` merges account rows with browser-saved
   environments and cached catalogs into one row per physical machine, rendered
-  by `WebConnectionsChip.tsx` (the top-bar popover that replaced the Hub page),
+  by the hosted mode of `ConnectionsPanel.tsx` (the top-bar panel that replaced the Hub page),
   while the manager serializes admission into a four-client pool, reports
   Live/Reconnecting/Parked/Offline, retains parked catalogs, and reconnects a
   parked machine when its project or Chats surface is selected.
@@ -1281,7 +1281,15 @@ Runtime support files outside `services/sync/`:
   Machines cache the access token in `github.accountAppToken.v1`
   (`shared/github/accountAppTokenClient.ts`, one request per renewal across
   processes) and use it as the `account_app` credential, after their own
-  sign-ins and before an adopted `gh` copy. A legacy device-flow sign-in on a
+  sign-ins and before an adopted `gh` copy. When GitHub refuses that token
+  (a Disconnect, or a new Connect on another computer), the install check and
+  the relay poll ask the account once for its current token and retry once,
+  only with a token that is different. A process asks about one refused token
+  at most once a minute; a press of "Check again" in Settings → GitHub asks
+  anyway, also over a cached "not connected" answer, so each press asks once.
+  The "Connected to your ADE account as @login" line reads the account again
+  when a page opens with an answer older than 30 seconds, and on each press. A
+  legacy device-flow sign-in on a
   machine is handed to the account (`POST /github/app/adopt`). Without
   `GITHUB_APP_CLIENT_SECRET` the routes answer 503 and machines behave as
   before.
@@ -1308,8 +1316,8 @@ Runtime support files outside `services/sync/`:
   machine adds tomorrow still has to arrive, and the one-shot migration can
   never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
   Secrets > Pull from account) forces a vault sync with the relay and then runs
-  the same pull. `project_secret.get` / `list` (agents, `ade secrets get|list`,
-  the Secrets page) refresh from the account first — at most one request per
+  the same pull. `project_secret.get` / `list` / `exec` (`ade secrets list|exec`, the
+  person's own `get`, the Secrets page) refresh from the account first — at most one request per
   10 s, and waiting at most 3 s before answering from this machine's copy — so
   a secret added on another machine moments ago is found. A miss says whether
   the account was checked or could not be reached. Rows this machine saved
@@ -2398,7 +2406,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   answered with a plain "pair with a code, or open a project" under
   `account_session_changed` rather than `auth_failed`, because the device's
   saved pairing is untouched by that refusal. `connectionAttempt` metadata is
-  now parsed rather than silently discarded. It
+  now parsed rather than silently discarded. Routed project commands run off
+  the message queue with the project host's peer-queue rule: up to
+  `MAX_CONCURRENT_PEER_READS` routed reads (`isConcurrentReadEnvelope`) overlap
+  behind the last routed write (`commandWriteBarrier`), a routed write waits
+  for all earlier routed work, and a freed read slot goes to the oldest waiting
+  read. One slow read no longer holds a browser's chat history behind it. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
   per-project host, applies the same failed-PIN cooldown, attributes its
   `auth_failed` rejections with the same `host: { deviceId, name }`
@@ -3665,6 +3678,32 @@ the CTO included. It also refuses without `confirmation: "REMOVE"`
 so this stops the ordinary agent path, not a process that strips its
 environment. The desktop Account page and the web client remove through the
 directory directly, behind their own dialogs.
+
+**Removing a computer from a chat.** A caller that names a chat
+(`ade machines remove <name|key|id>` from an agent's shell) does not get the
+refusal. The brain that holds the chat raises a card in it
+(`apps/ade-cli/src/services/account/machineRemovalRequest.ts`) and the command
+waits for the answer:
+
+- The card shows the computer's name, platform, install, last-seen time and
+  online state, and what removal does. The buttons are Keep and Remove.
+- An online computer, or the computer that runs the chat, needs a second
+  "Remove anyway". Remove without it keeps the card open.
+- The card is user-only (`MACHINE_REMOVAL_REQUEST_METADATA_KEY` in
+  `isUserOnlyConsentCard`): an agent, a peer chat, the CTO tools, a lane-share
+  guest and the subagent relay are refused, and the card takes no typed answer.
+- The removal runs inside the person's accepted answer, on the brain that holds
+  the chat, with the same directory call as the person's own removal. The
+  answer travels to that brain with the chat's pin, so "this computer" on the
+  card means the chat's computer, not the window's.
+- The command exits 0 for `removed`, 2 for `kept` or `timed_out`, and 3 for
+  `pending_approval` (another chat already has a card open for that computer;
+  the same chat asking again joins its card).
+- Stopping the turn, deleting the chat or archiving it closes the card, and the
+  agent gets `kept`. A removal that the person started before the card closed
+  still reports `removed`.
+- A brain that does not hold the chat refuses with a message that sends the
+  person to the Account page.
 
 A refusal must not read like an outage. When the directory reaches a decision it
 answers a `403` with a machine-readable code — `machine_revoked` or

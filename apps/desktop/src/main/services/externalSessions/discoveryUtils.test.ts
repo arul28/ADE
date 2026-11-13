@@ -14,9 +14,11 @@ import {
   cwdIsInScope,
   normalizeProviderCwd,
   pathContains,
+  providerAdeHome,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
 } from "./discoveryUtils";
+import { claudeConfigHomeDirs } from "./discoverClaude";
 
 describe("normalizeProviderCwd", () => {
   it("keeps a missing cwd missing", () => {
@@ -318,6 +320,50 @@ describe("resolveCursorCwdFromSlug", () => {
       // `cursorProjectSlug()` in apps/desktop/src/shared/cursorProjectSlug.ts.
       const slug = cwd.replace(/[^a-zA-Z0-9]/gu, "-").replace(/-+/gu, "-").replace(/^-+|-+$/gu, "");
       expect(resolveCursorCwdFromSlug(slug)).toBe(fs.realpathSync(cwd));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("providerConfigHomeDirs", () => {
+  const makeRoot = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "ade-home-dirs-"));
+
+  it("honors ADE_HOME from the process when the caller passes no env seam", () => {
+    const root = makeRoot();
+    const previous = process.env.ADE_HOME;
+    process.env.ADE_HOME = path.join(root, "ade-home");
+    try {
+      expect(providerAdeHome({})).toBe(path.join(root, "ade-home"));
+    } finally {
+      if (previous === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scans account, Claude preset and anthropic credential homes, and keeps Codex homes out", () => {
+    const root = makeRoot();
+    const adeHome = path.join(root, "ade-home");
+    const providerHomes = path.join(adeHome, "provider-homes");
+    const defaultHome = path.join(root, "home", ".claude");
+    const accountHome = path.join(providerHomes, "claude", "acct-1");
+    const claudePresetHome = path.join(providerHomes, "preset", "hp_claude");
+    const codexPresetHome = path.join(providerHomes, "preset", "hp_codex");
+    const credentialHome = path.join(providerHomes, "credential", "anthropic", "key-1");
+    for (const dir of [accountHome, claudePresetHome, credentialHome]) {
+      fs.mkdirSync(path.join(dir, "projects"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".claude.json"), "{}", "utf8");
+    }
+    fs.mkdirSync(path.join(codexPresetHome, "sessions", "2026"), { recursive: true });
+    fs.writeFileSync(path.join(codexPresetHome, "auth.json"), "{}", "utf8");
+    try {
+      const homes = claudeConfigHomeDirs({ homeDir: path.join(root, "home"), env: { ADE_HOME: adeHome } });
+      expect(homes.find((home) => home.dir === path.resolve(defaultHome))?.instanceId).toBeNull();
+      expect(homes.find((home) => home.dir === accountHome)?.instanceId).toBe("acct-1");
+      expect(homes.find((home) => home.dir === claudePresetHome)?.presetId).toBe("hp_claude");
+      expect(homes.find((home) => home.dir === credentialHome)?.credentialId).toBe("key-1");
+      expect(homes.some((home) => home.dir === codexPresetHome)).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

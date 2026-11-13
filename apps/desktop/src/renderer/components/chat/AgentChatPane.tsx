@@ -129,6 +129,7 @@ import {
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
 import { rememberMentionSuggestionLabels } from "./mentionChipLabels";
+import { searchComposerPullRequests } from "./composerPrSearch";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
@@ -7171,14 +7172,19 @@ export function AgentChatPane({
    * a presentational component writing its parent's state on mount. A Custom
    * pick reads the source model's ladder; a plain chat reads its own row.
    */
+  // Only a draft falls back to the family's remembered effort. An open chat
+  // (or a launch's reserved one) runs on its own level, or the model default
+  // when it has none: the family's memory is the last pick in ANY chat, and
+  // showing it there read as the chat's effort changing by itself (B14-34).
+  const composerHasChat = Boolean(lockSessionId ?? selectedSessionId);
   const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
     tiers: reasoningTiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: reasoningDescriptor?.family
+    rememberedForFamily: !composerHasChat && reasoningDescriptor?.family
       ? getReasoningForFamily(reasoningDescriptor.family) ?? null
       : null,
     modelDefault: reasoningDescriptor?.defaultReasoningEffort ?? null,
-  }), [getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
+  }), [composerHasChat, getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -7661,6 +7667,8 @@ export function AgentChatPane({
     setCursorConfigValues({ ...nextCursorConfigValues });
   }, [setFastModeState]);
 
+  /** The chat whose summary last set the composer's effort; null for a draft. */
+  const composerEffortSessionIdRef = useRef<string | null>(null);
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
       // A chat whose summary is still loading (or failing). Locked Work chats
@@ -7694,9 +7702,23 @@ export function AgentChatPane({
         // still waiting for its chat shows the model it launches with.
         setModelId("");
       }
-      if (lockSessionId || transcriptModelId) {
+      // A chosen chat whose summary hasn't come (still loading, or its
+      // computer asleep) never takes the last launch's settings or the
+      // defaults: they are another chat's, and a send here would carry that
+      // chat's effort into this one (B14-34). Its summary sets them.
+      if (loadingSessionId) {
+        // The effort still on screen is the chat shown before the switch (a
+        // transcript can name this chat's model before its summary comes):
+        // show none until the summary says this chat's own. A draft's effort
+        // stays, since it is the effort the chat it just started runs on.
+        const effortOwner = composerEffortSessionIdRef.current;
+        if (effortOwner && effortOwner !== loadingSessionId) {
+          composerEffortSessionIdRef.current = loadingSessionId;
+          setReasoningEffort(null);
+        }
         return;
       }
+      composerEffortSessionIdRef.current = null;
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
         return;
       }
@@ -7750,6 +7772,7 @@ export function AgentChatPane({
     if (nextModelId) {
       setModelId(nextModelId);
     }
+    composerEffortSessionIdRef.current = session.sessionId;
     setReasoningEffort(session.reasoningEffort ?? null);
     // The owning brain's answer on this chat wins over this window's last
     // account read — it is the machine that will enforce it.
@@ -11292,29 +11315,7 @@ export function AgentChatPane({
   const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
     if (isBoundScopePane) return [];
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
-    if (!pin) return [];
-    try {
-      const all = await window.ade.prs.listAll?.(pin);
-      if (!all?.length) return [];
-      const trimmed = query.trim().toLowerCase();
-      const digits = /^\d+$/.test(trimmed);
-      const matches = all.filter((pr) => {
-        if (pr.detached) return false;
-        if (!trimmed) return true;
-        if (digits) return String(pr.githubPrNumber).startsWith(trimmed);
-        return (pr.title ?? "").toLowerCase().includes(trimmed)
-          || String(pr.githubPrNumber).startsWith(trimmed);
-      });
-      return matches.slice(0, 20).map((pr) => ({
-        number: pr.githubPrNumber,
-        title: pr.title ?? "",
-        state: pr.state,
-        url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
-        repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
-      }));
-    } catch {
-      return [];
-    }
+    return pin ? await searchComposerPullRequests(pin, query) : [];
   }, [isBoundScopePane, selectedSessionId]);
 
   // Entity @-mention suggestions (chats / lanes / terminals) for the active

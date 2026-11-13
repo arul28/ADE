@@ -74,6 +74,12 @@ type AutomationIngressServiceArgs = {
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
     getAppUserTokenForRelay: () => Promise<string>;
+    /**
+     * The relay answered 401 to this App user token. The account client asks
+     * for the account's current token, so the next poll reads the new one
+     * instead of the token a Disconnect deleted at GitHub.
+     */
+    reportAppUserTokenRejected?: (token: string) => Promise<unknown>;
   } | null;
   getAccountAccessToken?: () => Promise<string | null>;
   /**
@@ -513,6 +519,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
   let relayPollUnauthorizedCount = 0;
+  /** The App user token the current poll sent, for `reportAppUserTokenRejected` on a 401. */
+  let relayPollAppUserToken: string | null = null;
   let unsubscribeSignIn: (() => void) | null = null;
   /** A poll failing on the same cause as the last one logs at info. */
   const relayPollFailures = createRepeatedFailureGate();
@@ -1231,6 +1239,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         : hostedAuth?.ok
           ? hostedAuth.token
           : null;
+      relayPollAppUserToken = hostedAuth?.ok ? hostedAuth.token : null;
       if (!authToken && (!accountAccessToken || useLegacyProjectRoute)) {
         throw new Error("GitHub auth is required for relay polling.");
       }
@@ -1495,6 +1504,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       // and each reconnect was another refused upgrade beside the refused poll.
       const unauthorized = relayError?.status === 401;
       relayPollUnauthorizedCount = unauthorized ? relayPollUnauthorizedCount + 1 : 0;
+      // The retry reads the token again, but a cached account token stays the
+      // same until the account client hears GitHub refused it.
+      if (unauthorized && relayPollAppUserToken) {
+        const rejected = relayPollAppUserToken;
+        relayPollAppUserToken = null;
+        void Promise.resolve(args.githubService?.reportAppUserTokenRejected?.(rejected)).catch(() => undefined);
+      }
       const authRefused = relayPollUnauthorizedCount >= 2;
       if (unauthorized) disableRelaySubscription();
       if (authRefused) {

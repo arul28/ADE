@@ -37,6 +37,9 @@ fire closed to avoid duplicate delivery.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/shared/codePointText.ts` | Code-point-safe text cuts for provider limits and titles. |
+| `apps/desktop/src/main/services/runtime/brainUnplannedRestart.ts` | The brain's run record: decides whether this start follows an unplanned restart, and counts the chats and CLIs it continued for the banner. |
+| `apps/desktop/src/main/services/runtime/liveTurnProjects.ts` | The projects with a running turn, on disk, so the next brain opens exactly those after a crash; claim by rename, pending file, and the skipped project that was being opened. |
+| `apps/desktop/src/renderer/components/app/BrainRestartNotice.tsx` | The one dismissible banner per unplanned restart of the local brain. |
 | `apps/desktop/src/renderer/components/chat/ChipText.tsx`, `ChipHoverCard.tsx`, `chipMenu.ts`, `chipActions.ts`, `chipCardBodies.tsx`, `MachineChipCard.tsx`, `McpMentionCardBody.tsx`, `useMachineFacts.ts` | Transcript and composer chip display, held-hover and right-click actions, per-kind information cards, chat-machine-pinned navigation, focused Connections/MCP Settings routes, and the model chip's new-chat draft action. See [Chips](composer-and-ui.md#chips). |
 | `apps/desktop/src/shared/chips.ts`, `apps/desktop/src/shared/types/chatMentions.ts` | Canonical chip and chat mention contracts. `@mcp:<server>` is part of the same parser and token formatter used by desktop, hosted web, and iOS's Swift mirror. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserHitTest.ts` | Shared hit-testing for the browser element picker, drag-to-capture, and `ade browser select`. Converts viewport points to CDP document coordinates, falls back to the page's `elementFromPoint`, and reaches same-renderer and cross-site iframe content. |
@@ -903,10 +906,34 @@ in `chatRuntimeOwnership.ts`:
   brain when that brain is live on this project.** It does not take over chats
   it is not running: startup recovery, prewarm, and scheduled wakes skip them.
   Its own chats and messages sent to it directly still work. Other secondary
-  brains do not make one another yield.
+  brains do not make one another yield. A chat whose owner stamp names an
+  installed brain's socket (its own home's, plus `~/.ade`'s and
+  `~/.ade-alpha`'s) waits for the machine brain even while that brain is down
+  or restarting (`isMachineBrainSocket`): launchd brings it back and it
+  recovers its own chats. Before this, a lane's test brain picked up a chat in
+  the gap after the installed brain was killed, resumed it on the lane's code,
+  and then held it.
+- **The machine brain takes its chats back.** A send, `messageSession`,
+  `runSessionTurn` or rerun on the machine brain for a chat another live brain
+  holds asks that brain, over its socket, to release it
+  (`takeChatRuntimeOrRefuse` → `chat.releaseChatRuntime`, CTO-only), after the
+  request's own cheap checks so a refused request never stops anything. The
+  whole exchange has one 10 s deadline (`chatRuntimeReleaseClient.ts`), and an
+  answer that arrives after it releases nothing. The
+  owner stops its agent process the way "Restart agent session" does (the
+  conversation is kept) and clears its stamp, then the send runs here. While a
+  turn, an accepted send or background work is running there it answers
+  `busy`, and the send is refused in plain words
+  (`ChatRuntimeBusyElsewhereError`): the chat is still working in another copy
+  of ADE, send again when it finishes or close that copy. A brain that does
+  not answer, or one an agent started by hand (served at the `agent` role,
+  which may not release a chat), leaves the old refusal with the owner's
+  socket. So a person never has to find and stop a dev test brain to get a
+  chat back.
 - **A non-owner never re-stamps or releases.** Without a runtime, a persist
-  keeps whatever owner is on disk, and a teardown releases only its own or a
-  dead brain's stamp.
+  keeps whatever owner is on disk, and a teardown or a hand-back releases only
+  its own or a dead brain's stamp, never one a live brain wrote since
+  (`persistedRuntimeOwner`).
 - **A non-owner does not guess.** It cannot see the owner's turn, so its
   summary carries `runtimeOwnedElsewhere` instead of `runtimeAlive`, turn
   status reports `BUSY … runs under another ADE brain` (phase `running`),
@@ -1766,6 +1793,30 @@ accepted update alike, and the update dialog shows its answer per chat:
     gone brain. The notices and restart note land, worded "the agent is told
     on this turn", and this turn carries the note; nothing is armed, since a
     turn is already starting.
+- **After a crash, the brain does not wait for the first request.** Each
+  brain keeps a run record (`runtime/brain-run/<endpoint>.json`,
+  `brainUnplannedRestart.ts`). The next brain treats the start as an
+  unplanned restart only when that record is not marked stopped, its pid is
+  gone, it started after this boot and it ran the same build; an orderly stop,
+  a forced stop by another ADE process, an update or a reboot does not count.
+  A brain an app started takes the record without a record of its own, so the
+  next start does not report the same crash. Rows of the dead brain close at
+  once (`listDeadProcessIdentities` passes them to
+  `reconcileStaleRunningSessions` as `deadOwnerIdentities`, which skips the
+  fresh-activity grace). Projects that had a running turn are listed in
+  `runtime/live-turns/<endpoint>.<pid>.json` (`liveTurnProjects.ts`); the
+  next brain claims each dead brain's file with a rename and opens only those
+  projects, one at a time, so their chats and CLIs continue within seconds.
+  The projects it has not opened yet stay in its own
+  `<endpoint>.<pid>.pending.json`, so a second crash during the opens does not
+  lose them, and the next brain skips the project that was being opened, so
+  one project cannot crash every brain after it. With a restart loop or the
+  setting off, the files are claimed and nothing opens.
+  `getRuntimeStatus.lastUnplannedRestart` (`{ts, chats, cliSessions}`, counted
+  for 10 minutes) feeds one dismissible banner per restart in the window
+  (`BrainRestartNotice`, local brain only). In the chat, a restart resume
+  shows one quiet line with its time, with no wake divider, "late" mark or
+  "Scheduled wake-up" bubble, also in old transcripts.
 - On every path, rows the sweep leaves running on purpose (a delegate that is
   still alive: a live child chat, or a tracked CLI child, per
   `staleRunSweep.liveDelegateRowIds`) are not reported as lost.

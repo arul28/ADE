@@ -274,6 +274,15 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // settles it. Never the login, the account, or an error.
   "github_app_connected",
   "github_app_disconnected",
+  // Passwords (feature "passwords"): turned on or off here (enabled |
+  // disabled), a CSV import, and an agent's sign-in, sign-up or
+  // `secrets exec` (completed | failed). Never the site, account, item,
+  // command, a count, or an error.
+  "passwords_switched",
+  "logins_imported",
+  "agent_signed_in",
+  "agent_signed_up",
+  "secrets_exec",
   // "New cloud machine" (feature "connections"): whether installations make
   // cloud boxes from ADE at all, and how often a create fails. completed (it
   // joined) | partial (signed in, still starting) | cancelled | failed. Never
@@ -421,11 +430,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ended. Never the URL, the hook, the secret's name or value, or the chat.
   "webhook_url_created",
   "secret_requested",
-  // How an agent's connect card or MCP server card ended. Never the account,
-  // the server's name, its command or URL, or the chat.
+  // How an agent's connect card, MCP server card or computer removal card
+  // ended. Never the account, the server's name, its command or URL, the
+  // computer, or the chat.
   "connect_requested",
   "mcp_server_requested",
   "mcp_server_remove_requested",
+  "machine_removal_requested",
   // A person moved an automation to another computer ("Runs on"). Never the
   // rule, either computer, or the repository.
   "run_on_changed",
@@ -688,6 +699,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "cloud_invite",
     // The first-run cards of the launch gate (actions "onboarding_*").
     "onboarding",
+    // Passwords: on/off per computer, imports, and agents' sign-ins,
+    // sign-ups and `secrets exec`.
+    "passwords",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

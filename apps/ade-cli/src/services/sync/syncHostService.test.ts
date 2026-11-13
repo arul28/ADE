@@ -1341,7 +1341,16 @@ describe("brain project actions fallback handler", () => {
       transcriptPath: vi.fn(async () => transcriptPath),
       isTurnActive: vi.fn(async () => true),
     };
+    // A routed command that carries `tag` records when it starts and waits for its gate.
+    const routedStarted: string[] = [];
+    const routedGates = new Map<string, Promise<void>>();
     const executeRoutedCommand = vi.fn(async (payload: SyncCommandPayload & { projectId: string }) => {
+      const tag = typeof payload.args.tag === "string" ? payload.args.tag : null;
+      if (tag) {
+        routedStarted.push(tag);
+        await routedGates.get(tag);
+        return { tag };
+      }
       if (payload.action === "chat.fail") {
         throw Object.assign(new Error("coded route failure"), { code: "coded_failure" });
       }
@@ -1373,7 +1382,7 @@ describe("brain project actions fallback handler", () => {
           { action: "chat.local", scope: "project", policy: { viewerAllowed: true, localOnly: true } },
         ] satisfies SyncRemoteCommandDescriptor[],
         getDescriptor: async (_projectId: string, action: string) =>
-          ["chat.send", "chat.fail"].includes(action)
+          ["chat.send", "chat.fail", "lanes.list"].includes(action)
             ? { action, scope: "project", policy: { viewerAllowed: true } }
             : null,
         execute: executeRoutedCommand,
@@ -1491,6 +1500,34 @@ describe("brain project actions fallback handler", () => {
       const codedError = await waitForEnvelope(envelopes, "command_result", "route-coded-error");
       expect(codedError.payload).toMatchObject({ error: { code: "coded_failure" } });
       expect(executeRoutedCommand).toHaveBeenCalledTimes(2);
+
+      // Routed reads run a few at a time behind the last write: a read sent
+      // after a write waits for it, and two reads do not wait for each other.
+      let releaseWrite!: () => void;
+      let releaseFirstRead!: () => void;
+      routedGates.set("write", new Promise<void>((resolve) => { releaseWrite = resolve; }));
+      routedGates.set("read-1", new Promise<void>((resolve) => { releaseFirstRead = resolve; }));
+      routeCommand("order-write", { commandId: "order-write", projectId: "project-1", action: "chat.send", args: { tag: "write" } });
+      routeCommand("order-read-1", { commandId: "order-read-1", projectId: "project-1", action: "lanes.list", args: { tag: "read-1" } });
+      routeCommand("order-read-2", { commandId: "order-read-2", projectId: "project-1", action: "lanes.list", args: { tag: "read-2" } });
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "order-probe",
+        payload: { commandId: "order-probe", action: "personalChats.list", args: {} },
+      }));
+      // The socket handles envelopes in order: the probe's answer means both reads were received.
+      await waitForEnvelope(envelopes, "command_result", "order-probe");
+      expect(routedStarted).toEqual(["write"]);
+      releaseWrite();
+      await expect(waitForEnvelope(envelopes, "command_result", "order-write"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { tag: "write" } } });
+      await waitForValue(() => routedStarted.includes("read-2") || undefined, "second routed read while the first runs");
+      expect(routedStarted).toEqual(["write", "read-1", "read-2"]);
+      await expect(waitForEnvelope(envelopes, "command_result", "order-read-2"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { tag: "read-2" } } });
+      releaseFirstRead();
+      await expect(waitForEnvelope(envelopes, "command_result", "order-read-1"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { tag: "read-1" } } });
 
       client.send(encodeSyncEnvelope({
         type: "command",

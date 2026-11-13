@@ -26,7 +26,8 @@ export type CloudRefusal =
   | "monthly_limit"
   | "tier_limit"
   | "owner_limit"
-  | "over_plan_disk";
+  | "over_plan_disk"
+  | "over_plan_limits";
 
 export type CloudActionEvent = {
   action: CloudAction;

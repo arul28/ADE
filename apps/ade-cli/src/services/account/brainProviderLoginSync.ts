@@ -14,6 +14,8 @@ type Logger = {
 
 /** The most the list of the account's cloud computers may take; then the answer is unknown. */
 const CLOUD_COMPUTER_READ_TIMEOUT_MS = 15_000;
+/** The most the first capture waits for this machine's display name (its probe gives up at 2 s). */
+const DISPLAY_NAME_WAIT_MS = 3_000;
 
 /**
  * Start the brain's one sign-in sync (P5). With `staticOff` set, no account
@@ -46,16 +48,24 @@ export async function installBrainProviderLoginSync(args: {
     import("./accountRuntimeLifecycle"),
   ]);
   // The name the machine directory and the Usage page show ("Mac Studio"), not
-  // the network hostname. Loaded lazily, as the brain loads the registry; the
-  // hostname stands in until it is known, and a failure never reaches a pass.
+  // the network hostname. A sign-in keeps the label it was captured under, so
+  // the first capture waits for the name (the macOS ComputerName probe, at
+  // most its own 2 s) instead of labelling it with the hostname; a failure or
+  // a slow probe leaves the hostname, and never holds the sync up for long.
   let displayName: (() => string) | null = null;
   if (!args.staticOff) {
-    void import("../sync/deviceRegistryService")
-      .then((module) => {
-        displayName = module.resolveDeviceDisplayName;
-        displayName();
-      })
-      .catch(() => undefined);
+    await Promise.race([
+      import("../sync/deviceRegistryService")
+        .then(async (module) => {
+          displayName = module.resolveDeviceDisplayName;
+          await module.resolveDeviceDisplayNameSettled();
+        })
+        .catch(() => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, DISPLAY_NAME_WAIT_MS);
+        timer.unref?.();
+      }),
+    ]);
   }
   const machineLabel = (): string => {
     try {

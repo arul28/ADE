@@ -287,6 +287,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // The desktop's post-update resume arm: machine-wide, and each row it
       // creates spends a real turn. A session-bound agent must not drive it.
       "armUpdateResume",
+      // The machine brain taking a chat back from a lane's test brain. It
+      // stops that brain's agent process; an agent must not call it.
+      "releaseChatRuntime",
       // Thread comments are the user's unsent review of an agent's reply. An
       // agent that could write or delete them could edit what the user is
       // about to tell it.
@@ -397,6 +400,13 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // A secret's value is the person's to read (Settings, or the desktop's own
+  // calls). Agents use secrets by name with `ade secrets exec`, which puts
+  // them in a command's environment and returns its output masked.
+  project_secret: ["get", "exportEnv"],
+  // Passwords: only the person adds, changes, imports or removes saved items;
+  // agents use logins through `ade browser signin` and never read a value.
+  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   // Sharing a gh sign-in with the account hands it to every computer the
   // person signs in to; only the person decides, from Settings › GitHub.
   github: ["setGhAccountSharing"],
@@ -462,6 +472,8 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
+  // Passwords is the account's, not a project's (`passwords.call`).
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -483,6 +495,8 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   account: ["getToken", "createToken"],
   account_vault: ["get"],
   project_secret: ["get", "exportEnv"],
+  // The values of a saved login, for desktop main to fill a page with.
+  passwords: ["resolveForFill", "revealValue", "passkeysForRp"],
   // A custom provider's launch env, tokens included.
   ai: ["harnessLaunchEnv"],
   // Raw proof bytes, streamed to the user's own desktop.
@@ -937,6 +951,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // desktop names, and only the desktop's main process should do that.
     "listInterruptedChats",
     "armUpdateResume",
+    "releaseChatRuntime",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",
@@ -1177,7 +1192,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
+  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request", "exec"],
+  // Passwords: `list`/`loginsForPage` return summaries only (agents use them
+  // to pick a login); every write and `resolveForFill` are user-only below.
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse"],
+  messages: ["status", "recent", "chats", "send", "codeWait"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.
