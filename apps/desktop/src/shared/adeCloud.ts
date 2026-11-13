@@ -16,13 +16,17 @@ import type {
   CloudPlanCleanupPick,
   CloudPlanFacts,
   CloudPlanId,
+  CloudSustainedCpuReport,
   CloudTimedWakesCancelled,
 } from "../../../account-directory/src/cloud/contract";
 import { CLOUD_INVITE_REFUSAL_REASONS, formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
 import type {
   CloudEarnedHours,
   CloudFreePlan,
+  CloudFreePlanGithub,
+  CloudFreePlanGithubState,
   CloudFreePlanState,
+  CloudFreeUnlockResult,
   CloudInviteRedeemResult,
   CloudInviteRefusalReason,
   CloudReferralSummary,
@@ -32,11 +36,13 @@ export {
   CLOUD_REFERRAL_ENTER_DAYS,
   CLOUD_REFERRAL_REWARD_LIMIT,
   CLOUD_REFERRAL_REWARD_MILLI,
+  CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   cloudFreePlanRefusedSentence,
+  formatCloudFreeGithubDay,
   cloudInviteLink,
   parseCloudInviteCode,
 } from "../../../account-directory/src/cloud/contract";
-export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanState, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary };
+export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanGithub, CloudFreePlanGithubState, CloudFreePlanState, CloudFreeUnlockResult, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary, CloudSustainedCpuReport };
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
 export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
 
@@ -805,9 +811,26 @@ export function formatCloudGb(gb: number): string {
 /** Whether the account gets the free plan's hours. An older server gives every account the free plan: `unclaimed`. */
 export function cloudFreePlanOf(account: Pick<CloudAccountState, "freePlan"> | null | undefined): CloudFreePlan {
   const state = account?.freePlan?.state;
-  if (state !== "claimed" && state !== "refused" && state !== "unclaimed") return { state: "unclaimed", sentence: null };
+  const github = cloudFreePlanGithubOf(account?.freePlan?.github);
+  if (state !== "claimed" && state !== "refused" && state !== "unclaimed") return { state: "unclaimed", sentence: null, github };
   const sentence = account?.freePlan?.sentence;
-  return { state, sentence: typeof sentence === "string" && sentence ? sentence : null };
+  return { state, sentence: typeof sentence === "string" && sentence ? sentence : null, github };
+}
+
+const FREE_GITHUB_STATES = new Set<string>(["ok", "no_github", "too_new", "used", "checking"]);
+
+/** The free plan's GitHub rules from any answer; an older server (or an unknown state) reads as `ok`. */
+export function cloudFreePlanGithubOf(value: unknown): CloudFreePlanGithub {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  const state = typeof raw?.state === "string" && FREE_GITHUB_STATES.has(raw.state) ? raw.state as CloudFreePlanGithubState : "ok";
+  if (state === "ok") return { state, oldEnoughAt: null, canUnlockWithCard: false, githubLogin: null, sentence: null };
+  return {
+    state,
+    oldEnoughAt: typeof raw?.oldEnoughAt === "number" && Number.isFinite(raw.oldEnoughAt) ? raw.oldEnoughAt : null,
+    canUnlockWithCard: raw?.canUnlockWithCard === true,
+    githubLogin: typeof raw?.githubLogin === "string" && raw.githubLogin ? raw.githubLogin : null,
+    sentence: typeof raw?.sentence === "string" && raw.sentence ? raw.sentence : null,
+  };
 }
 
 /** The account's referral summary, or null when the server sent none (an older server, or it couldn't build one). */

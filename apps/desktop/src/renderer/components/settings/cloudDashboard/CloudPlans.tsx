@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowSquareOut, CreditCard } from "@phosphor-icons/react";
 import {
+  CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   CLOUD_PLAN_LABELS,
   CLOUD_PLAN_RANK,
   cloudCatalogHasPro,
@@ -23,6 +24,7 @@ import { Banner } from "../../ui/notice";
 import { PushAllWorkButton } from "../../remoteTargets/PushAllWorkButton";
 import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
+import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
 
 /** The monthly limits a person picks for extra disk, in dollars. */
 const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
@@ -181,6 +183,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         ) : null}
       </header>
       <div className="kit-card-body">
+        <CloudFreeGithubNotice account={account} onChanged={onChanged} />
         <div className="adecd-plans" style={{ ["--adecd-plan-cols" as string]: columns.length }}>
           <div className="adecd-plan-col adecd-plan-keys" aria-hidden="true">
             <span className="adecd-plan-top" />
@@ -226,6 +229,11 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
           <p className="adecd-plan-fine" data-tone="warn">
             If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until they fit; you clean up or pick what ADE frees here.
+          </p>
+        ) : null}
+        {!paid ? (
+          <p className="adecd-plan-fine">
+            Free needs a GitHub account at least {CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. One free plan per GitHub account and per computer.
           </p>
         ) : null}
         <p className="adecd-plan-fine">

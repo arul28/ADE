@@ -5023,6 +5023,8 @@ declare global {
          */
         pickPlanCleanup?: (input: { planId: CloudPlanId } & CloudPlanCleanupPick) => Promise<CloudAccountState | null>;
         openBillingPortal?: () => Promise<{ opened: boolean }>;
+        /** Save a card with no charge so a too-new GitHub account gets the free hours now (`unlocked`: a card on file did it). Account level: no pin. */
+        openFreeUnlock?: () => Promise<{ opened: boolean; unlocked: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account

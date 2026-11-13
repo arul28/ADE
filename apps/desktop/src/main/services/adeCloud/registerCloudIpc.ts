@@ -109,7 +109,7 @@ export function registerCloudIpc(args: {
   /** One coarse product fact per box action that worked (analytics; never the box). */
   recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect" | "push_all_work") => void;
   /** One coarse fact per plan decision (analytics; never an amount). */
-  recordPlan?: (outcome: "plan_checkout" | "plan_portal" | "extra_on" | "extra_off") => void;
+  recordPlan?: (outcome: "plan_checkout" | "plan_portal" | "extra_on" | "extra_off" | "free_unlock_card") => void;
   /**
    * A `cloud` action on this computer's brain. Sign-ins for cloud machines
    * run there: a PTY can't start from this process in a packaged app.
@@ -539,6 +539,26 @@ export function registerCloudIpc(args: {
     if (result.ok) args.recordMachineAction?.("push_all_work");
     sendToAllWindows(IPC.cloudStatusChanged);
     return result;
+  });
+
+  /**
+   * A card saved with no charge starts the free hours of a GitHub account
+   * younger than 30 days: opens Stripe's page in the browser, or answers
+   * `unlocked` when a card already on file did it. Account level, so no pin.
+   */
+  ipcMain.handle(IPC.cloudOpenFreeUnlock, async (event): Promise<{ opened: boolean; unlocked: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenFreeUnlock)) return { opened: false, unlocked: false };
+    const provider = await requireCloudProvider(credentials);
+    if (!provider.billingFreeUnlock) throw new Error("This ADE Cloud can't take a card for the free hours yet.");
+    const result = await billingCall(async () => await provider.billingFreeUnlock!());
+    if (result.unlocked) {
+      logger.info("cloud.free_unlocked", { source: "card_on_file" });
+      sendToAllWindows(IPC.cloudStatusChanged);
+      return { opened: false, unlocked: true };
+    }
+    await openExternalUrl(result.url);
+    args.recordPlan?.("free_unlock_card");
+    return { opened: true, unlocked: false };
   });
 
   ipcMain.handle(IPC.cloudOpenBillingPortal, async (event): Promise<{ opened: boolean }> => {

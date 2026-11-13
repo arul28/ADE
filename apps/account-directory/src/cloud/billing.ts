@@ -273,9 +273,10 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, origin:
     const session = await stripeRequest(env, "POST", "/checkout/sessions", {
       mode: "setup",
       currency: "usd",
+      // Managed Payments (on for the plans' Checkout) takes only subscription and payment modes.
+      "managed_payments[enabled]": "false",
       customer,
       client_reference_id: userId,
-      "payment_method_types[0]": "card",
       "metadata[ade_user_id]": userId,
       "metadata[ade_purpose]": FREE_UNLOCK_PURPOSE,
       "setup_intent_data[metadata][ade_user_id]": userId,

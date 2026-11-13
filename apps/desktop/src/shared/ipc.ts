@@ -1199,6 +1199,8 @@ export const IPC = {
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
   cloudRedeemInvite: "ade.cloud.redeemInvite",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
+  /** Opens Stripe's page to save a card with no charge (a too-new GitHub account's free hours start now). Account level: no pin. */
+  cloudOpenFreeUnlock: "ade.cloud.openFreeUnlock",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
   /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */

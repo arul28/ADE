@@ -27,6 +27,7 @@ import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
+import { cloudFreeGithubHeroLine } from "./CloudFreeGithubNotice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
@@ -354,6 +355,8 @@ function CloudHero({
   // The free plan refused on this computer (another account used its free hours): one sentence from the server.
   const freePlan = cloudFreePlanOf(account);
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
+  // The free plan's GitHub rules hold its hours: one line here, the plan card says what to do.
+  const githubLine = account.rules === "free" && freePlan.github ? cloudFreeGithubHeroLine(freePlan.github) : null;
   const resets = account.billing.cancelAtPeriodEnd
     ? `plan ends ${formatCloudDate(account.billing.periodEnd)}`
     : `resets ${formatCloudDate(account.billing.periodEnd)}`;
@@ -382,6 +385,7 @@ function CloudHero({
             </div>
             <ul className="adecd-hours-notes">
               {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
+              {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
               {earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
               {account.extraHours.available ? (
                 <li>{account.extraHours.enabled

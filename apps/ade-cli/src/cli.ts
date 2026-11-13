@@ -29766,6 +29766,13 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
+  // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
+  const cloudCpuWatch = cloudComputerReports
+    ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
+        report: cloudComputerReports.reportSustainedCpu,
+        logger: headlessProjectLogger,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -29795,6 +29802,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
