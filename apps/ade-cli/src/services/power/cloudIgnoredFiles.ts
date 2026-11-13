@@ -67,8 +67,11 @@ export function summarizeIgnoredFiles(
       if (!path) continue;
       const first = path.split("/")[0]!;
       if (NOT_THE_PERSONS.has(first)) continue;
+      // Only folders count as rebuildable: a file named `build` is the person's.
+      // git ends a whole ignored folder with "/", so the last segment is a folder only then.
       const segments = path.replace(/\/$/, "").split("/");
-      if (segments.some((segment) => REBUILDABLE.has(segment))) {
+      const folders = path.endsWith("/") ? segments : segments.slice(0, -1);
+      if (folders.some((segment) => REBUILDABLE.has(segment))) {
         rebuildable += 1;
         continue;
       }
@@ -93,7 +96,7 @@ export function summarizeIgnoredFiles(
  */
 export async function readCloudIgnoredFiles(
   lanes: ReadonlyArray<{ laneName: string; worktreePath: string }>,
-  options: { run?: Run; now?: () => number; logger?: { warn(event: string, data?: unknown): void } } = {},
+  options: { run?: Run; now?: () => number; logger?: { warn(event: string, data?: unknown): void }; incomplete?: boolean } = {},
 ): Promise<CloudIgnoredFiles | null> {
   const run = options.run ?? defaultRun;
   if (!lanes.length) return null;
@@ -110,5 +113,5 @@ export async function readCloudIgnoredFiles(
       options.logger?.warn("cloud.ignored_files_read_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   }
-  return summarizeIgnoredFiles(read, (options.now ?? Date.now)(), { skipped, incomplete: unread > 0 });
+  return summarizeIgnoredFiles(read, (options.now ?? Date.now)(), { skipped, incomplete: unread > 0 || options.incomplete === true });
 }

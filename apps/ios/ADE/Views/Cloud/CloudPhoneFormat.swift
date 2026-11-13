@@ -134,7 +134,7 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
   if let held = entry.held {
-    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now))."
+    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
   }
   let save = entry.laneName != nil
     ? "ADE pushes its work to \(entry.branch ?? "the lane's branch") first, and the lane and its chats stay."

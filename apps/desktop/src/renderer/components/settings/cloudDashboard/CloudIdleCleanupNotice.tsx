@@ -35,6 +35,19 @@ function idleSubject(entry: CloudIdleCleanupEntry): string {
 }
 
 /** What happens before the delete and what is lost, in two short sentences. */
+/** What the delete loses: the files git ignores, with a leading space, or "" when none were found. */
+function ignoredDetail(entry: CloudIdleCleanupEntry): string {
+  // Absent (an older server) reads like unknown: the warning still says ignored files aren't kept.
+  if (entry.ignoredFiles == null) return " Files git ignores, such as .env, aren't pushed.";
+  const list = ignoredFilesList(entry.ignoredFiles);
+  if (entry.ignoredFiles.incomplete) {
+    return list
+      ? ` Files git ignores aren't pushed, so these won't be kept: ${list}. ADE couldn't read every lane, so there may be more.`
+      : " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't pushed.";
+  }
+  return list ? ` Files git ignores aren't pushed, so these won't be kept: ${list}.` : "";
+}
+
 function idleDetail(entry: CloudIdleCleanupEntry): string {
   const when = formatCloudDate(entry.deletesAt);
   const head = entry.idleDays
@@ -43,19 +56,7 @@ function idleDetail(entry: CloudIdleCleanupEntry): string {
   const save = entry.laneName
     ? ` ADE pushes its work to ${entry.branch ?? "the lane's branch"} first, and the lane and its chats stay.`
     : " ADE pushes its work to GitHub first.";
-  const list = entry.ignoredFiles ? ignoredFilesList(entry.ignoredFiles) : null;
-  const ignored = entry.ignoredFiles === undefined
-    ? ""
-    : entry.ignoredFiles === null
-      ? " Files git ignores, such as .env, aren't pushed."
-      : entry.ignoredFiles.incomplete
-        ? list
-          ? ` Files git ignores aren't pushed, so these won't be kept: ${list}. ADE couldn't read every lane, so there may be more.`
-          : " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't pushed."
-        : list
-          ? ` Files git ignores aren't pushed, so these won't be kept: ${list}.`
-          : "";
-  return `${head}${save}${ignored}`;
+  return `${head}${save}${ignoredDetail(entry)}`;
 }
 
 /** The lane row's short mark: "Deleted in 1 day", or "Not deleted" for a computer kept after a failed save. */
@@ -100,7 +101,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
                 title: `${idleSubject(entry)} wasn't deleted: ADE couldn't save its work`,
-                detail: `${entry.held.reason} ${idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)}`,
+                detail: `${entry.held.reason} ${idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)}${ignoredDetail(entry)}`,
                 actions: [action],
                 report: false,
               }}

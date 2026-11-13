@@ -407,18 +407,20 @@ struct CloudPlansCard: View {
         }
       }
       // An account from before the new plans keeps its old hours and disk until its period ends.
+      // "then …" only when this plan carries on; a waiting move or cancel shows its own "From" column.
+      let staysOn = account.billing?.cancelAtPeriodEnd != true && (account.billing?.nextPlanId ?? column.id) == column.id
       if current, let old = oldTermsHours(column), let end = account.billing?.periodEnd {
-        fact(cloudHours(old), "hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))")
+        fact(cloudHours(old), staysOn ? "hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "hours until \(cloudDate(end))")
       } else {
         fact(cloudHours(column.facts.includedMilli), "hours a month")
       }
       if current, let old = oldTermsDisk(column), let end = account.billing?.periodEnd {
-        fact(cloudGb(old), "disk until \(cloudDate(end)), then \(cloudGb(column.facts.diskGb))")
+        fact(cloudGb(old), staysOn ? "disk until \(cloudDate(end)), then \(cloudGb(column.facts.diskGb))" : "disk until \(cloudDate(end))")
       } else {
         fact(cloudGb(column.facts.diskGb), "disk in all")
       }
       if let minutes = column.facts.phoneMinutes {
-        fact("\(minutes)", "phone minutes")
+        fact("\(minutes)", "phone minutes, soon")
       }
       Text(column.id == "free" ? "Work stops until the next month" : "Extra hours, if you turn them on")
         .font(.system(size: 11.5))
@@ -430,7 +432,7 @@ struct CloudPlansCard: View {
     .background(current ? ADEColor.accent.opacity(0.08) : Color.clear, in: shape)
     .overlay(shape.strokeBorder(current ? ADEColor.accent.opacity(0.45) : ADEKit.edge, lineWidth: current ? 1 : 0.75))
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(cloudHours(column.facts.includedMilli)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes" } ?? "")")
+    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(cloudHours(column.facts.includedMilli)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes, coming soon" } ?? "")")
   }
 
   /// The paid plan's hours this period when they aren't the table's (old terms), else nil.

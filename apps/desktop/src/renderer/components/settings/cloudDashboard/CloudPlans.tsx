@@ -84,6 +84,9 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     : null;
   const keepsOldTerms = oldTerms != null && (oldTerms.hoursMilli != null || oldTerms.diskGb != null);
   const until = formatCloudDate(billing.periodEnd);
+  // The plan after renewal: a waiting move, Free after a cancel, or the same plan on the new numbers.
+  const afterId = billing.cancelAtPeriodEnd ? "free" : nextPlanId != null && nextPlanId !== current ? nextPlanId : current;
+  const afterFacts = columns.find((column) => column.id === afterId)?.facts ?? null;
   const githubState = account.rules === "free" ? cloudFreePlanOf(account).github?.state : undefined;
   const githubHeld = githubState != null && githubState !== "ok";
 
@@ -261,7 +264,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
                   <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
                 )}
                 {showPhoneMinutes ? (
-                  <span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b><small> a month</small></span>
+                  <span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b><small> a month, soon</small></span>
                 ) : null}
                 <span className="adecd-plan-wrap">{(() => {
                   const cents = cloudExtraHourCentsOf(column.id, catalog);
@@ -293,9 +296,9 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
             If you cancel: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ADE frees here.
           </p>
         ) : null}
-        {keepsOldTerms && currentFacts ? (
+        {keepsOldTerms && afterFacts ? (
           <p className="adecd-plan-fine">
-            {CLOUD_PLAN_LABELS[current]} keeps your old {[oldTerms?.hoursMilli != null ? `${formatCloudHours(oldTerms.hoursMilli)} hours` : null, oldTerms?.diskGb != null ? `${oldTerms.diskGb} GB` : null].filter(Boolean).join(" and ")} until {until}. From then it has {[oldTerms?.hoursMilli != null ? `${formatCloudHours(currentFacts.includedMilli)} hours` : null, oldTerms?.diskGb != null ? `${currentFacts.diskGb} GB` : null].filter(Boolean).join(" and ")}, as in the table.
+            {CLOUD_PLAN_LABELS[current]} keeps your old {[oldTerms?.hoursMilli != null ? `${formatCloudHours(oldTerms.hoursMilli)} hours` : null, oldTerms?.diskGb != null ? `${oldTerms.diskGb} GB` : null].filter(Boolean).join(" and ")} until {until}. From then {afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} {formatCloudHours(afterFacts.includedMilli)} hours and {afterFacts.diskGb} GB, as in the table.
           </p>
         ) : null}
         {/* The rule, unless the GitHub notice above already says how it applies to you. */}

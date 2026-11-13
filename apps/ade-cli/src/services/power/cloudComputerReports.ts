@@ -33,12 +33,20 @@ export function createCloudComputerReports(deps: {
   const { instanceId, projectRegistry, getCloudBrainAccess } = deps;
   let updateRetryAt = 0;
   // Only projects already open: the idle step never boots one to look.
-  const bootedRuntimes = async () => {
+  // `failed` counts projects whose lookup threw: what they hold wasn't read.
+  const openRuntimes = async () => {
     const scopeRegistry = deps.scopeRegistry();
-    return (await Promise.all(projectRegistry.list().map(async (record) =>
-      (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null)))
+    let failed = 0;
+    const runtimes = (await Promise.all(projectRegistry.list().map(async (record) =>
+      (await scopeRegistry.getIfBooted(record.projectId)?.catch((error: unknown) => {
+        failed += 1;
+        deps.logger?.warn("cloud.project_lookup_failed", { projectId: record.projectId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }))?.runtime ?? null)))
       .filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+    return { runtimes, failed };
   };
+  const bootedRuntimes = async () => (await openRuntimes()).runtimes;
   return {
     readWork: async () => {
       const runtimes = await bootedRuntimes();
@@ -53,15 +61,20 @@ export function createCloudComputerReports(deps: {
       }
       return { checkedAt: Date.now(), unpushed, prState };
     },
-    /** Every open lane's files git ignores, summed up (marked incomplete when a lane couldn't be read); null with no lane. */
+    /**
+     * Every lane's files git ignores, archived lanes included (their worktrees
+     * go with the computer too), summed up. Marked incomplete when a lane or a
+     * project couldn't be read; null with no lane.
+     */
     readIgnored: async (): Promise<CloudIgnoredFiles | null> => {
       const lanes = [];
-      for (const runtime of await bootedRuntimes()) {
-        for (const lane of await runtime.laneService.list({ includeArchived: false, includeStatus: false })) {
+      const { runtimes, failed } = await openRuntimes();
+      for (const runtime of runtimes) {
+        for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: false })) {
           if (lane.worktreePath) lanes.push({ laneName: lane.name, worktreePath: lane.worktreePath });
         }
       }
-      return lanes.length ? await readCloudIgnoredFiles(lanes, { logger: deps.logger }) : null;
+      return lanes.length ? await readCloudIgnoredFiles(lanes, { logger: deps.logger, incomplete: failed > 0 }) : null;
     },
     send: async (report: CloudDiskUsageReport) => {
       const client = await (await getCloudBrainAccess()).client();

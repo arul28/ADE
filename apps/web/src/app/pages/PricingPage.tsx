@@ -400,7 +400,7 @@ function IdleCleanupSection() {
     {
       icon: <GitBranch className="h-4 w-4" />,
       title: "Your work is pushed",
-      body: "ADE commits the work and pushes it to the lane's branch.",
+      body: "ADE commits the work and pushes it to the lane's branch. Files git ignores, like .env, aren't pushed, and the email lists them.",
     },
     {
       icon: <MessagesSquare className="h-4 w-4" />,
@@ -413,7 +413,7 @@ function IdleCleanupSection() {
       <Reveal>
         <SectionHeading
           eyebrow="Unused computers"
-          title="ADE cleans up idle computers, never your work."
+          title="ADE cleans up idle computers and saves your work first."
           description="A computer nobody uses for a while is deleted to free its disk. Here is what happens first."
         />
       </Reveal>
@@ -521,8 +521,9 @@ function FaqSection() {
             <FaqItem question="What happens to computers I don't use?">
               After {days(FREE_PLAN.idleDays)} unused on Free, or {days(PAID_IDLE_DAYS)} on a paid plan, ADE deletes
               the computer. You get an email first. Before it deletes anything, ADE commits the work and pushes it to
-              the lane's branch. The lane and its chats stay, and your next message makes a new computer from the
-              branch.
+              the lane's branch. Files git ignores, such as .env or a local database, are never pushed, so they aren't
+              kept; the email lists them. The lane and its chats stay, and your next message makes a new computer from
+              the branch.
             </FaqItem>
           </Reveal>
           <Reveal delay={0.2}>
