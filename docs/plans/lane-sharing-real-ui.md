@@ -1,6 +1,7 @@
 # Lane sharing: guests use ADE's real screens
 
-Status: planned 2026-11-13, owner decisions below. Branch `ade/lane-sharing-real-ui`.
+Status: built 2026-11-13 on branch `ade/lane-sharing-real-ui`, except the
+items under "Not built yet".
 
 ## Owner decisions
 - No separate guest UI. A shared lane uses the real Work tab, chat, prompt box,
@@ -69,3 +70,12 @@ Status: planned 2026-11-13, owner decisions below. Branch `ade/lane-sharing-real
   `prs.*`, `lanes.*`): they fail closed against the unknown target; hide them.
 - Trimmed summary fields the pane may assume.
 - 3 devices per grant and 200 envelopes per 10 s: the real pane reads more.
+
+## Not built yet
+- The guest pin (`transport: "lane_share_guest"`) and guest rows inside
+  `useWorkSessions`: the shared lane stays in the "Shared with me" shelf, and
+  the chat uses the guest chat scope instead of a pin.
+- A project tab served by the owner's computer: `/shared` is the guest's
+  page, with Back and Clone this project.
+- Thread comments in the real pane for a guest (the bound scope hides them).
+- Attachments on send (needs a new right).
