@@ -15813,6 +15813,7 @@ describe("ADE CLI", () => {
     [["session", "wait", "bs-1", "--network-idle", "--network-idle-ms", "250"], "wait", { sessionId: "bs-1", loadState: "network-idle", networkIdleMs: 250 }],
     [["fill", "--tab", "tab-1", "--selector", "input[name=email]", "--value", "me@example.com", "--lane", "lane-1", "--lease-ttl-ms", "5000"], "fill", { tabId: "tab-1", selector: "input[name=email]", text: "me@example.com", laneId: "lane-1", leaseTtlMs: 5000 }],
     [["fill", "--tab", "tab-1", "--text-match", "Email", "--value", "me@example.com"], "fill", { tabId: "tab-1", text: "Email", value: "me@example.com" }],
+    [["signin", "--tab", "tab-1", "--account", "me@example.com", "--no-observe"], "signin", { tabId: "tab-1", username: "me@example.com", observe: false }],
     [["clear-field", "--tab", "tab-1", "--test-id", "search"], "clear", { tabId: "tab-1", testId: "search" }],
     [["type", "--tab", "tab-1", "hello"], "typeText", { tabId: "tab-1", text: "hello" }],
     [["press", "--tab", "tab-1", "--selector", "input[name=q]", "Enter"], "dispatchKey", { tabId: "tab-1", selector: "input[name=q]", key: "Enter" }],
@@ -15829,6 +15830,29 @@ describe("ADE CLI", () => {
     expect(expectExecutePlan(buildCliPlan(["browser", ...argv])).steps[0]?.params).toMatchObject({
       arguments: { domain: "built_in_browser", action, args },
     });
+  }));
+
+  it("browser signin checks --site against the tab's own page before filling", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const plan = expectExecutePlan(buildCliPlan(["browser", "signin", "--tab", "tab-1", "--site", "example.com"]));
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "getStatus", args: { tabId: "tab-1" } },
+    });
+    const signin = plan.steps[1]?.params;
+    if (typeof signin !== "function") throw new Error("Expected a signin params builder");
+    const answer = (url: string) => signin({
+      status: { activeTabId: "tab-1", tabs: [{ id: "tab-1", url }], url },
+    });
+    expect(answer("https://example.com/login")).toMatchObject({
+      name: "run_ade_action",
+      arguments: { domain: "built_in_browser", action: "signin", args: { tabId: "tab-1" } },
+    });
+    // A saved login is only typed into the page the caller named, never one
+    // the tab drifted to between planning and the fill.
+    expect(() => answer("https://other.example/login")).toThrow(/does not match the tab's page/);
   }));
 
   it("browser proof files the observed screenshot, plus the HAR as a browser_trace with --har", () => withEnv({

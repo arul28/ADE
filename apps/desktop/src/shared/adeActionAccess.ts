@@ -350,8 +350,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   // writes and the one value read (`resolveForFill`) are the person's, and
   // `resolveForFill` only for this computer's own desktop app.
   passwords: {
-    read: ["list", "loginsForPage"],
-    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill"],
+    read: ["status", "list", "loginsForPage"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin"],
   },
   integration_connect: {
     read: ["status"],
@@ -701,7 +701,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "requestOriginAccess", "claim", "startHandoff", "waitForHandoff", "startSession",
       "endSession", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab",
       "reload", "goBack", "goForward", "stop", "observe", "click", "typeText", "dispatchKey",
-      "scroll", "fill", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
+      "scroll", "fill", "signin", "clear", "wait", "startInspect", "stopInspect", "captureScreenshot",
       "selectPoint", "selectCurrent", "clearSelection", "setEmulation", "setZoom", "findInPage",
       "stopFindInPage", "setDevTools", "setNetworkLogging", "exportHar", "hover", "drag",
       "selectOption", "uploadFile", "dropFiles", "paste", "writeClipboard", "startRecording", "stopRecording", "noteDemoStep",

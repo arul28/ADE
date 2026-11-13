@@ -4301,9 +4301,20 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
   they click Allow, so do not re-issue the open to retry it. Page actions
-  (observe/click/fill/screenshot) are not forwarded and still fail here.
+  (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
-  Login handoff (you cannot sign in; a person must):
+  Signing in with Passwords:
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ADE types the
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run \`ade browser handoff\` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
+
+  Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
@@ -4337,6 +4348,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
     $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --site example.com --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -4418,6 +4431,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
     --value <text>       Explicit value for browser fill, including an empty string,
                          or the text for browser clipboard write.
+    --site <host>        Browser signin: check that the open tab is on this host.
+    --account <username>
+                         Browser signin: which saved login to use.
     --html <markup>      HTML flavor for browser clipboard write.
     --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
@@ -18510,6 +18526,7 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   click: ["click"],
   type: ["type", "type-text"],
   fill: ["fill"],
+  signin: ["signin"],
   // `clear` is deliberately ambiguous at the CLI: with an element target it
   // clears a field, without one it clears the selection. `buildBrowserPlan`
   // keeps that branch written out because the disambiguation is a flag test,
@@ -18785,6 +18802,21 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
       ? undefined
       : `Handed the browser tab to the human: ${reason}. Waiting for Hand back…`,
   };
+}
+
+/**
+ * The host a `--site` value or a page URL names, lowercased. `--site` is only
+ * a check: signin always uses the tab's own page, so an unreadable value is
+ * refused before the browser is called rather than guessed at.
+ */
+function browserSiteHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -19357,6 +19389,109 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             [fillPayloadKey]: text,
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "signin") {
+    // The site is always the tab's own top-frame page. `--site` only checks
+    // that the tab is where the caller thinks it is, before any login is typed.
+    const site = readValue(args, ["--site"])?.trim() || null;
+    const account = readValue(args, ["--account"])?.trim() || null;
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const signinArgs: JsonObject = {
+      ...actionArgs,
+      ...(account ? { username: account } : {}),
+    };
+    const collectedSigninArgs = collectGenericObjectArgs(args, signinArgs);
+    const explicitTabId = typeof collectedSigninArgs.tabId === "string" ? collectedSigninArgs.tabId : null;
+    if (!site) {
+      return {
+        kind: "execute",
+        label: "browser signin",
+        // With no saved login, the person is asked in the chat; wait for them.
+        minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000,
+        steps: [
+          actionStep(
+            "result",
+            "passwords",
+            "signin",
+            collectedSigninArgs,
+          ),
+        ],
+      };
+    }
+    const wantedHost = browserSiteHost(site);
+    if (!wantedHost) {
+      throw new CliUsageError(
+        `browser signin --site must be a host name like example.com, not "${site}".`,
+      );
+    }
+    return {
+      kind: "execute",
+      label: "browser signin",
+      minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000,
+      steps: [
+        actionStep(
+          "status",
+          "built_in_browser",
+          "getStatus",
+          collectGenericObjectArgs(args, actionArgs),
+        ),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            const rawStatus = unwrapActionEnvelope(values.status);
+            const status = isRecord(rawStatus) ? rawStatus : {};
+            const tabs = firstArray(status, ["tabs"]);
+            const activeTabId = asString(status.activeTabId);
+            // The tab signin itself targets: the one named, else the chat's
+            // active tab, else the only tab it can see. Multiple candidate tabs
+            // are accepted only when they all agree on the host, because a
+            // guess could approve a fill into the wrong site.
+            const scopedTabs = tabs.filter((entry) => entry.heldByOtherChat !== true);
+            const namedTab = explicitTabId
+              ? tabs.find((entry) => asString(entry.id) === explicitTabId) ?? null
+              : activeTabId
+                ? scopedTabs.find((entry) => asString(entry.id) === activeTabId) ?? null
+                : scopedTabs.length === 1
+                  ? scopedTabs[0]!
+                  : null;
+            const candidateUrls = namedTab
+              ? [asString(namedTab.url)]
+              : scopedTabs.map((entry) => asString(entry.url));
+            const hosts = [...new Set(
+              candidateUrls
+                .filter((url): url is string => Boolean(url))
+                .map(browserSiteHost)
+                .filter((host): host is string => Boolean(host)),
+            )];
+            if (hosts.length === 0) {
+              throw new CliUsageError(
+                `browser signin could not read the open tab's address to check --site ${site}. Open the sign-in page in this chat's tab, or drop --site: the site is always the tab's own page.`,
+              );
+            }
+            if (hosts.length > 1) {
+              throw new CliUsageError(
+                `browser signin cannot tell which tab this chat will use to check --site ${site}. Pass --tab <id> naming the sign-in page, or drop --site: the site is always the tab's own page.`,
+              );
+            }
+            if (hosts[0] !== wantedHost) {
+              throw new CliUsageError(
+                `browser signin --site ${site} does not match the tab's page (${hosts[0]}). The site is always the tab's own page; drop --site or open ${site} in the tab.`,
+              );
+            }
+            return {
+              name: "run_ade_action",
+              arguments: {
+                domain: "passwords",
+                action: "signin",
+                args: collectedSigninArgs,
+              },
+            };
+          },
+        },
       ],
     };
   }
@@ -23335,6 +23470,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
  * is a boolean `readFlag` anywhere, so this table can never widen the CLI.
  */
 const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--account",
   "--action",
   // `collectGenericObjectArgs` is called straight out of the browser plan and
   // consumes these, so they carry a value here like any other browser flag —
@@ -23432,6 +23568,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--session",
   "--session-id",
   "--settle-ms",
+  "--site",
   "--state",
   "--steps",
   "--tab",
@@ -30982,6 +31119,10 @@ async function runServe(
   // a brain with sync off (a test brain) never opens the account's vault. One
   // runtime object, so a background make keeps its maker.
   let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
+  const startedPasswords = <T extends { startPeriodicSync(): void }>(service: T): T => {
+    service.startPeriodicSync();
+    return service;
+  };
   const machineAccountDomains = async () => {
     const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
     return buildMachineAccountDomainServices(await getMachineAccountRuntime());
@@ -31025,6 +31166,7 @@ async function runServe(
         accountVaultStore: vault,
         // Read from its local copy only (cloud.status reads the default lane size).
         accountSettingsStore: stores?.settings ?? null,
+        passwordService: stores ? startedPasswords(stores.passwords) : null,
         productAnalyticsService: brainProductAnalytics,
       };
     })();
@@ -37471,8 +37613,26 @@ function domElementTable(elements: JsonObject[]): string {
 function formatBrowserAction(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const trace = firstRecord(result, ["trace"]);
+  const signin = firstRecord(result, ["signin"]);
+  const signinFilled = Array.isArray(signin?.filled)
+    ? signin.filled.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  // The result names the site, the account and which fields were filled —
+  // never a value. The password stays inside the page.
+  const signinSite = asString(signin?.site) ?? "the page";
+  const signinLine = !signin
+    ? null
+    : signin.signInYourself === true
+      ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+      : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
-    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    ...(signinLine ? [signinLine] : []),
+    ...formatActionAnswerLines(result, {
+      action: asString(trace?.action),
+      // signin targets no single element: it types into whichever login fields
+      // the page presented, and the `signed in` line already says which.
+      ...(signin ? { noElement: "the page's login fields" } : {}),
+    }),
     "",
     formatBrowserObservation(value),
   ].join("\n");
@@ -39353,6 +39513,7 @@ function inferFormatter(
     label === "browser key" ||
     label === "browser scroll" ||
     label === "browser fill" ||
+    label === "browser signin" ||
     label === "browser clear" ||
     label === "browser wait" ||
     label === "browser hover" ||

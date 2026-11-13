@@ -311,6 +311,8 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { requestPasswordLoginFromUser } from "../passwords/passwordLoginRequest";
+import { signInWithPasswords, type BrowserSignin } from "../passwords/passwordSignin";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
@@ -647,7 +649,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService" | "passwordService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -4263,12 +4265,20 @@ export function buildProviderInstancesDomainService(
  * one that returns a value, and the policy tables keep it for this computer's
  * own desktop app (user-only, this-desktop-only, secret-bearing).
  */
-function buildPasswordsDomainService(runtime: AdeRuntime): OpaqueService | null {
+function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "passwordService" | "agentChatService" | "builtInBrowserService">>): OpaqueService | null {
   const passwords = runtime.passwordService;
   if (!passwords) return null;
   const objectArg = (args: unknown): Record<string, unknown> => (args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {});
   const text = (value: unknown): string => (typeof value === "string" ? value : "");
   return {
+    status: () => passwords.status(),
+    setEnabled: (args?: unknown) => passwords.setEnabled(objectArg(args).enabled === true),
+    setCloudEnabled: (args?: unknown) => passwords.setCloudEnabled(objectArg(args).enabled === true),
+    reset: (args?: unknown) => {
+      // The person typed it: a stray call can't wipe the account's vault.
+      if (objectArg(args).confirm !== "reset") throw new Error("Reset Passwords needs confirm: \"reset\".");
+      return passwords.reset();
+    },
     list: () => passwords.listSummaries(),
     loginsForPage: (args?: unknown) => passwords.loginsForPage(text(objectArg(args).pageUrl)),
     saveLogin: (args?: unknown) => {
@@ -4300,6 +4310,34 @@ function buildPasswordsDomainService(runtime: AdeRuntime): OpaqueService | null 
       const input = objectArg(args);
       return passwords.resolveForFill({ itemId: text(input.itemId), pageUrl: text(input.pageUrl) });
     },
+    // The secure sign-in card, in the agent's own chat (a runtime with chats only).
+    ...(runtime.agentChatService
+      ? {
+          requestLogin: (args?: unknown) => {
+            const agentChatService = runtime.agentChatService!;
+            return requestPasswordLoginFromUser({
+              requestChatInput: (input) => agentChatService.requestChatInput(input),
+              passwords,
+            }, args);
+          },
+        }
+      : {}),
+    // `ade browser signin`: fill a saved login; with none, ask the person in
+    // the agent's own chat (the RPC server stamps it), save, and fill.
+    ...(runtime.builtInBrowserService
+      ? {
+          signin: (args?: unknown) => signInWithPasswords({
+            browser: runtime.builtInBrowserService as unknown as BrowserSignin,
+            passwords,
+            requestLogin: runtime.agentChatService
+              ? (input) => requestPasswordLoginFromUser({
+                  requestChatInput: (request) => runtime.agentChatService!.requestChatInput(request),
+                  passwords,
+                }, input)
+              : null,
+          }, objectArg(args)),
+        }
+      : {}),
   } as unknown as OpaqueService;
 }
 
@@ -4571,12 +4609,15 @@ export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime)
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
   provider_logins: OpaqueService | null;
+  passwords: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
+    // Settings › Passwords and the browser's fill with no project open.
+    passwords: buildPasswordsDomainService(runtime),
   };
 }
 

@@ -1,9 +1,8 @@
 import fs from "node:fs";
 
-import { createPasswordService, type PasswordService, type PasswordsRelay } from "../passwords/passwordService";
+import { createPasswordService, getSharedPasswordService, passwordsCloudSwitch, type PasswordService, type PasswordsRelay } from "../passwords/passwordService";
 import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 /** How often Passwords pulls other machines' changes. */
-const PASSWORDS_SYNC_INTERVAL_MS = 60_000;
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   createAccountStoreResultHelpers,
@@ -187,22 +186,19 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
 
     // Passwords: sealed items and the vault key, through the same relay
     // client. An ADE Cloud computer keeps the key in memory only.
-    passwordService = createPasswordService({
+    const settingsForPasswords = accountSettingsStore;
+    passwordService = getSharedPasswordService(options.accountStoreAdeDir, () => createPasswordService({
       adeDir: options.accountStoreAdeDir,
       // A test's injected relay may not speak Passwords; then it has none.
       relay: "getPasswordItems" in accountStoreRelay ? accountStoreRelay as unknown as PasswordsRelay : null,
       getAccountUserId: accountStoreUserId,
       getDeviceId: accountStoreDeviceId,
       machineKind: isAdeCloudComputer() ? "cloud" : "desktop",
+      // The ADE Cloud switch is an ordinary account setting (no secret in it).
+      ...passwordsCloudSwitch(settingsForPasswords),
       logger: options.logger,
-    });
-    const passwordsSync = setInterval(() => {
-      void passwordService?.sync().catch((error: unknown) => {
-        options.logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
-      });
-    }, PASSWORDS_SYNC_INTERVAL_MS);
-    passwordsSync.unref?.();
-    options.teardown.push(() => clearInterval(passwordsSync));
+    }));
+    passwordService.startPeriodicSync();
   }
 
   const purgeAccountOwnedCredentials = (): void => {

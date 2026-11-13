@@ -1,4 +1,5 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
+import { BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL } from "../shared/types/builtInBrowserLoginCapture";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
@@ -2197,9 +2198,31 @@ app.whenReady().then(async () => {
   // desktop, shared by the built-in browser's recorder, App Control and the
   // runtime daemon (over the bridge below), so jobs queue on one hidden renderer.
   const chromiumDemoEngine = createChromiumDemoEngine({ logger: builtInBrowserBridgeLogger });
+  // Passwords live in this computer's brain, account-wide (`passwords.call`,
+  // no project needed). Values come back only for a fill, into main.
+  const callLocalPasswords = async (action: string, args: Record<string, unknown>): Promise<unknown> =>
+    (await localRuntimePool.callSync<{ result?: unknown }>("passwords.call", { action, args }))?.result;
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
     demoEngine: chromiumDemoEngine,
+    passwords: {
+      loginsForPage: async (pageUrl) => {
+        const rows = await callLocalPasswords("loginsForPage", { pageUrl });
+        return Array.isArray(rows) ? rows : [];
+      },
+      resolveForFill: async (input) => {
+        const value = await callLocalPasswords("resolveForFill", input);
+        return value && typeof value === "object" ? value as { username: string; password: string; totpUri: string | null } : null;
+      },
+      sync: async () => {
+        await callLocalPasswords("sync", {});
+      },
+      enabled: async () => {
+        const status = await callLocalPasswords("status", {});
+        return Boolean(status && typeof status === "object" && (status as { enabled?: unknown }).enabled === true);
+      },
+      saveLogin: (input) => callLocalPasswords("saveLogin", input),
+    },
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
@@ -2342,6 +2365,18 @@ app.whenReady().then(async () => {
         return { sessionService: null, agentChatService: null };
       },
     }),
+  });
+  // A login form the person sent in a browser tab (the tab preload). Only a
+  // browser tab's own page counts; the service checks the frame and the site.
+  ipcMain.on(BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, (event, payload: unknown) => {
+    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+    if (!record) return;
+    const text = (value: unknown) => (typeof value === "string" && value.length <= 1024 ? value : null);
+    builtInBrowserService.handleLoginSubmission(
+      event.sender,
+      event.senderFrame != null && event.senderFrame === event.sender.mainFrame,
+      { username: text(record.username), password: text(record.password) },
+    );
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy

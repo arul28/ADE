@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CredentialStore } from "../credentials/credentialStore";
 import type { PasswordRelayItem, PasswordRelayWrite } from "../push/pushRelayClient";
@@ -40,28 +43,30 @@ function memoryStore(): CredentialStore {
   };
 }
 
-function machine(relay: PasswordsRelay, deviceId: string) {
-  return createPasswordService({
-    adeDir: "/unused",
+async function machine(relay: PasswordsRelay, deviceId: string) {
+  const service = createPasswordService({
+    adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")),
     relay,
     getAccountUserId: () => "user_a",
     getDeviceId: () => deviceId,
     machineKind: "desktop",
     store: memoryStore(),
   });
+  await service.setEnabled(true);
+  return service;
 }
 
 describe("password service", () => {
   it("lets a second machine use what the first saved, and never shows a value in a summary or on the relay", async () => {
     const { relay, rows } = fakeRelay();
-    const mac = machine(relay, "mac");
+    const mac = await machine(relay, "mac");
     await mac.saveLogin({ origins: ["https://github.com/login"], username: "arul28", password: "s3cret-pass-123" });
     await mac.saveSecret({ name: "OPENAI_API_KEY", value: "key-value-xyz", projectScope: null });
     await mac.sync();
 
     expect(JSON.stringify([...rows.values()])).not.toMatch(/github|arul28|s3cret|key-value|OPENAI/);
 
-    const laptop = machine(relay, "laptop");
+    const laptop = await machine(relay, "laptop");
     await laptop.sync();
     const summaries = await laptop.listSummaries();
     expect(summaries.map((s) => [s.kind, s.title, s.sites, s.username])).toEqual([
@@ -74,7 +79,7 @@ describe("password service", () => {
 
   it("fills a login only into a page on its own site", async () => {
     const { relay } = fakeRelay();
-    const mac = machine(relay, "mac");
+    const mac = await machine(relay, "mac");
     const saved = await mac.saveLogin({ origins: ["https://github.com"], username: "arul28", password: "s3cret-pass-123" });
     expect(await mac.resolveForFill({ itemId: saved.id, pageUrl: "https://github.com/session" })).toMatchObject({ password: "s3cret-pass-123" });
     for (const page of ["https://github.com.evil.io/login", "https://gitlab.com/", "http://github.com/login"]) {
@@ -85,8 +90,8 @@ describe("password service", () => {
 
   it("picks up a reset made on another machine instead of failing to open new items", async () => {
     const { relay, reset } = fakeRelay();
-    const mac = machine(relay, "mac");
-    const laptop = machine(relay, "laptop");
+    const mac = await machine(relay, "mac");
+    const laptop = await machine(relay, "laptop");
     await mac.saveLogin({ origins: ["https://old.example"], username: "a", password: "old-pass-1" });
     await mac.sync();
     await laptop.sync();

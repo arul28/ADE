@@ -1,4 +1,5 @@
-import { contextBridge } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
+import { BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, type BuiltInBrowserLoginSubmission } from "../shared/types/builtInBrowserLoginCapture";
 
 /**
  * The built-in browser's media hook, a session preload for every browser tab.
@@ -141,4 +142,81 @@ try {
   contextBridge.executeInMainWorld({ func: installChromeBrandHook });
 } catch {
   // Main world unreachable: the request headers still carry Chrome's identity.
+}
+
+/**
+ * "Save to Passwords?" after the person signs in by hand.
+ *
+ * This preload runs in the isolated world, which shares the page's DOM but
+ * not its scripts, so a page can't see or fake these listeners' reads. When a
+ * login form is sent (a submit, a click on its button, or Enter in its
+ * password field), it reads the username and password and hands them to the
+ * main process, which checks the tab's own URL and frame before offering to
+ * save. A username-only step (the first page of a two-step sign-in) sends the
+ * username alone. Fields ADE filled from Passwords are skipped: there is
+ * nothing new to save.
+ */
+function installLoginCapture(): void {
+  const MAX = 1024;
+  const USERNAME_HINT = /user|email|login|account|identifier/i;
+  let lastSentAt = 0;
+  const filled = (input: HTMLInputElement) => input.hasAttribute("data-ade-vault-filled");
+  const isTextual = (input: HTMLInputElement) => ["text", "email", "tel", ""].includes(input.type.toLowerCase());
+  const visible = (input: HTMLInputElement) => !input.disabled && input.getClientRects().length > 0;
+  const scopeFor = (node: Element | null): ParentNode => node?.closest("form") ?? document;
+  const usernameIn = (scope: ParentNode, before: Element | null, hintedOnly = false): string | null => {
+    const inputs = Array.from(scope.querySelectorAll("input")).filter((input) => isTextual(input) && visible(input) && input.value.trim());
+    const preceding = before
+      ? inputs.filter((input) => input.compareDocumentPosition(before) & Node.DOCUMENT_POSITION_FOLLOWING)
+      : inputs;
+    const hinted = preceding.find((input) => {
+      const autocomplete = (input.getAttribute("autocomplete") ?? "").toLowerCase();
+      return autocomplete.includes("username") || autocomplete.includes("email") || input.type === "email"
+        || USERNAME_HINT.test(`${input.name} ${input.id} ${input.getAttribute("aria-label") ?? ""}`);
+    });
+    const pick = hinted ?? (hintedOnly ? null : preceding[preceding.length - 1] ?? null);
+    return pick ? pick.value.trim().slice(0, MAX) : null;
+  };
+  const capture = (origin: Element | null) => {
+    const now = Date.now();
+    if (now - lastSentAt < 1500) return;
+    const scope = scopeFor(origin);
+    const passwords = Array.from(scope.querySelectorAll<HTMLInputElement>("input[type=password]"))
+      .filter((input) => visible(input) && input.value);
+    let submission: BuiltInBrowserLoginSubmission | null = null;
+    if (passwords.length > 0) {
+      if (passwords.every(filled)) return;
+      // Two different values: a change-password form; the new one is last.
+      const distinct = new Set(passwords.map((input) => input.value));
+      const chosen = distinct.size > 1 ? passwords[passwords.length - 1]! : passwords[0]!;
+      submission = { username: usernameIn(scope, chosen), password: chosen.value.slice(0, MAX) };
+    } else if (scope !== document) {
+      // Only a real username or email field: never a search box's text.
+      const username = usernameIn(scope, null, true);
+      if (username) submission = { username, password: null };
+    }
+    if (!submission) return;
+    lastSentAt = now;
+    ipcRenderer.send(BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, submission);
+  };
+  window.addEventListener("submit", (event) => {
+    if (event.target instanceof HTMLFormElement) capture(event.target);
+  }, true);
+  window.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button, input[type=submit], [role=button]") : null;
+    if (!target) return;
+    const scope = scopeFor(target);
+    // Only a button next to a filled password field (or in a login form) counts.
+    if (scope.querySelector("input[type=password]") || target.closest("form")) capture(target);
+  }, true);
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || !(event.target instanceof HTMLInputElement)) return;
+    if (event.target.type === "password" || event.target.closest("form")) capture(event.target);
+  }, true);
+}
+
+try {
+  installLoginCapture();
+} catch {
+  // No DOM to watch (a blank frame); nothing to offer.
 }

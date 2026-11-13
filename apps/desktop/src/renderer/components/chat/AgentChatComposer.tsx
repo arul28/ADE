@@ -227,6 +227,7 @@ import { IntegrationConnectComposer } from "./IntegrationConnectCard";
 import { McpServerRequestComposer } from "./McpServerCard";
 import { MachineRemovalComposer } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestComposer, passwordLoginSelfAnswers } from "./PasswordLoginCard";
 import {
   isAskQuestionRequest,
   isRedirectablePendingRequest,
@@ -9587,6 +9588,26 @@ function AgentChatComposerImpl({
               error={pendingInputError ?? null}
               chatProvider={sessionProvider}
               onConnect={(answers) => { void onApproval("accept", null, answers); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "login") {
+          // The secure sign-in card. The username and password travel only as
+          // answers to `isSecret` questions; the host saves them to Passwords
+          // on the chat's machine, and a failed save comes back as
+          // `pendingInputError`.
+          return (
+            <PasswordLoginRequestComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onSave={(answers) => { void onApproval("accept", null, answers); }}
+              onSelf={() => { void onApproval("accept", null, passwordLoginSelfAnswers()); }}
               onDecline={() => { void onApproval("decline"); }}
             />
           );

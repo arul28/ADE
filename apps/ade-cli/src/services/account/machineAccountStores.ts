@@ -8,6 +8,8 @@ import { getSignedInAccountAccessToken } from "./accountAuthService";
 import { createAccountSettingsStore, getSharedAccountSettingsStore, type AccountSettingsStore } from "./accountSettingsStore";
 import { createAccountVaultStore, getSharedAccountVaultStore, type AccountVaultStore } from "./accountVaultStore";
 import { getSharedAccountAuthService } from "./sharedAccountAuthService";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { createPasswordService, getSharedPasswordService, passwordsCloudSwitch, type PasswordService } from "../passwords/passwordService";
 
 /**
  * The machine's account stores, for code that runs without a project runtime
@@ -26,6 +28,7 @@ type StoreLogger = {
 export type MachineAccountStores = {
   settings: AccountSettingsStore;
   vault: AccountVaultStore;
+  passwords: PasswordService;
   /** The signed-in account's user id, or null when this machine is signed out. */
   accountUserId: () => string | null;
 };
@@ -59,5 +62,14 @@ export function getMachineAccountStores(logger: StoreLogger): MachineAccountStor
     getDeviceId: deviceId,
     logger,
   }));
-  return { settings, vault, accountUserId };
+  const passwords = getSharedPasswordService(layout.adeDir, () => createPasswordService({
+    adeDir: layout.adeDir,
+    relay: relayClient,
+    getAccountUserId: accountUserId,
+    getDeviceId: deviceId,
+    machineKind: isAdeCloudComputer() ? "cloud" : "desktop",
+    ...passwordsCloudSwitch(settings),
+    logger,
+  }));
+  return { settings, vault, passwords, accountUserId };
 }

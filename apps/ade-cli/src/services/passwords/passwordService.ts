@@ -22,6 +22,7 @@
  * and counts only.
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import type {
   PasswordImportResult,
@@ -29,7 +30,9 @@ import type {
   PasswordItemSummary,
   PasswordLoginSecret,
   PasswordSecretSecret,
+  PasswordsStatus,
 } from "../../../../desktop/src/shared/types/passwords";
+import { createStoreRegistry } from "../account/accountCacheStore";
 import { EncryptedFileCredentialStore, type CredentialStore } from "../credentials/credentialStore";
 import type {
   PasswordMachineKind,
@@ -63,6 +66,7 @@ type CacheShape = { v: 1; accountId: string; cursor: string | null; items: Store
 const CACHE_KEY = "passwords.items.v1";
 const KEY_CACHE_KEY = "passwords.key.v1";
 const ITEM_ID_BYTES = 12;
+const SYNC_INTERVAL_MS = 60_000;
 
 export class PasswordsUnavailableError extends Error {
   constructor(message: string) {
@@ -109,6 +113,12 @@ export function createPasswordService(args: {
   getAccountUserId: () => string | null;
   getDeviceId: () => string | null;
   machineKind: PasswordMachineKind;
+  /**
+   * The account-wide "ADE Cloud computers can use Passwords" switch (an
+   * account setting): true, false, or null when nobody has set it yet.
+   */
+  getCloudEnabled?: () => boolean | null;
+  setCloudEnabled?: (enabled: boolean) => void;
   logger?: PasswordsLogger;
   /** Tests inject a store; production uses the machine's encrypted file store. */
   store?: CredentialStore;
@@ -123,16 +133,39 @@ export function createPasswordService(args: {
   });
   // A cloud computer never writes the key to disk: it asks again after a restart.
   const keepKeyOnDisk = args.machineKind !== "cloud";
+  const isCloud = args.machineKind === "cloud";
+  // Whether the person turned Passwords on for this computer. Plain JSON: it
+  // says only "on" or "off", and has to be readable before any key exists.
+  const statePath = path.join(args.adeDir, "passwords", "state.json");
+  let enabledHere: boolean | null = null;
+  const readEnabledHere = (): boolean => {
+    if (enabledHere !== null) return enabledHere;
+    try {
+      enabledHere = (JSON.parse(fs.readFileSync(statePath, "utf8")) as { enabled?: unknown }).enabled === true;
+    } catch {
+      enabledHere = false;
+    }
+    return enabledHere;
+  };
+  const cloudEnabled = (): boolean => args.getCloudEnabled?.() === true;
+  /** Passwords is off until the person turns it on: per computer, or by the one ADE Cloud switch. */
+  const isEnabled = (): boolean => (isCloud ? cloudEnabled() : readEnabledHere());
 
   let memoryKey: { accountId: string; key: Buffer; epoch: number } | null = null;
   /** Opened items, by id; rebuilt from the cache whenever it changes. Values live only here. */
   let opened = new Map<string, PasswordItemSecret>();
   let openedFor: string | null = null;
   let syncing: Promise<void> | null = null;
+  let periodicSync: ReturnType<typeof setInterval> | null = null;
 
   const accountOrThrow = (): string => {
     const accountId = args.getAccountUserId();
     if (!accountId) throw new PasswordsUnavailableError("Sign in to ADE to use Passwords.");
+    if (!isEnabled()) {
+      throw new PasswordsUnavailableError(isCloud
+        ? "Passwords is off for ADE Cloud computers. The person can turn it on in Settings › Passwords."
+        : "Passwords is off on this computer. The person can turn it on in Settings › Passwords.");
+    }
     return accountId;
   };
 
@@ -235,6 +268,11 @@ export function createPasswordService(args: {
     syncing = (async () => {
       const accountId = args.getAccountUserId();
       if (!accountId || !args.relay) return;
+      if (!isEnabled()) {
+        // Turned off (here, or the cloud switch from another machine): keep nothing.
+        if (memoryKey || openedFor) await purgeLocal();
+        return;
+      }
       const cache = await readCache(accountId);
       // Pull.
       let cursor = cache.cursor;
@@ -306,13 +344,99 @@ export function createPasswordService(args: {
     });
   }
 
+  async function purgeLocal(): Promise<void> {
+    await dropKey();
+    opened = new Map();
+    openedFor = null;
+    await store.delete(CACHE_KEY);
+    logger.info("passwords.purged", {});
+  }
+
   return {
+    /** Whether Passwords is on here, and what this computer holds. Never a value. */
+    async status(): Promise<PasswordsStatus> {
+      const accountId = args.getAccountUserId();
+      const enabled = isEnabled();
+      let itemCount: number | null = null;
+      if (accountId && enabled) {
+        try {
+          await ensureOpened();
+          itemCount = opened.size;
+        } catch {
+          itemCount = null;
+        }
+      }
+      return {
+        signedIn: Boolean(accountId),
+        enabled,
+        machineKind: args.machineKind,
+        cloudEnabled: args.getCloudEnabled?.() ?? null,
+        itemCount,
+      };
+    },
+
+    /**
+     * Turn Passwords on or off for this computer. Off forgets the key and every
+     * cached item here (the account's copy stays). The first time any computer
+     * turns it on, the ADE Cloud switch starts on.
+     */
+    async setEnabled(enabled: boolean): Promise<PasswordsStatus> {
+      if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords.");
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      fs.writeFileSync(statePath, JSON.stringify({ enabled }), { mode: 0o600 });
+      enabledHere = enabled;
+      if (enabled) {
+        if (args.getCloudEnabled?.() === null) args.setCloudEnabled?.(true);
+        void sync().catch((error: unknown) => {
+          logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
+      } else {
+        await purgeLocal();
+      }
+      logger.info("passwords.enabled_changed", { enabled });
+      return await this.status();
+    },
+
+    /** The account-wide switch for ADE Cloud computers. */
+    async setCloudEnabled(enabled: boolean): Promise<PasswordsStatus> {
+      if (!args.setCloudEnabled) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
+      args.setCloudEnabled(enabled);
+      if (isCloud && !enabled) await purgeLocal();
+      logger.info("passwords.cloud_enabled_changed", { enabled });
+      return await this.status();
+    },
+
+    /**
+     * Reset Passwords: the account starts a new, empty vault under a new key.
+     * Every saved item on every computer is gone. The caller asks the person
+     * first (and Touch ID / Windows Hello); this only does it.
+     */
+    async reset(): Promise<PasswordsStatus> {
+      const accountId = accountOrThrow();
+      const deviceId = args.getDeviceId();
+      if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
+      const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind, reset: true });
+      if (!released) throw new PasswordsUnavailableError("Passwords is unavailable right now; try again shortly.");
+      await purgeLocal();
+      memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
+      if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
+      logger.info("passwords.reset", { epoch: released.epoch });
+      await sync();
+      return await this.status();
+    },
+
     /** Everything an agent or a list may see. Never a value. */
     async listSummaries(): Promise<PasswordItemSummary[]> {
       await ensureOpened();
       return [...opened.entries()]
         .map(([id, secret]) => summarize(id, secret))
         .sort((a, b) => a.title.localeCompare(b.title));
+    },
+
+    /** The site and exact origin Passwords would fill a page on, or null (not https, not a site). */
+    siteForPage(pageUrl: string): { site: string; origin: string } | null {
+      const normalized = normalizeLoginOrigin(pageUrl);
+      return normalized ? { site: normalized.site, origin: normalized.origin } : null;
     },
 
     /** Saved logins for the site a page is on, best match first. Summaries only. */
@@ -424,15 +548,49 @@ export function createPasswordService(args: {
 
     sync,
 
-    /** Sign-out or a reset: forget the key and every cached item on this machine. */
-    async purge(): Promise<void> {
-      await dropKey();
-      opened = new Map();
-      openedFor = null;
-      await store.delete(CACHE_KEY);
-      logger.info("passwords.purged", {});
+    /** Keep this computer's copy in step with the account, once per service (unref'd). */
+    startPeriodicSync(): void {
+      if (periodicSync) return;
+      periodicSync = setInterval(() => {
+        void sync().catch((error: unknown) => {
+          logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
+      }, SYNC_INTERVAL_MS);
+      periodicSync.unref?.();
     },
+
+    /** Sign-out or a reset: forget the key and every cached item on this machine. */
+    purge: purgeLocal,
   };
 }
 
 export type PasswordService = ReturnType<typeof createPasswordService>;
+
+/**
+ * One service per ADE home, whoever asks first (a project runtime, or the
+ * machine route Settings uses with no project open). Two copies would each
+ * cache opened items and rewrite the same file, losing each other's writes.
+ */
+const registry = createStoreRegistry<PasswordService>();
+
+const PASSWORDS_CLOUD_SETTING_KEY = "passwords.cloudEnabled";
+
+/** The ADE Cloud switch, read and written as an ordinary account setting (it holds no secret). */
+export function passwordsCloudSwitch(settings: { get(scope: string, key: string): unknown; set(scope: string, key: string, value: unknown): boolean } | null): {
+  getCloudEnabled: () => boolean | null;
+  setCloudEnabled: (enabled: boolean) => void;
+} {
+  return {
+    getCloudEnabled: () => {
+      const value = settings?.get("all", PASSWORDS_CLOUD_SETTING_KEY);
+      return typeof value === "boolean" ? value : null;
+    },
+    setCloudEnabled: (enabled) => {
+      settings?.set("all", PASSWORDS_CLOUD_SETTING_KEY, enabled);
+    },
+  };
+}
+
+export function getSharedPasswordService(adeDir: string, create: () => PasswordService): PasswordService {
+  return registry.get(adeDir, create);
+}

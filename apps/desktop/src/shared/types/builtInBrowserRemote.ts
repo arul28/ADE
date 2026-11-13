@@ -133,6 +133,7 @@ export const BUILT_IN_BROWSER_REMOTE_CALL_METHODS = [
   "dispatchKey",
   "scroll",
   "fill",
+  "signin",
   "clear",
   "wait",
   "captureScreenshot",

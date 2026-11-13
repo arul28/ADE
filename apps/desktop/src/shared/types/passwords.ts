@@ -76,9 +76,41 @@ export type PasswordImportResult = {
   skippedInvalid: number;
 };
 
+/** What Settings › Passwords sends to save (or change) a login. */
+export type PasswordLoginSaveInput = {
+  id?: string;
+  title?: string;
+  origins: string[];
+  username: string;
+  password: string;
+  notes?: string;
+  totpUri?: string | null;
+};
+
+/** What Settings › Passwords sends to save (or change) a secret. */
+export type PasswordSecretSaveInput = {
+  id?: string;
+  name: string;
+  value: string;
+  projectScope: string | null;
+  notes?: string;
+};
+
 /** Account-level settings, synced as plain account settings (no secrets). */
 export type PasswordsSettings = {
   enabled: boolean;
   /** ADE Cloud computers on this account may unlock Passwords. On by default once enabled. */
   cloudEnabled: boolean;
+};
+
+/** Whether Passwords is on for one computer, for Settings and `ade passwords status`. */
+export type PasswordsStatus = {
+  signedIn: boolean;
+  /** On for this computer (on an ADE Cloud computer: the ADE Cloud switch). */
+  enabled: boolean;
+  machineKind: "desktop" | "phone" | "cloud" | "web" | "cli";
+  /** The account-wide ADE Cloud switch; null until Passwords was first turned on. */
+  cloudEnabled: boolean | null;
+  /** Saved items this computer can open, or null when it can't open them now. */
+  itemCount: number | null;
 };

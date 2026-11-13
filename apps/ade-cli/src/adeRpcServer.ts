@@ -3950,6 +3950,7 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
   "integration_connect.request": "ade integrations connect",
   "mcp_registry.request": "ade mcp servers add",
   "mcp_registry.remove": "ade mcp servers remove",
+  "passwords.requestLogin": "ade browser signin",
 };
 
 /**
@@ -6744,6 +6745,18 @@ async function runTool(args: {
       }
       ensureAskUserAllowed(session);
       scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
+    }
+    if (domain === "passwords" && action === "signin") {
+      // `ade browser signin` may raise the secure sign-in card, and only in
+      // the caller's own chat. Stamped here, never taken from the arguments,
+      // and not rate-limited: most sign-ins fill a saved login and ask nobody
+      // (the card itself joins one ask per chat and site).
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "passwords.signin requires object arguments.");
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, ...signinArgs } = rawObjectArgs;
+      const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      scopedObjectArgs = { ...signinArgs, ...(boundChat ? { chatSessionId: boundChat } : {}) };
     }
     if (domain === "automations" && action === "webhookSendTest" && !isUserClient && !callerIsCto) {
       // `config` is the builder's unsaved draft, and it names the secret the
