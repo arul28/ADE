@@ -26,7 +26,7 @@ import { AppleDevicePane } from "../apple/AppleDevicePane";
 import { AndroidDevicePane } from "../android/AndroidDevicePane";
 import { remoteWorkUsesOf } from "../../../shared/chatRemoteWork";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
-import { RemoteOrLaneTool, RemoteWorkAndroid, RemoteWorkSimulator, useDriverChat } from "./remoteWorkToolPanels";
+import { RemoteOrLaneTool, RemoteScreenDeviceReport, RemoteWorkAndroid, RemoteWorkSimulator, useDriverChat } from "./remoteWorkToolPanels";
 import {
   getAppleMiniPlayerLaneDevice,
   handoffAppleMiniPlayerAsync,
@@ -165,6 +165,11 @@ function NativePanelFrame({
 }
 
 /* ── Panels ───────────────────────────────────────────────────────────────── */
+
+/** The chat and tool a remote target pick holds for (`RemoteOrLaneTool`). */
+function remoteTargetStickyKey(props: Pick<WorkToolPanelProps, "panelSessionId" | "activeSession">, tool: string): string {
+  return `${props.panelSessionId ?? props.activeSession?.id ?? ""}:${tool}`;
+}
 
 function WorkTerminalTool({
   laneId,
@@ -369,12 +374,14 @@ function WorkIosTool(props: WorkToolPanelProps) {
       laneAvailable={Boolean(laneId && toolContext.supportsIosSimulator)}
       remoteLabel="Simulator"
       testId="ios-target-switcher"
+      stickyKey={remoteTargetStickyKey(props, "ios")}
       renderLane={() => <WorkIosDevice {...props} driverChat={driverChat} />}
-      renderRemote={(use, remotePin) => (
+      renderRemote={(use, remotePin, reportDevice) => (
         <RemoteWorkSimulator
           key={`${remotePin.key}:${use.workCopyLaneId}`}
           use={use}
           remotePin={remotePin}
+          onDeviceState={reportDevice}
           renderDevice={() => (
             <WorkIosDevice
               {...props}
@@ -573,14 +580,16 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
         laneAvailable={Boolean(laneId && toolContext.supportsAndroidEmulator !== false)}
         remoteLabel="Android"
         testId="android-target-switcher"
+        stickyKey={remoteTargetStickyKey(props, "android")}
         renderLane={() => (laneId
           ? <WorkAndroidDevice {...props} laneName={props.activeLane?.name ?? null} />
           : <NoLaneEmptyLine />)}
-        renderRemote={(use, remotePin) => (
+        renderRemote={(use, remotePin, reportDevice) => (
           <RemoteWorkAndroid
             key={`${remotePin.key}:${use.workCopyLaneId}`}
             use={use}
             remotePin={remotePin}
+            onDeviceState={reportDevice}
             renderDevice={() => (
               <WorkAndroidDevice
                 {...props}
@@ -711,6 +720,7 @@ function WorkAppControlTool(props: WorkToolPanelProps) {
       laneAvailable={Boolean(laneId)}
       remoteLabel="App Control"
       testId="app-control-target-switcher"
+      stickyKey={remoteTargetStickyKey(props, "app-control")}
       renderLane={renderLane}
       // The work copy's folder is on that machine; its service resolves it from the lane.
       renderRemote={(use, pin) => panel(
@@ -790,9 +800,11 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
       laneAvailable={Boolean(laneId) && laneHostRunsDesktopTool(tool, toolContext)}
       remoteLabel="Screen"
       testId={`${tool}-target-switcher`}
+      stickyKey={remoteTargetStickyKey(props, tool)}
       renderLane={renderLane}
-      renderRemote={(use, pin) => (
+      renderRemote={(use, pin, reportDevice) => (
         <NativePanelFrame padded frameRef={mountRef}>
+          <RemoteScreenDeviceReport laneId={use.workCopyLaneId} pin={pin} onDeviceState={reportDevice} />
           <ChatMacDesktopPanel
             key={`work-${tool}:${pin.key}:${use.workCopyLaneId}`}
             desktopTool={tool}

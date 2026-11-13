@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
 import type { AgentChatRemoteWorkUse } from "../../shared/types/chat";
 import type { ChatTerminalSession } from "../../shared/types/sessions";
@@ -84,14 +84,25 @@ export function useRemoteWorkPinResolver(active: boolean): (use: AgentChatRemote
  */
 const connectsInFlight = new Map<string, Promise<MachineConnectResult>>();
 
-function connectRemoteWorkMachine(machineKey: string): Promise<MachineConnectResult> {
+function connectRemoteWorkMachine(machineKey: string, start: () => Promise<MachineConnectResult>): Promise<MachineConnectResult> {
   for (const [key, existing] of connectsInFlight) {
     if (sameMachineKey(key, machineKey)) return existing;
   }
-  const started = window.ade.machines.connect(machineKey)
+  const started = start()
     .finally(() => { connectsInFlight.delete(machineKey); });
   connectsInFlight.set(machineKey, started);
   return started;
+}
+
+/**
+ * "Use it here": the Connections panel's own call (`remoteRuntime.connect` on
+ * the saved machine), which takes this app's link back from the other ADE app
+ * on this computer that holds it. A window-wide connect, not a project call,
+ * so it takes the machine, not a pin.
+ */
+async function takeBackRemoteWorkLink(machineKey: string, targetId: string): Promise<MachineConnectResult> {
+  const result = await window.ade.remoteRuntime.connect(targetId);
+  return { ok: true, address: { kind: "remote", machineKey, targetId: result.target.id, name: result.target.name } };
 }
 
 /**
@@ -102,6 +113,9 @@ function connectRemoteWorkMachine(machineKey: string): Promise<MachineConnectRes
  * - `failed`: it could not; `message` says why, `retry` tries again.
  * - `disconnected`: the person disconnected that machine here; only `retry`
  *   (their click) connects it again.
+ * - `held_elsewhere`: another ADE app on this computer (ADE Beta, a dev
+ *   build) holds this computer's one link to that machine; `useHere` (their
+ *   click) takes it back, as the Connections panel's "Use it here" does.
  * - `unknown`: the use names no project there (an older machine), so there is
  *   nothing to connect to.
  */
@@ -110,6 +124,7 @@ export type RemoteWorkReach =
   | { kind: "connecting"; retry: () => void }
   | { kind: "failed"; message: string; retry: () => void }
   | { kind: "disconnected"; retry: () => void }
+  | { kind: "held_elsewhere"; useHere: () => void }
   | { kind: "unknown"; retry: () => void };
 
 type ConnectAttempt =
@@ -135,7 +150,11 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
   // A click is the person's say-so, even over their own Disconnect. It holds
   // for that one connect: a later Disconnect of theirs must win again.
   const [clicked, setClicked] = useState(false);
+  // The saved machine a "Use it here" click takes the link back on; read by
+  // the connect that click starts.
+  const takeBackTargetRef = useRef<string | null>(null);
   const retry = useCallback(() => {
+    takeBackTargetRef.current = null;
     setClicked(true);
     setNonce((value) => value + 1);
   }, []);
@@ -143,6 +162,14 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
   const resolved = resolveRemoteWorkPin(use, snapshot, localMachineKey);
   const connection = snapshot?.connections.find((entry) =>
     sameMachineKey(entry.target.pairedMachine?.machineKey, use.machineKey)) ?? null;
+  const heldTargetId = connection?.state === "error" && connection.recovery === "held_elsewhere"
+    ? connection.target.id
+    : null;
+  const useHere = useCallback(() => {
+    takeBackTargetRef.current = heldTargetId;
+    setClicked(true);
+    setNonce((value) => value + 1);
+  }, [heldTargetId]);
   const reconnectBlocked = connection?.reconnectBlocked ?? null;
   const [blockSeen, setBlockSeen] = useState(reconnectBlocked);
   if (blockSeen !== reconnectBlocked) {
@@ -166,7 +193,11 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     }
     let cancelled = false;
     setAttempt({ machineKey, phase: "connecting" });
-    void connectRemoteWorkMachine(machineKey)
+    const takeBackTargetId = takeBackTargetRef.current;
+    takeBackTargetRef.current = null;
+    void connectRemoteWorkMachine(machineKey, takeBackTargetId
+      ? () => takeBackRemoteWorkLink(machineKey, takeBackTargetId)
+      : () => window.ade.machines.connect(machineKey))
       .then((result) => {
         if (cancelled) return;
         if (result.ok) setClicked(false);
@@ -185,7 +216,7 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
 
   if (resolved !== "unreachable") return { kind: "pin", pin: resolved };
   if (!hasProject) return { kind: "unknown", retry };
-  if (blocked) return { kind: "disconnected", retry };
+  if (blocked) return heldTargetId ? { kind: "held_elsewhere", useHere } : { kind: "disconnected", retry };
   const current = attempt && sameMachineKey(attempt.machineKey, machineKey) ? attempt : null;
   if (current?.phase === "failed") return { kind: "failed", message: current.message, retry };
   if (current?.phase === "connected") {

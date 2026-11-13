@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { remoteWorkUseKey, type RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import { cn } from "../ui/cn";
@@ -11,19 +11,71 @@ type RemoteTargetOption = {
   use: RemoteWorkCopyUse | null;
 };
 
+/*
+ * Per chat and tool, for this window's life: the target the person picked, and
+ * the uses whose machine said it has no device for them. A use is keyed with
+ * its `lastStartedAt`, so newer work there asks again.
+ */
+const PICKED_TARGETS = new Map<string, string>();
+const DEVICELESS_USES = new Map<string, ReadonlySet<string>>();
+const NO_KEYS: ReadonlySet<string> = new Set();
+const MAX_REMEMBERED = 200;
+
+function remember<T>(map: Map<string, T>, key: string, value: T): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > MAX_REMEMBERED) map.delete(map.keys().next().value!);
+}
+
+function devicelessKey(use: RemoteWorkCopyUse): string {
+  return `${remoteWorkUseKey(use)}@${use.lastStartedAt}`;
+}
+
 /**
  * Which device a screen tool shows: one per machine the chat drove a device
- * on through its work copy there, then this lane's own. The newest machine
- * the chat used comes first, unless the user picked another.
+ * on through its work copy there, then this lane's own.
+ *
+ * The default is the newest use whose machine has a device for it
+ * (`reportDevice`), else the newest: `lastStartedAt` moves with any command
+ * there, so a machine the chat only ran a shell on can be newer than the one
+ * whose emulator it drove. A person's pick holds for this chat and tool until
+ * the window closes. `stickyKey` names the chat and tool.
  */
-export function useRemoteTargetChoice(remoteUses: RemoteWorkCopyUse[], laneAvailable: boolean) {
+export function useRemoteTargetChoice(remoteUses: RemoteWorkCopyUse[], laneAvailable: boolean, stickyKey: string) {
   const options: RemoteTargetOption[] = [
     ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
     ...(laneAvailable ? [{ key: "lane", label: "This lane", use: null }] : []),
   ];
-  const [chosenKey, setChosenKey] = useState<string | null>(null);
-  const chosen = options.find((option) => option.key === chosenKey) ?? options[0] ?? null;
-  return { options, chosen, choose: setChosenKey };
+  const [pickedKey, setPickedKey] = useState<string | null>(() => PICKED_TARGETS.get(stickyKey) ?? null);
+  const [deviceless, setDeviceless] = useState<ReadonlySet<string>>(() => DEVICELESS_USES.get(stickyKey) ?? NO_KEYS);
+  // Another chat in the same pane: its own pick and its own readings.
+  const [stickySeen, setStickySeen] = useState(stickyKey);
+  if (stickySeen !== stickyKey) {
+    setStickySeen(stickyKey);
+    setPickedKey(PICKED_TARGETS.get(stickyKey) ?? null);
+    setDeviceless(DEVICELESS_USES.get(stickyKey) ?? NO_KEYS);
+  }
+  const picked = options.find((option) => option.key === pickedKey) ?? null;
+  const chosen = picked
+    ?? options.find((option) => option.use && !deviceless.has(devicelessKey(option.use)))
+    ?? options[0]
+    ?? null;
+  const choose = useCallback((key: string) => {
+    remember(PICKED_TARGETS, stickyKey, key);
+    setPickedKey(key);
+  }, [stickyKey]);
+  const reportDevice = useCallback((use: RemoteWorkCopyUse, hasDevice: boolean) => {
+    const key = devicelessKey(use);
+    setDeviceless((current) => {
+      if (current.has(key) === !hasDevice) return current;
+      const next = new Set(current);
+      if (hasDevice) next.delete(key);
+      else next.add(key);
+      remember(DEVICELESS_USES, stickyKey, next);
+      return next;
+    });
+  }, [stickyKey]);
+  return { options, chosen, choose, reportDevice };
 }
 
 /**

@@ -33,7 +33,7 @@ import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
 import { WorkToolsMaximizeContext } from "./workToolsMaximize";
 import { cn } from "../ui/cn";
 import { WorkToolPicker } from "./WorkToolPicker";
-import { useWorkToolStatuses } from "./useWorkToolStatuses";
+import { useWorkToolStatuses, withRemoteWorkToolLines } from "./useWorkToolStatuses";
 import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
 import { AndroidToolCardMenu } from "../android/AndroidToolCardMenu";
@@ -340,7 +340,7 @@ export function WorkSidebar({
   // The same for the Android card menu's start, stop, release and delete.
   const [androidDeviceRefreshKey, setAndroidDeviceRefreshKey] = useState(0);
   const {
-    statuses,
+    statuses: laneStatuses,
     loading: statusesLoading,
     appleDevice,
     androidDevice,
@@ -356,6 +356,10 @@ export function WorkSidebar({
     androidDeviceRefreshKey,
     remoteShellCount: activeRemoteWorkOnRow(activeSession).reduce((total, use) => total + use.terminalIds.length, 0),
   });
+  // A card whose device the chat drives on another machine names that machine
+  // instead of this lane's "No device" (from the chat summary; no reads).
+  const remoteWork = activeSession?.remoteWork;
+  const statuses = useMemo(() => withRemoteWorkToolLines(laneStatuses, remoteWork), [laneStatuses, remoteWork]);
 
   // No lane warning: every tool here is this lane's own. Another lane's App
   // Control session is never shown, so there is nothing to warn about.

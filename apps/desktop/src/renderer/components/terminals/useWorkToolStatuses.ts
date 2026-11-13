@@ -38,7 +38,11 @@ import { useAndroidLaneDeviceCard, type AndroidLaneDeviceCard } from "../android
 import { issueTabsScopeKey, useIssueTabs } from "../issues/issueTabsStore";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
+import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
+import { remoteWorkUsesOf } from "../../../shared/chatRemoteWork";
+import { sameMachineKey } from "../../../shared/machineAddress";
 import {
+  desktopToolForMachinePlatform,
   hostDesktopTool,
   workToolCardLabel,
   type WorkToolAvailability,
@@ -103,6 +107,43 @@ function prToolStatusLine(count: number | null): WorkToolStatus {
   if (count <= 0) return statusLine("No pull request open", false);
   if (count === 1) return statusLine("Pull request open", false);
   return statusLine(`${count} pull requests open`, false);
+}
+
+/** What a tool shows of another machine, by the `remoteWork` flag that says the chat drove it there. */
+const REMOTE_WORK_TOOL_NOUNS = [
+  ["ios", "usesSimulator", "Simulator"],
+  ["android", "usesAndroidEmulator", "Emulator"],
+  ["app-control", "usesAppControl", "App Control"],
+  ["mac-desktop", "usesDesktop", "Screen"],
+  ["windows-desktop", "usesDesktop", "Screen"],
+] as const;
+
+/**
+ * The cards of tools that show a device this chat drives on another machine
+ * (`remoteWork`): "Simulator on MacBook Pro", "Screen on build-box", "On 2
+ * machines". Only where the lane's own tool has nothing live, which is the
+ * line the lane would give otherwise ("No device", "Mac Desktop is off").
+ * From the chat summary alone: it reads nothing over the network.
+ */
+export function withRemoteWorkToolLines(
+  statuses: WorkToolStatusMap,
+  remoteWork: AgentChatRemoteWorkUse[] | null | undefined,
+): WorkToolStatusMap {
+  if (!remoteWork?.length) return statuses;
+  let next: WorkToolStatusMap | null = null;
+  for (const [tool, flag, noun] of REMOTE_WORK_TOOL_NOUNS) {
+    if (statuses[tool]?.live) continue;
+    const uses = remoteWorkUsesOf({ remoteWork }, flag)
+      .filter((use) => flag !== "usesDesktop" || desktopToolForMachinePlatform(use.machinePlatform) === tool);
+    const machines: string[] = [];
+    for (const use of uses) {
+      if (!machines.some((key) => sameMachineKey(key, use.machineKey))) machines.push(use.machineKey);
+    }
+    if (machines.length === 0) continue;
+    const line = machines.length === 1 ? `${noun} on ${uses[0]!.machineName}` : `On ${machines.length} machines`;
+    next = { ...(next ?? statuses), [tool]: statusLine(line, false) };
+  }
+  return next ?? statuses;
 }
 
 function isOpenPullRequest(state: PrSummary["state"]): boolean {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { remoteWorkUseKey, type RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
@@ -7,6 +7,7 @@ import { useRemoteWorkReach } from "../../lib/remoteWorkPins";
 import { useAppStore } from "../../state/appStore";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { Banner } from "../ui/notice/Banner";
+import { macDesktopStatusKey, useMacDesktopStatusEntry } from "../chat/macDesktopStatusStore";
 import { RemoteTargetSwitcher, useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 
@@ -49,6 +50,21 @@ function RemoteWorkReachGate({
       </div>
     );
   }
+  if (reach.kind === "held_elsewhere") {
+    // Not "disconnected": nobody here disconnected it, and Connect would
+    // read as doing nothing. The Connections panel's state and action.
+    return (
+      <WorkToolEmptyLine
+        title={`${use.machineName} is in use by another ADE app on this computer`}
+        testId="remote-work-held-elsewhere"
+        action={(
+          <button type="button" className={WORK_TOOL_CHROME_CHIP} onClick={reach.useHere}>
+            Use it here
+          </button>
+        )}
+      />
+    );
+  }
   if (reach.kind === "disconnected") {
     return (
       <WorkToolEmptyLine
@@ -78,6 +94,7 @@ export function RemoteOrLaneTool({
   laneAvailable,
   remoteLabel,
   testId,
+  stickyKey,
   renderLane,
   renderRemote,
 }: {
@@ -85,10 +102,16 @@ export function RemoteOrLaneTool({
   laneAvailable: boolean;
   remoteLabel: string;
   testId: string;
+  /** The chat and tool a person's pick of target holds for (`useRemoteTargetChoice`). */
+  stickyKey: string;
   renderLane: () => ReactNode;
-  renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding) => ReactNode;
+  /**
+   * `reportDevice` says whether that machine has a device for this use, from
+   * a read the panel makes anyway; the default target skips one that has none.
+   */
+  renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding, reportDevice: (hasDevice: boolean) => void) => ReactNode;
 }) {
-  const { options, chosen, choose } = useRemoteTargetChoice(uses, laneAvailable);
+  const { options, chosen, choose, reportDevice } = useRemoteTargetChoice(uses, laneAvailable, stickyKey);
   const use = chosen?.use ?? null;
   if (!use && options.length <= 1) return <>{renderLane()}</>;
   return (
@@ -103,7 +126,7 @@ export function RemoteOrLaneTool({
       <div className="min-h-0 flex-1">
         {use ? (
           <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
-            {(pin) => renderRemote(use, pin)}
+            {(pin) => renderRemote(use, pin, (hasDevice) => reportDevice(use, hasDevice))}
           </RemoteWorkReachGate>
         ) : renderLane()}
       </div>
@@ -174,6 +197,8 @@ type RemoteDeviceProps = {
   use: RemoteWorkCopyUse;
   remotePin: OpenProjectBinding;
   renderDevice: () => ReactNode;
+  /** Hears each read: whether the copy's lane there has a device. */
+  onDeviceState?: (hasDevice: boolean) => void;
 };
 
 /**
@@ -181,14 +206,20 @@ type RemoteDeviceProps = {
  * one. Nothing is started or picked from here: with no device yet, it says so.
  * `renderDevice` draws the device through `remotePin` on the copy's lane.
  */
-function RemoteWorkDevice({ use, remotePin, renderDevice, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
+function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
   const laneId = use.workCopyLaneId;
   const [state, setState] = useState<RemoteDeviceState>("loading");
+  const onDeviceStateRef = useRef(onDeviceState);
+  onDeviceStateRef.current = onDeviceState;
   useEffect(() => {
     let cancelled = false;
     const read = () => {
       void kind.read(laneId, remotePin)
-        ?.then((has) => { if (!cancelled) setState(has ? "device" : "none"); })
+        ?.then((has) => {
+          if (cancelled) return;
+          setState(has ? "device" : "none");
+          onDeviceStateRef.current?.(has);
+        })
         .catch((error: unknown) => { if (!cancelled) setState(failedRead(error)); });
     };
     read();
@@ -223,4 +254,28 @@ export function RemoteWorkSimulator(props: RemoteDeviceProps) {
 /** The other machine's Android emulator for this chat's work copy (`RemoteWorkDevice`). */
 export function RemoteWorkAndroid(props: RemoteDeviceProps) {
   return <RemoteWorkDevice {...props} kind={REMOTE_ANDROID} />;
+}
+
+/**
+ * Says whether the other machine's lane screen for this use is up, from the
+ * status the screen pane itself reads into the store; reads nothing itself.
+ */
+export function RemoteScreenDeviceReport({
+  laneId,
+  pin,
+  onDeviceState,
+}: {
+  laneId: string;
+  pin: OpenProjectBinding;
+  onDeviceState: (hasDevice: boolean) => void;
+}) {
+  const entry = useMacDesktopStatusEntry(macDesktopStatusKey(laneId, pin));
+  const known = entry?.confirmed !== false && entry?.status != null;
+  const hasDevice = known ? Boolean(entry?.status?.display) : null;
+  const onDeviceStateRef = useRef(onDeviceState);
+  onDeviceStateRef.current = onDeviceState;
+  useEffect(() => {
+    if (hasDevice !== null) onDeviceStateRef.current(hasDevice);
+  }, [hasDevice]);
+  return null;
 }

@@ -1515,6 +1515,51 @@ let browserMockIosStopped = false;
 let browserMockIosStopTimer: number | null = null;
 const browserMockIosListeners = new Set<(event: any) => void>();
 
+/** `?mockRemoteConnect=in-use`'s saved machine: another ADE app on this computer holds the link. */
+function browserMockHeldElsewhereConnection(): any[] {
+  if (browserMockParam("mockRemoteConnect") !== "in-use") return [];
+  return [{
+    target: {
+      id: BROWSER_MOCK_REMOTE_WORK_TARGET_ID,
+      name: "MacBook Pro (97)",
+      hostname: "mbp-97.local",
+      transport: "paired",
+      pairedMachine: { hostIdentity: "mock-mbp-97", machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "0.0.0-browser",
+      lastConnectedAt: Date.now() - 60_000,
+    },
+    state: "error",
+    arch: "darwin-arm64",
+    version: "0.0.0-browser",
+    route: null,
+    capabilities: null,
+    projects: [],
+    lastError: "Another ADE app on this computer (for example ADE Beta or a dev build) is using the link to MacBook Pro (97). Use it here instead?",
+    lastAttemptedAt: Date.now() - 30_000,
+    connectedAt: null,
+    reconnectBlocked: "disconnected",
+    recovery: "held_elsewhere",
+  }];
+}
+
+/** `remoteRuntime.connect` on `?mockRemoteConnect=in-use`'s machine ("Use it here"): it connects after a beat. */
+async function browserMockConnectHeldTarget(): Promise<any> {
+  await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+  const [held] = browserMockHeldElsewhereConnection();
+  return { target: { ...held.target, lastConnectedAt: Date.now() }, arch: "darwin-arm64", version: "0.0.0-browser", projects: [] };
+}
+
+/** `remoteRuntime.connect`, except "Use it here" on `?mockRemoteConnect=in-use`'s machine connects it after a beat. */
+function withHeldElsewhereConnect(connect: (id: string) => Promise<any>): (id: string) => Promise<any> {
+  return (id) => (id === BROWSER_MOCK_REMOTE_WORK_TARGET_ID && browserMockParam("mockRemoteConnect") === "in-use"
+    ? browserMockConnectHeldTarget()
+    : connect(id));
+}
+
 /** `window.ade.machines.connect`: the paired machines connect, after a beat; `?mockRemoteConnect` picks a failure. */
 async function browserMockConnectMachine(machineKey: string): Promise<any> {
   browserMockRemoteConnects += 1;
@@ -2374,6 +2419,8 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
     },
     // `?mockAndroidRemote`: the chat drove the Studio Mac's Android emulator
     // through its work copy there (`ade android … --machine "Studio Mac"`).
+    // `=two`: it later ran work on "MacBook Pro (97)" too, whose copy there
+    // has no emulator, so the newest use is not the one with a device.
     ...(browserMockFlag("mockAndroidRemote")
       ? {
         remoteWork: [{
@@ -2386,13 +2433,26 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
           workCopyLaneId: "remote-work-0a1b2c3d4e5f",
           usesSimulator: false,
           usesAndroidEmulator: true,
+          lastStartedAt: new Date(Date.now() - 60_000).toISOString(),
+        }, ...(browserMockParam("mockAndroidRemote") === "two" ? [{
+          machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY,
+          machineName: "MacBook Pro (97)",
+          machinePlatform: "darwin",
+          projectId: "mock-project-mbp",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-97aa",
+          usesSimulator: true,
+          usesAndroidEmulator: true,
           lastStartedAt: new Date().toISOString(),
-        }],
+        }] : [])],
       }
       : {}),
     // `?mockRemoteWork=ios,desktop,app-control`: the chat drove those on
     // "MacBook Pro (97)", a machine this window has no connection to; the
-    // tool connects on demand (`?mockRemoteConnect=hang|fail|fail-once`).
+    // tool connects on demand (`?mockRemoteConnect=hang|fail|fail-once`), or
+    // `?mockRemoteConnect=in-use`: another ADE app on this computer holds the
+    // link, and "Use it here" takes it back.
     ...(browserMockParam("mockRemoteWork") !== null
       ? {
         remoteWork: [{
@@ -6642,7 +6702,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now() - 3 * 86_400_000,
           connectedAt: null,
-        }],
+        }, ...browserMockHeldElsewhereConnection()],
         connectedCount: 1,
         updatedAt: Date.now(),
       }),
@@ -6672,7 +6732,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         autoConnect: true,
       }),
       removeTarget: resolvedArg({ removed: true }),
-      connect: resolvedArg({
+      connect: withHeldElsewhereConnect(resolvedArg({
         target: {
           id: "mock-remote",
           name: "Mock remote",
@@ -6687,7 +6747,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         arch: "darwin-arm64",
         version: "0.0.0-browser",
         projects: [],
-      }),
+      })),
       listProjects: resolvedArg([{
         projectId: "mock-remote-project",
         rootPath: "/Users/ade/Projects/browser-preview",
