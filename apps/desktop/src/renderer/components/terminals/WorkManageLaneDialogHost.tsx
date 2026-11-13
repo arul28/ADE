@@ -25,6 +25,7 @@ import {
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
@@ -45,9 +46,14 @@ export type WorkManageLaneDialogHostProps = {
 export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   laneId,
   lane: pinnedLane,
-  runtimePin,
+  runtimePin: lanePinProp,
   onClose,
 }: WorkManageLaneDialogHostProps) {
+  // A lane with no pin is a lane of the tab's copy (the store's list), so its
+  // calls go to that copy. Without this, every action on a local lane refused
+  // with "not connected", because a chat-scoped call never defaults to a machine.
+  const tabCopyPin = useTabCopyPin();
+  const runtimePin = lanePinProp ?? tabCopyPin ?? undefined;
   const lanes = useAppStore((state) => state.lanes);
   const laneSnapshots = useAppStore((state) => state.laneSnapshots);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
