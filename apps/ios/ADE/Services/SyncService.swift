@@ -19371,7 +19371,10 @@ final class SyncService: ObservableObject {
       + (discovered.tailscaleAddress.map { [$0] } ?? [])
     )
     if !knownAddresses.isDisjoint(with: discoveredAddresses) {
-      return true
+      // A row with no identity on a known address: the same brain only when
+      // it is on the profile's port too (another brain there has its own).
+      guard !profileIdentities.isEmpty, profile.port > 0 else { return true }
+      return discovered.port == profile.port
     }
 
     if let hostIdentity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
