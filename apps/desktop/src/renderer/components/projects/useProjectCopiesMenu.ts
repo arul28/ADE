@@ -17,7 +17,6 @@ import { buildRepositoryCopies, copyComputers, repositoryTabFromAccountProject, 
 import { useAccountProjectList, useRepositoryCopySources, useThisMachineKey } from "../../state/useRepositoryCopies";
 import type { ContextMenuEntry } from "../ui/ContextMenu";
 import { REQUEST_COPIES_MENU_EVENT, type CopiesMenuRequest } from "./removeProjectRequest";
-import { useThisComputerCatalog, withCatalogFolders } from "./useHomeAccountProjects";
 
 /** ADE Web has no recents of its own. */
 const NO_RECENT_PROJECTS: readonly RecentProjectSummary[] = [];
@@ -34,10 +33,13 @@ const NO_RECENT_PROJECTS: readonly RecentProjectSummary[] = [];
  *   account does not list, loses its folder: it is not counted either.
  */
 export function rowsWithSharedCopies(
-  rows: readonly CopiesMenuRow[],
+  rowsIn: readonly CopiesMenuRow[],
   copies: readonly RepositoryCopy[] | null,
+  adeCloudTargetIds: ReadonlySet<string>,
 ): CopiesMenuRow[] {
-  if (!copies) return [...rows];
+  // An ADE Cloud lane computer is never a copy to list or a place to clone to.
+  const rows = rowsIn.filter((row) => !row.machine.targetId || !adeCloudTargetIds.has(row.machine.targetId));
+  if (!copies) return rows;
   const shared = copies.filter((copy) => !copy.isAdeCloud);
   const sharedFor = (machine: CopyMachine): RepositoryCopy | undefined =>
     shared.find((copy) => machine.isLocal
@@ -327,20 +329,24 @@ export function useProjectCopiesMenu(args: {
 
   // The copies menu and the tab's Copies submenu say how many computers have
   // a copy, by the shared rule (`copyComputers`), and list the same ones. The
-  // sources are the snapshot and recents the top bar already holds, plus the
-  // catalog Home last read (Home counts those folders too): no new read.
+  // sources are the snapshot and recents the top bar already holds (the
+  // sources add this computer's catalog): no new read.
   const accountProjectList = useAccountProjectList();
   const thisMachineKey = useThisMachineKey(!webMode && accountProjectList.state === "ready");
-  const catalogFolders = useThisComputerCatalog(!webMode);
-  const thisComputerRecents = useMemo(
-    () => (webMode ? NO_RECENT_PROJECTS : withCatalogFolders(recentProjects, catalogFolders)),
-    [catalogFolders, recentProjects, webMode],
-  );
   const copySources = useRepositoryCopySources(true, {
     snapshot: remoteSnapshot,
-    recents: thisComputerRecents,
+    recents: webMode ? NO_RECENT_PROJECTS : recentProjects,
     machineKey: thisMachineKey,
   });
+  // ADE Cloud lane computers take no new work: no "Add a copy" there.
+  const adeCloudTargetIds = useMemo(() => new Set(
+    (remoteSnapshot?.connections ?? [])
+      .filter((connection) => copySources.isAdeCloudMachine?.({
+        hostname: connection.target.hostname ?? null,
+        machineKey: connection.target.pairedMachine?.machineKey ?? null,
+      }))
+      .map((connection) => connection.target.id),
+  ), [copySources, remoteSnapshot]);
   const sharedCopiesFor = useCallback((groupId: string): RepositoryCopy[] | null => {
     if (accountProjectList.state !== "ready") return null;
     const accountProject = accountProjectList.projects.find((entry) => entry.id === groupId);
@@ -376,8 +382,8 @@ export function useProjectCopiesMenu(args: {
     [copiesMenuCopies],
   );
   const copiesMenuRows = useMemo(
-    () => rowsWithSharedCopies(copiesMenuView?.rows ?? [], copiesMenuCopies),
-    [copiesMenuCopies, copiesMenuView?.rows],
+    () => rowsWithSharedCopies(copiesMenuView?.rows ?? [], copiesMenuCopies, adeCloudTargetIds),
+    [adeCloudTargetIds, copiesMenuCopies, copiesMenuView?.rows],
   );
 
   /**
@@ -391,7 +397,7 @@ export function useProjectCopiesMenu(args: {
     const model = copiesModelFor(group.id);
     const openFull = () => setCopiesMenu({ x: anchor.x, y: anchor.y, groupId: group.id });
     const entries: ContextMenuEntry[] = [];
-    for (const row of rowsWithSharedCopies(model?.rows ?? [], sharedCopiesFor(group.id))) {
+    for (const row of rowsWithSharedCopies(model?.rows ?? [], sharedCopiesFor(group.id), adeCloudTargetIds)) {
       if (row.copy) {
         entries.push({
           kind: "item",
@@ -419,7 +425,7 @@ export function useProjectCopiesMenu(args: {
     if (entries.length > 0) entries.push({ kind: "separator", key: "sep-copies-all" });
     entries.push({ kind: "item", key: "copies-all", label: "All copies…", icon: CopiesIcon, onSelect: openFull });
     return { kind: "submenu", key: "copies", label: "Copies", icon: CopiesIcon, entries };
-  }, [copiesModelFor, isProjectBusy, sharedCopiesFor, startCopyForRepo, switchToCopy, webMode]);
+  }, [adeCloudTargetIds, copiesModelFor, isProjectBusy, sharedCopiesFor, startCopyForRepo, switchToCopy, webMode]);
 
   // The computers tag on the project page opens the copies menu of the tab in
   // front; a Home row's computers chip opens it for that account project,

@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { captureError } from "../../../shared/sentry/capture";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopySources, useThisMachineKey } from "../../state/useRepositoryCopies";
-import { normalizePathForComparison } from "../../lib/pathUtils";
+import { readThisComputerCatalog, useThisComputerCatalog, withCatalogFolders } from "../../state/thisComputerCatalog";
 import { foreignCopyPaths } from "../app/projectTabGrouping";
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
 import { buildHomeProjectList, type HomeProjectList, type HomeWebComputer } from "./homeProjectRows";
@@ -18,25 +17,6 @@ function accountProjectForOrigin(projects: readonly AccountProjectView[], gitOri
     cachedGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key) === origin)) ?? null;
 }
 
-/**
- * This computer's catalog as Home last read it: shown at once on the next
- * open, then read again. Home and the copies menu both read it, so a folder
- * Home counts as this computer's copy is one the menu lists.
- */
-let thisComputerFoldersCache: readonly RecentProjectSummary[] = [];
-const catalogListeners = new Set<() => void>();
-function subscribeCatalog(listener: () => void): () => void {
-  catalogListeners.add(listener);
-  return () => catalogListeners.delete(listener);
-}
-function readCatalog(): readonly RecentProjectSummary[] {
-  return thisComputerFoldersCache;
-}
-function setCatalog(next: readonly RecentProjectSummary[]): void {
-  if (sameFolders(thisComputerFoldersCache, next)) return;
-  thisComputerFoldersCache = next;
-  for (const listener of catalogListeners) listener();
-}
 /** The local brain as this window last heard of it ("connected:<pid>" or its state); null before the first report. */
 let brainIdentity: string | null = null;
 /** The brain identity the last catalog read went to. */
@@ -61,17 +41,6 @@ function useBrainConnects(desktop: boolean): number {
   return connects;
 }
 
-/** The same folders in the same order: a read that changes nothing keeps the list Home already shows. */
-function sameFolders(a: readonly RecentProjectSummary[], b: readonly RecentProjectSummary[]): boolean {
-  return a.length === b.length && a.every((folder, index) => {
-    const other = b[index]!;
-    return folder.rootPath === other.rootPath
-      && folder.displayName === other.displayName
-      && folder.lastOpenedAt === other.lastOpenedAt
-      && (folder.gitOriginUrl ?? null) === (other.gitOriginUrl ?? null);
-  });
-}
-
 /**
  * This computer's folders as its brain registers them. The desktop's recents
  * stop at 24; the catalog has every folder. Read when Home opens and each time
@@ -84,40 +53,11 @@ function useThisComputerFolders(desktop: boolean, ready: boolean, recentsVersion
   const folders = useThisComputerCatalog(desktop);
   const brainConnects = useBrainConnects(desktop);
   useEffect(() => {
-    const read = window.ade?.project?.listThisComputer;
-    if (!desktop || !ready || typeof read !== "function") return undefined;
-    let cancelled = false;
+    if (!desktop || !ready) return;
     catalogReadIdentity = brainIdentity;
-    void read().then((next) => {
-      if (!cancelled) setCatalog(next);
-    }, (error: unknown) => {
-      // Home keeps the last catalog it read (or the recents alone); the next open reads again.
-      captureError(error, { fingerprint: ["home-projects", "this-computer-folders-read"], level: "warning", handled: true });
-    });
-    return () => {
-      cancelled = true;
-    };
+    readThisComputerCatalog();
   }, [brainConnects, desktop, ready, recentsVersion]);
   return folders;
-}
-const NO_FOLDERS: readonly RecentProjectSummary[] = [];
-
-/** This computer's catalog as Home last read it, without a read of its own. Desktop only. */
-export function useThisComputerCatalog(desktop: boolean): readonly RecentProjectSummary[] {
-  const folders = useSyncExternalStore(subscribeCatalog, readCatalog, readCatalog);
-  return desktop ? folders : NO_FOLDERS;
-}
-
-/** The recents, then each catalog folder the recents do not have (the recents keep order and pins). */
-export function withCatalogFolders(
-  recents: readonly RecentProjectSummary[],
-  folders: readonly RecentProjectSummary[],
-): readonly RecentProjectSummary[] {
-  if (folders.length === 0) return recents;
-  // Windows and macOS paths differ in case between two writers; compare by the shared key.
-  const listed = new Set(recents.filter((recent) => recent.kind !== "remote").map((recent) => normalizePathForComparison(recent.rootPath)));
-  const extra = folders.filter((folder) => !listed.has(normalizePathForComparison(folder.rootPath)));
-  return extra.length > 0 ? [...recents, ...extra] : recents;
 }
 
 /**
@@ -156,13 +96,14 @@ export function useHomeAccountProjects(args: {
   // The same sources as the copies menu and Settings › Location, so the
   // computer count agrees on all three. Home already holds the recents and
   // the connections on the desktop, so nothing is read a second time; ADE
-  // Web reads its in-browser connections (no IPC there). The recents plus
-  // the catalog: a folder Home puts in an account row has a copy to open.
+  // Web reads its in-browser connections (no IPC there). The sources add
+  // this computer's catalog, so a folder Home puts in an account row has a
+  // copy to open.
   const catalogFolders = useThisComputerFolders(!webMode, recentsLoaded, recentProjects);
   const desktopFolders = useMemo(() => withCatalogFolders(recentProjects, catalogFolders), [catalogFolders, recentProjects]);
   const sources = useRepositoryCopySources(true, webMode ? null : {
     snapshot: remoteSnapshot,
-    recents: desktopFolders,
+    recents: recentProjects,
     machineKey: thisMachineKey,
   });
   const hidden = useHomeHiddenProjects();

@@ -467,8 +467,17 @@ export function CommandPalette({
     [remoteLocations],
   );
 
+  // A computer picked here that has since disconnected is no place to act:
+  // the actions and the shown place go back to this computer together.
   const activeProjectLocation =
-    selectedProjectLocation ?? LOCAL_PROJECT_LOCATION;
+    selectedProjectLocation?.kind === "remote" &&
+    !remoteLocations.some(
+      (location) =>
+        location.kind === "remote" &&
+        location.targetId === selectedProjectLocation.targetId,
+    )
+      ? LOCAL_PROJECT_LOCATION
+      : (selectedProjectLocation ?? LOCAL_PROJECT_LOCATION);
   const activeRemoteTargetId =
     activeProjectLocation.kind === "remote"
       ? activeProjectLocation.targetId
@@ -2486,8 +2495,8 @@ export function CommandPalette({
                         initialMachineIds={
                           selectedProjectLocation
                             ? [
-                                selectedProjectLocation.kind === "remote"
-                                  ? selectedProjectLocation.targetId
+                                activeProjectLocation.kind === "remote"
+                                  ? activeProjectLocation.targetId
                                   : THIS_MACHINE_ID,
                               ]
                             : undefined

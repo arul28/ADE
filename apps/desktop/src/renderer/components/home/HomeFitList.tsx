@@ -52,6 +52,7 @@ export function FitList({
   const [open, setOpen] = useState(false);
   // Room for the "N more" line only when there is somewhere for it to go.
   const reserveRef = useRef(0);
+  const hasMore = more != null;
   reserveRef.current = more ? MORE_LINE : 0;
   const unrenderedRef = useRef(0);
   unrenderedRef.current = unrendered;
@@ -104,7 +105,8 @@ export function FitList({
       resize.disconnect();
       mutation.disconnect();
     };
-  }, []);
+    // Rows left out or a new "N more" line change the room with no resize.
+  }, [hasMore, unrendered]);
 
   return (
     <div ref={boxRef} className={`ade-fit${className ? ` ${className}` : ""}`}>

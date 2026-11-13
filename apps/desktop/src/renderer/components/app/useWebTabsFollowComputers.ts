@@ -15,8 +15,10 @@ function frontRemoteTabKey(
   store: Pick<ReturnType<typeof useAppStore.getState>, "projectBinding" | "isNewTabOpen" | "activeNoMachineTabId">,
   lastRemoteBindingKey: string | null,
 ): string | null {
+  // Home keeps the binding it opened over, so it goes first.
+  if (store.isNewTabOpen || store.activeNoMachineTabId != null) return null;
   if (store.projectBinding?.kind === "remote") return store.projectBinding.key;
-  if (store.projectBinding != null || store.isNewTabOpen || store.activeNoMachineTabId != null) return null;
+  if (store.projectBinding != null) return null;
   return lastRemoteBindingKey;
 }
 
@@ -92,11 +94,13 @@ export function useWebTabsFollowComputers({
   useEffect(() => {
     if (remoteBinding) lastRemoteBindingKeyRef.current = remoteBinding.key;
   }, [remoteBinding]);
-  const moveWebTabsOffGoneTargets = useCallback(async (gone: ReadonlySet<string>): Promise<Map<string, RemoteOpenProjectBinding>> => {
-    const waiting = new Map<string, RemoteOpenProjectBinding>();
+  const moveWebTabsOffGoneTargets = useCallback(async (
+    gone: ReadonlySet<string>,
+    waiting?: Map<string, RemoteOpenProjectBinding>,
+  ): Promise<void> => {
     const latestRemoteTabs = openRemoteProjectTabsRef.current;
     const affected = latestRemoteTabs.filter((entry) => gone.has(entry.targetId));
-    if (affected.length === 0) return waiting;
+    if (affected.length === 0) return;
     const connectedTargetIds = new Set(
       (remoteSnapshotRef.current?.connections ?? [])
         .filter((connection) => connection.state === "connected" && !gone.has(connection.target.id))
@@ -153,17 +157,19 @@ export function useWebTabsFollowComputers({
     const frontWasAffected = frontKey != null && affectedKeys.has(frontKey);
     for (const plan of plans) {
       if (!plan.noMachine) continue;
-      waiting.set(plan.noMachine.id, plan.tab);
+      // Kept before the switch below: a computer back during it finds the tab.
+      waiting?.set(plan.noMachine.id, plan.tab);
       store.showNoMachineTab(plan.noMachine, { activate: frontWasAffected && plan.tab.key === frontKey });
     }
     const frontPlan = frontWasAffected ? plans.find((plan) => plan.tab.key === frontKey) : undefined;
+    // A folder with no repository and no other copy closed: Home goes in front.
+    if (frontPlan && !frontPlan.fallback && !frontPlan.noMachine) store.openNewTab();
     if (frontPlan?.fallback?.kind === "remote") {
       await store.switchRemoteProject(frontPlan.fallback.binding.targetId, frontPlan.fallback.binding.projectId).catch((error: unknown) => {
         // The tab moved; only its page did not open. A click on the tab opens it again.
         captureError(error, { fingerprint: ["repository-tabs", "web-move-open"], level: "warning", handled: true });
       });
     }
-    return waiting;
   }, [openProjectTabRootsRef, openRemoteProjectTabsRef, recordNameForRef, remoteSnapshotRef, setOpenRemoteProjectTabs, setPreferredBindingKeyByGroup, setTabOrder, tabGroupsRef]);
   const webSeenTargetIdsRef = useRef<ReadonlySet<string>>(new Set());
   // Computers connected at some point in this page, and the ones whose drop is
@@ -219,9 +225,7 @@ export function useWebTabsFollowComputers({
         const latest = remoteSnapshotRef.current?.connections.find((connection) => connection.target.id === targetId);
         if (!latest || latest.state === "connected") return;
         webStoppedTargetsRef.current.add(targetId);
-        void moveWebTabsOffGoneTargets(new Set([targetId])).then((waiting) => {
-          for (const [id, binding] of waiting) webStoppedTabsRef.current.set(id, binding);
-        });
+        void moveWebTabsOffGoneTargets(new Set([targetId]), webStoppedTabsRef.current);
       }, WEB_STOP_SETTLE_MS));
     }
     const resumed = resumeWebStoppedTabs(webStoppedTabsRef.current, { connected, gone });

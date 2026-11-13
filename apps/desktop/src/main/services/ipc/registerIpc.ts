@@ -4957,6 +4957,7 @@ export function registerIpc({
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
+    let catalogLeaveError: unknown = null;
     // A folder Home lists from this computer's catalog alone (no desktop
     // recent, see `projectListThisComputer`) leaves that catalog the same way.
     // That is the whole forget, so a failed call throws: Home says why the row
@@ -4983,9 +4984,11 @@ export function registerIpc({
             "system",
             "desktop",
           );
-        } catch {
-          // Best effort; the desktop recent remains forgotten even if the
-          // background service is temporarily unavailable.
+        } catch (error) {
+          // Home lists this catalog, so the folder would come back with no
+          // word. The rest of the forget runs; then the error says why the
+          // row stays, and a retry takes the catalog-only path above.
+          catalogLeaveError = error;
         }
       }
     }
@@ -4997,6 +5000,7 @@ export function registerIpc({
         // Best effort; forgetting a project should still update recents even if teardown fails.
       }
     }
+    if (catalogLeaveError) throw catalogLeaveError;
   };
 
   handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {

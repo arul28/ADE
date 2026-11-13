@@ -33,11 +33,13 @@ import {
   type StartOnChoice,
 } from "../../shared/repositoryTab";
 import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot, RemoteRuntimeConnectionStatus } from "../../shared/types";
+import { foreignCopyPaths } from "../components/app/projectTabGrouping";
 import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
 import { isWebClientMode } from "../lib/webClientMode";
 import { adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "./cloudAccess";
 import { useStableBinding } from "./laneMachineRouting";
+import { readThisComputerCatalog, useThisComputerCatalog, withCatalogFolders } from "./thisComputerCatalog";
 import { useRemoteConnectionSnapshot } from "./projectMachines";
 import { readWebAccountMachineKeys, subscribeWebAccountMachineKeys } from "./webAccountMachineKeys";
 
@@ -165,6 +167,7 @@ function useThisComputer(active: boolean): ThisComputer | null {
       void readThisMachineKey().then((key) => {
         if (!cancelled && key) setMachineKey(key);
       });
+      readThisComputerCatalog();
       if (typeof listRecent !== "function") return;
       const readId = ++latestRead;
       void listRecent().then(
@@ -255,10 +258,26 @@ export function useRepositoryCopySources(active: boolean, given?: GivenCopySourc
   const hasGiven = given != null;
   const givenRecents = given?.recents;
   const givenKey = given?.machineKey ?? null;
+  const desktop = active && !isWebClientMode();
+  // Given recents that change (an open, a forget, a remove) change the
+  // catalog too; the own path reads it with the recents.
+  useEffect(() => {
+    if (desktop && hasGiven) readThisComputerCatalog();
+  }, [desktop, givenRecents, hasGiven]);
+  const catalog = useThisComputerCatalog(desktop);
+  const accountProjects = list.state === "ready" ? list.projects : null;
   const thisComputer = useMemo<ThisComputer | null>(() => {
-    if (!hasGiven) return ownThisComputer;
-    return isWebClientMode() ? null : { machineKey: givenKey, localProjects: givenRecents ?? NO_RECENTS };
-  }, [givenKey, givenRecents, hasGiven, ownThisComputer]);
+    const base = hasGiven
+      ? (isWebClientMode() ? null : { machineKey: givenKey, localProjects: givenRecents ?? NO_RECENTS })
+      : ownThisComputer;
+    if (!base) return null;
+    // The recents plus the catalog, less the folders that are another
+    // machine's copy at a path on this disk (F6).
+    const foreign = foreignCopyPaths({ projects: accountProjects, thisMachineKey: base.machineKey });
+    const all = withCatalogFolders(base.localProjects, catalog);
+    const localProjects = foreign.size === 0 ? all : all.filter((project) => !foreign.has(project.rootPath));
+    return localProjects === base.localProjects ? base : { ...base, localProjects };
+  }, [accountProjects, catalog, givenKey, givenRecents, hasGiven, ownThisComputer]);
   return useMemo<RepositoryCopySources>(() => ({
     connections,
     thisMachine: thisComputer,
