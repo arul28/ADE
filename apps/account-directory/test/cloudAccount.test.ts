@@ -184,12 +184,14 @@ function fakeNetwork() {
       : Object.fromEntries(new URLSearchParams(init.body)) as Row;
     calls.push({ method, url, body });
     const planned = once.findIndex((entry) => entry.match.test(`${method} ${url}`));
+    let response: Response;
     if (planned !== -1) {
       const { reply: planReply } = once.splice(planned, 1)[0]!;
       if (planReply instanceof Error) throw planReply;
-      return planReply;
+      response = planReply;
+    } else {
+      response = answer(method, url, body);
     }
-    const response = answer(method, url, body);
     const hook = after.findIndex((entry) => entry.match.test(`${method} ${url}`));
     if (hook !== -1) await after.splice(hook, 1)[0]!.run();
     return response;
@@ -1658,7 +1660,8 @@ describe("ADE Cloud plan cleanup", () => {
  * with nobody watching, so a test is the one way to prove the deletes that
  * must not happen: before the time the warning announced (a plan change
  * included), when the push didn't go through, for an account out of hours,
- * and for a computer used since its warning.
+ * for a computer used since its warning or while its save ran, and for one
+ * with a timed wake-up booked; and that a failure never repeats every minute.
  */
 describe("ADE Cloud idle cleanup", () => {
   const BRANCH = "ade/pricing-page";
@@ -1757,6 +1760,9 @@ describe("ADE Cloud idle cleanup", () => {
     ["a paid computer announced for later moved to Free: the announced time holds", () => {
       harness.exec("update cloud_computers set idle_deletes_at = ?, idle_warned_at = ?, idle_emailed_at = ? where instance_id = ?", NOW + 2 * DAY, NOW - DAY, NOW - DAY, INSTANCE);
     }, false],
+    ["a timed wake-up is booked weeks ahead: in use until it fires", () => {
+      harness.insert("cloud_wakes", { user_id: OWNER, instance_id: INSTANCE, wake_url: "https://box.agent37.app", wake_at: NOW + 20 * DAY, updated_at: NOW });
+    }, false],
   ])("not deleted: %s", async (_label, arrange, saveTried) => {
     seedIdle(3 * DAY + HOUR, dueRow);
     await arrange();
@@ -1782,7 +1788,49 @@ describe("ADE Cloud idle cleanup", () => {
       expect(deletes()).toEqual([]);
       expect(harness.rows("select detail from cloud_idle_cleanup_log where step = 'push_refused'")).toEqual([{ detail: "push_left_work" }, { detail: "push_left_work" }]);
       expect(emails()).toHaveLength(1);
+      // Refused twice: the next try waits 2 days, so the computer isn't woken every day.
+      const tried = execs().length;
+      clock = NOW + 2 * DAY + HOUR;
+      await run();
+      expect(execs()).toHaveLength(tried);
     }
+  });
+
+  it("a person who starts the computer while its save runs keeps it, awake", async () => {
+    seedIdle(3 * DAY + HOUR, dueRow);
+    answerExecs(tally([lane()]), tally([lane()]));
+    // The cleanup's free wake already has it running, so this start changes no status.
+    harness.net.after.push({
+      match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`),
+      run: async () => {
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, {})).status).toBe(200);
+      },
+    });
+
+    await run();
+
+    expect(deletes()).toEqual([]);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual(["running", "running"]);
+  });
+
+  it("a delete the provider refuses after the save waits before it runs again, never every minute", async () => {
+    seedIdle(3 * DAY + HOUR, dueRow);
+    answerExecs(tally([lane()]), tally([lane()]));
+    harness.net.once.push({ match: new RegExp(`DELETE .*/instances/${INSTANCE}$`), reply: harness.net.reply({ error: { code: "server_error" } }, 500) });
+    await run();
+    expect(computer(harness).deleted_at).toBeNull();
+    const saved = execs().length;
+    expect(saved).toBeGreaterThan(0);
+
+    clock = NOW + 60_000;
+    await run();
+    expect(execs()).toHaveLength(saved);
+
+    clock = NOW + HOUR;
+    answerExecs(tally([lane()]), tally([lane()]));
+    await run();
+    expect(computer(harness).deleted_at).toBe(clock);
   });
 
   it("a used computer is warned again only 2 days after its last use", async () => {

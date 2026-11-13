@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
-  IDLE_CLEANUP_HELD_NEXT,
   formatCloudDate,
+  idleCleanupHeldNext,
   idleCleanupSaveSentence,
   idleCleanupWhen,
   ignoredFilesSentence,
@@ -72,7 +72,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
                 title: `ADE didn't delete ${name}: its work couldn't be saved`,
-                detail: `${entry.held.reason} ${IDLE_CLEANUP_HELD_NEXT}`,
+                detail: `${entry.held.reason} ${idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)}`,
                 actions: [action],
                 report: false,
               }}

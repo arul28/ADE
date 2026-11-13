@@ -159,6 +159,11 @@ export type ComputerRow = {
   /** The save didn't go through, so the computer was kept: when, and why. */
   idle_held_at?: number | null;
   idle_held_reason?: string | null;
+  /** Saves that failed in a row this idle stretch: the next try waits longer each time. */
+  idle_held_count?: number | null;
+  /** A run that failed after or outside the save (a refused delete): tried again after a wait. */
+  idle_failed_at?: number | null;
+  idle_failed_count?: number | null;
   /** Files git ignores that a delete would lose (`CloudIgnoredFiles` as JSON). */
   ignored_files_json?: string | null;
 };

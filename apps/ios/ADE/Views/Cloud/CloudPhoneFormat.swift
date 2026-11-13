@@ -114,14 +114,19 @@ func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String
   return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
 }
 
+/// "in 1 day", "in 5 hours", "within the hour" (`inHowLong`).
+private func cloudInHowLong(_ at: Double, now: Double) -> String {
+  let left = max(0, at - now)
+  let hours = Int((left / 3_600_000).rounded())
+  if hours < 1 { return "within the hour" }
+  if hours < 20 { return "in \(hours) \(hours == 1 ? "hour" : "hours")" }
+  let days = max(1, Int((left / 86_400_000).rounded()))
+  return "in \(days) \(days == 1 ? "day" : "days")"
+}
+
 /// "deleted in 1 day", "deleted in 5 hours" (`idleCleanupWhen`).
 func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
-  let left = max(0, deletesAt - now)
-  let hours = Int((left / 3_600_000).rounded())
-  if hours < 1 { return "deleted within the hour" }
-  if hours < 20 { return "deleted in \(hours) \(hours == 1 ? "hour" : "hours")" }
-  let days = max(1, Int((left / 86_400_000).rounded()))
-  return "deleted in \(days) \(days == 1 ? "day" : "days")"
+  "deleted \(cloudInHowLong(deletesAt, now: now))"
 }
 
 /// What the warning says about files git ignores (`ignoredFilesSentence`).
@@ -137,6 +142,12 @@ func cloudIgnoredFilesSentence(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredF
     let shown = ignored.paths.joined(separator: ", ")
     list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
   }
+  if ignored.incomplete == true {
+    guard let list else {
+      return "ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never pushed, so they won't be kept.\(builds)"
+    }
+    return "Files git ignores are never pushed, so these won't be kept: \(list). ADE couldn't read every lane on it, so there may be more.\(builds)"
+  }
   guard let list else { return "No files that git ignores were found on it.\(builds)" }
   return "Files git ignores are never pushed, so these won't be kept: \(list).\(builds)"
 }
@@ -146,7 +157,7 @@ func cloudIgnoredFilesSentence(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredF
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let name = entry.displayName
   if let held = entry.held {
-    return "ADE didn't delete \(name): its work couldn't be saved. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again in a day."
+    return "ADE didn't delete \(name): its work couldn't be saved. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now))."
   }
   let branch = entry.branch.map { "the lane's branch, \($0)," } ?? "the lane's branch"
   let days = entry.idleDays.map { " after \($0) days unused" } ?? " because it isn't used"

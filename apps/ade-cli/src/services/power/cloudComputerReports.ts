@@ -53,7 +53,7 @@ export function createCloudComputerReports(deps: {
       }
       return { checkedAt: Date.now(), unpushed, prState };
     },
-    /** Every open lane's files git ignores, summed up; null when no lane could be read. */
+    /** Every open lane's files git ignores, summed up (marked incomplete when a lane couldn't be read); null with no lane. */
     readIgnored: async (): Promise<CloudIgnoredFiles | null> => {
       const lanes = [];
       for (const runtime of await bootedRuntimes()) {

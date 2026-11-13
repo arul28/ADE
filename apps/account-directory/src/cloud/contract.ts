@@ -320,8 +320,10 @@ export const CLOUD_DISK_USAGE_MAX_ITEMS = 12;
  * first `CLOUD_IGNORED_FILES_MAX_PATHS` (a folder ends in `/`), `more` counts
  * the rest. Folders that come back with a build or an install
  * (`node_modules`, `dist`) are left out and only counted in `rebuildable`.
+ * `incomplete`: some lane couldn't be read (a timeout, a broken worktree), so
+ * there may be more than listed; an older brain leaves it out.
  */
-export type CloudIgnoredFiles = { checkedAt: number; paths: string[]; more: number; rebuildable: number };
+export type CloudIgnoredFiles = { checkedAt: number; paths: string[]; more: number; rebuildable: number; incomplete?: boolean };
 export const CLOUD_IGNORED_FILES_MAX_PATHS = 10;
 
 /**
@@ -345,7 +347,8 @@ export type CloudIdleCleanupEntry = {
   idleDays?: number;
   /** Null before the computer first reported them. */
   ignoredFiles?: CloudIgnoredFiles | null;
-  held?: { at: number; reason: string } | null;
+  /** Kept because its save failed; ADE tries again at `retryAt` (an older server leaves it out: use `deletesAt`). */
+  held?: { at: number; reason: string; retryAt?: number } | null;
 };
 
 /** The update channel a computer follows. A client's `alpha` counts as `beta`. */
@@ -812,18 +815,27 @@ export function ignoredFilesSentence(ignored: CloudIgnoredFiles | null | undefin
   if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept.";
   const list = ignoredFilesList(ignored);
   const builds = ignored.rebuildable > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : "";
+  if (ignored.incomplete) {
+    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never pushed, so they won't be kept.${builds}`;
+    return `Files git ignores are never pushed, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
+  }
   if (!list) return `No files that git ignores were found on it.${builds}`;
   return `Files git ignores are never pushed, so these won't be kept: ${list}.${builds}`;
 }
 
+/** "in 1 day", "in 5 hours", "within the hour": how far away a time is. */
+function inHowLong(at: number, now: number): string {
+  const left = Math.max(0, at - now);
+  const hours = Math.round(left / 3_600_000);
+  if (hours < 1) return "within the hour";
+  if (hours < 20) return `in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const days = Math.max(1, Math.round(left / 86_400_000));
+  return `in ${days} ${days === 1 ? "day" : "days"}`;
+}
+
 /** "deleted in 1 day", "deleted in 3 days", "deleted in 5 hours": how far away a delete is. */
 export function idleCleanupWhen(deletesAt: number, now: number): string {
-  const left = Math.max(0, deletesAt - now);
-  const hours = Math.round(left / 3_600_000);
-  if (hours < 1) return "deleted within the hour";
-  if (hours < 20) return `deleted in ${hours} ${hours === 1 ? "hour" : "hours"}`;
-  const days = Math.max(1, Math.round(left / 86_400_000));
-  return `deleted in ${days} ${days === 1 ? "day" : "days"}`;
+  return `deleted ${inHowLong(deletesAt, now)}`;
 }
 
 /**
@@ -838,8 +850,14 @@ export function idleCleanupSaveSentence(branch: string | null | undefined): stri
   return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
 }
 
-/** What to do about a computer the idle cleanup kept because its work couldn't be saved. */
-export const IDLE_CLEANUP_HELD_NEXT = "Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again in a day.";
+/**
+ * What to do about a computer the idle cleanup kept because its work couldn't
+ * be saved, and when ADE tries again (each failed try waits longer: 1, 2, 4
+ * ... days, at most 14).
+ */
+export function idleCleanupHeldNext(retryAt: number, now: number): string {
+  return `Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again ${inHowLong(retryAt, now)}.`;
+}
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
 export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {

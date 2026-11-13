@@ -51,7 +51,7 @@ export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, t
 /** The idle cleanup's shared sentences (the server's emails say the same). */
 export {
   CLOUD_IGNORED_FILES_MAX_PATHS,
-  IDLE_CLEANUP_HELD_NEXT,
+  idleCleanupHeldNext,
   idleCleanupSaveSentence,
   idleCleanupWhen,
   ignoredFilesList,

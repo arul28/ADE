@@ -13,9 +13,9 @@
 import { execFile } from "node:child_process";
 import { CLOUD_IGNORED_FILES_MAX_PATHS, type CloudIgnoredFiles } from "../../../../desktop/src/shared/adeCloud";
 
-/** One lane's read gives up after this long: a huge tree is reported as unknown, never held up. */
+/** One lane's read gives up after this long: that lane is reported as unread (the summary says it may be incomplete), never held up. */
 const GIT_TIMEOUT_MS = 15_000;
-/** More entries than this in one lane are counted, not kept. */
+/** More entries than this in one lane are counted in `more`, not looked at. */
 const MAX_ENTRIES_READ = 5_000;
 
 /**
@@ -47,8 +47,16 @@ function defaultRun(cwd: string): Promise<string> {
   });
 }
 
-/** The summary from each lane's list: the likely precious first, then by name; build folders only counted. */
-export function summarizeIgnoredFiles(lanes: ReadonlyArray<{ laneName: string; paths: readonly string[] }>, now: number): CloudIgnoredFiles {
+/**
+ * The summary from each lane's list: the likely precious first, then by name;
+ * build folders only counted. `skipped` entries (past the per-lane cap) count
+ * in `more`; `incomplete` says some lane couldn't be read at all.
+ */
+export function summarizeIgnoredFiles(
+  lanes: ReadonlyArray<{ laneName: string; paths: readonly string[] }>,
+  now: number,
+  extra: { skipped?: number; incomplete?: boolean } = {},
+): CloudIgnoredFiles {
   const named = lanes.filter((lane) => lane.paths.length > 0);
   const prefix = named.length > 1;
   const kept: string[] = [];
@@ -69,27 +77,38 @@ export function summarizeIgnoredFiles(lanes: ReadonlyArray<{ laneName: string; p
   }
   kept.sort((left, right) => Number(LIKELY_PRECIOUS.test(right)) - Number(LIKELY_PRECIOUS.test(left)) || left.localeCompare(right));
   const paths = kept.slice(0, CLOUD_IGNORED_FILES_MAX_PATHS);
-  return { checkedAt: now, paths, more: kept.length - paths.length, rebuildable };
+  return {
+    checkedAt: now,
+    paths,
+    more: kept.length - paths.length + (extra.skipped ?? 0),
+    rebuildable,
+    ...(extra.incomplete ? { incomplete: true } : {}),
+  };
 }
 
 /**
- * Reads every lane's ignored files and sums them up. Null when no lane could
- * be read (the server then keeps its last summary).
+ * Reads every lane's ignored files and sums them up. A lane that can't be read
+ * marks the summary `incomplete` (sent anyway, so an older "none found" never
+ * stands for a lane nobody read). Null only with no lane.
  */
 export async function readCloudIgnoredFiles(
   lanes: ReadonlyArray<{ laneName: string; worktreePath: string }>,
   options: { run?: Run; now?: () => number; logger?: { warn(event: string, data?: unknown): void } } = {},
 ): Promise<CloudIgnoredFiles | null> {
   const run = options.run ?? defaultRun;
+  if (!lanes.length) return null;
   const read: Array<{ laneName: string; paths: string[] }> = [];
+  let skipped = 0;
+  let unread = 0;
   for (const lane of lanes) {
     try {
-      const out = await run(lane.worktreePath);
-      read.push({ laneName: lane.laneName, paths: out.split("\0").filter(Boolean).slice(0, MAX_ENTRIES_READ) });
+      const entries = (await run(lane.worktreePath)).split("\0").filter(Boolean);
+      skipped += Math.max(0, entries.length - MAX_ENTRIES_READ);
+      read.push({ laneName: lane.laneName, paths: entries.slice(0, MAX_ENTRIES_READ) });
     } catch (error) {
+      unread += 1;
       options.logger?.warn("cloud.ignored_files_read_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   }
-  if (!read.length) return null;
-  return summarizeIgnoredFiles(read, (options.now ?? Date.now)());
+  return summarizeIgnoredFiles(read, (options.now ?? Date.now)(), { skipped, incomplete: unread > 0 });
 }
