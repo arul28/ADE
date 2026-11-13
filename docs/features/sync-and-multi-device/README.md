@@ -1406,7 +1406,7 @@ Runtime support files outside `services/sync/`:
   `wrangler d1 execute --env production` already reaches, so support recovery is
   a direct D1 statement after these logs identify the row.
 - `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`, the
-  write-only R2 sink behind the desktop's **Report issue** button and
+  write-only R2 sink behind the desktop's report dialog and
   `ade report-issue --send`. It is matched in `index.ts` *before* the directory
   router, because it is the one route here that is not account-scoped and the
   directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
@@ -1427,7 +1427,7 @@ Runtime support files outside `services/sync/`:
   fleet-wide stop as its own quota would retry forever. Uploads also carry
   optional `auto` / `failureCode` metadata so automatic and hand-pressed
   reports stay separable in the bucket. See
-  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-report-issue)
+  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-the-report-dialog)
   for the client half, and `apps/account-directory/README.md` for the full
   contract and the R2 bucket + lifecycle setup the deploy does not do for you.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory

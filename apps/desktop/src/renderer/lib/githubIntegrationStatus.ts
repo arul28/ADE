@@ -555,10 +555,23 @@ export function isGithubAuthorizationPausedMessage(message: string | null | unde
 export const GITHUB_AUTHORIZATION_PAUSED_COPY =
   "GitHub is limiting authorization requests for this account right now. ADE keeps trying on its own — try again in a few minutes.";
 
-/** Replaces GitHub's transport error ("...failed (429)") with what it means. */
+/**
+ * undici's text for a request that never reached GitHub, as it crosses IPC or
+ * RPC: "fetch failed", with the reason in brackets when the brain named one.
+ * An older brain sends it as is; a current one already says what to do.
+ */
+const SIGN_IN_FETCH_FAILED = /\bfetch failed\b(?:\s*\(([^)]{1,80})\))?/i;
+
+/** Replaces GitHub's transport error ("...failed (429)", "fetch failed") with what it means. */
 export function deviceAuthMessageCopy(message: string | null): string | null {
   if (!message) return message;
-  return isGithubAuthorizationPausedMessage(message) ? GITHUB_AUTHORIZATION_PAUSED_COPY : message;
+  if (isGithubAuthorizationPausedMessage(message)) return GITHUB_AUTHORIZATION_PAUSED_COPY;
+  const fetchFailed = SIGN_IN_FETCH_FAILED.exec(message);
+  if (fetchFailed) {
+    const reason = fetchFailed[1]?.trim();
+    return `ADE couldn't reach GitHub${reason ? ` (${reason})` : ""}. Check your connection, then try again.`;
+  }
+  return message;
 }
 
 export function deviceAuthErrorCopy(error: unknown): string {

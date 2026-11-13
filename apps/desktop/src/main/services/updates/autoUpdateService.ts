@@ -893,6 +893,20 @@ export function createAutoUpdateService({
   let archiveRestoreInProgress = false;
   let staleHandoffRecoveriesThisInstall = 0;
   let staleHandoffRecoveryInProgress = false;
+  /**
+   * What the armed install was asked for, so a stale-handoff retry asks for
+   * the same: the person's "resume chats", a remote request, a quit-install,
+   * and the chats the first attempt listed (the brain it stopped has none
+   * running any more, so a fresh list would be empty).
+   */
+  let armedInstallRequest: {
+    resumeChats: boolean;
+    requestedRemotely: boolean;
+    closeAfterInstall: boolean;
+    resumedChats: UpdateInterruptedChat[];
+  } | null = null;
+  /** Chats a stale-handoff retry carries into its own install record. */
+  let carriedResumedChats: UpdateInterruptedChat[] = [];
   // Fresh updater sessions handed out so far; each needs its own partition name.
   let netSessionGeneration = 0;
   // Neither a fresh session nor Node transport was available for this
@@ -1970,7 +1984,10 @@ export function createAutoUpdateService({
         return;
       }
       patchSnapshot({ autoApplyPending: null });
-      const started = await quitAndInstall();
+      // Resume on: the feed refresh inside the install takes seconds after the
+      // idle check, and a turn that starts meanwhile must still be continued
+      // after the update. With nothing running the list is empty.
+      const started = await quitAndInstall(true);
       if (!started) return;
       productAnalyticsService?.captureInternal({
         event: "ade_update_auto_applied",
@@ -2189,8 +2206,11 @@ export function createAutoUpdateService({
 
   async function recoverStaleInstallHandoff(): Promise<void> {
     const readySnapshot = installReadySnapshot ?? cloneSnapshot(snapshot);
+    const request = armedInstallRequest;
     logger.warn("autoUpdate.stale_handoff_recovering", {
       version: readySnapshot.version,
+      resumeChats: request?.resumeChats ?? false,
+      resumedChats: request?.resumedChats.length ?? 0,
     });
     await unwindArmedInstall("handoff_stale_archive");
     patchSnapshot({
@@ -2219,8 +2239,13 @@ export function createAutoUpdateService({
         return;
       }
       if (installQuitArmed) return;
-      await quitAndInstall();
+      carriedResumedChats = request?.resumedChats ?? [];
+      await quitAndInstall(request?.resumeChats ?? false, {
+        ...(request?.requestedRemotely ? { requestedRemotely: true } : {}),
+        ...(request?.closeAfterInstall ? { closeAfterInstall: true } : {}),
+      });
     } finally {
+      carriedResumedChats = [];
       staleHandoffRecoveryInProgress = false;
     }
   }
@@ -2451,6 +2476,11 @@ export function createAutoUpdateService({
           return await abortInstall("prepare_timeout", installReadySnapshot);
         }
         resumedChats = Array.isArray(prepareResult.value) ? prepareResult.value : [];
+        // A stale-handoff retry keeps the chats the first attempt stopped.
+        if (carriedResumedChats.length > 0) {
+          const listed = new Set(resumedChats.map((chat) => chat.sessionId));
+          resumedChats = [...resumedChats, ...carriedResumedChats.filter((chat) => !listed.has(chat.sessionId))];
+        }
       } catch (error) {
         if (error instanceof InstallOnQuitDeferredError) {
           // Work started on the brain while the quit-install got ready. Not a
@@ -2495,6 +2525,12 @@ export function createAutoUpdateService({
         recentlyInstalledUpdate: undefined,
         restoreUpdateWorkspaceOnLaunch: true,
       });
+      armedInstallRequest = {
+        resumeChats,
+        requestedRemotely: options.requestedRemotely === true,
+        closeAfterInstall: options.closeAfterInstall === true,
+        resumedChats,
+      };
       logger.info("autoUpdate.quit_and_install", { version: snapshot.version ?? installVersion });
       patchSnapshot({
         status: "installing",

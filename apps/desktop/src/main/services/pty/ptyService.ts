@@ -65,7 +65,9 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
-import { noteLiveTurn } from "../runtime/liveTurnProjects";
+import { noteLiveTurn, plannedStopRecordedFor, registerPlannedStopCliSource } from "../runtime/liveTurnProjects";
+import { trackedCliReopensAfterRestart } from "../../../shared/cliChildSession";
+import { CLI_NOT_REOPENED_NOTICE } from "../../../shared/chatAutoResume";
 import { createCliTurnRecorder, recordCliSessionsToReopen, resetCliCrashReopenCount, type CliReopenEntry } from "./cliReopenAfterRestart";
 import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
@@ -2940,6 +2942,41 @@ export function createPtyService({
       entry.cliSubagentRecheckTimer = timer;
     }
   };
+  /**
+   * The tracked agent CLIs still open here, for the project's next runtime to
+   * reopen (`cliReopenAfterRestart.ts`), each with whether it is owed a
+   * continue. Mid-turn, by the best signal the CLI gives: its own turn report
+   * (Claude hooks, Codex OSC) when it has one, else still printing and not at
+   * its prompt. Claude draws its input box while it works, so for it the
+   * screen check alone misses any quiet moment. A CLI waiting on background
+   * agents it started (Stop came when they started) is owed one too: the stop
+   * kills them, and it would wait for their report forever. Waiting on the
+   * person (a permission prompt) is not a turn to continue. When in doubt it
+   * only reopens: a "continue" typed into an idle CLI would start work nobody
+   * asked for. A CLI ADE cannot reopen (Devin) is left out, with one line.
+   */
+  const plannedCliReopenEntries = (): CliReopenEntry[] => {
+    const entries: CliReopenEntry[] = [];
+    for (const entry of ptys.values()) {
+      if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+      const session = sessionService.get(entry.sessionId);
+      if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
+      if (!trackedCliReopensAfterRestart(session.toolType)) {
+        logger.info("pty.cli_reopen_not_supported", { sessionId: entry.sessionId, toolType: session.toolType });
+        // Its terminal ends with the stop; the line it keeps says why it stays closed.
+        entry.processOutputData?.(`\r\n${CLI_NOT_REOPENED_NOTICE}\r\n`);
+        continue;
+      }
+      const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
+      const midTurn = provider != null
+        && !session.attentionRequestedAt
+        && cliTurnOwedContinue(entry, { screenFallback: provider });
+      entries.push({ sessionId: entry.sessionId, midTurn });
+    }
+    return entries;
+  };
+  // A planned brain stop saves this list first, before any slow teardown.
+  const unregisterPlannedStopCliSource = registerPlannedStopCliSource(projectRoot, plannedCliReopenEntries);
   const piLeaseIdentity = processRegistry
     ? {
         processStartedAt: ownerProcessStartedAt,
@@ -10475,29 +10512,12 @@ export function createPtyService({
     disposeAll(options?: { reopenAfterRestart?: boolean }): void {
       // An orderly stop: no turn of this runtime is cut off by a crash.
       cliTurnRecorder?.close();
-      if (options?.reopenAfterRestart) {
+      unregisterPlannedStopCliSource();
+      // A planned brain stop already saved this list, first thing in the stop
+      // (`recordPlannedBrainStop`), with the chats at work beside it.
+      if (options?.reopenAfterRestart && !plannedStopRecordedFor(projectRoot)) {
         try {
-          const entries: CliReopenEntry[] = [];
-          for (const entry of ptys.values()) {
-            if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
-            const session = sessionService.get(entry.sessionId);
-            if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
-            const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
-            // Mid-turn, by the best signal the CLI gives: its own turn report
-            // (Claude hooks, Codex OSC) when it has one, else still printing
-            // and not at its prompt. Claude draws its input box while it works,
-            // so for it the screen check alone misses any quiet moment. A CLI
-            // waiting on background agents it started (Stop came when they
-            // started) is owed one too: the stop kills them, and it would wait
-            // for their report forever. Waiting on the person (a permission
-            // prompt) is not a turn to continue. When in doubt it only
-            // reopens: a "continue" typed into an idle CLI would start work
-            // nobody asked for.
-            const midTurn = provider != null
-              && !session.attentionRequestedAt
-              && cliTurnOwedContinue(entry, { screenFallback: provider });
-            entries.push({ sessionId: entry.sessionId, midTurn });
-          }
+          const entries = plannedCliReopenEntries();
           recordCliSessionsToReopen(projectRoot, entries);
           if (entries.length > 0) {
             logger.info("pty.cli_reopen_recorded", {

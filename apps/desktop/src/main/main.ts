@@ -13,7 +13,7 @@ import {
 } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { coerceSavedWindowRepositoryTabs, type SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
-import { flushSentry } from "../shared/sentry/capture";
+import { captureProblem, flushSentry } from "../shared/sentry/capture";
 import { scrubFreeTextThenCut } from "../shared/sentry/scrub";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
@@ -561,6 +561,7 @@ import {
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
 import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
 import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
+import { clearBrainStopIntent, noteBrainStopIntent } from "./services/runtime/liveTurnProjects";
 import { createOpenProjectDataWatch } from "./services/runtime/openProjectDataWatch";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
@@ -1263,15 +1264,16 @@ async function createWindow(args: {
   win.webContents.on("did-navigate", () => noteRendererPageStarted(webContentsId));
   win.webContents.on("render-process-gone", (_event, details) => {
     // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
-    // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
-    // an issue. A crash, an OOM or a failed launch stays one.
-    const level = details.reason === "killed" ? "warn" : "error";
+    // ending it at sign-out or shutdown, 0xC000013A) and `clean-exit` is a
+    // normal end: logged, recovered, not an issue. A crash, an OOM or a failed
+    // launch stays one, grouped by reason and exit code.
+    const reportable = details.reason !== "killed" && details.reason !== "clean-exit";
     // What the renderer last said it held (every 30 s while visible), with
     // the snapshot's age. The line goes to Sentry with these numbers;
     // analytics gets only buckets, and none from a stale snapshot.
     const crashState = takeRendererCrashState(webContentsId);
     const memory = crashState.record;
-    args.logger?.[level]("window.render_process_gone", {
+    const goneFields = {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
@@ -1288,7 +1290,19 @@ async function createWindow(args: {
         : { memorySnapshot: crashState.snapshotAgeSec == null ? "none" : "stale" }),
       openForSec: crashState.openForSec,
       snapshotAgeSec: crashState.snapshotAgeSec,
-    });
+    };
+    args.logger?.warn("window.render_process_gone", goneFields);
+    if (reportable) {
+      captureProblem("window.render_process_gone", {
+        tags: {
+          "log.event": "window.render_process_gone",
+          "render.reason": details.reason,
+          "render.exit_code": String(details.exitCode),
+        },
+        fingerprint: ["window.render_process_gone", details.reason, String(details.exitCode)],
+        extra: goneFields,
+      });
+    }
     const memoryBuckets = rendererMemoryAnalytics(crashState);
 
     // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
@@ -1307,11 +1321,17 @@ async function createWindow(args: {
     };
     if (!decision.recover) {
       if (decision.cause === "budget-exhausted") {
-        args.logger?.error("window.render_process_recovery_abandoned", {
+        const abandonedFields = {
           windowId: win.id,
           reason: details.reason,
           attempts: decision.attempts,
           windowMs: RENDERER_RECOVERY_WINDOW_MS,
+        };
+        args.logger?.warn("window.render_process_recovery_abandoned", abandonedFields);
+        captureProblem("window.render_process_recovery_abandoned", {
+          tags: { "log.event": "window.render_process_recovery_abandoned", "render.reason": details.reason },
+          fingerprint: ["window.render_process_recovery_abandoned", details.reason],
+          extra: abandonedFields,
         });
         reportRecovery(false);
         args.onRendererGaveUp?.("window_crashed", `${details.reason} (exit ${details.exitCode}), ${decision.attempts} times`);
@@ -3607,8 +3627,13 @@ app.whenReady().then(async () => {
       });
       return interruptedChats;
     }
+    // The brain this uninstall stops keeps its chats and CLIs at work for the
+    // next start, with the continue cap starting again: the update was accepted.
+    const brainIntentTarget = { runtimeDir: machineAdeLayout.runtimeDir, socketPath: machineAdeLayout.socketPath };
+    noteBrainStopIntent("accepted_update", brainIntentTarget);
     const result = await uninstallRuntimeService();
     if (!result.ok) {
+      clearBrainStopIntent(brainIntentTarget);
       // Nothing was removed and the install will not proceed, so recovery must
       // get its normal freedom back immediately.
       localRuntimePool.endUpdateWindow("uninstall_before_install_failed");
@@ -9638,6 +9663,9 @@ app.whenReady().then(async () => {
     isRepairing: () => quitPrompt.isRepairing() || machineRecoveryService.isRecovering(),
     isShuttingDown: () => shutdownRequested,
     shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
+    noteStopForGood: (stopping) => (stopping
+      ? noteBrainStopIntent("stop_for_good", { runtimeDir: machineAdeLayout.runtimeDir, socketPath: machineAdeLayout.socketPath })
+      : clearBrainStopIntent({ runtimeDir: machineAdeLayout.runtimeDir, socketPath: machineAdeLayout.socketPath })),
   });
 
   const confirmQuitWarning = async (

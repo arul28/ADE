@@ -79,19 +79,18 @@ function isIndexLockBusyError(error: unknown): boolean {
 }
 
 /**
- * A step that writes the lane's index and refuses to overwrite local work
- * (the fast-forward). Git refuses before it changes anything when it cannot
- * take the lock, so the same step can run again. The other writer may have
- * changed the lane during the wait, so `recheck` runs the step's safety
- * checks again before each retry, and throws to stop it.
- *
- * Never for the snapshot checkout or the index reset: the checkout overwrites
- * tracked files without asking, so it fails on a busy lock and the undo runs.
+ * A step that writes the lane's index. Git refuses before it changes anything
+ * when it cannot take the lock, so the same step can run again. The other
+ * writer may have changed the lane during the wait, so `recheck` runs the
+ * step's safety checks again before each retry, and throws to stop it (it
+ * gets the lock error, to stop with that). A step that overwrites files
+ * without asking (the snapshot checkout) must check in `recheck` that the
+ * lane is exactly as ADE left it, so a retry never overwrites anyone's work.
  */
 async function gitWriteOutWhenLockFrees(
   cwd: string,
   args: string[],
-  recheck: () => Promise<void>,
+  recheck: (lockError: unknown) => Promise<void>,
 ): Promise<string> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -100,7 +99,7 @@ async function gitWriteOutWhenLockFrees(
       const delay = INDEX_LOCK_RETRY_DELAYS_MS[attempt];
       if (delay === undefined || !isIndexLockBusyError(error)) throw error;
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
-      await recheck();
+      await recheck(error);
     }
   }
 }
@@ -442,6 +441,11 @@ export async function applyHandoffGitBundle(args: {
   }
   const g = (gitArgs: string[]): string[] => [...hardening, ...gitArgs];
   const undo: Array<() => Promise<void>> = [];
+  // Set when a wait for the index lock found the lane changed by another
+  // writer. The rollback of an existing lane (a hard reset, removing the
+  // arriving files) would then delete that writer's work, so it is skipped:
+  // the lane keeps what it has, and the handoff fails with the lock error.
+  let laneChangedDuringWait = false;
   const ignore = async (fn: () => Promise<unknown>): Promise<void> => {
     try {
       await fn();
@@ -545,7 +549,10 @@ export async function applyHandoffGitBundle(args: {
       }
       // The lane was clean, so a hard reset back loses nothing of the user's.
       landedOnExistingLane = true;
-      undo.push(() => ignore(() => runGit(["reset", "--hard", "--quiet", current], { cwd: worktreePath, timeoutMs: GIT_TIMEOUT_MS })));
+      undo.push(async () => {
+        if (laneChangedDuringWait) return;
+        await ignore(() => runGit(["reset", "--hard", "--quiet", current], { cwd: worktreePath, timeoutMs: GIT_TIMEOUT_MS }));
+      });
     } else {
       const ref = `refs/heads/${branch}`;
       const existing = await resolveCommit(projectRoot, ref);
@@ -602,18 +609,34 @@ export async function applyHandoffGitBundle(args: {
       }
       if (landedOnExistingLane) {
         undo.push(async () => {
+          if (laneChangedDuringWait) return;
           for (const relative of added) {
             await ignore(async () => fs.rmSync(path.join(worktreePath, relative), { force: true }));
           }
         });
       }
       // The working tree as it was, then the index back on the tip so every
-      // change shows as uncommitted.
-      // No wait on a busy index lock here: another writer may change the lane
-      // during a wait, and this checkout would overwrite it. A busy lock fails
-      // the step and the undo runs.
-      await gitOut(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]));
-      await gitOut(worktreePath, g(["reset", "--quiet", tip]));
+      // change shows as uncommitted. Another git holding the index lock (an
+      // editor's status refresh) gets a short wait. The checkout overwrites
+      // tracked files without asking, so it runs again only on a lane still
+      // at the tip with nothing changed and no new file in the way.
+      const stopIfLaneChanged = (lockError: unknown): never => {
+        laneChangedDuringWait = true;
+        throw lockError;
+      };
+      await gitWriteOutWhenLockFrees(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]), async (lockError) => {
+        if ((await resolveCommit(worktreePath, "HEAD")) !== tip) stopIfLaneChanged(lockError);
+        if (await gitOut(worktreePath, ["status", "--porcelain=v1"])) stopIfLaneChanged(lockError);
+        if (await findLocalFileCollision(worktreePath, tip, added)) stopIfLaneChanged(lockError);
+      });
+      // The reset changes only the index. After the checkout the lane is not
+      // clean, so the check is that the index and the files still match the
+      // snapshot exactly: nothing staged or edited by anyone else.
+      await gitWriteOutWhenLockFrees(worktreePath, g(["reset", "--quiet", tip]), async (lockError) => {
+        if ((await resolveCommit(worktreePath, "HEAD")) !== tip) stopIfLaneChanged(lockError);
+        if (!(await gitOk(worktreePath, ["diff", "--cached", "--quiet", snapshot, "--"]))) stopIfLaneChanged(lockError);
+        if (!(await gitOk(worktreePath, ["diff", "--quiet", "--"]))) stopIfLaneChanged(lockError);
+      });
     }
     undo.length = 0;
   } catch (error) {

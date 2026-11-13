@@ -925,13 +925,15 @@ describe("AttentionAccountCoordinator", () => {
       { accountOwnerId: "owner-a" },
       expect.anything(),
     );
+    // The routed payload is pinned; the call also carries the save's timeout.
     expect(callAttention).toHaveBeenNthCalledWith(
       5,
       "putPreferences",
-      {
+      expect.objectContaining({
         accountOwnerId: "owner-a",
         preferences: DEFAULT_ATTENTION_PREFERENCES,
-      },
+      }),
+      expect.anything(),
     );
   });
 

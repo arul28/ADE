@@ -1,6 +1,8 @@
-import { useState } from "react";
-import type { DiagnosticsManualSendResult } from "../../../shared/types/diagnostics";
+import { useEffect, useState } from "react";
 import { describeManualSendFailure } from "../../../shared/diagnosticsUpload";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { openPublicIssue, ReportPreview } from "../app/ReportIssueDialog";
+import { canRetryReport, createReportDraft, reportBridge, useReportDraftState } from "../app/reportDraft";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
 /**
@@ -10,7 +12,7 @@ import { ModernRow, ModernRows, ModernSection } from "./primitives";
  * failure it has already classified happens, unless `DO_NOT_TRACK=1` is set.
  * This section only offers the button.
  *
- * Every other "Report issue" button in the app sits on a screen that has
+ * Every other "Report this error to ADE…" button sits on a screen that has
  * already broken — a crash boundary, a recovery screen, a failed repair — so a
  * user whose app merely FEELS wrong had nowhere to press. That button has to
  * exist somewhere they can always reach.
@@ -36,62 +38,59 @@ export function DiagnosticsSharingSection() {
  * Everything that matters happens in the main process — building the report,
  * redacting it, the per-device manual budget, the upload — because a renderer
  * cannot be trusted with any of it and because this must be the SAME report the
- * error screens send. This component only presses the button and reads the
- * answer back honestly.
+ * error screens send. The first press builds the report and shows it here
+ * (nothing is sent, nothing is spent); "Send" uploads exactly that text.
  */
 function ManualDiagnosticsSend() {
-  const bridge = window.ade?.diagnostics;
-  const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<DiagnosticsManualSendResult | null>(null);
+  const bridge = reportBridge();
+  const [draft] = useState(() => createReportDraft(undefined));
+  const state = useReportDraftState(draft);
+  const { copy, copied } = useCopyToClipboard();
+  const [issueFailed, setIssueFailed] = useState(false);
+  // Leaving Settings drops a report nobody sent.
+  useEffect(() => () => draft.discard(), [draft]);
+
+  // An older preload has no report bridge; offering a button that cannot
+  // work is worse than offering none.
+  if (!bridge.prepare || !bridge.send) return null;
+
   // The person's own words, sent beside the report as Sentry User Feedback.
   // Offered only where that reaches ADE (main's Sentry client is running).
-  const [note, setNote] = useState("");
-  const noteAvailable = bridge?.userFeedbackAvailable === true;
-
-  // An older preload has no `sendManual`; offering a button that cannot work is
-  // worse than offering none.
-  if (!bridge?.sendManual) return null;
-
-  const send = async () => {
-    if (sending) return;
-    setSending(true);
-    setResult(null);
-    try {
-      const userMessage = noteAvailable ? note.trim() : "";
-      const sent = await bridge.sendManual!(undefined, userMessage ? { userMessage } : undefined);
-      setResult(sent);
-      if (sent.ok) setNote("");
-    } catch {
-      setResult({ ok: false, reason: "failed" });
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const reportPath = result?.reportPath ?? "";
+  const noteAvailable = bridge.noteAvailable;
+  const { phase, result } = state;
+  const reviewing = phase === "preparing" || phase === "prepare_failed" || phase === "ready" || phase === "sending" || phase === "send_failed";
+  const sent = phase === "sent" && result?.ok ? result : null;
+  const failure = phase === "send_failed" && result && !result.ok ? result : null;
+  const reportPath = sent?.reportPath || failure?.reportPath || "";
+  const canPressSend = phase === "ready" || (phase === "send_failed" && canRetryReport(result));
 
   return (
     <ModernRow
       title="Send a report now"
-      hint="Sends the same report as “Report issue”: versions, recent ADE logs and the failure code. Paths, names, emails and keys are removed; never your code or chats."
+      hint="Sends the same report as an error screen's report: versions, recent ADE logs and the failure code. Paths, names, emails and keys are removed; never your code or chats. You see it before it goes."
       control={(
         <button
           type="button"
-          onClick={() => void send()}
-          disabled={sending}
+          onClick={() => void (reviewing ? draft.send() : draft.prepare())}
+          disabled={reviewing && !canPressSend}
           className="ade-modern-btn"
         >
-          {sending ? "Sending…" : "Send a report to ADE"}
+          {phase === "sending"
+            ? "Sending…"
+            : reviewing
+              ? phase === "send_failed" ? "Try again" : "Send"
+              : "Send a report to ADE…"}
         </button>
       )}
     >
       {noteAvailable ? (
         <textarea
           aria-label="What went wrong (optional)"
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          maxLength={2000}
+          value={state.note}
+          onChange={(event) => draft.setNote(event.target.value)}
+          maxLength={state.prepared?.noteMaxChars ?? 2000}
           rows={3}
+          disabled={phase === "sending"}
           placeholder="What went wrong? (optional) Sent with the report."
           style={{
             width: "100%",
@@ -106,15 +105,51 @@ function ManualDiagnosticsSend() {
           }}
         />
       ) : null}
-      {result ? (
-        <p role="status" className={result.ok ? "ade-modern-muted" : "ade-modern-warn"} style={result.ok ? { color: "var(--kit-text-2)" } : undefined}>
-          {result.ok
-            ? `Report sent. Reference ${result.reference} — quote it if you get in touch.`
-            : describeManualSendFailure(result)}
+      {reviewing ? (
+        <>
+          <ReportPreview state={state} onRetry={() => void draft.prepare()} />
+          {state.rebuilt && phase === "ready" ? (
+            <p role="status" className="ade-modern-warn">That report was out of date, so ADE made a new one. Check it, then press Send again.</p>
+          ) : null}
+          <p className="ade-modern-muted" style={{ color: "var(--kit-text-2)" }}>
+            It goes to the ADE team, privately. Nothing is sent until you press Send.{" "}
+            <button type="button" className="ade-modern-btn" data-variant="link" disabled={phase === "sending"} onClick={() => draft.discard()}>
+              Cancel
+            </button>
+          </p>
+        </>
+      ) : null}
+      {sent || failure ? (
+        <p role="status" className={sent ? "ade-modern-muted" : "ade-modern-warn"} style={sent ? { color: "var(--kit-text-2)" } : undefined}>
+          {sent
+            ? `Sent. Reference ${sent.reference}. The ADE team reads it; quote the reference if you contact support.`
+            : describeManualSendFailure(failure!)}
+          {sent ? (
+            <>
+              {" "}
+              <button type="button" className="ade-modern-btn" data-variant="link" onClick={() => void copy(sent.reference)}>
+                {copied ? "Copied" : "Copy reference"}
+              </button>
+              {sent.publicIssueUrl ? (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    className="ade-modern-btn"
+                    data-variant="link"
+                    onClick={() => void openPublicIssue(sent).then((opened) => setIssueFailed(!opened))}
+                  >
+                    Open a public GitHub issue
+                  </button>
+                </>
+              ) : null}
+              {issueFailed ? " The GitHub page didn't open." : null}
+            </>
+          ) : null}
           {reportPath ? (
             <>
               {" "}
-              <button type="button" className="ade-modern-btn" data-variant="link" onClick={() => void bridge.revealReport(reportPath)}>
+              <button type="button" className="ade-modern-btn" data-variant="link" onClick={() => void window.ade?.diagnostics?.revealReport(reportPath)}>
                 View report
               </button>
             </>

@@ -6,6 +6,7 @@ import {
 } from "../../../../desktop/src/shared/accountDirectory";
 import { laneShareDisplayName } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareGuestGrant } from "./laneShareGuestPolicy";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 
 /**
  * The lane-share grants of THIS machine, read from the account directory
@@ -301,7 +302,7 @@ export async function sendLaneShareDirectoryRequest(
       }
     } catch (error) {
       if (error instanceof LaneShareGrantError) throw error;
-      throw new LaneShareGrantError("unavailable", "The account directory could not be reached.");
+      throw markExpected(new LaneShareGrantError("unavailable", "The account directory could not be reached."), "network");
     }
     let body: unknown;
     try {

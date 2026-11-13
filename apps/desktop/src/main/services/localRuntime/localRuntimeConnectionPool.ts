@@ -3790,10 +3790,17 @@ export class LocalRuntimeConnectionPool {
       const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
         + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`
         + installReason;
-      throw codedRecoveryError(
+      const recoveryError = codedRecoveryError(
         `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
+      // "Allow in the Background" is off for ADE: a macOS setting the person
+      // changes, which the recovery screen names. Every other code (a service
+      // that runs but does not answer, a failed install, a stale socket) is
+      // not known to be the machine's, so it stays reported.
+      throw recoveryCode === "background_item_blocked" && !crashLooping
+        ? markExpected(recoveryError, "environment")
+        : recoveryError;
     }
 
     const child = this.spawnRuntime(socketPath);

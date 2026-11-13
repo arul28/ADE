@@ -116,10 +116,10 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/renderer/components/app/BrainDownNotice.tsx` | The one app banner for a background service that is down around an update (mounted by `AutoUpdateBanner`): "Finishing the update" while an update owns the service, then the cause and the Fix it → Restart ADE → Reset ADE ladder when it half-landed. Publishes `useBrainDownNoticeShowing` so the project banner stands down. |
 | `apps/desktop/src/renderer/components/app/restartAde.ts` | The Restart ADE rung: relaunches through `updateRelaunchApp` and stamps `ade.recovery.restartRequestedAt` so the next failure after the relaunch knows that rung was tried. |
 | `apps/desktop/src/main/services/ipc/knownProjectRoots.ts` | Validation for renderer-supplied project roots on the recovery and diagnostics channels. A renderer may only name the open project, a local recent-projects entry, or a root main itself recently attempted to open; `AttemptedProjectRoots` is that last, bounded and expiring, single-writer registry, recorded only after the repo path resolves. Comparison goes through `pathsEqual` (case folding) and falls back to `path.resolve` when a root has no realpath, so a project on an unmounted volume is not refused. |
-| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of **Report issue**: shared machine sources plus what only Electron can reach — its `userData` jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Saves the report `0600`, copies it, and opens a prefilled GitHub issue. The typed last-failure store is keyed off the root the shared collector actually used, not the request's, so a report with no project open cannot attribute one project's failure to another's logs. |
-| `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder, the redactor (`redactDiagnosticText`), and `buildDiagnosticIssueUrl`. No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
+| `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` | Desktop half of the report dialog ("Report this error to ADE…"): shared machine sources plus what only Electron can reach — its `userData` jsonl logs, local runtime status, the recovery diagnosis for the open project, the typed last-failure store, and an Electron-aware volume reader. Builds the redacted text the dialog shows; the send saves it `0600` and uploads it. The typed last-failure store is keyed off the root the shared collector actually used, not the request's, so a report with no project open cannot attribute one project's failure to another's logs. |
+| `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` | The pure report builder and the redactor (`redactDiagnosticText`). No I/O, so both the desktop and the CLI produce byte-identical documents from the same sources. |
 | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` | `collectMachineDiagnosticSources` — everything a headless box can read: both of the background service's output streams, the service definition (the plist via `readFileHead`, the loaded job via `launchctl print`, the job's line in launchd's disabled list via `launchctl print-disabled`, the macOS Background Items verdict, and launchd's own spawn log for the job via `log show --last 10m`), a Notes line when launchd has the job loaded but stopped and never started it (`runs = 0`, `pended nondemand spawn`) or its domain is in on-demand-only mode, naming the `launchctl kickstart` that starts it, the project logs of the open **or most recently opened** project (`resolveMostRecentProjectRoot`), layout, disk figures, the storage-environment probe (`storageEnvironment`), and the redaction context. Both surfaces read it, so a source added for one appears in both. Command-backed sources (journald, `schtasks /XML`) go through the injectable `DiagnosticCommandRunner`, bounded and non-interactive. |
-| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--open] [--send]`, the headless equivalent. `--send` needs no project and no arguments: it posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise), saves a copy under `~/.ade/diagnostic-reports/` *before* attempting the upload, and prints the reference id or the plain-words failure alongside that path. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
+| `apps/ade-cli/src/commands/reportIssue.ts` | `ade report-issue [--send] [--open]`, the headless equivalent. It prints the report and never tells anyone to post it on a public page; `--open` after a successful `--send` opens the public GitHub issue that holds only the reference (`shared/publicIssueLink.ts`). `--send` needs no project and no arguments: it posts the same redacted report to ADE (Clerk token when the machine is signed in, anonymous otherwise), saves a copy under `~/.ade/diagnostic-reports/` *before* attempting the upload, and prints the reference id or the plain-words failure alongside that path. Local files only: it never starts or contacts the brain, so it still works where ADE will not come up and on hosts with no error screen to press. |
 | `apps/ade-cli/src/commands/triage.ts` | `ade triage [--agent] [--provider <name>]` — the step after diagnosis. `ade doctor` says which check failed and `ade report-issue` produces something to file; neither fixes anything, and the person staring at either is usually the person least able to act on it. This builds the two files an agent needs — a redacted machine context and a maintained playbook — and gets out of the way. This module only **sequences**: it runs the doctor probe, the diagnostic collection, and the playbook resolution concurrently (none needs the others, and the brain is exactly what may be hanging), then assembles, writes, detects, and launches. `--agent` launches nothing and prints the handoff for a session that is already running; a machine where ADE has downloaded no agent yet gets the same files and **exit 0**, because the files are the deliverable and the launch is a convenience. CLI-only by design — the desktop and iOS clients all need the brain this command exists to repair. Every collector is allowed to fail: a rejected doctor probe, diagnostic collection, or ADE-layout resolution becomes a section in `context.md` saying so, and even a rejected playbook resolver falls to the embedded copy rather than taking the bundle down. If the report could not be collected, the redaction context is derived locally instead, so a failed collection cannot turn `context.md` into the one unredacted copy of this machine's paths and names. |
 | `apps/ade-cli/src/commands/triageContext.ts` | Assembles the two files and the prompt from already-collected material; nothing here probes the machine. `context.md` is Install → Health checks → Brain → Recent errors → Full diagnostic report, with `orderTriageDoctorRows` putting failures before warnings before passes and a header line naming how many rows failed. `extractRecentErrorLines` pulls up to 40 error-shaped lines (`ERROR_LINE_PATTERN` covers `EACCES`/`ENOSPC`/`EDEADLK` and friends) **out of the already-redacted report**, so it cannot become a second unredacted path for the same bytes. The whole document then goes through `redactDiagnosticText` on the way out — the pass is idempotent, so the embedded report is unchanged, and collection error messages ride it too, which is why they are written into the document rather than printed raw. The bundle dir is `mkdtemp`, not a bare `mkdir` of the timestamp: the temp directory is world-writable on POSIX and a predictable name there is something another user can pre-create as a symlink. A full or read-only temp directory raises `TriageCommandError` naming the path, because that is a plausible state on exactly the machine this command is for. |
 | `apps/ade-cli/src/commands/triageLaunch.ts` | Provider detection and the launch plan. `TRIAGE_PROVIDERS` is the detection order — claude, codex, cursor-agent, opencode, droid — resolved with `resolveExecutableFromKnownLocations` (PATHEXT-aware, because on Windows `npm i -g codex` drops an extension-less sh script beside `codex.cmd` and `codex.ps1` and only the latter two can run); a resolver that throws on an unreadable PATH entry drops that provider rather than the command. `--provider` accepts aliases (`cursor`, `factory`) and raises `TriageUsageError` on anything else. Prompt delivery is per provider: claude, codex, cursor-agent and droid document a trailing `[prompt]`, but OpenCode's positional argument is a *project directory*, so it launches bare and the prompt is printed to paste. The same paste path is taken whenever `resolveCliSpawnInvocation` has to **wrap** the executable — a `.cmd` through `cmd.exe`, a `.ps1` through PowerShell — because both rewrite the command line before argv and the multi-line, path-bearing triage prompt would arrive corrupted. The spawn inherits stdio (the user talks to their agent directly), hides the extra Windows console a `.cmd` shim would pop, and the command exits with the agent's code. |
@@ -133,9 +133,11 @@ extension and releases its handles immediately, including on Windows.
 | `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for general URLs: allows only `http(s)` and `mailto:`. `normalizeEditorExternalUrl` / `openEditorExternalUrl` is a separate allowlist for SSH editor URLs (`vscode:` / `vscode-insiders:` / `vscodium:` with host `vscode-remote` and path `/ssh-remote+…`, plus `zed://ssh/…`). Opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
 | `apps/desktop/src/shared/diagnosticsUpload.ts` | The one diagnostics upload client, shared by the desktop main process (`autoDiagnosticsService`) and the CLI: `uploadDiagnosticReport`, the `DiagnosticUploadFailure` vocabulary and its one-sentence copy, `resolveDiagnosticsUploadBaseUrl`, and `diagnosticReference` (the first 8 characters of the returned id — a full uuid is unreadable over a phone call). It lives in `shared/` because that is the only tree the renderer, the main process and the CLI can all import (Vite refuses to serve files outside `apps/desktop`), and it is deliberately free of Node built-ins and `import.meta` so the identical module loads in all three. It posts the report's exact bytes and transforms nothing: the thing that is sent has to be the thing that was shown. |
 | `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
-| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button and its result line, on every error surface. One press sends the report to ADE where the surface can send (else it opens the GitHub issue with the report copied); the line reports what actually happened rather than claiming success. |
-| `apps/desktop/src/renderer/components/app/ReportIssueFooter.tsx` | The last row of the recovery screen and the two crash boundaries: a rule, Report issue with one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash (`confirmSentryDelivery`). |
-| `apps/desktop/src/renderer/webclient/adapter/diagnostics.ts` | Report issue in the hosted web client: the report goes to the web client's Sentry as User Feedback, and Open GitHub issue opens the issue page from the browser. See *Diagnostic reports* below. |
+| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The **Report this error to ADE…** control and its result line, on every error surface. A press opens the report dialog and sends nothing; after a send the line shows the reference, a copy control and the optional public GitHub issue. |
+| `apps/desktop/src/renderer/components/app/ReportIssueDialog.tsx`, `reportDraft.ts` | The report dialog (note, exact preview, Send) in its own React root, and the prepare → send → discard draft that it and Settings share. See *Diagnostic reports* below. |
+| `apps/desktop/src/shared/publicIssueLink.ts` | The one public GitHub issue link after a send: only the reference, version and channel, and OS family. Used by main, the web client and the CLI. |
+| `apps/desktop/src/renderer/components/app/ReportIssueFooter.tsx` | The last row of the recovery screen and the two crash boundaries: a rule, **Report this error to ADE…** with one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash (`confirmSentryDelivery`). |
+| `apps/desktop/src/renderer/webclient/adapter/diagnostics.ts` | The report dialog's prepare and send in the hosted web client: the report goes to the web client's Sentry as User Feedback. Without Sentry the dialog offers only **Copy report**. See *Diagnostic reports* below. |
 | `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The one report control in Settings → System → Advanced (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the report is built on this machine). It is **Send a report to ADE**, with no toggle. It hides the button on a preload that predates it. |
 | `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
 | `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
@@ -248,6 +250,78 @@ for one explicit action:
 
 Other reasons (`unknown`, `provider_environment`, `transient`) still wait for
 the user, since the original thread may come back.
+
+### Work in flight across a brain stop
+
+A brain that is told to stop (SIGTERM or SIGINT from launchd, systemd, the
+Windows service's shutdown request, a logout or reboot, or the `shutdown`
+request behind restart, repair and the memory restart) is a kept-alive
+service, so another start follows. It keeps what was at work for that start
+(`recordPlannedBrainStop`, `apps/desktop/src/main/services/runtime/liveTurnProjects.ts`):
+
+1. It runs first in `finish({ requested: true })` (`apps/ade-cli/src/cli.ts`),
+   synchronously, before the teardown. The service manager may kill the brain
+   1.5 s after SIGTERM (`terminatePidGracefully`), and the record is already
+   on disk by then.
+2. Each project with work gets its list,
+   `.ade/cache/reopen-cli-after-restart.<pid>.json`: the open agent CLIs
+   (from the terminals, `registerPlannedStopCliSource`), and one
+   `{ sessionId, midTurn: true, kind: "chat" }` entry per chat whose turn ran.
+   An accepted update adds `acceptedUpdate: true`. The terminals' own teardown
+   writes nothing more for that project; when it does write (its list failed
+   above), it adds to the same file.
+3. A project whose folder refuses the list (read-only, full) is opened anyway,
+   and its list rides in the brain's record (`lists`).
+4. The record, `runtime/live-turns/<endpoint>.<pid>.stopped.json`, names at
+   most 50 projects with the stop time. The live record and any pending file
+   go. If the record cannot be written, the live record stays, and the next
+   brain treats the stop as a crash.
+
+The next brain takes each `.stopped.json` once, by rename, even while its
+writer is still exiting. A record older than 6 h (`RESTART_RESUME_MAX_AGE_MS`)
+is claimed and opens nothing (`brain.planned_stop_record_taken` with
+`stale: true`). Otherwise the projects open one at a time, as after a crash.
+Each project's chat service takes its list once
+(`reopenCliSessionsAfterRestart`) and continues each chat by id
+(`continueChatsAfterPlannedStop`), with the same durable row id
+(`updateResumeScheduleId`), prompt and cap as every restart continue. It does
+not continue a chat that is closed on purpose, owned by another brain, already
+continued, or driven by the user since the start. Each such chat logs
+`agent_chat.update_resume_dropped` with `cause: "planned_stop"` and a reason.
+A brain that is not the machine brain (a dev or test brain on the same home)
+leaves the machine brain's chats in the list, with the list's own time, for
+the machine brain (`agent_chat.planned_stop_chat_left`). Personal chats
+continue too: the brain warms the personal-chats runtime at start
+(`createPersonalChatScope` → `warmExisting`), and its chat service takes its
+own list.
+
+**Why the brain stops decides what is kept.** The caller that stops the brain
+writes `runtime/live-turns/stop-intent.<endpoint>.json` first
+(`noteBrainStopIntent`), with the brain's pid when it knows it, and clears it
+when the stop fails. The brain reads it once as it stops; an intent for
+another pid, or older than 2 minutes, does not count.
+
+| Stop | Intent | Kept |
+| --- | --- | --- |
+| Restart, repair, memory restart, logout, reboot, Windows service shutdown | none | Chats and CLIs at work are continued |
+| `ade serve` stopped with Ctrl+C | none | Kept: it cannot be told from a restart |
+| Desktop update, `ade brain update` | `accepted_update` | Kept, and the continue cap starts again for chats and CLIs |
+| Settings "Stop and quit ADE", `ade brain stop`, `ade runtime stop`, `ade runtime uninstall-service` | `stop_for_good` | No chat. Open CLIs reopen at their prompt, with no continue. Projects an earlier stop left and this brain had not opened lose their continues the same way. |
+| Idle exit, socket lost, parent app gone, a failed start | none, not requested | Nothing kept, as before |
+| Crash, kill, power loss | — | The crash path: the live record stays |
+
+A brain an app started keeps no record of its own; its terminals still write
+their CLI list at teardown.
+
+A Devin CLI does not reopen after any stop: ADE never learns its resume id
+(`providerFromTool` has no Devin arm). `trackedCliReopensAfterRestart` leaves
+it out of the list (`pty.cli_reopen_not_supported`), and its terminal gets one
+line as the brain stops (`CLI_NOT_REOPENED_NOTICE`), which the ended terminal
+keeps.
+
+Size: the record holds at most 50 roots, the pid and the time; each list at
+most 200 entries of session id and flags; the intent about 100 bytes. No
+prompt or transcript text is stored.
 
 ### Typed project-open recovery
 
@@ -421,7 +495,7 @@ ladder, each rung with one line saying what it does:
    the usual quit warnings. No surface tells anyone to quit and reopen by hand.
 3. **Reset ADE…** — the hard reset dialog below; it removes everything ADE put
    on this computer, and the code stays.
-4. **Report issue** — sends ADE the redacted report and shows its reference.
+4. **Report this error to ADE…** — shows the redacted report, sends it to ADE on Send, and shows its reference.
 
 One rung holds the filled button: the first until a fix fails, then Restart
 ADE, then Reset ADE when a fix fails again after a recent restart (a
@@ -439,7 +513,7 @@ and a project open was refused with `LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`,
 it is a quiet "Finishing the update" that reopens the project once the service
 answers or the update settles. When the update half-landed it is one error
 banner in the `app` band: the cause, then **Fix it** →
-**Restart ADE** → **Reset ADE…**, with Report issue under the text. Fix it is
+**Restart ADE** → **Reset ADE…**, with the report control under the text. Fix it is
 `app.restartBackgroundService` → `restartBrain()` — the forced service
 reinstall, the wait for the endpoint and the ping — and its outcome is real: it
 resolves only once the new service answers (a success toast, and the refused
@@ -1378,30 +1452,56 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Transparent compressed history read | 256 MiB decompressed | Larger inputs are rejected rather than expanded in memory. |
 | Automatic compression sweep | 25 files | Oldest eligible files first, with a delay between files. |
 
-### Diagnostic reports ("Report issue")
+### Diagnostic reports (the report dialog)
 
-Every error surface — the project recovery screen, the renderer and page error
-boundaries, the update-transaction notice, the brain Repair control, and the
-Connections pane's publish-failure line — carries a **Report issue** button
-(`renderer/components/app/ReportIssueButton.tsx`). One press sends the
-redacted report to ADE (below). Its **Open GitHub issue** link assembles the same
-redacted Markdown report, saves it, copies it to the clipboard, and opens a
-prefilled GitHub new-issue page for `arul28/ADE` in the default browser. The URL
-carries only a short stub: GitHub rejects issue URLs somewhere north of 8 KB, so
-`buildDiagnosticIssueUrl` caps the whole URL at `ISSUE_URL_MAX_LENGTH` (6,000
-characters) and falls back to a title-and-stub URL past it. The full report
-rides the clipboard.
+Every error surface — the error toasts and banners ("Report…"), the project
+recovery screen, the renderer and page error boundaries, the update-transaction
+notice, the brain Repair control, and the Connections pane's publish-failure
+line — carries a **Report this error to ADE…** control
+(`renderer/components/app/ReportIssueButton.tsx`, `ui/notice/NoticeReport.tsx`).
+A press opens one dialog (`renderer/components/app/ReportIssueDialog.tsx`) and
+sends nothing. The dialog says the report goes to the ADE team privately, takes
+an optional "What were you doing?" note, and shows exactly what is sent: the
+note, then the redacted report text, with its size. Send uploads it; Cancel and
+Esc send nothing and spend nothing. It draws above the toast stack
+(`Z_LAYERS.dialogOverToasts`), so the toast that opened it never covers Send.
+
+The send is two steps (`renderer/components/app/reportDraft.ts`):
+
+1. `diagnostics.prepareReport(context?)` → `IPC.diagnosticsPrepareReport` →
+   `autoDiagnosticsService.prepareManual()`. Main builds and redacts the report,
+   uploads nothing, claims no budget, and answers the text, its size and an
+   opaque one-use id. Main keeps at most 4 prepared reports, each for 10
+   minutes (`PREPARED_REPORT_TTL_MS`).
+2. `diagnostics.sendReport(id, { userMessage })` → `IPC.diagnosticsSendReport`
+   → `autoDiagnosticsService.sendPrepared()`. Main uploads that prepared text
+   byte for byte and claims the manual budget only then. An unknown or expired
+   id answers `expired` and uploads nothing; the dialog builds a new report,
+   shows it, and asks for Send again. A failed upload keeps the id until it
+   expires, so "Try again" sends the same text.
+
+Cancel, Esc and leaving Settings drop the id (`diagnostics.discardReport` →
+`IPC.diagnosticsDiscardReport`). After a send the dialog shows "Sent. Reference
+…" with a copy control, and offers one optional action: **Open a public GitHub
+issue**, a prefilled `arul28/ADE` new-issue page whose body holds only the
+reference, the ADE version and channel, the OS family and a line that the
+private report is with the ADE team (`shared/publicIssueLink.ts`, also used by
+the web client and `ade report-issue`). The report text, logs, raw error,
+headline and ids never go to GitHub. Where sending is impossible (the hosted
+web client while its Sentry is off) the dialog shows the report with **Copy
+report** and asks the person to send it to the ADE team privately.
+
+The report always describes this computer and this ADE window, whichever
+machine a chat or lane on screen lives on, so none of these calls takes a pin.
 
 Those surfaces all share one property: something has already visibly broken. A
 user whose app merely *feels* wrong has nothing to press, so **General → Privacy
 → Send a report to ADE** is a button
-(`renderer/components/settings/DiagnosticsSharingSection.tsx` →
-`IPC.diagnosticsSendManual` → `autoDiagnosticsService.sendManual()`). It builds
-and uploads the same redacted report the error screens do, under surface
-`settings_manual` and `auto: false`, so a report somebody asked for stays
-separable server-side from one nobody chose to file. It does not open GitHub:
-the point is the send, and the result line offers **View report** for the saved
-copy.
+(`renderer/components/settings/DiagnosticsSharingSection.tsx`). It runs the
+same two steps under surface `settings_manual` and `auto: false`, so a report
+somebody asked for stays separable server-side from one nobody chose to file.
+It keeps its own note field and shows the same preview inline before Send; the
+result line offers **View report** for the saved copy.
 
 Two things it deliberately does not share with the automatic sender:
 
@@ -1429,9 +1529,9 @@ them apart; `uploadDiagnosticReport` reads the body and maps the fleet one to
 | Pure builder + redactor | `apps/ade-cli/src/services/diagnostics/diagnosticReport.ts` |
 | Shared collection (logs, disk, notes, redaction context) | `apps/ade-cli/src/services/diagnostics/diagnosticSources.ts` (`collectMachineDiagnosticSources`) |
 | Desktop-only extras (its own jsonl logs, runtime status, recovery diagnosis, typed last-failure store) | `apps/desktop/src/main/services/diagnostics/diagnosticReportService.ts` |
-| IPC | `IPC.diagnosticsOpenIssue`; manual send from Settings: `IPC.diagnosticsSendManual` |
+| IPC | `IPC.diagnosticsPrepareReport`, `IPC.diagnosticsSendReport`, `IPC.diagnosticsDiscardReport` (the dialog and Settings) |
 | Saved report | `<userData>/diagnostic-reports/<timestamp>-<surface>.md`, mode `0600` |
-| Headless equivalent | `ade report-issue [--open] [--send]` |
+| Headless equivalent | `ade report-issue [--send] [--open]` |
 | Headless state check | `ade doctor` → the **Diagnostics sharing** row (consent + today's spend) |
 | Settings entry | `general.diagnostics-sharing` (General → Privacy, `#diagnostics-sharing`, **Send a report to ADE**, hidden on hosted web). No toggle. |
 | Automatic opt-out | `DO_NOT_TRACK=1`, or an explicit `enabled: false` persisted by an earlier build. Honored silently; no UI. |
@@ -1571,13 +1671,13 @@ included. `Machine id` is the `machine_id` Sentry tags and PostHog events carry,
 so the same computer's events can be found in both; the upload stores it as the
 R2 object's `machineId` metadata.
 
-One coarse analytics event is emitted per press:
-`ade_feature_used { feature: "connections", action: "issue_report", outcome:
-"opened" | "failed" }`, deduped to one per hour per outcome.
+Analytics: `ade_feature_used` with `feature: "issue_report"` and coarse actions
+only (`issue_report` success or failed, `report_dialog` opened, completed or
+cancelled, `github_issue`, `report_copied`); see `docs/logging.md`.
 
-**Report issue sends to ADE first.** Filing on GitHub asks a user who is
-already looking at an error screen to paste a document into a form, so pressing
-**Report issue** — and `ade report-issue --send` — posts the finished report straight to
+**Reports go to ADE privately.** The ADE repository is public, and redaction
+is pattern-based, so the full report never goes to GitHub. Send in the report
+dialog — and `ade report-issue --send` — posts the finished report straight to
 `POST /diagnostics/upload` on the account directory Worker and shows a short
 reference id back. `apps/desktop/src/shared/diagnosticsUpload.ts` is the only
 client: it takes an already-redacted string and a base URL its caller resolved,
@@ -1588,20 +1688,20 @@ oversized report fails without spending one of the user's few daily uploads on a
 doomed request. Failures come back as a small closed vocabulary — `too_large`,
 `rate_limited`, `unavailable`, `rejected`, `network` — never a server string,
 because the person reading it already hit one failure and a status line is not
-an improvement on "couldn't send". Each maps to one plain sentence that points
-back at GitHub where posting by hand is still the answer, or at tomorrow where
-it is not; the CLI words the same reasons for a terminal line in
+an improvement on "couldn't send". Each maps to one plain sentence
+(`describeManualSendFailure`) that offers Try again where it can help, or
+points at tomorrow where it cannot; the CLI words the same reasons for a terminal line in
 `describeDiagnosticUpload`.
 
 The two surfaces differ in exactly one way, and deliberately. The desktop
-button sends from the main process through `diagnostics.sendManual(context)`
-(`autoDiagnosticsService.sendManual`, the same call Settings' **Send a report to
-ADE** makes without a context); the renderer cannot upload at all, because its
-CSP `connect-src` allows no remote origin — the renderer-side upload this
-replaced failed on every packaged build. The result line reads "Sent to ADE —
-reference …" with **Copy report** and **Open GitHub issue** (the old `openIssue`
-path) as secondary links, or the failure's own sentence with **Try again** and
-the GitHub fallback. The main-process send has no account token either — those
+dialog sends from the main process through `diagnostics.sendReport(id)`
+(`autoDiagnosticsService.sendPrepared`, the same call Settings' **Send a report
+to ADE** makes); the renderer cannot upload at all, because its CSP
+`connect-src` allows no remote origin — the renderer-side upload this replaced
+failed on every packaged build. After a send the dialog reads "Sent. Reference
+…" with a copy control and the optional **Open a public GitHub issue**; a
+failure shows its own sentence, with **Try again** where it can help, and the
+typed note stays. The main-process send has no account token either — those
 live in the brain's credential store — so a desktop upload is anonymous,
 identified only by the install id the report already carries. `ade report-issue --send` reads the machine's own credential store and
 directory origin off local files, so it sends a Clerk token when the machine is
@@ -1614,21 +1714,22 @@ hash of the caller address) to five uploads a UTC day.
 
 **The hosted web client** has neither a main process nor logs to collect, and
 the account directory refuses an upload from a browser page on another site. Its
-Report issue (`renderer/webclient/adapter/diagnostics.ts`) sends a smaller
-report as Sentry User Feedback to the web client's own project, `ade-web`,
+report dialog (`renderer/webclient/adapter/diagnostics.ts`, the same
+prepare → send → discard contract) sends a smaller report as Sentry User Feedback to the web client's own project, `ade-web`,
 which already holds the crash with its stack, screen and release. The report
 holds the surface, the screen's headline and technical detail (free-text
 scrub), the code, the web version, the browser, the path and the time, at most
-2,000 characters. The note links to the crash the screen captured
+2,000 characters, with the person's note in front of it in the same message
+(the preview shows both). The note links to the crash the screen captured
 (`sentryEventId` in the request) and carries a random 8-character reference as
 its `report.reference` tag. The reference shows only after Sentry answers 2xx
 for the note (`confirmSentryDelivery` in `shared/sentry/capture.ts`), so an ad
 blocker or a lost connection reads as "ADE couldn't send the report." with
 **Try again**. A browser sends at most 5 a day (`MAX_DIAGNOSTIC_REPORTS_PER_DAY`,
 kept in `localStorage`). Where the web client's Sentry does not run (Do Not
-Track, an analytics opt-out, a non-production build) the button opens the
-GitHub issue with the report copied, and a tab the browser blocked says so
-instead of claiming it opened. The web client has no automatic diagnostic
+Track, an analytics opt-out, a non-production build) the dialog shows the
+report with **Copy report** and asks the person to send it to the ADE team
+privately; it offers no GitHub link. The web client has no automatic diagnostic
 report: its crash boundaries' Sentry capture is the automatic report there.
 
 #### Auto-send
@@ -1717,7 +1818,7 @@ useful, and the shared three-a-day ceiling bounds the duplication. Nothing else
 coordinates them, deliberately.
 
 The button's disclosure text still holds for the manual path — nothing leaves
-the computer unless the user presses **Report issue** (which sends it to ADE) or posts the GitHub issue — and
+the computer unless the user presses Send in the report dialog, after reading it — and
 the automatic path adds one more way, which is announced every time it happens
 and switched off in one click.
 

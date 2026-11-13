@@ -24,7 +24,8 @@ import {
   waitForFakeTimerCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
-import { BACKGROUND_WORK_LOST_RESUME_PROMPT } from "../../../shared/chatAutoResume";
+import { BACKGROUND_WORK_LOST_RESUME_PROMPT, RESTART_RESUME_PROMPT } from "../../../shared/chatAutoResume";
+import { recordCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function waitForFakeTimerPromise<T>(
@@ -633,6 +634,103 @@ describe("createAgentChatService", () => {
         && event.event.metadata?.scheduledWake?.scheduleId === actionSchedule.item.id
       )).toBe(true);
       service.forceDisposeAll();
+    });
+
+    it.each([
+      ["a stop just now", 0, true],
+      ["a stop more than 6 h ago", 6 * 60 * 60_000 + 60_000, false],
+    ] as const)("continues once, by id, the chats %s named, never a closed one", async (_label, stoppedMsAgo, continues) => {
+      const scheduledWork = createScheduledWorkDb();
+      const stopped = createService({ db: scheduledWork.db });
+      const atWork = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      const closed = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      // The brain stops: every loaded chat becomes `detached`. The person had closed one.
+      await stopped.service.disposeAll();
+      stopped.sessionService.end({ sessionId: closed.id, status: "disposed" });
+      // What the stop wrote first (`recordPlannedBrainStop`).
+      recordCliSessionsToReopen(tmpRoot, [
+        { sessionId: atWork.id, midTurn: true, kind: "chat" },
+        { sessionId: closed.id, midTurn: true, kind: "chat" },
+      ], () => new Date(Date.now() - stoppedMsAgo));
+      const ptyService = {
+        create: vi.fn(),
+        resumeSession: vi.fn(),
+        canAcceptScheduledTurn: () => true,
+        enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
+      };
+
+      // The next brain opens the project.
+      const next = createService({ db: scheduledWork.db, ptyService });
+      const loggedDrop = (sessionId: string, reason: string) => next.logger.info.mock.calls.some(([event, fields]) =>
+        event === "agent_chat.update_resume_dropped"
+        && (fields as { sessionId?: string; reason?: string }).sessionId === sessionId
+        && (fields as { reason?: string }).reason === reason);
+      await waitFor(() => continues
+        ? next.logger.info.mock.calls.some(([event]) => event === "agent_chat.planned_stop_chats_continued")
+        : loggedDrop(atWork.id, "stale"));
+
+      const continueRows = (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");
+      expect(continueRows.map((row) => row.sessionId)).toEqual(continues ? [atWork.id] : []);
+      if (continues) {
+        expect(continueRows[0]?.prompt).toBe(RESTART_RESUME_PROMPT);
+        expect(loggedDrop(closed.id, "not_schedulable")).toBe(true);
+      } else {
+        expect(loggedDrop(closed.id, "stale")).toBe(true);
+      }
+      // Taken once: a later start finds no list to continue from.
+      expect(fs.readdirSync(path.join(tmpRoot, ".ade", "cache")).filter((name) => name.startsWith("reopen-cli-after-restart."))).toEqual([]);
+      next.service.forceDisposeAll();
+    });
+
+    it("leaves a planned stop's machine-brain chat in the list for the machine brain", async () => {
+      const machineSocket = "/Users/me/.ade/sock/ade.sock";
+      const scheduledWork = createScheduledWorkDb();
+      const stopped = createService({ db: scheduledWork.db });
+      const atWork = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      await stopped.service.disposeAll();
+      // The installed brain ran it, and its update restart wrote the list.
+      writePersistedChatState(atWork.id, {
+        ...readPersistedChatState(atWork.id),
+        runtimeOwner: {
+          brainId: "brain-machine-restarting",
+          pid: 987_654_320,
+          startedAt: "2026-10-20T11:00:00.000Z",
+          adeHome: null,
+          socketPath: machineSocket,
+          claimedAt: "2026-10-20T11:00:00.000Z",
+        },
+      });
+      recordCliSessionsToReopen(tmpRoot, [{ sessionId: atWork.id, midTurn: true, kind: "chat" }]);
+      const ptyService = () => ({
+        create: vi.fn(),
+        resumeSession: vi.fn(),
+        canAcceptScheduledTurn: () => true,
+        enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
+      });
+      const continueRows = () => (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");
+
+      // A dev brain on the shared home opens the project first.
+      const devBrain = createService({
+        db: scheduledWork.db,
+        ptyService: ptyService(),
+        runtimeSocketPath: "/tmp/dev-brain.sock",
+        machineBrainPid: () => null,
+        isMachineBrainSocket: (socketPath: string) => socketPath === machineSocket,
+      });
+      await waitFor(() => devBrain.logger.info.mock.calls.some(([event]) => event === "agent_chat.planned_stop_chat_left"));
+      expect(continueRows()).toEqual([]);
+      devBrain.service.forceDisposeAll();
+
+      // The machine brain comes back and continues it.
+      const machineBrain = createService({
+        db: scheduledWork.db,
+        ptyService: ptyService(),
+        runtimeSocketPath: machineSocket,
+        isMachineBrainSocket: (socketPath: string) => socketPath === machineSocket,
+      });
+      await waitFor(() => machineBrain.logger.info.mock.calls.some(([event]) => event === "agent_chat.planned_stop_chats_continued"));
+      expect(continueRows().map((row) => row.sessionId)).toEqual([atWork.id]);
+      machineBrain.service.forceDisposeAll();
     });
 
     it("leaves detached chats to the installed machine brain when it is live on the project", async () => {

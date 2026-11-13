@@ -437,7 +437,7 @@ export class ProjectScopeRegistry {
    * adds nothing. A project the user removed is not a failure: a window or
    * phone that still holds its id is told so and moves on.
    */
-  private reportUnknownProjectId(projectId: ProjectId): void {
+  private reportUnknownProjectId(projectId: ProjectId, requestedBy: string | undefined): void {
     if (!this.reportUnknownProjectIdOnce(projectId)) return;
     try {
       if (wasRemovedFromRegistry(this.projectRegistry.path, projectId)) return;
@@ -447,6 +447,8 @@ export class ProjectScopeRegistry {
         tags: { [DIAGNOSTIC_ATTACH_TAG]: PROJECT_REGISTRY_ATTACH },
         extra: {
           projectId,
+          // The RPC method that carried the id, when the caller named it.
+          requestedBy: requestedBy ?? null,
           // This machine opened the project's database before, so the
           // project was registered here once and has since gone from the list.
           openedHereBefore: this.projectRegistry.readDatabaseIdentity(projectId) !== null,
@@ -522,7 +524,7 @@ export class ProjectScopeRegistry {
 
   async get(
     projectId: ProjectId,
-    options: { touch?: boolean } = {},
+    options: { touch?: boolean; requestedBy?: string } = {},
   ): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
@@ -547,7 +549,7 @@ export class ProjectScopeRegistry {
       // project it now names instead of being told the project is unknown.
       const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
       if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
-      this.reportUnknownProjectId(projectId);
+      this.reportUnknownProjectId(projectId, options.requestedBy);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 

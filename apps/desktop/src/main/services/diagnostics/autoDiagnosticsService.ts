@@ -24,7 +24,11 @@ import {
   MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
   type AutoDiagnosticsNotice,
 } from "./autoDiagnosticsStore";
-import type { DiagnosticsManualSendResult } from "../../../shared/types/diagnostics";
+import type {
+  DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
+} from "../../../shared/types/diagnostics";
+import { randomUUID } from "node:crypto";
 
 /**
  * Sends the diagnostic report nobody was ever going to press the button for.
@@ -66,10 +70,57 @@ export type AutoDiagnosticsRequest = {
   extraNotes?: readonly string[];
 };
 
-/** What an error screen's "Report issue" adds to a manual send. Already validated by main. */
+/** What an error screen's report dialog adds to a manual send. Already validated by main. */
 export type ManualDiagnosticsContext = Omit<AutoDiagnosticsRequest, "failureCode">;
 
 export type { AutoDiagnosticsOutcome, AutoDiagnosticsSentNotice };
+
+/** How long a prepared report waits for Send. */
+export const PREPARED_REPORT_TTL_MS = 10 * 60_000;
+/** Prepared reports held at once; a newer one pushes out the oldest. */
+const MAX_PREPARED_REPORTS = 4;
+/** Mirror of `USER_FEEDBACK_MAX_CHARS` (`main/sentry/userFeedback.ts`), kept here so this service does not load Sentry. */
+const MANUAL_NOTE_MAX_CHARS = 2_000;
+/**
+ * How long a report waits for the one running before it. The longest job is
+ * an automatic send: the collection (8 s steps, run together) and then the
+ * upload (20 s), plus the file writes around them.
+ */
+export const DIAGNOSTICS_QUEUE_WAIT_MS = 35_000;
+/**
+ * The renderer's budget for a prepare or a send: the wait above, then its own
+ * collection or upload (20 s at most), with room for the writes around them.
+ */
+export const MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS = DIAGNOSTICS_QUEUE_WAIT_MS + 40_000;
+
+type DiagnosticsJobKind = "auto" | "manual";
+
+/** Settles true when `done` settles first, false when `ms` passes first. The timer never outlives the wait. */
+function settlesWithin(done: Promise<void>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    done.then(() => true),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+      if (typeof timer.unref === "function") timer.unref();
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+export type PreparedSendAnswer = {
+  result: DiagnosticsManualSendResult;
+  context: ManualDiagnosticsContext | null;
+  /** True for a second call that joined a send already running for the same id. */
+  joined?: boolean;
+};
+
+type PreparedManualReport = {
+  built: AutoDiagnosticsReport;
+  context: ManualDiagnosticsContext;
+  expiresAtMs: number;
+};
 
 export type AutoDiagnosticsReport = {
   report: string;
@@ -109,12 +160,25 @@ export type AutoDiagnosticsService = {
   /** One call per failure point. Never throws and never rejects. */
   report: (request: AutoDiagnosticsRequest) => Promise<AutoDiagnosticsOutcome>;
   /**
-   * One report, because a person asked for it. Never throws and never rejects;
-   * every outcome comes back named so the surface can say what happened.
-   * Without a context it is Settings' "Send a report to ADE" (`settings_manual`);
-   * with one it is an error screen's "Report issue", about that screen.
+   * Builds and redacts one report for a person to read, and keeps it here
+   * under a one-use id. Uploads nothing, writes nothing remote and claims no
+   * budget. Without a context it is Settings' "Send a report to ADE"
+   * (`settings_manual`); with one it is an error screen's report dialog.
+   * Never throws.
    */
-  sendManual: (context?: ManualDiagnosticsContext) => Promise<DiagnosticsManualSendResult>;
+  prepareManual: (context?: ManualDiagnosticsContext) => Promise<DiagnosticsPrepareResult>;
+  /**
+   * Uploads the prepared report with this id, byte for byte, and claims the
+   * manual budget then. An unknown or expired id answers `expired` and sends
+   * nothing. A sent report is forgotten; a failed one stays until it expires,
+   * so "Try again" sends the same text. Never throws; every outcome is named.
+   * `context` is what the report was prepared for, null for an unknown id.
+   * A second call for an id whose send is still running gets that send's
+   * answer with `joined: true`, and nothing is uploaded or claimed twice.
+   */
+  sendPrepared: (id: string) => Promise<PreparedSendAnswer>;
+  /** Drops a prepared report (Cancel). Unknown ids are ignored. */
+  discardPrepared: (id: string) => void;
   isEnabled: () => boolean;
   setEnabled: (enabled: boolean) => boolean;
   getStatus: () => {
@@ -144,12 +208,46 @@ export function createAutoDiagnosticsService(
   const env = deps.env ?? process.env;
   // One at a time. Two failures that fire together would otherwise race on the
   // budget file and, worse, run two report collections at once on a machine
-  // that is already unwell.
-  let inFlight = false;
+  // that is already unwell. A job that meets a running one waits for it
+  // (bounded), so a person's dialog does not fail because an automatic send is
+  // running, and an automatic send is not lost to a dialog.
+  let running: { kind: DiagnosticsJobKind; done: Promise<void> } | null = null;
+
+  /**
+   * Waits for the running job to end, then takes the slot. Answers the release
+   * function, or null when the wait ran out or `skipWhenAutoRuns` met an
+   * automatic job. Never throws.
+   */
+  const acquire = async (
+    kind: DiagnosticsJobKind,
+    options: { skipWhenAutoRuns?: boolean } = {},
+  ): Promise<(() => void) | null> => {
+    const deadline = Date.now() + DIAGNOSTICS_QUEUE_WAIT_MS;
+    // Several waiters wake together when a job ends; the first takes the slot
+    // and the others see it taken and wait again.
+    while (running) {
+      // Two automatic failures at once are one report, as before: the second
+      // one is dropped, not queued behind the first.
+      if (options.skipWhenAutoRuns && running.kind === "auto") return null;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return null;
+      if (!(await settlesWithin(running.done, remainingMs))) return null;
+    }
+    let release!: () => void;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const job = { kind, done };
+    running = job;
+    return () => {
+      if (running === job) running = null;
+      release();
+    };
+  };
 
   const report = async (request: AutoDiagnosticsRequest): Promise<AutoDiagnosticsOutcome> => {
-    if (inFlight) return "skipped_ineligible";
-    inFlight = true;
+    const release = await acquire("auto", { skipWhenAutoRuns: true });
+    if (!release) return "skipped_ineligible";
     try {
       return await runAutoDiagnosticsSend<AutoDiagnosticsReport>({
         stateFilePath: deps.stateFilePath,
@@ -176,34 +274,112 @@ export function createAutoDiagnosticsService(
         now,
       });
     } finally {
-      inFlight = false;
+      release();
     }
   };
 
   /**
-   * "Send a report to ADE", pressed by hand in Settings — or "Report issue" on
-   * an error screen, which passes that screen's context.
+   * Reports a person is reading in a dialog, by id. Few and short-lived: each
+   * one is a full report (up to 512 KB), and an id nobody sends is dropped
+   * when it expires or when a newer one pushes it out.
+   */
+  const prepared = new Map<string, PreparedManualReport>();
+  const dropExpired = () => {
+    const at = now();
+    for (const [id, entry] of prepared) {
+      if (entry.expiresAtMs <= at) prepared.delete(id);
+    }
+  };
+
+  /**
+   * Step one of "Send a report to ADE" in Settings and of an error screen's
+   * report dialog: the same collector and redaction as every other send, so
+   * what the person reads is what ADE would get.
    *
-   * Same collector, same redaction, same uploader as every other send — the
-   * only thing that differs is who decided and what happens afterwards.
+   * Nothing is claimed here. Opening the dialog and pressing Cancel must cost
+   * the person nothing, so the budget is spent only by `sendPrepared`.
+   */
+  const prepareManual = async (context?: ManualDiagnosticsContext): Promise<DiagnosticsPrepareResult> => {
+    // A collection already running is not two at once on a machine that is
+    // already unwell: this one waits for it. Only a wait that runs out fails,
+    // and the dialog offers "Try again".
+    const release = await acquire("manual");
+    if (!release) return { ok: false, reason: "failed" };
+    try {
+      const manualContext = context ?? { surface: "settings_manual" };
+      let built: AutoDiagnosticsReport;
+      try {
+        built = await deps.buildReport({ ...manualContext, failureCode: MANUAL_DIAGNOSTICS_FAILURE_CODE });
+      } catch (error) {
+        deps.logger?.warn?.("diagnostics.manual_prepare_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { ok: false, reason: "failed" };
+      }
+      dropExpired();
+      while (prepared.size >= MAX_PREPARED_REPORTS) {
+        const oldest = prepared.keys().next().value;
+        if (oldest === undefined) break;
+        prepared.delete(oldest);
+      }
+      const id = randomUUID();
+      const expiresAtMs = now() + PREPARED_REPORT_TTL_MS;
+      prepared.set(id, { built, context: manualContext, expiresAtMs });
+      return {
+        ok: true,
+        id,
+        report: built.report,
+        bytes: Buffer.byteLength(built.report, "utf8"),
+        expiresAtMs,
+        noteMaxChars: MANUAL_NOTE_MAX_CHARS,
+      };
+    } finally {
+      release();
+    }
+  };
+
+  /**
+   * Step two: the person pressed Send on text they have read.
    *
    * The opt-out is deliberately NOT checked. It governs reports ADE files BY
    * ITSELF when something breaks; this is a person asking, about a report they
-   * can open and read. Refusing it would leave someone who opted out of
-   * background reporting with no way to send anything at all. Nothing here
-   * writes `enabled`.
+   * just read. Refusing it would leave someone who opted out of background
+   * reporting with no way to send anything at all. Nothing here writes
+   * `enabled`.
    *
    * It is also NOT `runAutoDiagnosticsSend`: that policy is silence on failure
    * and a pending toast, both correct for a send nobody asked for and both
    * wrong here. A user watching a button has to be told the answer, and telling
    * them twice — inline and again in a toast — is worse than once.
    */
-  const sendManual = async (context?: ManualDiagnosticsContext): Promise<DiagnosticsManualSendResult> => {
-    // A collection already running is not a budget event: nothing is claimed,
-    // so a retry a moment later costs the user nothing.
-    if (inFlight) return { ok: false, reason: "failed" };
-    inFlight = true;
+  const sendsInProgress = new Map<string, Promise<PreparedSendAnswer>>();
+
+  const sendPrepared = (id: string): Promise<PreparedSendAnswer> => {
+    dropExpired();
+    const entry = typeof id === "string" ? prepared.get(id) : undefined;
+    // Never build a fresh report here: the person would be sending text they
+    // have not seen. The surface prepares again and shows it.
+    if (!entry) return Promise.resolve({ result: { ok: false, reason: "expired" }, context: null });
+    // A second Send for a report whose send is still running gets that send's
+    // answer: one upload and one budget claim, however often the button fires.
+    const inProgress = sendsInProgress.get(id);
+    if (inProgress) return inProgress.then((answer) => ({ ...answer, joined: true }));
+    const send = sendEntry(id, entry).finally(() => {
+      sendsInProgress.delete(id);
+    });
+    sendsInProgress.set(id, send);
+    return send;
+  };
+
+  const sendEntry = async (id: string, entry: PreparedManualReport): Promise<PreparedSendAnswer> => {
+    const { built, context } = entry;
+    // A send waits for a running job rather than failing. A wait that runs out
+    // is not a budget event: nothing is claimed, so "Try again" costs nothing.
+    const release = await acquire("manual");
+    if (!release) return { result: { ok: false, reason: "failed" }, context };
     try {
+      // Cancel or a newer report may have dropped this one during the wait.
+      if (prepared.get(id) !== entry) return { result: { ok: false, reason: "expired" }, context: null };
       const claim = claimManualDiagnosticsSend({
         filePath: deps.stateFilePath,
         source: "desktop",
@@ -213,34 +389,12 @@ export function createAutoDiagnosticsService(
         deps.logger?.info?.("diagnostics.manual_send_skipped", { reason: claim.reason });
         // A ledger that cannot be read or locked fails closed, exactly as the
         // automatic claim does — but the user gets told, rather than nothing.
-        return claim.reason === "daily_limit"
-          ? { ok: false, reason: "local_limit", limit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW }
-          : { ok: false, reason: "failed" };
-      }
-
-      let built: AutoDiagnosticsReport;
-      try {
-        built = await deps.buildReport({
-          ...(context ?? { surface: "settings_manual" }),
-          failureCode: MANUAL_DIAGNOSTICS_FAILURE_CODE,
-        });
-      } catch (error) {
-        deps.logger?.warn?.("diagnostics.manual_send_build_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // The reservation stays spent, for the automatic sender's reason: what
-        // it bounds is how often this computer tries, not how often it wins.
-        completeAutoDiagnosticsSend({
-          filePath: deps.stateFilePath,
-          failureCode: MANUAL_DIAGNOSTICS_FAILURE_CODE,
-          atMs: claim.atMs,
-          reportPath: null,
-          reference: null,
-          pending: false,
-          kind: "manual",
-          now,
-        });
-        return { ok: false, reason: "failed" };
+        return {
+          result: claim.reason === "daily_limit"
+            ? { ok: false, reason: "local_limit", limit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW }
+            : { ok: false, reason: "failed" },
+          context,
+        };
       }
 
       let reportPath: string | null;
@@ -267,6 +421,9 @@ export function createAutoDiagnosticsService(
         result = { ok: false, reason: "network" };
       }
 
+      // The reservation stays spent either way, for the automatic sender's
+      // reason: what it bounds is how often this computer tries, not how often
+      // it wins.
       completeAutoDiagnosticsSend({
         filePath: deps.stateFilePath,
         failureCode: MANUAL_DIAGNOSTICS_FAILURE_CODE,
@@ -294,19 +451,25 @@ export function createAutoDiagnosticsService(
               : result.reason === "too_large"
                 ? "too_large"
                 : "failed";
-        return { ok: false, reason, report: built.report, ...(reportPath ? { reportPath } : {}) };
+        return { result: { ok: false, reason, ...(reportPath ? { reportPath } : {}) }, context };
       }
 
+      // One use: the same text is never stored twice under two references.
+      prepared.delete(id);
       deps.logger?.info?.("diagnostics.manual_sent", { reference: result.reference });
-      return { ok: true, reference: result.reference, reportPath: reportPath ?? "", report: built.report };
+      return { result: { ok: true, reference: result.reference, reportPath: reportPath ?? "" }, context };
     } finally {
-      inFlight = false;
+      release();
     }
   };
 
   return {
     report,
-    sendManual,
+    prepareManual,
+    sendPrepared,
+    discardPrepared: (id) => {
+      prepared.delete(id);
+    },
     isEnabled: () => isAutoDiagnosticsEnabled(deps.stateFilePath),
     setEnabled: (enabled) => setAutoDiagnosticsEnabled(deps.stateFilePath, enabled, { now }),
     getStatus: () => readAutoDiagnosticsState(deps.stateFilePath, { now }),

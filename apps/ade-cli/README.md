@@ -541,9 +541,9 @@ ade machines reconnect                             # re-pair THIS machine after 
 ade machines connect <machine-key|device-id|name>
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
-ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
-ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
-ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
+ade report-issue --text                           # print a redacted diagnostic report (local files only; no brain needed)
+ade report-issue --send                           # also send the same redacted report to the ADE team privately and print its reference id
+ade report-issue --send --open                    # then open a public GitHub issue that holds only that reference, the version and the OS
 ade triage                                        # build a redacted context.md + repair playbook and hand them to the first agent ADE has downloaded
 ade triage --provider codex                       # pick the agent (claude | codex | cursor-agent | opencode | droid | muse)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
@@ -1205,17 +1205,19 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 
 When a row fails and the checks above do not explain it, `ade doctor --text`
 points at `ade report-issue`. That command is the headless counterpart to the
-desktop "Report issue" button: it reads only local files — it never starts or
+desktop's "Report this error to ADE…" dialog: it reads only local files — it never starts or
 contacts the brain — so it still works on the machine where ADE itself will not
 come up, and on Windows where there is no desktop error screen to press. It
-prints a redacted diagnostic report plus a prefilled GitHub issue URL (`--open`
-copies the report to the clipboard and opens that URL, `--json` returns
-`{ installId, issueUrl, copied, report }`).
+prints a redacted diagnostic report. Do not post the report on a public page;
+send it with `--send`. `--json` returns `{ installId, report, reportPath?, sent?,
+issueUrl?, opened? }`: `issueUrl` is the public GitHub issue link, present only
+after a successful `--send`, and holds only the reference, the version and
+channel and the OS family; `opened` says whether `--open` opened it.
 
 `--send` is the one part of this command that leaves the machine, and it is
 opt-in: it uploads the same redacted report to ADE over HTTPS and prints the
-reference id support quotes back. It is the headless counterpart to the desktop
-button's "Send to ADE", and it reads everything it needs — the account session,
+reference id support quotes back. It is the headless counterpart to Send in the
+desktop's report dialog, and it reads everything it needs — the account session,
 the directory origin — from local files, so it still works on a machine whose
 brain will not start. A signed-in machine attaches its account token; a
 signed-out one uploads anonymously against the install id already in the report.
@@ -1226,7 +1228,7 @@ asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
 can tell "not requested" from "requested and failed".
 
 `ade triage` is the third step after those two: `doctor` says which check
-failed, `report-issue` produces something to file, and `triage` hands the repair
+failed, `report-issue` produces a report to send, and `triage` hands the repair
 to a coding agent. It runs the same doctor checks and the same
 redacted diagnostic collection, writes them as a single `context.md` into a
 fresh temp directory (`ade-triage-<timestamp>-<random>/`) alongside a repair

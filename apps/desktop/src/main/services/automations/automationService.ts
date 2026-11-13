@@ -1,4 +1,4 @@
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import { createHash, randomUUID } from "node:crypto";
 import { automationCloudHomeProblem, automationCloudProblem, automationCloudTarget, localTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import { AUTOMATION_WEBHOOK_UNTRUSTED_NOTICE, type CloudAutomationSpec, type CloudAutomationTrigger } from "../../../../../account-directory/src/cloud/contract";
@@ -4668,8 +4668,10 @@ export function createAutomationService({
           chat_session_id: boundChatId,
         });
         emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
-        // Unchanged, the error itself goes on, with any expected mark it has.
-        throw message === raw && error instanceof Error ? error : new Error(message);
+        // Unchanged, the error itself goes on. Rewritten, it keeps the mark the
+        // original had. The rewrite is not marked by itself: its test also
+        // matches any other "not found" from inside the turn.
+        throw message === raw && error instanceof Error ? error : carryExpected(error, new Error(message));
       }
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       return toRun(loadRunRow(run.id)!);

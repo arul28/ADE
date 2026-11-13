@@ -41,6 +41,14 @@ export type CliReopenEntry = {
   sessionId: string;
   /** Its turn was running when the runtime stopped: it is told to continue. */
   midTurn: boolean;
+  /**
+   * `chat`: an agent chat whose turn ran when the brain stopped on purpose
+   * (`recordPlannedBrainStop`); it is continued by id, not reopened. Older
+   * runtimes read it as a CLI that is not reopenable, which does nothing.
+   */
+  kind?: "chat";
+  /** The stop was an update the user accepted: the continue cap starts again. */
+  acceptedUpdate?: true;
 };
 
 type CliReopenFile = {
@@ -77,7 +85,13 @@ function parseEntries(value: unknown): CliReopenEntry[] {
     if (!item || typeof item !== "object") continue;
     const sessionId = (item as Record<string, unknown>).sessionId;
     if (typeof sessionId !== "string" || !sessionId.trim() || sessionId.length > 256) continue;
-    entries.push({ sessionId: sessionId.trim(), midTurn: (item as Record<string, unknown>).midTurn === true });
+    const record = item as Record<string, unknown>;
+    entries.push({
+      sessionId: sessionId.trim(),
+      midTurn: record.midTurn === true,
+      ...(record.kind === "chat" ? { kind: "chat" as const } : {}),
+      ...(record.acceptedUpdate === true ? { acceptedUpdate: true as const } : {}),
+    });
   }
   return entries;
 }
@@ -92,9 +106,28 @@ function readFile(filePath: string): CliReopenFile | null {
   }
 }
 
+/** Two lists of one session: chat and accepted update if either says so, mid-turn likewise. */
+function mergeEntries(lists: Iterable<readonly CliReopenEntry[]>): CliReopenEntry[] {
+  const merged = new Map<string, CliReopenEntry>();
+  for (const list of lists) {
+    for (const entry of list) {
+      const earlier = merged.get(entry.sessionId);
+      merged.set(entry.sessionId, {
+        sessionId: entry.sessionId,
+        midTurn: entry.midTurn || earlier?.midTurn === true,
+        ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
+        ...(entry.acceptedUpdate || earlier?.acceptedUpdate ? { acceptedUpdate: true as const } : {}),
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
 /**
  * Save this runtime's open CLIs for the project's next runtime. Synchronous:
- * it runs while the runtime shuts down.
+ * it runs while the runtime shuts down. Adds to the list this runtime already
+ * wrote in this stop (a planned brain stop saves the chats first, and the
+ * terminals' teardown may add its CLIs after it).
  */
 export function recordCliSessionsToReopen(
   projectRoot: string,
@@ -102,14 +135,15 @@ export function recordCliSessionsToReopen(
   now: () => Date = () => new Date(),
 ): void {
   if (entries.length === 0) return;
-  const file: CliReopenFile = {
-    version: 1,
-    writtenAt: now().toISOString(),
-    sessions: entries.slice(-MAX_ENTRIES),
-  };
   const dir = cacheDir(projectRoot);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${FILE_PREFIX}${process.pid}${FILE_SUFFIX}`);
+  const earlier = readFile(filePath);
+  const file: CliReopenFile = {
+    version: 1,
+    writtenAt: now().toISOString(),
+    sessions: mergeEntries([earlier?.sessions ?? [], entries]).slice(-MAX_ENTRIES),
+  };
   const tmpPath = `${filePath}.tmp`;
   try {
     fs.writeFileSync(tmpPath, JSON.stringify(file));
@@ -124,17 +158,28 @@ export function recordCliSessionsToReopen(
  * Every list the project's stopped runtimes left, claimed and deleted as it is
  * read. A list another runtime claimed first, one that cannot be read, or one
  * older than `maxAgeMs` (the work it names is stale, as for a chat a restart
- * cut off long ago) adds nothing. A CLI in two lists is mid-turn if either
- * says so.
+ * cut off long ago) adds nothing; `onStale` gets a stale list's entries, so
+ * the caller can say which owed continues it drops. A CLI in two lists is
+ * mid-turn if either says so. `leave`: entries that belong to another
+ * runtime of this computer; they are written back, with their list's own
+ * time, for that runtime to take.
  */
 export function takeCliSessionsToReopen(
   projectRoot: string,
   maxAgeMs: number,
   now: () => Date = () => new Date(),
+  onStale?: (entries: CliReopenEntry[]) => void,
+  leave?: (entry: CliReopenEntry) => boolean,
 ): CliReopenEntry[] {
   const dir = cacheDir(projectRoot);
-  const merged = new Map<string, CliReopenEntry>();
+  const taken: CliReopenEntry[][] = [];
   for (const name of listFileNames(dir)) {
+    // A list that is all another runtime's stays where it is, untouched: a
+    // claim would hide it from its owner for the moment of the write-back.
+    if (leave) {
+      const whole = readFile(path.join(dir, name));
+      if (whole && whole.sessions.length > 0 && whole.sessions.every((entry) => leave(entry))) continue;
+    }
     const claimedPath = path.join(dir, `${name}.claimed-${process.pid}`);
     try {
       fs.renameSync(path.join(dir, name), claimedPath);
@@ -148,13 +193,54 @@ export function takeCliSessionsToReopen(
       // A claimed list is read only by this runtime.
     }
     const writtenMs = file ? Date.parse(file.writtenAt) : Number.NaN;
-    if (!file || !Number.isFinite(writtenMs) || now().getTime() - writtenMs > maxAgeMs) continue;
-    for (const entry of file.sessions) {
-      const midTurn = entry.midTurn || merged.get(entry.sessionId)?.midTurn === true;
-      merged.set(entry.sessionId, { sessionId: entry.sessionId, midTurn });
+    if (!file || !Number.isFinite(writtenMs) || now().getTime() - writtenMs > maxAgeMs) {
+      if (file && file.sessions.length > 0) onStale?.(file.sessions);
+      continue;
+    }
+    const left = leave ? file.sessions.filter((entry) => leave(entry)) : [];
+    if (left.length > 0) {
+      try {
+        writeJsonAtomic(path.join(dir, name), { ...file, sessions: left });
+      } catch {
+        // Not written back: this runtime acts on them instead, which its own
+        // checks then drop with a reason.
+        taken.push(left);
+      }
+    }
+    taken.push(left.length > 0 ? file.sessions.filter((entry) => !left.includes(entry)) : file.sessions);
+  }
+  return mergeEntries(taken).slice(-MAX_ENTRIES);
+}
+
+/**
+ * A stop for good: the project's lists keep their CLIs, to reopen as before,
+ * but nothing in them is continued, and their chats are not. Each list keeps
+ * its own time. Never throws; false when a list could not be rewritten.
+ */
+export function neutralizeCliSessionsToReopen(projectRoot: string): boolean {
+  const dir = cacheDir(projectRoot);
+  let ok = true;
+  for (const name of listFileNames(dir)) {
+    const filePath = path.join(dir, name);
+    // Claimed first, as a take does: a list another runtime takes meanwhile is its own.
+    const claimedPath = `${filePath}.claimed-${process.pid}`;
+    try {
+      fs.renameSync(filePath, claimedPath);
+    } catch {
+      continue;
+    }
+    const file = readFile(claimedPath);
+    const sessions = (file?.sessions ?? [])
+      .filter((entry) => entry.kind !== "chat")
+      .map((entry) => ({ sessionId: entry.sessionId, midTurn: false }));
+    try {
+      if (file && sessions.length > 0) writeJsonAtomic(filePath, { ...file, sessions });
+      fs.rmSync(claimedPath, { force: true });
+    } catch {
+      ok = false;
     }
   }
-  return [...merged.values()].slice(-MAX_ENTRIES);
+  return ok;
 }
 
 /**

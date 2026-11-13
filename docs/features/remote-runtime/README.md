@@ -505,7 +505,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
   its own outcome (`needs_trust` / `changed`) rather than through `onError`, so
   callers reveal the trust prompt instead of showing a machine row an error it
-  did not have. Connection failures also carry a **Report issue** button. `remoteMachineModel.ts`
+  did not have. Connection failures also carry a **Report this error to ADE…** control. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
   (`sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,

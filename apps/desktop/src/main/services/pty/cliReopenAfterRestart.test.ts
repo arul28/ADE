@@ -50,6 +50,24 @@ describe("CLI reopen after restart", () => {
     recordCliSessionsToReopen(root, [{ sessionId: "cli-c", midTurn: true }], () => stoppedAt);
     expect(takeCliSessionsToReopen(root, 1_000, () => new Date(stoppedAt.getTime() + 2_000))).toEqual([]);
 
+    // One stop writes in two steps (a planned brain stop saves the chats, the
+    // terminals' teardown its CLIs): the list holds both.
+    recordCliSessionsToReopen(root, [{ sessionId: "chat-mine", midTurn: true, kind: "chat" }], () => stoppedAt);
+    recordCliSessionsToReopen(root, [
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+      { sessionId: "cli-e", midTurn: false },
+    ], () => stoppedAt);
+    // A runtime that is not the entry's owner leaves it, with its list's time,
+    // for the owner's next start.
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater, undefined, (entry) => entry.sessionId === "chat-machine"))
+      .toEqual([
+        { sessionId: "chat-mine", midTurn: true, kind: "chat" },
+        { sessionId: "cli-e", midTurn: false },
+      ]);
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater)).toEqual([
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+    ]);
+
     // A project removed from the machine forgets its list.
     recordCliSessionsToReopen(root, [{ sessionId: "cli-d", midTurn: false }], () => stoppedAt);
     forgetCliSessionsToReopen(root);

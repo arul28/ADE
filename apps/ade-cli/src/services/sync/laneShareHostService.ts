@@ -39,6 +39,7 @@ import {
   type LaneShareDirectoryAccess,
 } from "./laneShareGrantService";
 import type { LaneShareCloseResult } from "./syncHostService";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 
 /**
  * The owner's side of lane sharing on the machine that holds the lane: make
@@ -288,7 +289,7 @@ export function createLaneShareHostService(options: {
         const code = error.code === "signed_out" || error.code === "no_directory" ? error.code : "unavailable";
         throw new LaneShareHostError(code, error.message);
       }
-      throw new LaneShareHostError("unavailable", "The account directory could not be reached.");
+      throw markExpected(new LaneShareHostError("unavailable", "The account directory could not be reached."), "network");
     }
     if (answer.status < 200 || answer.status >= 300) throw directoryError(answer.status, answer.body, path);
     return answer.body;

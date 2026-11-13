@@ -2474,7 +2474,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: added.projectId },
     }) as { actions: Array<{ name: string }> };
     expect(actions.actions.length).toBeGreaterThan(0);
-    expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId);
+    expect(scopeRegistry.get.mock.calls[0]?.[0]).toBe(added.projectId);
 
     handler.dispose();
   });

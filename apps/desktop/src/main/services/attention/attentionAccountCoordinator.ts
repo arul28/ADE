@@ -132,6 +132,15 @@ export const ATTENTION_IPC_BUDGET_MS = 25_000;
  */
 export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 18_000;
 
+/**
+ * How long a window's presence report may hold its IPC call. Presence is a
+ * best-effort heartbeat (the next one carries the latest state), so a relay
+ * or brain that is slow to answer must not keep the handler busy until the
+ * 30s IPC timer fires. The send keeps running past this; only the reply to
+ * the window stops waiting for it.
+ */
+export const ATTENTION_PRESENCE_BUDGET_MS = 8_000;
+
 /** First pause after the relay could not be reached; doubles to the max. */
 const RELAY_BACKOFF_BASE_MS = 5_000;
 const RELAY_BACKOFF_MAX_MS = 5 * 60_000;
@@ -209,6 +218,8 @@ export class AttentionAccountCoordinator {
   /** The last presence a window reported, resent on lock, sleep and wake. */
   private lastPresence: Record<string, unknown> | null = null;
   private presenceChanges: Promise<void> = Promise.resolve();
+  /** Set once a presence send passed its budget; cleared by the next one in time. */
+  private presenceSlowLogged = false;
   /**
    * A signed-in account whose presence sends found no usable token (a session
    * that could not refresh): how many in a row, and when to try again.
@@ -590,8 +601,27 @@ export class AttentionAccountCoordinator {
     const { userActive: _callerClaim, ...rest } = reported;
     const presence: Record<string, unknown> = userActive === null ? rest : { ...rest, userActive };
     this.lastPresence = rest;
-    await this.sendPresence(presence);
+    // A late send finishes on its own (its relay or brain state is still
+    // recorded); the window gets its receipt now.
+    let timedOut = false;
+    await withDeadline(this.sendPresence(presence), ATTENTION_PRESENCE_BUDGET_MS, () => {
+      timedOut = true;
+      return new Error("presence send passed its budget");
+    }).catch((error: unknown) => {
+      if (!timedOut) throw error;
+    });
+    if (timedOut) this.notePresenceSlow();
+    else this.presenceSlowLogged = false;
     return { userActive };
+  }
+
+  /** One info line per slow stretch; the next send in time re-arms it. */
+  private notePresenceSlow(): void {
+    if (this.presenceSlowLogged) return;
+    this.presenceSlowLogged = true;
+    this.options.getLogger().info("attention.presence_send_slow", {
+      budgetMs: ATTENTION_PRESENCE_BUDGET_MS,
+    });
   }
 
   /**
@@ -723,10 +753,16 @@ export class AttentionAccountCoordinator {
       }
     }
     if (!this.options.localRuntimeConnectionPool) return DEFAULT_ATTENTION_PREFERENCES;
-    return await this.options.localRuntimeConnectionPool.callAttention<AttentionPreferences>(
-      "getPreferences",
-      { accountOwnerId },
-      { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+    // The connect in front of the call is not covered by the transport
+    // timeout, so the deadline wraps both (as in `getSnapshot`).
+    return await withDeadline(
+      this.options.localRuntimeConnectionPool.callAttention<AttentionPreferences>(
+        "getPreferences",
+        { accountOwnerId },
+        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+      ),
+      ATTENTION_IPC_BUDGET_MS,
+      () => new Error("This computer's ADE brain did not answer in time. Activity will retry."),
     );
   }
 
@@ -746,12 +782,19 @@ export class AttentionAccountCoordinator {
     if (!this.options.localRuntimeConnectionPool) {
       throw accountActivityNotReadyError();
     }
-    await this.options.localRuntimeConnectionPool.callAttention<void>(
-      "putPreferences",
-      {
-        accountOwnerId,
-        preferences: request.preferences,
-      },
+    // With no timeout this call inherited the pool's ten-minute budget, past
+    // the renderer's 30s IPC timer.
+    await withDeadline(
+      this.options.localRuntimeConnectionPool.callAttention<void>(
+        "putPreferences",
+        {
+          accountOwnerId,
+          preferences: request.preferences,
+        },
+        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+      ),
+      ATTENTION_IPC_BUDGET_MS,
+      () => new Error("This computer's ADE brain did not answer in time. Try saving again."),
     );
   }
 

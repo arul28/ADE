@@ -351,11 +351,26 @@ export function cliReopenedNotice(args: { unexpected: boolean; continued: boolea
 }
 
 /**
+ * Written into a CLI's terminal as ADE stops, when ADE cannot reopen that CLI
+ * afterwards (Devin: ADE never learns its resume id). The ended terminal keeps
+ * the line, so the person knows why it stays closed.
+ */
+export const CLI_NOT_REOPENED_NOTICE =
+  "ADE is stopping and cannot reopen this Devin session after it starts again. Start Devin again to go on.";
+
+/**
  * Automatic resumes in a row before a chat waits for the user. A chat whose
  * resumed turn is cut off by another restart, again and again, is likely what
  * keeps stopping ADE (T3 #18461).
  */
 export const MAX_CONSECUTIVE_RESTART_RESUMES = 3;
+
+/**
+ * How long after a restart cut work off ADE still continues it by itself.
+ * Past this the work is stale: a chat, a CLI, or a brain's record of what
+ * was at work when it stopped (`recordPlannedBrainStop`) continues nothing.
+ */
+export const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
 
 /**
  * Why a chat a restart cut short does not continue by itself, or null when it

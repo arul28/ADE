@@ -330,7 +330,16 @@ export function createSpotifyApi(args: {
       if (response.status === 404) throw new SpotifyApiError("Spotify couldn't find that.", 404, "NOT_FOUND");
       throw new SpotifyApiError(`Spotify answered HTTP ${response.status}.`, response.status, "HTTP");
     }
-    const value = (text ? JSON.parse(text) : undefined) as T;
+    let value: T;
+    try {
+      value = (text ? JSON.parse(text) : undefined) as T;
+    } catch {
+      // Spotify answers some player commands (repeat, shuffle, seek) with a
+      // 2xx and a body that is not JSON. The command worked: there is nothing
+      // to read. A read with such a body is a real failure.
+      if (method === "GET") throw new SpotifyApiError("Spotify sent an answer ADE could not read. Try again.", response.status, "HTTP");
+      value = undefined as T;
+    }
     if (cacheable) {
       if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
       cache.set(path, { at: Date.now(), value });

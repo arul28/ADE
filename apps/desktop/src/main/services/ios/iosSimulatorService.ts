@@ -468,6 +468,9 @@ export class IosSimulatorOutPathOutsideRootError extends Error {
       + `--out must be a path inside that root; a relative path resolves under it (for example .ade/tmp/shot.png).`,
     );
     this.name = "IosSimulatorOutPathOutsideRootError";
+    // The `--out` path is the caller's (a person or an agent), so this is
+    // their answer, not a fault.
+    markExpected(this, "user");
   }
 }
 
@@ -719,6 +722,24 @@ function formatXcodeBuildFailure(error: unknown, context: { projectPath: string;
     summary ? `Build output:\n${summary}` : null,
     `Next action: ${nextAction}`,
   ].filter(Boolean).join("\n"));
+}
+
+/**
+ * A failed `xcrun simctl` read, as it should reach the caller. One with no
+ * stderr reads as a bare "Command failed: …" and names nothing, so it gets
+ * the exit code and signal, which tell a crashed CoreSimulator service from a
+ * refused one. The cause is not known, so it stays reported.
+ */
+function namedSimctlFailure(error: unknown, what: string): unknown {
+  const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown } | null;
+  const stderrText = typeof failure?.stderr === "string" ? failure.stderr.trim() : "";
+  if (stderrText || !(error instanceof Error)) return error;
+  const exit = typeof failure?.code === "number" || typeof failure?.code === "string" ? String(failure.code) : "unknown";
+  const signal = typeof failure?.signal === "string" && failure.signal ? `, signal ${failure.signal}` : "";
+  return carryExpected(error, new Error(
+    `\`xcrun simctl ${what}\` failed and printed nothing (exit ${exit}${signal}). Quit Simulator, then try again.`,
+    { cause: error },
+  ));
 }
 
 const defaultRunCommand: RunCommand = async (command, args, options = {}) => {
@@ -3026,7 +3047,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           { cause: error },
         ), "environment");
       }
-      if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
+      if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw namedSimctlFailure(error, "list devices");
       if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
       simctlMissingAt = Date.now();
       return [];
@@ -3097,7 +3118,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         simctlMissingAt = 0;
         return parseAppleInstalledRuntimes(stdout);
       } catch (error) {
-        if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
+        if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw namedSimctlFailure(error, "list runtimes");
         if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
         simctlMissingAt = Date.now();
         return [];
@@ -3441,7 +3462,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       await run("xcrun", ["simctl", ...simctlArgs], { timeoutMs });
     } catch (error) {
-      if (isTerminatedByTimeout(error)) throw new Error(timeoutMessage);
+      // CoreSimulator did not answer in time: the Mac's simulator service is
+      // stuck or the Mac is too busy. ADE only waited.
+      if (isTerminatedByTimeout(error)) throw markExpected(new Error(timeoutMessage, { cause: error }), "environment");
       throw error;
     }
   };
@@ -4996,7 +5019,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // Two overlapping launches share one DerivedData directory and the last one
     // to finish wins `runtime.activeSession`, so the caller is told about an app the
     // other launch installed. Reject the second launch instead.
-    if (runtime.activeLaunchId) throw new IosSimulatorLaunchInProgressError(runtime.activeLaunchId);
+    // A second launch while one runs is refused to the caller, who waits or cancels.
+    if (runtime.activeLaunchId) throw markExpected(new IosSimulatorLaunchInProgressError(runtime.activeLaunchId), "user");
     if (laneAppInstalls.has(runtime.key)) {
       throw new AdeExpectedError(
         `${APPLE_BUILD_BUSY_CODE}: an \`ade apple install\` is building in this lane's DerivedData. Wait for it, then launch again.`,

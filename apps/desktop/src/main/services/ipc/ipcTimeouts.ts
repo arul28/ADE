@@ -30,6 +30,7 @@ import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoCo
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
+import { MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS } from "../diagnostics/autoDiagnosticsService";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -383,6 +384,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // merged PR. The 30s default reported a failure while the merge went on.
     case IPC.prsLand:
       return 120_000;
+    // A report dialog's prepare or send waits for a report already running
+    // (an automatic send collects, then uploads for up to 20s) before its own
+    // collection or upload. On the 30s default the dialog showed a raw IPC
+    // timeout while the report went on.
+    case IPC.diagnosticsPrepareReport:
+    case IPC.diagnosticsSendReport:
+      return MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS;
     // The Usage page's Refresh runs the isolated ledger worker end to end. On
     // the 30s default the renderer rejected with a raw IPC timeout — and blanked
     // the page — while the daemon kept scanning for another nine minutes.

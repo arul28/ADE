@@ -253,9 +253,17 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the chat from spending another turn. Three coarse transitions and nothing
   // about the chat itself.
   "auto_resume",
-  // One coarse fact per "Report issue" press: whether the GitHub issue page
-  // opened. Never the surface it was pressed on, and never the report itself.
+  // Feature "issue_report". `issue_report`: whether a report sent from an
+  // error screen reached ADE (success | failed). `report_dialog`: the report
+  // dialog was opened, closed after a send (completed) or closed with nothing
+  // sent (cancelled). `github_issue`: the public GitHub issue page, offered only
+  // after a send, opened (opened | failed). `report_copied`: "Copy report"
+  // where sending is impossible (completed | failed). Never the surface, the
+  // report, the note, the reference or an error.
   "issue_report",
+  "report_dialog",
+  "github_issue",
+  "report_copied",
   // Machine membership. `machine_removed` is the user dropping a computer from
   // their account; `machine_register_refused` is the account directory refusing
   // to take THIS computer back, which is the state a revoked machine sits in
@@ -313,7 +321,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "cloud_lane_freed",
   "cloud_clear_caches",
   "cloud_default_size",
-  // One coarse fact per automatic diagnostic send: whether it went, was refused
+  // One coarse fact per automatic diagnostic send (feature "issue_report"): whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
   // local file and the upload the user was toasted about, not analytics.
@@ -702,6 +710,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // Passwords: on/off per computer, imports, and agents' sign-ins,
     // sign-ups and `secrets exec`.
     "passwords",
+    // Reports to ADE: the error screens' report dialog and its send, the
+    // public GitHub issue after a send, and ADE's automatic sends.
+    "issue_report",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

@@ -1940,12 +1940,13 @@ export function createMultiProjectRpcRequestHandler(
 
   const getProjectHandler = async (
     projectId: ProjectId,
+    requestedBy?: string,
   ): Promise<HandlerEntry> => {
     const cached = handlers.get(projectId);
     if (cached) return await cached;
 
     const pending = (async () => {
-      const scope = await scopeRegistry.get(projectId);
+      const scope = await scopeRegistry.get(projectId, { requestedBy });
       const handler = createAdeRpcRequestHandler({
         runtime: scope.runtime,
         serverVersion: options.serverVersion,
@@ -4609,7 +4610,7 @@ export function createMultiProjectRpcRequestHandler(
     }
     const foreignCaller = resolveForeignCaller(params);
     const handlerFor = (target: ProjectId): Promise<HandlerEntry> => (
-      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target)
+      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target, method)
     );
     let forwardedParams = omitProjectId(omitRemoteCaller(params));
     const parentSlot = childParentSlot(method, forwardedParams);

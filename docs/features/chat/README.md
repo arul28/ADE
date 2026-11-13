@@ -1752,7 +1752,11 @@ accepted update alike, and the update dialog shows its answer per chat:
     `.ade/cache/reopen-cli-after-restart.<pid>.json`, and marks one that is
     still printing and not at its prompt as mid-turn. Two runtimes of one
     project that stop together never overwrite each other's list. The next
-    runtime claims each file with a rename before it reads it.
+    runtime claims each file with a rename before it reads it. A brain told
+    to stop writes this list first, with its chats at work, and opens those
+    projects at its next start; a stop for good continues nothing, and a
+    Devin CLI never reopens (see
+    [work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop)).
   - **A crash, force quit, kill or power loss** writes nothing at exit. The
     next runtime reads the session rows instead
     (`findCliSessionsCutOffByCrash`): tracked agent CLI rows, `running` or

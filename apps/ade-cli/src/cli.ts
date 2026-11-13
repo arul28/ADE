@@ -107,7 +107,8 @@ import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
   describeDiagnosticUpload,
-  openDiagnosticIssue,
+  openPublicIssue,
+  publicIssueUrlForSend,
   saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
@@ -717,13 +718,17 @@ import {
   recordBrainRunStart,
 } from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
 import {
+  clearBrainStopIntent,
   closeLiveTurnProjectsRecord,
   dropLiveTurnProjectsAfterCrash,
   enableLiveTurnProjectsRecord,
+  noteBrainStopIntent,
   noteLiveTurnProjectOpening,
+  recordPlannedBrainStop,
   settleLiveTurnProjectAfterCrash,
   takeLiveTurnProjectsFromStoppedBrains,
 } from "../../desktop/src/main/services/runtime/liveTurnProjects";
+import { RESTART_RESUME_MAX_AGE_MS } from "../../desktop/src/shared/chatAutoResume";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -1612,7 +1617,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -28352,6 +28358,12 @@ async function runRuntimeCommand(
             };
           }
         }
+        // A person stopped it: the next start continues nothing it had at work.
+        noteBrainStopIntent("stop_for_good", {
+          runtimeDir: path.dirname(lastFailurePathForMachine()),
+          socketPath,
+          pid: runtimeInfo?.pid ?? null,
+        });
         await shutdownMachineRuntimeDaemon(client);
       } finally {
         client.close();
@@ -28363,6 +28375,8 @@ async function runRuntimeCommand(
         message: "ADE runtime endpoint stopped.",
       };
     } catch (error) {
+      // The stop did not happen: a later stop must not read it as one for good.
+      clearBrainStopIntent({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath });
       return {
         ok: false,
         running: false,
@@ -28378,7 +28392,12 @@ async function runRuntimeCommand(
   }
   if (sub === "uninstall-service") {
     const { uninstallRuntimeService } = await import("./serviceManager");
-    return uninstallRuntimeService();
+    // A person removed the service: its brain's work is not continued later.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
+    const removed = await uninstallRuntimeService();
+    if (!removed.ok) clearBrainStopIntent(intentTarget);
+    return removed;
   }
   if (sub === "service-status") {
     const { getRuntimeServiceStatus } = await import("./serviceManager");
@@ -28926,7 +28945,11 @@ async function runBrainCommand(
 
   if (sub === "stop") {
     const { uninstallRuntimeService } = await import("./serviceManager");
+    // A person stopped the brain: the next start continues nothing it had at work.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
     const stopped = await uninstallRuntimeService();
+    if (!stopped.ok) clearBrainStopIntent(intentTarget);
     // An open ADE app needs its brain: it puts the service back within about
     // a minute (`tryRepairServiceConnection`). Say so, so the stop does not
     // seem to have failed.
@@ -30900,7 +30923,16 @@ async function runServe(
   /** Set before `finish()` when the brain stops because something failed. */
   let stoppingOnFailure = false;
 
-  const finish = () => {
+  /**
+   * `requested`: someone asked this brain to stop (a signal from the service
+   * manager, an installer, a logout or reboot, or a `shutdown` request). The
+   * brain is a kept-alive service, so a start follows: the chats and CLIs at
+   * work are kept for it (`recordPlannedBrainStop`), first, before the slow
+   * teardown, unless the stop was announced as one for good. Every other stop
+   * (idle, socket lost, parent gone) has nothing at work to keep, or belongs
+   * to a brain the record does not cover.
+   */
+  const finish = (options: { requested?: boolean } = {}) => {
     if (done) return;
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
@@ -30908,7 +30940,11 @@ async function runServe(
     if (!stoppingOnFailure) {
       markBrainStoppedCleanly();
       markBrainRunStoppedCleanly();
-      closeLiveTurnProjectsRecord();
+      const kept = options.requested && !embedded
+        ? recordPlannedBrainStop({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: serveSocketPath })
+        : null;
+      if (kept) headlessProjectLogger.info("brain.planned_stop_recorded", { ...kept });
+      else closeLiveTurnProjectsRecord();
     }
     resolveDone?.();
   };
@@ -31447,7 +31483,7 @@ async function runServe(
         };
       },
       disposeScopesOnDispose: false,
-      onShutdown: finish,
+      onShutdown: () => finish({ requested: true }),
     }));
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
@@ -32443,15 +32479,25 @@ async function runServe(
   if (!embedded) {
     /**
      * Open, one at a time, the projects in which the brain before this one
-     * had a chat or CLI turn running when it stopped unplanned. Opening a
-     * project is what runs its CLI reopen and chat restart recovery, so they
+     * had a chat or CLI turn running when it stopped: unplanned (a crash), or
+     * planned (a restart, an update, a reboot) no more than 6 h ago. Opening a
+     * project is what runs its CLI reopen and chat continue, so they
      * continue within seconds instead of when a window or phone next opens
      * the project. Only those projects: no other project database is opened.
      * Nothing opens in a restart loop or with "Continue chats after restarts"
      * off; the files are claimed either way.
      */
     const runtimeDir = path.dirname(lastFailurePathForMachine());
-    const roots = takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath: serveSocketPath });
+    const roots = takeLiveTurnProjectsFromStoppedBrains({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      maxStoppedAgeMs: RESTART_RESUME_MAX_AGE_MS,
+      onStoppedRecord: ({ projects, stale }) => {
+        // A stale stop's projects stay closed; each one says which chats and
+        // CLIs it drops when it next opens (`reopenCliSessionsAfterRestart`).
+        headlessProjectLogger.info("brain.planned_stop_record_taken", { projects, stale });
+      },
+    });
     if (roots.length > 0) {
       const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
       if (hold) {
@@ -32756,7 +32802,7 @@ async function runServe(
       // outlives its service registration and squats on the channel socket and
       // sync singleton, so force the exit if disposal does not finish in time.
       const finishFromSignal = () => {
-        finish();
+        finish({ requested: true });
         const timer = setTimeout(() => process.exit(0), 10_000);
         timer.unref();
       };
@@ -38832,7 +38878,7 @@ function formatTextOutput(
         // `ade report-issue` exists for: it reads local files only, so it still
         // works on the machine where the brain will not come up.
         if (!doctorRows.some((row) => row.status === "fail")) return table;
-        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue --send\` to send the report to the ADE team privately.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -42075,29 +42121,38 @@ async function runParsedCli(
         projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
         cliVersion: VERSION,
       });
-      // Copy-then-open, the same order the desktop button uses: the issue
-      // template asks the user to paste the report from their clipboard, so
-      // opening it without copying first sends them to a form with nothing to
-      // paste. Both steps are best effort and the report is printed regardless.
-      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
       // Saved BEFORE the upload is attempted, so the path printed under a
       // failure is a file that already exists rather than one written after we
       // knew we needed it.
       const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
       // Sending is opt-in and never blocks the printed report: a failed upload
-      // still leaves the user holding everything they need to file by hand.
+      // still leaves the user holding everything they need.
       const sent = plan.send ? await sendDiagnosticReport(built) : null;
+      // The full report goes to ADE privately, never to a public page. The
+      // public GitHub issue exists only after a send, and holds only the
+      // reference, the version and the OS family.
+      const publicUrl = publicIssueUrlForSend(built, sent);
+      const opened = publicUrl && plan.open ? await openPublicIssue(publicUrl) : false;
       if (parsed.options.text) {
-        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
         const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
+        const nextStep = !plan.send
+          ? "\nTo send this report to the ADE team privately, run `ade report-issue --send`. Do not post it on a public page."
+          : publicUrl
+            ? opened
+              ? `\nOpened a public GitHub issue that holds only the reference, ADE version and OS:\n${publicUrl}`
+              : `\nTo also open a public GitHub issue (it holds only the reference, ADE version and OS), use:\n${publicUrl}`
+            : "";
+        const openNote = plan.open && !publicUrl
+          ? "\nNothing opened: a public GitHub issue needs a report sent with --send."
+          : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
+          output: `${built.report}${sendNote}${nextStep}${openNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue, sent, savedPath),
+          buildReportIssuePayload(built, sent, savedPath, publicUrl ? { url: publicUrl, opened } : null),
           parsed.options,
           undefined,
         ),
