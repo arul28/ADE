@@ -630,6 +630,38 @@ function frontRemoteTabKey(
   return lastRemoteBindingKey;
 }
 
+/**
+ * ADE Web: how long a computer that was connected must stay away before its
+ * tabs leave it. A project open passes through "idle" and "connecting" for
+ * well under this; the reconnect hold covers a real drop before it.
+ */
+const WEB_STOP_SETTLE_MS = 3_000;
+
+/**
+ * ADE Web: the copies of no-machine tabs whose computer connected again, to
+ * open as their tabs again; the tab stays where it was in the strip, and the
+ * no-machine tab closes once its repository is open (`useNoMachineTabCleanup`).
+ * A tab the person closed, or one whose computer left the list, is dropped.
+ */
+function resumeWebStoppedTabs(
+  stoppedTabs: Map<string, RemoteOpenProjectBinding>,
+  targets: { connected: ReadonlySet<string>; gone: ReadonlySet<string> },
+): RemoteOpenProjectBinding[] {
+  if (stoppedTabs.size === 0) return [];
+  const open = new Set(useAppStore.getState().noMachineTabs.map((tab) => tab.id));
+  const resumed: RemoteOpenProjectBinding[] = [];
+  for (const [id, binding] of stoppedTabs) {
+    if (!open.has(id) || targets.gone.has(binding.targetId)) {
+      stoppedTabs.delete(id);
+      continue;
+    }
+    if (!targets.connected.has(binding.targetId)) continue;
+    stoppedTabs.delete(id);
+    resumed.push(binding);
+  }
+  return resumed;
+}
+
 const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
   connected: "Connected",
   connecting: "Reconnecting",
@@ -2007,12 +2039,13 @@ export function TopBar({
   );
 
   /**
-   * ADE Web: a computer forgotten or removed in this browser leaves the
-   * connection list. The tab is the repository (as on the desktop, #2205):
-   * each of that computer's tabs moves to another reachable copy of its
-   * repository; a tab with none stays open with no machine; only a folder
-   * with no repository closes. Nothing asks: the person confirmed in the
-   * connections menu.
+   * ADE Web: a computer leaves this tab. It was forgotten or removed in this
+   * browser (it leaves the connection list), or it stopped (still listed, not
+   * connected once the reconnect hold ends). The tab is the repository (as on
+   * the desktop, #2205): each of that computer's tabs moves to another
+   * connected copy of its repository; a tab with none stays open with no
+   * machine; only a folder with no repository closes. A drop never closes a
+   * tab. Returns the no-machine tabs it made, with the copy each one had.
    */
   // The last remote tab in front: a forget can drop the binding before the
   // connection list loses its computer (see `frontRemoteTabKey`).
@@ -2020,10 +2053,11 @@ export function TopBar({
   useEffect(() => {
     if (remoteBinding) lastRemoteBindingKeyRef.current = remoteBinding.key;
   }, [remoteBinding]);
-  const moveWebTabsOffGoneTargets = useCallback(async (gone: ReadonlySet<string>) => {
+  const moveWebTabsOffGoneTargets = useCallback(async (gone: ReadonlySet<string>): Promise<Map<string, RemoteOpenProjectBinding>> => {
+    const waiting = new Map<string, RemoteOpenProjectBinding>();
     const latestRemoteTabs = openRemoteProjectTabsRef.current;
     const affected = latestRemoteTabs.filter((entry) => gone.has(entry.targetId));
-    if (affected.length === 0) return;
+    if (affected.length === 0) return waiting;
     const connectedTargetIds = new Set(
       (remoteSnapshotRef.current?.connections ?? [])
         .filter((connection) => connection.state === "connected" && !gone.has(connection.target.id))
@@ -2047,18 +2081,23 @@ export function TopBar({
       const noMachine = !usable && group?.origin
         ? { id: group.id, displayName: recordNameForRef.current(group) ?? tab.displayName, iconDataUrl: tab.iconDataUrl ?? null }
         : null;
-      return { tab, fallback: usable, noMachine };
+      return { tab, fallback: usable, noMachine, groupId: group?.id ?? null };
     });
     const affectedKeys = new Set(affected.map((entry) => entry.key));
     const renamed = new Map<string, string>();
     const nextRemote = new Map<string, RemoteOpenProjectBinding>();
+    // A computer that stopped stays listed with its copies, so the tab must
+    // also prefer its new copy, or it would still show the one that left.
+    const preferred: Record<string, string> = {};
     for (const entry of latestRemoteTabs) if (!affectedKeys.has(entry.key)) nextRemote.set(entry.key, entry);
     for (const plan of plans) {
       if (plan.fallback?.kind === "remote") {
         nextRemote.set(plan.fallback.binding.key, plan.fallback.binding);
         renamed.set(plan.tab.key, plan.fallback.binding.key);
+        if (plan.groupId) preferred[plan.groupId] = plan.fallback.binding.key;
       }
     }
+    if (Object.keys(preferred).length > 0) setPreferredBindingKeyByGroup((current) => ({ ...current, ...preferred }));
     const shownBeforeClose = {
       groups: tabGroupsRef.current,
       openLocal: new Set(openProjectTabRootsRef.current),
@@ -2075,6 +2114,7 @@ export function TopBar({
     const frontWasAffected = frontKey != null && affectedKeys.has(frontKey);
     for (const plan of plans) {
       if (!plan.noMachine) continue;
+      waiting.set(plan.noMachine.id, plan.tab);
       store.showNoMachineTab(plan.noMachine, { activate: frontWasAffected && plan.tab.key === frontKey });
     }
     const frontPlan = frontWasAffected ? plans.find((plan) => plan.tab.key === frontKey) : undefined;
@@ -2084,15 +2124,77 @@ export function TopBar({
         captureError(error, { fingerprint: ["repository-tabs", "web-move-open"], level: "warning", handled: true });
       });
     }
-  }, [setOpenRemoteProjectTabs, setTabOrder]);
+    return waiting;
+  }, [setOpenRemoteProjectTabs, setPreferredBindingKeyByGroup, setTabOrder]);
   const webSeenTargetIdsRef = useRef<ReadonlySet<string>>(new Set());
+  // Computers connected at some point in this page, and the ones whose drop is
+  // settling: a project open passes through "idle" and "connecting" for a
+  // moment, so only a computer still away after WEB_STOP_SETTLE_MS stopped.
+  const webEverConnectedRef = useRef(new Set<string>());
+  const webStopTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const webStoppedTargetsRef = useRef(new Set<string>());
+  // No-machine tabs made by a computer that stopped, by tab id, with the copy
+  // each one had: the copy comes back when its computer connects again.
+  const webStoppedTabsRef = useRef(new Map<string, RemoteOpenProjectBinding>());
+  useEffect(() => {
+    const timers = webStopTimersRef.current;
+    return () => {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
   useEffect(() => {
     if (!webMode || !remoteSnapshot) return;
     const present = new Set(remoteSnapshot.connections.map((connection) => connection.target.id));
+    const connected = new Set(
+      remoteSnapshot.connections
+        .filter((connection) => connection.state === "connected")
+        .map((connection) => connection.target.id),
+    );
     const gone = new Set([...webSeenTargetIdsRef.current].filter((targetId) => !present.has(targetId)));
     webSeenTargetIdsRef.current = present;
+    const timers = webStopTimersRef.current;
+    const stopTimer = (targetId: string) => {
+      const timer = timers.get(targetId);
+      if (timer) clearTimeout(timer);
+      timers.delete(targetId);
+    };
+    for (const targetId of connected) {
+      webEverConnectedRef.current.add(targetId);
+      webStoppedTargetsRef.current.delete(targetId);
+      stopTimer(targetId);
+    }
+    // Connected earlier in this page, still listed, not connected now. The
+    // reconnect hold (federated adapter) reports a dropped computer as
+    // connected while it comes back, so this one stayed away.
+    for (const targetId of [...webEverConnectedRef.current]) {
+      if (!present.has(targetId)) {
+        webEverConnectedRef.current.delete(targetId);
+        webStoppedTargetsRef.current.delete(targetId);
+        stopTimer(targetId);
+        continue;
+      }
+      if (connected.has(targetId) || timers.has(targetId) || webStoppedTargetsRef.current.has(targetId)) continue;
+      timers.set(targetId, setTimeout(() => {
+        timers.delete(targetId);
+        const latest = remoteSnapshotRef.current?.connections.find((connection) => connection.target.id === targetId);
+        if (!latest || latest.state === "connected") return;
+        webStoppedTargetsRef.current.add(targetId);
+        void moveWebTabsOffGoneTargets(new Set([targetId])).then((waiting) => {
+          for (const [id, binding] of waiting) webStoppedTabsRef.current.set(id, binding);
+        });
+      }, WEB_STOP_SETTLE_MS));
+    }
+    const resumed = resumeWebStoppedTabs(webStoppedTabsRef.current, { connected, gone });
+    if (resumed.length > 0) {
+      const byKey = new Map(openRemoteProjectTabsRef.current.map((entry) => [entry.key, entry]));
+      for (const binding of resumed) byKey.set(binding.key, binding);
+      const nextRemoteTabs = [...byKey.values()];
+      openRemoteProjectTabsRef.current = nextRemoteTabs;
+      setOpenRemoteProjectTabs(nextRemoteTabs);
+    }
     if (gone.size > 0) void moveWebTabsOffGoneTargets(gone);
-  }, [moveWebTabsOffGoneTargets, remoteSnapshot, webMode]);
+  }, [moveWebTabsOffGoneTargets, remoteSnapshot, setOpenRemoteProjectTabs, webMode]);
 
   const handleRemoteTargetDisconnectRequested = useCallback(
     (target: RemoteRuntimeTarget): Promise<boolean> =>
