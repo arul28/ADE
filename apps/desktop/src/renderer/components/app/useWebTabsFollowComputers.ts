@@ -30,18 +30,18 @@ function frontRemoteTabKey(
 const WEB_STOP_SETTLE_MS = 3_000;
 
 /**
- * ADE Web: the copies of no-machine tabs whose computer connected again, to
- * open as their tabs again; the tab stays where it was in the strip, and the
+ * ADE Web: the copies of no-machine tabs whose computer connected again, by
+ * no-machine tab id, to open as their tabs again; the tab stays where it was in the strip, and the
  * no-machine tab closes once its repository is open (`useNoMachineTabCleanup`).
  * A tab the person closed, or one whose computer left the list, is dropped.
  */
 function resumeWebStoppedTabs(
   stoppedTabs: Map<string, RemoteOpenProjectBinding>,
   targets: { connected: ReadonlySet<string>; gone: ReadonlySet<string> },
-): RemoteOpenProjectBinding[] {
+): Array<[string, RemoteOpenProjectBinding]> {
   if (stoppedTabs.size === 0) return [];
   const open = new Set(useAppStore.getState().noMachineTabs.map((tab) => tab.id));
-  const resumed: RemoteOpenProjectBinding[] = [];
+  const resumed: Array<[string, RemoteOpenProjectBinding]> = [];
   for (const [id, binding] of stoppedTabs) {
     if (!open.has(id) || targets.gone.has(binding.targetId)) {
       stoppedTabs.delete(id);
@@ -49,7 +49,7 @@ function resumeWebStoppedTabs(
     }
     if (!targets.connected.has(binding.targetId)) continue;
     stoppedTabs.delete(id);
-    resumed.push(binding);
+    resumed.push([id, binding]);
   }
   return resumed;
 }
@@ -231,10 +231,20 @@ export function useWebTabsFollowComputers({
     const resumed = resumeWebStoppedTabs(webStoppedTabsRef.current, { connected, gone });
     if (resumed.length > 0) {
       const byKey = new Map(openRemoteProjectTabsRef.current.map((entry) => [entry.key, entry]));
-      for (const binding of resumed) byKey.set(binding.key, binding);
+      for (const [, binding] of resumed) byKey.set(binding.key, binding);
       const nextRemoteTabs = [...byKey.values()];
       openRemoteProjectTabsRef.current = nextRemoteTabs;
       setOpenRemoteProjectTabs(nextRemoteTabs);
+      // A waiting tab in front opens its copy; another project can be the one
+      // under it, and closing the waiting page alone would show that one.
+      const store = useAppStore.getState();
+      const front = resumed.find(([id]) => id === store.activeNoMachineTabId)?.[1];
+      if (front && store.projectBinding?.key !== front.key) {
+        void store.switchRemoteProject(front.targetId, front.projectId).catch((error: unknown) => {
+          // The tab is back; only its page did not open. A click on the tab opens it again.
+          captureError(error, { fingerprint: ["repository-tabs", "web-resume-open"], level: "warning", handled: true });
+        });
+      }
     }
     if (gone.size > 0) void moveWebTabsOffGoneTargets(gone);
   }, [moveWebTabsOffGoneTargets, openRemoteProjectTabsRef, remoteSnapshot, remoteSnapshotRef, setOpenRemoteProjectTabs, webMode]);
