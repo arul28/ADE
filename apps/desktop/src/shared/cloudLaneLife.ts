@@ -257,3 +257,70 @@ export function cloudTierRequestOfCard(card: AdeCardPayload, chatSessionId: stri
     chatSessionId,
   };
 }
+
+// ---------------------------------------------------------------------------
+// A new lane's computer waits for the person to approve it joining the account
+// ---------------------------------------------------------------------------
+
+/**
+ * The card a lane launch posts in the agent's chat when no desktop window can
+ * approve its new computer (no desktop attached to the brain that runs it).
+ * Only the brain posts it; agents can't post cards. The same card id again
+ * marks it done or ended.
+ */
+export const CLOUD_JOIN_APPROVAL_CARD_VARIANT = "cloud_join_approval";
+
+const JOIN_ROW = { link: "join_approval_link", state: "join_approval_state" } as const;
+
+export type CloudJoinApproval = {
+  launchId: string;
+  computerName: string;
+  /** The account service's own approval page for this computer's code (`…/device?user_code=…`). */
+  url: string;
+  /** `waiting` until the computer joined (`joined`) or the launch stopped waiting (`ended`). */
+  state: "waiting" | "joined" | "ended";
+};
+
+/** Only the account service's approval page: https, `/device`, with a code. */
+export function isCloudJoinApprovalUrl(raw: string | null | undefined): boolean {
+  try {
+    const url = new URL(String(raw ?? ""));
+    return url.protocol === "https:" && url.pathname.replace(/\/+$/, "") === "/device" && Boolean(url.searchParams.get("user_code")) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+export function buildCloudJoinApprovalCard(input: CloudJoinApproval): AdeCardPayload {
+  const waiting = input.state === "waiting";
+  return {
+    cardId: `cloud-join-approval:${input.launchId}`,
+    variant: CLOUD_JOIN_APPROVAL_CARD_VARIANT,
+    state: waiting ? "live" : "terminal",
+    title: input.state === "joined"
+      ? `${input.computerName} joined your ADE account`
+      : input.state === "ended" ? `${input.computerName} no longer waits for approval` : `Approve ${input.computerName} joining your ADE account`,
+    subtitle: waiting ? "A new ADE Cloud computer for this lane. The lane waits up to 10 minutes." : null,
+    rows: [
+      { key: JOIN_ROW.link, icon: "info", text: input.computerName, detail: input.url },
+      { key: JOIN_ROW.state, icon: waiting ? "running" : input.state === "joined" ? "pass" : "skipped", text: input.state, detail: input.state },
+    ],
+    fallbackText: waiting
+      ? `Approve "${input.computerName}" joining your ADE account: open ${input.url} on your phone or in a browser signed in to ADE. The lane waits up to 10 minutes.`
+      : input.state === "joined" ? `"${input.computerName}" joined your ADE account.` : `"${input.computerName}" no longer waits for approval.`,
+  };
+}
+
+/** What a `cloud_join_approval` card carries, or null for any other card (or a link that isn't the approval page). */
+export function cloudJoinApprovalOfCard(card: AdeCardPayload): CloudJoinApproval | null {
+  if (card.variant !== CLOUD_JOIN_APPROVAL_CARD_VARIANT || !card.cardId.startsWith("cloud-join-approval:")) return null;
+  const row = card.rows?.find((entry) => entry.key === JOIN_ROW.link) ?? null;
+  if (!row?.detail || !isCloudJoinApprovalUrl(row.detail)) return null;
+  const stated = card.rows?.find((entry) => entry.key === JOIN_ROW.state)?.detail;
+  return {
+    launchId: card.cardId.slice("cloud-join-approval:".length),
+    computerName: row.text,
+    url: row.detail,
+    state: card.state === "live" ? "waiting" : stated === "joined" ? "joined" : "ended",
+  };
+}

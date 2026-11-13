@@ -182,8 +182,14 @@ minutes are shown on the plan table only; nothing meters them yet.
 - **Cloud 7 terms, from each account's next period** (migration 0033,
   `old_plan_terms`): accounts that existed before keep Plus's 40 GB and Pro's
   120 GB until their next period starts, so nobody is cut mid-period. Hours
-  are stored per period (`included_milli`), so the new hours (Free 100,
-  Plus 300, Pro 1,600) also start with the next period.
+  are stored per period (`included_milli`), so the new hours (Plus 300,
+  Pro 1,600) start with the next period. Free is the exception (Cloud 8): a
+  free period that began on fewer hours than the free plan has now is raised
+  at once on the next read (`raiseFreeHours` in `store.ts`, never for an
+  account refused the free plan or held by the GitHub rules, and its
+  out-of-hours warning clears), since more hours never hurt. `ade cloud
+  status` says both numbers when a paid period's hours differ from its plan's
+  ("500 hours this period, 300 from 2026-12-01").
 - **Extra hours** are one flat price per plan (2¢, 1.5¢, 1.2¢), each its own
   Stripe metered price on the one extra-hours meter
   (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`). Checkout sells only the
@@ -786,10 +792,32 @@ a terminal in.
   new computers, the refusal reads "your agents hit today's limit of N new
   computers a day. Change it in Settings › Integrations › ADE Cloud › What
   agents may do › New computers a day." A person is never counted.
-- **The join.** The same rule as a brain's make: the brain approves itself
-  only for an unattended yes with a headless browser here (a cloud computer);
-  otherwise the sign-in link goes to the agent's chat and to the CLI (stderr,
-  and `approvalUrl` in the status). A computer's ADE answers before its
+- **The join.** When a desktop app is attached to the brain, the new
+  computer signs in through that app's approval window, as the app's own
+  creates do (`cloud.approveWindow` over the desktop bridge,
+  `desktopApprovalWindow` in `cloudLaneLaunchBrainHost.ts`; cancelling the
+  launch closes it with `cloud.closeApprovalWindow`). If that window can't
+  finish (the desktop left, closed it, or is too old to have it), the brain
+  waits the moment a landed approval needs, starts a fresh code and falls
+  back to the link. With no desktop, the brain approves itself only for an
+  unattended yes with a headless browser here (a cloud computer); otherwise
+  the agent's chat gets a `cloud_join_approval` card (`buildCloudJoinApprovalCard`
+  in `shared/cloudLaneLife.ts`) whose Approve opens the account service's
+  own `/device?user_code=…` page in this computer's ADE browser, where the
+  person confirms the computer by name; the card turns into "joined" or "no
+  longer waits" when the join ends. Only the brain posts it (agents can't
+  post cards), and a client that doesn't know the card shows its text, link
+  included. The CLI prints the link (stderr, and `approvalUrl` in the
+  status). A join that fails puts the computer to sleep (`restWhileFailed`),
+  and the server's no-check-in sleep catches one ADE never looked at again.
+  `ade cloud status` shows a computer that never signed in as "not joined to
+  ADE yet", never "up to date".
+- **Why agent launches don't use the server launcher yet.** The server
+  launcher (below) needs no approval on this machine at all, but it runs a
+  different stage model (the computer runs its own launch and posts its
+  stages) and hasn't been checked live on an agent's path. Moving agent and
+  CLI launches to it is a follow-up once a beta with it is in the cloud
+  template. A computer's ADE answers before its
   network is always up, so the sign-in start is retried: `ade login`
   (device mode) keeps trying an account directory it can't reach, that times
   out or answers without JSON for 45 s, and says which it was; the launcher
@@ -801,7 +829,10 @@ a terminal in.
   step and in Copy details.
 - **One computer per id.** The launch id is printed first (stderr, `--json`
   too). The same `--launch-id` again answers that launch, and a failed one
-  goes on from its failed step; the server returns the same computer for a
+  goes on from its failed step; `--prompt` is not needed again (the launch
+  keeps it), and an id this ADE doesn't hold asks for `--prompt`. A step
+  resumed after the brain restarted keeps its first start time, and the join
+  publishes only when what it shows changes; the server returns the same computer for a
   repeated request id. Ctrl-C stops only the waiting: the launch goes on in
   the brain, which resumes saved records 5 s after it starts.
   `ade chat launch-status <id> --machine cloud` reads it, and

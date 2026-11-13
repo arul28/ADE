@@ -256,7 +256,7 @@ function seedAccount(data: Harness, userId: string, overrides: Row = {}): void {
   data.insert("cloud_accounts", {
     user_id: userId,
     plan: "free",
-    included_milli: 50_000,
+    included_milli: 100_000,
     period_start: NOW - 8 * DAY,
     period_end: NOW + 22 * DAY,
     created_at: NOW - 60 * DAY,
@@ -683,8 +683,8 @@ describe("ADE Cloud account", () => {
       expect(computer(harness).disk_gb).toBe(4);
     }],
     ["one account's failure doesn't cost another account its stop at 0 hours", async () => {
-      seedAccount(harness, OTHER, { used_milli: 50_000 });
-      harness.exec("update cloud_accounts set used_milli = 50000 where user_id = ?", OWNER);
+      seedAccount(harness, OTHER, { used_milli: 100_000 });
+      harness.exec("update cloud_accounts set used_milli = 100000 where user_id = ?", OWNER);
       seedComputer(harness, { awake_since: NOW - 60_000 });
       seedComputer(harness, { instance_id: SECOND, user_id: OTHER, awake_since: NOW - 60_000 });
       provide(harness);
@@ -1247,11 +1247,11 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
 
   it.each<[string, Row, { state: string; earnedLeft: number; extraUsed: number; reports: number }]>([
     ["a free account past its plan's hours keeps running on earned hours",
-      { used_milli: 60_000, earned_granted_milli: 20_000 }, { state: "warn80", earnedLeft: 10_000, extraUsed: 0, reports: 0 }],
+      { used_milli: 110_000, earned_granted_milli: 20_000 }, { state: "warn80", earnedLeft: 10_000, extraUsed: 0, reports: 0 }],
     ["a free account is out once its earned hours are gone too",
-      { used_milli: 70_000, earned_granted_milli: 20_000 }, { state: "zero", earnedLeft: 0, extraUsed: 0, reports: 0 }],
+      { used_milli: 120_000, earned_granted_milli: 20_000 }, { state: "zero", earnedLeft: 0, extraUsed: 0, reports: 0 }],
     ["earned hours an ended period drew are gone",
-      { used_milli: 55_000, earned_granted_milli: 20_000, earned_used_milli: 15_000 }, { state: "zero", earnedLeft: 0, extraUsed: 0, reports: 0 }],
+      { used_milli: 105_000, earned_granted_milli: 20_000, earned_used_milli: 15_000 }, { state: "zero", earnedLeft: 0, extraUsed: 0, reports: 0 }],
     ["an account refused the free plan runs on earned hours from its first hour",
       { included_milli: 0, free_refused_at: NOW - DAY, used_milli: 5_000, earned_granted_milli: 20_000 }, { state: "none", earnedLeft: 15_000, extraUsed: 0, reports: 0 }],
     ["paid extra hours start only after earned hours, and earned hours are never billed",
@@ -1269,7 +1269,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
   });
 
   it("a period's end draws its earned hours once, even when two reads roll it at once", async () => {
-    seedAccount(harness, OWNER, { period_start: NOW - 31 * DAY, period_end: NOW - HOUR, used_milli: 60_000, earned_granted_milli: 20_000 });
+    seedAccount(harness, OWNER, { period_start: NOW - 31 * DAY, period_end: NOW - HOUR, used_milli: 110_000, earned_granted_milli: 20_000 });
 
     // The second read rolls the period while the first, holding the old row, is about to.
     let second: CloudAccountState | null = null;
@@ -1462,16 +1462,16 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
       async () => { await connectGithub(OWNER, 77, 40); harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OTHER, claimed_at: NOW - DAY }); },
       { state: "used", included: 0, claims: [{ github_user_id: 77, user_id: OTHER }], create: 402 }],
     ["a GitHub account 30 days old claims the free plan",
-      () => connectGithub(OWNER, 77, 40), { state: "ok", included: 50_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
+      () => connectGithub(OWNER, 77, 40), { state: "ok", included: 100_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
     ["a revoked GitHub connection whose age is still stored gets no free hours",
       async () => { await connectGithub(OWNER, 77, 40); harness.exec("update github_app_grants set state = 'needs_reauth', state_reason = 'bad_refresh_token' where user_id = ?", OWNER); },
       { state: "no_github", included: 0, claims: [], create: 402 }],
     ["a former paid customer's card counts for a new GitHub account",
       async () => { await connectGithub(OWNER, 77, 10); harness.exec("update cloud_accounts set stripe_subscription_id = 'sub_old' where user_id = ?", OWNER); },
-      { state: "ok", included: 50_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
+      { state: "ok", included: 100_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
     ["an account that used ADE Cloud before the rules keeps its hours with no GitHub",
       async () => { harness.exec("update cloud_accounts set free_github_exempt = 1 where user_id = ?", OWNER); },
-      { state: "ok", included: 50_000, claims: [], create: 201 }],
+      { state: "ok", included: 100_000, claims: [], create: 201 }],
   ])("free plan per GitHub account: %s", async (_label, arrange, expected) => {
     withGithub();
     seedAccount(harness, OWNER);
@@ -1491,8 +1491,8 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
   it.each<[string, () => void, { state: string; included: number }]>([
     ["a new free account gets no free hours while GitHub can't be checked", () => {}, { state: "checking", included: 0 }],
     ["a hold from before stays", () => harness.exec("update cloud_accounts set free_github_hold = 'no_github', included_milli = 0 where user_id = ?", OWNER), { state: "no_github", included: 0 }],
-    ["an account that already claimed its GitHub account keeps its hours", () => harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OWNER, claimed_at: NOW - DAY }), { state: "ok", included: 50_000 }],
-    ["an account that used ADE Cloud before the rules keeps its hours", () => harness.exec("update cloud_accounts set free_github_exempt = 1 where user_id = ?", OWNER), { state: "ok", included: 50_000 }],
+    ["an account that already claimed its GitHub account keeps its hours", () => harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OWNER, claimed_at: NOW - DAY }), { state: "ok", included: 100_000 }],
+    ["an account that used ADE Cloud before the rules keeps its hours", () => harness.exec("update cloud_accounts set free_github_exempt = 1 where user_id = ?", OWNER), { state: "ok", included: 100_000 }],
     ["a settle that throws holds a new free account's hours", () => {
       withGithub();
       // No GitHub connected, and the write of that hold fails: the settle throws.
@@ -1508,6 +1508,19 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect({ state: state.freePlan?.github?.state, included: included() }).toEqual(expected);
   });
 
+  it.each<[string, Row, { included: number; warnedZero: number | null }]>([
+    ["a free period that began on the old 50 hours gets today's free hours at once, and its out-of-hours warning clears", { included_milli: 50_000, used_milli: 50_000, warned_zero_at: NOW - HOUR }, { included: 100_000, warnedZero: null }],
+    ["an account refused the free plan keeps 0", { included_milli: 0, free_refused_at: NOW - DAY }, { included: 0, warnedZero: null }],
+    ["a paid period keeps its own hours", { plan: "paid", paid_plan: "plus", included_milli: 50_000 }, { included: 50_000, warnedZero: null }],
+  ])("free hours raised by a release: %s", async (_label, overrides, expected) => {
+    seedAccount(harness, OWNER, overrides);
+
+    const state = await stateOf();
+
+    expect({ included: included(), warnedZero: harness.row("select warned_zero_at from cloud_accounts where user_id = ?", OWNER).warned_zero_at }).toEqual(expected);
+    expect(state.hours.includedMilli).toBe(expected.included);
+  });
+
   it("two ADE accounts claiming one GitHub account at once: one gets the free plan, the other is refused", async () => {
     withGithub();
     seedAccount(harness, OWNER);
@@ -1521,7 +1534,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
 
     expect(githubClaims()).toEqual([{ github_user_id: 77, user_id: OTHER }]);
     expect([owner.freePlan?.github?.state, included(OWNER)]).toEqual(["used", 0]);
-    expect([(await stateOf(OTHER)).freePlan?.github?.state, included(OTHER)]).toEqual(["ok", 50_000]);
+    expect([(await stateOf(OTHER)).freePlan?.github?.state, included(OTHER)]).toEqual(["ok", 100_000]);
   });
 
   it("switching GitHub accounts never lets one GitHub account feed two free plans", async () => {

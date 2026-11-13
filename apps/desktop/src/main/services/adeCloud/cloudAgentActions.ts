@@ -70,6 +70,8 @@ import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
 import type { CloudLogger } from "./cloudProvider";
 import type { CloudMoveResult } from "./cloudMachineCopy";
+import type { CloudApprovalWindowResult } from "./cloudMachineCreator";
+import type { CloudApprovalWindowRequest } from "./cloudDesktopActions";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
@@ -108,6 +110,9 @@ export type CloudDesktopBridge = {
   create(args: CloudCreateMachineArgs & CloudMadeBy): Promise<CloudCreateMachineResult>;
   copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
   move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudMoveResult>;
+  /** The desktop's approval window for a machine this brain signs in (`CloudDesktopActions.approveWindow`). An older desktop answers "not exposed". */
+  approveWindow?(args: CloudApprovalWindowRequest): Promise<CloudApprovalWindowResult>;
+  closeApprovalWindow?(args: { id: string }): Promise<void>;
 };
 
 export type CloudChatApprovals = {
@@ -715,6 +720,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         madeByChat: madeByChat(approval),
         caller: { chatSessionId, permissionLevel: chatSessionId ? deps.approvals?.permissionLevel(chatSessionId) ?? null : null },
         notice: chatSessionId && deps.approvals ? ((message: string) => deps.approvals!.notice(chatSessionId, message)) : null,
+        card: chatSessionId && deps.approvals?.postCard
+          ? ((card: AdeCardPayload) => {
+            void deps.approvals!.postCard!(chatSessionId, card).catch((error: unknown) => {
+              deps.logger?.warn?.("cloud.lane_launch_card_failed", { cardId: card.cardId, error: getErrorMessage(error) });
+              // The card's words still reach the chat (the approval link among them).
+              deps.approvals!.notice(chatSessionId, card.fallbackText);
+            });
+          })
+          : null,
       };
       if (existing) {
         // Already approved and counted when it started.
