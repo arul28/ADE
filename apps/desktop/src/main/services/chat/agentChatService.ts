@@ -72057,10 +72057,15 @@ export function createAgentChatService(args: {
           continue;
         }
       }
-      // The chat already ran a turn in this brain (the user typed into it, or
-      // something else drove it) before this arm, e.g. before a retry of an
-      // arm that failed. A continue now would start work nobody asked for.
-      if (updateResumeUserCancels.has(chat.sessionId) || lastTurnStartedAtBySession.has(chat.sessionId)) {
+      // A chat named for recovery after the restart already ran a turn in
+      // this brain (the user typed into it, or something else drove it)
+      // before this arm, e.g. before a retry of an arm that failed. A
+      // continue now would start work nobody asked for. A call with no list
+      // arms the chats at work now, which have a turn by definition.
+      if (
+        requested != null
+        && (updateResumeUserCancels.has(chat.sessionId) || lastTurnStartedAtBySession.has(chat.sessionId))
+      ) {
         logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: "driven_since_start" });
         settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
         continue;
