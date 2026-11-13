@@ -82,6 +82,49 @@ type SessionRecord = {
   disposers: Array<() => void>;
 };
 
+/**
+ * Saved machines the person disconnected in this browser (by `envId`). A
+ * background connect leaves them alone until the person connects them again,
+ * across reloads too. Per browser, like the saved machines themselves.
+ */
+const USER_DISCONNECTED_STORAGE_KEY = "ade.web.userDisconnectedMachines.v1";
+
+function readUserDisconnected(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(globalThis.localStorage?.getItem(USER_DISCONNECTED_STORAGE_KEY) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeUserDisconnected(ids: ReadonlySet<string>): void {
+  try {
+    globalThis.localStorage?.setItem(USER_DISCONNECTED_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Storage blocked or full: the choice holds until this page reloads.
+  }
+}
+
+/**
+ * How a connect behaves.
+ * - `activate` false: connect without moving the machine on screen.
+ * - `background` true: nobody asked for this machine (a repository tab
+ *   opened and every computer with a copy joins it). It never parks another
+ *   machine to make room, and it skips a machine the person disconnected.
+ */
+export type WebMachineConnectOptions = { activate?: boolean; background?: boolean };
+
+/** A background connect that did not run, and why. Not a failure of the machine. */
+export class WebMachineConnectSkipped extends Error {
+  constructor(readonly reason: "user_disconnected" | "no_room") {
+    super(reason === "user_disconnected"
+      ? "You disconnected this computer. Connect it again to see its work here."
+      : `This browser already holds ${WEB_MACHINE_SESSION_LIMIT} computer connections.`);
+    this.name = "WebMachineConnectSkipped";
+  }
+}
+
 function connectionState(
   session: SessionRecord,
 ): WebMachineSessionState {
@@ -149,6 +192,7 @@ function remoteProject(project: SyncMobileProjectSummary): RemoteRuntimeProjectR
 
 export class WebMachineSessionManager {
   private readonly sessions = new Map<string, SessionRecord>();
+  private readonly userDisconnected = readUserDisconnected();
   private readonly environments = new Map<string, WebClientEnvironmentRecord>();
   private readonly listeners = new Set<(snapshot: WebMachineWorkspaceSnapshot) => void>();
   private readonly invalidationListeners = new Set<(
@@ -348,6 +392,9 @@ export class WebMachineSessionManager {
         lastError: status?.error ?? null,
         lastAttemptedAt: session?.lastUsedAt ?? null,
         connectedAt: state === "live" ? session?.lastUsedAt ?? null : null,
+        // Same word as the desktop: the person disconnected it, so nothing
+        // connects it again on its own.
+        reconnectBlocked: this.userDisconnected.has(environment.envId) ? "disconnected" : null,
       };
     });
     return {
@@ -365,9 +412,15 @@ export class WebMachineSessionManager {
    */
   async connectEnvironment(
     targetId: string,
-    options: { activate?: boolean } = {},
+    options: WebMachineConnectOptions = {},
   ): Promise<WebMachineSessionSnapshot> {
-    const activate = options.activate !== false;
+    const activate = options.activate !== false && options.background !== true;
+    const background = options.background === true;
+    if (background && this.userDisconnected.has(targetId)) {
+      throw new WebMachineConnectSkipped("user_disconnected");
+    }
+    // A connect someone asked for clears their earlier Disconnect.
+    if (!background) this.setUserDisconnected(targetId, false);
     const inFlight = this.environmentConnects.get(targetId);
     if (inFlight) {
       const snapshot = await inFlight;
@@ -375,7 +428,7 @@ export class WebMachineSessionManager {
       if (activate) this.activateSession(targetId);
       return snapshot;
     }
-    const connecting = this.connectEnvironmentInternal(targetId, activate);
+    const connecting = this.connectEnvironmentInternal(targetId, activate, background);
     this.environmentConnects.set(targetId, connecting);
     try {
       return await connecting;
@@ -394,7 +447,11 @@ export class WebMachineSessionManager {
     this.emit();
   }
 
-  private async connectEnvironmentInternal(targetId: string, activate: boolean): Promise<WebMachineSessionSnapshot> {
+  private async connectEnvironmentInternal(
+    targetId: string,
+    activate: boolean,
+    background = false,
+  ): Promise<WebMachineSessionSnapshot> {
     const environment = this.environments.get(targetId);
     if (!environment) throw new Error("That machine is no longer saved in this browser.");
     const session = await this.withAdmission(async () => {
@@ -409,6 +466,7 @@ export class WebMachineSessionManager {
         this.emit();
         return existing;
       }
+      if (background && !existing?.client && !this.hasRoom()) throw new WebMachineConnectSkipped("no_room");
       await this.makeRoom(targetId);
       const admitted = existing ?? this.createSession(environment);
       if (!admitted.client) this.attachClient(admitted, this.takeClient());
@@ -444,10 +502,18 @@ export class WebMachineSessionManager {
     return this.snapshotSession(session);
   }
 
-  async connectAccountMachine(machine: AdeAccountMachine): Promise<WebMachineSessionSnapshot> {
+  async connectAccountMachine(
+    machine: AdeAccountMachine,
+    options: WebMachineConnectOptions = {},
+  ): Promise<WebMachineSessionSnapshot> {
     const inFlight = this.accountMachineConnects.get(machine.machineKey);
-    if (inFlight) return await inFlight;
-    const connecting = this.connectAccountMachineInternal(machine);
+    if (inFlight) {
+      const snapshot = await inFlight;
+      // The connect in flight may be a background one; this caller wants it on screen.
+      if (options.activate !== false && options.background !== true) this.activateSession(snapshot.targetId);
+      return snapshot;
+    }
+    const connecting = this.connectAccountMachineInternal(machine, options);
     this.accountMachineConnects.set(machine.machineKey, connecting);
     try {
       return await connecting;
@@ -460,18 +526,22 @@ export class WebMachineSessionManager {
 
   private async connectAccountMachineInternal(
     machine: AdeAccountMachine,
+    options: WebMachineConnectOptions,
   ): Promise<WebMachineSessionSnapshot> {
-    const existingEnvironment = this.listEnvironments().find(
-      (environment) => environment.hostDeviceId === machine.deviceId,
-    );
-    if (existingEnvironment) return await this.connectEnvironment(existingEnvironment.envId);
+    const background = options.background === true;
+    const activate = options.activate !== false && !background;
+    const existingEnvironment = this.findAccountMachineEnvironment(machine);
+    if (existingEnvironment) return await this.connectEnvironment(existingEnvironment.envId, options);
 
     const client = await this.withAdmission(async () => {
+      if (background && !this.hasRoom()) throw new WebMachineConnectSkipped("no_room");
       await this.makeRoom(null);
       const taken = this.takeClient();
-      // Pairing is a foreground action: its hello is the machine the user is
-      // waiting on, and it arrives before this session exists to activate.
-      bindProjectHostRecoveryClient(taken);
+      // A pairing someone asked for is a foreground action: its hello is the
+      // machine the user is waiting on, and it arrives before this session
+      // exists to activate. A background pairing leaves the screen's machine
+      // armed.
+      if (activate) bindProjectHostRecoveryClient(taken);
       return taken;
     });
     let pairedSession: SessionRecord | null = null;
@@ -493,10 +563,10 @@ export class WebMachineSessionManager {
       pairedSession = session;
       session.projects = (await client.getProjectCatalog()).projects;
       session.lastStatus = client.getStatus();
-      this.activeTargetId = environment.envId;
+      if (activate) this.activeTargetId = environment.envId;
       this.bindRecoveryToActiveSession();
       this.rememberCatalog(session);
-      this.markMachineActive(environment.envId);
+      if (activate) this.markMachineActive(environment.envId);
       this.touch(session);
       this.emit();
       return this.snapshotSession(session);
@@ -561,6 +631,29 @@ export class WebMachineSessionManager {
     return { session, project };
   }
 
+  /** The saved connection of an account machine, by its device id. */
+  findAccountMachineEnvironment(machine: Pick<AdeAccountMachine, "deviceId">): WebClientEnvironmentRecord | null {
+    if (!machine.deviceId) return null;
+    return this.listEnvironments().find((environment) => environment.hostDeviceId === machine.deviceId) ?? null;
+  }
+
+  /**
+   * The person pressed Disconnect: park the machine and remember it, so a
+   * repository tab that opens later does not connect it again on its own.
+   */
+  async disconnectByUser(targetId: string): Promise<void> {
+    await this.park(targetId);
+    this.setUserDisconnected(targetId, true);
+    this.emit();
+  }
+
+  private setUserDisconnected(targetId: string, disconnected: boolean): void {
+    if (this.userDisconnected.has(targetId) === disconnected) return;
+    if (disconnected) this.userDisconnected.add(targetId);
+    else this.userDisconnected.delete(targetId);
+    writeUserDisconnected(this.userDisconnected);
+  }
+
   async park(targetId: string): Promise<void> {
     const session = this.sessions.get(targetId);
     if (!session || session.parked) return;
@@ -578,6 +671,7 @@ export class WebMachineSessionManager {
     await client.removeEnvironment(targetId);
     this.environments.delete(targetId);
     this.disposeSession(targetId);
+    this.setUserDisconnected(targetId, false);
     if (environment) this.forgetCatalog(machineCatalogKey(environment));
     this.emit();
   }
@@ -662,6 +756,13 @@ export class WebMachineSessionManager {
     const client = this.clientFactory();
     this.allClients.add(client);
     return client;
+  }
+
+  /** A live connection can start without parking another one. */
+  private hasRoom(): boolean {
+    let live = 0;
+    for (const session of this.sessions.values()) if (session.client !== null) live += 1;
+    return live < WEB_MACHINE_SESSION_LIMIT;
   }
 
   private async makeRoom(nextTargetId: string | null): Promise<void> {

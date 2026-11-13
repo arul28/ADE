@@ -1263,11 +1263,43 @@ export class AdeSyncClient {
   }
 
   private async awaitCurrentRestoration(): Promise<void> {
-    const restoration = this.restorationPromise;
+    const restoration = this.restorationPromise ?? await this.nextRestoration();
     if (!restoration) {
       throw new AdeSyncError("The computer connected without restoring the workspace.", "restoration_missing");
     }
     await restoration;
+  }
+
+  /**
+   * The restoration of the next hello, when the link dropped after its hello
+   * and is dialing again on its own. A first pairing saves the new computer
+   * between its hello and this wait; a socket that closed in that gap used to
+   * fail a connect that was seconds from working ("connected without
+   * restoring the workspace", then fine on a second try). Null when nothing
+   * is dialing, the dial gives up, or no hello comes in time.
+   */
+  private nextRestoration(): Promise<Promise<void> | null> {
+    const state = this.connection.getStatus().state;
+    if (state !== "connecting" && state !== "reconnecting") return Promise.resolve(null);
+    // A drop between two dials passes through "disconnected"; these end the wait.
+    const gaveUp = (next: string) => next === "idle" || next === "auth_failed" || next === "error";
+    return new Promise((resolve) => {
+      let done = false;
+      let off: (() => void) | null = null;
+      const finish = (value: Promise<void> | null) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        off?.();
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(this.restorationPromise), this.restorationTimeoutMs);
+      off = this.on("status", () => {
+        if (this.restorationPromise) finish(this.restorationPromise);
+        else if (gaveUp(this.connection.getStatus().state)) finish(null);
+      });
+      if (done) off();
+    });
   }
 
   private handleEnvelope(envelope: SyncEnvelope): void {

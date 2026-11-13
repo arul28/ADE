@@ -13916,7 +13916,11 @@ const adeBridge = {
   // account, by machine key. Never reads or changes the tab's machine.
   machines: {
     connect: (machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> =>
-      ipcRenderer.invoke(IPC.machinesConnect, { machineKey, connect: options?.connect !== false }),
+      ipcRenderer.invoke(IPC.machinesConnect, {
+        machineKey,
+        connect: options?.connect !== false,
+        background: options?.background === true,
+      }),
     addressFor: (machineKey: string): Promise<MachineAddress | null> =>
       ipcRenderer.invoke(IPC.machinesAddressFor, { machineKey }),
   },

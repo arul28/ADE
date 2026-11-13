@@ -1,4 +1,5 @@
 import type {
+  AdeAccountMachine,
   AdeAccountMachinePairResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
@@ -10,9 +11,15 @@ import type {
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
+import {
+  sameMachineKey,
+  type MachineAddress,
+  type MachineConnectOptions,
+  type MachineConnectResult,
+} from "../../../shared/machineAddress";
 import type { BrowserAccountClient } from "../account/client";
 import type { AdeSyncClient } from "../sync";
-import type { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
+import { WebMachineConnectSkipped, type WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
 
@@ -686,7 +693,8 @@ export function createFederatedWebAdapter({
     },
     openProject,
     async disconnect(targetId: string) {
-      await manager.park(targetId);
+      // The person's Disconnect: a repository tab that opens later leaves it off.
+      await manager.disconnectByUser(targetId);
       return { disconnected: true };
     },
     async removeTarget(targetId: string) {
@@ -740,8 +748,66 @@ export function createFederatedWebAdapter({
     },
   };
 
+  // Contract C2 (`shared/machineAddress.ts`) for this tab: any machine of the
+  // account by its key. A machine this tab never paired with is paired
+  // through the account, the same path Connect takes. It never moves the
+  // machine on screen; `background` (a repository tab opening) also skips a
+  // machine the person disconnected and never parks another one for room.
+  const accountMachineFor = (machineKey: string): AdeAccountMachine | null =>
+    accountClient.getSnapshot().machines.find((entry) => sameMachineKey(entry.machineKey, machineKey)) ?? null;
+  const machineDisplayName = (machine: AdeAccountMachine, fallback?: string | null): string =>
+    machine.customName?.trim() || machine.name?.trim() || fallback?.trim() || "your computer";
+  const machinesOverrides = {
+    async connect(machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> {
+      const key = typeof machineKey === "string" ? machineKey.trim() : "";
+      if (!key) return { ok: false, reason: "invalid", machineKey: "", message: "ADE needs to know which computer to reach." };
+      const machine = accountMachineFor(key);
+      if (!machine) {
+        return { ok: false, reason: "not_in_account", machineKey: key, message: "That computer is no longer on your ADE account." };
+      }
+      const saved = manager.findAccountMachineEnvironment(machine);
+      if (options?.connect === false) {
+        // This tab saves a pairing only by connecting; a save-only call
+        // answers with what it has.
+        return saved
+          ? { ok: true, address: { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) } }
+          : { ok: false, reason: "unreachable", machineKey: key, message: `${machineDisplayName(machine)} is not connected to this browser yet.` };
+      }
+      try {
+        const session = await manager.connectAccountMachine(machine, {
+          activate: false,
+          background: options?.background === true,
+        });
+        return {
+          ok: true,
+          address: {
+            kind: "remote",
+            machineKey: key,
+            targetId: session.targetId,
+            name: machineDisplayName(machine, session.environment.machineName),
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Skipped on purpose (the person's Disconnect, or no room left in
+        // this browser): nothing is wrong with the machine.
+        if (error instanceof WebMachineConnectSkipped) return { ok: false, reason: "declined", machineKey: key, message };
+        return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't reach ${machineDisplayName(machine)}: ${message}` };
+      }
+    },
+    async addressFor(machineKey: string): Promise<MachineAddress | null> {
+      const key = typeof machineKey === "string" ? machineKey.trim() : "";
+      const machine = key ? accountMachineFor(key) : null;
+      const saved = machine ? manager.findAccountMachineEnvironment(machine) : null;
+      return machine && saved
+        ? { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) }
+        : null;
+    },
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
     account: accountOverrides,
+    machines: machinesOverrides,
     app: appOverrides,
     personalChats: personalChatsOverrides,
     project: projectOverrides,

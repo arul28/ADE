@@ -46,7 +46,10 @@ export function registerMachineConnectIpc(args: Omit<MachineConnectorDeps, "logg
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.machinesConnect)) throw new Error("ADE can't do that from here.");
     const request = isRecord(raw) ? raw : {};
     const machineKey = typeof request.machineKey === "string" ? request.machineKey : "";
-    return await connector.connect(machineKey, { connect: request.connect !== false });
+    return await connector.connect(machineKey, {
+      connect: request.connect !== false,
+      background: request.background === true,
+    });
   });
 
   ipcMain.handle(IPC.machinesAddressFor, (event, raw: unknown): MachineAddress | null => {

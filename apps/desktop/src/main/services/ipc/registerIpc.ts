@@ -12982,6 +12982,12 @@ export function registerIpc({
       return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
     },
     isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
+    // The person's Disconnect, or "Reconnect automatically" off: a repository
+    // tab opening does not connect that machine on its own.
+    declined: (targetId) => {
+      const connection = runtimeBridge.snapshot().connections.find((entry) => entry.target.id === targetId);
+      return connection?.reconnectBlocked === "disconnected" || connection?.target.autoConnect === false;
+    },
     listAccountMachines: () => accountBridge.listMachines(),
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
