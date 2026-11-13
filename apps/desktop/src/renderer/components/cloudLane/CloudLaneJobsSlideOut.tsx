@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { noticeCornerHeld, noticeCornerReleasedAt, subscribeNoticeCornerHeld } from "../app/toast/cornerNoticeDock";
+import { lastNoticeCornerHold, noticeCornerHeld, noticeCornerHeldSince, subscribeNoticeCornerHeld } from "../app/toast/cornerNoticeDock";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CaretRight, Check, Warning, X } from "@phosphor-icons/react";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -106,13 +106,15 @@ function selectPanelJobs(
 /**
  * When a finished row's display period starts: when it ended, or, if it
  * ended while the notice corner was held (a browser page covered both
- * corners), when the corner freed up, so the finish is actually seen. While
- * the corner is held, every finished row counts as just finished.
+ * corners), when the corner freed up, so the finish is actually seen. A row
+ * that had already run its period before the hold stays gone.
  */
 function shownSince(job: CloudLaneJobSnapshot): number {
-  if (noticeCornerHeld()) return Date.now();
   const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
-  return Number.isFinite(endedAt) ? Math.max(endedAt, noticeCornerReleasedAt()) : endedAt;
+  if (!Number.isFinite(endedAt)) return endedAt;
+  if (noticeCornerHeld()) return endedAt >= noticeCornerHeldSince() ? Date.now() : endedAt;
+  const hold = lastNoticeCornerHold();
+  return hold && endedAt >= hold[0] && endedAt <= hold[1] ? hold[1] : endedAt;
 }
 
 /** When the first finished row of `shown` leaves the panel; null while every row runs or failed. */

@@ -65,9 +65,9 @@ function useNoticeCorner(viewportRef: React.RefObject<HTMLDivElement | null>, st
  * never paint over it, and anything that overlaps it freezes it. So the stack
  * uses the first bottom corner of `main` that no live page covers: the right,
  * as always, else the left (over the sidebar, when it is open and the browser
- * is not expanded). When both are covered the stack is held: nothing is
- * drawn (so nothing counts as shown or delivered), every countdown waits, and
- * the stack returns once a corner is free.
+ * is not expanded). When both are covered the stack is held: still mounted
+ * (cards keep their state) but not displayed, and nothing on it is delivered,
+ * shown or timed out until a corner is free.
  */
 export function ToastViewport({
   slots = NO_SLOTS,
@@ -92,7 +92,7 @@ export function ToastViewport({
     const element = viewportRef.current;
     if (!element || typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver(() => {
-      // A held stack draws nothing and measures 0; keep the last real height
+      // A held stack measures 0; keep the last real height
       // so the corner decision does not flap between "fits" and "covered".
       const height = Math.round(element.getBoundingClientRect().height);
       if (height > 0) setStackHeight(height);
@@ -108,8 +108,6 @@ export function ToastViewport({
   const side = lastShownSideRef.current;
   // A move between corners slides the stack in from the side it now sits on,
   // without remounting it (a remount would reset each card's own state).
-  // Coming back from a hold mounts it fresh, which is the point: nothing on
-  // it was shown while held.
   const slide = useAnimationControls();
   const lastSideRef = useRef(side);
   useEffect(() => {
@@ -130,14 +128,16 @@ export function ToastViewport({
         bottom: TOAST_VIEWPORT_INSET_PX,
         zIndex: Z_LAYERS.toast,
         width: `min(${MAX_WIDTH_PX}px, calc(100% - ${TOAST_VIEWPORT_INSET_PX * 2}px))`,
-        display: "flex",
+        // Held: kept mounted so every card keeps its state (an expanded row),
+        // but out of layout and out of the occlusion pass. Nothing counts as
+        // delivered, shown or expired while held (`cornerNoticeDock`).
+        display: held ? "none" : "flex",
         flexDirection: "column",
         justifyContent: "flex-end",
         gap: TOAST_VIEWPORT_GAP_PX,
         pointerEvents: "none",
       }}
     >
-      {held ? null : (
       <motion.div
         animate={slide}
         style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: TOAST_VIEWPORT_GAP_PX }}
@@ -158,7 +158,6 @@ export function ToastViewport({
           ))}
         </AnimatePresence>
       </motion.div>
-      )}
     </div>
   );
 }

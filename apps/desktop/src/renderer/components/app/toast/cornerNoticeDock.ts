@@ -101,14 +101,16 @@ function coveredByAny(rects: ReadonlyMap<string, CornerNoticeRect>, box: CornerN
  *   - the Launches panel's dismiss and the cloud-lane rows' display period.
  */
 let heldNow = false;
-/** When the last hold ended; a finished row's display period counts from here. */
+/** When the last hold began and ended; a row that finished inside it is shown from its end. */
+let heldStartedAt = 0;
 let heldReleasedAt = 0;
 const heldListeners = new Set<Listener>();
 
 export function setNoticeCornerHeld(next: boolean): void {
   if (heldNow === next) return;
   heldNow = next;
-  if (!next) heldReleasedAt = Date.now();
+  if (next) heldStartedAt = Date.now();
+  else heldReleasedAt = Date.now();
   setToastsHeld(next);
   for (const listener of Array.from(heldListeners)) listener();
 }
@@ -117,8 +119,14 @@ export function noticeCornerHeld(): boolean {
   return heldNow;
 }
 
-export function noticeCornerReleasedAt(): number {
-  return heldReleasedAt;
+/** When the current hold began; meaningful only while held. */
+export function noticeCornerHeldSince(): number {
+  return heldStartedAt;
+}
+
+/** The last hold that has ended, as `[start, end]`, or null before any. */
+export function lastNoticeCornerHold(): readonly [number, number] | null {
+  return heldReleasedAt > 0 ? [heldStartedAt, heldReleasedAt] : null;
 }
 
 export function subscribeNoticeCornerHeld(listener: Listener): () => void {
