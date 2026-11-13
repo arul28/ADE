@@ -14,6 +14,12 @@ import { SettingsToggle } from "../primitives/SettingsControls";
 
 type Path = "ade" | "self";
 
+/** What ADE does now with a pick that was sent: one sentence for the toast. */
+export function planCleanupPickSentence(push: boolean, count: number): string {
+  const computers = count === 1 ? "1 computer" : `${count} computers`;
+  return push ? `ADE is pushing the work of ${computers} to GitHub, then freeing ${count === 1 ? "it" : "them"}.` : `ADE is deleting ${computers} now.`;
+}
+
 /**
  * The question before a cheaper plan's limits are passed (the owner's rules
  * of 2026-11-13): ADE never removes a computer on its own. Two paths:
@@ -129,9 +135,12 @@ export function CloudPlanLimitsDialog({
       actions={[primary, { label: "Cancel", onClick: onClose, disabled: busy, variant: "secondary" }]}
     >
       <div className="adecd-limits">
-        <div className="adecd-limits-fit" aria-live="polite">
-          <FitCell label="Computers" fits={computersFit} value={String(now.computers)} limit={String(cleanup.computerLimit)} />
-          <FitCell label="Disk" fits={diskFits} value={formatCloudGb(now.gb)} limit={formatCloudGb(cleanup.limitGb)} />
+        <div aria-live="polite">
+          <div className="adecd-limits-list-head">{path === "ade" ? `Left after ADE frees the ${count === 1 ? "computer" : "computers"} you pick` : "Now"}</div>
+          <div className="adecd-limits-fit">
+            <FitCell label="Computers" fits={computersFit} value={String(now.computers)} limit={String(cleanup.computerLimit)} />
+            <FitCell label="Disk" fits={diskFits} value={formatCloudGb(now.gb)} limit={formatCloudGb(cleanup.limitGb)} />
+          </div>
         </div>
 
         <div className="adecd-fl-choices" role="radiogroup" aria-label="How to fit the plan">

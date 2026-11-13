@@ -33,7 +33,7 @@ import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash 
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
-import { CloudPlanLimitsDialog } from "./CloudPlanLimitsDialog";
+import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
@@ -715,7 +715,7 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
     const bridge = window.ade.cloud?.pickPlanCleanup;
     if (!bridge) throw new Error("This version of ADE can't do that here.");
     await bridge({ planId: cleanup.planId, ...pick });
-    showToast({ tone: "success", title: `ADE ${pick.push ? "is pushing the work of and freeing" : "is deleting"} ${pick.instanceIds.length === 1 ? "1 computer" : `${pick.instanceIds.length} computers`} now.` });
+    showToast({ tone: "success", title: planCleanupPickSentence(pick.push, pick.instanceIds.length) });
     onChanged();
   };
   return (

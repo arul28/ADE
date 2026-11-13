@@ -22,7 +22,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { PushAllWorkButton } from "../../remoteTargets/PushAllWorkButton";
 import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
-import { CloudPlanLimitsDialog } from "./CloudPlanLimitsDialog";
+import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 
 /** The monthly limits a person picks for extra disk, in dollars. */
 const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
@@ -135,7 +135,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     showToast({
       tone: "success",
       title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
-      ...(freeing ? { message: `ADE ${pick.push ? "is pushing the work of and freeing" : "is deleting"} ${freeing === 1 ? "1 computer" : `${freeing} computers`} now.` } : {}),
+      ...(freeing ? { message: planCleanupPickSentence(pick.push, freeing) } : {}),
     });
     onChanged();
   };
