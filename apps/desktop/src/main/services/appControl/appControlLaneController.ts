@@ -60,6 +60,7 @@ import type { ComputerUseArtifactIngestionRequest, ComputerUseArtifactIngestionR
 import { killWindowsProcessTreeAsync } from "../shared/processExecution";
 import { subscribeCdpPageDiagnostics, type CdpPendingRequest } from "../shared/cdpPageDiagnostics";
 import type { Logger } from "../logging/logger";
+import type { LinuxLaneLaunchEnv } from "../linuxDesktop/linuxDesktopSeatProvider";
 import type { createPtyService } from "../pty/ptyService";
 import { base64ImageDimensions, imageDimensions } from "../shared/imageDimensions";
 import { frameToParentRect, frameTransformFromBox, type CdpBoxModelResponse } from "../shared/cdpFrameTransform";
@@ -178,8 +179,7 @@ export type CreateAppControlServiceArgs = {
    * Linux or with no lane screen service in this process. Mac Desktop's
    * `laneScreenLaunchEnv`.
    */
-  laneScreenLaunchEnv?: ((args: { laneId: string; start: boolean }) =>
-    Promise<{ set: Record<string, string>; unset: string[] } | null>) | null;
+  laneScreenLaunchEnv?: ((args: { laneId: string; start: boolean }) => Promise<LinuxLaneLaunchEnv | null>) | null;
 };
 
 /** How a call names its lane: directly, by the session it holds, or by its chat. */
@@ -2086,6 +2086,12 @@ export function createAppControlLaneController(context: AppControlLaneController
       throw new Error("App Control terminal launch requires the ADE terminal service.");
     }
     const ptyService = args.ptyService;
+    // Before the previous app stops and before the session exists: a lane
+    // screen that cannot start refuses the launch with its own reason, leaves
+    // the running app as it is, and is never mistaken for a debug port that
+    // never opened. Only a launch's own env can name a display (the resolved
+    // command adds env on Windows only).
+    const screenEnv = await laneScreenEnv(explicitLaunchEnv(launchArgs));
     const previousShellId = activeSession?.terminalSessionId ?? null;
     const reuseCandidate = relaunchShellCandidate(launchArgs);
     // The hold keeps the dead-shell sweep from deleting the shell before the
@@ -2100,7 +2106,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       const reuseShellId = reuseCandidate
         ? await claimShellForRelaunch(ptyService, reuseCandidate, cleanClaimId(launchArgs.chatSessionId))
         : null;
-      return await launchInShell(ptyService, launchArgs, reuseShellId);
+      return await launchInShell(ptyService, launchArgs, reuseShellId, screenEnv);
     } finally {
       releaseShell();
     }
@@ -2177,17 +2183,24 @@ export function createAppControlLaneController(context: AppControlLaneController
    * `DISPLAY` or `WAYLAND_DISPLAY` itself keeps it. Cleared keys are set
    * empty: the terminal merges this over the host's environment.
    */
+  /** The env a launch names itself, with unset values as empty. */
+  const explicitLaunchEnv = (launchArgs: AppControlLaunchArgs): Record<string, string> => Object.fromEntries(
+    Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
+  );
+
   const laneScreenEnv = async (explicitEnv: Record<string, string>): Promise<Record<string, string>> => {
     if (process.platform !== "linux" || !args.laneScreenLaunchEnv) return {};
     const hasValue = (value: string | undefined): boolean => Boolean(value?.trim());
     if (hasValue(explicitEnv.DISPLAY) || hasValue(explicitEnv.WAYLAND_DISPLAY)) return {};
     const hostHasDisplay = hasValue(process.env.DISPLAY) || hasValue(process.env.WAYLAND_DISPLAY);
-    let screen: Awaited<ReturnType<NonNullable<CreateAppControlServiceArgs["laneScreenLaunchEnv"]>>>;
+    let screen: LinuxLaneLaunchEnv | null;
     try {
       screen = await args.laneScreenLaunchEnv({ laneId, start: !hostHasDisplay });
     } catch (error) {
-      const reason = (error instanceof Error ? error.message : String(error))
-        .replace(/^MAC_DESKTOP_[A-Z_]+:\s*/, "");
+      // A screen error's message starts with its code (`CODE: sentence`); the sentence is the reason.
+      const message = error instanceof Error ? error.message : String(error);
+      const code = (error as { code?: unknown } | null)?.code;
+      const reason = typeof code === "string" && message.startsWith(`${code}:`) ? message.slice(code.length + 1).trim() : message;
       const why = hostHasDisplay
         ? "App Control runs the app on this lane's Linux Desktop screen, and that screen could not be reached."
         : "This machine has no display for the app, so App Control runs it on the lane's Linux Desktop screen, and that screen did not start.";
@@ -2201,16 +2214,12 @@ export function createAppControlLaneController(context: AppControlLaneController
     ptyService: AppControlPtyService,
     launchArgs: AppControlLaunchArgs,
     reuseShellId: string | null,
+    screenEnv: Record<string, string>,
   ): Promise<AppControlSession> => {
     cdpAttachmentEpoch += 1;
     const debugPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort) ?? await findFreePort();
     const resolved = resolveLaunch(launchArgs, debugPort);
-    const launchEnv = Object.fromEntries(
-      Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
-    );
-    // Before the session exists: a lane screen that cannot start refuses the
-    // launch with its own reason, not a debug port that never opened.
-    const screenEnv = await laneScreenEnv({ ...launchEnv, ...(resolved.env ?? {}) });
+    const launchEnv = explicitLaunchEnv(launchArgs);
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
     const session: AppControlSession = {
       id: randomUUID(),

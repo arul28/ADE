@@ -2638,7 +2638,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
     const device = laneDevices.get(laneId);
-    if (!device) return;
+    if (!device) {
+      // No device now, but one it gave up earlier is still on record: the
+      // next copy with this id must not be told the lane gave up its device.
+      await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+      return;
+    }
     const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
     let poweredOff = false;
     if (!heldElsewhere && bootedForWorkCopy.get(device.udid) === laneId) {

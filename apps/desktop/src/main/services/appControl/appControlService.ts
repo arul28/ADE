@@ -93,7 +93,7 @@ function withRemoteWorkLanes(serviceArgs: CreateAppControlServiceArgs): CreateAp
         create: async (createArgs: Parameters<typeof ptyService.create>[0]) => {
           if (!isRemoteWorkLaneId(createArgs.laneId)) return await ptyService.create(createArgs);
           const copy = remoteWorkLaneSummary(projectRoot, createArgs.laneId);
-          if (!copy) throw new Error("This chat has no work copy on this machine any more, so its app cannot start here. Run the command again to make it.");
+          if (!copy) throw new Error("This chat has no copy of its code on this machine any more, so its app cannot start here. Run the command again to make it.");
           const primaryLaneId = resolvePrimaryLaneId?.() ?? null;
           if (!primaryLaneId) throw new Error("This project has no primary lane here to run the app's terminal in.");
           const created = await ptyService.create({

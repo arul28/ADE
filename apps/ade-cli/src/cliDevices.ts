@@ -57,28 +57,29 @@ import {
    docs/features/sync-and-multi-device/devices-and-machines.md.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** The device commands and the kind each drives (after `CLI_COMMAND_ALIASES`). */
-const DEVICE_COMMAND_KIND: Readonly<Record<string, DeviceKind>> = {
-  apple: "ios",
-  android: "android",
-  "mac-desktop": "screen",
-  screen: "screen",
-  "windows-desktop": "screen",
-  "windows-desk": "screen",
-  "app-control": "app",
-};
+/** The kind a device command drives (any spelling of it), or null for any other command. */
+function deviceKindOfCommand(typed: string): DeviceKind | null {
+  const command = CLI_COMMAND_ALIASES[typed] ?? typed;
+  if (SCREEN_COMMAND_NAMES.has(command)) return "screen";
+  return DEVICE_KINDS.find((kind) => DEVICE_KIND_COMMAND[kind] === command) ?? null;
+}
 
 /** How long one machine gets to answer the list. */
 const MACHINE_READ_TIMEOUT_MS = 8_000;
-/** How long a device command waits for the chat's choice before it runs here. */
+/** How long a device command waits for the chat's choice before it stops. */
 const CHOICE_READ_TIMEOUT_MS = 4_000;
 
 function errorText(error: unknown): string {
-  if (isRecord(error) && isRecord((error as { details?: unknown }).details)) {
-    const cause = asString((error as { details: JsonObject }).details.cause);
+  if (isRecord(error) && isRecord(error.details)) {
+    const cause = asString(error.details.cause);
     if (cause) return cause;
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/** These options, for this machine only (the chat's choice, the roster, this machine's devices). */
+function thisMachineOnly(options: GlobalOptions): GlobalOptions {
+  return { ...options, machine: null, allMachines: false, machineProject: null, machineWorkCopy: null };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -91,6 +92,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     }),
   ]).finally(() => clearTimeout(timer));
 }
+
+/** What an ADE MCP app does with a device: `use` and `--machine` are refused over MCP. */
+const MCP_DEVICE_HINT = "Device commands here take --lane <lane there> (lanes_list names them).";
 
 /** Under ADE MCP the app picks the machine per call; the CLI never reaches another one. */
 function underRemoteMcp(): boolean {
@@ -107,6 +111,18 @@ function chatIdentity(): string | null {
   if (!id || id.startsWith("remote:") || underRemoteMcp()) return null;
   return id;
 }
+
+/**
+ * The session is an agent CLI in a terminal (a tracked Claude Code, Codex, …
+ * session), not an ADE chat: its terminal names it as the activity target too
+ * (ptyService). It keeps no device choice, so none is read for it.
+ */
+function isAgentCliTerminal(chat: string): boolean {
+  return process.env[SESSION_ACTIVITY_SESSION_ID_ENV]?.trim() === chat;
+}
+
+const AGENT_CLI_KEEPS_NO_CHOICE =
+  "A device choice is kept for ADE chats; this session is an agent CLI in a terminal. Pass --machine <name> on each device command instead.";
 
 export function isDevicesCommand(command: readonly string[]): boolean {
   const typed = command[0]?.toLowerCase() ?? "";
@@ -128,36 +144,49 @@ async function callChatDeviceAction(
     needsLiveRuntime: "this chat's device choice",
     shapeResult: (values) => values.result,
   };
-  let answer: unknown;
+  const answer = await executePlan(plan, { ...thisMachineOnly(options), timeoutMs: Math.min(options.timeoutMs, timeoutMs) });
+  const value = unwrapActionEnvelope(answer);
+  return normalizeChatDeviceSources(isRecord(value) ? value.sources : null) ?? {};
+}
+
+/** The brain here is older than device choices: it has no such action. */
+function isOlderBrainAnswer(reason: string): boolean {
+  return /not callable|unknown action|not allowed/i.test(reason);
+}
+
+/**
+ * `ade devices use|current`: the chat's choice, with an older brain said as
+ * such (an update fixes it).
+ */
+async function chatDeviceAction(
+  options: GlobalOptions,
+  action: "getDeviceSources" | "setDeviceSource",
+  args: JsonObject,
+): Promise<ChatDeviceSources> {
   try {
-    answer = await executePlan(plan, {
-      ...options,
-      machine: null,
-      allMachines: false,
-      machineProject: null,
-      timeoutMs: Math.min(options.timeoutMs, timeoutMs),
-    });
+    return await callChatDeviceAction(options, action, args);
   } catch (error) {
-    if (/not callable|unknown action|not allowed/i.test(errorText(error))) {
+    if (isOlderBrainAnswer(errorText(error))) {
       throw new CliToolError("The ADE running on this machine is older than device choices (ade devices use). Update ADE, then run it again.", { action: `chat.${action}` });
     }
     throw error;
   }
-  const value = unwrapActionEnvelope(answer);
-  return normalizeChatDeviceSources(isRecord(value) ? value.sources : null) ?? {};
 }
 
 /**
  * A device command (`ade apple|android|screen|app-control …`) from a chat
  * that named no `--machine` and no `--lane`: when the chat chose another
  * machine for that kind (`ade devices use`), the command goes there exactly
- * as `--machine <its key>` would. Anything else runs as typed. A choice that
- * cannot be read (an older brain, a chat this brain does not keep) runs here.
+ * as `--machine <its key>` would. Anything else runs as typed. Where no
+ * choice can exist (an older brain, an agent CLI in a terminal, a session
+ * this brain does not keep as a chat) it runs here; a choice that may exist
+ * but cannot be read stops the command rather than run it on the wrong
+ * machine.
  */
 export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli> {
-  const typed = parsed.command[0]?.toLowerCase() ?? "";
-  const kind = DEVICE_COMMAND_KIND[CLI_COMMAND_ALIASES[typed] ?? typed];
-  if (!kind || !chatIdentity()) return parsed;
+  const kind = deviceKindOfCommand(parsed.command[0]?.toLowerCase() ?? "");
+  const chat = chatIdentity();
+  if (!kind || !chat || isAgentCliTerminal(chat)) return parsed;
   const options = parsed.options;
   if (options.headless || options.machine || options.allMachines) return parsed;
   const flags = flagNamesOutsideFreeText(parsed.command);
@@ -169,15 +198,19 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli
   try {
     sources = await withTimeout(callChatDeviceAction(options, "getDeviceSources", {}, CHOICE_READ_TIMEOUT_MS), CHOICE_READ_TIMEOUT_MS + 1_000, "This machine's ADE");
   } catch (error) {
-    // Only a slow brain is worth a line; an older one has no choice to read.
-    if (/did not answer|timed out|timeout/i.test(errorText(error))) {
-      process.stderr.write(`· could not read this chat's device choice in time; running on this machine.\n`);
+    const reason = errorText(error);
+    // No choice can exist: an older brain, a session that is no ADE chat here.
+    if (isOlderBrainAnswer(reason) || /device choice is kept for ADE chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
+      return parsed;
     }
-    return parsed;
+    throw new CliToolError(
+      `Could not read this chat's device choice (${firstSentence(reason)}). Pass --machine <name>, or run \`ade devices use ${kind}@here\`.`,
+      { action: "chat.getDeviceSources" },
+    );
   }
   const choice = sources[kind];
   if (!choice) return parsed;
-  process.stderr.write(`· ${kind}@${choice.machineName} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
+  process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: choice.machineName } })} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
   const end = parsed.command.indexOf("--");
   const command = end >= 0
     ? [...parsed.command.slice(0, end), "--machine", choice.machineKey, ...parsed.command.slice(end)]
@@ -253,9 +286,10 @@ function matchMachine(machines: readonly RosterMachine[], query: string): Roster
 
 /* ── one device per kind and source ────────────────────────────────────── */
 
-export type DeviceRow = {
-  id: string | null;
-  kind: DeviceKind | null;
+/** One device of one machine. */
+type DeviceEntry = {
+  id: string;
+  kind: DeviceKind;
   what: string;
   source: "here" | "machine";
   machine: string;
@@ -264,6 +298,20 @@ export type DeviceRow = {
   needs: string | null;
   chosen?: boolean;
 };
+
+/** A machine whose devices could not be read (offline, no answer, no project there). */
+type UnreadMachine = {
+  id: null;
+  kind: null;
+  what: "-";
+  source: "machine";
+  machine: string;
+  machineKey: string;
+  state: string;
+  needs: null;
+};
+
+type DeviceRow = DeviceEntry | UnreadMachine;
 
 type StatusRead = { ok: true; value: JsonObject } | { ok: false; error: string };
 
@@ -287,11 +335,11 @@ function deviceRow(
   read: StatusRead,
   where: { here: boolean; machine: string; machineKey: string | null; idSource: string; platform: string | null },
   chat: string | null,
-): DeviceRow {
-  const base = {
-    id: `${kind}@${where.idSource}`,
+): DeviceEntry {
+  const base: Pick<DeviceEntry, "id" | "kind" | "source" | "machine" | "machineKey"> = {
+    id: formatDeviceId({ kind, source: where.here ? { kind: "here" } : { kind: "machine", machine: where.idSource } }),
     kind,
-    source: where.here ? "here" as const : "machine" as const,
+    source: where.here ? "here" : "machine",
     machine: where.machine,
     machineKey: where.machineKey,
   };
@@ -347,7 +395,7 @@ function deviceRow(
       : lease ? inUseBy(asString(lease.holderId), chat) : status.display ? "on" : "off";
     return {
       ...base,
-      what: screenProductName(platform),
+      what: desktopProductName(remoteMachineHostPlatform(platform)),
       state,
       needs: missing.length
         ? missingThere(where.here, "screen packages")
@@ -376,17 +424,10 @@ function firstSentence(text: string): string {
  * every device command takes). A failed read is that kind's answer.
  */
 async function readStatuses(kinds: readonly DeviceKind[], options: GlobalOptions): Promise<Map<DeviceKind, StatusRead>> {
-  const remote = Boolean(options.machine);
   const reads = await Promise.all(kinds.map(async (kind): Promise<[DeviceKind, StatusRead]> => {
+    const build = () => buildCliPlan([DEVICE_KIND_COMMAND[kind], "status"], options);
     // This shell's lane is a lane here; a plan for another machine must not name it.
-    const laneId = process.env.ADE_LANE_ID;
-    if (remote) delete process.env.ADE_LANE_ID;
-    let plan: CliPlan;
-    try {
-      plan = buildCliPlan([DEVICE_KIND_COMMAND[kind], "status"], options);
-    } finally {
-      if (remote && laneId !== undefined) process.env.ADE_LANE_ID = laneId;
-    }
+    const plan = options.machine ? withoutShellLane(build) : build();
     if (plan.kind !== "execute") return [kind, { ok: false, error: "no status read" }];
     try {
       const value = unwrapActionEnvelope(await executePlan({ ...plan, shapeResult: (values) => values.result ?? values.status }, options));
@@ -421,8 +462,8 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
       return null;
     }
   })();
-  const single: GlobalOptions = { ...options, machine: null, allMachines: false, machineProject: null, machineWorkCopy: null };
-  const choicePromise: Promise<ChatDeviceSources | null> = chat
+  const single = thisMachineOnly(options);
+  const choicePromise: Promise<ChatDeviceSources | null> = chat && !isAgentCliTerminal(chat)
     ? callChatDeviceAction(single, "getDeviceSources", {}, CHOICE_READ_TIMEOUT_MS).catch(() => null)
     : Promise.resolve(null);
 
@@ -436,7 +477,7 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
   })();
 
   const machineRows = others.map(async (machine): Promise<DeviceRow[]> => {
-    const unavailable = (state: string): DeviceRow[] => [{
+    const unavailable = (state: string): UnreadMachine[] => [{
       id: null, kind: null, what: "-", source: "machine", machine: machine.name, machineKey: machine.key, state, needs: null,
     }];
     const kinds = kindsFor(machine.platform);
@@ -513,31 +554,38 @@ function formatDevicesList(value: DevicesList): string {
   );
   const footer = [
     ...value.notes,
-    value.devices.some((row) => row.chosen) ? "* this chat's device for that kind." : null,
-    "Pick one for this chat: ade devices use <id>. One command: --machine <name>.",
+    value.devices.some((row) => row.id !== null && row.chosen) ? "* this chat's device for that kind." : null,
+    underRemoteMcp() ? MCP_DEVICE_HINT : "Pick one for this chat: ade devices use <id>. One command: --machine <name>.",
   ].filter(Boolean).join("\n");
   return `${table}\n${footer}\n`;
 }
 
 /* ── the command ───────────────────────────────────────────────────────── */
 
-function noChatRefusal(): CliUsageError {
-  return new CliUsageError(
-    underRemoteMcp()
-      ? "ade devices use picks a device for a chat, and an ADE MCP app has no chat on this computer. Pass --lane <lane> to the device commands instead."
-      : "ade devices use keeps a choice for a chat, and this terminal has no chat (ADE_CHAT_SESSION_ID is not set). Name the machine on each command instead: --machine <name>.",
-  );
+/**
+ * The chat whose choice `use` and `current` keep, or a refusal: a terminal
+ * with no chat, or an agent CLI in a terminal, keeps none. (An ADE MCP app
+ * never gets here: its command check refuses `devices use`.)
+ */
+function choiceChat(): { chat: string } | { refusal: string } {
+  const chat = chatIdentity();
+  if (!chat) {
+    return { refusal: "ade devices use keeps a choice for a chat, and this terminal has no chat (ADE_CHAT_SESSION_ID is not set). Name the machine on each command instead: --machine <name>." };
+  }
+  return isAgentCliTerminal(chat) ? { refusal: AGENT_CLI_KEEPS_NO_CHOICE } : { chat };
 }
 
 async function useDevice(options: GlobalOptions, typed: string): Promise<{ value: JsonObject; text: string }> {
-  if (!chatIdentity()) throw noChatRefusal();
+  const owner = choiceChat();
+  if ("refusal" in owner) throw new CliUsageError(owner.refusal);
   if (!typed.trim()) throw new CliUsageError("ade devices use <kind>@<source>, e.g. ade devices use \"ios@MacBook Pro\" (ade devices --text lists them).");
   const parsed = parseDeviceId(typed);
   if (!parsed.ok) throw new CliUsageError(parsed.error);
   const { kind, source } = parsed.id;
-  const single: GlobalOptions = { ...options, machine: null, allMachines: false, machineProject: null };
+  const single = thisMachineOnly(options);
   if (source.kind === "cloud") {
-    throw new CliToolError(kind === "ios" ? ADE_CLOUD_IPHONE_UNAVAILABLE : `ADE Cloud has no ${DEVICE_KIND_NOUN[kind]}; ${kind}@cloud is not a device.`, { id: `${kind}@cloud` });
+    const id = formatDeviceId(parsed.id);
+    throw new CliToolError(kind === "ios" ? ADE_CLOUD_IPHONE_UNAVAILABLE : `ADE Cloud has no ${DEVICE_KIND_NOUN[kind]}; ${id} is not a device.`, { id });
   }
   let target: RosterMachine | null = null;
   if (source.kind === "machine") {
@@ -549,7 +597,7 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
   if (target && !deviceKindRunsOnPlatform(kind, target.platform)) {
     throw new CliUsageError(`${target.name} can't run an ${DEVICE_KIND_NOUN[kind]}: they run on a Mac. ade devices --kind ${kind} --text lists the ones you can use.`);
   }
-  const sources = await callChatDeviceAction(single, "setDeviceSource", {
+  const sources = await chatDeviceAction(single, "setDeviceSource", {
     kind,
     source: target ? { kind: "machine", machineKey: target.key, machineName: target.name } : { kind: "here" },
   });
@@ -559,47 +607,29 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
     ? `This chat's ${noun} is on ${target.name} from now on: ade ${command} … goes there with no other flag.`
       + `${target.online ? "" : ` ${target.name} is offline right now.`} ade devices use ${kind}@here brings it back.`
     : `This chat's ${noun} is on this machine.`;
-  return { value: { ok: true, id: `${kind}@${target ? target.name : "here"}`, sources: sources as JsonObject }, text };
+  const id = formatDeviceId({ kind, source: target ? { kind: "machine", machine: target.name } : { kind: "here" } });
+  return { value: { ok: true, id, sources }, text };
 }
 
 async function currentDevices(options: GlobalOptions): Promise<{ value: JsonObject; text: string }> {
-  if (!chatIdentity()) {
-    const text = "This terminal has no chat, so its devices are this machine's unless a command names --machine <name>.";
+  const owner = choiceChat();
+  if ("refusal" in owner) {
+    const text = underRemoteMcp()
+      ? `An ADE MCP app keeps no device choice: the devices are those of the machine the tool's \`machine\` input picks. ${MCP_DEVICE_HINT}`
+      : "This terminal keeps no device choice, so its devices are this machine's unless a command names --machine <name>.";
     return { value: { chat: null, sources: {} }, text };
   }
-  const sources = await callChatDeviceAction({ ...options, machine: null, allMachines: false, machineProject: null }, "getDeviceSources", {});
+  const sources = await chatDeviceAction(thisMachineOnly(options), "getDeviceSources", {});
   const table = renderTable(
     ["kind", "device", "since"],
     DEVICE_KINDS.map((kind) => {
       const choice = sources[kind];
-      return [kind, choice ? `${kind}@${choice.machineName}` : `${kind}@here`, choice ? new Date(choice.chosenAt).toLocaleString() : ""];
+      const id = formatDeviceId({ kind, source: choice ? { kind: "machine", machine: choice.machineName } : { kind: "here" } });
+      return [kind, id, choice ? new Date(choice.chosenAt).toLocaleString() : ""];
     }),
     "This chat's devices",
   );
-  return { value: { chat: chatIdentity(), sources: sources as JsonObject }, text: `${table}\nChange one: ade devices use <kind>@<machine|here>.\n` };
-}
-
-/** Option values and positionals of `ade devices …` (global flags are already out). */
-function devicesArgs(command: readonly string[]): { sub: string; rest: string[]; kind: string | null } {
-  const words: string[] = [];
-  let kind: string | null = null;
-  for (let index = 1; index < command.length; index += 1) {
-    const token = command[index]!;
-    if (token === "--kind") {
-      kind = command[index + 1] ?? "";
-      index += 1;
-      continue;
-    }
-    if (token.startsWith("--kind=")) {
-      kind = token.slice("--kind=".length);
-      continue;
-    }
-    if (token.startsWith("-")) throw new CliUsageError(`ade devices does not take ${token}. ade devices --help shows its options.`);
-    words.push(token);
-  }
-  const first = words[0]?.toLowerCase();
-  const sub = first === "use" || first === "current" || first === "list" || first === "ls" ? first : "list";
-  return { sub, rest: sub === "list" && first !== "list" && first !== "ls" ? words : words.slice(1), kind };
+  return { value: { chat: owner.chat, sources }, text: `${table}\nChange one: ade devices use <kind>@<machine|here>.\n` };
 }
 
 export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: string; exitCode: number }> {
@@ -607,7 +637,9 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
   if (options.machine || options.allMachines) {
     throw new CliUsageError("ade devices already lists every machine; leave out --machine.");
   }
-  const { sub, rest, kind } = devicesArgs(parsed.command);
+  // Global flags are already out of the command here.
+  const { sub, first, rest, kind, otherFlags } = devicesSubcommand(parsed.command.slice(1));
+  if (otherFlags.length) throw new CliUsageError(`ade devices does not take ${otherFlags[0]}. ade devices --help shows its options.`);
   const print = (value: unknown, text: string) => (options.text ? `${text.endsWith("\n") ? text : `${text}\n`}` : formatOutput(value, options, undefined));
   if (sub === "use") {
     if (kind) throw new CliUsageError("ade devices use takes one device id, e.g. ade devices use android@here.");
@@ -618,7 +650,9 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
     const result = await currentDevices(options);
     return { output: print(result.value, result.text), exitCode: 0 };
   }
-  if (rest.length) throw new CliUsageError(`ade devices: unknown command "${rest[0]}". Use ade devices [--kind <kind>], use <id> or current.`);
+  if (sub === null || rest.length) {
+    throw new CliUsageError(`ade devices: unknown command "${sub === null ? first : rest[0]}". Use ade devices [--kind <kind>], use <id> or current.`);
+  }
   const only = kind == null ? null : kind.trim().toLowerCase();
   if (only !== null && !isDeviceKind(only)) {
     throw new CliUsageError(`--kind takes ${DEVICE_KINDS.join(", ")}.`);
@@ -626,3 +660,4 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
   const value = await listDevices(options, only);
   return { output: print(value, formatDevicesList(value)), exitCode: 0 };
 }
+

@@ -190,13 +190,13 @@ function readRegistryAt(projectRoot: string): Registry {
     text = fs.readFileSync(registryPathFor(projectRoot), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { version: 1, copies: [] };
-    throw new RemoteWorkError("registry_unreadable", `Could not read this project's work copies: ${error instanceof Error ? error.message : String(error)}`);
+    throw new RemoteWorkError("registry_unreadable", `Could not read the list of chats' code copies in this project: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
     const parsed = JSON.parse(text) as Partial<Registry>;
     return { version: 1, copies: Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : [] };
   } catch (error) {
-    throw new RemoteWorkError("registry_unreadable", `This project's work copy list is damaged (${registryPathFor(projectRoot)}): ${error instanceof Error ? error.message : String(error)}`);
+    throw new RemoteWorkError("registry_unreadable", `The list of chats' code copies in this project is damaged (${registryPathFor(projectRoot)}): ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -245,7 +245,7 @@ export function remoteWorkLaneSummary(projectRoot: string, laneId: string): { pa
   const copy = findRemoteWorkCopyForLane(projectRoot, laneId);
   if (!copy) return null;
   const machine = copy.machineName?.trim();
-  return { path: copy.path, name: machine ? `${machine} chat's work copy` : "Work copy of a chat on another machine" };
+  return { path: copy.path, name: machine ? `Code of a chat on ${machine}` : "Code of a chat on another machine" };
 }
 
 export type RemoteWorkLogger = {
@@ -474,7 +474,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * keeps the stat cache, so only changed files are hashed.
    */
   const workingTree = async (copyPath: string, leaveOut: readonly string[] = []): Promise<string> => {
-    const indexPath = await gitOrThrow(["rev-parse", "--path-format=absolute", "--git-path", "index"], copyPath, "Could not find the work copy's index");
+    const indexPath = await gitOrThrow(["rev-parse", "--path-format=absolute", "--git-path", "index"], copyPath, "Could not find the index of your code there");
     const tempIndex = path.join(os.tmpdir(), `ade-remote-work-index-${randomUUID()}`);
     const pathspecFile = leaveOut.length ? path.join(os.tmpdir(), `ade-remote-work-paths-${randomUUID()}`) : null;
     try {
@@ -484,7 +484,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         // No index yet: git builds one from scratch.
       }
       const env = { ...process.env, GIT_INDEX_FILE: tempIndex };
-      await gitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A"], copyPath, "Could not read the work copy", { env });
+      await gitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A"], copyPath, "Could not read your code there", { env });
       if (pathspecFile) {
         // Files a sync kept in place (made here) are not what it wrote: left
         // out, the next sync still finds them made here and keeps them again.
@@ -492,11 +492,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         await gitOrThrow(
           ["rm", "--cached", "-q", "--ignore-unmatch", `--pathspec-from-file=${pathspecFile}`, "--pathspec-file-nul"],
           copyPath,
-          "Could not read the work copy",
+          "Could not read your code there",
           { env: { ...env, GIT_LITERAL_PATHSPECS: "1" } },
         );
       }
-      return await gitOrThrow(["write-tree"], copyPath, "Could not read the work copy", { env });
+      return await gitOrThrow(["write-tree"], copyPath, "Could not read your code there", { env });
     } finally {
       fs.rmSync(tempIndex, { force: true });
       if (pathspecFile) fs.rmSync(pathspecFile, { force: true });
@@ -515,9 +515,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   const filesMadeHere = async (copy: RemoteWorkCopy): Promise<string[]> => {
     if (!copy.syncedTree) return [];
     const split = (text: string): string[] => text.split("\0").filter(Boolean);
-    const untracked = split(await gitOrThrow(["ls-files", "--others", "--exclude-standard", "-z"], copy.path, "Could not read the work copy"));
+    const untracked = split(await gitOrThrow(["ls-files", "--others", "--exclude-standard", "-z"], copy.path, "Could not read your code there"));
     if (!untracked.length) return [];
-    const synced = new Set(split(await gitOrThrow(["ls-tree", "-r", "--name-only", "-z", copy.syncedTree], copy.path, "Could not read the work copy")));
+    const synced = new Set(split(await gitOrThrow(["ls-tree", "-r", "--name-only", "-z", copy.syncedTree], copy.path, "Could not read your code there")));
     const made = untracked.filter((file) => !synced.has(file));
     const chars = made.reduce((total, file) => total + file.length + 4, 0);
     if (made.length > KEPT_FILES_MAX || chars > KEPT_FILES_MAX_CHARS) {
@@ -574,7 +574,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * that reached origin is safe; work nobody synced in and nobody pushed is not.
    */
   const unsyncedWork = async (copy: RemoteWorkCopy, keptInPlace: ReadonlySet<string> = new Set()): Promise<string | null> => {
-    const head = await gitOrThrow(["rev-parse", "HEAD"], copy.path, "Could not read the work copy");
+    const head = await gitOrThrow(["rev-parse", "HEAD"], copy.path, "Could not read your code there");
     // An adopted copy (never synced here) may hold commits made before it was lost from the list.
     if (copy.syncedTree === null || head.toLowerCase() !== copy.head.toLowerCase()) {
       const remotes = await git(["branch", "-r", "--contains", "HEAD"], copy.path);
@@ -586,9 +586,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     // from the commit checked out now: a file the sync wrote, or one committed
     // (and so pushed, above) there, is safe to reset.
     const current = await workingTree(copy.path);
-    const committed = await gitOrThrow(["rev-parse", "HEAD^{tree}"], copy.path, "Could not read the work copy");
+    const committed = await gitOrThrow(["rev-parse", "HEAD^{tree}"], copy.path, "Could not read your code there");
     const changedPaths = async (from: string): Promise<Set<string>> => new Set(
-      (await gitOrThrow(["diff", "--name-only", "-z", from, current], copy.path, "Could not read the work copy"))
+      (await gitOrThrow(["diff", "--name-only", "-z", from, current], copy.path, "Could not read your code there"))
         .split("\0").filter(Boolean),
     );
     const sinceCommit = await changedPaths(committed);
@@ -619,8 +619,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         if (inTheWay.length) {
           throw new RemoteWorkError(
             "copy_has_unsynced_work",
-            `This chat's work copy here was not synced because files made there (${nameFew(inTheWay)}) would be overwritten by the chat's own `
-            + "files of the same name. Pass --no-sync to use the copy as it is, or --discard to throw them away.",
+            `Your code there was not synced because files made there (${nameFew(inTheWay)}) would be overwritten by your own `
+            + "files of the same name. Pass --code as-is to use the copy as it is, or --code fresh to throw them away.",
           );
         }
       }
@@ -631,7 +631,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       const keepPatterns = keep.flatMap((file) => ["-e", literalRootPattern(file)]);
       // Removing a `.gitignore` can uncover files it was hiding, so go until clean.
       for (let pass = 0; pass < WORK_COPY_CLEAN_PASSES; pass += 1) {
-        const removed = await gitOrThrow(["clean", "-fd", ...keepPatterns], copyPath, "Could not clean the work copy");
+        const removed = await gitOrThrow(["clean", "-fd", ...keepPatterns], copyPath, "Could not clean your code there");
         if (!removed.trim()) break;
       }
       if (patchFile) {
@@ -704,7 +704,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
 
   const busyError = (): RemoteWorkError => new RemoteWorkError(
     "copy_busy",
-    "A command still runs in this chat's work copy here. Wait for it to end, or stop it "
+    "A command still runs in your code there. Wait for it to end, or stop it "
     + "(`ade terminal list --machine <this machine>` shows it).",
   );
 
@@ -780,7 +780,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     if (free != null && free < minFreeBytes) {
       throw new RemoteWorkError(
         "disk_full",
-        `This machine has ${Math.floor(free / 1024 ** 3)} GB free, too little for a new work copy. Free some disk there or use another machine.`,
+        `This machine has ${Math.floor(free / 1024 ** 3)} GB free, too little for a new copy of your code. Free some disk there or use another machine.`,
       );
     }
   };
@@ -794,7 +794,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     const copyPath = pathFor(owner);
     if (!fs.existsSync(path.join(copyPath, ".git"))) return null;
     // A folder that is there but unreadable is refused, not replaced: it may hold work.
-    const head = await gitOrThrow(["rev-parse", "HEAD"], copyPath, "Could not read the work copy left in this chat's folder here");
+    const head = await gitOrThrow(["rev-parse", "HEAD"], copyPath, "Could not read the code left in this chat's folder there");
     logger?.warn("remote_work.adopted_unlisted_copy", { owner, path: copyPath });
     const copy: RemoteWorkCopy = { owner, path: copyPath, head, branch: source.branch ?? null, machineName: source.machineName ?? null, syncedTree: null, createdAt: timestamp, lastUsedAt: timestamp };
     updateCopy(owner, () => copy);
@@ -809,7 +809,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
     await git(["worktree", "prune"], projectRoot);
     fs.mkdirSync(root, { recursive: true });
-    await gitOrThrow([...WORK_COPY_NO_HOOKS, "worktree", "add", "--detach", copyPath, source.head], projectRoot, "Could not create the work copy");
+    await gitOrThrow([...WORK_COPY_NO_HOOKS, "worktree", "add", "--detach", copyPath, source.head], projectRoot, "Could not make the copy of your code there");
     const syncedTree = await syncCopy(copyPath, source, patch);
     const copy: RemoteWorkCopy = {
       owner,
@@ -863,8 +863,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       if (inUse(owner)) {
         throw new RemoteWorkError(
           "copy_busy",
-          "A command still runs in this chat's work copy here, so it was not synced. Wait for it to end, or stop it "
-          + "(`ade terminal list --machine <this machine>` shows it). To use the copy as it is, pass --no-sync.",
+          "A command still runs in your code there, so it was not synced. Wait for it to end, or stop it "
+          + "(`ade terminal list --machine <this machine>` shows it). To use the copy as it is, pass --code as-is.",
         );
       }
       // Files made here (a generated project, a pushed file) stay in place
@@ -875,9 +875,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         if (reason) {
           throw new RemoteWorkError(
             "copy_has_unsynced_work",
-            `This chat's work copy here was not synced because ${reason}. Pass --no-sync to use the copy as it is `
-            + "(and commit and push that work from there: `ade shell start --machine <this machine> --no-sync -- git push origin HEAD:<branch>`), "
-            + "or --discard to throw it away.",
+            `Your code there was not synced because ${reason}. Pass --code as-is to use the copy as it is `
+            + "(and commit and push that work from there: `ade shell start --machine <this machine> --code as-is -- git push origin HEAD:<branch>`), "
+            + "or --code fresh to throw it away.",
           );
         }
       }

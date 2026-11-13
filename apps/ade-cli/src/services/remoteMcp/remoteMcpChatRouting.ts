@@ -166,7 +166,7 @@ export function createChatRouter(deps: {
       located?.note ?? null,
     ].filter(Boolean).join("; ");
     return {
-      content: [{ type: "text", text: `No chat ${sessionId} on any computer that answered${unasked ? ` (${unasked})` : ""}. chat_list shows a project's chats.` }],
+      content: [{ type: "text", text: `No chat ${sessionId} on any machine that answered${unasked ? ` (${unasked})` : ""}. chat_list shows a project's chats.` }],
       structuredContent: { view: name, result: { sessionId, state: "not_found", error: CHAT_NOT_FOUND } },
       isError: true,
     };

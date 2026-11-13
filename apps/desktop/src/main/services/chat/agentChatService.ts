@@ -81362,12 +81362,14 @@ export function createAgentChatService(args: {
     if (!isDeviceKind(kind)) throw new Error("kind must be ios, android, screen or app.");
     const source = args?.source;
     const next: ChatDeviceSources = { ...(managed.deviceSources ?? {}) };
+    // A machine is read the way a stored choice is read back, so the two agree.
+    const chosen = source?.kind === "machine"
+      ? normalizeChatDeviceSources({ [kind]: { ...source, chosenAt: nowIso() } })?.[kind]
+      : undefined;
     if (source?.kind === "here") {
       delete next[kind];
-    } else if (source?.kind === "machine" && typeof source.machineKey === "string" && source.machineKey.trim()) {
-      const machineKey = source.machineKey.trim();
-      const machineName = typeof source.machineName === "string" && source.machineName.trim() ? source.machineName.trim() : machineKey;
-      next[kind] = { kind: "machine", machineKey, machineName, chosenAt: nowIso() };
+    } else if (chosen) {
+      next[kind] = chosen;
     } else {
       throw new Error("source must be { kind: \"here\" } or { kind: \"machine\", machineKey, machineName }.");
     }

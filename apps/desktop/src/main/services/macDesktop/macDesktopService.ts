@@ -955,6 +955,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
     leases.releaseLane(laneId);
     recording.forgetLane(laneId);
     ownership.removeDisplay(laneId);
+    linuxLaunchEnvs.delete(laneId);
     if (wasStreaming) {
       emit({ type: "stream-stopped", status: streaming.buildStreamStatus(laneId, { redacted: true }) });
     }
@@ -990,6 +991,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
     if (isLinuxSeat && lostLanes > 0) reportLinuxScreenProblem("helper_lost", { lanes: lostLanes });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
+    linuxLaunchEnvs.clear();
     recording.clear();
     streaming.clear();
     // A helper that exited on a signal handed its lanes' apps off on the way
@@ -1378,6 +1380,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
         }
       }
       ownership.removeDisplay(laneId);
+      linuxLaunchEnvs.delete(laneId);
       if (had) {
         emit({
           type: "display-destroyed",
@@ -2004,6 +2007,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
       streaming.dispose();
       driverLifecycle.dispose();
       ownership.clear();
+      linuxLaunchEnvs.clear();
       lifecycleTails.clear();
       recording.clear();
       offRemoteWorkLanes();

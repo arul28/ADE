@@ -13,6 +13,7 @@ import {
   remoteWorkFileTooLargeMessage,
   type RemoteWorkFileOp,
 } from "../../desktop/src/shared/types/remoteWork";
+import { GIT_HEADLESS_PROMPT_ENV, GIT_READ_ENV } from "../../desktop/src/main/services/git/gitReadEnv";
 import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
 import { fileSha256 } from "./services/tools/download";
 
@@ -27,14 +28,14 @@ import { fileSha256 } from "./services/tools/download";
    uncommitted change as one binary patch.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** How a `--machine` call readies the work copy: `--no-sync` → "none", `--discard`, or null for a sync. */
+/** How a `--machine` call readies the work copy: `--code as-is` → "none", `--code fresh` → "discard", or null for a sync. */
 export type MachineWorkCopySync = "none" | "discard" | null;
 
 /** What `cliMachineTargeting` reads for a call that runs in the work copy. */
 export type MachineWorkCopy = {
   sync: MachineWorkCopySync;
   argv?: string[] | null;
-  /** `ade shell start --machine … --scratch`: no work copy and no repo; a temp folder there, removed after. */
+  /** `ade shell start --machine … --no-code`: no work copy and no repo; a temp folder there, removed after. */
   scratch?: boolean;
 };
 
@@ -152,7 +153,7 @@ export function withRemoteScreenArgs(params: JsonObject, cwd: string): JsonObjec
 /**
  * `ade app-control … --machine`: the App Control session there is this
  * chat's work copy's. A launch syncs the copy to this checkout first (the app
- * there is this code, uncommitted changes included) unless `--no-sync`, and
+ * there is this code, uncommitted changes included) unless `--code as-is`, and
  * its `--cwd`, which must be inside this checkout, becomes the same folder in
  * the copy. A status or driver list sends no commit and makes no copy; every
  * other verb uses the copy as it is.
@@ -320,7 +321,22 @@ function readLocalWorkSource(cwd: string): JsonObject {
   if (!remoteRefs.length) {
     // Pushed from another checkout, or this one has not fetched since: ask
     // origin once before refusing (the branch, or every branch when detached).
-    const fetched = spawnSync("git", ["fetch", "--quiet", "origin", ...(branch ? [branch] : [])], { cwd: top, windowsHide: true, timeout: 60_000 });
+    // Never a prompt: a fetch that needs a password fails at once instead of
+    // waiting on a dialog or the terminal the agent cannot answer.
+    const fetched = spawnSync("git", ["fetch", "--quiet", "origin", ...(branch ? [branch] : [])], {
+      cwd: top,
+      windowsHide: true,
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ...GIT_READ_ENV,
+        ...GIT_HEADLESS_PROMPT_ENV,
+        GCM_INTERACTIVE: "Never",
+        // A person's own ssh command (a key, a proxy) is kept as it is.
+        GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND?.trim() || "ssh -o BatchMode=yes",
+      },
+    });
     if (fetched.status === 0) remoteRefs = originRefsWithHead();
   }
   if (!remoteRefs.length) {

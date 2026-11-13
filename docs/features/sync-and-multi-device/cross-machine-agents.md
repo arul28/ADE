@@ -113,8 +113,10 @@ error only when it is for the same commit.
   (base64, 16 MiB at most), made with fixed diff options so the user's diff
   settings cannot break it. A commit that is not on origin is refused here:
   "Push it first". `--code as-is` and `--code fresh` (old names `--no-sync`
-  and `--discard`, still accepted) are read only for a shell start or an Apple
-  build with `--machine` and no `--lane`.
+  and `--discard`, still accepted) are read only for a command that runs your
+  code with `--machine` and no `--lane`: a shell start, an Apple build, an
+  Android install, launch, test or preview, and an App Control launch
+  (`cliMachineTargeting.ts`).
 - **Never lose work there.** Before a sync the copy is compared with what the
   last sync wrote and with its checked-out commit. Unpushed commits, or files
   changed there and not committed, refuse the sync and name the files.

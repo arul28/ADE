@@ -30,18 +30,18 @@ const MAX_REMOTE_ARG_CHARS = 8_000;
 
 /** Never runnable remotely, at any scope. */
 const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
-  ["mcp", "ADE MCP is managed on the computer itself, not by a connected app."],
-  ["login", "Signing this computer in or out is done on the computer itself."],
-  ["logout", "Signing this computer in or out is done on the computer itself."],
-  ["connect", "Linking this computer to an account is done on the computer itself."],
-  ["setup", "Setup is interactive and runs on the computer itself."],
-  ["reset", "Resetting ADE is done on the computer itself."],
+  ["mcp", "ADE MCP is managed on the machine itself, not by a connected app."],
+  ["login", "Signing this machine in or out is done on the machine itself."],
+  ["logout", "Signing this machine in or out is done on the machine itself."],
+  ["connect", "Linking this machine to an account is done on the machine itself."],
+  ["setup", "Setup is interactive and runs on the machine itself."],
+  ["reset", "Resetting ADE is done on the machine itself."],
   ["brain", "Starting or stopping ADE's brain would cut this connection."],
   ["serve", "Starting or stopping ADE's brain would cut this connection."],
   ["runtime", "Running another ADE runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
-  ["desktop", "Opening the desktop app is done on the computer itself."],
-  ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
+  ["desktop", "Opening the desktop app is done on the machine itself."],
+  ["account", "Account tokens outlive ADE MCP, so they are created on the machine itself."],
 ]);
 
 /**
@@ -221,12 +221,12 @@ export function checkRemoteAdeCommand(
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
-    return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
+    return { ok: false, reason: "The chat tools find a chat's machine by themselves: pass the chat id to chat_status or chat_read." };
   }
   // Git's credential helper prints this computer's GitHub token; it is for
   // git on this computer only, never a connected app.
   if (command === "git" && words[0] === "credential") {
-    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this computer and is not available remotely." };
+    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this machine and is not available remotely." };
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
@@ -234,14 +234,14 @@ export function checkRemoteAdeCommand(
   // Only ADE's server runs these, over exec on a cloud computer: one interrupts
   // all its work, the other commits and pushes every lane.
   if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work" || words[0] === "work-state")) {
-    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a machine it is about to stop or free-wake.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
     return {
       ok: false,
-      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a computer itself.`,
+      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a machine itself.`,
     };
   }
   if (command === "android") {
@@ -347,7 +347,7 @@ function isCloudLaneMachineUse(command: string, args: readonly string[]): boolea
   return named;
 }
 const SERVICE_SIGN_IN_REASON =
-  "Signing this computer in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the computer itself.";
+  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the machine itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
@@ -380,9 +380,9 @@ function jsonNamesRestartAdb(text: string): boolean {
 
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
-  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that computer.";
+  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that machine.";
 const ANDROID_SDK_REASON =
-  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that computer: "
+  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that machine: "
   + "the setup card in the Android tool, or Settings › Android devices. System images: the device picker's System images.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
@@ -410,7 +410,7 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
  * The whole `account_vault` domain, at every scope: it holds the account's
  * credentials, ADE MCP's own token hashes and its account secret.
  */
-const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the computer itself.";
+const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the machine itself.";
 
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);

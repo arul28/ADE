@@ -9,6 +9,10 @@ ADE runs on the person's own machines. You reach them through one URL. Each
 tool call is one short HTTP request, and every tool is also an `ade` command,
 so `["<command>","--help"]` through the `ade` tool explains any of them.
 
+A script or bot sends its own `User-Agent` (e.g. `my-bot/1.0`): the relay's
+Cloudflare front refuses default library user agents (Python's urllib) with
+"Error 1010: Access denied".
+
 ## 1. Find the machine and project
 
 1. `machines_list`: pick one with `online: true` and `serving: true`. Pass its

@@ -3106,7 +3106,7 @@ function workCopyOwner(session: SessionState): string {
   if (!owner || !parseForeignCallerSessionId(owner)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "A work copy is for commands sent from another machine (`ade shell start --machine <name>`).",
+      "A copy of a chat's code is kept here only for commands sent from another machine (`ade shell start --machine <name>`).",
     );
   }
   return owner;
@@ -3115,7 +3115,7 @@ function workCopyOwner(session: SessionState): string {
 function workCopyPreparingError(machineName: string | null): JsonRpcError {
   return new JsonRpcError(
     JsonRpcErrorCode.invalidRequest,
-    `This chat's work copy on ${machineName?.trim() || "this machine"} is still being made (the first command `
+    `The copy of this chat's code on ${machineName?.trim() || "this machine"} is still being made (the first command `
     + "fetches the commit and checks it out, which can take a few minutes). It goes on there; run the command again in a minute.",
     { code: "work_copy_preparing", retryable: true },
   );
@@ -3262,7 +3262,7 @@ function remoteWorkSurfaceScope(
   if (requestedLaneId && requestedLaneId !== remote.laneId) {
     throw new JsonRpcError(
       JsonRpcErrorCode.policyDenied,
-      `A chat on another machine uses its work copy here (lane ${remote.laneId}) as its lane; --lane ${requestedLaneId} was refused. `
+      `A chat on another machine uses the copy of its code here (lane ${remote.laneId}) as its lane; --lane ${requestedLaneId} was refused. `
         + "Leave out --lane.",
       { kind: "lane_bound", method, callerLaneId: remote.laneId, requestedLaneId },
     );
@@ -3300,7 +3300,7 @@ function remoteWorkLaunchCwd(runtime: AdeRuntime, laneId: string, cwd: unknown):
   if (!copyPath) return null;
   const resolved = path.resolve(copyPath, relative);
   if (!isPathWithinAuthorizedRoot(copyPath, resolved)) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `--cwd ${relative} is outside this chat's work copy.`);
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `--cwd ${relative} is outside your code there.`);
   }
   return resolved;
 }
@@ -3359,7 +3359,7 @@ async function prepareRemoteWorkShell(
     // `--scratch`: one command that needs no code, in an empty folder under
     // ADE's home, with no work copy and no git; the folder goes when it ends.
     if (remoteWork.exitWhenDone !== true || !command) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--scratch runs one command: ade shell start --machine <name> --scratch -- <command>.");
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "--no-code runs one command: ade shell start --machine <name> --no-code -- <command>.");
     }
     const owner = workCopyOwner(session);
     const scratchDir = createRemoteWorkScratchDir(owner);
@@ -3386,7 +3386,7 @@ async function prepareRemoteWorkShell(
     args: {
       ...launch,
       // The command names the shell where the chat's views list it.
-      title: asOptionalTrimmedString(ptyArgs.title) ?? (command ? command.slice(0, 120) : "Work copy shell"),
+      title: asOptionalTrimmedString(ptyArgs.title) ?? (command ? command.slice(0, 120) : "Shell for a chat on another machine"),
       cols,
       rows,
       laneId: primary.laneId,
@@ -3449,7 +3449,7 @@ function existingCallerWorkCopyPath(runtime: AdeRuntime, owner: string): string 
   if (!copy || !fs.existsSync(copy.path)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "This chat has no work copy on this machine yet. `ade shell start --machine <this machine>` or `ade files push --machine <this machine>` makes it.",
+      "This chat has no copy of its code on this machine yet. `ade shell start --machine <this machine>` or `ade files push --machine <this machine>` makes it.",
       { code: "copy_missing" },
     );
   }
@@ -3680,7 +3680,7 @@ function ptyAccessDenied(method: string, session?: SessionState): never {
     callerChatSessionId,
     nextStep: foreignCaller
       ? "A caller on another machine owns no lane here, including a lane it created. "
-        + "Run `ade shell start --machine <this machine>` without --lane to use this chat's work copy, "
+        + "Run `ade shell start --machine <this machine>` without --lane to use your code there, "
         + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane>` and open the terminal from it."
       : null,
   });
