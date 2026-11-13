@@ -6251,6 +6251,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return status();
         },
         list: async () => [...items],
+        activity: async () => [],
+        // A fixture code that changes every 30 s, like a real authenticator.
+        code: async () => {
+          const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30);
+          return { code: String(Math.floor(Date.now() / 30_000) % 1_000_000).padStart(6, "0"), secondsLeft };
+        },
         saveLogin: async (args: { id?: string; title?: string; origins: string[]; username: string }) => {
           const saved: PasswordItemSummary = {
             id: args.id ?? `pw-login-${items.length + 1}`,
