@@ -19,6 +19,7 @@ import {
   resolveAdeLayout,
   type AdeLayoutPaths,
 } from "../../../shared/adeLayout";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { resolvePathWithinRoot } from "../shared/utils";
 import { createLogIntegrityService, type LogIntegrityService } from "./logIntegrityService";
@@ -291,7 +292,34 @@ function repairLegacyPaths(paths: AdeLayoutPaths, actions: AdeSyncAction[]): voi
   deleteIfExists(path.join(paths.packsDir, ".DS_Store"), "artifacts/packs/.DS_Store", actions);
 }
 
+/** Error codes of a folder the OS does not let this user write to. */
+const FOLDER_NOT_WRITABLE_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
+
+/**
+ * ADE keeps its project state in `.ade` inside the folder. A folder that
+ * belongs to another user, or a read-only volume, refuses that: the person
+ * has to change the folder, so say which one and why, and do not report it
+ * as a defect.
+ */
 export function initializeOrRepairAdeProject(projectRoot: string, options: RepairOptions = {}): {
+  paths: AdeLayoutPaths;
+  cleanup: AdeCleanupResult;
+} {
+  try {
+    return repairAdeProject(projectRoot, options);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (typeof code !== "string" || !FOLDER_NOT_WRITABLE_CODES.has(code)) throw error;
+    throw new AdeExpectedError(
+      `ADE can't write to this folder: ${projectRoot}. It belongs to another user or is read-only (${code}). `
+        + "Change the owner or the permissions of the folder, then open it again.",
+      "environment",
+      { cause: error },
+    );
+  }
+}
+
+function repairAdeProject(projectRoot: string, options: RepairOptions): {
   paths: AdeLayoutPaths;
   cleanup: AdeCleanupResult;
 } {

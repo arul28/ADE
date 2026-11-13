@@ -119,6 +119,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // The machine itself is out of processes or disk.
   /\bspawn \S+ EAGAIN\b/,
   /\bENOSPC: no space left on device\b/,
+  // A project folder this user may not write to (marked where thrown; the
+  // text is for a desktop that reads an older brain's reply).
+  /\bADE can't write to this folder: /,
   // A chat waiting on the user: a recovery choice, a pending question, a turn still running.
   /This chat requires an explicit continuity recovery action before another turn can be sent/,
   new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),

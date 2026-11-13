@@ -2149,7 +2149,11 @@ export function createAiIntegrationService(args: {
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
   /** The step a status read is in now, for a caller whose wait ran out (`getStatusWithinBudget`). */
   let statusReadPhase: string | null = null;
-  /** The last status a read answered, served when a later plain read runs past its budget. */
+  /**
+   * The last status a current read answered, served when a later plain read
+   * runs past its budget. A key or sign-in change clears it: it describes the
+   * old credentials.
+   */
   let lastGoodStatus: AiIntegrationStatus | null = null;
   let providerReadinessCacheGeneration = 0;
   let seenLoginGeneration = providerLoginGeneration();
@@ -2176,6 +2180,7 @@ export function createAiIntegrationService(args: {
     const current = providerLoginGeneration();
     if (current === seenLoginGeneration) return;
     seenLoginGeneration = current;
+    lastGoodStatus = null;
     dropStatusCaches();
   };
 
@@ -2229,6 +2234,7 @@ export function createAiIntegrationService(args: {
   const invalidateProviderReadinessCaches = (): void => {
     providerReadinessCacheGeneration += 1;
     statusCache = null;
+    lastGoodStatus = null;
     statusRequestsInFlight.clear();
     modelListCache.clear();
     resetProviderRuntimeHealth();
@@ -2598,6 +2604,8 @@ export function createAiIntegrationService(args: {
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
           };
+          // An older read that a key or sign-in change outran must not become
+          // the cache, nor the fallback a later slow read answers with.
           if (requestGeneration === providerReadinessCacheGeneration && loginGeneration === providerLoginGeneration()) {
             statusCache = {
               result,
@@ -2606,6 +2614,7 @@ export function createAiIntegrationService(args: {
               toolInstallGeneration,
               loginGeneration,
             };
+            lastGoodStatus = result;
           }
           logger.info("ai.status.summary", {
             ...phaseContext,
@@ -2617,7 +2626,6 @@ export function createAiIntegrationService(args: {
             providerAvailability: availability,
             opencodeModelCount: opencodeInventory.modelIds.length,
           });
-          lastGoodStatus = result;
           return result;
         } catch (error) {
           logger.warn("ai.status.failed", {

@@ -1382,7 +1382,7 @@ describe("ProjectScopeRegistry sync-host phase backoff", () => {
     await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toBe(probe.failure);
     expect(probe.counts.activated).toBe(1);
     expect(scopeRegistry.getMostRecentFailingSyncHostProjectId()).toBe(first.projectId);
-    const booted = await scopeRegistry.resolveBootedSyncScope();
+    const booted = scopeRegistry.resolveReadySyncScope();
     expect(booted?.registryProjectId).toBe(first.projectId);
     expect(probe.counts.activated).toBe(1);
 

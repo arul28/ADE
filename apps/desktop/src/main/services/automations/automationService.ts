@@ -4601,7 +4601,9 @@ export function createAutomationService({
           error_message: message,
         });
         emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
-        throw new Error(message);
+        // The error itself, so a rule-settings problem keeps its expected
+        // ("user") mark on the way to the caller.
+        throw error instanceof Error ? error : new Error(message);
       }
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       return toRun(loadRunRow(run.id)!);
@@ -4666,7 +4668,8 @@ export function createAutomationService({
           chat_session_id: boundChatId,
         });
         emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
-        throw new Error(message);
+        // Unchanged, the error itself goes on, with any expected mark it has.
+        throw message === raw && error instanceof Error ? error : new Error(message);
       }
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       return toRun(loadRunRow(run.id)!);

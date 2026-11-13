@@ -40,9 +40,13 @@ export async function handleMcpAccount(
   request: Request,
   pathname: string,
 ): Promise<Response> {
-  const members = (await storage.get<string[]>("members")) ?? [];
+  // A value that is not a list (an older shape) reads as no members, so the
+  // next registration writes the list again instead of failing every request.
+  const storedMembers = await storage.get<unknown>("members");
+  const members = Array.isArray(storedMembers) ? storedMembers.filter((key): key is string => typeof key === "string") : [];
   const front = (await storage.get<string>("front")) ?? null;
-  const off = (await storage.get<string[]>(OFF_MEMBERS_KEY)) ?? [];
+  const storedOff = await storage.get<unknown>(OFF_MEMBERS_KEY);
+  const off = Array.isArray(storedOff) ? storedOff.filter((key): key is string => typeof key === "string") : [];
   if (pathname === MCP_ACCOUNT_PATH && request.method === "GET") {
     return jsonResponse(
       { members, front, ...(off.length ? { off } : {}) } satisfies McpAccountState,

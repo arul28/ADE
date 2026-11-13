@@ -23759,9 +23759,10 @@ export function createAgentChatService(args: {
     const existingInfo = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
     if (existingInfo?.agentCli) return event;
     // A runtime that already named the failure a sign-in (Cursor's expired
-    // session after its own reconnect) built the card it wants; the wider
-    // sign-in words below must not replace it with the generic CLI card.
-    if (existingInfo?.category === "auth") return event;
+    // session after its own reconnect) and built its own card keeps it; the
+    // wider sign-in words below must not replace it with the generic CLI
+    // card. An "auth" error with no card still gets one below.
+    if (existingInfo?.category === "auth" && existingInfo.presentation) return event;
 
     const text = `${event.message}\n${event.detail ?? ""}`;
     // Signed in, but the plan or the model is the refusal: no button fixes
@@ -29839,12 +29840,16 @@ export function createAgentChatService(args: {
        */
       backgroundLossTurnImminent?: boolean;
       /**
-       * Codex: the process is already dead and a caller is about to start a
-       * fresh one (a send that found it dead). Drop it without the "stopped
-       * while ADE was closing" notice and without marking the chat idle,
-       * which would land on the turn that caller is starting.
+       * Codex: the process is already dead, found by a caller before its exit
+       * event. Either way the turn it never finished ends as interrupted once,
+       * without the "stopped while ADE was closing" notice.
+       * - `turn_imminent`: the caller starts a turn next (a send or a steer).
+       *   The chat stays active; an idle mark would land on that new turn.
+       * - `settle`: no turn follows (Stop, resume, a fork, a read). The chat
+       *   goes idle, or it stays active with no turn and scheduled work
+       *   defers forever.
        */
-      silentDeadCodexSwap?: boolean;
+      deadCodexRuntime?: "turn_imminent" | "settle";
     },
   ): void => {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
@@ -29921,11 +29926,11 @@ export function createAgentChatService(args: {
       );
       settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
       runtime.codexAgentIndexByTurn.clear();
-      if (shouldMarkInterrupted && options?.silentDeadCodexSwap) {
+      if (shouldMarkInterrupted && options?.deadCodexRuntime) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
         // An older turn the dead process never finished still ends here: its
-        // exit event, if it comes, is suppressed. It is not the caller's new
-        // turn, so no "closing" notice and no idle mark.
+        // exit event, if it comes, is suppressed. ADE did not stop it while
+        // closing, so no "closing" notice.
         if (interruptedTurnId) {
           emitChatEvent(managed, {
             type: "status",
@@ -29941,6 +29946,10 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
           });
+        }
+        if (options.deadCodexRuntime === "settle") {
+          markSessionIdleWithFreshCache(managed);
+          persistChatState(managed);
         }
       } else if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
@@ -47428,19 +47437,38 @@ export function createAgentChatService(args: {
   };
 
   const codexRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CodexRuntime> }>();
-  const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+  /**
+   * Drops the chat's Codex runtime when its app-server is already dead. The
+   * exit handler normally does this first; this covers the gap between stdin
+   * closing and the exit event. True when it dropped one.
+   */
+  const dropDeadCodexRuntime = (
+    managed: ManagedChatSession,
+    mode: "turn_imminent" | "settle",
+  ): boolean => {
+    if (managed.runtime?.kind !== "codex" || isCodexRuntimeProcessAlive(managed.runtime)) return false;
+    logger.info("agent_chat.codex_dead_runtime_dropped", {
+      sessionId: managed.session.id,
+      reason: "not_alive_on_reuse",
+      closed: managed.closed,
+      mode,
+    });
+    teardownRuntime(managed, "idle_ttl", { deadCodexRuntime: mode });
+    return true;
+  };
+
+  /**
+   * `turnImminent`: the caller starts a turn right after (a send or a steer),
+   * so a dead runtime is swapped without settling the chat. Every other
+   * caller settles it.
+   */
+  const ensureCodexSessionRuntime = async (
+    managed: ManagedChatSession,
+    options: { turnImminent?: boolean } = {},
+  ): Promise<CodexRuntime> => {
     refreshRuntimeCompactionSettings(managed);
-    if (managed.runtime?.kind === "codex") {
-      if (isCodexRuntimeProcessAlive(managed.runtime)) return managed.runtime;
-      // The exit handler normally drops a dead runtime first; this covers the
-      // gap between stdin closing and the exit event.
-      logger.info("agent_chat.codex_dead_runtime_dropped", {
-        sessionId: managed.session.id,
-        reason: "not_alive_on_reuse",
-        closed: managed.closed,
-      });
-      teardownRuntime(managed, "idle_ttl", { silentDeadCodexSwap: true });
-    }
+    dropDeadCodexRuntime(managed, options.turnImminent ? "turn_imminent" : "settle");
+    if (managed.runtime?.kind === "codex") return managed.runtime;
     return joinRuntimeStart(codexRuntimeStarts, managed, () => attachNewCodexRuntime(managed));
   };
 
@@ -65250,7 +65278,7 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
-      const runtime = await ensureCodexSessionRuntime(managed);
+      const runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
         managed.session.reasoningEffort = applySessionPresetReasoningEffort("codex", reasoningEffort);
       } else if (!managed.session.reasoningEffort) {
@@ -67168,7 +67196,10 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
-      const runtime = await ensureCodexSessionRuntime(managed);
+      // A steer on a dead runtime finds no active turn on the new one and
+      // sends as a new turn below.
+      const droppedDeadRuntime = dropDeadCodexRuntime(managed, "turn_imminent");
+      const runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
       await runtime.collaborationModesReady?.catch(() => {});
       await runtime.acceptedSteersHydrationReady;
 
@@ -67182,6 +67213,17 @@ export function createAgentChatService(args: {
         allowPendingInput: options?.allowPendingInput,
       });
       if (!preparedSteer) {
+        // The dead runtime's turn ended above, and no turn follows it now.
+        if (
+          droppedDeadRuntime
+          && managed.session.status === "active"
+          && !runtime.activeTurnId
+          && !runtime.awaitingTurnStart
+          && !runtime.turnStartReserved
+        ) {
+          markSessionIdleWithFreshCache(managed);
+          persistChatState(managed);
+        }
         return { steerId, queued: false };
       }
       if (isCodexGoalSlashInput(trimmed)) {
@@ -69314,6 +69356,13 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
+      // A dead app-server has nothing left to stop: settle the chat (its turn
+      // ends as interrupted, the chat goes idle) and do not start a new
+      // process just to find no turn on it.
+      if (dropDeadCodexRuntime(managed, "settle")) {
+        persistChatState(managed);
+        return result;
+      }
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
       // Stop has to settle the user-facing cards even when there is no turn
@@ -71808,6 +71857,12 @@ export function createAgentChatService(args: {
 
   /** Chats whose update-resume row the scheduler cancelled on arrival, in this brain. */
   const updateResumeNotArmedIds = new Set<string>();
+  /**
+   * How many times the user drove each chat (`cancelPendingUpdateResume`) in
+   * this brain. An arm compares it across its own awaits: a message that
+   * lands while the row is written means the chat already continued.
+   */
+  const updateResumeUserCancels = new Map<string, number>();
 
   /**
    * Arms one durable "continue" row per chat.
@@ -71826,6 +71881,10 @@ export function createAgentChatService(args: {
   const armUpdateResume = async (
     input?: { sessionIds?: readonly string[] },
   ): Promise<AgentChatArmUpdateResumeResult> => {
+    // Read before any await: a user message from here on wins over this arm.
+    const userCancelsAtStart = new Map(updateResumeUserCancels);
+    const userDroveSinceStart = (sessionId: string): boolean =>
+      (updateResumeUserCancels.get(sessionId) ?? 0) !== (userCancelsAtStart.get(sessionId) ?? 0);
     await scheduledWorkReady;
     const requested = Array.isArray(input?.sessionIds)
       ? new Set(input.sessionIds.filter((id): id is string => typeof id === "string" && id.length > 0))
@@ -71938,7 +71997,18 @@ export function createAgentChatService(args: {
           // The user accepted this update: a fresh start for the resume cap.
           restartResumeStreak: 0,
         });
-        if (schedule.status === "scheduled" && schedule.pausedFlag !== true) {
+        if (userDroveSinceStart(chat.sessionId)) {
+          // The user typed into the chat while this arm ran. Their cancel
+          // either already ended the row, or ran before the row existed; end
+          // it here then. Settled for good: a retry reads the cancelled row
+          // as already continued, because it is not in the not-armed set.
+          updateResumeNotArmedIds.delete(chat.sessionId);
+          if (schedule.status === "scheduled" || schedule.status === "paused") {
+            await scheduledWorkScheduler.cancel(schedule.id);
+          }
+          logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: "user_message" });
+          settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
+        } else if (schedule.status === "scheduled" && schedule.pausedFlag !== true) {
           updateResumeNotArmedIds.delete(chat.sessionId);
           armed.push(chat);
         } else if (schedule.status === "paused") {
@@ -71975,8 +72045,10 @@ export function createAgentChatService(args: {
    */
   const cancelPendingUpdateResume = async (sessionId: string): Promise<void> => {
     // The user is driving the chat now: a later retry of an arm the scheduler
-    // refused must read its cancelled row as settled, not arm it again.
+    // refused must read its cancelled row as settled, not arm it again, and an
+    // arm still writing its row must not keep it (`armUpdateResume`).
     updateResumeNotArmedIds.delete(sessionId);
+    updateResumeUserCancels.set(sessionId, (updateResumeUserCancels.get(sessionId) ?? 0) + 1);
     try {
       await scheduledWorkReady;
       const pending = (scheduledWorkScheduler?.list(sessionId) ?? [])

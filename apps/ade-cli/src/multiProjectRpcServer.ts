@@ -2534,16 +2534,15 @@ export function createMultiProjectRpcRequestHandler(
       : null);
 
   /**
-   * A project scope that is already booted and can answer a sync read, or
-   * null. Never boots a project and never runs host activation: a read that
-   * activated a host turned a status check into "Another ADE brain is already
-   * hosting mobile sync" whenever a second brain held the port. A scope whose
-   * boot failed is null here too; the caller answers with the machine's state.
+   * A project scope that has finished opening and can answer a sync read, or
+   * null. Never boots a project, never runs host activation and never waits
+   * on a scope that is still opening: a read that activated a host turned a
+   * status check into "Another ADE brain is already hosting mobile sync"
+   * whenever a second brain held the port. With no ready scope, the caller
+   * answers with the machine's state.
    */
-  const resolveBootedSyncServiceForRead = async () => {
-    const scope = await scopeRegistry.resolveBootedSyncScope?.().catch(() => null);
-    return scope?.runtime.syncService ?? null;
-  };
+  const resolveReadySyncServiceForRead = () =>
+    scopeRegistry.resolveReadySyncScope?.()?.runtime.syncService ?? null;
 
   // Status is a recovery control: if a project scope is already alive, use it
   // without re-entering host activation (which may be timed out or backed off).
@@ -2557,7 +2556,7 @@ export function createMultiProjectRpcRequestHandler(
     // scope must never redirect a destructive action.
     const syncService = targetProjectId
       ? scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null
-      : await resolveBootedSyncServiceForRead();
+      : resolveReadySyncServiceForRead();
     if (syncService) await applyPendingLanePresence();
     return syncService;
   };
@@ -2699,7 +2698,7 @@ export function createMultiProjectRpcRequestHandler(
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;
-    const runningSyncService = readySyncService ?? await resolveBootedSyncServiceForRead();
+    const runningSyncService = readySyncService ?? resolveReadySyncServiceForRead();
     if (runningSyncService) {
       await applyPendingLanePresence();
       return await run(runningSyncService);

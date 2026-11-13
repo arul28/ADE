@@ -201,13 +201,13 @@ function readStartCause(runtimeDir: string, previous: BrainStart | undefined): B
   try {
     if (process.platform === "win32") {
       const record = readWindowsServicePidRecord(resolveWindowsServicePidPath());
-      if (record) {
+      // A record from a supervisor that is not this brain's parent (a manual
+      // start while the service runs) says nothing about this start.
+      if (record && record.supervisorPid === process.ppid) {
         cause.supervisorPid = record.supervisorPid;
-        if (record.supervisorPid === process.ppid) {
-          cause.startedBy = "supervisor";
-          cause.supervisorRestartCount = record.restartCount;
-          cause.previousExitCode = record.lastExitCode;
-        }
+        cause.startedBy = "supervisor";
+        cause.supervisorRestartCount = record.restartCount;
+        cause.previousExitCode = record.lastExitCode;
       }
     } else if (process.env.INVOCATION_ID) {
       cause.startedBy = "systemd";

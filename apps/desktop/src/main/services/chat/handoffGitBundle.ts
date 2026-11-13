@@ -79,18 +79,28 @@ function isIndexLockBusyError(error: unknown): boolean {
 }
 
 /**
- * A step that writes the lane's index (fast-forward, checkout, reset). Git
- * refuses before it changes anything when it cannot take the lock, so the
- * same step can simply run again.
+ * A step that writes the lane's index and refuses to overwrite local work
+ * (the fast-forward). Git refuses before it changes anything when it cannot
+ * take the lock, so the same step can run again. The other writer may have
+ * changed the lane during the wait, so `recheck` runs the step's safety
+ * checks again before each retry, and throws to stop it.
+ *
+ * Never for the snapshot checkout or the index reset: the checkout overwrites
+ * tracked files without asking, so it fails on a busy lock and the undo runs.
  */
-async function gitWriteOut(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
+async function gitWriteOutWhenLockFrees(
+  cwd: string,
+  args: string[],
+  recheck: () => Promise<void>,
+): Promise<string> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await gitOut(cwd, args, env);
+      return await gitOut(cwd, args);
     } catch (error) {
       const delay = INDEX_LOCK_RETRY_DELAYS_MS[attempt];
       if (delay === undefined || !isIndexLockBusyError(error)) throw error;
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      await recheck();
     }
   }
 }
@@ -491,14 +501,15 @@ export async function applyHandoffGitBundle(args: {
       }
       const current = await resolveCommit(worktreePath, "HEAD");
       const status = await gitOut(worktreePath, ["status", "--porcelain=v1"]);
+      const dirtyLaneError = (): Error => new Error(
+        `The destination lane on '${branch}' has uncommitted changes. Commit or discard them there, then hand off again.`,
+      );
       if (status) {
         const alreadyApplied = current === tip
           && (await readHandoffWorkingTreeSha({ worktreePath }))
             === (await gitOut(worktreePath, ["rev-parse", `${expectedHead}^{tree}`]));
         if (alreadyApplied) return;
-        throw new Error(
-          `The destination lane on '${branch}' has uncommitted changes. Commit or discard them there, then hand off again.`,
-        );
+        throw dirtyLaneError();
       }
       if (!current) throw new Error("The destination lane has no readable commit.");
       if (current !== tip) {
@@ -513,13 +524,24 @@ export async function applyHandoffGitBundle(args: {
         const added = (await gitOut(worktreePath, ["diff", "--name-only", "--diff-filter=A", "-z", current, tip]))
           .split("\0")
           .filter(Boolean);
-        const collision = await findLocalFileCollision(worktreePath, current, added);
-        if (collision) {
-          throw new Error(
-            `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
-          );
-        }
-        await gitWriteOut(worktreePath, ["merge", "--ff-only", "--quiet", tip]);
+        const refuseLocalCollision = async (): Promise<void> => {
+          const collision = await findLocalFileCollision(worktreePath, current, added);
+          if (collision) {
+            throw new Error(
+              `The destination lane already has '${collision}' (an ignored or untracked file) where the handed-off commits add one. Move it aside, then hand off again.`,
+            );
+          }
+        };
+        await refuseLocalCollision();
+        // Another git held the lock: the lane must still be clean, at the
+        // same commit, with no new file in the way, before the retry.
+        await gitWriteOutWhenLockFrees(worktreePath, ["merge", "--ff-only", "--quiet", tip], async () => {
+          if ((await resolveCommit(worktreePath, "HEAD")) !== current) {
+            throw new Error(`'${branch}' moved on this machine during the handoff. Hand off again.`);
+          }
+          if (await gitOut(worktreePath, ["status", "--porcelain=v1"])) throw dirtyLaneError();
+          await refuseLocalCollision();
+        });
       }
       // The lane was clean, so a hard reset back loses nothing of the user's.
       landedOnExistingLane = true;
@@ -587,8 +609,11 @@ export async function applyHandoffGitBundle(args: {
       }
       // The working tree as it was, then the index back on the tip so every
       // change shows as uncommitted.
-      await gitWriteOut(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]));
-      await gitWriteOut(worktreePath, g(["reset", "--quiet", tip]));
+      // No wait on a busy index lock here: another writer may change the lane
+      // during a wait, and this checkout would overwrite it. A busy lock fails
+      // the step and the undo runs.
+      await gitOut(worktreePath, g(["checkout", "--no-overlay", snapshot, "--", "."]));
+      await gitOut(worktreePath, g(["reset", "--quiet", tip]));
     }
     undo.length = 0;
   } catch (error) {

@@ -940,8 +940,15 @@ export class ProjectScopeRegistry {
     return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;
   }
 
-  /** Return a cached sync scope without booting it or running host activation. */
-  async resolveBootedSyncScope(): Promise<ProjectScope | null> {
+  /**
+   * A sync scope that has already finished opening, for a sync read. It never
+   * boots a scope, never runs host activation and never waits on a scope that
+   * is still opening (a read that waited answered late, or with nothing when
+   * that open failed while another scope was ready). The known sync host's
+   * ready scope wins; then the most recently opened ready scope; then any
+   * other ready scope. Null when none is ready.
+   */
+  resolveReadySyncScope(): ProjectScope | null {
     if (!this.options.syncRuntime?.enabled) return null;
     const preferredIds = [
       this.syncHostProjectId,
@@ -952,11 +959,12 @@ export class ProjectScopeRegistry {
           return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
         })
         .map((record) => record.projectId),
+      ...this.readyScopes.keys(),
     ];
     for (const projectId of new Set(preferredIds)) {
       if (!projectId) continue;
-      const cached = this.getIfBooted(projectId);
-      if (cached) return await cached;
+      const ready = this.getIfReady(projectId);
+      if (ready) return ready;
     }
     return null;
   }

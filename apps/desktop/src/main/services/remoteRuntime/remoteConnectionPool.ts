@@ -1185,22 +1185,36 @@ export class RemoteConnectionPool {
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
     let step: RemoteEventSetupPhase = "connect";
+    // Set once the caller has its answer (the deadline included). A dial that
+    // finishes later stays shared with other calls, but this call never sends
+    // its method then: a `sync.connectToBrain` sent after the caller was told
+    // it failed would still change the other machine's connection.
+    let settled = false;
     const call = this.withEntryForTarget(
       target,
-      (entry) => entry.client.call(method, {
-        ...params,
-        projectId,
-      }, { timeoutMs: REMOTE_RUNTIME_SYNC_CALL_TIMEOUT_MS }),
+      (entry) => {
+        if (settled) {
+          return Promise.reject(new RemoteSyncCallTimeoutError(target.name, method, step, REMOTE_RUNTIME_SYNC_DEADLINE_MS));
+        }
+        return entry.client.call(method, {
+          ...params,
+          projectId,
+        }, { timeoutMs: REMOTE_RUNTIME_SYNC_CALL_TIMEOUT_MS });
+      },
       {
         retryOnConnectionError: RETRYABLE_REMOTE_SYNC_METHODS.has(method),
         phases: { onPhase: (phase) => { step = phase; }, operation: "read" },
       },
     );
-    return await withDeadline(
-      call,
-      REMOTE_RUNTIME_SYNC_DEADLINE_MS,
-      () => new RemoteSyncCallTimeoutError(target.name, method, step, REMOTE_RUNTIME_SYNC_DEADLINE_MS),
-    );
+    try {
+      return await withDeadline(
+        call,
+        REMOTE_RUNTIME_SYNC_DEADLINE_MS,
+        () => new RemoteSyncCallTimeoutError(target.name, method, step, REMOTE_RUNTIME_SYNC_DEADLINE_MS),
+      );
+    } finally {
+      settled = true;
+    }
   }
 
   async listActionRegistryForTarget(
