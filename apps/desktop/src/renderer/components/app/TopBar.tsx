@@ -615,6 +615,21 @@ function HeaderActionPill({
   );
 }
 
+/**
+ * The remote tab in front, for ADE Web's move off a computer that left. The
+ * forget can drop the binding before the move runs; then the last remote tab
+ * is still the one in front, unless the person opened Home or a no-machine
+ * tab since: a forget made from there never pulls them into a project.
+ */
+function frontRemoteTabKey(
+  store: Pick<ReturnType<typeof useAppStore.getState>, "projectBinding" | "isNewTabOpen" | "activeNoMachineTabId">,
+  lastRemoteBindingKey: string | null,
+): string | null {
+  if (store.projectBinding?.kind === "remote") return store.projectBinding.key;
+  if (store.projectBinding != null || store.isNewTabOpen || store.activeNoMachineTabId != null) return null;
+  return lastRemoteBindingKey;
+}
+
 const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
   connected: "Connected",
   connecting: "Reconnecting",
@@ -1999,21 +2014,12 @@ export function TopBar({
    * with no repository closes. Nothing asks: the person confirmed in the
    * connections menu.
    */
-  // The remote tab that was in front, while it may still be: a forget can drop
-  // the binding before the connection list loses its computer. Leaving the
-  // tab (Home, another tab) while its computer is still listed clears it, so a
-  // later forget never pulls the person off Home.
-  const lastRemoteBindingRef = useRef<{ key: string; targetId: string } | null>(null);
+  // The last remote tab in front: a forget can drop the binding before the
+  // connection list loses its computer (see `frontRemoteTabKey`).
+  const lastRemoteBindingKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (remoteBinding) {
-      lastRemoteBindingRef.current = { key: remoteBinding.key, targetId: remoteBinding.targetId };
-      return;
-    }
-    const last = lastRemoteBindingRef.current;
-    if (last && remoteSnapshot?.connections.some((connection) => connection.target.id === last.targetId)) {
-      lastRemoteBindingRef.current = null;
-    }
-  }, [remoteBinding, remoteSnapshot]);
+    if (remoteBinding) lastRemoteBindingKeyRef.current = remoteBinding.key;
+  }, [remoteBinding]);
   const moveWebTabsOffGoneTargets = useCallback(async (gone: ReadonlySet<string>) => {
     const latestRemoteTabs = openRemoteProjectTabsRef.current;
     const affected = latestRemoteTabs.filter((entry) => gone.has(entry.targetId));
@@ -2065,10 +2071,7 @@ export function TopBar({
     for (const binding of affected) useAppStore.getState().evictProjectDataCaches(binding.key);
     // The tab that was in front stays in front: on its other copy, or with no machine.
     const store = useAppStore.getState();
-    // The forget can drop the binding before this runs; then the last remote binding was in front.
-    const frontKey = store.projectBinding?.kind === "remote"
-      ? store.projectBinding.key
-      : store.projectBinding == null ? lastRemoteBindingRef.current?.key ?? null : null;
+    const frontKey = frontRemoteTabKey(store, lastRemoteBindingKeyRef.current);
     const frontWasAffected = frontKey != null && affectedKeys.has(frontKey);
     for (const plan of plans) {
       if (!plan.noMachine) continue;
