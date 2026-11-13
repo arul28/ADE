@@ -2274,7 +2274,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `running`). A CLI that reports its own turn (Claude hooks, Codex OSC 7501;
   `ptyService.getTrackedCliTurn`) reads `idle` between turns and `awaiting`
   while it waits on the person, instead of `running` for as long as the
-  terminal lives. `attentionCount` (which drives hub badges and
+  terminal lives. A Claude CLI whose turn ended while its background agents
+  still work reads `running` until the last agent stops
+  (`backgroundAgentCount`). `attentionCount` (which drives hub badges and
   attention-first project sorting) counts chat rows, shells attached to a
   chat, and live agent CLI sessions that wait on the person. A standalone CLI
   session that exited non-zero never counts: it must not pin its project to

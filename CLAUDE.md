@@ -48,6 +48,36 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
    computer, guard it with a clear message (as Cursor Cloud launch does), never
    by letting the call misroute.
 
+## Every provider, both surfaces
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Every
+provider, both surfaces** section. Keep the two the same.
+
+ADE runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
+Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin and Antigravity. The list grows;
+read it from `AgentChatProvider` (`apps/desktop/src/shared/types/chat.ts`) and
+`LAUNCH_PROFILE_TOOL_TYPE` (`apps/desktop/src/shared/cliLaunch.ts`).
+
+Each provider reaches ADE in two ways, and they behave differently:
+- **Chat:** ADE drives the agent through an SDK or protocol (Claude Agent SDK,
+  `codex app-server`, the SDK workers, OpenCode's server, ACP). ADE gets typed
+  events: turns, tools, subagents, approvals.
+- **CLI:** the provider's own program runs in an ADE terminal. ADE sees the
+  screen plus whatever signal that CLI gives: Claude Code hooks, Codex's
+  OSC 7501 state, or nothing (output guesses).
+
+1. Before you design a fix, list every provider and surface it touches. Do not
+   stop after Claude and Codex.
+2. For each one, decide: works the same, needs its own code, or not supported.
+   Put "not supported" in the capability gate and the UI. Silence is not a
+   decision.
+3. Read each provider's real mechanism in its adapter
+   (`services/chat/*SdkEventMapper.ts`, `services/chat/acpHost/`,
+   `services/pty/cliTurnSignals.ts`) or in its docs. Never assume it works
+   like Claude.
+4. In your report and in `/quality`, name the providers you changed, the ones
+   you checked and left as they are, and the ones you could not check.
+
 ## Subagents
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Subagents**

@@ -9,7 +9,7 @@ import type { UpdateInterruptedChat } from "../../../shared/types";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
-import { floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
+import { editingTextNow, floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
 import type { AnnouncementPageDef } from "./announcementPages";
 import {
   allAnnouncements,
@@ -60,6 +60,8 @@ const AFTER_UPDATE_EVENT = "ade:open-whats-new-after-update";
 /** The project settles before anything shows over it. */
 const SETTLE_MS = 4_000;
 const CHECK_INTERVAL_MS = 3_000;
+/** The person must not have typed or clicked for this long before the modal may open over their work. */
+const INPUT_QUIET_MS = 8_000;
 
 export type AfterUpdateDetail = {
   version: string;
@@ -149,8 +151,13 @@ export function AnnouncementsHost() {
   useEffect(() => {
     if (!waiting) return undefined;
     const since = Date.now();
+    let lastInputAt = since;
+    const noteInput = () => { lastInputAt = Date.now(); };
+    window.addEventListener("keydown", noteInput, { capture: true, passive: true });
+    window.addEventListener("pointerdown", noteInput, { capture: true, passive: true });
     const check = () => {
       if (document.hidden || Date.now() - since < SETTLE_MS) return;
+      if (Date.now() - lastInputAt < INPUT_QUIET_MS || editingTextNow()) return;
       if (!onboardingSettledBeforeThisLaunch() || floatingLayerBusy() || launchGateOpen()) return;
       setShownThisLaunch(true);
       if (!inProjectShowingAllowed()) return;
@@ -160,7 +167,11 @@ export function AnnouncementsHost() {
       setShowing({ pages, notes: null });
     };
     const interval = window.setInterval(check, CHECK_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("keydown", noteInput, { capture: true });
+      window.removeEventListener("pointerdown", noteInput, { capture: true });
+    };
   }, [waiting]);
 
   const showingRef = useRef(showing);
