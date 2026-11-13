@@ -277,6 +277,9 @@ struct AccountProjectsClient {
   struct ChangeError: Error, Equatable {
     let status: Int?
     let message: String
+    /// The request may have reached the account and the answer was lost or
+    /// unreadable: the change may have happened.
+    var unconfirmed: Bool = false
   }
 
   func add(baseURL: URL, token: String, identity: AccountProjectIdentity,
@@ -318,13 +321,13 @@ struct AccountProjectsClient {
       do {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-          throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.")
+          throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.", unconfirmed: true)
         }
         return (data, http)
       } catch let error as ChangeError {
         throw error
       } catch {
-        throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.")
+        throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.", unconfirmed: true)
       }
     }
     var (data, http) = try await send(token)
@@ -340,13 +343,19 @@ struct AccountProjectsClient {
       case 401, 403:
         throw ChangeError(status: http.statusCode, message: "Sign in to ADE again, then try again.")
       default:
-        throw ChangeError(status: http.statusCode, message: message ?? "Your ADE account could not make that change. Try again.")
+        // A server error can come after the change was saved, or from a proxy
+        // in front of the account: the change may have happened.
+        throw ChangeError(
+          status: http.statusCode,
+          message: message ?? "Your ADE account could not make that change. Try again.",
+          unconfirmed: http.statusCode >= 500
+        )
       }
     }
     do {
       return try JSONDecoder().decode(Response.self, from: data)
     } catch {
-      throw ChangeError(status: http.statusCode, message: "Your ADE account sent an answer ADE can't read.")
+      throw ChangeError(status: http.statusCode, message: "Your ADE account sent an answer ADE can't read.", unconfirmed: true)
     }
   }
 }
@@ -392,15 +401,24 @@ final class AccountProjectStore: ObservableObject {
   @Published private(set) var display: [String: AccountProjectDisplay] = [:]
   /// When a read last succeeded (from the cache on launch). Nil = never.
   @Published private(set) var lastSuccessAt: Date?
+  /// When the last successful read of this session started. A caller that
+  /// needs a list newer than some moment compares against this, not
+  /// `lastSuccessAt`: a read that started earlier can end later.
+  private(set) var lastSuccessStartedAt: Date?
   /// Bumps on every change the Hub must rebuild for.
   @Published private(set) var revision = 0
 
   private var userId: String?
+  /// The account whose list the store holds, also while the phone waits for
+  /// Clerk to restore the session (`activate(userId:beforeSession:)`).
+  var activeUserId: String? { userId }
   private var state = AccountProjectListState()
   /// Every row the phone holds, removed and merged rows included.
   var listState: AccountProjectListState { state }
   private var lastAttemptAt: Date?
   private var failureCount = 0
+  /// Activated from the device owner before Clerk restored the session.
+  private var awaitingSession = false
   private var inFlight: Task<Void, Never>?
   /// Rows this phone added or removed, with the list cursor after each
   /// change. A read that answers an older cursor started before the change,
@@ -428,10 +446,23 @@ final class AccountProjectStore: ObservableObject {
   /// The account `userId` signed in (a cached session at launch, a sign-in,
   /// or an account switch). Loads that account's cache at once, so a first
   /// frame offline already shows its projects.
-  func activate(userId: String) {
-    guard self.userId != userId else { return }
+  ///
+  /// `beforeSession`: the phone's owner, at launch, before Clerk restored the
+  /// session. A read cannot run yet, so the first activation with the
+  /// session restored reads at once instead of waiting out a failure floor.
+  func activate(userId: String, beforeSession: Bool = false) {
+    guard self.userId != userId else {
+      if awaitingSession, !beforeSession {
+        awaitingSession = false
+        lastAttemptAt = nil
+        refreshIfStale()
+      }
+      return
+    }
+    awaitingSession = beforeSession
     inFlight?.cancel()
     inFlight = nil
+    lastSuccessStartedAt = nil
     pendingChanges = [:]
     self.userId = userId
     lastAttemptAt = nil
@@ -452,8 +483,10 @@ final class AccountProjectStore: ObservableObject {
   /// account's cache, with its chat logs; a switch keeps the cache of the
   /// account that left.
   func deactivate(deletingCacheOf ownerId: String?) {
+    awaitingSession = false
     inFlight?.cancel()
     inFlight = nil
+    lastSuccessStartedAt = nil
     pendingChanges = [:]
     if let ownerId { deleteCache(userId: ownerId) }
     userId = nil
@@ -506,11 +539,13 @@ final class AccountProjectStore: ObservableObject {
   /// Reads the changes since the cursor now. A read already running is
   /// joined rather than doubled. With `changeCursor` (the cursor after a
   /// change this phone made), a joined read that ends before that cursor
-  /// started too early, so one more read follows.
-  func refresh(after changeCursor: Int? = nil) async {
+  /// started too early, so one more read follows. With `startingNow`, a
+  /// read that was already running never counts: one starts after it.
+  func refresh(after changeCursor: Int? = nil, startingNow: Bool = false) async {
     while let running = inFlight {
       await running.value
       if inFlight == running { inFlight = nil }
+      if startingNow { continue }
       guard let changeCursor, (state.cursor ?? Int.min) < changeCursor else { return }
     }
     let task = Task { await self.performRefresh() }
@@ -548,7 +583,8 @@ final class AccountProjectStore: ObservableObject {
       phase = .unconfigured
       return
     }
-    lastAttemptAt = Date()
+    let startedAt = Date()
+    lastAttemptAt = startedAt
     let account = AccountService.shared
     guard let session = await account.pairingSession(),
           session.authorization.ownerId == requestedUserId,
@@ -578,6 +614,7 @@ final class AccountProjectStore: ObservableObject {
         }
       }
       let changed = next != state || phase != .ready
+      lastSuccessStartedAt = startedAt
       publish(state: next, display: display, lastSuccessAt: Date(), phase: .ready)
       // An unchanged list (most foreground reads) writes nothing: the cache
       // only needs a time to say it holds a list.

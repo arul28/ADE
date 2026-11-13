@@ -5,12 +5,13 @@ import { ACCOUNT_MACHINE_TARGET_PREFIX, recentProjectLocationKey } from "../app/
 import type { AppState } from "../../state/appStore";
 import type { useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { FitList } from "../home/HomeFitList";
-import { LaneShareHomeFoot } from "../laneShare/guest/LaneShareHomeFoot";
+import { LaneShareHomeRows } from "../laneShare/guest/LaneShareHomeRows";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
 import type { HomeLocalGroup, HomeProjectRow } from "./homeProjectRows";
 import { requestCopiesMenu } from "./removeProjectRequest";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
+import type { LaneShareReceivedEntry } from "../../../shared/types/laneShare";
 
 type WebMachine = ReturnType<typeof useWebMachines>[number];
 
@@ -179,6 +180,7 @@ export function ProjectsCard({
   count,
   listRef,
   onListKeyDown,
+  sharedRows,
   ...ctx
 }: RowContext & {
   preview: boolean;
@@ -190,6 +192,8 @@ export function ProjectsCard({
   localGroups: readonly HomeLocalGroup[];
   /** The header count: account projects only (local folders when there is no account list). */
   count: number;
+  /** Lanes shared with this account and open invites (`useLaneShareHomeRows`). */
+  sharedRows: readonly LaneShareReceivedEntry[];
   listRef: MutableRefObject<HTMLDivElement | null>;
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
@@ -270,7 +274,7 @@ export function ProjectsCard({
             </button>
           )}
         </div>
-      ) : (
+      ) : sharedRows.length > 0 && !preview ? null : (
         <div className="ade-welcome-empty">
           <strong>No projects yet</strong>
           {ctx.webMode
@@ -278,7 +282,7 @@ export function ProjectsCard({
             : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
         </div>
       )}
-      {preview ? null : <LaneShareHomeFoot />}
+      {preview ? null : <LaneShareHomeRows rows={sharedRows} />}
     </section>
   );
 }

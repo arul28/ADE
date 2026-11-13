@@ -5002,11 +5002,13 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
   Earned hours never expire; they are used after the plan's hours and before
-  extra hours. The free plan is given once per computer.
+  extra hours. The free plan is given once per computer and once per GitHub
+  account, which must be at least 30 days old (or add a card, no charge).
 
-  Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
-  Change it in Settings › ADE Cloud › Plan and hours.
-  Disk and computers are what you have at one time, not a monthly amount.
+  Plans: Free, Plus, Pro and Max. \`ade cloud hours\` shows yours, with its hours and disk.
+  Change it in Settings › ADE Cloud › Plans.
+  Disk is what all your computers hold at one time, not a monthly amount.
+  No plan limits how many computers you have.
   On a paid plan, extra disk past the plan's is counted by the day, inside a
   monthly limit you set. A grow past it is refused with a sentence that says why.
 
@@ -21310,14 +21312,17 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
 /**
  * `ade cloud push-work --json`: every lane's work committed and pushed. With
  * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
- * it. `--check` is `work-state`.
+ * it. `--check` is `work-state`. `--message <text>` is the commit message for
+ * uncommitted work (the idle cleanup's "saved by ADE before cleanup"); an
+ * older brain ignores it and uses its own.
  */
 function buildCloudPushWorkPlan(args: string[]): CliPlan {
   if (args.includes("--check")) return buildCloudWorkStatePlan();
+  const message = readValue(args, ["--message"])?.trim();
   return {
     kind: "execute",
     label: "cloud push-work",
-    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    steps: [{ key: "result", method: "cloud.pushWork", params: message ? { message: message.slice(0, 200) } : {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -21473,22 +21478,28 @@ function formatCloudAccount(value: unknown): string {
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
-  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" ? account.planId : undefined;
+  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
   const disk = isRecord(account.disk) && typeof account.disk.usedGb === "number"
     ? typeof account.disk.limitGb === "number" ? `${account.disk.usedGb} of ${account.disk.limitGb} GB disk` : `${account.disk.usedGb} GB disk`
     : null;
-  const computers = isRecord(account.computers) && typeof account.computers.total === "number" && typeof account.computers.limit === "number"
-    ? `${account.computers.total} of ${account.computers.limit} computers`
+  // No plan limits how many computers an account has: a count, never "of N".
+  const computers = isRecord(account.computers) && typeof account.computers.total === "number"
+    ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
     : null;
-  const atOneTime = disk || computers ? `\n${[disk, computers].filter(Boolean).join(", ")} at one time.` : "";
+  const atOneTime = disk || computers ? `\n${[disk && `${disk} in use`, computers].filter(Boolean).join(", ")}.` : "";
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
-  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine;
+  // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
+  const github = freePlan.github;
+  const githubLine = github && github.state !== "ok" && github.sentence
+    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
+    : "";
+  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */
@@ -29946,9 +29957,10 @@ async function runServe(
         scopeRegistry: () => scopeRegistry,
         getCloudBrainAccess,
         version: VERSION,
+        logger: headlessProjectLogger,
       })
     : null;
-  // What uses this computer's disk, and its last work: sent at the idle step for the dashboard.
+  // What uses this computer's disk, its last work and the files git ignores: sent at the idle step for the dashboard.
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
@@ -29956,6 +29968,7 @@ async function runServe(
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
+        readIgnored: cloudComputerReports.readIgnored,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
       })
@@ -29973,6 +29986,13 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
+  // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
+  const cloudCpuWatch = cloudComputerReports
+    ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
+        report: cloudComputerReports.reportSustainedCpu,
+        logger: headlessProjectLogger,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -30002,6 +30022,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -31333,10 +31354,11 @@ async function runServe(
       holdCloudWork,
       remoteProviderSignIn,
       pushCloudWork: holdCloudWork
-        ? async ({ check }: { check: boolean }) => {
+        ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
+              message,
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));

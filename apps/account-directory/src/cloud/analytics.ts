@@ -19,7 +19,8 @@ export type CloudActionOrigin = "person" | "agent" | "system";
 /** The refusals worth counting, as the codes and reasons the routes answer with. */
 export type CloudRefusal =
   | "out_of_hours"
-  | "computer_limit"
+  /** Past the hidden cap on computers awake at once (never a plan limit). */
+  | "awake_cap"
   | "plan_disk"
   | "needs_approval"
   | "extra_off"
@@ -206,8 +207,19 @@ export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, u
  * - `refused`: the computer already gave another account its free hours.
  * - `id_unreadable`: the computer couldn't read its OS id, so nothing was claimed.
  * - `unclaimed_use`: free hours used with no computer seen (phone or MCP only).
+ * The GitHub rules (`freePlanGithub.ts`):
+ * - `github_missing`: free hours held, no GitHub connected.
+ * - `github_too_new`: held, the GitHub account is younger than 30 days.
+ * - `github_used`: held, that GitHub account already gives another ADE account its free plan.
+ * - `github_check_failed`: held while GitHub couldn't be asked (tried again later).
+ * - `github_released`: a hold cleared, so the free hours came back.
+ * - `github_claimed`: this account's GitHub account now holds its free plan.
+ * - `card_unlock_started`: the person opened the card page (no charge) for a too-new GitHub account.
+ * - `card_unlocked`: a card saved with no charge unlocked a too-new GitHub account.
  */
-export type CloudFreePlanStep = "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use";
+export type CloudFreePlanStep =
+  | "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use"
+  | "github_missing" | "github_too_new" | "github_used" | "github_check_failed" | "github_released" | "github_claimed" | "card_unlock_started" | "card_unlocked";
 
 /** One `ade_cloud_free_plan` per account, step and day. The computer's id is never sent. */
 export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, step: CloudFreePlanStep, platform: string | null, now: number): void {
@@ -223,6 +235,52 @@ export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, u
         client: "account",
         step,
         ...(platform ? { platform } : {}),
+        $geoip_disable: true,
+      },
+    });
+  })());
+}
+
+/* ---- Idle cleanup (`idleCleanup.ts`) ---- */
+
+/**
+ * - `warned`: the first warning went out (email and in-app).
+ * - `emailed`: a follow-up email (free: about 6 hours before; paid: one a day).
+ * - `saved`: the computer committed and pushed its work before the delete.
+ * - `push_refused`: the save didn't go through, so the computer was kept.
+ * - `deleted`: the computer was deleted; its lane stays.
+ * - `kept`: the person kept it after a warning (`how`: `button`, `used`,
+ *   `hours_back`, or `scheduled`: it has a timed wake-up booked).
+ * - `failed`: an ADE-side failure that didn't keep the computer for good
+ *   (`reason`: `email_failed`, `delete_failed`, `run_failed`); retried later.
+ */
+export type CloudIdleCleanupStep = "warned" | "emailed" | "saved" | "push_refused" | "deleted" | "kept" | "failed";
+
+export type CloudIdleCleanupEvent = {
+  step: CloudIdleCleanupStep;
+  plan: CloudPlanId;
+  /** `push_refused` and `failed`: the closed code (`push_left_work`, `prepare_stop_failed`, `wake_timeout`, `delete_failed` ...). */
+  reason?: string;
+  /** `kept`: how. */
+  how?: "button" | "used" | "hours_back" | "scheduled";
+};
+
+/** One `ade_cloud_idle_cleanup` per account, step, computer (hashed into the uuid, never sent) and hour. */
+export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, event: CloudIdleCleanupEvent, key: string, now: number): void {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
+  hold(waitUntil, (async () => {
+    await send(env, {
+      event: "ade_cloud_idle_cleanup",
+      distinct_id: await accountDistinctId(userId),
+      uuid: await uuidFromSeed(`ade-cloud-idle-cleanup-v1:${userId}:${event.step}:${key}:${bucket}`),
+      timestamp: new Date(now).toISOString(),
+      properties: {
+        client: "account",
+        step: event.step,
+        plan: event.plan,
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.how ? { how: event.how } : {}),
         $geoip_disable: true,
       },
     });

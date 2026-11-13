@@ -98,6 +98,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - a failed GitHub sign-in on the account directory (`github_app.sign_in_failed`, `logGithubApp` in `apps/account-directory/src/logging.ts`), as a warning titled `<event>: <kind>`, one issue per kind and GitHub's short OAuth error code, tagged `area: github_app`, `github_app.kind`, `github_app.oauth_error` and `github_app.client`, with only the attempt count and HTTP status as extras. Never the code, state, verifier or a token. Workers Logs keep one request in ten, so this is the one record of GitHub's reason for each failure;
 - a brain that cannot keep its crash-recovery files (`area: brain_restart`): the run record that tells the next brain whether this one stopped unplanned (`run_record_write_failed`, `run_record_stop_failed`, `brainUnplannedRestart.ts`), and the list of projects with a running turn (`live_turns_write_failed`, `liveTurnProjects.ts`, once per process because it writes at each project's first and last turn). Without them a crash shows no banner, or its projects open on first use as before;
 - on iOS, a Live Inspect reply the app cannot decode (`area: live_inspect`, `LiveInspectMarkupModel.fail`): the host and app disagree on the format. Offline machines, timeouts and older hosts are shown to the user and not reported.
+- on iOS, a Hub removal that a computer or the account refused (`area: hub-remove-folder`, `area: hub-remove-account-project`, `run()` in `HubRemoveProjects.swift`). The remove sheet shows the reason on the row. A computer that is offline or never answered, and a signed-out phone, are shown to the user and not reported. One event per refused folder, from a person's tap, so the volume stays at the person's pace.
 - a Linux lane screen that fails on its host (`linux_screen.<kind>`, `linuxDesktop/linuxScreenTelemetry.ts`), as a warning with a fixed description per kind and structured fields only (the helper's error text can carry Xvfb or ffmpeg output, so it stays in the local log), once per kind and detail per process: the helper not starting or exiting with lanes up (`helper_start_failed`, `helper_lost`), `display.create` failing for anything but a caller's mistake (`display_create_failed`), an accessibility bus that would not start (`display_degraded`), a recording whose encoder died (`recording_interrupted`), and an `ade screen setup` that failed or left something missing (`setup_failed`). Each carries the host as tags: `linux.distro`, `linux.distro_version`, `linux.distro_like` (from `/etc/os-release`), `linux.container` and `arch`, because only Ubuntu x64 is exercised by hand. What a host lacks before setup, a sudo that needs a password and a missing window manager are Sentry Logs (`linux_screen.host_report`, `linux_screen.setup_needs_user`, `linux_screen.display_degraded`), searchable by the same fields;
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
 - a Copilot chat failure ADE could have caused (`main/services/chat/copilotSentry.ts`), tagged `provider: copilot`, `copilot.kind` and `copilot.model` and grouped per kind and cause: a `session.error` that is not sign-in, rate limit, quota or an outage (`session_error`, titled by its kind alone and grouped by error type and code, because a provider's message can quote the request; the message and both GitHub request ids are in the scrubbed extra), a failed turn that was not interrupted (`turn_failed`), the SDK worker dying under a live chat (`worker_exited`), the runtime refusing to list or run a slash command (`commands_list_failed`, `command_failed`), a refused model or permission change (`setting_failed`), and a permission or question handler that threw (`handler_failed`). Each sent turn leaves a `copilot` breadcrumb with its model, agent mode, permission level, attachment count and the command name, never the prompt. Its other failures (a lost conversation, a model list or MCP sign-in lookup that failed) are `agent_chat.copilot_*` warn lines, so Sentry Logs only;
@@ -763,11 +764,11 @@ client version and for work nobody watches
 
 - **`ade_cloud_action`**: one per decided action. `action` is `create`,
   `move`, `copy`, `tier_change`, `grow`, `delete`, `plan_change` or
-  `refused`; `plan` is `free`, `plus` or `pro`; `origin` is `person`,
+  `refused`; `plan` is `free`, `plus`, `pro` or `max`; `origin` is `person`,
   `agent` (the computer was made by an agent's chat, or an agent deleted it)
-  or `system` (the computer's own disk grower, the 30-day delete); `tier` is
+  or `system` (the computer's own disk grower, the idle cleanup); `tier` is
   `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
-  (`out_of_hours`, `computer_limit`, `plan_disk`, `needs_approval`,
+  (`out_of_hours`, `awake_cap`, `plan_disk`, `needs_approval`,
   `extra_off`, `monthly_limit`, `tier_limit`, `owner_limit`, `over_plan_disk`) and
   `refused_action` (`create`, `move`, `copy`, `tier_change`, `grow`, `wake`).
   The uuid comes from the account, the action, a key (the instance id, hashed
@@ -785,6 +786,16 @@ client version and for work nobody watches
   and `referrer_rewarded`), `reward_refused` (with `reason` `same_computer` or
   `friend_computer_used`) or `cap_reached` (the referrer's 10th reward). One
   per account, step, reason and hour.
+- **`ade_cloud_idle_cleanup`** (`idleCleanup.ts`): `step` is `warned`,
+  `emailed` (a follow-up), `saved`, `push_refused` (with `reason`, a closed
+  code such as `push_left_work`, `check_left_work`, `prepare_stop_failed`,
+  `wake_failed`), `deleted` or `kept` (with `how`: `button`, `used`,
+  `hours_back`); `plan` is the account's plan. One per account, step,
+  computer (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.idle_cleanup_warned`, `_kept`, `_came_back`, `_held`, `_deleted`;
+  Sentry: `cloud.idle_cleanup_push_refused`, `_save_failed`, `_delete_failed`,
+  `_email_failed`, `_run_failed`, `_account_failed`, `_log_failed`,
+  `_unclaim_failed`, `_report_failed`, `cloud.idle_cleanup_put_back_failed`.
 - **`ade_cloud_free_plan`** (`freePlan.ts`): `step` is `claimed`, `restored`
   (a refused account claimed a computer of its own), `refused` (the computer
   already gave another account its free hours), `id_unreadable` or
@@ -2339,6 +2350,13 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 `/download/*` Vercel redirect endpoints are deliberately analytics-free — the
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
+
+The pricing page (`/pricing`, screen `pricing`) reuses the same events: each
+plan card's button records the CTA event with `choose_plan_free`,
+`choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
+`pricing_page` (it opens the install dialog, which records its own feature
+event), and every link to the page (site header, home page masthead and
+ADE Cloud teaser, footer) records the `view_pricing` feature.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

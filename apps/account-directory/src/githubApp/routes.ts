@@ -33,6 +33,7 @@ import {
   type GithubAppEnv,
   type GithubAppRuntime,
 } from "./grants";
+import { recordGithubAccountCreated } from "../cloud/freePlanGithub";
 import { checkToken, deleteToken, exchangeCode, readGithubUser, refreshTokens, type GithubTokens, type GithubUser } from "./oauth";
 import { confirmPage, connectedPage, failurePage, installedPage, maskEmail, type FailureKind } from "./pages";
 import { constantTimeEqual, randomBase64Url, randomHex, seal, sha256Base64Url, sha256Hex, signInAad, signInTokensAad, unseal } from "./seal";
@@ -488,6 +489,10 @@ async function handleCallback(request: Request, env: GithubAppEnv, url: URL, wai
     return failureResponse(row, "github_busy");
   }
 
+  // The GitHub account's age, for the free plan's rules (`cloud/freePlanGithub.ts`). Best effort: a settle reads it later otherwise.
+  await recordGithubAccountCreated(rt.db, user.user, Date.now()).catch((error: unknown) => {
+    logGithubApp({ event: "github_app.account_age_save_failed", userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
+  });
   const confirm = randomBase64Url(32);
   const held = await rt.db.prepare(`
     update github_app_sign_ins set status = 'confirming', github_login = ?, github_user_id = ?, tokens_sealed = ?, confirm_hash = ?, expires_at = ?
@@ -714,6 +719,9 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
     const read = await readGithubUser(rt.config, tokens.accessToken);
     if (!read.ok) return read.kind === "transient" ? githubUnavailable(60) : fail("not_this_app", "GitHub doesn't know this sign-in as one of the ADE GitHub App's.", 400);
     user = read.user;
+    await recordGithubAccountCreated(rt.db, user, Date.now()).catch((error: unknown) => {
+      logGithubApp({ event: "github_app.account_age_save_failed", userId, message: error instanceof Error ? error.message : "unknown" });
+    });
   }
 
   const { saved, previous } = await saveGrant(rt, userId, user, tokens, "adopted_device_flow", Date.now(), { onlyIfNotActive: true });

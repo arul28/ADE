@@ -182,6 +182,8 @@ export type CloudKeepAwakeOptions = {
    * again at the next check.
    */
   reportBooted?: () => Promise<{ sleepWhenIdle: boolean }>;
+  /** Each check's moment and busy reasons, for the sustained-CPU watch (`cloudSustainedCpu.ts`). Never throws. */
+  sampleCpu?: (at: number, reasons: readonly string[]) => void;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
   logger?: {
     info(event: string, data?: unknown): void;
@@ -462,6 +464,11 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (state.busy || wasBusy) lastBusyAt = at;
       if (state.busy) lastWorkAt = at;
       wasBusy = state.busy;
+      try {
+        options.sampleCpu?.(at, state.reasons);
+      } catch (error) {
+        options.logger?.warn("cloud.cpu_sample_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
       if (await growDiskEarlyIfDue(state)) {
         lastBusyAt = now();
       } else if (!state.busy) {

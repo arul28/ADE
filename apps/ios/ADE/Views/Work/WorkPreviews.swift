@@ -1554,6 +1554,13 @@ enum ADEPreviewScreen: String, CaseIterable {
   case sideChat = "side-chat"
   /// The same main chat with the panel down: the chip and the label.
   case sideChatMain = "side-chat-main"
+  /// A chat ADE continued after a restart: one restart line with its time;
+  /// no "Woke at" line and no resume message. A later ordinary wake keeps
+  /// its look. Read through the saved-transcript parser. See
+  /// `WorkRestartResumePreviewData`.
+  case chatRestart = "chat-restart"
+  /// The same events read through the live event decoder.
+  case chatRestartLive = "chat-restart-live"
   /// A Muse chat whose turn stopped because Muse is signed out on its
   /// machine: the sign-in card in the composer's place. See
   /// `WorkProviderSignInPreviewMachine`.
@@ -1829,6 +1836,18 @@ struct ADEPreviewScreenHost: View {
       WorkSideChatPreviewHost(panelPresented: true)
     case .sideChatMain:
       WorkSideChatPreviewHost(panelPresented: false)
+    case .chatRestart:
+      NavigationStack {
+        workPreviewChatSessionView(transcript: WorkRestartResumePreviewData.savedTranscript)
+      }
+      .environmentObject(WorkPreviewData.syncService)
+      .environmentObject(WorkPreviewData.dictationController)
+    case .chatRestartLive:
+      NavigationStack {
+        workPreviewChatSessionView(transcript: WorkRestartResumePreviewData.liveTranscript)
+      }
+      .environmentObject(WorkPreviewData.syncService)
+      .environmentObject(WorkPreviewData.dictationController)
     case .chatSignIn:
       WorkProviderSignInPreviewHost()
     case .chatSignInRecovered:
@@ -3007,6 +3026,45 @@ private enum WorkSideChatPreviewData {
         turnId: "s-3", itemId: "s-a3"
       )),
     ]
+  }
+}
+
+/// `chat-restart`: the events a host writes when ADE restarts during a turn
+/// and continues the chat (desktop `restartInterruptedNotice`, the
+/// `update-resume:` wake), then an ordinary wake-up later.
+@MainActor
+enum WorkRestartResumePreviewData {
+  static var lines: [String] {
+    let session = WorkPreviewData.chatSummary.sessionId
+    func at(_ minutesAgo: Int) -> String { WorkPreviewData.iso(minutesAgo: minutesAgo) }
+    let events: [(Int, String)] = [
+      (40, #"{"type":"user_message","text":"Make the Hub list come from the account only.","turnId":"t-1"}"#),
+      (39, #"{"type":"text","text":"Reading `HubScreen.swift` and the account store first.","turnId":"t-1","itemId":"a-1"}"#),
+      (31, #"{"type":"system_notice","noticeKind":"info","message":"ADE restarted while this response was running. The agent picks up where it stopped.","turnId":"t-1"}"#),
+      (31, #"{"type":"scheduled_work_update","id":"update-resume:\#(session)","kind":"wakeup","status":"fired","reason":"Resume after ADE restart","prompt":"ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.","firedAt":"\#(at(31))","late":true,"durable":true,"turnId":"t-2"}"#),
+      (31, #"{"type":"user_message","text":"ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.","metadata":{"scheduledWake":{"scheduleId":"update-resume:\#(session)","kind":"wakeup","firedAt":"\#(at(31))","reason":"Resume after ADE restart","late":true}},"turnId":"t-2"}"#),
+      (30, #"{"type":"text","text":"Continuing: the main list now reads the account projects only.","turnId":"t-2","itemId":"a-2"}"#),
+      (30, #"{"type":"done","turnId":"t-2","status":"completed"}"#),
+      (12, #"{"type":"scheduled_work_update","id":"wake-ci","kind":"wakeup","status":"fired","reason":"Check CI","prompt":"Check whether CI passed.","firedAt":"\#(at(12))","turnId":"t-3"}"#),
+      (12, #"{"type":"user_message","text":"Check whether CI passed.","metadata":{"scheduledWake":{"scheduleId":"wake-ci","kind":"wakeup","firedAt":"\#(at(12))","reason":"Check CI"}},"turnId":"t-3"}"#),
+      (11, #"{"type":"text","text":"CI passed on all shards.","turnId":"t-3","itemId":"a-3"}"#),
+      (11, #"{"type":"done","turnId":"t-3","status":"completed"}"#),
+    ]
+    return events.enumerated().map { index, entry in
+      #"{"sessionId":"\#(session)","timestamp":"\#(at(entry.0))","sequence":\#(index + 1),"event":\#(entry.1)}"#
+    }
+  }
+
+  /// Through `parseWorkChatTranscript`, as a chat opened from history.
+  static var savedTranscript: [WorkChatEnvelope] {
+    parseWorkChatTranscript(lines.joined(separator: "\n"))
+  }
+
+  /// Through the wire decoder, as a live chat.
+  static var liveTranscript: [WorkChatEnvelope] {
+    let decoder = JSONDecoder()
+    let entries = lines.compactMap { try? decoder.decode(AgentChatEventEnvelope.self, from: Data($0.utf8)) }
+    return makeWorkChatTranscript(from: entries)
   }
 }
 

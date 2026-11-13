@@ -1,4 +1,6 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
+import { AWAKE_COMPUTER_CAP } from "./cloud/plans";
+import { AWAKE_CAP_COUNT_SQL, PENDING_TIMEOUT_MS, logCloud, reportCloudFailure } from "./cloud/store";
 
 /**
  * Timed wakes for cloud machines (README, "the provider timed wakes").
@@ -86,16 +88,59 @@ export async function handleCloudWakeRequest(request: Request, env: CloudWakeEnv
  * The minute cron: wakes every machine whose time is within the lead, and
  * forgets each once woken. One that doesn't answer is tried each minute until
  * `GIVE_UP_AFTER_MS` past its time.
+ *
+ * The awake cap holds for timed wakes too, counted as the create and wake
+ * routes count it (awake computers and recent reservations,
+ * `AWAKE_CAP_COUNT_SQL`): a computer whose account is at it waits for a later
+ * tick, and is given up on (reported) once `GIVE_UP_AFTER_MS` passes. Rows of
+ * an account at the cap are left out of the read, so they never fill the
+ * batch and hold back other accounts' wakes. A computer already awake (one of
+ * the caller's own, by its record) takes no slot.
  */
 export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; fetchImpl?: typeof fetch } = {}): Promise<{ woken: number; failed: number }> {
   const now = options.now ?? Date.now();
   const fetchImpl = options.fetchImpl ?? fetch;
-  const due = await env.DB.prepare("select user_id, instance_id, wake_url, wake_at from cloud_wakes where wake_at <= ? order by wake_at limit ?")
-    .bind(now + CLOUD_WAKE_LEAD_MS, BATCH)
+  const cutoff = now - PENDING_TIMEOUT_MS;
+  const due = await env.DB.prepare(`
+    select w.user_id, w.instance_id, w.wake_url, w.wake_at from cloud_wakes w
+    where w.wake_at <= ?
+      and (w.wake_at < ?
+        or exists (select 1 from cloud_computers c where c.instance_id = w.instance_id and c.user_id = w.user_id and c.deleted_at is null and c.status in ('running', 'restarting', 'updating'))
+        or (select count(*) from cloud_computers c where c.user_id = w.user_id and c.deleted_at is null and ${AWAKE_CAP_COUNT_SQL}) < ?)
+    order by w.wake_at limit ?
+  `).bind(now + CLOUD_WAKE_LEAD_MS, now - GIVE_UP_AFTER_MS, cutoff, AWAKE_COMPUTER_CAP, BATCH)
     .all<{ user_id: string; instance_id: string; wake_url: string; wake_at: number }>();
   let woken = 0;
   let failed = 0;
-  await Promise.all((due.results ?? []).map(async (row) => {
+  const rows = due.results ?? [];
+  const userIds = [...new Set(rows.map((row) => row.user_id))];
+  const counted = userIds.length ? await env.DB.prepare(`
+    select user_id, instance_id, status from cloud_computers
+    where deleted_at is null and ${AWAKE_CAP_COUNT_SQL} and user_id in (select value from json_each(?))
+  `).bind(cutoff, JSON.stringify(userIds)).all<{ user_id: string; instance_id: string; status: string }>() : { results: [] };
+  // Awake already, by the account's own record: the wake takes no slot.
+  const awakeKey = (userId: string, instanceId: string) => `${userId}\n${instanceId}`;
+  const awakeIds = new Set((counted.results ?? []).filter((row) => row.status !== "provisioning").map((row) => awakeKey(row.user_id, row.instance_id)));
+  const awakeByUser = new Map<string, number>();
+  for (const row of counted.results ?? []) awakeByUser.set(row.user_id, (awakeByUser.get(row.user_id) ?? 0) + 1);
+  const givenUp: typeof rows = [];
+  const allowed = rows.filter((row) => {
+    if (awakeIds.has(awakeKey(row.user_id, row.instance_id))) return true;
+    const awake = awakeByUser.get(row.user_id) ?? 0;
+    if (awake < AWAKE_COMPUTER_CAP) {
+      awakeByUser.set(row.user_id, awake + 1);
+      return true;
+    }
+    if (now - row.wake_at > GIVE_UP_AFTER_MS) {
+      reportCloudFailure("cloud.timed_wake_capped", { userId: row.user_id, instanceId: row.instance_id, awake });
+      givenUp.push(row);
+    } else logCloud("cloud.timed_wake_waits_for_cap", { userId: row.user_id, instanceId: row.instance_id, awake });
+    return false;
+  });
+  await Promise.all(givenUp.map((row) => env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")
+    .bind(row.user_id, row.instance_id, row.wake_at).run()));
+  failed += givenUp.length;
+  await Promise.all(allowed.map(async (row) => {
     let reached = false;
     if (WAKE_URL.test(row.wake_url)) {
       try {

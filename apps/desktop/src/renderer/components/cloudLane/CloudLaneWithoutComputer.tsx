@@ -19,8 +19,9 @@ import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import "./cloudLane.css";
 
 /**
- * A lane kept without a computer: its computer was freed to save space, or
- * removed after 30 days unused. It says so in plain words and offers one
+ * A lane kept without a computer: its computer was freed to save space,
+ * removed by the idle cleanup after its work was pushed (or by the old 30-day
+ * rule), or freed to fit a cheaper plan. It says so in plain words and offers one
  * next step, "New computer on the same branch": a new ADE Cloud launch for
  * the same lane id on `origin/<branch>`, the same launch a new lane uses, so
  * its card shows the same steps. "Forget lane" removes the record; the
@@ -31,6 +32,9 @@ function cloudLaneWithoutComputerSentence(lane: CloudLaneWithoutComputer): strin
   const since = Number.isFinite(lane.since) ? new Date(lane.since).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null;
   const when = since ? ` on ${since}` : "";
   if (lane.reason === "freed") return `${lane.laneName} has no computer now. You freed it${when} to save space; its work is on GitHub.`;
+  if (lane.reason === "idle_cleanup") {
+    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} because it wasn't used, after committing its work and pushing it to ${lane.branchRef ? lane.branchRef : "the lane's branch"}. Your next message makes a new computer from the branch.`;
+  }
   if (lane.reason === "plan_limit") {
     return `${lane.laneName} has no computer now. ADE Cloud removed it${when} to fit your plan, after pushing its work to GitHub. A new computer starts from the branch on GitHub.`;
   }

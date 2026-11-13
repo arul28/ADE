@@ -25,16 +25,24 @@ export type MachineBoundAgentChatApi = AgentChatApi & {
   getImageDataUrl(path: string): Promise<{ dataUrl: string }>;
 };
 
-/** What a pane is routed to. Absent means the project chat domain. */
+/**
+ * What a pane is routed to. Absent means the project chat domain. Every
+ * scope is bound to one place when it is made, so the pane hides what only a
+ * project chat can do:
+ * - `personal`: a machine's chats with no project (`personalChats.*`);
+ * - `lane_share_guest`: a guest's view of one shared lane, whose every call
+ *   goes to the owner's computer through the guest connection.
+ */
 export type ChatPaneScope = {
-  kind: "personal";
-  /** `agentChat`-shaped API backed by `personalChats.*`. */
+  kind: "personal" | "lane_share_guest";
+  /** `agentChat`-shaped API bound to that place. */
   agentChat: MachineBoundAgentChatApi;
-  /** Model-catalog scope the personal model picker registered its descriptors under. */
+  /** Model-catalog scope the model picker reads its descriptors under. */
   modelCatalogScopeKey: string;
   /**
    * The machine the chat runs on, when the scope names one (the Chats page
-   * lists every machine's chats); otherwise the window's machine.
+   * lists every machine's chats; a shared lane runs on its owner's);
+   * otherwise the window's machine.
    */
   machineName?: string | null;
 };

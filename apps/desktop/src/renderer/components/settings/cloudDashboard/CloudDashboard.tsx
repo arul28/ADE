@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
+  CLOUD_FREE_GITHUB_BANNER_ID,
+  CLOUD_FREE_REFUSED_BANNER_ID,
   CLOUD_PLAN_LABELS,
   cloudAccountBanner,
   cloudEarnedHoursOf,
@@ -27,6 +29,7 @@ import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
+import { cloudFreeGithubHeroLine } from "./CloudFreeGithubNotice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
@@ -34,6 +37,7 @@ import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
+import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
@@ -43,6 +47,7 @@ import {
   hoursForecast,
   lastRunText,
   planName,
+  removedReasonText,
   prefersReducedMotion,
   type DashLane,
 } from "./cloudDashboardModel";
@@ -227,9 +232,17 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   // disk share would only repeat it in two more banners.
   const accountBanner = cloudAccountBanner(account);
   const overPlan = account.planCleanup != null || accountBanner?.id === "cloud-over-plan-disk";
-  const banner = account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk" ? null : accountBanner;
+  // The free plan's GitHub hold: the hero's line and the plan card's notice say it, with what to do.
+  const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID || accountBanner?.id === CLOUD_FREE_REFUSED_BANNER_ID ? null : accountBanner;
   const diskLimit = account.disk.limitGb ?? 0;
   const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
+  const openBillingPortal = async () => {
+    try {
+      await window.ade.cloud?.openBillingPortal?.();
+    } catch (error) {
+      showToast({ tone: "error", title: "Couldn't open billing", message: errorText(error) });
+    }
+  };
 
   return (
     <div id={CLOUD_DASHBOARD_ID} className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
@@ -243,8 +256,21 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         now={now}
       />
 
-      {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
+      {banner ? (
+        <Banner
+          layout="inline"
+          model={{
+            ...banner,
+            // A failed payment says to update the card: the way there, on the notice.
+            ...(banner.id === "cloud-hours-past-due" && window.ade.cloud?.openBillingPortal
+              ? { actions: [{ label: "Update card", variant: "primary" as const, onClick: () => void openBillingPortal() }] }
+              : {}),
+            report: false,
+          }}
+        />
+      ) : null}
       <PlanNotices account={account} onChanged={refresh} />
+      <CloudIdleCleanupNotices account={account} now={now} onChanged={refresh} />
       {!overPlan && diskShare >= CLOUD_DISK_WARN_SHARE ? (
         <Banner
           layout="inline"
@@ -270,7 +296,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           <Desktop size={14} />
           Lanes and computers
           <span className="kit-card-head-count">{lanes.length}</span>
-          <span className="adecd-head-note">{account.computers.total} of {account.computers.limit} computers · {account.computers.awake} awake</span>
+          <span className="adecd-head-note">{account.computers.total} {account.computers.total === 1 ? "computer" : "computers"} · {account.computers.awake} awake</span>
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
           {inside ? (
@@ -354,6 +380,8 @@ function CloudHero({
   // The free plan refused on this computer (another account used its free hours): one sentence from the server.
   const freePlan = cloudFreePlanOf(account);
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
+  // The free plan's GitHub rules hold its hours: one line here, the plan card says what to do.
+  const githubLine = account.rules === "free" && freePlan.github ? cloudFreeGithubHeroLine(freePlan.github) : null;
   const resets = account.billing.cancelAtPeriodEnd
     ? `plan ends ${formatCloudDate(account.billing.periodEnd)}`
     : `resets ${formatCloudDate(account.billing.periodEnd)}`;
@@ -375,13 +403,17 @@ function CloudHero({
             <span className="adecd-label">Hours left this month</span>
             <div className="adecd-hours-num">
               <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
-              <span>of {formatCloudHours(hours.includedMilli)} h, {resets}</span>
+              {/* Free hours held (GitHub rules, or another account used them here): the plan's hours, on hold, never "of 0 h". */}
+              <span>{hours.includedMilli <= 0 && (githubLine || blockedSentence) && account.plan === "free"
+                ? `of ${formatCloudHours(cloudCatalogOf(account).plans.free.includedMilli)} h, on hold`
+                : `of ${formatCloudHours(hours.includedMilli)} h, ${resets}`}</span>
             </div>
             <div className="kit-meter adecd-meter" data-level={usageLeftLevel(hoursPct)}>
               <span style={{ width: `${Math.max(0, Math.min(100, hoursPct))}%` }} />
             </div>
             <ul className="adecd-hours-notes">
               {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
+              {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
               {earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
               {account.extraHours.available ? (
                 <li>{account.extraHours.enabled
@@ -393,13 +425,8 @@ function CloudHero({
           </div>
           <div className="adecd-minis">
             <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
-            <MiniMeter
-              label="Computers"
-              value={String(account.computers.total)}
-              of={`of ${account.computers.limit}`}
-              pct={percentOf(account.computers.total, account.computers.limit)}
-              note={`${account.computers.awake} awake now`}
-            />
+            {/* No plan limits how many computers an account has: a count, with no meter. */}
+            <MiniMeter label="Computers" value={String(account.computers.total)} of={null} pct={null} note={`${account.computers.awake} awake now`} />
           </div>
         </div>
         <div className="adecd-hero-city">
@@ -429,12 +456,15 @@ function CloudHero({
   );
 }
 
-function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number; note: string }) {
+/** `pct` null: a count with nothing to fill toward; the meter's row stays, empty, so the minis line up. */
+function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number | null; note: string }) {
   return (
     <div className="adecd-mini">
       <span className="adecd-label">{label}</span>
       <div className="adecd-mini-num"><b className="kit-num" data-face="ui">{value}</b>{of ? <span>{of}</span> : null}</div>
-      <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>
+      {pct == null
+        ? <div className="kit-meter adecd-meter" aria-hidden="true" style={{ visibility: "hidden" }} />
+        : <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>}
       <span className="adecd-mini-note">{note}</span>
     </div>
   );
@@ -452,7 +482,7 @@ function EmptyPlot() {
 
 function laneAria(lane: DashLane, now: number): string {
   if (lane.state === "none") return `${lane.name}, no computer now`;
-  return [lane.name, lane.noLane ? "no lane" : null, lane.tier?.label, formatCloudGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
+  return [lane.name, lane.idle ? idleRowTag(lane.idle, now).label.toLowerCase() : null, lane.noLane ? "no lane" : null, lane.tier?.label, formatCloudGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
     .filter(Boolean)
     .join(", ");
 }
@@ -462,6 +492,7 @@ function laneDetail(lane: DashLane, now: number): string[] {
   return [
     [lane.tier?.label, lane.rateLabel, formatCloudGb(lane.diskGb)].filter(Boolean).join(", "),
     `${STATE_LABEL[lane.state]}, ${lastRunText(lane, now).toLowerCase()}`,
+    ...(lane.idle ? [idleRowTag(lane.idle, now).title] : []),
     ...(lane.noLane ? ["No lane on this computer"] : []),
     ...(lane.old ? ["Not used for a long time"] : []),
   ];
@@ -542,8 +573,9 @@ function LaneTable({
               <span className="adecd-name">
                 {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <span className="adecd-name-text">{lane.name}</span>
-                {/* One mark at most, so the name keeps its room: no lane, then unused, then safe to delete. */}
-                {lane.noLane ? <span className="kit-tag">No lane</span>
+                {/* One mark at most, so the name keeps its room: the idle cleanup's warning, no lane, then unused, then safe to delete. */}
+                {lane.idle ? <IdleTag lane={lane} now={now} />
+                  : lane.noLane ? <span className="kit-tag">No lane</span>
                   : lane.old ? <span className="kit-tag" data-tone="warn" title={lane.safe ? "Not used for a long time. Its pull request is merged and nothing is unpushed." : "Not used for a long time"}>Unused</span>
                   : lane.safe ? <span className="kit-tag" data-tone="ok" title="Its pull request is merged and nothing is unpushed">Safe to delete</span>
                   : null}
@@ -555,7 +587,7 @@ function LaneTable({
               ) : (
                 <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
               )}
-              <span className="adecd-when">{lastRunText(lane, now)}</span>
+              <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
             </div>
@@ -587,7 +619,7 @@ function LaneActions({
     <>
       {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
       {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
-      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
+      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. Its disk still counts toward your plan.</span> : null}
     </>
   );
 }
@@ -619,6 +651,13 @@ function laneMenuActions(lane: DashLane, args: {
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/** The idle cleanup's mark on a lane row: when it is deleted, or that ADE kept it after a failed save. */
+function IdleTag({ lane, now }: { lane: DashLane; now: number }) {
+  if (!lane.idle) return null;
+  const tag = idleRowTag(lane.idle, now);
+  return <span className="kit-tag" data-tone="warn" title={tag.title}>{tag.label}</span>;
+}
 
 /** What a row's State cell says while its lane changes size or is deleted. */
 type RowStatus = { state: "starting" | "failed" | "awake"; label: string; title: string | null };
@@ -744,10 +783,10 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
           model={{
             id: "cloud-plan-cleanup",
             tone: "warning",
-            title: `Your computers don't fit ${plan}`,
+            title: `Your computers hold more disk than ${plan} has`,
             detail: `${cleanup.sentence} ${cleanup.startsAt != null
               ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-              : `ADE can't make a new computer${cloudAccountBanner(account)?.id === "cloud-over-plan-disk" ? " or wake one" : ""} until they fit. It deletes nothing on its own.`}`,
+              : `ADE can't make a new computer${cloudAccountBanner(account)?.id === "cloud-over-plan-disk" ? " or wake one" : ""} until their disk fits. It deletes nothing on its own.`}`,
             actions: [{ label: "Choose what goes", variant: "primary", onClick: () => setAsking(true) }],
             report: false,
           }}

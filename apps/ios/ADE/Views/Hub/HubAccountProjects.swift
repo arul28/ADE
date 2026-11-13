@@ -36,6 +36,10 @@ struct HubAccountJoin: Equatable {
   var hiddenCardIds: Set<String> = []
   /// GitHub repositories a machine shows that the list does not name yet.
   var unknownIdentities: Set<String> = []
+  /// Cards of a project another card already shows (a second folder of the
+  /// same repository): card id -> that project. The Hub lists the project
+  /// once; these folders stay reachable from the project's copies.
+  var duplicateCardIds: [String: String] = [:]
 }
 
 /// Pure: match Hub cards to account projects. For each card, in order:
@@ -45,8 +49,8 @@ struct HubAccountJoin: Equatable {
 ///    for a list read and falls through;
 /// 1. one of its folders is a copy on the account (machine key + registry id);
 /// 2. its GitHub `owner/name` is the project's address or an old address.
-/// The first card that claims a project keeps it; a later card stays a card
-/// of its own. A card that matches no live project but names a removed one
+/// The first card that claims a project keeps it; a later card is a
+/// duplicate of it (one row per account project). A card that matches no live project but names a removed one
 /// (by a copy it had, or by its address) is hidden. Only github.com addresses match by name, because a machine's
 /// catalog drops the host.
 func hubJoinAccountProjects(
@@ -64,7 +68,11 @@ func hubJoinAccountProjects(
     if let sent = card.accountProjectId {
       let id = merged[sent] ?? sent
       if index.liveIds.contains(id) {
-        if claimed.insert(id).inserted { join.accountIdByCardId[card.cardId] = id }
+        if claimed.insert(id).inserted {
+          join.accountIdByCardId[card.cardId] = id
+        } else {
+          join.duplicateCardIds[card.cardId] = id
+        }
         continue
       }
       if index.removedIds.contains(id) {
@@ -78,6 +86,8 @@ func hubJoinAccountProjects(
     if let projectId = byCopy ?? byName {
       if claimed.insert(projectId).inserted {
         join.accountIdByCardId[card.cardId] = projectId
+      } else {
+        join.duplicateCardIds[card.cardId] = projectId
       }
       continue
     }

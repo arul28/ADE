@@ -9,6 +9,7 @@ import {
   type CloudAgentLimits,
   type CloudShapeId,
   isCloudInstanceId,
+  isPaidPlanId,
   cloudMachineState,
   type CloudCreateProgress,
   type CloudMachineActionArgs,
@@ -109,7 +110,7 @@ export function registerCloudIpc(args: {
   /** One coarse product fact per box action that worked (analytics; never the box). */
   recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect" | "push_all_work") => void;
   /** One coarse fact per plan decision (analytics; never an amount). */
-  recordPlan?: (outcome: "plan_checkout" | "plan_portal" | "extra_on" | "extra_off") => void;
+  recordPlan?: (outcome: "plan_checkout" | "plan_portal" | "extra_on" | "extra_off" | "free_unlock_card") => void;
   /**
    * A `cloud` action on this computer's brain. Sign-ins for cloud machines
    * run there: a PTY can't start from this process in a packaged app.
@@ -479,7 +480,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudPickPlanCleanup, async (event, arg: { planId?: unknown; push?: unknown; instanceIds?: unknown }): Promise<CloudAccountState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPickPlanCleanup)) return null;
     const pick = readPick(arg);
-    const planId = arg?.planId === "free" || arg?.planId === "plus" || arg?.planId === "pro" ? arg.planId : null;
+    const planId = arg?.planId === "free" || isPaidPlanId(arg?.planId) ? arg.planId : null;
     if (!pick || !planId) throw new Error("ADE couldn't read which computers to free.");
     const account = await billingCall(async () => (await requireCloudProvider(credentials)).pickPlanCleanup({ planId, ...pick }));
     logger.info("cloud.plan_cleanup_picked", { plan: planId, computers: pick.instanceIds.length, push: pick.push });
@@ -509,7 +510,7 @@ export function registerCloudIpc(args: {
    */
   ipcMain.handle(IPC.cloudOpenCheckout, async (event, arg?: { plan?: unknown; cleanup?: unknown }): Promise<CloudOpenCheckoutResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
-    const plan = arg?.plan === "pro" || arg?.plan === "plus" ? arg.plan : undefined;
+    const plan = isPaidPlanId(arg?.plan) ? arg.plan : undefined;
     const cleanup = readPick(arg?.cleanup);
     // A pick that was sent but can't be read must not become "no pick": the plan would change and nothing the person chose would go.
     if (arg?.cleanup != null && !cleanup) {
@@ -544,6 +545,49 @@ export function registerCloudIpc(args: {
     if (result.ok) args.recordMachineAction?.("push_all_work");
     sendToAllWindows(IPC.cloudStatusChanged);
     return result;
+  });
+
+  /**
+   * A card saved with no charge starts the free hours of a GitHub account
+   * younger than 30 days: opens Stripe's page in the browser, or answers
+   * `unlocked` when a card already on file did it. Account level, so no pin.
+   */
+  ipcMain.handle(IPC.cloudOpenFreeUnlock, async (event): Promise<{ opened: boolean; unlocked: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenFreeUnlock)) return { opened: false, unlocked: false };
+    const provider = await requireCloudProvider(credentials);
+    if (!provider.billingFreeUnlock) throw new Error("This ADE Cloud can't take a card for the free hours yet.");
+    const result = await billingCall(async () => await provider.billingFreeUnlock!());
+    if (result.unlocked) {
+      logger.info("cloud.free_unlocked", { source: "card_on_file" });
+      sendToAllWindows(IPC.cloudStatusChanged);
+      return { opened: false, unlocked: true };
+    }
+    await openExternalUrl(result.url);
+    args.recordPlan?.("free_unlock_card");
+    return { opened: true, unlocked: false };
+  });
+
+  /**
+   * "Keep it" on an idle cleanup warning: the server restarts the computer's
+   * idle clock with no wake. Account level, by the computer's ADE Cloud id
+   * (the server owns the clock wherever the computer is), so no pin.
+   */
+  ipcMain.handle(IPC.cloudKeepIdleComputer, async (event, arg: { instanceId?: unknown }): Promise<{ ok: boolean; message?: string }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudKeepIdleComputer)) return { ok: false, message: "ADE can't do that from here." };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isCloudInstanceId(instanceId)) return { ok: false, message: "ADE doesn't know that computer." };
+    const provider = await requireCloudProvider(credentials);
+    if (!provider.keepIdleComputer) return { ok: false, message: "This ADE Cloud can't keep a computer that way." };
+    try {
+      await provider.keepIdleComputer(instanceId);
+    } catch (error) {
+      logger.warn("cloud.idle_keep_failed", { error: getErrorMessage(error) });
+      return { ok: false, message: getErrorMessage(error) };
+    }
+    // The server records the product event (`ade_cloud_idle_cleanup` step `kept`).
+    logger.info("cloud.idle_kept", {});
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return { ok: true };
   });
 
   ipcMain.handle(IPC.cloudOpenBillingPortal, async (event): Promise<{ opened: boolean }> => {

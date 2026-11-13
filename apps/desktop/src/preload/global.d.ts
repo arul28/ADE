@@ -5068,6 +5068,8 @@ declare global {
          */
         pickPlanCleanup?: (input: { planId: CloudPlanId } & CloudPlanCleanupPick) => Promise<CloudAccountState | null>;
         openBillingPortal?: () => Promise<{ opened: boolean }>;
+        /** Save a card with no charge so a too-new GitHub account gets the free hours now (`unlocked`: a card on file did it). Account level: no pin. */
+        openFreeUnlock?: () => Promise<{ opened: boolean; unlocked: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
@@ -5079,6 +5081,8 @@ declare global {
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         personIsHere?: () => Promise<boolean>;
         pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
+        /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
+        keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
         /**
          * The life of a lane's computer: work check, delete lane, keep the
          * lane on a fresh computer, lanes without a computer, tier changes

@@ -20,7 +20,13 @@ export function withChatPin<T>(
   pin: OpenProjectBinding | null | undefined,
   call: (pin: OpenProjectBinding) => Promise<T>,
 ): Promise<T> {
-  return pin ? call(pin) : Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE));
+  if (!pin) return Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE));
+  // A call that throws before it returns a promise still ends in the chain's `.catch`.
+  try {
+    return call(pin);
+  } catch (error) {
+    return Promise.reject(error);
+  }
 }
 
 /**
@@ -35,7 +41,7 @@ export const PERSONAL_CHAT_ADAPTER_PIN: OpenProjectBinding = Object.freeze({
   displayName: "Personal chat",
 });
 
-/** The pin for a call through a pane's chat API: the adapter's own for a personal pane. */
-export function chatApiPin(pin: OpenProjectBinding | null | undefined, personal: boolean): OpenProjectBinding | null {
-  return personal ? PERSONAL_CHAT_ADAPTER_PIN : pin ?? null;
+/** The pin for a call through a pane's chat API: the adapter's own for a bound (personal or shared) pane. */
+export function chatApiPin(pin: OpenProjectBinding | null | undefined, bound: boolean): OpenProjectBinding | null {
+  return bound ? PERSONAL_CHAT_ADAPTER_PIN : pin ?? null;
 }

@@ -354,8 +354,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   // web client has no channel for.
   {
     id: "sharing.by-me",
-    label: "Lanes shared by me",
-    keywords: ["share", "sharing", "guest", "invite", "revoke", "stop sharing", "collaborate", "access"],
+    label: "Lanes you shared",
+    keywords: ["share", "sharing", "guest", "invite", "revoke", "remove access", "stop sharing", "collaborate", "access", "people with access", "shared by me"],
     tab: "sharing",
     anchor: "sharing-by-me",
     scope: "account",
@@ -364,8 +364,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "sharing.with-me",
-    label: "Lanes shared with me",
-    keywords: ["share", "sharing", "guest", "leave", "invited"],
+    label: "Lanes shared with you",
+    keywords: ["share", "sharing", "guest", "leave", "invited", "accept", "decline", "shared with me"],
     tab: "sharing",
     anchor: "sharing-with-me",
     scope: "account",
@@ -374,8 +374,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "sharing.defaults",
-    label: "My default rights",
-    keywords: ["share", "sharing", "rights", "preset", "default", "watch", "comment", "suggest", "collaborate"],
+    label: "Default access",
+    keywords: ["share", "sharing", "rights", "default rights", "preset", "default", "watch", "comment", "suggest", "collaborate"],
     tab: "sharing",
     anchor: "sharing-defaults",
     scope: "account",
@@ -1667,7 +1667,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-cloud.plans",
     label: "ADE Cloud plans and billing",
-    keywords: ["plan", "plans", "upgrade", "plus", "pro", "free", "price", "billing", "extra hours", "extra disk", "manage billing", "subscription", "invoice", "cancel"],
+    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "extra disk", "manage billing", "subscription", "invoice", "cancel"],
     tab: "ade-cloud",
     anchor: "cloud-plan",
     // The plans side by side, extra hours and extra disk; the account's Stripe subscription.

@@ -17,6 +17,8 @@ export const MARKETING_SCREENS = {
   PAIR: "pair",
   /** `/invite/<code>`: the code is never part of the screen or the page address. */
   INVITE: "invite",
+  /** `/pricing`: ADE Cloud's plans. */
+  PRICING: "pricing",
   PRIVACY: "privacy",
   TERMS: "terms",
   NOT_FOUND: "not_found",
@@ -40,6 +42,8 @@ export const MARKETING_FEATURES = {
   // The invite page (`/invite/<code>`): "Open in ADE", and copying the code.
   OPEN_INVITE_IN_ADE: "open_invite_in_ade",
   COPY_INVITE_CODE: "copy_invite_code",
+  // ADE Cloud's prices: the links to `/pricing` (header, footer, home page).
+  VIEW_PRICING: "view_pricing",
   // Install dialog. The dialog captures its own open event so every trigger
   // (hero, back cover, header, footer) reports the same feature regardless of
   // which CTA label it also carries.
@@ -77,6 +81,12 @@ export const MARKETING_CTA_LABELS = {
   DOWNLOAD_LINUX_ARM64_DEB: "download_linux_arm64_deb",
   GET_STARTED_FREE: "get_started_free",
   OPEN_WEB_CLIENT: "open_web_client",
+  // `/pricing`: a plan card's button. Every plan starts the same way (get
+  // ADE, then pick the plan in Settings), so the label names the plan.
+  CHOOSE_PLAN_FREE: "choose_plan_free",
+  CHOOSE_PLAN_PLUS: "choose_plan_plus",
+  CHOOSE_PLAN_PRO: "choose_plan_pro",
+  CHOOSE_PLAN_MAX: "choose_plan_max",
 } as const;
 
 export type MarketingCtaLabel = (typeof MARKETING_CTA_LABELS)[keyof typeof MARKETING_CTA_LABELS];
@@ -88,6 +98,7 @@ export const MARKETING_CTA_POSITIONS = {
   DOWNLOAD_PAGE: "download_page",
   INSTALL_DIALOG: "install_dialog",
   INVITE_PAGE: "invite_page",
+  PRICING_PAGE: "pricing_page",
 } as const;
 
 export type MarketingCtaPosition =
@@ -137,6 +148,7 @@ const SCREEN_BY_PATH: Readonly<Record<string, MarketingScreen | null>> = Object.
   "/download": MARKETING_SCREENS.DOWNLOAD,
   "/open": MARKETING_SCREENS.OPEN_LINK,
   "/pair": MARKETING_SCREENS.PAIR,
+  "/pricing": MARKETING_SCREENS.PRICING,
   "/privacy": MARKETING_SCREENS.PRIVACY,
   "/terms": MARKETING_SCREENS.TERMS,
   "/_og": null,
