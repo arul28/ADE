@@ -28,6 +28,49 @@ export const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = 5_000;
 /** How long a project open must have frozen the loop before the worker names it. */
 export const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = 5_000;
 
+/**
+ * The longest the watchdog waits on the machine before it restarts the brain
+ * anyway. A freeze the brain did not cause (memory paged out under swap, a
+ * drive that stopped answering) is not fixed by a restart, and the restart
+ * takes every terminal and agent session with it. This ceiling only bounds a
+ * wait that never ends.
+ */
+export const BRAIN_LOOP_MACHINE_WAIT_CEILING_MS = 5 * 60_000;
+
+/** Major page faults across a freeze that mean memory is being read back from swap. */
+export const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS = 50;
+
+/** Minor page faults across a freeze that mean compressed memory is being unpacked. */
+export const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS = 50_000;
+
+/** A synchronous file call open this long is a drive not answering. */
+export const BRAIN_LOOP_DRIVE_STALL_MS = 10_000;
+
+export type BrainLoopFreezeCause = "self" | "memory" | "drive";
+
+/**
+ * Who froze the brain: the brain itself, or the machine under it.
+ *
+ * Memory: the process is paging (`majorFaultsDelta`) or unpacking compressed
+ * memory (`minorFaultsDelta`), as on 2026-11-13 when the Mac Studio had 12.6
+ * of 13.3 GB of swap in use and the watchdog killed a brain that was only
+ * waiting for its memory. Drive: the main thread sits inside one synchronous
+ * file call. Anything else (a busy loop, a sync child wait, a deadlock) is the
+ * brain's own, and a restart is still the cure.
+ */
+export function brainLoopFreezeCause(args: {
+  majorFaultsDelta: number;
+  minorFaultsDelta: number;
+  syncFsCallBlockedMs: number | null;
+}): BrainLoopFreezeCause {
+  if (
+    args.majorFaultsDelta >= BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS
+    || args.minorFaultsDelta >= BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS
+  ) return "memory";
+  if (args.syncFsCallBlockedMs != null && args.syncFsCallBlockedMs >= BRAIN_LOOP_DRIVE_STALL_MS) return "drive";
+  return "self";
+}
+
 export function evaluateBrainLoopWatchdog(args: {
   nowWallMs: number;
   nowMonotonicMs: number;
@@ -75,6 +118,20 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = ${BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS};
     const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = ${BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
+    const BRAIN_LOOP_MACHINE_WAIT_CEILING_MS = ${BRAIN_LOOP_MACHINE_WAIT_CEILING_MS};
+    const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS = ${BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS};
+    const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS = ${BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS};
+    const BRAIN_LOOP_DRIVE_STALL_MS = ${BRAIN_LOOP_DRIVE_STALL_MS};
+    const brainLoopFreezeCause = ${brainLoopFreezeCause.toString()};
+    // Process-wide fault counts at the last heartbeat: what the freeze since
+    // then cost in paging. resourceUsage() in a worker reads the whole process.
+    const faultCounts = () => {
+      const usage = process.resourceUsage();
+      return { major: usage.majorPageFault, minor: usage.minorPageFault };
+    };
+    let faultsAtHeartbeat = faultCounts();
+    // One line per freeze when the watchdog waits on the machine instead of killing.
+    let machineWaitReported = false;
     const readSyncFsCall = ${readSyncFsCall.toString()};
     // What the main thread is inside, when the brain installed the tracker.
     const currentSyncFsCall = () => {
@@ -239,6 +296,8 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       lastHeartbeatWallMs = Date.now();
       lastHeartbeatMonotonicMs = monotonicMs();
       projectOpenStallReported = false;
+      machineWaitReported = false;
+      faultsAtHeartbeat = faultCounts();
       if (typeof message.lastCommand === "string" && message.lastCommand.length > 0) {
         lastCommand = message.lastCommand;
       }
@@ -333,6 +392,32 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       }
 
       if (evaluation.blocked) {
+        // A freeze the machine caused is waited out (see brainLoopFreezeCause);
+        // only the brain's own freeze, or a wait past the ceiling, restarts it.
+        const faults = faultCounts();
+        const blockedFsCall = currentSyncFsCall();
+        const cause = brainLoopFreezeCause({
+          majorFaultsDelta: Math.max(0, faults.major - faultsAtHeartbeat.major),
+          minorFaultsDelta: Math.max(0, faults.minor - faultsAtHeartbeat.minor),
+          syncFsCallBlockedMs: blockedFsCall ? blockedFsCall.blockedMs : null,
+        });
+        if (cause !== "self" && evaluation.blockedMs < BRAIN_LOOP_MACHINE_WAIT_CEILING_MS) {
+          if (!machineWaitReported) {
+            machineWaitReported = true;
+            try {
+              fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.loop_watchdog_waiting_on_machine " + JSON.stringify({
+                pid: process.pid,
+                lastCommand,
+                cause,
+                blockedMs: evaluation.blockedMs,
+                majorFaultsDelta: Math.max(0, faults.major - faultsAtHeartbeat.major),
+                minorFaultsDelta: Math.max(0, faults.minor - faultsAtHeartbeat.minor),
+                ceilingMs: BRAIN_LOOP_MACHINE_WAIT_CEILING_MS,
+              }) + "\n");
+            } catch {}
+          }
+          return;
+        }
         writeBreadcrumbAndKill(evaluation.blockedMs);
       }
     }, workerData.checkIntervalMs);

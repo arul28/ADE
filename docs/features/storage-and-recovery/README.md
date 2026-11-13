@@ -540,6 +540,19 @@ register with `trackBrainLoopWatchdogCommand`, and a start or end is sent to
 the worker at once, so a call that blocks the moment it starts is named instead
 of reported as `idle`.
 
+The kill is only for a freeze the brain caused. Every terminal and agent
+session runs under the brain, so a restart ends all of them, and it cannot fix
+a freeze the machine caused. Before it kills, the worker asks
+`brainLoopFreezeCause` who froze the loop, from the process's page faults
+since the last heartbeat and the synchronous file call it is inside:
+`memory` (50+ major faults, or 50,000+ minor faults while compressed memory is
+unpacked), `drive` (one file call open 10 s or more), or `self`. For `memory`
+and `drive` it logs `brain.loop_watchdog_waiting_on_machine` once and keeps
+waiting, up to `BRAIN_LOOP_MACHINE_WAIT_CEILING_MS` (5 min), after which it
+kills as before. On 2026-11-13 a Mac Studio with 12.6 of 13.3 GB of swap in
+use froze the brain for 35 s while it paged, and the old rule killed it and
+every Claude Code session and subagent under it.
+
 The Node report is written by the main thread, which is the stuck one, so it
 only lands if the loop frees up inside the grace. On macOS the worker therefore
 first runs `/usr/bin/sample` on the brain (2 s, detached) and waits for its

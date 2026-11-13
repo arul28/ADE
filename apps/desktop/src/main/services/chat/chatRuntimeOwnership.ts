@@ -61,6 +61,13 @@ export type ChatRuntimeOwnershipVerdict =
   /** Claimed by a brain instance that is still heartbeating. Hands off. */
   | "live-foreign-brain";
 
+/** What a brain answers when the machine brain asks for one of its chats back. */
+export type ChatRuntimeReleaseResult = {
+  released: boolean;
+  /** `busy`: a turn or background work is running there. `not_held`: it never held the chat. */
+  reason?: "busy" | "not_held";
+};
+
 export type ChatRuntimeOwnershipDecision = {
   /** May this brain adopt, relaunch, interrupt, or terminalize the session? */
   adoptable: boolean;
@@ -171,6 +178,8 @@ export class ChatRuntimeOwnedElsewhereError extends Error {
     self: Pick<ChatRuntimeOwnerSelf, "pid" | "socketPath">;
     /** What was refused, as a verb phrase: "send to", "interrupt". */
     action: string;
+    /** The owner was asked to hand the chat back and is still working in it. */
+    ownerBusy?: boolean;
   }) {
     super(describeChatRuntimeOwnedElsewhere(args));
     this.name = "ChatRuntimeOwnedElsewhereError";
@@ -187,7 +196,14 @@ export function describeChatRuntimeOwnedElsewhere(args: {
   owner: ChatRuntimeOwner;
   self: Pick<ChatRuntimeOwnerSelf, "pid" | "socketPath">;
   action: string;
+  ownerBusy?: boolean;
 }): string {
+  if (args.ownerBusy) {
+    return [
+      `This chat is still working in another copy of ADE on this computer (${describeChatRuntimeOwner(args.owner)}), usually a test copy started from a lane.`,
+      "Send again when it finishes and ADE takes the chat back, or close that copy.",
+    ].join(" ");
+  }
   const route = args.owner.socketPath
     ? `Run the command against the owner instead: ade --socket "${args.owner.socketPath}" …`
     : "Run the command through the ade CLI of the brain that owns it.";

@@ -21,6 +21,7 @@ import {
   trackBrainMemoryPressure,
   startBrainLoopWatchdog,
 } from "./brainLoopWatchdog";
+import { brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
 
 describe("brainLoopWatchdog", () => {
   it("allows a 30 second event-loop stall before the watchdog terminates the brain", () => {
@@ -29,6 +30,19 @@ describe("brainLoopWatchdog", () => {
 
   it("builds a valid worker program from the tested watchdog evaluator", () => {
     expect(() => new Function(buildBrainLoopWatchdogWorkerSource())).not.toThrow();
+  });
+
+  // A restart cannot give a paged-out brain its memory back or make a drive
+  // answer, and it ends every terminal and agent session the brain holds.
+  it.each([
+    { name: "a busy loop of its own", major: 3, minor: 900, fsMs: null, cause: "self" },
+    { name: "memory read back from swap", major: 400, minor: 2_000, fsMs: null, cause: "memory" },
+    { name: "compressed memory being unpacked", major: 0, minor: 120_000, fsMs: null, cause: "memory" },
+    { name: "a file call the drive never answers", major: 0, minor: 500, fsMs: 25_000, cause: "drive" },
+    { name: "a file call still inside a healthy disk's time", major: 0, minor: 500, fsMs: 2_000, cause: "self" },
+  ])("blames $name on the right party", ({ major, minor, fsMs, cause }) => {
+    expect(brainLoopFreezeCause({ majorFaultsDelta: major, minorFaultsDelta: minor, syncFsCallBlockedMs: fsMs }))
+      .toBe(cause);
   });
 
   it("detects a main-thread heartbeat gap while the worker check cadence stays healthy", () => {

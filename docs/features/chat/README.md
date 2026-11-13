@@ -903,7 +903,23 @@ in `chatRuntimeOwnership.ts`:
   brain when that brain is live on this project.** It does not take over chats
   it is not running: startup recovery, prewarm, and scheduled wakes skip them.
   Its own chats and messages sent to it directly still work. Other secondary
-  brains do not make one another yield.
+  brains do not make one another yield. A chat whose owner stamp names the
+  machine socket waits for the machine brain even while that brain is down or
+  restarting (`isMachineBrainSocket`): launchd brings it back and it recovers
+  its own chats. Before this, a lane's test brain picked up a chat in the gap
+  after the installed brain was killed, resumed it on the lane's code, and
+  then held it.
+- **The machine brain takes its chats back.** A send, `messageSession`,
+  `runSessionTurn` or rerun on the machine brain for a chat another live brain
+  holds first asks that brain, over its socket, to release it
+  (`chat.releaseChatRuntime`, CTO-only, 10 s). The owner stops its agent
+  process the way "Restart agent session" does (the conversation is kept) and
+  clears its stamp, then the send runs here. While a turn or background work
+  is still running there it answers `busy`, and the send is refused in plain
+  words: the chat is still working in another copy of ADE, send again when it
+  finishes or close that copy. A brain that does not answer leaves the old
+  refusal with the owner's socket. So a person never has to find and stop a
+  test brain to get a chat back.
 - **A non-owner never re-stamps or releases.** Without a runtime, a persist
   keeps whatever owner is on disk, and a teardown releases only its own or a
   dead brain's stamp.
