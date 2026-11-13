@@ -4683,6 +4683,28 @@ export function registerIpc({
     listRecentProjectSummaries()
   );
 
+  // This computer's folders as its brain registers them: the catalog other
+  // machines read through `projects.list`. The desktop's own recents stop at
+  // 24 (`RECENT_PROJECT_CAP`); Home lists every folder. Machine-local by
+  // design (no pin): another computer's folders come from its connection's
+  // catalog. Only while the brain is connected: Home never starts or repairs
+  // it for this, and an empty answer leaves Home on the recents.
+  handle(IPC.projectListThisComputer, async (): Promise<RecentProjectSummary[]> => {
+    const pool = localRuntimeConnectionPool;
+    if (!pool || pool.getStatus().connectionState !== "connected") return [];
+    const records = await pool.projects().catch(() => []);
+    return records
+      .filter((record) => record.catalogVisibility !== "system" && record.exists !== false)
+      .map((record): RecentProjectSummary => ({
+        rootPath: record.rootPath,
+        displayName: record.displayName,
+        lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : "",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: record.gitOriginUrl ?? null,
+      }));
+  });
+
   // The account's project list as a machine last read it: this computer's
   // brain, or a connected machine (`targetId`) for a client with no brain of
   // its own. A read of a JSON file on that machine; no server call.
@@ -4929,6 +4951,12 @@ export function registerIpc({
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
+    // A folder Home lists from this computer's catalog alone (no desktop
+    // recent, see `projectListThisComputer`) leaves that catalog the same way.
+    if (!removed && path.isAbsolute(targetKey)) {
+      const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+      await catalogPool?.setProjectCatalogVisibility(targetKey, "system", "desktop").catch(() => undefined);
+    }
     if (removed && !removed.remote) {
       // Removing a project is the person's way to start over with it: adding
       // it back no longer expects the old database. A project whose whole

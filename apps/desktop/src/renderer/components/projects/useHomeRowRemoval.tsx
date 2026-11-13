@@ -29,6 +29,8 @@ export function useHomeRowRemoval(args: {
   /** Rows hidden by a forget that has not committed yet. */
   pendingForgetKeys: Set<string>;
   handleRemoveRow: (row: HomeProjectRow) => void;
+  /** A row hidden from this list: list it again. */
+  handleShowAgain: (row: HomeProjectRow) => void;
 } {
   const { recentProjects, setRecentProjects, setRowError } = args;
   const [pendingForgetKeys, setPendingForgetKeys] = useState<Set<string>>(() => new Set());
@@ -170,5 +172,10 @@ export function useHomeRowRemoval(args: {
     });
   }, [handleForget]);
 
-  return { pendingForgetKeys, handleRemoveRow };
+  const handleShowAgain = useCallback((row: HomeProjectRow) => {
+    showOnHome(row.key);
+    setHiddenToast((current) => (current?.id === row.key ? null : current));
+  }, []);
+
+  return { pendingForgetKeys, handleRemoveRow, handleShowAgain };
 }

@@ -37,6 +37,43 @@ function accountProjectForOrigin(projects: readonly AccountProjectView[], gitOri
     cachedGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key) === origin)) ?? null;
 }
 
+/** This computer's catalog as Home last read it: shown at once on the next open, then read again. */
+let thisComputerFoldersCache: readonly RecentProjectSummary[] = [];
+
+/**
+ * This computer's folders as its brain registers them. The desktop's recents
+ * stop at 24; the catalog has every folder. Read when Home opens and each time
+ * the recents change (an open or a forget changes both). Desktop only.
+ */
+function useThisComputerFolders(enabled: boolean, recentsVersion: unknown): readonly RecentProjectSummary[] {
+  const [folders, setFolders] = useState<readonly RecentProjectSummary[]>(() => thisComputerFoldersCache);
+  useEffect(() => {
+    const read = window.ade?.project?.listThisComputer;
+    if (!enabled || typeof read !== "function") return undefined;
+    let cancelled = false;
+    void read().then((next) => {
+      thisComputerFoldersCache = next;
+      if (!cancelled) setFolders(next);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, recentsVersion]);
+  return enabled ? folders : NO_FOLDERS;
+}
+const NO_FOLDERS: readonly RecentProjectSummary[] = [];
+
+/** The recents, then each catalog folder the recents do not have (the recents keep order and pins). */
+function withCatalogFolders(
+  recents: readonly RecentProjectSummary[],
+  folders: readonly RecentProjectSummary[],
+): readonly RecentProjectSummary[] {
+  if (folders.length === 0) return recents;
+  const listed = new Set(recents.filter((recent) => recent.kind !== "remote").map((recent) => recent.rootPath));
+  const extra = folders.filter((folder) => !listed.has(folder.rootPath));
+  return extra.length > 0 ? [...recents, ...extra] : recents;
+}
+
 /**
  * Icons seen this session, by account project id: a row keeps its icon after
  * its computer goes offline or the browser disconnects it. Memory only.
@@ -78,13 +115,15 @@ export function useHomeAccountProjects(args: {
     machineKey: thisMachineKey,
   });
   const hidden = useHomeHiddenProjects();
+  const catalogFolders = useThisComputerFolders(!webMode, recentProjects);
+  const desktopFolders = useMemo(() => withCatalogFolders(recentProjects, catalogFolders), [catalogFolders, recentProjects]);
   const thisMachineName = (thisMachineKey ? accountList.machineNames?.[thisMachineKey]?.trim() : null) || "this computer";
 
   const list = useMemo(() => {
     const built = buildHomeProjectList({
       projects: accountProjects,
       sources,
-      recents: webMode ? webRecents : recentProjects,
+      recents: webMode ? webRecents : desktopFolders,
       remoteSnapshot: webMode ? null : remoteSnapshot,
       webMode,
       webComputers,
@@ -104,7 +143,7 @@ export function useHomeAccountProjects(args: {
         .map((group) => ({ ...group, rows: group.rows.filter((row) => !pendingForgetKeys.has(row.group.id)) }))
         .filter((group) => group.rows.length > 0),
     };
-  }, [accountProjects, hidden, pendingForgetKeys, recentProjects, remoteSnapshot, sources, thisMachineKey, thisMachineName, webComputers, webComputersByKey, webMode, webRecents]);
+  }, [accountProjects, desktopFolders, hidden, pendingForgetKeys, remoteSnapshot, sources, thisMachineKey, thisMachineName, webComputers, webComputersByKey, webMode, webRecents]);
 
   // A project with no computer online opens as its repository tab, with no
   // machine (0M): the tab waits for a computer instead of failing.

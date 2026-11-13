@@ -6,6 +6,7 @@ import { musicTabAvailable } from "../music/musicTab";
 import {
   AppWindow,
   ChatCircleDots,
+  Eye,
   FolderOpen,
   GitMerge,
   Globe,
@@ -277,7 +278,7 @@ export function ProjectWelcomePage() {
   // One source: the account's projects decide the rows and the count, on
   // every client; a project with no computer online opens as its repository
   // tab with no machine (0M). This computer's other folders follow.
-  const { pendingForgetKeys, handleRemoveRow } = useHomeRowRemoval({ recentProjects, setRecentProjects, setRowError });
+  const { pendingForgetKeys, handleRemoveRow, handleShowAgain } = useHomeRowRemoval({ recentProjects, setRecentProjects, setRowError });
   const { list: homeList, openNoMachineTab } = useHomeAccountProjects({
     webMode,
     recentProjects,
@@ -489,7 +490,8 @@ export function ProjectWelcomePage() {
 
   const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
     if (!rowMenu) return [];
-    const row = rows.find((entry) => entry.key === rowMenu.key);
+    const hiddenRow = homeList.hiddenRows.find((entry) => entry.key === rowMenu.key);
+    const row = rows.find((entry) => entry.key === rowMenu.key) ?? hiddenRow;
     if (!row) return [];
     const { group, rp } = row;
     const remoteBinding = remoteBindingFromRecent(rp);
@@ -562,9 +564,12 @@ export function ProjectWelcomePage() {
             onSelect: () => handleRemoveRow(row),
           }
         : null,
+      hiddenRow
+        ? { kind: "item", key: "show-again", label: "Show on this list", icon: Eye, onSelect: () => handleShowAgain(hiddenRow) }
+        : null,
     ];
     return entries.filter((entry): entry is ContextMenuEntry => entry != null);
-  }, [connectionByTarget, handleOpen, handleRemoveRow, handleTogglePin, rowMenu, rows, webMode]);
+  }, [connectionByTarget, handleOpen, handleRemoveRow, handleShowAgain, handleTogglePin, homeList.hiddenRows, rowMenu, rows, webMode]);
 
   const focusRowButton = useCallback((index: number) => {
     const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
@@ -609,8 +614,9 @@ export function ProjectWelcomePage() {
     <ProjectsCard
       preview={preview}
       rows={homeList.accountRows}
+      hiddenRows={homeList.hiddenRows}
       localGroups={homeList.localGroups}
-      // Account projects only; this computer's recents when there is no account list.
+      // The account's count, hidden rows included; this computer's recents when there is no account list.
       count={homeList.accountCount ?? homeRows.length}
       webMode={webMode}
       listRef={listRef}
@@ -626,6 +632,7 @@ export function ProjectWelcomePage() {
       onOpen={handleOpen}
       onTogglePin={handleTogglePin}
       onRemove={handleRemoveRow}
+      onShowAgain={handleShowAgain}
       onMerge={setMergeTarget}
       onRowMenu={setRowMenu}
     />
@@ -633,6 +640,7 @@ export function ProjectWelcomePage() {
     connectingKeys,
     connectionByTarget,
     handleRemoveRow,
+    handleShowAgain,
     handleListKeyDown,
     handleOpen,
     handleTogglePin,

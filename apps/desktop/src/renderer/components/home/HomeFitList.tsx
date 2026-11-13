@@ -14,6 +14,11 @@ import { Dialog } from "../ui/dialog";
  * Rows are the list element's direct children. Mark headings (a day, a
  * "Merged this week" divider) with `data-fit-head`; they are not counted.
  * Measuring is one read pass when the box resizes or the rows change.
+ *
+ * A long list can pass only its first rows and the number it left out
+ * (`unrendered`): hidden rows still cost style and layout on every pass over
+ * the page, so a caller with far more rows than any card can show renders a
+ * cap. "N more" counts the left-out rows too, and the dialog shows them all.
  */
 
 const MORE_LINE = 26;
@@ -30,9 +35,12 @@ export function FitList({
   listClassName,
   ariaLabel,
   role = "list",
+  unrendered = 0,
 }: {
   children: ReactNode;
   more?: FitListMore | null;
+  /** Rows the caller left out of `children`; "N more" counts them. */
+  unrendered?: number;
   className?: string;
   listClassName?: string;
   ariaLabel?: string;
@@ -45,6 +53,8 @@ export function FitList({
   // Room for the "N more" line only when there is somewhere for it to go.
   const reserveRef = useRef(0);
   reserveRef.current = more ? MORE_LINE : 0;
+  const unrenderedRef = useRef(0);
+  unrenderedRef.current = unrendered;
 
   useLayoutEffect(() => {
     const box = boxRef.current;
@@ -61,7 +71,8 @@ export function FitList({
       const height = box.clientHeight;
       const top = box.getBoundingClientRect().top;
       const bottoms = rows.map((row) => row.getBoundingClientRect().bottom - top);
-      const allFit = bottoms.every((bottom) => bottom <= height + 0.5);
+      // Left-out rows always need the "N more" line.
+      const allFit = unrenderedRef.current === 0 && bottoms.every((bottom) => bottom <= height + 0.5);
       let shown = rows.length;
       if (!allFit) {
         const limit = height - reserveRef.current;
@@ -100,13 +111,13 @@ export function FitList({
       <div ref={listRef} className={listClassName} role={role} aria-label={ariaLabel}>
         {children}
       </div>
-      {hidden > 0 && more ? (
+      {hidden + unrendered > 0 && more ? (
         <button
           type="button"
           className="ade-fit-more"
           onClick={() => ("onMore" in more ? more.onMore() : setOpen(true))}
         >
-          {hidden} more
+          {hidden + unrendered} more
           <ArrowRight size={11} weight="bold" aria-hidden />
         </button>
       ) : null}

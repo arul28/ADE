@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   ArrowsClockwise,
+  Eye,
   Folder,
   GitMerge,
   PushPin,
@@ -380,6 +381,7 @@ export function RecentProjectRow({
   lastActiveAt,
   web = null,
   removeLabel,
+  restores = false,
   repository = null,
   computers = null,
   iconDataUrl = null,
@@ -399,6 +401,8 @@ export function RecentProjectRow({
   onForget: () => void;
   /** The X button's label; it names what the X does. */
   removeLabel?: string;
+  /** A row hidden from this list: the button shows it again instead of removing it. */
+  restores?: boolean;
   /** `owner/name` of an account project: the subtitle. A local folder shows its path. */
   repository?: string | null;
   /** The shared computer count of an account project. */
@@ -591,7 +595,7 @@ export function RecentProjectRow({
               <button
                 type="button"
                 className="ade-welcome-icon-button"
-                data-danger="true"
+                data-danger={restores ? undefined : "true"}
                 aria-label={removeLabel ?? `Remove ${rp.displayName} from this list`}
                 title={removeLabel ?? "Remove from this list"}
                 disabled={isForgetting}
@@ -600,7 +604,7 @@ export function RecentProjectRow({
                   onForget();
                 }}
               >
-                <X size={13} weight="bold" />
+                {restores ? <Eye size={13} weight="bold" /> : <X size={13} weight="bold" />}
               </button>
             </div>
           ) : null}

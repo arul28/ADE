@@ -292,13 +292,16 @@ function CopyRow({
   }
   if (!machine.online) {
     // An offline machine's copy shows where it is; it cannot be opened now.
+    // A computer known only from the account list has no connection here,
+    // and the account may still show it online: say "not connected", not "offline".
+    const state = machine.targetId == null && !machine.isLocal ? "not connected" : "offline";
     return copy
       ? disabledRow(
         <CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />,
         path(copy.rootPath),
-        <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">offline</span>,
+        <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">{state}</span>,
       )
-      : disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet("offline"));
+      : disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet(state));
   }
   if (copy) {
     return (

@@ -132,6 +132,7 @@ export const IPC = {
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
+  projectListThisComputer: "ade.project.listThisComputer",
   projectAccountList: "ade.project.accountList",
   projectAccountAdd: "ade.project.accountAdd",
   projectAccountRemove: "ade.project.accountRemove",

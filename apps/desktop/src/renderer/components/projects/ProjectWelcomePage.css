@@ -682,6 +682,22 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-welcome-row-sub[data-tone="busy"] { font-family: var(--font-sans); color: var(--color-warning); }
 .ade-welcome-row-repo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* "Only on <computer>": a computer name, so no forced capitals. */
+/* "N hidden" beside the Projects count: quiet until pointed at. */
+.ade-welcome-hidden-toggle {
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.ade-welcome-hidden-toggle:hover,
+.ade-welcome-hidden-toggle[aria-pressed="true"] { background: var(--kit-hover); color: var(--color-fg); }
+.ade-welcome-hidden-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .ade-welcome-local-head { text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The parent path gives way long before the folder name does. */

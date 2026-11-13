@@ -329,7 +329,7 @@ export function RemoveProjectDialog({
                 checked={scope === "list"}
                 onChange={() => setScope("list")}
                 label="From this list"
-                hint="Home on this computer stops listing it. Open it again to list it again."
+                hint="Home on this computer hides it. It still counts, and you can show it again."
               />
             ) : null}
             {current ? (

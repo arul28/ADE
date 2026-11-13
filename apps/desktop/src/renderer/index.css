@@ -631,7 +631,6 @@ h6 {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 55%, transparent);
 }
 
-/* The computers tag: its reachability dot sits on the glyph's corner. */
 /* The computers chip: a Home row's and the project sidebar's (one style). */
 .ade-welcome-machines-chip {
   display: inline-flex;

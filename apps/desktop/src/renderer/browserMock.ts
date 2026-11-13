@@ -6259,6 +6259,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         clearedAt: new Date().toISOString(),
       }),
       listRecent: resolved(BROWSER_MOCK_RECENT_PROJECTS),
+      listThisComputer: resolved([]),
       findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({

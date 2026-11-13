@@ -73,8 +73,18 @@ export type HomeLocalGroup = {
 
 export type HomeProjectList = {
   accountRows: HomeProjectRow[];
+  /**
+   * Account projects this computer's Home does not list ("From this list"),
+   * in the same order. They still count: the header shows "N hidden" and can
+   * show them again.
+   */
+  hiddenRows: HomeProjectRow[];
   localGroups: HomeLocalGroup[];
-  /** Account projects shown; the header count. Null when the account list is not read. */
+  /**
+   * The account's project count, hidden ones included: the header count, the
+   * same number as `ade projects list --account` and every other client.
+   * Null when the account list is not read.
+   */
   accountCount: number | null;
 };
 
@@ -263,6 +273,7 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
     const groups = groupRecentProjects({ recentProjects: usable, remoteSnapshot: webMode ? null : input.remoteSnapshot });
     return {
       accountRows: [],
+      hiddenRows: [],
       localGroups: groups.length > 0 ? [{ key: "recents", label: null, rows: groups.map(localRow) }] : [],
       accountCount: null,
     };
@@ -343,11 +354,11 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
     }
   }
 
-  const accountRows: Array<HomeProjectRow & { sortSeen: number }> = [];
+  const accountRows: Array<HomeProjectRow & { sortSeen: number; hidden: boolean }> = [];
   for (const project of projects) {
     // Hidden from this list, unless it was opened again after that.
     const hiddenAt = input.hidden.get(project.id);
-    if (hiddenAt != null && (factsById.get(project.id)?.lastOpenedAt ?? 0) <= hiddenAt) continue;
+    const hidden = hiddenAt != null && (factsById.get(project.id)?.lastOpenedAt ?? 0) <= hiddenAt;
     const tab = repositoryTabFromAccountProject(project);
     const built = buildRepositoryCopies(tab, { ...input.sources, accountCopies: project.copies })
       .filter((copy) => !copy.isAdeCloud);
@@ -376,6 +387,7 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
       copies,
       iconDataUrl,
       sortSeen: Math.max(0, ...project.copies.map((copy) => copy.lastSeenAt)),
+      hidden,
     });
   }
   accountRows.sort((left, right) =>
@@ -400,10 +412,14 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
     .sort(([left], [right]) => Number(right === LOCAL_MACHINE_ID) - Number(left === LOCAL_MACHINE_ID))
     .map(([, entry]) => entry);
 
+  const shown: HomeProjectRow[] = [];
+  const hiddenRows: HomeProjectRow[] = [];
+  for (const { sortSeen: _sortSeen, hidden, ...row } of accountRows) (hidden ? hiddenRows : shown).push(row);
   return {
-    accountRows: accountRows.map(({ sortSeen: _sortSeen, ...row }) => row),
+    accountRows: shown,
+    hiddenRows,
     localGroups: ordered,
-    accountCount: accountRows.length,
+    accountCount: projects.length,
   };
 }
 

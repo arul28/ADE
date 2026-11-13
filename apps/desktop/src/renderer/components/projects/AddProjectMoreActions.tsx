@@ -3,6 +3,9 @@ import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 
 export type AddProjectPlace = { key: string; name: string };
 
+// Background and color sit in classes, not the inline style, so hover can change them.
+const LINK_CLASS = "bg-transparent text-[var(--color-secondary-fg)] hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]";
+
 const linkStyle = {
   display: "inline-flex",
   alignItems: "center",
@@ -11,10 +14,8 @@ const linkStyle = {
   padding: "0 8px",
   borderRadius: 6,
   border: "1px solid transparent",
-  background: "transparent",
   fontFamily: SANS_FONT,
   fontSize: 12,
-  color: COLORS.textSecondary,
   cursor: "pointer",
 } as const;
 
@@ -55,7 +56,7 @@ export function AddProjectMoreActions({
       <button
         type="button"
         style={linkStyle}
-        className="hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
+        className={LINK_CLASS}
         onClick={onOpenFolder}
       >
         <FolderOpen size={14} weight="regular" aria-hidden />
@@ -64,7 +65,7 @@ export function AddProjectMoreActions({
       <button
         type="button"
         style={linkStyle}
-        className="hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
+        className={LINK_CLASS}
         onClick={onCreate}
       >
         <FolderPlus size={14} weight="regular" aria-hidden />

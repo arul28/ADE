@@ -1,4 +1,4 @@
-import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject } from "react";
+import { useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type ReactNode } from "react";
 import { FolderSimple } from "@phosphor-icons/react";
 import type { RecentProjectGroup } from "../app/projectTabGrouping";
 import { ACCOUNT_MACHINE_TARGET_PREFIX, recentProjectLocationKey } from "../app/projectTabGrouping";
@@ -31,6 +31,8 @@ type RowContext = {
   onTogglePin: (group: RecentProjectGroup) => Promise<void> | void;
   /** The row's X: the remove window for an account project, forget with Undo for a local folder. */
   onRemove: (row: HomeProjectRow) => void;
+  /** A row hidden from this list: list it again. */
+  onShowAgain: (row: HomeProjectRow) => void;
   onMerge: (rp: RecentProjectSummary) => void;
   onRowMenu: (menu: { x: number; y: number; key: string }) => void;
 };
@@ -48,12 +50,14 @@ function webMachineFor(ctx: RowContext, targetId: string | undefined): WebMachin
  * Projects dialog, `closeDialog` shuts it: the copies menu belongs to the top
  * bar, which a modal dialog covers, so a chip there closes the dialog first.
  */
-function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false }: {
+function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false, hiddenOnList = false }: {
   row: HomeProjectRow;
   ctx: RowContext;
   closeDialog?: () => void;
   /** Under an "Only on <computer>" heading. */
   namedByGroup?: boolean;
+  /** Hidden from this list and shown on request: its button lists it again. */
+  hiddenOnList?: boolean;
 }) {
   const { group, rp, key } = row;
   // The page keys an open in flight by the location it opens.
@@ -98,8 +102,11 @@ function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false }: {
       busy={ctx.openingRowKey != null && !isOpeningRow}
       onOpen={() => ctx.onOpen(rp)}
       onTogglePin={group.recentKeys.length > 0 ? () => void ctx.onTogglePin(group) : undefined}
-      onForget={() => ctx.onRemove(row)}
-      removeLabel={row.kind === "account" ? `Remove ${group.displayName}…` : `Remove ${rp.displayName} from this list`}
+      onForget={() => (hiddenOnList ? ctx.onShowAgain(row) : ctx.onRemove(row))}
+      restores={hiddenOnList}
+      removeLabel={hiddenOnList
+        ? `Show ${group.displayName} on this list`
+        : row.kind === "account" ? `Remove ${group.displayName}…` : `Remove ${rp.displayName} from this list`}
       onMerge={canMerge ? () => ctx.onMerge(rp) : undefined}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -129,6 +136,35 @@ function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false }: {
   );
 }
 
+type RowItem = { key: string; row: boolean; node: ReactNode };
+
+/**
+ * Rows the card renders inline. A card is never taller than this many rows,
+ * and every rendered row costs style and layout on each pass over Home (the
+ * add window's open is three such passes), so the rest live only in the
+ * "N more" dialog.
+ */
+const INLINE_ROW_CAP = 40;
+
+/** The first `cap` rows with their headings, and how many rows were left out. */
+function capRowItems(items: readonly RowItem[], cap: number): { items: RowItem[]; unrendered: number } {
+  const kept: RowItem[] = [];
+  let rowsKept = 0;
+  let unrendered = 0;
+  for (const item of items) {
+    if (item.row && rowsKept >= cap) {
+      unrendered += 1;
+      continue;
+    }
+    if (rowsKept >= cap) continue;
+    kept.push(item);
+    if (item.row) rowsKept += 1;
+  }
+  // A heading with no row after it goes too.
+  while (kept.length > 0 && !kept[kept.length - 1]!.row) kept.pop();
+  return { items: kept, unrendered };
+}
+
 /**
  * The home page's Projects widget: the account's projects that fit, then this
  * computer's other folders ("Only on <computer>"), the rest behind "more". A
@@ -138,6 +174,7 @@ function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false }: {
 export function ProjectsCard({
   preview,
   rows,
+  hiddenRows,
   localGroups,
   count,
   listRef,
@@ -147,6 +184,8 @@ export function ProjectsCard({
   preview: boolean;
   /** The account's projects. */
   rows: readonly HomeProjectRow[];
+  /** Account projects hidden from this list; they count, and show on request. */
+  hiddenRows: readonly HomeProjectRow[];
   /** Folders that are no account project, one group per computer. */
   localGroups: readonly HomeLocalGroup[];
   /** The header count: account projects only (local folders when there is no account list). */
@@ -154,27 +193,57 @@ export function ProjectsCard({
   listRef: MutableRefObject<HTMLDivElement | null>;
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
-  const hasProjects = rows.length > 0 || localGroups.some((group) => group.rows.length > 0);
-  const renderRows = (closeDialog?: () => void) => (
-    <>
-      {rows.map((row) => <ProjectsCardRowView key={row.key} row={row} ctx={ctx} closeDialog={closeDialog} />)}
-      {localGroups.map((group) => (
-        <Fragment key={group.key}>
-          {group.label ? (
-            <div className="kit-eyebrow ade-home-pr-divider ade-welcome-local-head" data-fit-head title={group.label}>
-              {group.label}
-            </div>
-          ) : null}
-          {group.rows.map((row) => (
-            <ProjectsCardRowView key={row.key} row={row} ctx={ctx} closeDialog={closeDialog} namedByGroup={Boolean(group.label)} />
-          ))}
-        </Fragment>
-      ))}
-    </>
-  );
+  const [showHidden, setShowHidden] = useState(false);
+  const revealHidden = showHidden && hiddenRows.length > 0;
+  const hasProjects = rows.length > 0 || revealHidden || localGroups.some((group) => group.rows.length > 0);
+  const renderItems = (closeDialog?: () => void): RowItem[] => {
+    const items: RowItem[] = [];
+    const head = (key: string, label: string) => items.push({
+      key,
+      row: false,
+      node: (
+        <div key={key} className="kit-eyebrow ade-home-pr-divider ade-welcome-local-head" data-fit-head title={label}>
+          {label}
+        </div>
+      ),
+    });
+    const rowItem = (row: HomeProjectRow, extra?: { namedByGroup?: boolean; hiddenOnList?: boolean }) => items.push({
+      key: row.key,
+      row: true,
+      node: <ProjectsCardRowView key={row.key} row={row} ctx={ctx} closeDialog={closeDialog} {...extra} />,
+    });
+    // Hidden rows first, so the press on "N hidden" shows its result where the person looks.
+    if (revealHidden) {
+      head("hidden-head", "Hidden from this list");
+      for (const row of hiddenRows) rowItem(row, { hiddenOnList: true });
+      if (rows.length > 0) head("listed-head", "Listed");
+    }
+    for (const row of rows) rowItem(row);
+    for (const group of localGroups) {
+      if (group.label) head(group.key, group.label);
+      for (const row of group.rows) rowItem(row, { namedByGroup: Boolean(group.label) });
+    }
+    return items;
+  };
+  // The card shows what fits, at most INLINE_ROW_CAP rows; the dialog shows every row.
+  const inlineItems = capRowItems(renderItems(), INLINE_ROW_CAP);
   return (
     <section className="kit-card ade-home-card ade-home-projects" aria-label="Projects">
-      <WelcomeCardHead icon={FolderSimple} title="Projects" count={count > 0 ? count : null} />
+      <WelcomeCardHead icon={FolderSimple} title="Projects" count={count > 0 ? count : null}>
+        {/* "From this list" hides a project on this computer only; the
+            account still has it, so it still counts. This shows them again. */}
+        {hiddenRows.length > 0 && !preview ? (
+          <button
+            type="button"
+            className="ade-welcome-hidden-toggle"
+            aria-pressed={revealHidden}
+            title={revealHidden ? "Stop showing the hidden projects" : "Show the projects hidden from this list"}
+            onClick={() => setShowHidden((value) => !value)}
+          >
+            {hiddenRows.length} hidden
+          </button>
+        ) : null}
+      </WelcomeCardHead>
       {hasProjects ? (
         <div
           id="ade-welcome-project-list"
@@ -183,8 +252,11 @@ export function ProjectsCard({
           data-flush="true"
           onKeyDown={onListKeyDown}
         >
-          <FitList more={preview ? null : { dialog: { title: "Projects", render: renderRows } }}>
-            {renderRows()}
+          <FitList
+            more={preview ? null : { dialog: { title: "Projects", render: (close) => renderItems(close).map((item) => item.node) } }}
+            unrendered={preview ? 0 : inlineItems.unrendered}
+          >
+            {inlineItems.items.map((item) => item.node)}
           </FitList>
         </div>
       ) : (
