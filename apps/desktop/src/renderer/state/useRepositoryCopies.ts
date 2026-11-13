@@ -129,7 +129,12 @@ function readThisMachineKey(): Promise<string | null> {
 export function useThisMachineKey(enabled: boolean): string | null {
   const [machineKey, setMachineKey] = useState<string | null>(thisMachineKeyCache);
   useEffect(() => {
-    if (!enabled || thisMachineKeyCache) return undefined;
+    if (!enabled) return undefined;
+    // Another reader can fill the cache before this hook is enabled.
+    if (thisMachineKeyCache) {
+      setMachineKey(thisMachineKeyCache);
+      return undefined;
+    }
     let cancelled = false;
     void readThisMachineKey().then((key) => {
       if (!cancelled && key) setMachineKey(key);

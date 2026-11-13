@@ -17,6 +17,7 @@ import { buildRepositoryCopies, copyComputers, repositoryTabFromAccountProject, 
 import { useAccountProjectList, useRepositoryCopySources, useThisMachineKey } from "../../state/useRepositoryCopies";
 import type { ContextMenuEntry } from "../ui/ContextMenu";
 import { REQUEST_COPIES_MENU_EVENT, type CopiesMenuRequest } from "./removeProjectRequest";
+import { useThisComputerCatalog, withCatalogFolders } from "./useHomeAccountProjects";
 
 /** ADE Web has no recents of its own. */
 const NO_RECENT_PROJECTS: readonly RecentProjectSummary[] = [];
@@ -326,12 +327,18 @@ export function useProjectCopiesMenu(args: {
 
   // The copies menu and the tab's Copies submenu say how many computers have
   // a copy, by the shared rule (`copyComputers`), and list the same ones. The
-  // sources are the snapshot and recents the top bar already holds: no new read.
+  // sources are the snapshot and recents the top bar already holds, plus the
+  // catalog Home last read (Home counts those folders too): no new read.
   const accountProjectList = useAccountProjectList();
   const thisMachineKey = useThisMachineKey(!webMode && accountProjectList.state === "ready");
+  const catalogFolders = useThisComputerCatalog(!webMode);
+  const thisComputerRecents = useMemo(
+    () => (webMode ? NO_RECENT_PROJECTS : withCatalogFolders(recentProjects, catalogFolders)),
+    [catalogFolders, recentProjects, webMode],
+  );
   const copySources = useRepositoryCopySources(true, {
     snapshot: remoteSnapshot,
-    recents: webMode ? NO_RECENT_PROJECTS : recentProjects,
+    recents: thisComputerRecents,
     machineKey: thisMachineKey,
   });
   const sharedCopiesFor = useCallback((groupId: string): RepositoryCopy[] | null => {
