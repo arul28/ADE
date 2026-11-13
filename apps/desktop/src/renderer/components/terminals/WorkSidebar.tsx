@@ -45,7 +45,7 @@ import {
   isDesktopWorkTool,
   isHostMismatchWorkTool,
   laneScreenPlatform,
-  remoteMachineHostPlatform,
+  remoteDesktopToolContext,
   workToolContextLabel,
   workToolLabel,
   type WorkToolContext,
@@ -213,13 +213,9 @@ export function WorkSidebar({
   const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
   const hasRemoteAndroidEmulator = remoteAndroidEmulatorUses(activeSession).length > 0;
   // The other machines' screens this chat drives, by the tool that shows each.
-  const remoteDesktopPlatforms = remoteWorkUsesOf(activeSession, "usesDesktop")
-    .map((use) => remoteMachineHostPlatform(use.machinePlatform));
-  const hasRemoteWindowsDesktop = remoteDesktopPlatforms.includes("win32");
-  // An unknown platform shows in the Mac Desktop pane, which reads the host's own.
-  const remoteMacDesktopPlatform = remoteDesktopPlatforms.includes("darwin") || remoteDesktopPlatforms.includes(null)
-    ? "darwin"
-    : remoteDesktopPlatforms.includes("linux") ? "linux" : null;
+  const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(
+    remoteWorkUsesOf(activeSession, "usesDesktop"),
+  );
   const hasRemoteAppControl = remoteWorkUsesOf(activeSession, "usesAppControl").length > 0;
   const toolContext = useMemo<WorkToolContext>(
     () => ({

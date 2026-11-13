@@ -1,17 +1,14 @@
 import { useState } from "react";
-import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
-import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
+import { remoteWorkUseKey, type RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import { cn } from "../ui/cn";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW } from "./workToolChrome";
-
-type RemoteWorkTargetUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
 
 type RemoteTargetOption = {
   key: string;
   label: string;
   /** The other machine's work copy, or null for this lane. */
-  use: RemoteWorkTargetUse | null;
+  use: RemoteWorkCopyUse | null;
 };
 
 /**
@@ -19,7 +16,7 @@ type RemoteTargetOption = {
  * on through its work copy there, then this lane's own. The newest machine
  * the chat used comes first, unless the user picked another.
  */
-export function useRemoteTargetChoice(remoteUses: RemoteWorkTargetUse[], laneAvailable: boolean) {
+export function useRemoteTargetChoice(remoteUses: RemoteWorkCopyUse[], laneAvailable: boolean) {
   const options: RemoteTargetOption[] = [
     ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
     ...(laneAvailable ? [{ key: "lane", label: "This lane", use: null }] : []),

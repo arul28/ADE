@@ -28338,7 +28338,7 @@ extension SyncService {
     // (`workRemoteLaneId`). The host gets the plain lane id, and the command
     // goes to the lane's machine in the project that machine holds.
     let laneTarget = try syncRemoteLaneTarget(args: args)
-    // A chat's work copy on another machine (`remoteWorkCopyLaneId`) lives in
+    // A chat's work copy on another machine (`registerRemoteWorkCopyLane`) lives in
     // the project the chat's brain named, which need not be the checkout the
     // focused repository matches there. Also on the focused machine itself.
     let workCopyProject = (args["laneId"] as? String).flatMap(SyncRemoteWorkCopyProjects.shared.project(laneId:))

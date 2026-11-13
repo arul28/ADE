@@ -43,7 +43,7 @@ enum WorkToolChipKind: Equatable {
 /// A chip for a device the chat drives on another machine through its work
 /// copy there (`ade apple|android|screen … --machine`), not the lane's own.
 struct WorkToolChipRemote: Equatable, Hashable {
-  /// The work copy's lane, namespaced to its machine (`remoteWorkCopyLaneId`):
+  /// The work copy's lane, namespaced to its machine (`registerRemoteWorkCopyLane`):
   /// what the viewer streams and drives.
   let laneId: String
   let machineName: String
@@ -169,8 +169,8 @@ func workToolChips(
   android: AndroidDeviceStatus? = nil
 ) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
-  if let name = appleDeviceRunningName(appleDevice) {
-    chips.append(WorkToolChip(kind: .simulator(name: name, family: appleDevice?.device?.family)))
+  if let chip = appleToolChip(appleDevice) {
+    chips.append(chip)
   }
   if let chip = androidToolChip(android) {
     chips.append(chip)
@@ -197,8 +197,9 @@ func workToolChips(
 func workRemoteToolChips(_ reads: [WorkLaneToolsModel.RemoteRead]) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   for read in reads {
-    if let name = appleDeviceRunningName(read.apple) {
-      chips.append(WorkToolChip(kind: .simulator(name: name, family: read.apple?.device?.family), remote: read.remote))
+    if var chip = appleToolChip(read.apple) {
+      chip.remote = read.remote
+      chips.append(chip)
     }
     if var chip = androidToolChip(read.android) {
       chip.remote = read.remote
@@ -210,6 +211,13 @@ func workRemoteToolChips(_ reads: [WorkLaneToolsModel.RemoteRead]) -> [WorkToolC
     }
   }
   return chips
+}
+
+/// The simulator chip while the lane's own device is up
+/// (`appleDeviceRunningName`), or nil.
+func appleToolChip(_ status: AppleDeviceStatus?) -> WorkToolChip? {
+  guard let name = appleDeviceRunningName(status) else { return nil }
+  return WorkToolChip(kind: .simulator(name: name, family: status?.device?.family))
 }
 
 /// The Mac Desktop chip, or nil when the lane has no screen to show. A host
@@ -349,6 +357,10 @@ final class WorkLaneToolsModel: ObservableObject {
   /// Deliberately much slower than `WorkToolsSheet`'s 3 s: that is a surface
   /// the user opened to watch, whereas these chips sit behind every chat.
   static let refreshInterval: Duration = .seconds(10)
+  /// How long one read of another machine's device may take before its pill
+  /// keeps the last answer. Shorter than the command's own timeout: a machine
+  /// that is slow or gone must not hold the others' pills back for long.
+  static let remoteReadTimeoutNanoseconds: UInt64 = 5_000_000_000
 
   /// The surface a chip opened.
   enum Surface: Equatable {
@@ -392,6 +404,11 @@ final class WorkLaneToolsModel: ObservableObject {
   /// The last read of each of those, by namespaced lane id: the seed of a
   /// remote chip's viewer. Not published.
   private(set) var remoteReads: [String: RemoteRead] = [:]
+  /// The namespaced lanes this round reads, newest use first: the order of
+  /// their pills.
+  private var remoteOrder: [String] = []
+  /// The lane's own chips from its last read.
+  private var localChips: [WorkToolChip] = []
 
   /// True while a tool sheet or a live stream is up (a stream lives on the
   /// stage, not in `presented`). Both poll the same reads faster and are the
@@ -446,6 +463,8 @@ final class WorkLaneToolsModel: ObservableObject {
     appControlState = nil
     lastTools = nil
     remoteReads = [:]
+    remoteOrder = []
+    localChips = []
     self.remoteDevices = remoteDevices
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
@@ -460,14 +479,16 @@ final class WorkLaneToolsModel: ObservableObject {
 
   /// All reads at once, each gated on its own action: a Mac with the pane
   /// state but no Apple or Android support keeps the chips it always could
-  /// show, and no read goes on the wire unadvertised.
+  /// show, and no read goes on the wire unadvertised. The lane's own chips
+  /// publish as soon as its reads answer; another machine's publish as each
+  /// of its reads does, so an unreachable machine holds back nothing.
   func refresh(laneId: String, syncService: SyncService) async {
     let readTools = syncService.supportsWorkToolsState(laneId: laneId)
     // Asked of the lane's own machine: a lane on another Mac answers there.
     let readApple = syncService.supportsAppleDeviceStatus(laneId: laneId)
     // Android is offered only where the host can also mint a stream ticket.
     let readAndroid = syncService.supportsAndroidDevice(laneId: laneId)
-    async let nextRemote = readRemoteDevices(syncService: syncService)
+    async let remoteDone: Void = refreshRemoteDevices(syncService: syncService)
     async let nextState: WorkToolsLaneState? = readTools
       ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
       : nil
@@ -477,46 +498,95 @@ final class WorkLaneToolsModel: ObservableObject {
     async let nextAndroid: AndroidDeviceStatus? = readAndroid
       ? (try? await syncService.fetchAndroidDeviceStatus(laneId: laneId))
       : nil
-    let (fetched, apple, android, remote) = await (nextState, nextApple, nextAndroid, nextRemote)
-    guard !Task.isCancelled else { return }
-    remoteReads = Dictionary(remote.map { ($0.remote.laneId, $0) }, uniquingKeysWith: { first, _ in first })
-    let tools = workToolsStateAfterRead(fetched: fetched, previous: lastTools, supported: readTools)
-    lastTools = tools
-    appleStatus = apple
-    androidStatus = android
-    macDesktopState = tools?.macDesktop
-    appControlState = tools?.appControl
-    appControlStream = syncService.supportsAppControlStream
-    let next = workToolChips(state: tools, appleDevice: apple, android: android)
-      + workRemoteToolChips(remote)
+    let (fetched, apple, android) = await (nextState, nextApple, nextAndroid)
+    if !Task.isCancelled {
+      let tools = workToolsStateAfterRead(fetched: fetched, previous: lastTools, supported: readTools)
+      lastTools = tools
+      appleStatus = apple
+      androidStatus = android
+      macDesktopState = tools?.macDesktop
+      appControlState = tools?.appControl
+      appControlStream = syncService.supportsAppControlStream
+      localChips = workToolChips(state: tools, appleDevice: apple, android: android)
+      publishChips()
+    }
+    await remoteDone
+  }
+
+  /// The lane's own chips, then the other machines' in the order of the
+  /// chat's use. Publishes only when the set changes.
+  private func publishChips() {
+    let next = localChips + workRemoteToolChips(remoteOrder.compactMap { remoteReads[$0] })
     if next != chips { chips = next }
   }
 
-  /// Each work copy's devices on its machine, read there. A machine the phone
-  /// cannot reach (`remoteWorkCopyLaneId` nil), or one that does not advertise
-  /// a read, gets no read and so no chip. A failed read keeps the last answer,
-  /// as the lane's own chips do. Only the devices the chat drove are read.
-  private func readRemoteDevices(syncService: SyncService) async -> [RemoteRead] {
-    var reads: [RemoteRead] = []
+  /// Each work copy's devices on its machine, read there, all machines at
+  /// once. A machine the phone cannot reach (`registerRemoteWorkCopyLane`
+  /// nil), or one that does not advertise a read, gets no read and so no chip.
+  /// A failed or slow read keeps the last answer, as the lane's own chips do.
+  /// Only the devices the chat drove are read.
+  private func refreshRemoteDevices(syncService: SyncService) async {
+    var order: [String] = []
+    var targets: [(device: WorkRemoteWorkDevice, laneId: String)] = []
     for device in remoteDevices {
-      guard !Task.isCancelled else { break }
-      guard let laneId = syncService.remoteWorkCopyLaneId(device) else { continue }
-      let previous = remoteReads[laneId]
-      var read = RemoteRead(remote: WorkToolChipRemote(laneId: laneId, machineName: device.machineName))
-      if device.simulator, syncService.supportsAppleDeviceStatus(laneId: laneId) {
-        read.apple = (try? await syncService.fetchAppleDeviceStatus(laneId: laneId)) ?? previous?.apple
-      }
-      if device.android, syncService.supportsAndroidDevice(laneId: laneId) {
-        read.android = (try? await syncService.fetchAndroidDeviceStatus(laneId: laneId)) ?? previous?.android
-      }
-      // The screen opens only on the live stage, so it needs the stream there.
-      if device.desktop, syncService.supportsWorkToolsState(laneId: laneId),
-         syncService.supportsMacDesktopStream(laneId: laneId) {
-        read.macDesktop = (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))?.macDesktop ?? previous?.macDesktop
-      }
-      reads.append(read)
+      guard let laneId = syncService.registerRemoteWorkCopyLane(device), !order.contains(laneId) else { continue }
+      order.append(laneId)
+      targets.append((device, laneId))
     }
-    return reads
+    guard !Task.isCancelled else { return }
+    // A machine the phone can no longer reach loses its pill now.
+    remoteOrder = order
+    remoteReads = remoteReads.filter { order.contains($0.key) }
+    publishChips()
+    await withTaskGroup(of: RemoteRead.self) { group in
+      for target in targets {
+        let previous = remoteReads[target.laneId]
+        group.addTask { @MainActor in
+          await Self.readRemoteDevice(target.device, laneId: target.laneId, previous: previous, syncService: syncService)
+        }
+      }
+      for await read in group {
+        guard !Task.isCancelled else { continue }
+        remoteReads[read.remote.laneId] = read
+        publishChips()
+      }
+    }
+  }
+
+  /// One work copy's devices, each read at once and each bounded by
+  /// `remoteReadTimeoutNanoseconds`.
+  private static func readRemoteDevice(
+    _ device: WorkRemoteWorkDevice,
+    laneId: String,
+    previous: RemoteRead?,
+    syncService: SyncService
+  ) async -> RemoteRead {
+    let readApple = device.simulator && syncService.supportsAppleDeviceStatus(laneId: laneId)
+    let readAndroid = device.android && syncService.supportsAndroidDevice(laneId: laneId)
+    // The screen opens only on the live stage, so it needs the stream there.
+    let readDesktop = device.desktop && syncService.supportsWorkToolsState(laneId: laneId)
+      && syncService.supportsMacDesktopStream(laneId: laneId)
+    async let apple: AppleDeviceStatus? = readApple
+      ? await boundedRemoteRead({ try? await syncService.fetchAppleDeviceStatus(laneId: laneId) })
+      : nil
+    async let android: AndroidDeviceStatus? = readAndroid
+      ? await boundedRemoteRead({ try? await syncService.fetchAndroidDeviceStatus(laneId: laneId) })
+      : nil
+    async let desktop: WorkToolsMacDesktopState? = readDesktop
+      ? await boundedRemoteRead({ (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))?.macDesktop })
+      : nil
+    var read = RemoteRead(remote: WorkToolChipRemote(laneId: laneId, machineName: device.machineName))
+    let (appleRead, androidRead, desktopRead) = await (apple, android, desktop)
+    if readApple { read.apple = appleRead ?? previous?.apple }
+    if readAndroid { read.android = androidRead ?? previous?.android }
+    if readDesktop { read.macDesktop = desktopRead ?? previous?.macDesktop }
+    return read
+  }
+
+  /// `work`'s answer, or nil once `remoteReadTimeoutNanoseconds` pass first.
+  private static func boundedRemoteRead<T>(_ work: @escaping @MainActor () async -> T?) async -> T? {
+    let answer: T?? = await workAwaitWithDeadline(timeoutNanoseconds: remoteReadTimeoutNanoseconds, work: work)
+    return answer ?? nil
   }
 
   #if DEBUG
@@ -532,7 +602,8 @@ final class WorkLaneToolsModel: ObservableObject {
     appControlState = state?.appControl
     // The fixture's app streams from a drawn stand-in, as a streaming host's would.
     appControlStream = state?.appControl != nil
-    chips = workToolChips(state: state, appleDevice: appleStatus, android: androidStatus)
+    localChips = workToolChips(state: state, appleDevice: appleStatus, android: androidStatus)
+    publishChips()
   }
   #endif
 }

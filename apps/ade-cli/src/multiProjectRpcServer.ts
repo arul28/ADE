@@ -170,6 +170,7 @@ import type { AgentMachineBridge } from "./services/account/agentMachineBridge";
 import type { CrossScopeChats } from "./services/chat/crossScopeChats";
 import {
   rememberChildWakeToken,
+  noteExternalChatTurn,
   rememberExternalChat,
 } from "../../desktop/src/main/services/chat/externalChats";
 import {
@@ -2000,6 +2001,8 @@ export function createMultiProjectRpcRequestHandler(
         machineName: typeof claim.machineName === "string" ? claim.machineName.trim().slice(0, 120) || null : null,
         permissionLevel: readPermissionLevel(claim.permissionLevel),
       });
+      // The latest turn it called in, for `release_remote_work_devices`.
+      if (typeof claim.turnId === "string") noteExternalChatTurn(foreignId, claim.turnId.trim().slice(0, 200));
     }
     return foreignId;
   };
@@ -3772,6 +3775,7 @@ export function createMultiProjectRpcRequestHandler(
           caller: {
             chatSessionId: callerChat,
             permissionLevel: located?.runtime.agentChatService?.permissionLevelOf(callerChat ?? "") ?? null,
+            turnId: callerChat ? located?.runtime.agentChatService?.remoteTurnIdOf(callerChat) ?? null : null,
             ...(wakeToken ? { wakeToken } : {}),
           },
           timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,

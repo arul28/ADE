@@ -20,45 +20,52 @@ export function activeRemoteWork(
     !Number.isFinite(turnStart) || Date.parse(use.lastStartedAt) >= turnStart);
 }
 
+/** A remote-work entry whose machine told us the work copy's lane. */
+export type RemoteWorkCopyUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
+
+/** The machines a chat used in the turn that just settled, so their devices can be let go. */
+export type RemoteWorkTurnRelease = {
+  sessionId: string;
+  /** The turn that ended (`RemoteCallerClaim.turnId` of its calls); null when unknown. */
+  turnId: string | null;
+  uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
+};
+
+/** Whether this entry drives any device on its machine (simulator, emulator, screen or App Control). */
+export function remoteWorkUsesDevice(
+  use: Pick<AgentChatRemoteWorkUse, "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl">,
+): boolean {
+  return use.usesSimulator === true || use.usesAndroidEmulator === true || use.usesDesktop === true || use.usesAppControl === true;
+}
+
 /**
- * The machines whose simulator this chat drives through its work copy, newest
+ * The machines whose simulator (`usesSimulator`), Android emulator
+ * (`usesAndroidEmulator`), desktop screen (`usesDesktop`) or App Control
+ * session (`usesAppControl`) this chat drives through its work copy, newest
  * first. Only those whose machine told us the copy's lane (current ADE there).
- */
-export function remoteSimulatorUses(
-  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
-  return (session?.remoteWork ?? [])
-    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
-      use.usesSimulator && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
-    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
-}
-
-/**
- * The machines whose Android emulator this chat drives through its work copy,
- * newest first. Only those whose machine told us the copy's lane.
- */
-export function remoteAndroidEmulatorUses(
-  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
-  return (session?.remoteWork ?? [])
-    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
-      use.usesAndroidEmulator === true && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
-    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
-}
-
-/**
- * The machines whose desktop screen (`usesDesktop`) or App Control session
- * (`usesAppControl`) this chat drives through its work copy, newest first.
- * Only those whose machine told us the copy's lane.
  */
 export function remoteWorkUsesOf(
   session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-  kind: "usesDesktop" | "usesAppControl",
-): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
+  kind: "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl",
+): RemoteWorkCopyUse[] {
   return (session?.remoteWork ?? [])
-    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
+    .filter((use): use is RemoteWorkCopyUse =>
       use[kind] === true && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
     .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+}
+
+/** The machines whose simulator this chat drives through its work copy, newest first. */
+export function remoteSimulatorUses(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+): RemoteWorkCopyUse[] {
+  return remoteWorkUsesOf(session, "usesSimulator");
+}
+
+/** The machines whose Android emulator this chat drives through its work copy, newest first. */
+export function remoteAndroidEmulatorUses(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+): RemoteWorkCopyUse[] {
+  return remoteWorkUsesOf(session, "usesAndroidEmulator");
 }
 
 /**

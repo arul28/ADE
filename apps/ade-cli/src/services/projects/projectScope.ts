@@ -1,6 +1,7 @@
 import type { CrossMachineHandoffTransport } from "../../../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
+import type { RemoteWorkTurnRelease } from "../../../../desktop/src/shared/chatRemoteWork";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { TerminalInputDedupeLedger } from "../sync/syncHostService";
 import type { SyncHostBlocker } from "../sync/syncService";
@@ -268,7 +269,7 @@ export class ProjectScopeRegistry {
        */
       crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
       /** Lets go of the devices a chat drove on other machines when its turn ends (the brain owns the bridge). */
-      releaseRemoteWorkDevices?: (event: { sessionId: string; uses: Array<{ machineKey: string; machineName: string; projectId: string | null }> }) => void;
+      releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
       /** The brain's phone input ledger, shared with each project's sync host. */

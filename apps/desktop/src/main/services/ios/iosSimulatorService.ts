@@ -179,7 +179,7 @@ import { readAppleDeviceMarker } from "./appleDeviceMarker";
 
 import { appleAppOnDevice, appleLaneDerivedDataPath, healMovedDerivedData } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
-import { generateXcodeGenProjects } from "./xcodeGenProjects";
+import { generateXcodeGenProjects, type XcodeGenOptions } from "./xcodeGenProjects";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
   createLaneDeviceMaintenance,
@@ -2604,8 +2604,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!isRemoteWorkLaneId(laneId)) return false;
     const runtime = runtimes.get(laneKey(laneId));
     if (!runtime) return false;
+    // An app session its chat let go of at a turn's end (no owner) does not
+    // count: it would keep the copy for good.
     return Boolean(
-      runtime.activeSession
+      runtime.activeSession?.chatSessionId
       || runtime.activeLaunchId
       || runtime.hub?.getDeviceSession()
       || runtime.streamStatus.running
@@ -2623,7 +2625,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const releaseWorkCopyDevice = async (laneId: string): Promise<void> => {
     const runtime = runtimes.get(laneKey(laneId));
     const owner = runtime?.activeSession?.chatSessionId ?? runtime?.hub?.getDeviceSession()?.chatSessionId ?? null;
-    if (owner) await releaseIfOwnedBy(owner).catch(() => undefined);
+    if (owner) {
+      await releaseIfOwnedBy(owner).catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_owner_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    // An app session its chat let go of at the end of a turn has no owner,
+    // and ends with the copy all the same.
+    if (runtime?.activeSession && !runtime.activeSession.chatSessionId) {
+      await shutdown({ laneId, force: false }).catch((error: unknown) => {
+        args.logger.warn("apple.work_copy_session_end_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
     const device = laneDevices.get(laneId);
     if (!device) return;
     const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
@@ -2635,7 +2648,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         return false;
       });
     }
-    await laneDevices.deviceDetach({ laneId, by: "agent" }).catch(() => null);
+    await laneDevices.deviceDetach({ laneId, by: "agent" }).catch((error: unknown) => {
+      args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+    });
     args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff });
   };
   const offWorkCopyReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
@@ -2814,11 +2829,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // `fill-element` reads its field back itself, a better check than focus.
         typeText: ({ secure, ...textArgs }) => typeText({ ...textArgs, laneId: runtime.laneId }, { checkFocus: false, secure }),
         readElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
-        bootDevice: async (device) => {
-          const bootedNow = await power.bootDevice(device);
-          noteBootFor(runtime.laneId, device.udid, bootedNow);
-          return bootedNow;
-        },
+        bootDevice: (device) => ensureDeviceBooted(device, runtime.laneId),
         powerOffDevice: (deviceUdid) => power.powerOffDevice(deviceUdid, "hub-power"),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
         getAppSessionOwner: () => runtime.activeSession?.chatSessionId ?? null,
@@ -3492,11 +3503,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     );
 
   /**
-   * Every boot and power-off goes through here, so the helper reset, the
-   * recording stop and the device-list refresh cannot be left out of a path.
-   * Lambdas, because the functions they call are declared further down.
-   */
-  /**
    * Simulators booted here for a work copy (a chat on another machine), by
    * udid → the copy's lane id. When the copy goes, they go back powered off,
    * as they were (`releaseWorkCopyDevice`). In memory: a restart forgets it.
@@ -3505,6 +3511,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const noteBootFor = (laneId: string | null | undefined, udid: string, bootedNow: boolean): void => {
     if (bootedNow && laneId && isRemoteWorkLaneId(laneId)) bootedForWorkCopy.set(udid, laneId);
   };
+  /**
+   * Every boot and power-off goes through here, so the helper reset, the
+   * recording stop and the device-list refresh cannot be left out of a path.
+   * Lambdas, because the functions they call are declared further down.
+   */
   const power = createSimulatorPower({
     run: (file, commandArgs, options) => run(file, commandArgs, options),
     waitForBootStatus: (device) => waitForSimulatorBootStatus(device),
@@ -3526,12 +3537,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /**
    * Boot a shut-down simulator and wait until CoreSimulator says it is ready.
    *
-   * Only explicit starts come here: `deviceStart`, and `startStream` when its
-   * caller passed `boot: true`. A viewer that only wants to watch gets
-   * `APPLE_DEVICE_OFF` instead (see `startStream`).
+   * Only explicit starts come here: `deviceStart`, a launch, the hub's boot,
+   * and `startStream` when its caller passed `boot: true`. A viewer that only
+   * wants to watch gets `APPLE_DEVICE_OFF` instead (see `startStream`).
+   *
+   * The one boot path for a lane's own device, so a boot for a work copy is
+   * always noted (`bootedForWorkCopy`). Answers whether this call booted it.
    */
-  const ensureDeviceBooted = async (device: IosSimulatorDevice, laneId?: string | null): Promise<void> => {
-    noteBootFor(laneId, device.udid, await power.bootDevice(device));
+  const ensureDeviceBooted = async (device: IosSimulatorDevice, laneId?: string | null): Promise<boolean> => {
+    const bootedNow = await power.bootDevice(device);
+    noteBootFor(laneId, device.udid, bootedNow);
+    return bootedNow;
   };
 
   /**
@@ -3936,8 +3952,27 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return targets;
   };
 
+  /**
+   * XcodeGen for a build: only in the folder of the project the caller named
+   * (`projectPath`, or the project a `targetId` encodes), else everywhere.
+   */
+  const xcodeGenOptions = (named: { projectPath?: string | null; targetId?: string | null }): XcodeGenOptions => {
+    const decoded = decodeTargetId(named.targetId);
+    const projectPath = named.projectPath?.trim() || (decoded[0] === "project" ? decoded[1] ?? null : null);
+    return { run: (command, commandArgs, options) => run(command, commandArgs, options), logger: args.logger, projectPath };
+  };
+
   const listLaunchTargets = async (targetArgs: IosSimulatorListLaunchTargetsArgs = {}): Promise<IosSimulatorLaunchTarget[]> => {
     const projectRoot = await resolveScopedRoot(targetArgs);
+    // A chat's work copy is ADE's own, so a list there may write: XcodeGen
+    // makes the projects of its `project.yml` specs first, or an XcodeGen-only
+    // app would list nothing. A lane's own checkout is only read.
+    const laneId = targetArgs.laneId?.trim();
+    if (laneId && isRemoteWorkLaneId(laneId) && !targetArgs.projectRoot) {
+      await generateXcodeGenProjects(projectRoot, xcodeGenOptions({})).catch((error: unknown) => {
+        args.logger.warn("apple.xcodegen_before_list_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
     const [projectTargets, builtTargets, installedTargets] = await Promise.all([
       listProjectLaunchTargets(projectRoot),
       listBuiltLaunchTargets(projectRoot),
@@ -4719,7 +4754,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const resolveLaunchTarget = async (launchArgs: IosSimulatorLaunchArgs, deviceUdid: string, projectRoot: string): Promise<ResolvedLaunchTarget> => {
     const generatedXcodeProjects = launchArgs.appBundlePath || launchArgs.build === false
       ? []
-      : await generateXcodeGenProjects(projectRoot, run);
+      : await generateXcodeGenProjects(projectRoot, xcodeGenOptions(launchArgs));
     const resolved = await resolveLaunchTargetFromProjects(launchArgs, deviceUdid, projectRoot);
     return generatedXcodeProjects.length ? { ...resolved, generatedXcodeProjects } : resolved;
   };
@@ -5170,7 +5205,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       } else {
         emitLaunchProgress(launchId, "boot-simulator", "running", "Booting simulator...", device.name, { deviceUdid: device.udid });
       }
-      noteBootFor(runtime.laneId, device.udid, await power.bootDevice(device));
+      await ensureDeviceBooted(device, runtime.laneId);
       emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator services are ready.", device.name, { deviceUdid: device.udid });
 
       currentStep = "open-simulator";
@@ -6126,8 +6161,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const releaseIfOwnedBy = async (
     chatSessionId: string | null | undefined,
     /**
-     * `keepRunning`: let go of what the chat holds (leases, the app and device
-     * sessions) but leave the simulator on and the app open. A chat on
+     * `keepRunning`: let go of what the chat holds (leases, automatic
+     * recordings, the device session, its claim on the app session) but
+     * leave the simulator on, the app open and its live view running. A chat on
      * another machine whose turn ended asks for this (`release_remote_work_devices`).
      */
     options: { keepRunning?: boolean } = {},
@@ -6160,6 +6196,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         });
       }
       if (runtime.activeSession?.chatSessionId !== trimmed) continue;
+      if (options.keepRunning) {
+        // Only the chat's claim on the app session goes: the app and its live
+        // view keep running, and the chat's next turn (or another chat) takes
+        // the unowned session with its next call.
+        const previousSession = runtime.activeSession;
+        runtime.activeSession = { ...previousSession, chatSessionId: null };
+        invalidateStatus(runtime);
+        emit({ type: "session-updated", session: runtime.activeSession });
+        args.logger.info("ios_simulator.session_unowned_after_turn", { chatSessionId: trimmed, laneId: runtime.laneId });
+        result = { released: true, previousSession };
+        continue;
+      }
       args.logger.info("ios_simulator.released_with_chat_session", { chatSessionId: trimmed, laneId: runtime.laneId });
       // Identify as the owner: shutdown now refuses an anonymous non-force call.
       const released = await shutdown({ chatSessionId: trimmed, laneId: runtime.laneId, force: false });
@@ -7857,7 +7905,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const runTestsClaimed = async (testArgs: AppleRunTestsArgs, runtime: LaneRuntime): Promise<AppleRunTestsResult> => {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
     // A `project.yml` with no project gets one from XcodeGen first, as for a launch.
-    const generatedXcodeProjects = await generateXcodeGenProjects(projectRoot, run);
+    const generatedXcodeProjects = await generateXcodeGenProjects(projectRoot, xcodeGenOptions(testArgs));
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
     testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}, scheme ${scheme}` };

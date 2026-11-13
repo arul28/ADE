@@ -3,6 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { remoteWorkUsesDevice, type RemoteWorkTurnRelease } from "../../../shared/chatRemoteWork";
 import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
@@ -12411,10 +12412,7 @@ export function createAgentChatService(args: {
    * go of what the chat holds there (leases, sessions; nothing powered off).
    * `uses` are the machines and projects whose devices it used.
    */
-  onRemoteWorkTurnSettled?: (event: {
-    sessionId: string;
-    uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
-  }) => void;
+  onRemoteWorkTurnSettled?: (event: RemoteWorkTurnRelease) => void;
   /**
    * Content-free hook fired after a session-metadata generation: on request,
    * or `automatic` when ADE refreshed the status line after a turn.
@@ -25044,12 +25042,13 @@ export function createAgentChatService(args: {
     // machines this turn used: an earlier turn's end already let go there.
     const turnStartedMs = pendingTurnStartMsBySession.get(settledSessionId);
     const deviceUses = (remoteWorkBySession.get(settledSessionId) ?? []).filter((use) =>
-      (use.usesSimulator || use.usesAndroidEmulator || use.usesDesktop || use.usesAppControl)
+      remoteWorkUsesDevice(use)
       && (turnStartedMs === undefined || !(Date.parse(use.lastStartedAt) < turnStartedMs)));
     if (onRemoteWorkTurnSettled && deviceUses.length) {
       try {
         onRemoteWorkTurnSettled({
           sessionId: settledSessionId,
+          turnId: lastTurnStartedAtBySession.get(settledSessionId) ?? null,
           uses: deviceUses.map((use) => ({ machineKey: use.machineKey, machineName: use.machineName, projectId: use.projectId })),
         });
       } catch (error) {
@@ -81367,7 +81366,7 @@ export function createAgentChatService(args: {
     // always stays.
     const list = [...uses.filter((use) => !sameUse(use)), next];
     while (list.length > 6) {
-      const withoutDevice = list.slice(0, -1).findIndex((use) => !use.usesSimulator && !use.usesAndroidEmulator && !use.usesDesktop && !use.usesAppControl);
+      const withoutDevice = list.slice(0, -1).findIndex((use) => !remoteWorkUsesDevice(use));
       list.splice(withoutDevice >= 0 ? withoutDevice : 0, 1);
     }
     remoteWorkBySession.set(sessionId, list);
@@ -81897,6 +81896,13 @@ export function createAgentChatService(args: {
      * not one of this service's chats. The brain records it for a child it
      * starts elsewhere (`rememberExternalChat`).
      */
+    /**
+     * The id another machine knows this chat's current (or latest) turn by:
+     * when it started. Sent with every call there and with the end-of-turn
+     * release, so a release that lands after the next turn's calls is
+     * skipped there. Null when the chat has not had a turn here.
+     */
+    remoteTurnIdOf: (sessionId: string): string | null => lastTurnStartedAtBySession.get(sessionId) ?? null,
     permissionLevelOf: (sessionId: string): PermissionLevel | null => {
       // A tracked CLI caller has a level too: the one it was launched with.
       // Without it a child it starts on another machine is capped at `ask`.

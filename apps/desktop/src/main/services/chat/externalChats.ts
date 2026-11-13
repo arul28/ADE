@@ -180,6 +180,30 @@ export function externalChatContext(sessionId: string): ExternalChatContext | nu
 }
 
 /**
+ * The latest turn each chat on another machine was in when it called here
+ * (`RemoteCallerClaim.turnId`), so a late end-of-turn release from it can tell
+ * that its next turn already started. In memory only: after a restart there
+ * is nothing of that chat's here to release by mistake.
+ */
+const externalChatTurns = new Map<string, string>();
+
+export function noteExternalChatTurn(sessionId: string, turnId: string | null | undefined): void {
+  const id = sessionId.trim();
+  const turn = turnId?.trim();
+  if (!id || !turn) return;
+  externalChatTurns.delete(id);
+  externalChatTurns.set(id, turn);
+  while (externalChatTurns.size > MAX_EXTERNAL_CHATS) {
+    externalChatTurns.delete(externalChatTurns.keys().next().value as string);
+  }
+}
+
+/** The turn this chat on another machine was in on its latest call here; null when it never said. */
+export function externalChatLatestTurn(sessionId: string): string | null {
+  return externalChatTurns.get(sessionId.trim()) ?? null;
+}
+
+/**
  * The token another machine handed over when it started this child here. The
  * child's wakes carry it back, so only the machine that started the child can
  * have its report accepted, whoever else learns the ids.

@@ -139,7 +139,7 @@ import {
   isRemoteWorkLaneId,
   onRemoteWorkCopyReleased,
   registerRemoteWorkDeviceCheck,
-  remoteWorkLaneSummary,
+  withRemoteWorkLaneResolvers,
 } from "../remoteWork/remoteWorkCopyService";
 import {
   installLinuxDesktopPackages,
@@ -359,19 +359,9 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
   // A chat on another machine stands in for a lane with its work copy here
   // (`remote-work-…`, `ade screen … --machine`): the copy is the lane's
   // folder, and it is named for that chat's machine.
-  const { resolveLaneWorktreePath: laneWorktreePath, resolveLaneName: laneName } = serviceDeps;
   const deps: MacDesktopServiceDeps = {
     ...serviceDeps,
-    resolveLaneWorktreePath: laneWorktreePath
-      ? (laneId) => (isRemoteWorkLaneId(laneId)
-        ? remoteWorkLaneSummary(serviceDeps.projectRoot, laneId)?.path ?? null
-        : laneWorktreePath(laneId))
-      : laneWorktreePath,
-    resolveLaneName: laneName
-      ? (laneId) => (isRemoteWorkLaneId(laneId)
-        ? remoteWorkLaneSummary(serviceDeps.projectRoot, laneId)?.name ?? null
-        : laneName(laneId))
-      : laneName,
+    ...withRemoteWorkLaneResolvers(serviceDeps.projectRoot, serviceDeps),
   };
   const platform = deps.platform ?? process.platform;
   const now = deps.now ?? (() => Date.now());

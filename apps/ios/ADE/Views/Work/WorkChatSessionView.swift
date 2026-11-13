@@ -1347,12 +1347,7 @@ struct WorkChatSessionView: View {
         }
         if showsComposerLaneToolChips {
           ForEach(laneTools.chips) { chip in
-            // A device on another machine is never the pane's tab: it opens
-            // on the live stage from every layout.
-            WorkLaneToolChipView(
-              chip: chip,
-              isSelected: chip.remote == nil ? pillSelection(chip.duoToolTab, selected) : (duoPane == nil ? nil : false)
-            ) {
+            WorkLaneToolChipView(chip: chip, isSelected: toolChipSelection(chip, selected)) {
               ADEHaptics.light()
               if chip.remote != nil {
                 laneTools.open(chip, macDesktopStream: true)
@@ -1416,6 +1411,13 @@ struct WorkChatSessionView: View {
   /// pane shows this pill's surface.
   private func pillSelection(_ tab: DuoToolTab, _ selected: DuoToolTab?) -> Bool? {
     duoPane == nil ? nil : selected == tab
+  }
+
+  /// A lane tool pill's selection. A device on another machine is never the
+  /// pane's tab: it opens on the live stage from every layout.
+  private func toolChipSelection(_ chip: WorkToolChip, _ selected: DuoToolTab?) -> Bool? {
+    guard chip.remote == nil else { return duoPane == nil ? nil : false }
+    return pillSelection(chip.duoToolTab, selected)
   }
 
   var maxUserBubbleWidth: CGFloat? {

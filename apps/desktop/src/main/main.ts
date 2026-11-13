@@ -6147,6 +6147,7 @@ app.whenReady().then(async () => {
         (await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null))?.worktreePath ?? null,
       // A chat on another machine runs its app in this lane's terminal, in its work copy.
       resolvePrimaryLaneId: () => laneService.getPrimaryLane()?.laneId ?? null,
+      archiveTerminal: (sessionId: string) => { sessionService.archiveSession(sessionId); },
       onEvent: (payload) => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });

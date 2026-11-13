@@ -520,8 +520,9 @@ Files
     $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--discard drops it); one that replaces a file of the
+  repo is a change made there, so the next sync needs --no-sync or --discard.
 
 ## ade search --help
 ADE Search
@@ -655,8 +656,13 @@ Shell sessions
     $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
     $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
     $ ade shell clean --machine <name>               Delete this chat's work copy there
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --scratch --wait -- nvidia-smi   No repo needed: an empty temp folder there, removed after
   Each call opens a new shell there and syncs the copy again, so put all the
   steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --scratch needs no checkout, commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
@@ -1927,7 +1933,10 @@ Android Emulator
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
   --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  first (an APK that git ignores does not travel: use --gradle). A Gradle
+  build or a boot there waits as long as it would here and prints "still
+  running" lines to stderr meanwhile. --clone sets this repo up there first.
+  The emulator's lease is let go when this chat's turn ends (it stays on).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -2058,6 +2067,19 @@ App Control
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The session works for this chat's work copy there (a hidden worktree
+  at your commit; the commit must be on origin), and this chat owns it, as for
+  a lane. launch sends your checkout and its uncommitted changes first
+  (--no-sync runs the copy as it is, --discard drops work made there) and runs
+  in a terminal there; --cwd must be inside this checkout and is the same
+  folder in the copy. status and drivers make no copy. --lane is refused (the
+  copy is the lane). proof and a captioned recording are filed in this chat's
+  proof drawer. ade shell clean --machine <name> removes the copy and stops
+  its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
 
 ## ade browser --help
 ADE browser

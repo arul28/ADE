@@ -865,12 +865,20 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       logger?.info("android.release_uninstalled", { laneId, avdName: device.avdName, removed, asked: device.adeInstalledPackages.length });
     },
 
-    /** A chat ended: its recordings stop (filed as proof) and its leases pass on. */
-    async releaseIfOwnedBy(chatSessionId: string): Promise<void> {
+    /**
+     * A chat ended: its recordings stop (filed as proof) and its leases pass
+     * on. With `turnEnded` only its turn did: its automatic recordings stop,
+     * as a local chat's do at a turn's end, and one it started keeps going.
+     */
+    async releaseIfOwnedBy(chatSessionId: string, options: { turnEnded?: boolean } = {}): Promise<void> {
       const chat = chatSessionId?.trim();
       if (!chat) return;
-      for (const laneId of sessions.lanesOfChat(chat)) {
-        await sessions.finishQuietly(laneId, "chat-ended", "android.recording_chat_end_failed");
+      if (options.turnEnded) {
+        await sessions.onTurnEnded(chat);
+      } else {
+        for (const laneId of sessions.lanesOfChat(chat)) {
+          await sessions.finishQuietly(laneId, "chat-ended", "android.recording_chat_end_failed");
+        }
       }
       const ended = leases.endChat(chat);
       if (ended > 0) logger?.info("android.device_leases_ended_with_chat", { chatSessionId: chat, count: ended });

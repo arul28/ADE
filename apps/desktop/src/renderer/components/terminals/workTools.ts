@@ -413,10 +413,11 @@ export function workToolAvailability(
       reason: `This lane lives on ${cloud}. This tool drives a real machine, and the lane's machine is ${cloud}'s VM.`,
     };
   }
-  // Windows Desktop follows the host platform strictly, before the read-only
+  // Windows Desktop follows the host platform, before the read-only
   // short-circuit: a Mac-hosted lane must not offer a Windows screen even to a
-  // web client that could watch one. The Mac rule below keeps its existing
-  // behavior, including the web client's watch-only case.
+  // web client that could watch one, unless the chat drives a Windows
+  // machine's screen through its work copy there. The Mac rule below keeps its
+  // existing behavior, including the web client's watch-only case.
   if (id === "windows-desktop" && context.hasRemoteWindowsDesktop) return AVAILABLE;
   if (id === "mac-desktop" && context.remoteMacDesktopPlatform) return AVAILABLE;
   if (id === "app-control" && context.hasRemoteAppControl) return AVAILABLE;
@@ -514,6 +515,30 @@ export function remoteMachineHostPlatform(platform: string | null | undefined): 
 /** The lane-screen tool that shows a machine's screen: Windows Desktop for Windows, else Mac Desktop. */
 export function desktopToolForMachinePlatform(platform: string | null | undefined): DesktopWorkTool {
   return remoteMachineHostPlatform(platform) === "win32" ? "windows-desktop" : "mac-desktop";
+}
+
+/** The lane's host can show this lane-screen tool (unanswered counts as yes). */
+export function laneHostRunsDesktopTool(tool: DesktopWorkTool, toolContext: WorkToolContext): boolean {
+  const platform = toolContext.hostPlatform ?? null;
+  if (tool === "windows-desktop") {
+    return toolContext.supportsWindowsDesktop !== false && (platform === null || platform === "win32");
+  }
+  return toolContext.supportsMacDesktop !== false && (platform === null || platform === "darwin" || platform === "linux");
+}
+
+/**
+ * What the other machines' screens a chat drives (`usesDesktop` entries) add
+ * to the tool context, by the tool that shows each. An unknown platform shows
+ * in the Mac Desktop pane, which reads the host's own.
+ */
+export function remoteDesktopToolContext(
+  uses: ReadonlyArray<{ machinePlatform: string | null }>,
+): { remoteMacDesktopPlatform: "darwin" | "linux" | null; hasRemoteWindowsDesktop: boolean } {
+  const platforms = uses.map((use) => remoteMachineHostPlatform(use.machinePlatform));
+  let remoteMacDesktopPlatform: "darwin" | "linux" | null = null;
+  if (platforms.some((platform) => platform === "darwin" || platform === null)) remoteMacDesktopPlatform = "darwin";
+  else if (platforms.includes("linux")) remoteMacDesktopPlatform = "linux";
+  return { remoteMacDesktopPlatform, hasRemoteWindowsDesktop: platforms.includes("win32") };
 }
 
 /** The lane-screen tools: one per host platform, never both. */

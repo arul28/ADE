@@ -44,13 +44,15 @@ import type {
   AppControlTypeTextArgs,
   AppControlWindowsResult,
 } from "../../../shared/types";
-import { APP_CONTROL_PROOF_BACKEND_NAME, createAppControlRecording } from "./appControlRecording";
+import { APP_CONTROL_PROOF_BACKEND_NAME } from "../../../shared/types/appControl";
+import { createAppControlRecording } from "./appControlRecording";
 import { createAppControlWindowRecorder } from "./appControlWindowRecorder";
 import {
   isRemoteWorkLaneId,
   onRemoteWorkCopyReleased,
   registerRemoteWorkDeviceCheck,
   remoteWorkLaneSummary,
+  withRemoteWorkLaneResolvers,
 } from "../remoteWork/remoteWorkCopyService";
 import type { ComputerUseArtifactIngestionResult, ComputerUseArtifactOwner } from "../../../shared/types/computerUseArtifacts";
 import {
@@ -76,30 +78,39 @@ export type AppControlService = ReturnType<typeof createAppControlService>;
  * folder, named for that chat's machine. Its app runs in a terminal of the
  * primary lane, in the copy, as `ade shell start --machine` runs a command,
  * and that terminal is owned by the caller's chat, so the copy counts as
- * busy while the app runs.
+ * busy while the app runs. Like those shells it is archived from the start,
+ * so it does not fill this machine's Work tab; it still runs and its chat
+ * still reads and stops it.
  */
 function withRemoteWorkLanes(serviceArgs: CreateAppControlServiceArgs): CreateAppControlServiceArgs {
-  const { projectRoot, resolveLaneWorktreePath, resolveLaneName, ptyService, resolvePrimaryLaneId } = serviceArgs;
-  const copyOf = (laneId: string) => (isRemoteWorkLaneId(laneId) ? remoteWorkLaneSummary(projectRoot, laneId) : null);
+  const { projectRoot, ptyService, resolvePrimaryLaneId, archiveTerminal } = serviceArgs;
   return {
     ...serviceArgs,
-    resolveLaneWorktreePath: (laneId) => (isRemoteWorkLaneId(laneId) ? copyOf(laneId)?.path ?? null : resolveLaneWorktreePath?.(laneId) ?? null),
-    resolveLaneName: (laneId) => (isRemoteWorkLaneId(laneId) ? copyOf(laneId)?.name ?? null : resolveLaneName?.(laneId) ?? null),
+    ...withRemoteWorkLaneResolvers(projectRoot, serviceArgs),
     ptyService: ptyService
       ? {
         ...ptyService,
         create: async (createArgs: Parameters<typeof ptyService.create>[0]) => {
           if (!isRemoteWorkLaneId(createArgs.laneId)) return await ptyService.create(createArgs);
-          const copy = copyOf(createArgs.laneId);
+          const copy = remoteWorkLaneSummary(projectRoot, createArgs.laneId);
           if (!copy) throw new Error("This chat has no work copy on this machine any more, so its app cannot start here. Run the command again to make it.");
           const primaryLaneId = resolvePrimaryLaneId?.() ?? null;
           if (!primaryLaneId) throw new Error("This project has no primary lane here to run the app's terminal in.");
-          return await ptyService.create({
+          const created = await ptyService.create({
             ...createArgs,
             laneId: primaryLaneId,
             cwd: createArgs.cwd?.trim() || copy.path,
             allowExternalCwd: true,
           });
+          try {
+            archiveTerminal?.(created.sessionId);
+          } catch (error) {
+            serviceArgs.logger?.warn("app_control.remote_work_terminal_archive_failed", {
+              sessionId: created.sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return created;
         },
       }
       : ptyService,

@@ -33,14 +33,13 @@ import {
 import {
   isRemoteWorkSyncMode,
   createRemoteWorkCopyService,
-  createRemoteWorkScratchDir,
-  removeRemoteWorkScratchDir,
   findRemoteWorkCopyForLane,
   remoteWorkLaneIdFor,
   RemoteWorkError,
   type RemoteWorkPrepareResult,
   type RemoteWorkPrepareWithinResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
+import { createRemoteWorkScratchDir, removeRemoteWorkScratchDir } from "../../desktop/src/main/services/remoteWork/remoteWorkScratch";
 import {
   createRemoteWorkFiles,
   RemoteWorkFileError,
@@ -49,12 +48,13 @@ import {
 import { isRemoteWorkFileOp, type RemoteWorkFileOp } from "../../desktop/src/shared/types/remoteWork";
 import { remoteRunOnceShellLaunch } from "../../desktop/src/main/services/pty/ptyService";
 import { windowsCommandLineOverLimitMessage } from "../../desktop/src/main/services/shared/processExecution";
-import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
+import { externalChatContext, externalChatLatestTurn } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
   desktopProductName,
   LINUX_DESKTOP_SETUP_USER_STEP,
+  MAC_DESKTOP_LANE_FREE_ACTIONS,
   MAC_DESKTOP_USER_CLI_HOLDER_ID,
   USER_ONLY_CONSENT_CARD_REFUSAL,
   WINDOWS_DESKTOP_NEXT_STEP,
@@ -216,6 +216,7 @@ import {
   ANDROID_LANE_FREE_ACTIONS,
   ANDROID_SDK_PERSON_ONLY_ACTIONS,
 } from "../../desktop/src/shared/types/androidEmulator";
+import { APP_CONTROL_CODE_SYNC_ACTIONS, APP_CONTROL_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/appControl";
 import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
@@ -3154,6 +3155,9 @@ async function prepareCallerWorkCopy(
   return { owner, laneId, prepared: answer.prepared };
 }
 
+/** How many of the files a sync kept in place an answer names. */
+const REMOTE_WORK_KEPT_FILES_SHOWN = 20;
+
 /**
  * A device action (`ios_simulator`, `android_emulator`) from a chat on another
  * machine with no lane here: its work copy here stands in for the lane. Gives
@@ -3183,7 +3187,7 @@ function remoteWorkDeviceScope(
       return prepared.done;
     },
     withWorkCopy: (value: unknown): unknown => (isRecord(value)
-      ? { ...value, workCopy: { laneId, ...(keptFiles.length ? { keptFiles: keptFiles.slice(0, 20) } : {}) } }
+      ? { ...value, workCopy: { laneId, ...(keptFiles.length ? { keptFiles: keptFiles.slice(0, REMOTE_WORK_KEPT_FILES_SHOWN) } : {}) } }
       : value),
   };
 }
@@ -3206,36 +3210,46 @@ const MAC_DESKTOP_REMOTE_REFUSED_ACTIONS: Readonly<Record<string, string>> = {
 const APP_CONTROL_WORK_COPY_MAKING_ACTIONS = new Set<string>(["launch", "launchInTerminal", "connect"]);
 
 /** `app_control` actions from another machine that sync the work copy to the caller's code first (a launch builds and runs it). */
-const APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS = new Set<string>(["launch", "launchInTerminal"]);
+const APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS = new Set<string>(APP_CONTROL_CODE_SYNC_ACTIONS);
 
 /** No `mac_desktop` action needs the caller's code: the screen shows what runs here. */
 const NO_CODE_SYNC_ACTIONS: ReadonlySet<string> = new Set<string>();
 
 /**
- * A `mac_desktop` or `app_control` action from a chat on another machine with
- * no lane here (`ade screen … --machine`, `ade app-control … --machine`): its
- * work copy's lane stands in for the lane, as for a device, so the display,
- * lease, windows and session belong to that lane, and the chat stays their
- * owner (`chatSessionId` is still the caller's own, set by the scope function).
+ * A `mac_desktop`, `app_control` or `android_emulator` action from a chat on
+ * another machine with no lane here (`ade screen … --machine`, `ade
+ * app-control … --machine`, `ade android … --machine`): its work copy's lane
+ * stands in for the lane, so the display, lease, windows, session or
+ * emulator belong to that lane, and the chat stays their owner
+ * (`chatSessionId` is still the caller's own, set by the scope function).
  *
- * - A lane-free read (status, window and driver lists) makes no copy: it
- *   names the copy's lane only when the copy is here already.
- * - A copy-making action (start, open, launch, connect) makes the copy at the
- *   caller's commit when it is missing; a launch also gets the caller's code.
+ * - A lane-free read (status, window, driver and device lists) makes no copy:
+ *   it names the copy's lane only when the copy is here already.
+ * - A copy-making action (start, open, launch, connect, a device boot) makes
+ *   the copy at the caller's commit when it is missing; one in `codeSync` also
+ *   gets the caller's code.
  * - Anything else acts on the copy's lane; with no copy here the service says
  *   there is nothing on it, and no copy is made for that.
- * - Naming another lane is refused, naming both, as for a chat on this machine.
+ * - Naming another lane is refused, as for a chat on this machine.
  *
  * `prepare` (null when no copy is used) readies the copy and resolves to its
- * `done`; `answer` adds `workCopy.laneId` so the caller's machine learns the lane.
+ * `done`; `answer` adds `workCopy.laneId` (and `extraAnswer`) so the caller's
+ * machine learns the lane. The caller puts `laneId`, when there is one, back
+ * into `args`.
  */
 function remoteWorkSurfaceScope(
   runtime: AdeRuntime,
   session: SessionState,
-  domain: "mac_desktop" | "app_control",
+  domain: "mac_desktop" | "app_control" | "android_emulator",
   action: string,
   surfaceArgs: Record<string, unknown>,
-  rules: { laneFree: ReadonlySet<string>; copyMaking: ReadonlySet<string>; codeSync: ReadonlySet<string> },
+  rules: {
+    laneFree: ReadonlySet<string>;
+    copyMaking: ReadonlySet<string>;
+    codeSync: ReadonlySet<string>;
+    /** Added to every answer that does not carry the key already. */
+    extraAnswer?: Record<string, unknown>;
+  },
 ): {
   args: Record<string, unknown>;
   laneId: string | null;
@@ -3253,12 +3267,14 @@ function remoteWorkSurfaceScope(
       { kind: "lane_bound", method, callerLaneId: remote.laneId, requestedLaneId },
     );
   }
-  // `platform` names the screen (Mac, Windows or Linux Desktop) on the
-  // caller's machine, whose own platform is another one.
+  const extra = rules.extraAnswer ?? {};
+  // Input actions answer nothing; the caller's machine still learns the lane.
   const answer = (value: unknown): unknown => {
-    if (value == null) return { workCopy: { laneId: remote.laneId }, ...(domain === "mac_desktop" ? { platform: process.platform } : {}) };
+    if (value == null) return { workCopy: { laneId: remote.laneId }, ...extra };
     const withCopy = remote.withWorkCopy(value);
-    return domain === "mac_desktop" && isRecord(withCopy) && !("platform" in withCopy) ? { ...withCopy, platform: process.platform } : withCopy;
+    if (!isRecord(withCopy)) return withCopy;
+    const missing = Object.entries(extra).filter(([key]) => !(key in withCopy));
+    return missing.length ? { ...withCopy, ...Object.fromEntries(missing) } : withCopy;
   };
   const copyExists = remote.copyExists();
   if (rules.laneFree.has(action)) {
@@ -3385,7 +3401,7 @@ async function prepareRemoteWorkShell(
       created: prepared.created,
       synced: prepared.synced,
       laneId,
-      ...(prepared.keptFiles.length ? { keptFiles: prepared.keptFiles.slice(0, 20) } : {}),
+      ...(prepared.keptFiles.length ? { keptFiles: prepared.keptFiles.slice(0, REMOTE_WORK_KEPT_FILES_SHOWN) } : {}),
     },
     done: prepared.done,
     scratchDir: null,
@@ -4720,7 +4736,7 @@ function scopeWorkToolsAdeActionArgs(
  * capability probe and has to work on every host; `listWindows` and
  * `getStreamStatus` are redacted reads.
  */
-const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(["getStatus", "listWindows", "getStreamStatus"]);
+const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(MAC_DESKTOP_LANE_FREE_ACTIONS);
 
 /**
  * Derived, not listed: every allowlisted `mac_desktop` action that is neither a
@@ -5271,7 +5287,7 @@ export async function scopeUnboundAndroidAdeActionArgs(
  * the driver list. Everything else acts on, or reads, one lane's session, so a
  * caller with no lane is refused it.
  */
-const APP_CONTROL_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDrivers"]);
+const APP_CONTROL_LANE_FREE = new Set<string>(APP_CONTROL_LANE_FREE_ACTIONS);
 
 /**
  * Derived, not listed, for the reason `MAC_DESKTOP_LANE_BOUND_ACTIONS` is: a
@@ -5281,7 +5297,7 @@ const APP_CONTROL_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDrivers
  */
 export const APP_CONTROL_LANE_BOUND_ACTIONS = new Set<string>(
   (ADE_ACTION_ALLOWLIST.app_control ?? []).filter(
-    (action) => !APP_CONTROL_LANE_FREE_ACTIONS.has(action) && !isCtoOnlyAdeAction("app_control", action),
+    (action) => !APP_CONTROL_LANE_FREE.has(action) && !isCtoOnlyAdeAction("app_control", action),
   ),
 );
 
@@ -5411,7 +5427,7 @@ export async function scopeUnboundAppControlAdeActionArgs(
  * derivation below; anything else on the allowlist floats the card.
  */
 const APP_CONTROL_NON_DRIVING_ACTIONS = new Set<string>([
-  ...APP_CONTROL_LANE_FREE_ACTIONS,
+  ...APP_CONTROL_LANE_FREE,
   "claim",
   "stop",
   "screenshot",
@@ -7155,10 +7171,10 @@ async function runTool(args: {
       } else if (action === "create" && isRecord(scopedObjectArgs.remoteWork)) {
         const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
         scopedObjectArgs = prepared.args;
-        afterScopedCall = prepared.scratchDir
+        const scratchDir = prepared.scratchDir;
+        afterScopedCall = scratchDir
           ? () => {
             // Runs whether or not the shell started; `result` is set only when it did.
-            const scratchDir = prepared.scratchDir!;
             removeScratchDirWhenShellEnds(runtime, scratchDir, isRecord(result) ? asOptionalTrimmedString(result.sessionId) : null);
           }
           : prepared.done;
@@ -7334,6 +7350,9 @@ async function runTool(args: {
           laneFree: MAC_DESKTOP_READ_ONLY_ACTIONS,
           copyMaking: MAC_DESKTOP_WORK_COPY_MAKING_ACTIONS,
           codeSync: NO_CODE_SYNC_ACTIONS,
+          // The screen (Mac, Windows or Linux Desktop) is named by this
+          // machine's platform; the caller's machine runs another one.
+          extraAnswer: { platform: process.platform },
         });
         const refusal = MAC_DESKTOP_REMOTE_REFUSED_ACTIONS[action];
         if (refusal) scopeAccessDenied(refusal, `run_ade_action:mac_desktop.${action}`);
@@ -7386,7 +7405,7 @@ async function runTool(args: {
       // its lane (`ade app-control … --machine`); a launch runs the caller's code.
       if (isRecord(appControlArgs.remoteWork)) {
         const remote = remoteWorkSurfaceScope(runtime, session, domain, action, appControlArgs, {
-          laneFree: APP_CONTROL_LANE_FREE_ACTIONS,
+          laneFree: APP_CONTROL_LANE_FREE,
           copyMaking: APP_CONTROL_WORK_COPY_MAKING_ACTIONS,
           codeSync: APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS,
         });
@@ -7399,9 +7418,17 @@ async function runTool(args: {
         const laneId = remote.laneId;
         if (prepare && laneId) {
           prepareBeforeCall = async () => {
-            afterScopedCall = await prepare();
-            const cwd = remoteWorkLaunchCwd(runtime, laneId, callerCwd);
-            if (cwd) scopedObjectArgs = { ...scopedObjectArgs, cwd };
+            const done = await prepare();
+            // A refused `--cwd` must not leave the copy busy: the call's
+            // `finally` that frees it is not reached from here.
+            try {
+              const cwd = remoteWorkLaunchCwd(runtime, laneId, callerCwd);
+              if (cwd) scopedObjectArgs = { ...scopedObjectArgs, cwd };
+            } catch (error) {
+              done();
+              throw error;
+            }
+            afterScopedCall = done;
           };
         }
         transformScopedResult = remote.answer;
@@ -7451,29 +7478,24 @@ async function runTool(args: {
       if (isRecord(androidArgs.remoteWork)) {
         // Used as it is, made at the caller's commit when missing; an install
         // or launch that builds or reads an APK gets the caller's code first.
-        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, ANDROID_CODE_SYNC.has(action) ? undefined : "none");
-        // Input actions answer nothing; the caller's machine still learns the lane.
-        const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
-        if (ANDROID_LANE_FREE.has(action)) {
-          // Status and the AVD list make no copy: they name this chat's
-          // emulator only when its copy is here already.
-          const copyExists = remote.copyExists();
-          androidArgs = copyExists ? { ...remote.rest, laneId: remote.laneId } : remote.rest;
-          if (copyExists) transformScopedResult = answer;
-        } else {
-          androidArgs = { ...remote.rest, laneId: remote.laneId };
-          // A stop, an input or a screenshot with no copy here has no device
-          // to act on: the service says so, and no copy is made for it.
-          if (ANDROID_COPY_MAKING_ACTIONS.has(action) || remote.copyExists()) {
-            // Busy until the call returns (a boot runs for its length).
-            prepareBeforeCall = async () => {
-              afterScopedCall = await remote.prepare();
-            };
-            // The caller's machine learns which lane here is its work copy, so
-            // its views can show this emulator.
-            transformScopedResult = answer;
-          }
+        // Status and the AVD list make no copy; a stop, an input or a
+        // screenshot with no copy here has no device to act on.
+        const remote = remoteWorkSurfaceScope(runtime, session, domain, action, androidArgs, {
+          laneFree: ANDROID_LANE_FREE,
+          copyMaking: ANDROID_COPY_MAKING_ACTIONS,
+          codeSync: ANDROID_CODE_SYNC,
+        });
+        androidArgs = remote.laneId ? { ...remote.args, laneId: remote.laneId } : remote.args;
+        const prepare = remote.prepare;
+        // Busy until the call returns (a boot runs for its length).
+        if (prepare) {
+          prepareBeforeCall = async () => {
+            afterScopedCall = await prepare();
+          };
         }
+        // The caller's machine learns which lane here is its work copy, so
+        // its views can show this emulator.
+        transformScopedResult = remote.answer;
       }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAndroidAdeActionArgs(runtime, session, action, androidArgs, toolArgs.callerRoot)
@@ -8673,6 +8695,15 @@ async function runTool(args: {
     if (!owner || !parseForeignCallerSessionId(owner)) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
+    // Sent without waiting, so it can land after the chat's next turn
+    // already claimed a device here: then it would free the new claim, and
+    // is skipped. A caller that names no turn (older ADE) releases as before.
+    const endedTurnId = asOptionalTrimmedString(toolArgs.turnId);
+    const latestTurnId = externalChatLatestTurn(owner);
+    if (endedTurnId && latestTurnId && latestTurnId !== endedTurnId) {
+      runtime.logger.info("remote_work.turn_release_stale", { endedTurnId, latestTurnId });
+      return { released: [], skipped: "newer_turn" };
+    }
     const released: string[] = [];
     const release = async (device: string, run: () => Promise<boolean>): Promise<void> => {
       try {
@@ -8686,10 +8717,11 @@ async function runTool(args: {
       const ios = runtime.iosSimulatorService;
       return ios ? (await ios.releaseIfOwnedBy(owner, { keepRunning: true })).released : false;
     });
-    // Its recordings stop (filed as proof) and its leases pass on; the emulator stays on.
+    // Its automatic recordings stop (filed as proof) and its leases pass on;
+    // a recording it started itself and the emulator keep going.
     await release("android_emulator", async () => {
       if (!runtime.androidEmulatorService) return false;
-      await runtime.androidEmulatorService.releaseIfOwnedBy(owner);
+      await runtime.androidEmulatorService.releaseIfOwnedBy(owner, { turnEnded: true });
       return true;
     });
     // The real-input lease on this machine's screen.

@@ -404,11 +404,24 @@ the trust boundary, as it is for the person's own desktop.
   only its own claims) to each machine and project whose simulator, emulator,
   screen or App Control session it used this turn (`onRemoteWorkTurnSettled`
   in the chat service). That machine lets go as for a local chat that ended,
-  without powering anything off: iOS leases, app session and device session
-  (`releaseIfOwnedBy(…, { keepRunning: true })`), Android recordings and
-  leases, the desktop input lease. App Control sessions are left running (a
-  stop would quit the app). A machine that is offline or asleep is skipped,
-  never woken; device leases there still expire by themselves (10 minutes).
+  without powering anything off: iOS leases, automatic recordings and device
+  session, and its claim on the app session, which keeps running with its
+  live view, unowned, for the next turn or another chat to take
+  (`releaseIfOwnedBy(…, { keepRunning: true })`); Android leases and
+  automatic recordings (one the agent started itself keeps going); the
+  desktop input lease. App Control sessions are left running (a stop would
+  quit the app). The release carries the ended turn's id, and every call
+  carries the caller's current turn (`RemoteCallerClaim.turnId`), so a
+  release that lands after the chat's next turn already called there is
+  skipped. A machine that is offline or asleep is skipped, never woken;
+  device leases there still expire by themselves (10 minutes).
+- **Which callers get it.** The end-of-turn release covers chats: every
+  provider on the chat surface (Claude, Codex, Cursor, Droid, OpenCode, Pi,
+  Muse, Qwen, Kimi, Grok, Copilot, Devin, Antigravity), since the chat
+  service sees their turns end. A provider's CLI in an ADE terminal using
+  `--machine` gets no release: it relies on the device lease timeouts, the
+  20-minute Android idle stop, the screen's idle stop and the work-copy
+  sweep.
 
 ## Limits
 

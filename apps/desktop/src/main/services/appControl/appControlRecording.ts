@@ -43,6 +43,7 @@ import type {
   AppControlScreencastFrame,
   AppControlSession,
 } from "../../../shared/types/appControl";
+import { APP_CONTROL_PROOF_BACKEND_NAME } from "../../../shared/types/appControl";
 import type {
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
@@ -62,9 +63,6 @@ import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngine
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoLengths, produceDemoVideo, DemoRecordingUnusableError } from "../demoVideo/demoRenderService";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
-
-/** The broker's backend name for everything App Control files. */
-export const APP_CONTROL_PROOF_BACKEND_NAME = "ade-app-control";
 
 export const APP_CONTROL_RECORDING_NEEDS_DESKTOP_CODE = "APP_CONTROL_RECORDING_NEEDS_DESKTOP";
 export const APP_CONTROL_SCREEN_RECORDING_DENIED_CODE = "APP_CONTROL_SCREEN_RECORDING_DENIED";

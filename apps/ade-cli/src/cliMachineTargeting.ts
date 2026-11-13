@@ -22,6 +22,7 @@ import { gitRemoteIdentity } from "../../desktop/src/main/services/github/github
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
 import { MAC_DESKTOP_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/macDesktop";
+import { APP_CONTROL_PROOF_BACKEND_NAME } from "../../desktop/src/shared/types/appControl";
 import { remoteMachineLongCallBudgetMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { androidStoreShotCaption } from "../../desktop/src/shared/androidDevicePresentation";
 import {
@@ -354,17 +355,33 @@ function machineCallScopeFor(
  */
 const MACHINE_WIDE_ACTIONS: ReadonlySet<string> = new Set(["usage.getUsageLimits", "usage.getUsageSnapshot"]);
 
+/** The tool, domain, action and args of an `ade/actions/call` request; null for any other request. */
+function actionCallParts(
+  method: string,
+  params: JsonObject | undefined,
+): { name: unknown; domain: string | null; action: string | null; args: JsonObject | null } | null {
+  if (method !== "ade/actions/call" || !params || !isRecord(params.arguments)) return null;
+  const { domain, action, args } = params.arguments;
+  return {
+    name: params.name,
+    domain: typeof domain === "string" ? domain : null,
+    action: typeof action === "string" ? action : null,
+    args: isRecord(args) ? args : null,
+  };
+}
+
 /** `ade shell start --machine … --scratch`: a command that needs no checkout there. */
 function isScratchShell(method: string, params: JsonObject | undefined): boolean {
-  if (method !== "ade/actions/call" || !params || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
-  const { domain, action, args } = params.arguments;
-  return domain === "pty" && action === "create" && isRecord(args) && isRecord(args.remoteWork) && args.remoteWork.scratch === true;
+  const call = actionCallParts(method, params);
+  const remoteWork = call?.args?.remoteWork;
+  return call?.name === "run_ade_action" && call.domain === "pty" && call.action === "create"
+    && isRecord(remoteWork) && remoteWork.scratch === true;
 }
 
 function isMachineWideAction(method: string, params: JsonObject | undefined): boolean {
-  if (method !== "ade/actions/call" || !params || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
-  const { domain, action } = params.arguments;
-  return typeof domain === "string" && typeof action === "string" && MACHINE_WIDE_ACTIONS.has(`${domain}.${action}`);
+  const call = actionCallParts(method, params);
+  return call?.name === "run_ade_action" && call.domain != null && call.action != null
+    && MACHINE_WIDE_ACTIONS.has(`${call.domain}.${call.action}`);
 }
 
 /** The most a proof command reads back from another machine for one capture. */
@@ -388,9 +405,8 @@ function withoutLocalPaths(params: JsonObject | undefined): JsonObject {
 
 /** `domain.action` of an action call, the name the other machine's budgets use; null for anything else. */
 function remoteCallLabel(method: string, params: JsonObject | undefined): string | null {
-  if (method !== "ade/actions/call" || !params || !isRecord(params.arguments)) return null;
-  const { domain, action } = params.arguments;
-  return typeof domain === "string" && typeof action === "string" ? `${domain}.${action}` : null;
+  const call = actionCallParts(method, params);
+  return call?.domain != null && call.action != null ? `${call.domain}.${call.action}` : null;
 }
 
 /** How often a long call to another machine says it is still waiting. */
@@ -584,7 +600,7 @@ export async function createMachineRemoteConnection(
       name: "ingest_computer_use_artifacts",
       arguments: {
         backendStyle: "manual",
-        backendName: "ade-app-control",
+        backendName: APP_CONTROL_PROOF_BACKEND_NAME,
         toolName: "app-control proof",
         inputs: [{ kind: "screenshot", title, description: title, path: filePath }],
       },
@@ -599,15 +615,18 @@ export async function createMachineRemoteConnection(
    * the files it made are read back, and each is filed in THIS chat's drawer;
    * the answer carries the ids filed here.
    */
-  const fileOneRemoteAppleCaptureHere = async (
-    where: string,
+  /**
+   * File one capture read back from another machine in THIS chat's drawer.
+   * Answers the id filed here, or null when the drawer refused it.
+   */
+  const fileCaptureHere = async (
     input: { kind: "screenshot" | "video_recording"; title: string; description: string; path: string; mimeType: string; metadata: JsonObject },
-    toolName: string,
+    filing: { backendName: string; toolName: string; where: string; noun?: "capture" | "recording" },
   ): Promise<string | null> => {
     try {
       const filed = unwrapToolResult(await fileRemoteCapturesHere({
         name: "ingest_computer_use_artifacts",
-        arguments: { backendStyle: "manual", backendName: "ade-ios-simulator", toolName, inputs: [input] },
+        arguments: { backendStyle: "manual", backendName: filing.backendName, toolName: filing.toolName, inputs: [input] },
       }));
       return firstFiledArtifactId(filed);
     } catch (error) {
@@ -619,10 +638,18 @@ export async function createMachineRemoteConnection(
         ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
         : null;
       // The capture is what was asked for; a drawer that refused it is said, not thrown.
-      if (!duplicateOf) process.stderr.write(`Could not file the ${toolName} capture from ${where} as proof here: ${message}\n`);
+      if (!duplicateOf) {
+        process.stderr.write(`Could not file the ${filing.toolName} ${filing.noun ?? "capture"} from ${filing.where} as proof here: ${message}\n`);
+      }
       return duplicateOf;
     }
   };
+
+  const fileOneRemoteAppleCaptureHere = (
+    where: string,
+    input: Parameters<typeof fileCaptureHere>[0],
+    toolName: string,
+  ): Promise<string | null> => fileCaptureHere(input, { backendName: "ade-ios-simulator", toolName, where });
 
   const fileRemoteAppleProofHere = async (params: JsonObject, action: AppleProofAction): Promise<unknown> => {
     const toolArgs = isRecord(params.arguments) ? params.arguments : {};
@@ -709,22 +736,8 @@ export async function createMachineRemoteConnection(
     if (!record) return answer;
     const where = machineName ?? machine;
     const caption = asString(actionArgs.caption);
-    const fileOne = async (input: { kind: "screenshot" | "video_recording"; title: string; description: string; path: string; mimeType: string; metadata: JsonObject }, toolName: string) => {
-      try {
-        const filed = unwrapToolResult(await fileRemoteCapturesHere({
-          name: "ingest_computer_use_artifacts",
-          arguments: { backendStyle: "manual", backendName: "android-emulator", toolName, inputs: [input] },
-        }));
-        return firstFiledArtifactId(filed);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const duplicateOf = message.includes(PROOF_DUPLICATE_CODE)
-          ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
-          : null;
-        if (!duplicateOf) process.stderr.write(`Could not file the ${toolName} capture from ${where} as proof here: ${message}\n`);
-        return duplicateOf;
-      }
-    };
+    const fileOne = (input: Parameters<typeof fileCaptureHere>[0], toolName: string) =>
+      fileCaptureHere(input, { backendName: "android-emulator", toolName, where });
     if (action === "screenshot" || action === "captureProofBundle") {
       const filePath = asString(action === "screenshot" ? record.path : record.screenshotPath);
       if (!filePath) return answer;
@@ -857,36 +870,18 @@ export async function createMachineRemoteConnection(
     // No caption is a scratch recording, here as there: nothing is filed.
     if (!record || !filePath || !caption || asString(record.lastError)) return answer;
     const where = machineName ?? machine;
-    let proofArtifactId: string | null = null;
-    try {
-      const filed = unwrapToolResult(await fileRemoteCapturesHere({
-        name: "ingest_computer_use_artifacts",
-        arguments: {
-          backendStyle: "manual",
-          backendName: surface.backendName,
-          toolName: surface.toolName,
-          inputs: [{
-            kind: "video_recording",
-            title: caption,
-            description: `${surface.label} recording on ${where}.`,
-            path: filePath,
-            mimeType: "video/mp4",
-            metadata: {
-              durationMs: typeof record.durationMs === "number" ? record.durationMs : null,
-              ...(typeof record.wallDurationMs === "number" ? { wallDurationMs: record.wallDurationMs } : {}),
-              ...(typeof record.idleCutMs === "number" ? { idleCutMs: record.idleCutMs } : {}),
-            },
-          }],
-        },
-      }));
-      proofArtifactId = firstFiledArtifactId(filed);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      proofArtifactId = message.includes(PROOF_DUPLICATE_CODE)
-        ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
-        : null;
-      if (!proofArtifactId) process.stderr.write(`Could not file the ${surface.toolName} recording from ${where} as proof here: ${message}\n`);
-    }
+    const proofArtifactId = await fileCaptureHere({
+      kind: "video_recording",
+      title: caption,
+      description: `${surface.label} recording on ${where}.`,
+      path: filePath,
+      mimeType: "video/mp4",
+      metadata: {
+        durationMs: typeof record.durationMs === "number" ? record.durationMs : null,
+        ...(typeof record.wallDurationMs === "number" ? { wallDurationMs: record.wallDurationMs } : {}),
+        ...(typeof record.idleCutMs === "number" ? { idleCutMs: record.idleCutMs } : {}),
+      },
+    }, { backendName: surface.backendName, toolName: surface.toolName, where, noun: "recording" });
     return withAppleActionResult(answer, { ...record, proofArtifactId });
   };
 
@@ -963,15 +958,15 @@ export async function createMachineRemoteConnection(
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "mac_desktop") {
         // The screen there is this chat's work copy's (Mac, Windows or Linux Desktop).
         const screenParams = withRemoteScreenArgs(params, roots.workspaceRoot);
-        if (recordingStopFiledAsProof(screenParams)) {
+        if (recordingStopFiledAsProof(method, screenParams)) {
           return await fileRemoteRecordingHere(screenParams, { backendName: MAC_DESKTOP_PROOF_BACKEND_NAME, toolName: "desktop record", label: "Desktop screen" });
         }
         return await callRemote(method, screenParams);
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "app_control") {
         const appControlParams = withRemoteAppControlArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
-        if (recordingStopFiledAsProof(appControlParams)) {
-          return await fileRemoteRecordingHere(appControlParams, { backendName: "ade-app-control" /* APP_CONTROL_PROOF_BACKEND_NAME */, toolName: "app-control record", label: "App Control" });
+        if (recordingStopFiledAsProof(method, appControlParams)) {
+          return await fileRemoteRecordingHere(appControlParams, { backendName: APP_CONTROL_PROOF_BACKEND_NAME, toolName: "app-control record", label: "App Control" });
         }
         return await callRemote(method, appControlParams);
       }
@@ -1065,10 +1060,9 @@ function firstFiledArtifactId(value: unknown): string | null {
 }
 
 /** A recording stop the other machine would file as proof; `proof: false` files nothing at all. */
-function recordingStopFiledAsProof(params: JsonObject): boolean {
-  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
-  const args = toolArgs && isRecord(toolArgs.args) ? toolArgs.args : null;
-  return params.name === "run_ade_action" && toolArgs?.action === "stopRecording" && args?.proof !== false;
+function recordingStopFiledAsProof(method: string, params: JsonObject): boolean {
+  const call = actionCallParts(method, params);
+  return call?.name === "run_ade_action" && call.action === "stopRecording" && call.args?.proof !== false;
 }
 
 function isAppControlCaptureProof(params: JsonObject | undefined): boolean {

@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ANDROID_CODE_SYNC_ACTIONS, ANDROID_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/androidEmulator";
+import { APP_CONTROL_CODE_SYNC_ACTIONS, APP_CONTROL_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/appControl";
+import { MAC_DESKTOP_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/macDesktop";
 import {
   REMOTE_WORK_FILE_CHUNK_BYTES,
   REMOTE_WORK_FILE_MAX_BYTES,
@@ -69,8 +71,7 @@ export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: M
           ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
         }
         : {
-          ...(workCopy.sync === "none" ? readLocalHead(cwd) : readLocalWorkSource(cwd)),
-          ...(workCopy.sync ? { sync: workCopy.sync } : {}),
+          ...remoteWorkPayload(workCopy.sync === "none" ? "head" : "build", cwd, workCopy.sync),
           ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
           // A command there ends its shell, so the next command can sync.
           ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
@@ -96,29 +97,31 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
   const builds = workCopy != null && sync !== "none";
   return {
     ...params,
-    arguments: {
-      ...toolArgs,
-      args: {
-        ...args,
-        remoteWork: builds
-          ? { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) }
-          : { ...readLocalHead(cwd), sync: "none" },
-      },
-    },
+    arguments: { ...toolArgs, args: { ...args, remoteWork: remoteWorkPayload(builds ? "build" : "head", cwd, sync) } },
   };
+}
+
+/**
+ * What a `--machine` call sends about this checkout: nothing but `sync:
+ * "none"` for a read about the machine (no copy made), this checkout's code
+ * for a verb that builds or runs it, else only its commit (a missing copy is
+ * made at it, an existing one used as it is).
+ */
+function remoteWorkPayload(kind: "machine" | "build" | "head", cwd: string, sync: MachineWorkCopySync = null): JsonObject {
+  if (kind === "machine") return { sync: "none" };
+  if (kind === "build") return { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) };
+  return { ...readLocalHead(cwd), sync: "none" };
 }
 
 /**
  * The lane-free reads of `ade screen` (`mac_desktop`) and `ade app-control`
  * (`app_control`): they send no commit and make no copy there, and name this
- * chat's screen or session only when its copy is there already. They match
- * the brain's (`MAC_DESKTOP_READ_ONLY_ACTIONS`, `APP_CONTROL_LANE_FREE_ACTIONS`
- * in adeRpcServer.ts).
+ * chat's screen or session only when its copy is there already.
  */
-const SCREEN_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "listWindows", "getStreamStatus"]);
-const APP_CONTROL_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "listDrivers"]);
+const SCREEN_MACHINE_ACTIONS: ReadonlySet<string> = new Set(MAC_DESKTOP_LANE_FREE_ACTIONS);
+const APP_CONTROL_MACHINE_ACTIONS: ReadonlySet<string> = new Set(APP_CONTROL_LANE_FREE_ACTIONS);
 /** App Control verbs that run this chat's code there: the copy is synced to this checkout first. */
-const APP_CONTROL_CODE_SYNC_ACTIONS: ReadonlySet<string> = new Set(["launch", "launchInTerminal"]);
+const APP_CONTROL_CODE_SYNC: ReadonlySet<string> = new Set(APP_CONTROL_CODE_SYNC_ACTIONS);
 
 /**
  * `ade screen … --machine` (Mac, Windows or Linux Desktop there): the screen
@@ -140,7 +143,7 @@ export function withRemoteScreenArgs(params: JsonObject, cwd: string): JsonObjec
       ...toolArgs,
       args: {
         ...args,
-        remoteWork: SCREEN_MACHINE_ACTIONS.has(action) ? { sync: "none" } : { ...readLocalHead(cwd), sync: "none" },
+        remoteWork: remoteWorkPayload(SCREEN_MACHINE_ACTIONS.has(action) ? "machine" : "head", cwd),
       },
     },
   };
@@ -159,7 +162,7 @@ export function withRemoteAppControlArgs(params: JsonObject, cwd: string, workCo
   if (!isRecord(toolArgs.args)) return params;
   const action = asString(toolArgs.action) ?? "";
   const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
-  const runsCode = APP_CONTROL_CODE_SYNC_ACTIONS.has(action);
+  const runsCode = APP_CONTROL_CODE_SYNC.has(action);
   const sync = workCopy?.sync ?? null;
   const launchCwd = runsCode ? asString(args.cwd) : null;
   return {
@@ -169,11 +172,11 @@ export function withRemoteAppControlArgs(params: JsonObject, cwd: string, workCo
       args: {
         ...args,
         ...(launchCwd ? { cwd: checkoutRelativePath(launchCwd, cwd, "--cwd") } : {}),
-        remoteWork: APP_CONTROL_MACHINE_ACTIONS.has(action)
-          ? { sync: "none" }
-          : runsCode && sync !== "none"
-            ? { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) }
-            : { ...readLocalHead(cwd), sync: "none" },
+        remoteWork: remoteWorkPayload(
+          APP_CONTROL_MACHINE_ACTIONS.has(action) ? "machine" : runsCode && sync !== "none" ? "build" : "head",
+          cwd,
+          sync,
+        ),
       },
     },
   };
@@ -184,6 +187,11 @@ export function withRemoteAppControlArgs(params: JsonObject, cwd: string, workCo
  * work copy: relative to the checkout's top, `/`-separated ("" is the top).
  */
 function checkoutRelativePath(target: string, cwd: string, flag: string): string {
+  return checkoutRelative(target, cwd, flag).relative.split(path.sep).join("/");
+}
+
+/** `target` relative to this checkout's top (git names the top by its real path: macOS `/tmp` is `/private/tmp`). */
+function checkoutRelative(target: string, cwd: string, flag: string): { top: string; relative: string } {
   const { top } = localCheckout(cwd);
   const typed = path.resolve(cwd, target);
   let relative: string;
@@ -195,7 +203,7 @@ function checkoutRelativePath(target: string, cwd: string, flag: string): string
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new CliUsageError(`${flag} ${target} is outside this checkout (${top}), so it means nothing on the other machine.`);
   }
-  return relative.split(path.sep).join("/");
+  return { top, relative };
 }
 
 /**
@@ -231,11 +239,7 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObje
       args: {
         ...args,
         ...(apkPath ? { apkPath: remoteApkPath(apkPath, cwd) } : {}),
-        remoteWork: ANDROID_MACHINE_ACTIONS.has(action)
-          ? { sync: "none" }
-          : builds
-            ? readLocalWorkSource(cwd)
-            : { ...readLocalHead(cwd), sync: "none" },
+        remoteWork: remoteWorkPayload(ANDROID_MACHINE_ACTIONS.has(action) ? "machine" : builds ? "build" : "head", cwd),
       },
     },
   };
@@ -248,14 +252,8 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObje
  * output) is refused here with the way that works.
  */
 function remoteApkPath(apkPath: string, cwd: string): string {
-  const { top } = localCheckout(cwd);
-  // git names the top by its real path (macOS `/tmp` is `/private/tmp`).
-  const typed = path.resolve(cwd, apkPath);
-  if (!fs.existsSync(typed)) throw new CliUsageError(`--apk ${apkPath}: no such file here.`);
-  const relative = path.relative(fs.realpathSync.native(top), fs.realpathSync.native(typed));
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new CliUsageError(`--apk ${apkPath} is outside this checkout (${top}), so it cannot go to the other machine.`);
-  }
+  if (!fs.existsSync(path.resolve(cwd, apkPath))) throw new CliUsageError(`--apk ${apkPath}: no such file here.`);
+  const { top, relative } = checkoutRelative(apkPath, cwd, "--apk");
   const ignored = spawnSync("git", ["check-ignore", "-q", "--", relative], { cwd: top, windowsHide: true });
   if (ignored.status === 0) {
     throw new CliUsageError(

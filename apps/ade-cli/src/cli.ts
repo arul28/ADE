@@ -12,6 +12,8 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
+import type { RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -30845,7 +30847,6 @@ async function runServe(
   // before then is refused as "can't reach other machines".
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
-  type RemoteWorkTurnRelease = { sessionId: string; uses: Array<{ machineKey: string; machineName: string; projectId: string | null }> };
   let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
@@ -31113,12 +31114,14 @@ async function runServe(
   // a machine that is offline or asleep is skipped (never woken), and the
   // device leases there still time out by themselves.
   if (!embedded) {
-    releaseRemoteWorkDevices = ({ sessionId, uses }) => {
+    releaseRemoteWorkDevices = ({ sessionId, turnId, uses }) => {
       void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
         machine: use.machineKey,
         scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
         method: "ade/actions/call",
-        params: { name: "release_remote_work_devices", arguments: {} },
+        // The ended turn goes in the arguments, not the caller claim: there
+        // it would count as the chat's latest turn, after its next one.
+        params: { name: "release_remote_work_devices", arguments: turnId ? { turnId } : {} },
         caller: { chatSessionId: sessionId, permissionLevel: null },
         timeoutMs: 30_000,
         wake: false,
@@ -31127,7 +31130,11 @@ async function runServe(
           machineKey: use.machineKey,
           error: error instanceof Error ? error.message : String(error),
         });
-      })))).catch(() => undefined);
+      })))).catch((error: unknown) => {
+        headlessProjectLogger.warn("remote_work.turn_release_bridge_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     };
   }
 
@@ -31198,10 +31205,13 @@ async function runServe(
     // start and then hourly deletes copies unused for a week and copies whose
     // chat its own machine says is deleted or archived.
     const sweepWorkCopies = async (): Promise<void> => {
-      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+      const [{ sweepMachineRemoteWork }, { sweepRemoteWorkScratch }, { parseForeignCallerSessionId }] = await Promise.all([
         import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/main/services/remoteWork/remoteWorkScratch"),
         import("../../desktop/src/shared/runtimeClientNames"),
       ]);
+      // `--scratch` folders a restart left behind.
+      sweepRemoteWorkScratch(undefined, headlessProjectLogger);
       await sweepMachineRemoteWork({
         logger: headlessProjectLogger,
         ownerGone: async (owner) => {
@@ -40992,14 +41002,6 @@ const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
  * it arrives (text mode), then answer with its exit code. Works the same for a
  * shell on another machine, because every call goes over `connection`.
  */
-/** Text without terminal control sequences: OSC (titles, links), CSI (colour, cursor, modes) and the short escapes. */
-function withoutTerminalControls(text: string): string {
-  return text
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\u001b[()][0-9A-Za-z]|\u001b[=>78MDEc]/g, "");
-}
-
 async function followShellToExit(
   connection: CliConnection,
   started: unknown,
@@ -41021,7 +41023,7 @@ async function followShellToExit(
       // To a pipe (an agent reading it), without the screen codes a terminal
       // adds (Windows' console sends a title, clear screen and mode switches
       // around the first line of output).
-      if (options.text) process.stdout.write(process.stdout.isTTY ? data : withoutTerminalControls(data));
+      if (options.text) process.stdout.write(process.stdout.isTTY ? data : stripAnsiWithOptions(data, { preserveCarriageReturns: true }));
       output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     }
     if (typeof read.nextSince === "number") since = read.nextSince;

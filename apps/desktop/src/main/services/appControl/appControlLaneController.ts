@@ -139,6 +139,8 @@ export type CreateAppControlServiceArgs = {
    * `ade shell start --machine` does; without it such a launch is refused.
    */
   resolvePrimaryLaneId?: (() => string | null) | null;
+  /** Archives a terminal: the one a chat on another machine runs its app in is archived from the start. */
+  archiveTerminal?: ((sessionId: string) => void) | null;
   onEvent?: ((payload: AppControlEventPayload) => void) | null;
   /**
    * macOS recording engine. Defaults to a private `ade-desktop-driver` that is

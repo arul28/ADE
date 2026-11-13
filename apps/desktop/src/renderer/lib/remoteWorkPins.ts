@@ -29,6 +29,12 @@ function remoteWorkPinOn(
   };
 }
 
+/** The pin for a use's project on this computer, or "unreachable" when the use names no checkout. */
+function localRemoteWorkPin(use: AgentChatRemoteWorkUse): RemoteWorkPin {
+  if (!use.projectRootPath) return "unreachable";
+  return { kind: "local", key: use.projectRootPath, rootPath: use.projectRootPath, displayName: use.machineName };
+}
+
 function resolveRemoteWorkPin(
   use: AgentChatRemoteWorkUse,
   snapshot: RemoteRuntimeConnectionSnapshot | null,
@@ -36,7 +42,7 @@ function resolveRemoteWorkPin(
 ): RemoteWorkPin {
   if (!use.projectId || !use.projectRootPath) return "unreachable";
   if (localMachineKey && sameMachineKey(use.machineKey, localMachineKey)) {
-    return { kind: "local", key: use.projectRootPath, rootPath: use.projectRootPath, displayName: use.machineName };
+    return localRemoteWorkPin(use);
   }
   const connection = snapshot?.connections.find((entry) =>
     entry.state === "connected" && sameMachineKey(entry.target.pairedMachine?.machineKey, use.machineKey));
@@ -79,12 +85,12 @@ export function useRemoteWorkPinResolver(active: boolean): (use: AgentChatRemote
 const connectsInFlight = new Map<string, Promise<MachineConnectResult>>();
 
 function connectRemoteWorkMachine(machineKey: string): Promise<MachineConnectResult> {
-  const key = machineKey.trim().toLowerCase();
-  const existing = connectsInFlight.get(key);
-  if (existing) return existing;
+  for (const [key, existing] of connectsInFlight) {
+    if (sameMachineKey(key, machineKey)) return existing;
+  }
   const started = window.ade.machines.connect(machineKey)
-    .finally(() => { connectsInFlight.delete(key); });
-  connectsInFlight.set(key, started);
+    .finally(() => { connectsInFlight.delete(machineKey); });
+  connectsInFlight.set(machineKey, started);
   return started;
 }
 
@@ -126,7 +132,8 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
   const localMachineKey = useLocalMachineKey(active);
   const [attempt, setAttempt] = useState<ConnectAttempt | null>(null);
   const [nonce, setNonce] = useState(0);
-  // A click is the person's say-so, even over their own Disconnect.
+  // A click is the person's say-so, even over their own Disconnect. It holds
+  // for that one connect: a later Disconnect of theirs must win again.
   const [clicked, setClicked] = useState(false);
   const retry = useCallback(() => {
     setClicked(true);
@@ -136,7 +143,17 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
   const resolved = resolveRemoteWorkPin(use, snapshot, localMachineKey);
   const connection = snapshot?.connections.find((entry) =>
     sameMachineKey(entry.target.pairedMachine?.machineKey, use.machineKey)) ?? null;
-  const blocked = connection?.reconnectBlocked === "disconnected" && !clicked;
+  const reconnectBlocked = connection?.reconnectBlocked ?? null;
+  const [blockSeen, setBlockSeen] = useState(reconnectBlocked);
+  if (blockSeen !== reconnectBlocked) {
+    setBlockSeen(reconnectBlocked);
+    setClicked(false);
+  }
+  // A block in a snapshot from before this window's own connect answered is
+  // the one that connect lifted; the next push says whether it still holds.
+  const connectedAt = attempt?.phase === "connected" && sameMachineKey(attempt.machineKey, use.machineKey) ? attempt.at : null;
+  const blockIsStale = connectedAt !== null && (!snapshot || snapshot.updatedAt <= connectedAt);
+  const blocked = reconnectBlocked === "disconnected" && !clicked && !blockIsStale;
   const hasProject = Boolean(use.projectId && use.projectRootPath);
   const needsConnect = active && loaded && hasProject && resolved === "unreachable" && !blocked;
   const machineKey = use.machineKey;
@@ -152,6 +169,7 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     void connectRemoteWorkMachine(machineKey)
       .then((result) => {
         if (cancelled) return;
+        if (result.ok) setClicked(false);
         setAttempt(result.ok
           ? { machineKey, phase: "connected", address: result.address, at: Date.now() }
           : { machineKey, phase: "failed", message: result.message });
@@ -175,7 +193,8 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     // address, keyed like the snapshot's pin so nothing remounts when it lands.
     // A later drop shows in the snapshot, whose own state then wins.
     if (current.address.kind === "this") {
-      return { kind: "pin", pin: { kind: "local", key: use.projectRootPath!, rootPath: use.projectRootPath!, displayName: use.machineName } };
+      const local = localRemoteWorkPin(use);
+      return local === "unreachable" ? { kind: "unknown", retry } : { kind: "pin", pin: local };
     }
     const sameTarget = connection?.target.id === current.address.targetId ? connection : null;
     // An error the snapshot reported after this connect answered is newer than it.

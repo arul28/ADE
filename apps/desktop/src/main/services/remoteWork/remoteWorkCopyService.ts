@@ -34,6 +34,7 @@ import { runGit, type GitRunResult } from "../git/git";
 import { isPathInside, pathComparisonKey, pathsEqual } from "../shared/pathCompare";
 import { writeTextAtomic } from "../shared/utils";
 import { isRemoteWorkLaneId, REMOTE_WORK_LANE_PREFIX, REMOTE_WORK_MAX_PATCH_BYTES } from "../../../shared/types/remoteWork";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 
 /** What the calling chat sends with each command. */
 export type RemoteWorkSource = {
@@ -113,10 +114,15 @@ const REMOTE_WORK_RECLAIM_FREE_BYTES = 20 * 1024 ** 3;
 /**
  * Below this much free disk, no new copy is made. A copy is a worktree that
  * shares the main checkout's objects (ADE's own is about 300 MB), so this
- * leaves room for one plus a small build; a small ADE Cloud computer has a
- * few GB free once the lane is set up, and 5 GB refused every copy there.
+ * leaves room for one plus a build.
  */
-const REMOTE_WORK_MIN_FREE_BYTES = 1.5 * 1024 ** 3;
+const REMOTE_WORK_MIN_FREE_BYTES = 5 * 1024 ** 3;
+/**
+ * The same floor on an ADE Cloud computer: a small one has a few GB free once
+ * its lane is set up, and 5 GB refused every copy there. Its disk guard
+ * watches the rest.
+ */
+const REMOTE_WORK_CLOUD_MIN_FREE_BYTES = 1.5 * 1024 ** 3;
 
 const SHA = /^[0-9a-f]{40}$/i;
 const REGISTRY_FILE = "copies.json";
@@ -151,6 +157,11 @@ const FAILED_MAKE_RETENTION_MS = 10 * 60_000;
 function literalRootPattern(file: string): string {
   const escaped = file.replace(/[\\*?[]/g, (char) => `\\${char}`).replace(/ +$/, (spaces) => spaces.replace(/ /g, "\\ "));
   return `/${escaped}`;
+}
+
+/** The first three of `files`, and how many more: "a, b, c and 4 more". */
+function nameFew(files: readonly string[]): string {
+  return files.slice(0, 3).join(", ") + (files.length > 3 ? ` and ${files.length - 3} more` : "");
 }
 
 function ownerHash(owner: string): string {
@@ -286,6 +297,8 @@ export type RemoteWorkCopyServiceOptions = {
   now?: () => number;
   /** Free bytes on the project's disk; null when unknown. */
   freeBytes?: () => number | null;
+  /** Whether this is an ADE Cloud computer (`ADE_CLOUD_INSTANCE_ID`), whose smaller disk takes a lower floor. */
+  isCloudComputer?: () => boolean;
 };
 
 function defaultFreeBytes(dir: string, logger?: RemoteWorkLogger): number | null {
@@ -302,7 +315,8 @@ function defaultFreeBytes(dir: string, logger?: RemoteWorkLogger): number | null
 /** `rebuilt`: read back from ADE's project list because the file was damaged; never written. */
 type MachineIndex = { version: 1; projects: Array<{ projectRoot: string }>; rebuilt?: true };
 
-function defaultAdeHome(): string {
+/** ADE's home on this machine: $ADE_HOME, else ~/.ade. */
+export function defaultAdeHome(): string {
   const fromEnv = process.env.ADE_HOME?.trim();
   return path.resolve(fromEnv || path.join(os.homedir(), ".ade"));
 }
@@ -374,6 +388,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   const { projectRoot, logger } = options;
   const now = options.now ?? (() => Date.now());
   const freeBytes = options.freeBytes ?? (() => defaultFreeBytes(projectRoot, logger));
+  const minFreeBytes = (options.isCloudComputer ?? isAdeCloudComputer)() ? REMOTE_WORK_CLOUD_MIN_FREE_BYTES : REMOTE_WORK_MIN_FREE_BYTES;
   const adeHome = options.adeHome ?? defaultAdeHome();
   const root = path.join(projectRoot, ".ade", "remote-work");
   const state = projectStateFor(projectRoot);
@@ -582,8 +597,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       ? [...(await changedPaths(copy.syncedTree))].filter((file) => sinceCommit.has(file))
       : [...sinceCommit]).filter((file) => !keptInPlace.has(file));
     if (atRisk.length) {
-      const named = atRisk.slice(0, 3).join(", ") + (atRisk.length > 3 ? ` and ${atRisk.length - 3} more` : "");
-      return `it has changes made there that are not committed and pushed (${named})`;
+      return `it has changes made there that are not committed and pushed (${nameFew(atRisk)})`;
     }
     return null;
   };
@@ -603,10 +617,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       if (keep.length) {
         const inTheWay = await keptFilesInTheWay(copyPath, source.head, patchFile, keep);
         if (inTheWay.length) {
-          const named = inTheWay.slice(0, 3).join(", ") + (inTheWay.length > 3 ? ` and ${inTheWay.length - 3} more` : "");
           throw new RemoteWorkError(
             "copy_has_unsynced_work",
-            `This chat's work copy here was not synced because files made there (${named}) would be overwritten by the chat's own `
+            `This chat's work copy here was not synced because files made there (${nameFew(inTheWay)}) would be overwritten by the chat's own `
             + "files of the same name. Pass --no-sync to use the copy as it is, or --discard to throw them away.",
           );
         }
@@ -764,7 +777,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       free = freeBytes();
       if (free == null || free >= REMOTE_WORK_RECLAIM_FREE_BYTES) return;
     }
-    if (free != null && free < REMOTE_WORK_MIN_FREE_BYTES) {
+    if (free != null && free < minFreeBytes) {
       throw new RemoteWorkError(
         "disk_full",
         `This machine has ${Math.floor(free / 1024 ** 3)} GB free, too little for a new work copy. Free some disk there or use another machine.`,
@@ -998,6 +1011,31 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
 
 export type RemoteWorkCopyService = ReturnType<typeof createRemoteWorkCopyService>;
 
+type LaneLookup = ((laneId: string) => Promise<string | null> | string | null) | null | undefined;
+
+/**
+ * A device or screen service's lane lookups, with a chat on another machine
+ * standing in for a lane by its work copy here (`remote-work-…`): the copy is
+ * the lane's folder, named for that chat's machine. Any other lane goes to
+ * `lookups`.
+ */
+export function withRemoteWorkLaneResolvers(
+  projectRoot: string,
+  lookups: { resolveLaneWorktreePath?: LaneLookup; resolveLaneName?: LaneLookup },
+): {
+  resolveLaneWorktreePath: (laneId: string) => Promise<string | null> | string | null;
+  resolveLaneName: (laneId: string) => Promise<string | null> | string | null;
+} {
+  return {
+    resolveLaneWorktreePath: (laneId) => (isRemoteWorkLaneId(laneId)
+      ? remoteWorkLaneSummary(projectRoot, laneId)?.path ?? null
+      : lookups.resolveLaneWorktreePath?.(laneId) ?? null),
+    resolveLaneName: (laneId) => (isRemoteWorkLaneId(laneId)
+      ? remoteWorkLaneSummary(projectRoot, laneId)?.name ?? null
+      : lookups.resolveLaneName?.(laneId) ?? null),
+  };
+}
+
 /**
  * How a project's runtime tells whether a shell still runs in a copy (its
  * terminals). Registered once when the runtime starts; the returned function
@@ -1090,7 +1128,6 @@ export async function sweepMachineRemoteWork(sweepOptions: {
   ownerGone?: (owner: string) => Promise<{ gone: boolean; archived: boolean } | null>;
 } = {}): Promise<number> {
   let released = 0;
-  sweepRemoteWorkScratch(sweepOptions.adeHome ?? defaultAdeHome(), sweepOptions.logger);
   for (const entry of readMachineIndex(sweepOptions.adeHome ?? defaultAdeHome(), sweepOptions.logger).projects) {
     try {
       released += await createRemoteWorkCopyService({ projectRoot: entry.projectRoot, adeHome: sweepOptions.adeHome, logger: sweepOptions.logger })
@@ -1100,64 +1137,6 @@ export async function sweepMachineRemoteWork(sweepOptions: {
     }
   }
   return released;
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
-   Scratch folders: `ade shell start --machine <this machine> --scratch -- <cmd>`
-   runs a command that needs no code (nvidia-smi, a disk check) in an empty
-   temporary folder under ADE's own home, with no work copy and no git. The
-   folder goes when the command's shell ends; the sweep removes any a
-   restart left behind.
-   ────────────────────────────────────────────────────────────────────────── */
-
-/** A scratch folder older than this is left over (its shell ended while no brain ran) and goes in the sweep. */
-const REMOTE_WORK_SCRATCH_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
-
-function scratchRoot(adeHome: string): string {
-  return path.join(adeHome, "remote-work", "scratch");
-}
-
-/** A new, empty scratch folder for `owner`'s one command. */
-export function createRemoteWorkScratchDir(owner: string, adeHome: string = defaultAdeHome()): string {
-  const root = scratchRoot(adeHome);
-  fs.mkdirSync(root, { recursive: true });
-  return fs.mkdtempSync(path.join(root, `${ownerHash(owner)}-`));
-}
-
-/** Remove a scratch folder. Anything outside the scratch root is refused (logged, kept). */
-export function removeRemoteWorkScratchDir(dir: string, adeHome: string = defaultAdeHome(), logger?: RemoteWorkLogger): void {
-  const root = scratchRoot(adeHome);
-  if (pathsEqual(dir, root) || !isPathInside(dir, root)) {
-    logger?.warn("remote_work.scratch_outside_root", { dir });
-    return;
-  }
-  try {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
-  } catch (error) {
-    // A file still held open (Windows); the sweep tries again.
-    logger?.warn("remote_work.scratch_remove_failed", { error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-/** Remove scratch folders older than a week. */
-function sweepRemoteWorkScratch(adeHome: string, logger?: RemoteWorkLogger): void {
-  const root = scratchRoot(adeHome);
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  const cutoff = Date.now() - REMOTE_WORK_SCRATCH_MAX_AGE_MS;
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const dir = path.join(root, entry.name);
-    try {
-      if (fs.statSync(dir).mtimeMs < cutoff) removeRemoteWorkScratchDir(dir, adeHome, logger);
-    } catch {
-      // Gone meanwhile.
-    }
-  }
 }
 
 function isCopy(value: unknown): value is RemoteWorkCopy {

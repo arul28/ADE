@@ -177,7 +177,7 @@ extension SyncService {
 // MARK: - A chat's work copies on other machines
 
 /// The project each work copy lane the phone has named lives in on its
-/// machine, keyed by the namespaced lane id (`remoteWorkCopyLaneId`).
+/// machine, keyed by the namespaced lane id (`registerRemoteWorkCopyLane`).
 ///
 /// A work copy (`remote-work-…`) is not a lane of the focused repository's
 /// checkout there: it belongs to the project the chat's brain resolved for the
@@ -219,7 +219,7 @@ extension SyncService {
   /// (its `machineKey` is the account directory's), or it is not paired with
   /// this phone. Nothing is sent then; the call never falls back to the
   /// focused machine, where the same lane id means nothing.
-  func remoteWorkCopyLaneId(_ device: WorkRemoteWorkDevice) -> String? {
+  func registerRemoteWorkCopyLane(_ device: WorkRemoteWorkDevice) -> String? {
     guard let deviceId = AccountService.shared.machines
       .first(where: { $0.machineKey == device.machineKey })?.deviceId
       .flatMap(nonEmptyTrimmed)
