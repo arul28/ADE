@@ -58,14 +58,17 @@ MacBook's simulator, and a build sends your code there first. The choice is
 kept by the chat's own machine (it survives a restart of ADE) and shown by
 `ade devices current`.
 
-### Or name the device on one command
+### Or name the machine on one command
 
 ```bash
-ade apple screenshot --device "ios@MacBook Pro"
-ade screen open Calculator --device "screen@MacBook Pro"
+ade apple screenshot --machine "MacBook Pro"
+ade screen open Calculator --machine "MacBook Pro"
 ```
 
-`--machine <name>` stays as the short form of `--device <kind>@<name>`.
+The command says the kind, so `--machine` is all it needs. Ids
+(`ios@MacBook Pro`) are only for `ade devices use`. `--device` keeps its
+existing meaning on `ade apple` and `ade android`: which simulator or emulator
+of the lane's, by name.
 
 ### Your code there
 
@@ -116,8 +119,8 @@ tool's `machine` input and works in a lane on it:
 2. `["devices","--text"]` with that `machine`: the devices there.
 3. Device commands with `--lane <lane there>`.
 
-`--device <kind>@<other machine>` and `--machine` (other than
-`--machine cloud`) are refused over MCP with the sentence "Pick the machine
+`--machine` (other than `--machine cloud`) and `devices use` are refused
+over MCP with the sentence "Pick the machine
 with the tool's `machine` input". Cloud phones, once on the account, are
 listed by `devices` on any machine and used the same way.
 
@@ -143,8 +146,8 @@ ios@cloud` answers "ADE Cloud iPhone is not on this account yet".
 
 ## Rules for anything new
 
-- A new command that acts on a device takes `--device`, and reads the chat's
-  choice when it is absent.
+- A new command that acts on a device takes `--machine`, and reads the
+  chat's choice when it is absent.
 - Words outside the table above do not go into agent-facing text.
 - One skill page holds this model: ade-computer-use
   `references/other-machines.md`. Other skills link to it.

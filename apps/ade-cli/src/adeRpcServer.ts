@@ -4239,6 +4239,9 @@ const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
   ["switchAccount", "self"],
   ["requestSessionAttention", "self"],
   ["clearAsk", "self"],
+  // `ade devices use|current`: a chat picks and reads its own device sources.
+  ["getDeviceSources", "self"],
+  ["setDeviceSource", "self"],
   ["setSessionActivity", "self"],
   // A CLI's hook reports its own turn; another session's would be a forged status.
   ["reportCliTurnSignal", "self"],

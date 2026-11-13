@@ -223,23 +223,27 @@ const ANDROID_CODE_SYNC: ReadonlySet<string> = new Set(ANDROID_CODE_SYNC_ACTIONS
  * device list sends no commit and makes no copy. The chat id is the other
  * machine's to set, from the caller's identity.
  */
-export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObject {
+export function withRemoteAndroidArgs(params: JsonObject, cwd: string, workCopy: MachineWorkCopy | null = null): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
   if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
   const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
   // An install or launch builds only with `--gradle` or `--apk`; tests and previews always build.
   const optionalBuild = action === "installApp" || action === "launchApp";
-  const builds = ANDROID_CODE_SYNC.has(action) && (!optionalBuild || asString(args.apkPath) != null || args.gradle != null);
-  const apkPath = builds ? asString(args.apkPath) : null;
+  const buildVerb = ANDROID_CODE_SYNC.has(action) && (!optionalBuild || asString(args.apkPath) != null || args.gradle != null);
+  // `--code as-is`: the build uses the code there as it is (no patch sent);
+  // `--code fresh` throws away changes made there before the sync.
+  const sync = buildVerb ? workCopy?.sync ?? null : null;
+  const builds = buildVerb && sync !== "none";
+  const apkPath = buildVerb ? asString(args.apkPath) : null;
   return {
     ...params,
     arguments: {
       ...toolArgs,
       args: {
         ...args,
-        ...(apkPath ? { apkPath: remoteApkPath(apkPath, cwd) } : {}),
-        remoteWork: remoteWorkPayload(ANDROID_MACHINE_ACTIONS.has(action) ? "machine" : builds ? "build" : "head", cwd),
+        ...(apkPath ? { apkPath: builds ? remoteApkPath(apkPath, cwd) : checkoutRelativePath(apkPath, cwd, "--apk") } : {}),
+        remoteWork: remoteWorkPayload(ANDROID_MACHINE_ACTIONS.has(action) ? "machine" : builds ? "build" : "head", cwd, sync),
       },
     },
   };

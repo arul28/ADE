@@ -210,7 +210,7 @@ the lane is archived or deleted.
 
 ## Optional: keep the app off the user's screen
 
-App Control never needs the user's screen. On a Mac host you may still move the
+App Control never needs the user's screen. On a Mac you may still move the
 app's window onto the lane's private Mac Desktop:
 
 ```bash

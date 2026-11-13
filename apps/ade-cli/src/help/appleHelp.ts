@@ -64,10 +64,13 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   git does not track) runs XcodeGen first and says so; without XcodeGen the
   error says how to install it (brew install xcodegen). Same for install and test.
 
-  --machine <name> (no --lane) builds in this chat's work copy there; a cold
-  build waits as long as it would here and prints "still running" lines to
-  stderr meanwhile. --clone sets this repo up there first. The simulator
-  session there is let go when this chat's turn ends (the device stays on).
+  --machine <name> (no --lane) builds your code there: it first matches this
+  checkout, uncommitted changes included (--code as-is uses it as it is,
+  --code fresh throws away changes made there). A cold build waits as long
+  as it would here and prints "still running" lines to stderr meanwhile.
+  --clone sets this repo up there first. The simulator session there is let
+  go when this chat's turn ends (the device stays on). ade devices use
+  ios@<name> sends every apple command there with no flag.
 
   Flags:
     --device, --udid <id>       Simulator device.

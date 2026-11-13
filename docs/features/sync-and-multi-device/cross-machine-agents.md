@@ -4,7 +4,9 @@ Agents and the `ade` CLI can find, start, message and wait on chats on the
 account's other machines, drive their devices, and hear back when a child they
 started there finishes. The person's surfaces (the cross-machine Work list,
 drafts on another machine, handoff) are described elsewhere; this is the agent
-half.
+half. The words and commands agents see (machine, device, "your code there",
+`ade devices`, `--device`, `--code`, `--to`) are specified in
+[devices and machines](./devices-and-machines.md); this page is how they work.
 
 ## What an agent can do
 
@@ -110,13 +112,14 @@ error only when it is for the same commit.
   project root the environment names, `resolveRoots` in `cli.ts`) and sends the commit, the remote branch that holds it, and the patch as bytes
   (base64, 16 MiB at most), made with fixed diff options so the user's diff
   settings cannot break it. A commit that is not on origin is refused here:
-  "Push it first". `--no-sync` and `--discard` are read only for a shell start
-  or an Apple build with `--machine` and no `--lane`.
+  "Push it first". `--code as-is` and `--code fresh` (old names `--no-sync`
+  and `--discard`, still accepted) are read only for a shell start or an Apple
+  build with `--machine` and no `--lane`.
 - **Never lose work there.** Before a sync the copy is compared with what the
   last sync wrote and with its checked-out commit. Unpushed commits, or files
   changed there and not committed, refuse the sync and name the files.
-  `--no-sync` runs in the copy as it is (to commit and push from there);
-  `--discard` resets anyway.
+  `--code as-is` runs in the copy as it is (to commit and push from there);
+  `--code fresh` resets anyway.
 - **Files made there stay.** A file that is untracked, not ignored, and not
   written by the last sync (a `.xcodeproj` from `xcodegen generate`, a file
   `ade files push` put there) does not refuse a sync: it is kept in place
@@ -130,7 +133,7 @@ error only when it is for the same commit.
 - **One command at a time.** A copy is busy from its sync until the command
   it was readied for has started (an Apple build: until the call returns), and
   while a shell runs in it. A synced command is refused while it is busy;
-  `--no-sync` runs beside it. Another chat on the machine cannot read, type
+  `--code as-is` runs beside it. Another chat on the machine cannot read, type
   into or stop such a shell, and lane-wide terminal lists leave it out.
 - **Limits.** Submodules are not initialised in a copy. Untracked files that
   are not ignored travel in the patch, so a large one must be committed or
@@ -173,9 +176,9 @@ error only when it is for the same commit.
   ADE lane (`envLaneIdForLaneCommand`). A terminal whose terminal host process
   dies prints why, and each stop of such a shell logs
   `pty.remote_work_shell_disposed`.
-- **No repository.** `ade shell start --machine <name> --scratch [--wait] --
-  <cmd>` runs a command that needs no code (`nvidia-smi`, a disk check) in an
-  empty folder under `<ADE_HOME>/remote-work/scratch/` there: no work copy,
+- **No repository.** `ade shell start --machine <name> --no-code [--wait] --
+  <cmd>` (old name `--scratch`) runs a command that needs no code
+  (`nvidia-smi`, a disk check) in an empty folder under `<ADE_HOME>/remote-work/scratch/` there: no work copy,
   no git, no commit to push. It runs in any project open in ADE there (the
   `anyProject` scope; this repository's checkout when there is one). The
   folder goes when the shell ends; the hourly sweep removes any older than a
@@ -258,10 +261,10 @@ approves) starts new work. Running work stays where it is.
 
 ## Moving a chat to another machine
 
-`ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO
-that one: here `--machine` names the destination, and the command runs on this
-machine's brain. The move form is never forwarded, so you cannot move a chat
-that lives on another machine from here; and `--machine` with `--cancel`,
+`ade chat handoff <session> --to <name>` moves a chat FROM this machine TO
+that one: `--to` names the destination (`--machine` is a hidden alias), and the
+command runs on this machine's brain. The move form is never forwarded, so you
+cannot move a chat that lives on another machine from here; and `--to` with `--cancel`,
 `--retry` or `--options` is an error, because those act on this machine's own
 move. It is the same move
 the desktop modal, the session menu and the phone start; see
@@ -269,11 +272,11 @@ the desktop modal, the session menu and the phone start; see
 
 ```bash
 ade chat handoff <session> --options --json        # machines, blockers with fixes, what would travel
-ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 \
+ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 \
   --prompt "run the UI tests next"                 # brief (default); --fork carries full history
-ade chat handoff <session> --machine "Mac mini" --model … --include-changes   # bring uncommitted/unpushed work
-ade chat handoff <session> --machine "Mac mini" --model … --clone             # set the repo up there first
-ade chat handoff <session> --machine "Mac mini" --model … --when-turn-ends    # queue it from inside a turn
+ade chat handoff <session> --to "Mac mini" --model … --include-changes        # bring uncommitted/unpushed work
+ade chat handoff <session> --to "Mac mini" --model … --clone                  # set the repo up there first
+ade chat handoff <session> --to "Mac mini" --model … --when-turn-ends         # queue it from inside a turn
 ade chat handoff <session> --cancel                # keep a queued or awaiting move here, or dismiss an unknown one
 ade chat handoff <session> --retry                 # retry a failed or unknown move with the same choices
 ```
@@ -440,8 +443,9 @@ the trust boundary, as it is for the person's own desktop.
 
 - Both machines need this ADE version; an older target is reported as
   "update ADE there" (capability `agentRemoteCallers`).
-- Recordings started with `--machine` are filed on that machine; only stills
-  (`proof`) are filed back here.
+- A recording started with `--machine` and stopped with a caption (`record
+  stop`) is read back and filed here, like stills (`proof`). One that stops by
+  itself there (its cap, idle, the app closed) is filed on that machine.
 - An App Control session started from another machine is not stopped when the
   calling turn ends; the agent stops it, or the work copy's removal does.
 - Builds run where the lane is. To build an iOS app from a Linux box, start a

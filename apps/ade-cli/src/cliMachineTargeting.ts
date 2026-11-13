@@ -70,6 +70,12 @@ import {
 
 /** `ade apple` verbs that build the app: with --machine and no --lane they sync the work copy first. */
 const APPLE_BUILD_VERBS: ReadonlySet<string> = new Set(["launch", "open", "install", "install-app", "test", "tests"]);
+/**
+ * `ade android` verbs that can build the app: with --machine and no --lane
+ * they take `--code`. Install and launch build only with --gradle or --apk
+ * (`withRemoteAndroidArgs` decides); tests and previews always do.
+ */
+const ANDROID_BUILD_VERBS: ReadonlySet<string> = new Set(["install", "launch", "test", "preview"]);
 /** `ade app-control` verbs that run the app: with --machine and no --lane they sync the work copy first. */
 const APP_CONTROL_LAUNCH_VERBS: ReadonlySet<string> = new Set(["launch", "open", "start"]);
 
@@ -133,6 +139,52 @@ export function flagNamesOutsideFreeText(args: readonly string[]): Set<string> {
 }
 
 /**
+ * `ade chat handoff|move … --to <machine>`: the same as their older
+ * `--machine`, which the plans read. Both at once is refused.
+ */
+function withMoveDestinationFlag(command: readonly string[]): string[] {
+  const out: string[] = [];
+  let to: string | null = null;
+  let machine = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const token = command[index]!;
+    if (token === "--") {
+      out.push(...command.slice(index));
+      break;
+    }
+    if (FREE_TEXT_VALUE_FLAGS.has(token) && index + 1 < command.length) {
+      out.push(token, command[index + 1]!);
+      index += 1;
+      continue;
+    }
+    if (token === "--machine" || token.startsWith("--machine=")) machine = true;
+    if (token === "--to" || token.startsWith("--to=")) {
+      const value = token === "--to" ? command[index + 1] : token.slice("--to=".length);
+      if (token === "--to") index += 1;
+      if (!value?.trim() || (token === "--to" && value.startsWith("--"))) {
+        throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+      }
+      if (to !== null) throw new CliUsageError("Name one destination with --to.");
+      to = value;
+      out.push("--machine", value);
+      continue;
+    }
+    out.push(token);
+  }
+  if (to !== null && machine) throw new CliUsageError("--to and --machine name the same destination: use --to.");
+  return out;
+}
+
+/** `--code synced|as-is|fresh`: how your code there is readied before the command. */
+function workCopySyncFromCode(value: string): "none" | "discard" | null {
+  const word = value.trim().toLowerCase();
+  if (word === "synced" || word === "sync") return null;
+  if (word === "as-is" || word === "asis") return "none";
+  if (word === "fresh") return "discard";
+  throw new CliUsageError(`--code takes synced, as-is or fresh, not "${value}".`);
+}
+
+/**
  * Pull `--machine <name>`, `--all-machines`, `--machine-project <sel>`,
  * `--clone` and (for chat and lanes, while targeting a machine)
  * `--project <sel>` out of a supported command's own arguments into the
@@ -163,12 +215,14 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   // a target.
   const chatSub = primary === "chat" ? parsed.command[1]?.toLowerCase() : undefined;
   if (chatSub === "handoff" || chatSub === "move") {
-    const flags = flagNamesOutsideFreeText(parsed.command);
+    // `--to <machine>` is the destination; `--machine` stays as its alias.
+    const command = withMoveDestinationFlag(parsed.command);
+    const flags = flagNamesOutsideFreeText(command);
     const ownMoveFlags = chatSub === "handoff" ? ["--cancel", "--retry", "--options"] : ["--status", "--retry"];
     if (flags.has("--machine") && ownMoveFlags.some((flag) => flags.has(flag))) {
-      throw new CliUsageError(`--machine names the destination of a move; drop it for ${ownMoveFlags.join("/")}.`);
+      throw new CliUsageError(`--to names the destination of a move; drop it for ${ownMoveFlags.join("/")}.`);
     }
-    return parsed;
+    return { ...parsed, command };
   }
   if (primary === "files") {
     // The other `ade files` verbs act on a workspace (a lane) here; with
@@ -203,7 +257,13 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   const workCopyVerb = commandFlags.has("--machine")
     && ((primary === "shell" && (subcommand === "start" || subcommand === "create"))
       || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand))
+      || (primary === "android" && ANDROID_BUILD_VERBS.has(subcommand))
       || (primary === "app-control" && APP_CONTROL_LAUNCH_VERBS.has(subcommand)));
+  // `--code synced|as-is|fresh` and `--no-code`, or their older spellings
+  // (`--no-sync`, `--discard`, `--scratch`), which stay as hidden aliases.
+  const codeFlagName = (sync: "none" | "discard" | null, typed: string): string =>
+    typed === "--code" ? `--code ${sync === "none" ? "as-is" : sync === "discard" ? "fresh" : "synced"}` : typed;
+  let codeChosen: string | null = null;
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
     if (token === "--") {
@@ -231,13 +291,16 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
     if (flag === "--clone" && inline == null && MACHINE_CLONE_PRIMARIES.has(primary)) { machineClone = true; continue; }
-    // A one-off command that needs no code: no work copy, no repository there.
-    if (flag === "--scratch" && inline == null && workCopyVerb && primary === "shell") { scratch = true; continue; }
+    // A one-off command that needs no code: no copy of it, no repository there.
+    if ((flag === "--no-code" || flag === "--scratch") && inline == null && workCopyVerb && primary === "shell") { scratch = true; continue; }
     // The size of a new ADE Cloud computer (`--machine cloud`); no chat or lane verb has a --size of its own.
     if (flag === "--size" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) { cloudSize = takeValue(); continue; }
-    if ((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) {
-      if (workCopySync) throw new CliUsageError("Use --no-sync or --discard, not both.");
-      workCopySync = flag === "--no-sync" ? "none" : "discard";
+    if (((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) || (flag === "--code" && workCopyVerb)) {
+      const sync = flag === "--code" ? workCopySyncFromCode(takeValue()) : flag === "--no-sync" ? "none" : "discard";
+      const typed = codeFlagName(sync, flag);
+      if (codeChosen) throw new CliUsageError(`Use ${codeChosen} or ${typed}, not both.`);
+      codeChosen = typed;
+      workCopySync = sync;
       continue;
     }
     if (flag === "--project" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) {
@@ -252,14 +315,26 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
   if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
   const usesWorkCopy = workCopyVerb && !commandFlags.has("--lane") && !commandFlags.has("--lane-id");
-  if (workCopySync && !usesWorkCopy) {
-    throw new CliUsageError("--no-sync and --discard are for this chat's work copy there; leave out --lane to use it.");
+  if (codeChosen && !usesWorkCopy) {
+    throw new CliUsageError(`${codeChosen} is for your code there; leave out --lane to use it.`);
+  }
+  if (!codeChosen && (commandFlags.has("--code") || ((commandFlags.has("--no-sync") || commandFlags.has("--discard")) && primary === "shell"))) {
+    const typed = commandFlags.has("--code") ? "--code" : commandFlags.has("--no-sync") ? "--no-sync" : "--discard";
+    throw new CliUsageError(
+      machine
+        ? `${typed} is for a command that builds or runs your code on another machine: ade shell start, ade apple launch|install|test, `
+          + "ade android install|launch|test|preview, ade app-control launch."
+        : `${typed} is for your code on another machine: add --machine <name>.`,
+    );
+  }
+  if (!scratch && commandFlags.has("--no-code")) {
+    throw new CliUsageError("--no-code runs one command on another machine with no code: ade shell start --machine <name> --no-code [--wait] -- <command>.");
   }
   if (scratch) {
-    if (!usesWorkCopy) throw new CliUsageError("--scratch runs in a temporary folder there, not a lane: leave out --lane.");
-    if (workCopySync) throw new CliUsageError("--scratch has no work copy to sync: leave out --no-sync and --discard.");
-    if (machineClone) throw new CliUsageError("--scratch needs no repository there: leave out --clone.");
-    if (!terminatorArgs?.length) throw new CliUsageError("--scratch runs one command: ade shell start --machine <name> --scratch [--wait] -- <command>.");
+    if (!usesWorkCopy) throw new CliUsageError("--no-code runs in an empty folder there, not a lane: leave out --lane.");
+    if (codeChosen) throw new CliUsageError(`--no-code has no code to ready: leave out ${codeChosen}.`);
+    if (machineClone) throw new CliUsageError("--no-code needs no repository there: leave out --clone.");
+    if (!terminatorArgs?.length) throw new CliUsageError("--no-code runs one command: ade shell start --machine <name> --no-code [--wait] -- <command>.");
   }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   const cloudLane = isCloudLaneMachineSelector(machine);
@@ -282,9 +357,9 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (!machine && primary === "shell") {
     const flags = flagNamesOutsideFreeText(parsed.command);
     if (subcommand === "clean") {
-      throw new CliUsageError("ade shell clean deletes this chat's work copy on another machine: add --machine <name>.");
+      throw new CliUsageError("ade shell clean deletes your code on another machine: add --machine <name>.");
     }
-    const workCopyFlag = ["--no-sync", "--discard", "--wait", "--scratch"].find((flag) => flags.has(flag));
+    const workCopyFlag = ["--wait", "--scratch"].find((flag) => flags.has(flag));
     if (workCopyFlag) {
       throw new CliUsageError(`${workCopyFlag} is for a command on another machine: add --machine <name>. Here, run the command in your own shell.`);
     }
@@ -950,7 +1025,7 @@ export async function createMachineRemoteConnection(
         return await callRemote(method, appleParams);
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "android_emulator") {
-        const androidParams = withRemoteAndroidArgs(params, roots.workspaceRoot);
+        const androidParams = withRemoteAndroidArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
         const proofAction = androidActionFiledAsProof(androidParams);
         if (proofAction) return await fileRemoteAndroidProofHere(androidParams, proofAction);
         return await callRemote(method, androidParams);

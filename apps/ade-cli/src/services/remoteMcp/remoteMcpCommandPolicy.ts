@@ -51,7 +51,7 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "action", "actions", "ade-browser", "cloud", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
-  "code", "codes", "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
+  "code", "codes", "device", "devices", "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
   "health", "help", "history", "imessage", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
   "mac-desk", "mac-desktop", "machine", "machines", "messages", "models", "new", "notify", "open", "operation",
   "operations", "password", "passwords", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
@@ -85,6 +85,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Nothing that spends money or deletes is reachable from here.
   ["cloud", new Set(["status", "list", "ls", "machines", "hours", "limits"])],
   ["machines", new Set(["list", "show"])],
+  // The devices on this computer, and a chat's choice (an app has none). `use`
+  // is refused for every scope above.
+  ["devices", true],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
   // `share` lists a lane's shares in its read form only (`isLaneShareListForm`).
@@ -207,6 +210,14 @@ export function checkRemoteAdeCommand(
     };
   }
   const words = positionalWords(args);
+  const devicesVerdict = checkDevicesCommand(command, args);
+  if (devicesVerdict) return devicesVerdict;
+  // `--to <machine>` moves a chat to another computer, the same as the old
+  // `--machine` there, which the rule above refuses: so is this.
+  if ((command === "chat" || command === "chats") && (words[0] === "handoff" || words[0] === "move")
+    && args.some((word) => word === "--to" || word.startsWith("--to="))) {
+    return { ok: false, reason: "Moving a chat to another computer (`--to`) is not available through ADE MCP." };
+  }
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
@@ -262,10 +273,45 @@ export function checkRemoteAdeCommand(
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"], ["provider", "providers"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["action", "actions"], ["machine", "machines"], ["device", "devices"], ["gh", "github"], ["provider", "providers"],
+]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+/** `ade devices` subcommands an app may run: the list and the (empty) choice. */
+const DEVICES_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "current"]);
+
+/**
+ * `ade devices`: the list (of this computer's devices; the app picks the
+ * computer with the tool's `machine` input) and `current`. `use` keeps a
+ * choice for a chat, and an app has no chat on the computer.
+ */
+function checkDevicesCommand(command: string, args: readonly string[]): RemoteCommandVerdict | null {
+  if (command !== "devices") return null;
+  let sub: string | null = null;
+  for (let index = 1; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (word === "--kind") {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    sub = word.toLowerCase();
+    break;
+  }
+  if (sub === "use") {
+    return {
+      ok: false,
+      reason: "`ade devices use` picks a device for a chat, and an ADE MCP app has no chat there. "
+        + "Pick the machine with the tool's `machine` input, then pass --lane <lane there> to the device commands.",
+    };
+  }
+  if (sub !== null && !DEVICES_READ_SUBCOMMANDS.has(sub)) {
+    return { ok: false, reason: `\`ade devices ${sub}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
+  }
+  return null;
+}
 /**
  * The reviewed exception to "no --machine": `--machine cloud` (with `--size`)
  * on exactly these subcommands. It asks this computer's own brain to make a

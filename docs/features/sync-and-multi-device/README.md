@@ -24,9 +24,15 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- [`devices-and-machines.md`](./devices-and-machines.md) — the one model
+  agents learn for using a device on any machine: the words (machine, device,
+  source, lane, "your code there"), `ade devices`, `devices use|current`,
+  `--machine`, `--code synced|as-is|fresh`, `--clone`,
+  `--no-code`, `--to` on `chat handoff|move`, MCP, and the ADE Cloud iPhone.
 - `cross-machine-agents.md` — agents and the CLI on other machines:
   `--machine`, `--all-machines`, children that wake parents across machines and
-  projects, remote device drive with proof filed back.
+  projects, remote device drive with proof filed back (the implementation
+  under `devices-and-machines.md`).
 - `cross-machine-session-handoff.md` — moving a Work chat to another
   machine: the brain-owned move record and its states, agent and CLI control,
   approval, the source banner and send routing, the Git contract (clean and

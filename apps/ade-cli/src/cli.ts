@@ -57,6 +57,7 @@ import {
   routedToLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
+import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -1595,6 +1596,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
@@ -1876,6 +1881,7 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   sessions: "session",
   project: "projects",
   machine: "machines",
+  device: "devices",
   quota: "usage",
   quotas: "usage",
   disk: "storage",
@@ -2100,6 +2106,36 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   The directory only accepts a re-pair with proof of a freshly completed
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
   re-pairs as soon as it lands — no second command.
+`,
+  devices: `${ADE_BANNER}
+  ADE devices
+
+  A device is something an agent drives and watches: an iPhone simulator, an
+  Android emulator, a screen (Mac, Windows or Linux Desktop), an app under App
+  Control. Its source is where it runs: here (this machine) or another machine
+  on your ADE account. A device id is <kind>@<source>: ios@here,
+  "ios@MacBook Pro", "android@Windows PC", screen@build-box. Kinds: ios,
+  android, screen, app.
+
+    $ ade devices --text                       Every device this chat can use, on every machine
+    $ ade devices --kind ios --text            Only iPhones
+    $ ade devices use "ios@MacBook Pro"        This chat's iPhone is on the MacBook from now on
+    $ ade devices use ios@here                 Back to this machine
+    $ ade devices current --text               This chat's choices
+
+  The list reads only: it starts and copies nothing. Each row says what the
+  device is, its state (off, on, in use by a chat) and what it needs first
+  ("Android SDK missing there", "repository missing there: --clone").
+  A machine that did not answer is a row saying so. A machine that cannot run
+  a kind is not listed for it (iPhone simulators run on a Mac).
+
+  After use, the plain commands go there with no other flag: ade apple
+  launch, ade apple screenshot, ade android tap, ade screen open, ade
+  app-control launch all act on that machine's device, and a build sends your
+  code there first. --machine <name> on one command, or --lane, still wins.
+  The choice is kept by this chat (it survives a restart of ADE). ade shell
+  does not follow it: a command on another machine always names --machine.
+  use needs a chat; a terminal with no chat names --machine on each command.
 `,
   search: `${ADE_BANNER}
   ADE Search
@@ -2803,19 +2839,21 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  On another machine (this chat's work copy there: a hidden worktree at your
-  commit, which must be on origin, with your uncommitted changes applied):
+  On another machine (in your code there: ADE keeps a copy of this chat's code
+  on that machine, at your commit, which must be pushed, with your uncommitted
+  changes applied):
     $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
-    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
-    $ ade shell clean --machine <name>               Delete this chat's work copy there
+    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
+    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
+    $ ade shell clean --machine <name>               Delete your code there and everything it held
     $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
-    $ ade shell start --machine <name> --scratch --wait -- nvidia-smi   No repo needed: an empty temp folder there, removed after
-  Each call opens a new shell there and syncs the copy again, so put all the
-  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+  --code synced (the default) makes your code there match this checkout before
+  the command runs. Each call opens a new shell there and syncs again, so put
+  all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
   Files made there that git does not track (a generated .xcodeproj, a pushed
   file) stay through a sync; edits there to the repo's files refuse it.
-  --scratch needs no checkout, commit or push, only a project open in ADE there.
+  --no-code needs no commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
@@ -2880,14 +2918,15 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \\ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+  On another machine (your code there, the one ade shell start --machine uses;
+  paths there are relative to its top, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
   base64 in shell commands. A pushed file git does not track stays there
-  through the next sync (--discard drops it); one that replaces a file of the
-  repo is a change made there, so the next sync needs --no-sync or --discard.
+  through the next sync (--code fresh drops it); one that replaces a file of
+  the repo is a change made there, so the next sync needs --code as-is or
+  --code fresh.
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -3084,9 +3123,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
-                                                    default; --fork carries full history). --machine names the
+                                                    default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
                                                     keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
@@ -3100,9 +3139,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+    $ ade chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
@@ -3799,14 +3838,16 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
 
   Another machine: --machine <name> drives that machine's screen (Mac,
-  Windows or Linux Desktop) with no lane there. The screen works for this
-  chat's work copy there (a hidden worktree at your commit, made by the first
-  start or open; the commit must be on origin), and this chat owns it, as
-  for a lane. status, windows and stream status make no copy. --lane is
-  refused (the copy is the lane). screen proof and a captioned recording are
-  filed in this chat's proof drawer. lease and start --shared ask in a chat
-  on that machine, so they are refused; use the default input instead.
-  ade shell clean --machine <name> removes the copy and closes its screen.
+  Windows or Linux Desktop) with no lane there. The screen belongs to your
+  code there (ADE puts it there at your commit on the first start or open;
+  the commit must be pushed), and this chat owns it, as for a lane. status,
+  windows and stream status put nothing there. --lane is refused. screen
+  proof and a captioned recording are filed in this chat's proof drawer.
+  lease and start --shared ask in a chat on that machine, so they are
+  refused; use the default input instead. ade devices use screen@<name>
+  sends every screen command there with no flag (ade devices --text lists
+  the screens you can use). ade shell clean --machine <name> deletes your
+  code there and closes its screen.
     $ ade screen start --machine "MacBook Pro" --text
     $ ade screen open TextEdit --machine "MacBook Pro" --text
     $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
@@ -4064,17 +4105,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there works for this chat's work
-  copy (a hidden worktree at your commit, made on first use; the commit must
-  be on origin). Every view of this chat then shows it in the Android tool.
-  status and devices make no copy. --lane <id> uses a lane on that machine
+  no new lane. Without --lane, the emulator there runs your code there (ADE
+  puts it there at your commit on first use; the commit must be pushed).
+  Every view of this chat then shows it in the Android tool. status and
+  devices put nothing there. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle). A Gradle
-  build or a boot there waits as long as it would here and prints "still
-  running" lines to stderr meanwhile. --clone sets this repo up there first.
-  The emulator's lease is let go when this chat's turn ends (it stays on).
+  --gradle or --apk, test and preview make your code there match this
+  checkout first, uncommitted changes included (--code as-is uses it as it
+  is, --code fresh throws away changes made there; an APK that git ignores
+  does not travel: use --gradle). A Gradle build or a boot there waits as
+  long as it would here and prints "still running" lines to stderr
+  meanwhile. --clone sets this repo up there first. The emulator's lease is
+  let go when this chat's turn ends (it stays on). ade devices use
+  android@<name> sends every android command there with no flag (ade
+  devices --text lists the emulators you can use).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -4207,15 +4252,16 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade app-control actions --text               List every callable app_control action
 
   Another machine: --machine <name> runs the app on that machine with no lane
-  there. The session works for this chat's work copy there (a hidden worktree
-  at your commit; the commit must be on origin), and this chat owns it, as for
-  a lane. launch sends your checkout and its uncommitted changes first
-  (--no-sync runs the copy as it is, --discard drops work made there) and runs
-  in a terminal there; --cwd must be inside this checkout and is the same
-  folder in the copy. status and drivers make no copy. --lane is refused (the
-  copy is the lane). proof and a captioned recording are filed in this chat's
-  proof drawer. ade shell clean --machine <name> removes the copy and stops
-  its app.
+  there. The app runs from your code there (at your commit; the commit must
+  be pushed), and this chat owns the session, as for a lane. launch makes
+  your code there match this checkout first, uncommitted changes included
+  (--code as-is uses it as it is, --code fresh throws away changes made
+  there) and runs in a terminal there; --cwd must be inside this checkout and
+  is the same folder there. status and drivers put nothing there. --lane is
+  refused. proof and a captioned recording are filed in this chat's proof
+  drawer. ade devices use app@<name> sends every app-control command there
+  with no flag. ade shell clean --machine <name> deletes your code there and
+  stops its app.
     $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
     $ ade app-control observe --map --machine windows --text
 `,
@@ -5521,7 +5567,7 @@ const REMOVED_LAUNCH_FLAGS: Readonly<Record<string, string>> = {
 /** `chat handoff` / `chat fork` flag spellings that were removed. */
 const REMOVED_HANDOFF_FLAGS: Readonly<Record<string, string>> = {
   "--model-id": "--model",
-  "--to-machine": "--machine",
+  "--to-machine": "--to",
   "--where": "--options",
   "--handoff-note": "--note",
   "--from-turn": "--through-turn",
@@ -5909,7 +5955,7 @@ function envLaneIdForLaneCommand(): string | null {
   const laneId = process.env.ADE_LANE_ID?.trim() || null;
   if (isRemoteWorkLaneId(laneId)) {
     throw new CliUsageError(
-      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      "This shell runs in the code a chat on another machine keeps here, so it has no ADE lane. "
       + "Pass --lane <lane> to act on a lane of this machine.",
     );
   }
@@ -10740,8 +10786,8 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       formatText: (result: unknown) => {
         const value = unwrapActionEnvelope(result);
         return isRecord(value) && value.released === true
-          ? "Deleted this chat's work copy on that machine."
-          : "This chat had no work copy on that machine.";
+          ? "Deleted your code on that machine, and everything it held."
+          : "This chat had no code on that machine.";
       },
     };
   }
@@ -12144,7 +12190,7 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const machine = readValue(args, ["--machine"]);
     if (machine === null || !machine.trim()) {
-      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+      throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
     const includeDescendants = !readFlag(args, ["--no-descendants"]);
@@ -13346,7 +13392,7 @@ function buildChatPlan(args: string[]): CliPlan {
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
     const handoffMachine = readValue(args, ["--machine"]);
     if (handoffMachine !== null && !handoffMachine.trim()) {
-      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
+      throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
     }
     if (control) {
       return {
@@ -15106,8 +15152,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     // One file into or out of this chat's work copy on another machine
     // (cliRemoteWork.ts sends it in chunks); there is no local form.
     const usage = sub === "push"
-      ? "ade files push --machine <name> <local file> <path in the work copy there>"
-      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+      ? "ade files push --machine <name> <local file> <path in your code there>"
+      : "ade files pull --machine <name> <path in your code there> <local file or folder>";
     if (!machine) {
       throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
     }
@@ -23693,6 +23739,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--option",
   "--choice",
   "--answer",
+  // `--code synced|as-is|fresh` on a command bound for another machine.
+  "--code",
   "--answers-json",
   "--schedule-id",
   "--job-id",
@@ -41722,11 +41770,14 @@ function isChatLocateCommand(command: string[]): boolean {
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  // A device command with no --machine and no --lane follows the chat's
+  // device choice (`ade devices use`), exactly as --machine would.
+  const parsed = extractMachineTargeting(await withChatDeviceChoice(parseCliArgs(argv)));
   await applyAccountProjectSelector(parsed.options);
   const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
   try {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
+    if (isDevicesCommand(parsed.command)) return await runDevicesCommand(parsed);
     if (!parsed.options.machine) {
       const sessionId = chatIdForLookup(parsed);
       return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);

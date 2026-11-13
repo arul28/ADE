@@ -13,7 +13,7 @@ entry point calls the same `chat` action, `startCrossMachineHandoff`:
 - the desktop modal and the session menu's **Hand off › Another machine ▸**
   (including **Quick brief to <machine>**, which uses the chat's current model
   and settings);
-- `ade chat handoff <session> --machine <name> …`, so an agent can move its own
+- `ade chat handoff <session> --to <name> …` (`--machine` is a hidden alias), so an agent can move its own
   chat ("wrap up and continue this on the Mac mini");
 - the phone, through the sync remote command `chat.startCrossMachineHandoff`.
 
@@ -310,7 +310,7 @@ remain ordinary hard failures.
 
 ## Batch moves
 
-`ade chat move --machine <name> <session> [<session>…]` moves a set of active
+`ade chat move --to <name> <session> [<session>…]` (`--machine` is a hidden alias) moves a set of active
 Work chats to one destination. `--all` selects every non-archived, non-settled
 Work chat owned by this project brain. Selected chats include their descendants
 by default; `--no-descendants` limits the batch to the named chats. The source
