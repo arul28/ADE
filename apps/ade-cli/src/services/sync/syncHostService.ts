@@ -310,7 +310,8 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { adeLoopbackForwardPort, createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { enqueueTailscaleServe } from "./tailscaleServeCommand";
 import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
@@ -554,10 +555,11 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
  * Ports still advertised through `tailscale serve` that ADE published on an
  * earlier run and never tore down.
  *
- * Only ADE's exact signature is reclaimed: a port inside ADE's own sync range
- * forwarding to 127.0.0.1 on the SAME port. A hand-rolled `tailscale serve`
- * that happens to sit in that range — anything forwarding elsewhere — is left
- * strictly alone.
+ * Only ADE's shape is reclaimed: a port inside ADE's own sync range
+ * forwarding to 127.0.0.1 on the same port, or to the side door a few ports
+ * above it (`adeLoopbackForwardPort`). A hand-rolled `tailscale serve` of any
+ * other shape is left alone; one of exactly this shape is removed only while
+ * nothing serves at either end (the caller probes both).
  */
 export function staleAdeTailnetServePorts(
   serveStatusJson: string,
@@ -577,11 +579,33 @@ export function staleAdeTailnetServePorts(
     if (!Number.isInteger(port)) continue;
     if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
     if (port === currentPort) continue;
-    const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
-    if (forward !== `127.0.0.1:${port}`) continue;
+    // ADE forwards a sync port to itself, or to the side door the listener
+    // opened while another program held 127.0.0.1:<port>.
+    if (adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward) == null) continue;
     stale.push(port);
   }
   return stale.sort((left, right) => left - right);
+}
+
+/** Sync port → the loopback port its `tailscale serve --tcp` entry forwards to. */
+export function adeTailnetServeTargets(serveStatusJson: string): Map<number, number> {
+  const targets = new Map<number, number>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return targets;
+  }
+  const tcp = (parsed as { TCP?: unknown } | null)?.TCP;
+  if (!tcp || typeof tcp !== "object") return targets;
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    const target = Number.isInteger(port)
+      ? adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward)
+      : null;
+    if (Number.isInteger(port) && target != null) targets.set(port, target);
+  }
+  return targets;
 }
 
 export function isRuntimeHostPairingRecord(
@@ -4340,7 +4364,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   let detachSharedListener: (() => void) | null = null;
+  let detachSharedListenerStatus: (() => void) | null = null;
   if (sharedListener && !guestsOnly) {
+    // The listener re-checks loopback on its own (and moves off a shadowed
+    // port). Mirror its verdict so route health and Tailscale publication
+    // follow it instead of the last check this host happened to run.
+    detachSharedListenerStatus = sharedListener.onLoopbackStatusChanged(() => {
+      if (disposed) return;
+      loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      const port = sharedListener.getPort();
+      if (port == null) return;
+      void publishValidatedDiscovery(port).catch((error) => {
+        args.logger.warn("sync_host.discovery_refresh_failed", {
+          port,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
     detachSharedListener = sharedListener.setConnectionHandler((connection) => {
       const peer = registerPeer(
         connection.ws,
@@ -4639,14 +4679,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // and it also pinned the listener to a constant port (8787) that never
     // matched the live socket. Per-node serve works on any node and targets the
     // actual port phones must connect to.
-    const signature = `serve:${port}`;
+    // Tailscale Serve forwards to 127.0.0.1: the listener's own port, or its
+    // local side door while another program holds 127.0.0.1:<port>. The
+    // tailnet-facing port stays the sync port either way.
+    const targetPort = sharedListener?.getLoopbackPort() ?? port;
+    const signature = `serve:${port}->${targetPort}`;
     if (tailnetServeSignature === signature && !options?.force) return;
     if (tailnetServeLastFailureSignature === signature && !options?.force) return;
     const publishToken = ++tailnetServePublishSequence;
     tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
     tailnetServePort = port;
-    const target = `tcp://127.0.0.1:${port}`;
+    const target = `tcp://127.0.0.1:${targetPort}`;
     updateTailnetDiscoveryStatus({
       state: "publishing",
       serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4662,7 +4706,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" })
+    void enqueueTailscaleServe(() => execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" }))
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4689,7 +4733,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // must never delay or endanger advertising the live port.
         if (tailnetServeActivePublishToken === publishToken) {
           void reclaimStaleTailnetServes(port).catch(() => {});
-          if (discoveryEnabled) void tailnetHttps.publish(port);
+          if (discoveryEnabled) void tailnetHttps.publish(port, { targetPort });
         }
       })
       .catch((error: unknown) => {
@@ -4757,12 +4801,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const reclaimStaleTailnetServes = async (currentPort: number): Promise<void> => {
     const cli = resolveTailscaleCliPath();
     let stale: number[];
+    let serveStatusJson: string;
     try {
       const { stdout } = await execFileAsync(
         cli,
         ["serve", "status", "--json"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
+      serveStatusJson = stdout;
       stale = staleAdeTailnetServePorts(stdout, currentPort);
       // The same read answers for ADE's stale HTTPS entries.
       void tailnetHttps.reclaimStale(stdout);
@@ -4772,6 +4818,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (stale.length === 0) return;
+    // Where each entry forwards: the sync port itself, or a side door.
+    const staleTargets = adeTailnetServeTargets(serveStatusJson);
     let reclaimed = 0;
     for (const port of stale) {
       // The snapshot is stale the moment reclaiming starts: turning off a low
@@ -4790,12 +4838,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // into nothing. Probe immediately before each teardown, so the window
       // between the snapshot and this `off` is closed too.
       if (await isLocalPortServing(port)) continue;
+      const target = staleTargets.get(port);
+      if (target != null && target !== port && await isLocalPortServing(target)) continue;
       try {
-        await execFileAsync(
+        await enqueueTailscaleServe(() => execFileAsync(
           cli,
           ["serve", `--tcp=${port}`, "off"],
           { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-        );
+        ));
         reclaimed += 1;
       } catch {
         // A single stubborn entry must not stop the rest.
@@ -4830,7 +4880,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     https: () => tailnetHttps.route(),
     recheckHttps: async () => {
       if (tailnetServePort == null || tailnetDiscoveryStatus.state !== "published") return;
-      await tailnetHttps.publish(tailnetServePort, { force: true });
+      await tailnetHttps.publish(tailnetServePort, {
+        force: true,
+        targetPort: sharedListener?.getLoopbackPort() ?? tailnetServePort,
+      });
     },
   });
 
@@ -4858,11 +4911,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCliPath();
     try {
       // Plain per-node teardown matching the `serve --bg --tcp=<port>` form.
-      await execFileAsync(
+      await enqueueTailscaleServe(() => execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-      );
+      ));
       updateTailnetDiscoveryStatus({
         state: "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4901,6 +4954,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     port: number,
     options?: { force?: boolean },
   ): Promise<void> => {
+    if (sharedListener) {
+      // The shared listener owns the local route: its own port, or a side
+      // door while another program holds 127.0.0.1:<port>. Probing the port
+      // here would call a working side door a failure.
+      try {
+        await sharedListener.revalidateLoopback();
+      } finally {
+        loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      }
+      return;
+    }
     // Re-publish paths pass force:true so a shadow that arose AFTER startup is
     // caught before we (re)advertise the port; the startup path keeps the cheap
     // short-circuit once a port is validated.
@@ -4936,17 +5000,50 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const publishValidatedDiscovery = async (
+  // One publication at a time: two overlapping ones (a port move and a
+  // loopback verdict change) could each tear down the other's Tailscale route.
+  let discoveryChain: Promise<unknown> = Promise.resolve();
+  const publishValidatedDiscovery = (
     port: number,
     options?: { forceLan?: boolean; forceTailnet?: boolean },
   ): Promise<void> => {
+    const run = discoveryChain.then(
+      () => publishValidatedDiscoveryNow(port, options),
+      () => publishValidatedDiscoveryNow(port, options),
+    );
+    discoveryChain = run.catch(() => undefined);
+    return run;
+  };
+
+  const publishValidatedDiscoveryNow = async (
+    port: number,
+    options?: { forceLan?: boolean; forceTailnet?: boolean },
+  ): Promise<void> => {
+    // A publication for a port the shared listener has already left is stale:
+    // the move's own refresh publishes the live port. Checked again after the
+    // await below, which runs an external `tailscale serve`.
+    const isStale = (): boolean => sharedListener != null && sharedListener.getPort() !== port;
+    if (isStale()) return;
     const lanPortChanged = bonjourPort != null && bonjourPort !== port;
     const tailnetPortChanged = tailnetServePort != null && tailnetServePort !== port;
     if (lanPortChanged) unpublishLanDiscovery();
     if (tailnetPortChanged) await unpublishTailnetDiscovery();
-    if (disposed) return;
+    if (disposed || isStale()) return;
+    // LAN peers reach the wildcard bind, not loopback, so a program holding
+    // 127.0.0.1:<port> does not stop LAN. Tailscale Serve forwards to
+    // 127.0.0.1:<port>, so only that route waits for loopback to answer as
+    // this listener (the shared listener moves off a shadowed port by itself).
     publishLanDiscovery(port, { force: options?.forceLan });
-    publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    // Read the shared listener's live verdict, not a copy: a check that
+    // finished for an older port must not unpublish the current one.
+    const localRouteReady = sharedListener
+      ? sharedListener.getLoopbackPort() != null
+      : loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated;
+    if (localRouteReady) {
+      publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    } else if (tailnetServePort != null) {
+      await unpublishTailnetDiscovery();
+    }
   };
 
   function peerForSocket(ws: WebSocket): PeerState | null {
@@ -9398,16 +9495,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           // A project-host handoff may happen long after the listener's bind
           // probe. Force a fresh identity check before this host republishes
-          // LAN/Tailscale discovery for the shared port.
+          // discovery for the shared port.
           await sharedListener!.revalidateLoopback();
+        } catch (error) {
+          // A shadowed loopback is a degraded route, not a failed host: relay
+          // pipes arrive in process and LAN on the wildcard bind. Refusing to
+          // host here is what used to take every route down at once. The
+          // listener's self-heal moves off the port; Tailscale waits for it.
+          if (!isLoopbackShadowedError(error)) throw error;
+          args.logger.warn("sync_host.loopback_shadowed_hosting_degraded", {
+            port,
+            error: error.message,
+          });
+          void sharedListener!.healNow();
         } finally {
           loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
         }
-        if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
-          throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
-        }
-        await publishValidatedDiscovery(port);
-        return port;
+        await publishValidatedDiscovery(sharedListener!.getPort() ?? port);
+        return sharedListener!.getPort() ?? port;
       }
       if (startupError) {
         throw startupError;
@@ -9491,11 +9596,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const port = getListeningPort();
       if (port != null) {
         // Re-validate the loopback listener before republishing so a post-startup
-        // shadow cannot re-advertise a stale port. On failure validateListeningPort
-        // marks the route unvalidated and throws, so we skip the publish.
+        // shadow cannot re-advertise Tailscale onto another program. A shadow
+        // only withholds Tailscale (see publishValidatedDiscovery); any other
+        // failure skips the publish.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          await publishValidatedDiscovery(port, options);
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, options);
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9527,9 +9638,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Re-enabling discovery must also re-validate the loopback listener so a
         // shadow that appeared while discovery was off cannot be published.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          publishLanDiscovery(port, { force: true });
-          publishTailnetDiscovery(port, { force: true });
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            // A shadow withholds only Tailscale (publishValidatedDiscovery).
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, { forceLan: true, forceTailnet: true });
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9589,7 +9705,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
-      return { ...loopbackValidationStatus };
+      // The shared listener owns the verdict; read it live, not a copy.
+      return sharedListener?.getLoopbackValidationStatus() ?? { ...loopbackValidationStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
@@ -9737,6 +9854,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // was disabled), the listener closes them after a grace period.
         detachSharedListener?.();
         detachSharedListener = null;
+        detachSharedListenerStatus?.();
+        detachSharedListenerStatus = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
           abortPeerOperations(peer, "Sync host changed.");

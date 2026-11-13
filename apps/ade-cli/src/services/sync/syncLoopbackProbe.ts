@@ -105,7 +105,37 @@ export type SyncLoopbackValidationStatus = {
   lastFailureAt: string | null;
   reason: string | null;
   lastSuccessAt: string | null;
+  /**
+   * Program name (never a path or arguments) of another process holding
+   * 127.0.0.1:<port>, e.g. "workerd". Set whenever one was found, including
+   * while a side door answers in its place (`loopbackAdeValidated` true).
+   */
+  shadowedBy?: string | null;
+  /**
+   * Where 127.0.0.1 reaches this listener: its own port, or the local-only
+   * side door it opened because another program holds `127.0.0.1:<port>`.
+   * Tailscale Serve forwards here. Null when no local route answers as ADE.
+   * With it, `loopbackAdeValidated` means "some local route answers as this
+   * listener", not only "127.0.0.1:<port> itself does".
+   */
+  loopbackPort?: number | null;
 };
+
+/** The program name of a command line: its first token's basename, nothing else. */
+export function programNameFromCommandLine(command: string | null | undefined): string | null {
+  const trimmed = command?.trim();
+  if (!trimmed) return null;
+  const quoted = /^"([^"]+)"/.exec(trimmed);
+  // An unquoted macOS bundle path can hold spaces ("Docker Desktop.app/
+  // Contents/MacOS/Docker Desktop --flag"), so the first space is not where
+  // the executable ends. The bundle's own name is the program name and
+  // never includes arguments.
+  const bundle = quoted ? null : /([^/]+)\.app\/Contents\/MacOS\//.exec(trimmed);
+  if (bundle?.[1]) return bundle[1].length <= 64 ? bundle[1] : null;
+  const first = quoted ? quoted[1]! : trimmed.split(/\s+/)[0]!;
+  const base = first.split(/[\\/]/).pop()?.replace(/\.exe$/i, "") ?? "";
+  return base.length > 0 && base.length <= 64 ? base : null;
+}
 
 export class LoopbackShadowedError extends Error {
   readonly code = "ELOOPBACKSHADOWED";
@@ -136,6 +166,20 @@ export async function probeAdeLoopbackListener(
   expectedNonce: string,
   timeoutMs = SYNC_LOOPBACK_PROBE_TIMEOUT_MS,
 ): Promise<SyncLoopbackProbeResult> {
+  return probeAdeListenerAt("127.0.0.1", port, expectedNonce, timeoutMs);
+}
+
+/**
+ * The same identity probe against one of this machine's own addresses. A
+ * program can bind `<lan-ip>:<port>` over ADE's wildcard exactly as it can
+ * `127.0.0.1:<port>`, and then it, not ADE, answers LAN peers on that address.
+ */
+export async function probeAdeListenerAt(
+  host: string,
+  port: number,
+  expectedNonce: string,
+  timeoutMs = SYNC_LOOPBACK_PROBE_TIMEOUT_MS,
+): Promise<SyncLoopbackProbeResult> {
   const checkedAt = new Date().toISOString();
   return await new Promise<SyncLoopbackProbeResult>((resolve) => {
     let settled = false;
@@ -148,7 +192,7 @@ export async function probeAdeLoopbackListener(
       resolve({ ...result, port, checkedAt });
     };
     const request = http.get({
-      host: "127.0.0.1",
+      host,
       port,
       path: "/",
       headers: { connection: "close" },
@@ -172,12 +216,12 @@ export async function probeAdeLoopbackListener(
         reason: ok
           ? null
           : statusCode !== 426
-            ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`
+            ? `Expected ADE 426 Upgrade Required on ${host}:${port}, received ${statusCode ?? "no status"}${statusMessage ? ` ${statusMessage}` : ""}.`
             : markerValue == null || markerValue.length === 0
-              ? `The listener on 127.0.0.1:${port} returned 426 but did not present a loopback identity in ${SYNC_LOOPBACK_ADE_MARKER_HEADER}.`
+              ? `The listener on ${host}:${port} returned 426 but did not present a loopback identity in ${SYNC_LOOPBACK_ADE_MARKER_HEADER}.`
               : expectedNonce.length === 0
-                ? `The listener on 127.0.0.1:${port} cannot be ADE-validated because the expected loopback identity is empty.`
-                : `The listener on 127.0.0.1:${port} returned 426 but presented a different loopback identity — another process owns 127.0.0.1:${port}.`,
+                ? `The listener on ${host}:${port} cannot be ADE-validated because the expected loopback identity is empty.`
+                : `The listener on ${host}:${port} returned 426 but presented a different loopback identity — another process owns ${host}:${port}.`,
       });
     });
     request.setTimeout(timeoutMs, () => {
@@ -191,7 +235,7 @@ export async function probeAdeLoopbackListener(
         statusMessage: null,
         markerValue: null,
         timedOut,
-        reason: `ADE loopback probe failed on 127.0.0.1:${port}: ${error.message}`,
+        reason: `ADE loopback probe failed on ${host}:${port}: ${error.message}`,
       });
     });
   });

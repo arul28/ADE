@@ -2833,7 +2833,37 @@ keeps the previous primary connected (`switchFocusKeepingPrevious`), and a
 project the machine refuses to open (for example one set to follow another
 machine) shows its reason as a Hub toast. Settings rows report the route each
 machine's link actually took, and each row tracks its own action, so one
-machine connecting never locks the others.
+machine connecting never locks the others. A row titles the computer and puts
+the install on its own line ("ADE Beta", or the home path for a dev install),
+so several installs on one Mac read apart. After a failed connect the row's
+status line turns into a one-line "Couldn't connect" and its button into Retry;
+the full explanation lives on the machine's page, which shows one status and
+one primary action. When the relay closes with 4507 (the computer's bridge
+refused the tunnel), the phone reached the computer's relay connection but ADE
+on it did not answer, and the copy says exactly that
+(`syncRelayHostDidNotAnswerMessage`); the close code is carried on the connect
+error for that purpose and recovery is unchanged. 4501 (no host connection at
+the relay: asleep or offline) and 4509 (which the relay can also send) keep
+the route-neutral copy.
+
+A Bonjour advertisement belongs to a saved machine by **device id first**
+(`matchesDiscoveredHost`, the PIN sheet's `latestDiscoveredHost`): every ADE
+install on one computer (ADE, ADE Beta, a dev home) shares its addresses and
+name but has its own device id and port. Matching on a shared address or name
+took another install's port, so the phone dialed the wrong ADE on Wi-Fi, was
+refused, and fell back to the relay; the PIN sheet sent the PIN to the wrong
+install. Address and name decide only when a side has no device id. A PIN
+pairing to a computer advertising its live port does not sweep ADE's default
+ports, and ranks routes only by history from that same machine.
+
+A live connection (focused or fleet) that drops without a close frame (1006,
+or no code) sends one Sentry report (`SyncLiveDropReport`, area
+`sync_live_drop`): connection kind, route kind, close code and an age bucket,
+at most once per kind per ten minutes. A saved port change leaves a
+`sync.route` breadcrumb, so the report shows whether the port moved just
+before. Such a drop was seen on a real iPhone right after the computer's sync
+port moved and never reproduced in the simulator (focused or fleet, signed in
+or not).
 
 A CLI or shell session on another live machine opens on the phone at once,
 over that machine's roster connection. The focused machine and the active

@@ -79,11 +79,11 @@ struct FilesRootScreen: View {
       !syncService.shouldSuppressDomainHydrationNotices,
       let hydrationNotice = filesStatus.inlineHydrationFailureNotice(for: .files)
     {
-      ADEInstructionErrorCard(
+      ADEFlatInlineNotice(
         notice: hydrationNotice,
         retry: { Task { await reload(refreshRemote: true) } }
       )
-      .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16), separator: .hidden)
+      .adeFlatRow(separator: .hidden)
     }
     if let errorMessage,
       filesStatus.phase == .ready,

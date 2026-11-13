@@ -3,7 +3,7 @@ import type {
   SyncDeviceRecord,
   SyncPairingConnectInfo,
 } from "../../../../desktop/src/shared/types";
-import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
+import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 
 function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;
@@ -83,13 +83,17 @@ export function buildAddressCandidates(
   return candidates;
 }
 
+/**
+ * The port to advertise: the live one, whatever it is. A listener that had to
+ * move to an OS-assigned port (every port above a taken one was busy) is
+ * outside ADE's usual range, and clamping it back to 8787 would send phones
+ * to the program that forced the move. What the listener may bind is bounded
+ * where it binds (`buildSyncHostPortCandidates`).
+ */
 function normalizeSyncHostPort(port: number | null | undefined): number {
-  const parsed = Number.isFinite(port)
-    ? Math.max(1, Math.min(65_535, Math.floor(Number(port))))
-    : DEFAULT_SYNC_HOST_PORT;
-  return parsed >= DEFAULT_SYNC_HOST_PORT && parsed <= SYNC_HOST_MAX_PORT
-    ? parsed
-    : DEFAULT_SYNC_HOST_PORT;
+  if (!Number.isFinite(port)) return DEFAULT_SYNC_HOST_PORT;
+  const parsed = Math.floor(Number(port));
+  return parsed >= 1 && parsed <= 65_535 ? parsed : DEFAULT_SYNC_HOST_PORT;
 }
 
 export function buildPairingConnectInfo(argsIn: {

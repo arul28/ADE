@@ -1513,6 +1513,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   case settingsMachines = "settings-machines"
   /// One machine's page. See `SettingsMachinesPreviewHost`.
   case settingsMachinePage = "settings-machine-page"
+  /// A machine page whose last connect failed: one status, one action.
+  case settingsMachinePageFailing = "settings-machine-page-failing"
+  /// The Work list's slim "Couldn't load your chats" notice. See
+  /// `WorkLoadNoticePreviewHost`.
+  case workLoadNotice = "work-load-notice"
   /// The Files workspace sheet. See `FilesWorkspacePickerPreviewHost`.
   case filesPicker = "files-picker"
   /// The flat PR list, detail tabs and diff page. See `PrFlatPreviews.swift`.
@@ -1674,6 +1679,10 @@ struct ADEPreviewScreenHost: View {
       SettingsMachinesPreviewHost()
     case .settingsMachinePage:
       SettingsMachinesPreviewHost(showsPage: true)
+    case .settingsMachinePageFailing:
+      SettingsMachinesPreviewHost(showsFailingPage: true)
+    case .workLoadNotice:
+      WorkLoadNoticePreviewHost()
     case .filesPicker:
       FilesWorkspacePickerPreviewHost()
     case .prsList:

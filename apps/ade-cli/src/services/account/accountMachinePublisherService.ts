@@ -25,6 +25,7 @@ import {
 import type { MachinePowerSource } from "../power/machinePowerMonitor";
 import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
+import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "../sync/syncBindHost";
 import {
   normalizeAppPackageChannel,
   packageChannelNameSuffix,
@@ -695,9 +696,15 @@ export function buildAccountMachineRegistration(args: {
   for (const candidate of connectInfo.addressCandidates) {
     const host = candidate.host.trim();
     if (!host) continue;
+    // LAN reaches the wildcard bind directly, so it is usable whenever the
+    // listener is bound. Gating it on the loopback check (as this once did)
+    // let any program holding 127.0.0.1:<port> hide a working LAN route.
     if (
       candidate.kind === "lan"
-      && args.snapshot.routeHealth.listener.loopbackAdeValidated
+      && args.snapshot.routeHealth.listener.listenerBound
+      // A loopback-only bind (ADE_SYNC_BIND_HOST=127.0.0.1) serves no LAN
+      // peer; Bonjour withholds LAN for it too (publishLanDiscovery).
+      && !SYNC_HOST_BIND_LOOPBACK_ONLY
     ) {
       add({ kind: "lan", host, port: connectInfo.port });
       continue;
@@ -711,7 +718,6 @@ export function buildAccountMachineRegistration(args: {
     }
     if (
       candidate.kind === "relay"
-      && args.snapshot.routeHealth.listener.loopbackAdeValidated
       && args.snapshot.routeHealth.relay.relayControlConnected
       && args.snapshot.routeHealth.relay.relayBridgeValidated
       && Boolean(args.snapshot.routeHealth.relay.relayEndToEndVerifiedAt)

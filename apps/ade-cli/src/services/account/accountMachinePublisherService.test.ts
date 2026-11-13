@@ -1852,9 +1852,10 @@ describe("account machine registration publisher", () => {
     })).toBeNull();
 
     const host = routeSnapshot();
+    host.routeHealth.listener.listenerBound = false;
     host.routeHealth.listener.loopbackAdeValidated = false;
     host.routeHealth.tailscale.tailscaleReachable = false;
-    host.routeHealth.relay.skipReason = "Relay route is unusable because loopback validation failed.";
+    host.routeHealth.relay.skipReason = "Relay control is not connected.";
     host.pairingConnectInfo!.addressCandidates = [
       { kind: "lan", host: "192.168.1.20" },
       { kind: "tailscale", host: "studio.tailnet.ts.net" },
@@ -1864,6 +1865,21 @@ describe("account machine registration publisher", () => {
       machineKey: "machine-studio",
       snapshot: host,
     })?.reachableEndpoints).toEqual([]);
+  });
+
+  // LAN peers reach the wildcard bind, and relay pipes reach the listener in
+  // process; neither goes through 127.0.0.1:<port>. Another program holding
+  // that address (a `wrangler dev` on 8787) must not hide either route.
+  it("keeps LAN and relay published while another program shadows the loopback port", () => {
+    const host = routeSnapshot();
+    host.routeHealth.listener.loopbackAdeValidated = false;
+    host.routeHealth.listener.reason = "Expected ADE 426 Upgrade Required on 127.0.0.1:8787, received 404 Not Found.";
+    host.routeHealth.tailscale.tailscaleReachable = false;
+    const endpoints = buildAccountMachineRegistration({
+      machineKey: "machine-studio",
+      snapshot: host,
+    })?.reachableEndpoints ?? [];
+    expect(endpoints.map((endpoint) => endpoint.kind).sort()).toEqual(["lan", "relay"]);
   });
 
   it("sends the account bearer only to a trusted directory with a bounded registration body", async () => {
