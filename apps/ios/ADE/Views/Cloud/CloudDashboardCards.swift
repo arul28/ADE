@@ -95,11 +95,12 @@ struct CloudHero: View {
             )
           }
           if let computers = account.computers {
+            // No plan limits how many computers an account has: a count, with an empty meter.
             CloudMiniMeter(
               label: "Computers",
               value: "\(computers.total)",
-              of: "of \(computers.limit)",
-              fraction: computers.limit > 0 ? Double(computers.total) / Double(computers.limit) : 0,
+              of: nil,
+              fraction: 0,
               note: "\(computers.awake) awake now"
             )
           }
@@ -223,7 +224,7 @@ struct CloudLanesCard: View {
 
   private var hint: String? {
     guard let computers = store.account?.computers else { return nil }
-    return "\(computers.total) of \(computers.limit) computers · \(computers.awake) awake"
+    return "\(computers.total) \(computers.total == 1 ? "computer" : "computers") · \(computers.awake) awake"
   }
 
   var body: some View {
@@ -347,6 +348,7 @@ struct CloudPlansCard: View {
       Column(id: "plus", label: "Plus", facts: plans.plus ?? plans.paid),
     ]
     if let pro = plans.pro { out.append(Column(id: "pro", label: "Pro", facts: pro)) }
+    if let max = plans.max { out.append(Column(id: "max", label: "Max", facts: max)) }
     return out
   }
 
@@ -366,7 +368,7 @@ struct CloudPlansCard: View {
             planColumn(column)
           }
         }
-        Text("An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster. Disk and computers count what you have at one time, across all your computers.")
+        Text("An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster. Disk is what all your computers hold at one time. Make as many computers as you like.")
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
@@ -393,7 +395,9 @@ struct CloudPlansCard: View {
       }
       fact(Int(Double(column.facts.includedMilli) / 1000).formatted(), "hours a month")
       fact(cloudGb(column.facts.diskGb), "disk in all")
-      fact("\(column.facts.computerLimit)", column.facts.computerLimit == 1 ? "computer at a time" : "computers at a time")
+      if let minutes = column.facts.phoneMinutes {
+        fact("\(minutes)", "phone minutes")
+      }
       Text(column.id == "free" ? "Work stops until the next month" : "Extra hours, if you turn them on")
         .font(.system(size: 11.5))
         .foregroundStyle(ADEColor.textMuted)
@@ -404,7 +408,7 @@ struct CloudPlansCard: View {
     .background(current ? ADEColor.accent.opacity(0.08) : Color.clear, in: shape)
     .overlay(shape.strokeBorder(current ? ADEColor.accent.opacity(0.45) : ADEKit.edge, lineWidth: current ? 1 : 0.75))
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(Int(Double(column.facts.includedMilli) / 1000)) hours a month, \(cloudGb(column.facts.diskGb)) disk, \(column.facts.computerLimit) computers")
+    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(Int(Double(column.facts.includedMilli) / 1000)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes" } ?? "")")
   }
 
   private func fact(_ value: String, _ unit: String) -> some View {

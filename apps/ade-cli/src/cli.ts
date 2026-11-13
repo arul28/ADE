@@ -4917,9 +4917,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Earned hours never expire; they are used after the plan's hours and before
   extra hours. The free plan is given once per computer.
 
-  Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
+  Plans: Free, Plus, Pro and Max. \`ade cloud hours\` shows yours, with its hours and disk.
   Change it in Settings › ADE Cloud › Plan and hours.
-  Disk and computers are what you have at one time, not a monthly amount.
+  Disk is what all your computers hold at one time, not a monthly amount.
+  No plan limits how many computers you have.
   On a paid plan, extra disk past the plan's is counted by the day, inside a
   monthly limit you set. A grow past it is refused with a sentence that says why.
 
@@ -21344,16 +21345,17 @@ function formatCloudAccount(value: unknown): string {
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
-  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" ? account.planId : undefined;
+  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
   const disk = isRecord(account.disk) && typeof account.disk.usedGb === "number"
     ? typeof account.disk.limitGb === "number" ? `${account.disk.usedGb} of ${account.disk.limitGb} GB disk` : `${account.disk.usedGb} GB disk`
     : null;
-  const computers = isRecord(account.computers) && typeof account.computers.total === "number" && typeof account.computers.limit === "number"
-    ? `${account.computers.total} of ${account.computers.limit} computers`
+  // No plan limits how many computers an account has: a count, never "of N".
+  const computers = isRecord(account.computers) && typeof account.computers.total === "number"
+    ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
     : null;
-  const atOneTime = disk || computers ? `\n${[disk, computers].filter(Boolean).join(", ")} at one time.` : "";
+  const atOneTime = disk || computers ? `\n${[disk && `${disk} in use`, computers].filter(Boolean).join(", ")}.` : "";
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";

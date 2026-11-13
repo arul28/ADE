@@ -9,6 +9,7 @@ import {
   type CloudAgentLimits,
   type CloudShapeId,
   isCloudInstanceId,
+  isPaidPlanId,
   cloudMachineState,
   type CloudCreateProgress,
   type CloudMachineActionArgs,
@@ -479,7 +480,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudPickPlanCleanup, async (event, arg: { planId?: unknown; push?: unknown; instanceIds?: unknown }): Promise<CloudAccountState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPickPlanCleanup)) return null;
     const pick = readPick(arg);
-    const planId = arg?.planId === "free" || arg?.planId === "plus" || arg?.planId === "pro" ? arg.planId : null;
+    const planId = arg?.planId === "free" || isPaidPlanId(arg?.planId) ? arg.planId : null;
     if (!pick || !planId) throw new Error("ADE couldn't read which computers to free.");
     const account = await billingCall(async () => (await requireCloudProvider(credentials)).pickPlanCleanup({ planId, ...pick }));
     logger.info("cloud.plan_cleanup_picked", { plan: planId, computers: pick.instanceIds.length, push: pick.push });
@@ -509,7 +510,7 @@ export function registerCloudIpc(args: {
    */
   ipcMain.handle(IPC.cloudOpenCheckout, async (event, arg?: { plan?: unknown; cleanup?: unknown }): Promise<CloudOpenCheckoutResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
-    const plan = arg?.plan === "pro" || arg?.plan === "plus" ? arg.plan : undefined;
+    const plan = isPaidPlanId(arg?.plan) ? arg.plan : undefined;
     const cleanup = readPick(arg?.cleanup);
     // A pick that was sent but can't be read must not become "no pick": the plan would change and nothing the person chose would go.
     if (arg?.cleanup != null && !cleanup) {

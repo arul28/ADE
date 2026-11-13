@@ -133,12 +133,12 @@ const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
   ],
   // Only what every server sells: Pro and extra disk are offered only when the server sends them.
   plans: {
-    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 12, priceUsd: 0 },
-    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
+    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
+    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
-  extraHourCents: 1,
+  extraHourCents: 2,
 };
 
 /**
@@ -165,27 +165,48 @@ export function cloudCatalogHasPro(catalog: CloudCatalog): catalog is CloudCatal
   return catalog.plans.plus != null && catalog.plans.pro != null;
 }
 
-/** Which plan the account has: `plus` for a paid account from a server that predates Pro. */
+/** True when the server sells Max too (it sends Max's facts only once its price is set). */
+export function cloudCatalogHasMax(catalog: CloudCatalog): catalog is CloudCatalog & { plans: { plus: CloudPlanFacts; pro: CloudPlanFacts; max: CloudPlanFacts } } {
+  return cloudCatalogHasPro(catalog) && catalog.plans.max != null;
+}
+
+const PAID_PLAN_IDS: readonly CloudPaidPlanId[] = ["plus", "pro", "max"];
+export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => (PAID_PLAN_IDS as readonly unknown[]).includes(value);
+
+/** Which plan the account has: `plus` for a paid account from a server that predates Pro, or one naming a plan this build doesn't know. */
 export function cloudPlanIdOf(account: Pick<CloudAccountState, "plan" | "planId">): CloudPlanId {
-  if (account.planId === "free" || account.planId === "plus" || account.planId === "pro") return account.planId;
+  if (account.planId === "free" || isPaidPlanId(account.planId)) return account.planId;
   return account.plan === "paid" ? "plus" : "free";
 }
 
 /** The facts of the account's plan, from what the server sent: a server before Pro has only `free` and `paid`. */
 export function cloudPlanFactsOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): CloudPlanFacts {
-  const byId = account.planId === "plus" || account.planId === "pro" ? catalog.plans[account.planId] : undefined;
+  const byId = isPaidPlanId(account.planId) ? catalog.plans[account.planId] : undefined;
   return byId ?? catalog.plans[account.plan];
 }
 
-/** "Free", "Plus" or "Pro"; a paid account on a server before Pro keeps its old name, "$5 plan". */
+/** "Free", "Plus", "Pro" or "Max"; a paid account on a server before Pro keeps its old name, "$5 plan". */
 export function cloudPlanLabelOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): string {
-  if (account.planId === "plus" || account.planId === "pro") return CLOUD_PLAN_LABELS[account.planId];
+  if (isPaidPlanId(account.planId)) return CLOUD_PLAN_LABELS[account.planId];
   return account.plan === "paid" ? `$${catalog.paidPriceUsd} plan` : CLOUD_PLAN_LABELS.free;
 }
 
-export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro" };
+/**
+ * What one extra hour costs on `planId`, in cents, or null when it has none
+ * (the free plan). A server before per-plan prices sends one price for all.
+ */
+export function cloudExtraHourCentsOf(planId: CloudPlanId, catalog: CloudCatalog): number | null {
+  if (planId === "free") return null;
+  const own = catalog.plans[planId]?.extraHourCents;
+  return own === undefined ? catalog.extraHourCents : own;
+}
+
+/** "2¢", "1.5¢": an extra hour's price as people read it. */
+export const formatCloudCentsPerHour = (cents: number): string => `${Number(cents.toFixed(2))}¢`;
+
+export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro", max: "Max" };
 /** Plan order, cheapest first: whether a move between two plans is up or down. */
-export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2 };
+export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2, max: 3 };
 
 /** Hours of a Small computer this size uses per hour awake. */
 export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
@@ -847,7 +868,7 @@ export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   if (typeof raw.sentence !== "string") return null;
-  if (raw.planId !== "free" && raw.planId !== "plus" && raw.planId !== "pro") return null;
+  if (raw.planId !== "free" && !isPaidPlanId(raw.planId)) return null;
   const text = (entry: unknown): string | null => (typeof entry === "string" && entry ? entry : null);
   const computersOf = (list: unknown): CloudPlanCleanupComputer[] => (Array.isArray(list)
     ? list.flatMap((entry): CloudPlanCleanupComputer[] => {
@@ -871,8 +892,6 @@ export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
     ...(Array.isArray(raw.choices) ? { choices: computersOf(raw.choices) } : {}),
     usedGb: finite(raw.usedGb),
     limitGb: finite(raw.limitGb),
-    computerCount: finite(raw.computerCount),
-    computerLimit: finite(raw.computerLimit),
     startsAt: typeof raw.startsAt === "number" && Number.isFinite(raw.startsAt) ? raw.startsAt : null,
     freeing: freeing && typeof freeing.push === "boolean" && Array.isArray(freeing.instanceIds) && typeof freeing.at === "number"
       ? { push: freeing.push, at: freeing.at, instanceIds: freeing.instanceIds.filter((id): id is string => typeof id === "string") }
@@ -967,6 +986,8 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       title: "You're out of ADE Cloud hours",
       detail: account.extraHours.available
         ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
+        : cloudCatalogHasMax(catalog)
+          ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
         : cloudCatalogHasPro(catalog)
           ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
           : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,

@@ -3,15 +3,19 @@ import { ArrowSquareOut, CreditCard } from "@phosphor-icons/react";
 import {
   CLOUD_PLAN_LABELS,
   CLOUD_PLAN_RANK,
+  cloudCatalogHasMax,
   cloudCatalogHasPro,
   cloudCatalogOf,
+  cloudExtraHourCentsOf,
   cloudPlanIdOf,
   cloudPlanLabelOf,
   formatCloudCents,
+  formatCloudCentsPerHour,
   formatCloudDate,
   formatCloudHours,
   type CloudAccountState,
   type CloudPaidPlanId,
+  type CloudPlanCleanup,
   type CloudPlanCleanupPick,
   type CloudPlanFacts,
   type CloudPlanId,
@@ -43,23 +47,30 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diskLimit, setDiskLimit] = useState(DEFAULT_EXTRA_DISK_LIMIT);
-  // Pro to Plus over Plus's limits: the question first (CloudPlanLimitsDialog).
-  const [askingPlus, setAskingPlus] = useState(false);
+  // A downgrade over the cheaper plan's disk: the question first (CloudPlanLimitsDialog).
+  const [asking, setAsking] = useState<CloudPaidPlanId | null>(null);
 
   const catalog = cloudCatalogOf(account);
   const pro = cloudCatalogHasPro(catalog) ? catalog.plans.pro : null;
+  const max = cloudCatalogHasMax(catalog) ? catalog.plans.max : null;
   const current = cloudPlanIdOf(account);
   const paid = account.plan === "paid";
   const pastDue = account.billing.notice === "past_due";
   const { billing, extraHours } = account;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
-  // Pro with a move to Plus waiting: the Pro column undoes the move (uncharged).
-  const canStayOnPro = paid && !pastDue && !billing.cancelAtPeriodEnd && current === "pro" && nextPlanId === "plus";
+  // A paid plan with a move down waiting: its own column undoes the move (uncharged).
+  const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
   const columns: Column[] = [
     { id: "free", facts: catalog.plans.free },
     { id: "plus", facts: catalog.plans.plus ?? catalog.plans.paid },
     ...(pro ? [{ id: "pro" as const, facts: pro }] : []),
+    ...(max ? [{ id: "max" as const, facts: max }] : []),
   ];
+  // What a move down to each cheaper plan would go over (only plans it goes over are sent).
+  const previewFor = (plan: CloudPlanId): CloudPlanCleanup | null =>
+    (account.downgradePreviews as Partial<Record<CloudPlanId, CloudPlanCleanup>> | undefined)?.[plan] ?? null;
+  const showPhoneMinutes = columns.some((column) => column.facts.phoneMinutes != null);
+  const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
 
   const run = async (work: (() => Promise<unknown>) | undefined) => {
     if (!work) return;
@@ -84,59 +95,62 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   });
 
   // Only an answer that the plan changed now says it worked; anything else shows the plan error.
-  const stayOnPro = () => run(async () => {
-    const result = await bridge?.openCheckout?.("pro");
-    if (result?.change !== "now") throw new Error("ADE Cloud didn't keep you on Pro. Try again in a moment, or use Manage billing.");
-    showToast({ title: "You stay on Pro.", tone: "success" });
+  const stay = (plan: CloudPaidPlanId) => run(async () => {
+    const label = CLOUD_PLAN_LABELS[plan];
+    const result = await bridge?.openCheckout?.(plan);
+    if (result?.change !== "now") throw new Error(`ADE Cloud didn't keep you on ${label}. Try again in a moment, or use Manage billing.`);
+    showToast({ title: `You stay on ${label}.`, tone: "success" });
   });
 
   const choose = async (target: Column) => {
     if (target.id === "free") return;
-    if (target.id === "pro" && canStayOnPro) {
-      await stayOnPro();
+    if (target.id === current && canStay) {
+      await stay(target.id);
       return;
     }
     if (!paid) {
       await checkout(pro ? target.id : undefined);
       return;
     }
-    if (target.id === "pro") {
+    const label = CLOUD_PLAN_LABELS[target.id];
+    if (CLOUD_PLAN_RANK[target.id] > CLOUD_PLAN_RANK[current]) {
       const ok = await confirmDialog({
-        title: "Move to Pro?",
-        message: `Pro is $${target.facts.priceUsd} a month with ${formatCloudHours(target.facts.includedMilli)} hours. You pay the difference for the rest of this month now. Hours you used stay used.`,
-        confirmLabel: "Move to Pro",
+        title: `Move to ${label}?`,
+        message: `${label} is $${target.facts.priceUsd} a month with ${formatCloudHours(target.facts.includedMilli)} hours. You pay the difference for the rest of this month now. Hours you used stay used.`,
+        confirmLabel: `Move to ${label}`,
       });
-      if (ok) await checkout("pro");
+      if (ok) await checkout(target.id);
       return;
     }
-    // Pro to Plus starts with the next month. Over Plus's limits, ADE asks
-    // first: clean up yourself (no move), or pick what ADE frees now.
-    if (account.downgradePreviews?.plus) {
-      setAskingPlus(true);
+    // A move down starts with the next month. Over the cheaper plan's disk, ADE
+    // asks first: clean up yourself (no move), or pick what ADE frees now.
+    if (previewFor(target.id)) {
+      setAsking(target.id);
       return;
     }
     const ok = await confirmDialog({
-      title: "Move to Plus?",
-      message: `You move to Plus on ${formatCloudDate(billing.periodEnd)}. Pro stays until then.`,
-      confirmLabel: "Move to Plus",
+      title: `Move to ${label}?`,
+      message: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.`,
+      confirmLabel: `Move to ${label}`,
     });
     if (!ok) return;
+    const plan = target.id;
     await run(async () => {
-      await bridge?.openCheckout?.("plus");
-      showToast({ title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.` });
+      await bridge?.openCheckout?.(plan);
+      showToast({ title: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}.` });
     });
   };
 
   // The dialog shows a refusal itself; only a move that went through reaches the toast.
-  const moveToPlusWith = async (pick: CloudPlanCleanupPick) => {
-    const result = await bridge?.openCheckout?.("plus", pick);
+  const moveDownWith = async (plan: CloudPaidPlanId, pick: CloudPlanCleanupPick) => {
+    const result = await bridge?.openCheckout?.(plan, pick);
     if (result?.change !== "next_period") throw new Error("ADE Cloud didn't change your plan. Nothing changed. Try again in a moment.");
     const freeing = result.freeing?.length ?? 0;
     if (pick.instanceIds.length > 0 && freeing === 0) {
       // The plan changed but the pick wasn't queued (another pick was running): say so, never a quiet success.
       showToast({
         tone: "warning",
-        title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
+        title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,
         message: "ADE didn't start freeing the computers you picked. Choose them again from the notice on this page.",
       });
       onChanged();
@@ -144,14 +158,14 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     }
     showToast({
       tone: "success",
-      title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
+      title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,
       ...(freeing ? { message: planCleanupPickSentence(pick.push, freeing) } : {}),
     });
     onChanged();
   };
 
   const actionFor = (column: Column): { label: string; primary: boolean } | null => {
-    if (column.id === "pro" && canStayOnPro) return { label: "Stay on Pro", primary: true };
+    if (column.id === current && canStay && column.id !== "free") return { label: `Stay on ${CLOUD_PLAN_LABELS[column.id]}`, primary: true };
     if (column.id === current) return null;
     if (column.id === "free") return null;
     if (pastDue || billing.cancelAtPeriodEnd) return null;
@@ -197,7 +211,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
             <span>Price</span>
             <span>Hours a month</span>
             <span>Disk</span>
-            <span>Computers</span>
+            {showPhoneMinutes ? <span>Phone minutes</span> : null}
             <span className="adecd-plan-wrap">Past your hours</span>
             <span className="adecd-plan-foot" />
           </div>
@@ -214,8 +228,13 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
                 <span><b className="kit-num" data-face="ui">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b><small>{column.facts.priceUsd ? " a month" : " forever"}</small></span>
                 <span><b className="kit-num" data-face="ui">{Number(formatCloudHours(column.facts.includedMilli)).toLocaleString()}</b><small> hours</small></span>
                 <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
-                <span><b className="kit-num" data-face="ui">{column.facts.computerLimit}</b><small> at one time</small></span>
-                <span className="adecd-plan-wrap">{column.id === "free" ? <small>Work stops until the next month</small> : <small>{catalog.extraHourCents}¢ an hour, if you turn it on</small>}</span>
+                {showPhoneMinutes ? (
+                  <span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b><small> a month</small></span>
+                ) : null}
+                <span className="adecd-plan-wrap">{(() => {
+                  const cents = cloudExtraHourCentsOf(column.id, catalog);
+                  return cents == null ? <small>Work stops until the next month</small> : <small>{formatCloudCentsPerHour(cents)} an hour, if you turn it on</small>;
+                })()}</span>
                 <span className="adecd-plan-foot">
                   {action ? (
                     <button
@@ -235,11 +254,11 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         </div>
         {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
           <p className="adecd-plan-fine" data-tone="warn">
-            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until they fit; you clean up or pick what ADE frees here.
+            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until their disk fits; you clean up or pick what ADE frees here.
           </p>
         ) : null}
         <p className="adecd-plan-fine">
-          An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster (see Sizes). Disk and computers count what you have at one time, across all your computers.
+          An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster (see Sizes). Disk is what all your computers hold at one time. Make as many computers as you like.
         </p>
 
         {extraHours.available ? (
@@ -248,7 +267,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
               <div>
                 <b>Extra hours</b>
                 <small>
-                  Keep working past your plan's hours at {catalog.extraHourCents}¢ a Small-hour, billed after use.
+                  Keep working past your plan's hours at {formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)} a Small-hour, billed after use.
                   {extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} h used this month.` : ""}
                 </small>
               </div>
@@ -313,13 +332,13 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
           <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: "ADE Cloud couldn't change your plan", detail: error, dismiss: { onDismiss: () => setError(null) } }} />
         ) : null}
       </div>
-      {askingPlus && account.downgradePreviews?.plus ? (
+      {asking && previewFor(asking) ? (
         <CloudPlanLimitsDialog
-          cleanup={account.downgradePreviews.plus}
+          cleanup={previewFor(asking)!}
           mode="downgrade"
           currentPlanLabel={cloudPlanLabelOf(account, catalog)}
-          onClose={() => setAskingPlus(false)}
-          onPick={moveToPlusWith}
+          onClose={() => setAsking(null)}
+          onPick={(pick) => moveDownWith(asking, pick)}
         />
       ) : null}
     </section>

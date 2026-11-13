@@ -525,7 +525,7 @@ export function BatchLaunchModal({
     return (multiIssue ? state?.sessionType : defaultConfig.sessionType) === "cli";
   });
   const adeCloudProblem = adeCloudPicked
-    ? adeCloudCapacityProblem(adeCloud.account, launchCount) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null)
+    ? adeCloudCapacityProblem(adeCloud.account) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null)
     : null;
   const adeCloudChoice: AdeCloudLaneChoice | null = adeCloud.offered
     ? {

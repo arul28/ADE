@@ -48,15 +48,16 @@ const CATALOG: CloudAccountState["catalog"] = {
     { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
   ],
   plans: {
-    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 12, priceUsd: 0 },
-    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
-    plus: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
-    pro: { includedMilli: 1_500_000, computerLimit: 30, diskGb: 120, priceUsd: 20 },
+    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
+    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+    plus: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+    pro: { includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
+    max: { includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
-  extraHourCents: 1,
-  extraDiskCentsPer10GbMonth: 100,
+  extraHourCents: 2,
+  extraDiskCentsPer10GbMonth: 200,
 };
 
 type LaneSpec = {
@@ -148,10 +149,10 @@ function fixture(scenario: Scenario): Fixture {
         recentUsedMilli: 61_000,
         lanes: [
           { id: "k3j9x0a1", lane: "checkout-redesign", tier: "medium", diskGb: 8, state: "running", lastActiveAgoMs: 0, createdAgoMs: 6 * DAY, pr: "open" },
-          { id: "m2q8w1b2", lane: "android-push", tier: "large", diskGb: 16, state: "asleep", lastActiveAgoMs: 5 * HOUR, createdAgoMs: 9 * DAY, unpushed: true },
+          { id: "m2q8w1b2", lane: "android-push", tier: "large", diskGb: 10, state: "asleep", lastActiveAgoMs: 5 * HOUR, createdAgoMs: 9 * DAY, unpushed: true },
           { id: "p7r4t5c3", lane: "fix-login-redirect", tier: "small", diskGb: 4, state: "asleep", lastActiveAgoMs: 2 * DAY, createdAgoMs: 4 * DAY, pr: "merged" },
           { id: "z1x2c3d4", lane: "search-index", tier: "small", diskGb: 4, state: "running", lastActiveAgoMs: 0, createdAgoMs: DAY },
-          { id: "q9w8e7f5", lane: "docs-pass", tier: "small", diskGb: 4, state: "asleep", lastActiveAgoMs: 19 * DAY, createdAgoMs: 30 * DAY, pr: "merged" },
+          { id: "q9w8e7f5", lane: "docs-pass", tier: "small", diskGb: 2, state: "asleep", lastActiveAgoMs: 19 * DAY, createdAgoMs: 30 * DAY, pr: "merged" },
         ],
         without: [{ name: "billing-webhooks", reason: "freed" }],
       };
@@ -165,7 +166,7 @@ function fixture(scenario: Scenario): Fixture {
           id: `pro${index}x7k2`,
           lane: ["api-gateway", "ios-onboarding", "perf-sweep", "e2e-flake", "design-tokens", "billing-v2", "android-emu", "ml-ranker", "docs-site", "infra-terraform", "chat-search"][index]!,
           tier: (["medium", "large", "small", "small", "small", "medium", "xlarge", "large", "small", "medium", "small"] as const)[index]!,
-          diskGb: [12, 28, 4, 8, 4, 16, 44, 24, 4, 8, 4][index]!,
+          diskGb: [8, 12, 4, 4, 4, 8, 10, 6, 2, 2, 2][index]!,
           state: index % 3 === 0 ? "running" : "asleep",
           lastActiveAgoMs: index % 3 === 0 ? 0 : (index + 1) * 7 * HOUR,
           createdAgoMs: (index + 2) * DAY,
@@ -180,7 +181,7 @@ function fixture(scenario: Scenario): Fixture {
     case "full":
       return {
         planId: "free",
-        usedMilli: 50_000,
+        usedMilli: 100_000,
         recentUsedMilli: 9_000,
         lanes: [
           { id: "f1u2l3l4", lane: "monorepo-upgrade", tier: "small", diskGb: 8, state: "asleep", lastActiveAgoMs: 4 * HOUR, createdAgoMs: 12 * DAY, unpushed: true },
@@ -254,11 +255,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
     extraDisk: fix.planId === "free" ? undefined : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
-    disk: { usedGb: fix.planId === "free" && fix.lanes.length === 2 && fix.usedMilli === 50_000 ? 11 : diskUsed, limitGb: plan.diskGb },
+    disk: { usedGb: fix.planId === "free" && fix.lanes.length === 2 && fix.usedMilli === 100_000 ? 11 : diskUsed, limitGb: plan.diskGb },
     computers: {
       total: machines.length,
       awake: machines.filter((box) => box.state === "running").length,
-      limit: plan.computerLimit,
     },
     recentUse: fix.recentUsedMilli ? { days: 7, usedMilli: fix.recentUsedMilli } : undefined,
     dueForDeletion: [],
@@ -280,7 +280,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
 }
 
 /** What goes over `planId` (oldest first), as the server's `planCleanupFor` says it. */
-function mockCleanup(machines: CloudLaneMachine[], planId: "free" | "plus", startsAt: number | null): CloudPlanCleanup {
+function mockCleanup(machines: CloudLaneMachine[], planId: "free" | "plus" | "pro", startsAt: number | null): CloudPlanCleanup {
   const plan = CATALOG.plans[planId]!;
   const diskOf = (box: CloudLaneMachine) => box.resources?.diskGb ?? 0;
   const usedGb = machines.reduce((total, box) => total + diskOf(box), 0);
@@ -293,15 +293,13 @@ function mockCleanup(machines: CloudLaneMachine[], planId: "free" | "plus", star
     createdAt: box.createdAtMs ?? 0,
   }));
   const computers: typeof choices = [];
-  let count = machines.length;
   let disk = usedGb;
   for (const choice of choices) {
-    if (count <= plan.computerLimit && disk <= plan.diskGb) break;
+    if (disk <= plan.diskGb) break;
     computers.push(choice);
-    count -= 1;
     disk -= choice.diskGb;
   }
-  const facts = { planId, usedGb, limitGb: plan.diskGb, computerCount: machines.length, computerLimit: plan.computerLimit };
+  const facts = { planId, usedGb, limitGb: plan.diskGb };
   return { ...facts, computers, choices, startsAt, freeing: null, sentence: planCleanupSentence(facts) };
 }
 
@@ -372,7 +370,7 @@ export function applyBrowserMockCloud(ade: any): void {
       }
       return { opened: false, change: downgrade ? "next_period" : "now", ...(cleanup ? { freeing: cleanup.instanceIds } : {}) };
     },
-    pickPlanCleanup: async (input: { planId: "free" | "plus"; push: boolean; instanceIds: string[] }) => {
+    pickPlanCleanup: async (input: { planId: string; push: boolean; instanceIds: string[] }) => {
       console.info("[browser mock] cloud.pickPlanCleanup", input);
       if (state.planCleanup) state.planCleanup = { ...state.planCleanup, freeing: { push: input.push, instanceIds: input.instanceIds, at: Date.now() } };
       for (const listener of statusListeners) listener();

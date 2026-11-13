@@ -161,10 +161,11 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let limitGb: Double?
   }
 
+  /// No plan limits how many computers an account has; `limit` is still sent
+  /// for older builds and is never shown.
   struct Computers: Decodable, Equatable {
     let total: Int
     let awake: Int
-    let limit: Int
   }
 
   struct RecentUse: Decodable, Equatable {
@@ -235,8 +236,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// shows it (App Store rule: the iPhone app does not sell plans).
   struct PlanFacts: Decodable, Equatable {
     let includedMilli: Int
-    let computerLimit: Int
     let diskGb: Double
+    /// Phone minutes a month (shown on the plan table only); nil from an older server.
+    let phoneMinutes: Int?
   }
 
   struct Catalog: Decodable, Equatable {
@@ -245,6 +247,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let paid: PlanFacts
       let plus: PlanFacts?
       let pro: PlanFacts?
+      let max: PlanFacts?
     }
     struct Size: Decodable, Equatable {
       let type: String
@@ -302,9 +305,11 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// Out of hours for this period, as the server counts it.
   var outOfHours: Bool { hours.state == "zero" }
 
-  /// `free`, `plus` or `pro` (`cloudPlanIdOf`): a paid account of an older server is Plus.
+  /// `free`, `plus`, `pro` or `max` (`cloudPlanIdOf`): a paid account of an older server is Plus.
   var currentPlanId: String {
-    plan == "free" ? "free" : (planId == "pro" ? "pro" : "plus")
+    if plan == "free" { return "free" }
+    if let planId, planId == "pro" || planId == "max" { return planId }
+    return "plus"
   }
 }
 

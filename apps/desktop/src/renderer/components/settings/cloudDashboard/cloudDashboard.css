@@ -304,7 +304,7 @@
  * what fits after the pick, the two paths, the push switch, the computers.
  */
 .adecd-limits { display: flex; flex-direction: column; gap: 12px; }
-.adecd-limits-fit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.adecd-limits-fit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .adecd-limits-cell {
   display: flex;
   align-items: baseline;
