@@ -517,9 +517,19 @@ Renderer — onboarding:
   greeting, the date, a one-line headline (`home/homeHeadline.ts`) and running /
   needs-you counts, over a row of actions (**Add project**, **Chat without a
   project**, **Browser**, and the recents side panel), above the widget grid.
-  Recents list recent local and remote projects, open or forget entries, and
-  launch project creation, clone, or folder selection before a project-bound
-  route is available. Each row carries the same right-click project menu as a
+  The Projects card lists the account's projects, one row per project, and
+  its count is the account's count (`ade projects list --account`), on every
+  client, with or without a computer connected (`homeProjectRows.ts`,
+  `useHomeAccountProjects.ts`). Folders on no account project follow under
+  "Only on <computer>" and do not count: this computer's from its brain's
+  catalog (`project.listThisComputer`, a this-computer IPC with no pin; it
+  reads again when the local brain connects), each connected computer's from
+  its connection catalog. An account row's computers chip opens the copies
+  menu. Its X opens the remove window with **From this list** first: Home on
+  this computer hides the row (`homeHiddenProjects.ts`, localStorage, by
+  account project id), it still counts, and "N hidden" shows it again; opening
+  the project lists it again. A local folder's X forgets it with Undo. The
+  card renders at most 40 rows inline; "N more" shows every row. Each row carries the same right-click project menu as a
   project tab — change icon, pin or unpin, and copy path — and a project with
   no checkout on this machine offers **Add a copy on this computer…**, which
   opens the Add project form with this computer ticked.
@@ -528,8 +538,10 @@ Renderer — onboarding:
   `/settings`, so a person with no project can still reach the settings that
   need none (see "Settings with no project" below).
 - `apps/desktop/src/renderer/components/projects/AddProjectForm.tsx` — **Add
-  project** from GitHub (the palette's clone flow and the start page). The
-  repository comes first, then one row per machine: this computer (not on
+  project** from GitHub (the palette's clone flow and the start page). Add
+  project opens on this form; **Open a folder…** and **New empty project…** sit
+  under it (`AddProjectMoreActions.tsx`), with a computer picker when other
+  computers are connected. The repository comes first, then one row per machine: this computer (not on
   hosted web) and every saved machine. An offline machine cannot be ticked, and
   the form never connects to or wakes one. A machine that already has a copy
   says "already here". Each ticked machine clones on its own
@@ -539,10 +551,13 @@ Renderer — onboarding:
   <machine>" offers **Open** instead, and a failure shows a toast that names
   the machine.
 - `apps/desktop/src/renderer/components/projects/ProjectCopiesMenu.tsx` — the
-  copies menu of a project tab, opened from the machine mark on a tab whose
-  work is on another machine, or from **Copies…** in the tab's right-click
-  menu. One row per machine: the copy in use, another copy (picking it moves
-  the tab there), "not here" with **Add a copy**, or offline. A project with no
+  copies menu of a project, opened from a Home row's computers chip or the
+  project sidebar's computers tag; the tab's right-click menu has a **Copies**
+  submenu with the same rows. One row per machine: the copy in use, another
+  copy (picking it moves the tab there with that copy's own binding), "not
+  here" with **Add a copy**, "Not connected" for a computer known only from the
+  account list, or offline. Every surface counts computers with one rule
+  (`copyComputers`). A project with no
   git origin says "This machine only" and offers Publish.
   `useProjectCopiesMenu.ts` owns the menu, the remove dialog's target and their
   models for the top bar; `projectCopies.ts` holds the pure rules every copy
@@ -2711,7 +2726,7 @@ The pages themselves:
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. Smart decisions (OpenCode Jev) and the composer's model hint sit beside Next prompt: they act on chats and the composer, and save to the project's `.ade/local.yaml` like it. With no OpenCode Zen sign-in the Smart decisions row offers **Sign in to OpenCode** instead of its switch. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `NewLaneSettingsSection.tsx` | **Your lanes** manages lanes; **New lanes** contains Where new lanes start and Lane templates. |
-| Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | Lane sharing at the account level. **Lanes shared by me**: every share the account gave, on any machine, grouped by project, one row per person; rows of the machine and project this window is bound to show rights and usage and can be edited, and a share on another computer can be stopped from here. **Lanes shared with me**: shares given to this account, with Accept, Open and Leave (an account call, no project needed). **My default rights**: the start value of the share sheet for a new person, one value per account (account settings key `laneShare.defaultRights`, scope `all`). It is in `ACCOUNT_ONLY_TAB_IDS` and hidden on the web client, which has no channel for the owner's `lane_share` actions. See [lane sharing](../lanes/lane-sharing.md). |
+| Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | Lane sharing at the account level, three sections on one page (each with its own anchor: `#sharing-by-me`, `#sharing-with-me`, `#sharing-defaults`). **Lanes you shared**: every share the account gave, on any machine, grouped by project, one row per person; rows of the machine and project this window is bound to show rights and usage and can be changed, and a share on another computer can be stopped from here. **Lanes shared with you**: shares given to this account, with Accept, Open, Decline and Leave (an account call, no project needed). **Default access**: the start value of the share sheet for a new person, one value per account (account settings key `laneShare.defaultRights`, scope `all`). It is in `ACCOUNT_ONLY_TAB_IDS` and hidden on the web client, which has no channel for the owner's `lane_share` actions. See [lane sharing](../lanes/lane-sharing.md). |
 | Agents (Project) | `PrChatTranscriptsSection.tsx` | What agents keep about the project: PR transcript gists. The PR transcripts entry keeps its `lanes-git.pr-chat-transcripts` id. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |

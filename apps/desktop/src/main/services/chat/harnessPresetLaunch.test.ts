@@ -11,6 +11,7 @@ import {
   resolveHarnessPresetPlan,
   resolveLaunchBrain,
   resolveTrackedCliPreset,
+  routeConfigHomeId,
   stripTrailingV1,
   type HarnessPresetLaunchDeps,
 } from "./harnessPresetLaunch";
@@ -27,6 +28,8 @@ import {
   presetsUsingCredential,
   removeCredentialLaunchHome,
   removePrivateTree,
+  routeConfigHome,
+  ROUTE_CONFIG_HOME_MAX_AGE_MS,
 } from "./harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import { defaultReadProxyConnection } from "./harnessPresetProxyConnection";
@@ -37,6 +40,7 @@ import type { TerminalResumeMetadata } from "../../../shared/types/sessions";
 import { allProviderKeySpecs } from "../../../renderer/components/settings/providers/keys/providerKeySpecs";
 import type { HarnessPreset, HarnessPresetBody, HarnessPresetSource } from "../../../shared/harnessPresets";
 import { isHarnessPresetBody } from "../../../shared/harnessPresets";
+import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 
@@ -970,6 +974,30 @@ describe("resolveHarnessPresetForLaunch", () => {
       status: "unsupported",
       unsupported: expect.stringMatching(/unsafe/),
     });
+  });
+
+  // An Import or a resume of a session in an old route home resolves that
+  // route. The idle-route prune must not delete the session it is opening.
+  it("keeps the idle home of the route being launched and prunes other idle routes", () => {
+    const routeId = encodeRoutePresetId({
+      harness: "claude",
+      source: { kind: "key", provider: "anthropic", credentialId: "work", label: "Work key" },
+      model: "claude-opus-4-5",
+    });
+    const launchedHome = routeConfigHome(adeHome, routeConfigHomeId(routeId));
+    const otherHome = routeConfigHome(adeHome, "r0123456789abcdef");
+    const idleSince = new Date(Date.now() - ROUTE_CONFIG_HOME_MAX_AGE_MS - 24 * 60 * 60 * 1000);
+    for (const home of [launchedHome, otherHome]) {
+      fs.mkdirSync(path.join(home, "projects"), { recursive: true });
+      fs.writeFileSync(path.join(home, "projects", "session.jsonl"), "{}\n");
+      fs.utimesSync(home, idleSince, idleSince);
+    }
+
+    const plan = resolveHarnessPresetForLaunch(routeId, deps());
+
+    expect(plan?.status).toBe("ready");
+    expect(fs.readFileSync(path.join(launchedHome, "projects", "session.jsonl"), "utf8")).toBe("{}\n");
+    expect(fs.existsSync(otherHome)).toBe(false);
   });
 
   it("does not prune a live direct-credential home with orphaned presets", () => {

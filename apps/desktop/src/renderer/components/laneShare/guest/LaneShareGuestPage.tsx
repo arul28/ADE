@@ -1,102 +1,133 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { UsersThree } from "@phosphor-icons/react";
+import { ArrowLeft, UsersThree } from "@phosphor-icons/react";
 import type { LaneShareOpenResult, LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
 import { LANE_SHARE_GRANT_ID_PATTERN, LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../../shared/laneShareDirectory";
 import { Banner } from "../../ui/notice";
 import { cn } from "../../ui/cn";
 import { showToast } from "../../app/toast/toastStore";
-import { formatLaneShareEnd, laneShareGrantStateLabel, laneShareInviteExpired, laneSharePresetText, LANE_SHARE_RISK_LABELS } from "../laneShareModel";
+import { formatLaneShareEnd, laneShareInviteExpired, laneSharePresetText } from "../laneShareModel";
+import { useLaneShareList } from "../laneShareStore";
+import { settingsRouteFor } from "../../../../shared/settingsManifest";
+import { LaneShareGuestLaneTree } from "./LaneShareGuestShelf";
 import {
   acceptLaneShare,
   laneShareGuestProblem,
   leaveLaneShare,
   loadLaneShareReceived,
-  useLaneShareGuestLaneName,
   useLaneShareGuestStore,
   type LaneShareGuestProblem,
 } from "./laneShareGuestStore";
 import { LaneShareGuestView } from "./LaneShareGuestView";
-import { LaneShareMeta } from "../laneShareUi";
+import { LaneShareMeta, LaneShareState } from "../laneShareUi";
 import { LANE_SHARE_GUEST_ROUTE, laneShareGuestPath } from "./laneShareGuestRoute";
 
 /**
  * Lanes shared with me (`/shared`), a page of this machine, not of a project:
  * it works with no project open, and in the web client with no machine of
- * its own. `?grant=<id>` is where an invite link lands (signed out: sign in;
- * not this account's grant: say so; pending: accept; active: open).
+ * its own. `?grant=<id>` is where an invite link lands: signed out, sign in;
+ * not this account's grant, say so; the owner's own link, open the owner's
+ * lane; pending, the lane with one Accept strip; active, the lane itself,
+ * on its newest chat.
  */
 
-
-
-function AcceptCard({
+function InviteStrip({
   entry,
   onAccepted,
 }: {
   entry: LaneShareReceivedEntry;
   onAccepted: (entry: LaneShareReceivedEntry) => void;
 }) {
-  const [busy, setBusy] = React.useState(false);
+  const [busy, setBusy] = React.useState<"accept" | "decline" | null>(null);
   const [problem, setProblem] = React.useState<LaneShareGuestProblem | null>(null);
   const expired = laneShareInviteExpired(entry);
+  const owner = entry.giverLabel ?? "The owner";
   const accept = async () => {
-    setBusy(true);
+    setBusy("accept");
     setProblem(null);
     try {
-      const grant = await acceptLaneShare(entry.grantId);
-      showToast({ tone: "success", title: "Lane added to Shared with me" });
-      onAccepted(grant);
+      onAccepted(await acceptLaneShare(entry.grantId));
     } catch (error) {
       setProblem(laneShareGuestProblem(error));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
   const decline = async () => {
-    setBusy(true);
+    setBusy("decline");
     try {
       await leaveLaneShare(entry.grantId);
       showToast({ tone: "success", title: "Invite declined" });
     } catch (error) {
       setProblem(laneShareGuestProblem(error));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
   return (
-    <div className="kit-panel mx-auto mt-8 flex w-full max-w-[520px] flex-col gap-3 p-5" data-testid="lane-share-accept-card">
-      <div className="flex flex-col gap-1">
-        <span className="text-[14px] font-medium text-fg/90">
-          {entry.giverLabel ?? "Someone"} shares a lane with you
-        </span>
-        <span className="min-w-0 break-words text-[12.5px] text-fg/70">
-          {entry.laneLabel ?? "A lane"}
-          {entry.projectLabel ? ` in ${entry.projectLabel}` : ""}
-        </span>
-        <LaneShareMeta
-          parts={[
-            `${laneSharePresetText(entry.preset)} access`,
-            entry.risk ? <span key="risk">{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null,
-            formatLaneShareEnd(entry.endsAt),
-          ]}
-        />
+    <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lane-share-invite">
+      <div className="flex min-w-0 shrink-0 flex-col border-b border-fg/[0.06] px-4 py-2">
+        <span className="min-w-0 truncate text-[13px] font-medium text-fg/90">{entry.laneLabel ?? "Shared lane"}</span>
+        <LaneShareMeta parts={[`Shared by ${owner}`, entry.projectLabel, entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null]} />
       </div>
-      {expired ? (
-        <div className="text-[12.5px] text-fg/70">This invite expired. Ask {entry.giverLabel ?? "the owner"} to send it again.</div>
-      ) : (
-        <div className="text-[12px] text-fg/60">
-          The lane stays on {entry.giverLabel ?? "the owner"}'s computer. You see and do only what the owner allows, and the owner can stop it at any time.
+      <div className="mx-auto flex w-full max-w-[640px] flex-col gap-3 px-4 pt-6">
+        <div className="ade-ls-invite-strip" data-testid="lane-share-accept-strip">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-[13px] text-fg/90">
+              {expired ? "This invite expired" : `${owner} invited you to this lane`}
+            </span>
+            <span className="text-[12px] text-fg/60">
+              {expired
+                ? `Ask ${owner} to send it again.`
+                : `${laneSharePresetText(entry.preset)} access. The lane stays on ${owner}'s computer, and ${owner} can stop sharing at any time.`}
+            </span>
+          </div>
+          {!expired ? (
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" className="kit-btn" data-size="sm" disabled={busy != null} onClick={() => { void decline(); }}>Decline</button>
+              <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={busy != null} onClick={() => { void accept(); }}>
+                {busy === "accept" ? "Opening…" : "Accept and open"}
+              </button>
+            </div>
+          ) : null}
         </div>
-      )}
-      {problem ? <Banner layout="inline" model={{ id: "lane-share-accept-problem", tone: "error", title: problem.message, report: false }} /> : null}
-      {!expired ? (
-        <div className="flex items-center gap-2">
-          <button type="button" className="kit-btn kit-btn-primary" disabled={busy} onClick={() => { void accept(); }}>Accept</button>
-          <button type="button" className="kit-btn" disabled={busy} onClick={() => { void decline(); }}>Decline</button>
-        </div>
-      ) : null}
+        {problem ? <Banner layout="inline" model={{ id: "lane-share-accept-problem", tone: "error", title: problem.message, report: false }} /> : null}
+      </div>
     </div>
   );
+}
+
+/**
+ * The owner opened its own invite link: open the shared lane in the Work tab
+ * with a short note, or Settings › Sharing when this tab does not hold it.
+ */
+function OwnShareRedirect({ grantId }: { grantId: string }) {
+  const navigate = useNavigate();
+  const { key, entry } = useLaneShareList(null);
+  const done = React.useRef(false);
+  // The list starts loading after the first render; give it a few seconds
+  // before this falls back to Settings (a tab that cannot read it never fills).
+  const [waitedLong, setWaitedLong] = React.useState(false);
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setWaitedLong(true), 5_000);
+    return () => window.clearTimeout(timer);
+  }, []);
+  React.useEffect(() => {
+    if (done.current) return;
+    const share = entry?.shares.find((candidate) => candidate.grantId === grantId) ?? null;
+    const stillLoading = entry?.status === "loading" || (key != null && entry == null);
+    if (!share && stillLoading && !waitedLong) return;
+    done.current = true;
+    showToast({
+      tone: "info",
+      title: "This is your own share link",
+      message: share
+        ? `The people you invite use it to open this lane. ${share.receiverEmail ? `It is shared with ${share.receiverEmail}.` : ""}`.trim()
+        : "The people you invite use it. Manage it here.",
+    });
+    navigate(share ? `/work?laneId=${encodeURIComponent(share.laneId)}` : settingsRouteFor("sharing.by-me"), { replace: true });
+  }, [entry, grantId, key, navigate, waitedLong]);
+  return <div className="p-6 text-[12px] text-fg/50">Opening your lane…</div>;
 }
 
 type LinkState =
@@ -111,6 +142,8 @@ export function LaneShareGuestPage() {
   const rawGrant = params.get("grant")?.trim() ?? "";
   const grantId = LANE_SHARE_GRANT_ID_PATTERN.test(rawGrant) ? rawGrant : null;
   const sessionId = grantId ? params.get("session") : null;
+  /** `view=lane`: the lane's own page (start a chat), not its newest chat. */
+  const laneView = params.get("view") === "lane";
   const received = useLaneShareGuestStore((state) => state.received);
   const receivedStatus = useLaneShareGuestStore((state) => state.receivedStatus);
   const receivedProblem = useLaneShareGuestStore((state) => state.receivedProblem);
@@ -122,6 +155,8 @@ export function LaneShareGuestPage() {
   }, []);
 
   const listed = grantId ? (received ?? []).find((entry) => entry.grantId === grantId) ?? null : null;
+  const active = React.useMemo(() => (received ?? []).filter((entry) => entry.state === "active"), [received]);
+  const invites = React.useMemo(() => (received ?? []).filter((entry) => entry.state === "pending"), [received]);
 
   // A link to a grant this list does not show as active: ask the directory.
   React.useEffect(() => {
@@ -145,11 +180,30 @@ export function LaneShareGuestPage() {
     };
   }, [grantId, listed?.state, retries]);
 
-  const select = (id: string | null, session: string | null = null) => {
-    navigate(id ? laneShareGuestPath(id, session) : LANE_SHARE_GUEST_ROUTE);
-  };
+  const select = React.useCallback((id: string | null, session: string | null = null, options: { lane?: boolean; replace?: boolean } = {}) => {
+    const path = id ? laneShareGuestPath(id, session) : LANE_SHARE_GUEST_ROUTE;
+    navigate(options.lane && id ? `${path}&view=lane` : path, options.replace ? { replace: true } : undefined);
+  }, [navigate]);
 
-  const rows = (received ?? []).filter((entry) => entry.state === "active" || entry.state === "pending");
+  // Nothing picked: open the first shared lane (or invite) instead of a
+  // "pick one" page.
+  const first = active[0] ?? invites[0] ?? null;
+  React.useEffect(() => {
+    if (!grantId && first) select(first.grantId, null, { replace: true });
+  }, [first, grantId, select]);
+
+  // An open lane with no chat picked opens its newest chat.
+  const sessions = useLaneShareGuestStore((state) => (listed?.state === "active" ? state.sessions[listed.grantId] : undefined));
+  const newestChat = React.useMemo(
+    () => (sessions ?? []).find((session) => session.kind === "chat") ?? null,
+    [sessions],
+  );
+  React.useEffect(() => {
+    if (listed?.state === "active" && !sessionId && !laneView && newestChat) {
+      select(listed.grantId, newestChat.sessionId, { replace: true });
+    }
+  }, [laneView, listed?.grantId, listed?.state, newestChat, select, sessionId]);
+
   const signedOut = receivedProblem?.code === "signed_out" || receivedProblem?.code === "no_directory"
     || (link?.kind === "problem" && (link.problem.code === "signed_out" || link.problem.code === "no_directory"));
 
@@ -157,43 +211,42 @@ export function LaneShareGuestPage() {
   const unavailable = receivedProblem?.code === LANE_SHARING_UNAVAILABLE
     || (link?.kind === "problem" && link.problem.code === LANE_SHARING_UNAVAILABLE);
 
+  const centered = (child: React.ReactNode) => <div className="mx-auto mt-8 w-full max-w-[560px] px-4">{child}</div>;
+  const pendingListed = listed && (listed.state === "pending" || listed.state === "expired") ? listed : null;
+
   let main: React.ReactNode;
   if (unavailable) {
-    main = (
-      <div className="mx-auto mt-8 w-full max-w-[520px]">
-        <Banner
-          layout="inline"
-          model={{
-            id: "lane-sharing-unavailable",
-            tone: "info",
-            title: LANE_SHARING_UNAVAILABLE_MESSAGE,
-            report: false,
-            actions: [{
-              label: "Try again",
-              onClick: () => {
-                void loadLaneShareReceived({ force: true, retry: true });
-                if (grantId) setRetries((count) => count + 1);
-              },
-            }],
-          }}
-        />
-      </div>
+    main = centered(
+      <Banner
+        layout="inline"
+        model={{
+          id: "lane-sharing-unavailable",
+          tone: "info",
+          title: LANE_SHARING_UNAVAILABLE_MESSAGE,
+          report: false,
+          actions: [{
+            label: "Try again",
+            onClick: () => {
+              void loadLaneShareReceived({ force: true, retry: true });
+              if (grantId) setRetries((count) => count + 1);
+            },
+          }],
+        }}
+      />,
     );
   } else if (signedOut) {
-    main = (
-      <div className="mx-auto mt-8 w-full max-w-[520px]">
-        <Banner
-          layout="inline"
-          model={{
-            id: "lane-share-sign-in",
-            tone: "info",
-            title: "Sign in to your ADE account first",
-            detail: "Lanes shared with you are tied to your account. After you sign in, open the link again.",
-            report: false,
-            actions: [{ label: "Sign in", onClick: () => navigate("/account") }],
-          }}
-        />
-      </div>
+    main = centered(
+      <Banner
+        layout="inline"
+        model={{
+          id: "lane-share-sign-in",
+          tone: "info",
+          title: "Sign in to your ADE account first",
+          detail: "Lanes shared with you are tied to your account. After you sign in, open the link again.",
+          report: false,
+          actions: [{ label: "Sign in", onClick: () => navigate("/account") }],
+        }}
+      />,
     );
   } else if (listed?.state === "active") {
     main = (
@@ -201,71 +254,97 @@ export function LaneShareGuestPage() {
         key={listed.grantId}
         entry={listed}
         sessionId={sessionId}
-        onSelectSession={(next) => select(listed.grantId, next)}
-        onClose={() => select(null)}
+        onSelectSession={(next) => select(listed.grantId, next, { lane: next == null })}
       />
     );
+  } else if (pendingListed) {
+    main = <InviteStrip entry={pendingListed} onAccepted={(accepted) => select(accepted.grantId, null, { replace: true })} />;
   } else if (grantId && link?.kind === "loading") {
-    main = <div className="p-6 text-[12px] text-fg/50">Opening the share…</div>;
+    main = <div className="p-6 text-[12px] text-fg/50">Opening the lane…</div>;
   } else if (grantId && link?.kind === "problem") {
-    main = (
-      <div className="mx-auto mt-8 w-full max-w-[520px]">
-        <Banner layout="inline" model={{ id: "lane-share-link-problem", tone: "error", title: link.problem.message, report: false }} />
-      </div>
-    );
+    main = centered(<Banner layout="inline" model={{ id: "lane-share-link-problem", tone: "error", title: link.problem.message, report: false }} />);
   } else if (grantId && link?.kind === "result") {
     const { role, grant } = link.result;
-    if (role === "none" || !grant) {
-      main = (
-        <div className="mx-auto mt-8 w-full max-w-[520px]">
-          <Banner
-            layout="inline"
-            model={{
-              id: "lane-share-not-yours",
-              tone: role === "giver" ? "info" : "warning",
-              title: role === "giver" ? "This is your own share" : "This share is not for this account",
-              detail: role === "giver"
-                ? "Manage it in Settings › Sharing."
-                : "If the invite went to another email address, sign in with that account and open the link again.",
-              report: false,
-            }}
-          />
-        </div>
+    if (role === "giver") {
+      main = <OwnShareRedirect grantId={grantId} />;
+    } else if (role === "none" || !grant) {
+      main = centered(
+        <Banner
+          layout="inline"
+          model={{
+            id: "lane-share-not-yours",
+            tone: "warning",
+            title: "This invite is for another account",
+            detail: "Sign in with the account the invite went to, then open the link again.",
+            report: false,
+            actions: [{ label: "Switch account", onClick: () => navigate("/account") }],
+          }}
+        />,
       );
     } else if (grant.state === "pending" || grant.state === "expired") {
-      main = <AcceptCard entry={grant} onAccepted={(accepted) => select(accepted.grantId)} />;
+      main = <InviteStrip entry={grant} onAccepted={(accepted) => select(accepted.grantId, null, { replace: true })} />;
     } else if (grant.state === "active") {
       // Accepted on another device: the list catches up.
-      main = <div className="p-6 text-[12px] text-fg/50">Opening the share…</div>;
+      main = <div className="p-6 text-[12px] text-fg/50">Opening the lane…</div>;
     } else {
-      main = (
-        <div className="mx-auto mt-8 w-full max-w-[520px]">
-          <Banner layout="inline" model={{ id: "lane-share-closed", tone: "neutral", title: "This share has ended", detail: "Ask the owner for a new invite.", report: false }} />
-        </div>
+      main = centered(
+        <Banner layout="inline" model={{ id: "lane-share-closed", tone: "neutral", title: "This share has ended", detail: "Ask the owner for a new invite.", report: false }} />,
       );
     }
   } else {
     main = (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <UsersThree size={20} className="text-fg/35" />
-        <div className="text-[12.5px] text-fg/65">
-          {receivedStatus === "loading" ? "Loading…" : rows.length === 0 ? "Nobody shares a lane with you yet." : "Pick a shared lane."}
-        </div>
+        <UsersThree size={22} className="text-fg/30" />
+        <div className="text-[13px] text-fg/75">{receivedStatus === "loading" ? "Loading…" : "No shared lanes yet"}</div>
+        {receivedStatus !== "loading" ? (
+          <div className="max-w-[340px] text-[12px] text-fg/50">When someone shares a lane with you, ADE emails you a link. It opens the lane here.</div>
+        ) : null}
       </div>
     );
   }
 
+  const selectedTree = grantId ? { grantId, sessionId } : null;
   return (
     <div className="flex h-full min-h-0 w-full" data-testid="lane-share-guest-page">
-      <aside className="flex w-[260px] shrink-0 flex-col border-r border-fg/[0.06]">
-        <h2 className="ade-ls-pane-title px-3 pb-2 pt-3">Shared with me</h2>
+      <aside className="flex w-[260px] shrink-0 flex-col border-r border-fg/[0.06] max-md:hidden">
+        <div className="flex items-center gap-1 px-2 pb-1 pt-2">
+          <button
+            type="button"
+            className="kit-icon-btn"
+            aria-label="Back"
+            title="Back"
+            onClick={() => (window.history.length > 1 ? navigate(-1) : navigate("/"))}
+          >
+            <ArrowLeft size={14} />
+          </button>
+          <h2 className="ade-ls-pane-title min-w-0 flex-1">Shared with me</h2>
+        </div>
         {receivedProblem && !signedOut && !unavailable ? (
           <div className="px-3 pb-2 text-[11.5px] text-fg/60">{receivedProblem.message}</div>
         ) : null}
-        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
-          {rows.map((entry) => (
-            <SharedLaneRow key={entry.grantId} entry={entry} selected={entry.grantId === grantId} onSelect={() => select(entry.grantId)} />
-          ))}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 pb-3">
+          {invites.length > 0 ? (
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="px-2 pb-0.5 text-[11px] text-fg/45">Invites</span>
+              {invites.map((entry) => (
+                <InviteRow key={entry.grantId} entry={entry} selected={entry.grantId === grantId} onSelect={() => select(entry.grantId)} />
+              ))}
+            </div>
+          ) : null}
+          {active.length > 0 ? (
+            <div className="flex min-w-0 flex-col gap-0.5">
+              {invites.length > 0 ? <span className="px-2 pb-0.5 text-[11px] text-fg/45">Lanes</span> : null}
+              {active.map((entry) => (
+                <LaneShareGuestLaneTree
+                  key={entry.grantId}
+                  entry={entry}
+                  selected={selectedTree}
+                  defaultExpanded={entry.grantId === grantId}
+                  onSelect={(id, session) => select(id, session, { lane: session == null })}
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
       </aside>
       <main className="min-h-0 min-w-0 flex-1">{main}</main>
@@ -273,24 +352,22 @@ export function LaneShareGuestPage() {
   );
 }
 
-/** One shared lane in the list: the host's current lane name once a connection read it, so a rename follows. */
-function SharedLaneRow({ entry, selected, onSelect }: { entry: LaneShareReceivedEntry; selected: boolean; onSelect: () => void }) {
-  const laneName = useLaneShareGuestLaneName(entry);
+/** One invite in the list: the lane, who sent it, and that it waits for an answer. */
+function InviteRow({ entry, selected, onSelect }: { entry: LaneShareReceivedEntry; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
       className={cn(
-        "flex w-full min-w-0 flex-col rounded-md px-2 py-1.5 text-left hover:bg-fg/[0.05]",
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-fg/[0.05]",
         selected && "bg-fg/[0.07]",
       )}
       onClick={onSelect}
     >
-      <span className="min-w-0 truncate text-[12.5px] text-fg/85" title={laneName ?? undefined}>
-        {laneName ?? "Shared lane"}
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="min-w-0 truncate text-[12px] text-fg/85" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Shared lane"}</span>
+        <span className="min-w-0 truncate text-[10.5px] text-fg/45">From {entry.giverLabel ?? "another account"}</span>
       </span>
-      <span className="min-w-0 truncate text-[11px] text-fg/50">
-        From {entry.giverLabel ?? "another account"} · {laneShareGrantStateLabel(entry).label}
-      </span>
+      <LaneShareState label={laneShareInviteExpired(entry) ? "Expired" : "New"} tone={laneShareInviteExpired(entry) ? null : "ok"} />
     </button>
   );
 }

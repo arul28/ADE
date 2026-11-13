@@ -2732,7 +2732,13 @@ function createAgentChatAttachmentUpload(
 
 async function getRemoteTurnFileDiff(args: SyncRemoteCommandServiceArgs, payload: Record<string, unknown>) {
   const parsed = parseAgentChatTurnFileDiffArgs(payload);
-  const cwd = requireProjectRoot(args, "chat.getTurnFileDiff");
+  // A lane names the worktree to read in (a lane-sharing guest's read always
+  // does, set by the host). Lanes share one object store, so the commits read
+  // the same; a lane with no worktree here is refused, never the project root.
+  const laneId = asTrimmedString(payload.laneId);
+  const laneCwd = laneId ? resolveLaneWorktreePathForSync(args, laneId) : null;
+  if (laneId && !laneCwd) throw new Error("chat.getTurnFileDiff: that lane has no worktree on this computer.");
+  const cwd = laneCwd ?? requireProjectRoot(args, "chat.getTurnFileDiff");
   const language = parsed.filePath.split(".").pop() ?? undefined;
   const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
     const result = await runGit(["show", spec], {
@@ -5592,6 +5598,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.listPendingInputs", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").listPendingInputs({
       sessionId: requireString(payload.sessionId, "chat.listPendingInputs requires sessionId."),
+    }));
+  // What the chat's runtime can show (subagents, review mode). The web
+  // client's adapter already asks for it and fell back to "nothing" when no
+  // host served it.
+  register("chat.getSessionCapabilities", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getSessionCapabilities({
+      sessionId: requireString(payload.sessionId, "chat.getSessionCapabilities requires sessionId."),
     }));
   register("chat.listSubagents", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

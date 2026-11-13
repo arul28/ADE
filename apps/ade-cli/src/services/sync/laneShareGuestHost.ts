@@ -189,6 +189,13 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     };
     const sessionId = envelope.sessionId;
     const turnId = typeof event?.turnId === "string" && event.turnId ? event.turnId : null;
+    // A chat's summary changed without a session row write (a title, model or
+    // mode change; a turn that starts or ends): the lane's guests read their
+    // sessions again, at most once per debounce. Nothing runs with no guest.
+    if ((event?.type === "session_meta_updated" || event?.type === "status") && laneShareGuestPeersBySocket.size > 0) {
+      const laneId = resolveLaneShareSession(sessionId)?.laneId ?? null;
+      if (laneId) notifyLaneShareLaneChanged(laneId, false);
+    }
     if (event?.type === "user_message") {
       // A steer, queued or delivered, starts no turn of its own. One that left
       // the queue is no longer the guest's to remove.

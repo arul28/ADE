@@ -46,17 +46,18 @@ ADE first learns it.
 | `apps/desktop/src/shared/externalSessionPolicy.ts` | The one import policy. `PROVIDER_IMPORT_RULES` (the per-provider table), `effectiveImportRules` (the table narrowed by host capabilities), `planImport` (what the action bar shows), `importRejectionReason` (the host guard), and `importProviderLabel` (the provider label every desktop surface uses). The renderer and the host import all use it. iOS mirrors it in Swift. |
 | `apps/desktop/src/main/services/externalSessions/sessionHome.ts` | `createSessionHomeResolver`: maps a provider cwd to the lane that owns it (`ExternalSessionHome`). The deepest lane root wins. A folder under `.ade/worktrees/` that no live lane owns is a removed lane, not the primary lane. |
 | `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
+| `apps/desktop/src/main/services/externalSessions/adeConfigHomes.ts` | The config homes ADE owns under `<ADE_HOME>/provider-homes/` that can hold a CLI's sessions: `providerConfigHomeDirs` (Claude/Codex accounts, presets, keys and routes) and `adeHarnessConfigHomes` (Droid/Grok/Kimi/Pi presets and routes, and Droid keys), each tagged with the launch identity that writes there. Also `ADE_HARNESS_HOME_ENV_KEY` (the variable that points each CLI at its home) and `uniqueByPath`. See [Where the other CLIs' sessions live](#where-the-other-clis-sessions-live). |
 | `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under **every** Claude config home: `CLAUDE_CONFIG_DIR` or `~/.claude`, each account home under `<ADE_HOME>/provider-homes/claude/<instance>`, and the per-preset / per-credential homes ADE launches with. Reads `ai-title`/custom titles, excludes SDK-origin transcripts, collapses continuation chains to their leaf, and keeps the config home on the record so an import can resume under the account that owns the transcript. |
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from **every** Codex config home — `CODEX_HOME` / `~/.codex`, each `<ADE_HOME>/provider-homes/codex/<instance>`, and the preset / API-key homes ADE launches with — reading each home's `state_5.sqlite`: top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when a thread store is unusable, and keeps the config home on the record for import. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
-| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`), one record per session id, using the `session_start` row for id/cwd/title. |
+| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`) and under `<home>/.factory/sessions/` of each preset, route and API-key home ADE runs Droid on, one record per session id, using the `session_start` row for id/cwd/title. A record from an ADE home keeps that home (`configHome`). |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. Never shells out to the CLI and never starts a 2.0 server on that store. |
-| `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the one Pi session store that ADE chat and tracked Pi terminals also use. |
-| `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts`, `discoverAntigravity.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
+| `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the default Pi session store and in the session store of each preset and route home ADE runs Pi on (`PI_CODING_AGENT_DIR`). Drops ADE's own Pi chats: a session whose `.ade-owner` marker names owner `sdk` (an ADE chat; the marker outlives the chat), or one that opens with ADE's `## ADE` guidance. A CLI session from an ADE terminal (owner `cli`) still lists. `defaultHomeOnly` limits it to the default store, for the tracked-terminal id lookup in `ptyService`. |
+| `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts`, `discoverAntigravity.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. Kimi and Grok also read the store in each preset and route home ADE runs them on (`KIMI_CODE_HOME`, `GROK_HOME`). See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
 | `apps/desktop/src/main/services/externalSessions/discoverAcpShared.ts` | Shared plumbing for the four ACP discoverers. Each discoverer maps its records to one neutral `{ type, timestamp, message: { role, content } }` form, and the shared helpers compute the preview, the sampled `messages`, and the prompt count from that form. Also: bounded head + tail reads, the `## ADE` guidance test, `~` expansion for env overrides, and a newest-first read loop that stops when enough sessions survive. |
 | `apps/desktop/src/main/services/externalSessions/events/` | The per-provider converters from a provider store to ADE chat events (`AgentChatEventEnvelope[]`), plus byte-window paging. `loadExternalSessionEvents` (`index.ts`) serves both the preview (`purpose: "preview"`) and the chat import (`purpose: "import"`). `jsonlSourceFor` names the conversation file a converter reads; `records.ts` is the exact-id record lookup (it returns null for an ill-formed id). A store-only Cursor chat pages through `loadCursorStorePage` (`cursor.ts`). See [Conversation events](#conversation-events). |
 | `apps/desktop/src/main/services/externalSessions/externalSessionDetail.ts` | `loadExternalSessionDetail`: one session's detail for a preview. Returns the text tail in `messages` and a page of `events` with `hasOlder`/`olderCursor`. Also owns the local file watch (`startExternalSessionDetailWatch`), which pushes a fresh newest page when the source file changes and loads through the `loadDetail` callback it is given (the service's `getDetail`). Callers go through `externalSessionsService.getDetail`, not this function directly. |
-| `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it, and finds which live process holds each file. Claude and Codex roots come from `providerConfigHomeDirs` (every config home ADE runs them under, classified by the CLI's own files so a Claude preset home is never scanned as Codex); Droid still uses `shared/providerConfigHomes.ts` so `FACTORY_HOME_OVERRIDE` is honoured with its own shape. The ACP roots come from the same module (`QWEN_HOME`, `GROK_HOME`, `COPILOT_HOME`, `KIMI_CODE_HOME`). The live-process scan (`isProviderCliCommandLine`) matches native CLIs by name, including ADE's absolute pinned paths, and ADE's Node-run pins (Qwen `lib/cli-entry.js`, Pi `dist/cli.js`, Cursor `index.js`) by their tools-cache package directory plus script path, so a terminal still on the previous pin matches too. See [Session tracking](#session-tracking). |
+| `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it, and finds which live process holds each file. Claude and Codex roots come from `providerConfigHomeDirs` (every config home ADE runs them under, classified by the CLI's own files so a Claude preset home is never scanned as Codex); Droid still uses `shared/providerConfigHomes.ts` so `FACTORY_HOME_OVERRIDE` is honoured with its own shape, and Droid, Pi, Grok and Kimi add the roots of their ADE preset and route homes (`adeHarnessConfigHomes`). The ACP roots come from the same module (`QWEN_HOME`, `GROK_HOME`, `COPILOT_HOME`, `KIMI_CODE_HOME`). The live-process scan (`isProviderCliCommandLine`) matches native CLIs by name, including ADE's absolute pinned paths, and ADE's Node-run pins (Qwen `lib/cli-entry.js`, Pi `dist/cli.js`, Cursor `index.js`) by their tools-cache package directory plus script path, so a terminal still on the previous pin matches too. See [Session tracking](#session-tracking). |
 | `apps/desktop/src/main/services/externalSessions/liveChatProviderRefs.ts` | `providerPointersFromChatRecord`: every provider pointer that one ADE chat holds (`importedFrom` for a continue, the provider session ids including Copilot's `copilotSdkSessionId`, and `acpSessionId` for the ACP providers and older Copilot chats). `chatImportedRefsProvider(chatService)` builds the chat refs source from it over the non-archived chats. Both runtime hosts wire in that one function, so a session that ADE itself runs never lists as importable on either. |
 | `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the ADE session and the only one that knows a fork's new provider id. |
 | `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<config-home>/sessions/<pid>.json`) from every Claude config home ADE runs the CLI under and returns the session ids whose pid is still alive, for `possiblyActive`. |
@@ -285,6 +286,82 @@ it; the stored resume metadata names that account, so the terminal keeps working
 after a restart. A chat import creates the ADE chat on the chosen account and
 the chat importer moves the transcript into that account's home. A removed
 account id is refused rather than silently falling back to the default account.
+
+Route homes count too. `ade new chat --mode cli --via <source>` runs Claude or
+Codex on `<ADE_HOME>/provider-homes/route/r<hash>`, and its CLI session lives
+there. Discovery lists those homes when the CLI's own files are in them.
+
+### Where the other CLIs' sessions live
+
+A harness preset or an ad-hoc route can move four more CLIs into a home that ADE
+owns. A session started that way is not in the CLI's default store, so
+discovery also reads these homes (`adeHarnessConfigHomes` in
+`adeConfigHomes.ts`):
+
+| Provider | Variable ADE sets | What the variable names | Sessions inside |
+|---|---|---|---|
+| Droid | `FACTORY_HOME_OVERRIDE` | a HOME-like root; Droid adds `.factory` | `<home>/.factory/sessions/<escaped cwd>/` |
+| Grok | `GROK_HOME` | the config folder | `<home>/sessions/<percent-encoded cwd>/<id>/` |
+| Kimi | `KIMI_CODE_HOME` | the config folder | `<home>/sessions/wd_<slug>_<hash>/<id>/` |
+| Pi | `PI_CODING_AGENT_DIR` | the agent folder | wherever Pi's own rules put sessions inside it (`piSessionRootForEnvironment`) |
+
+The homes, all under `<ADE_HOME>/provider-homes/`:
+
+- `preset/<id>`: a saved preset. The folder name is the preset id in lower
+  case. ADE maps it back to the real id from the machine's preset list, and
+  skips a folder whose preset is gone or is for another harness.
+- `route/r<hash>`: an ad-hoc `--via` route. The hash is the first 16 hex
+  characters of the SHA-256 of the route id (`routeConfigHomeId`). ADE lists
+  the folder only when the CLI's own files are in it, because one route folder
+  serves one harness.
+- `credential/droid/<id>`: a stored API key for Droid. Only Droid gets a home for
+  a plain key; Grok, Kimi and Pi take a key in env only, so their session stays
+  in the default store.
+
+ADE never scans `<provider>/default` for these providers. That folder isolates
+the embedded-runtime chat sign-in and holds no CLI sessions. Discovery never
+walks `provider-homes` as a whole; it reads only the folders listed above.
+
+The other providers need no extra home:
+
+- Copilot and Qwen: a preset sets env only (`COPILOT_PROVIDER_*`, `OPENAI_*`).
+  The session stays in the default store.
+- OpenCode: a preset moves only `OPENCODE_CONFIG`. The session stays in the
+  user's OpenCode data store, which discovery already reads.
+- Cursor: the CLI preset gate drops presets (`CLI_PRESET_GATED_HARNESSES`).
+- Muse and Antigravity: they are not preset harnesses.
+- Claude and Codex: covered above.
+
+**Resuming in the same home.** A record from one of these homes carries it
+(`configHome` with `presetId`, `credentialId` or `routeHomeId`). Import puts
+the home's variable in the terminal's env and adds the preset's own env (the
+stored key, the proxy endpoint). A route home names only a hash, so import finds
+the route id from an ADE terminal (archived ones too) whose resume metadata
+names a route with that hash. The resume metadata then records the preset or
+route, so a later resume of the imported terminal gets the same env. When the
+preset, key or route is gone, import logs `external_sessions.import_preset_unresolved`
+or `external_sessions.import_route_unresolved` and still resumes in the same
+home, on the CLI's own sign-in. For a route it cannot name, the resume metadata
+records the home itself (`launch.routeHomeId`), so a later resume also runs in
+that home (`routeHomeLaunchEnv`).
+
+A key home's folder is the key id in lower case, and so is a preset home's
+folder. The key store and the preset list match ids exactly, so import names
+the stored key or the saved preset again from its folder before it resolves
+the env.
+
+A route launch marks its own home as in use before the 30-day prune of idle
+route homes runs (`touchRouteConfigHome`). An import or a resume of a session
+in an old route home thus keeps that session.
+
+A route that goes through ADE's proxy resolves only while the proxy runs. Import
+and the terminal resume paths call `prepareHarnessLaunch` first, as a new launch
+does, so a resume after a brain restart keeps the route's env.
+
+There is no account picker for these providers: `accountId` stays Claude and
+Codex only. A session in one of these homes offers CLI continue and chat copy,
+not chat continue (`importToChat: false`): a chat continue would seed a provider
+pointer into the chat's own default home, where the session is not.
 
 ### Lane attribution
 
@@ -544,6 +621,11 @@ other provider resumes in the session's own folder, because its session is
 keyed to that folder. The resume selector per ACP provider is:
 `qwen --resume <id>`, `kimi -S <id>`, `grok -r <id>`,
 `copilot --resume=<id>`, and `agy --conversation <id>`.
+
+A session from an ADE account, preset, route or API-key home resumes with that
+home in its env, plus the preset's own env (see
+[Where Claude sessions live](#where-claude-sessions-live) and
+[Where the other CLIs' sessions live](#where-the-other-clis-sessions-live)).
 
 When an import does not explicitly override model or permission mode, the
 resume command preserves provider state. ADE does not inject Claude plan mode,
@@ -1061,6 +1143,10 @@ recent-session cut; a directory name that is not an escaped absolute path can
 only be placed by the session's own `session_start` cwd, so those are read after
 every directory scope already confirmed.
 
+Discovery also reads the `.factory/sessions` folder of each preset, route and
+API-key home ADE runs Droid on (see
+[Where the other CLIs' sessions live](#where-the-other-clis-sessions-live)).
+
 `droid --fork` is gated on an installed-CLI probe. Discovery can temporarily
 show fork disabled while the probe is pending; import awaits the probe and
 fails with a clear message if the installed binary lacks `--fork`. Resume is
@@ -1090,9 +1176,21 @@ project cwd rather than transplanting them into another lane cwd.
 
 ### Pi
 
-Pi sessions live in the one native Pi session store that ADE chat and tracked
-Pi terminals also use. CLI continue and CLI copy (`pi --fork <id>`) run in the
-session's own folder. A chat continue seeds `piSessionId`.
+Pi sessions live in the native Pi session store that ADE chat and tracked Pi
+terminals also use, and in the session store of each preset and route home ADE
+runs Pi on (`PI_CODING_AGENT_DIR`). CLI continue and CLI copy
+(`pi --fork <id>`) run in the session's own folder. A chat continue seeds
+`piSessionId`.
+
+ADE's own Pi chats open with the `## ADE` guidance block, so discovery drops a
+session whose first prompt starts that way (the chat ref hides an open chat; this
+also hides an archived one, or one from a removed lane). A CLI launch from the
+Work tab starts its first prompt with "ADE session guidance." instead, so the
+user's own CLI sessions stay listed.
+
+The tracked-terminal lookup in `ptyService` (`resolvePiSessionIdFromStorage`)
+passes `defaultHomeOnly`, so a Pi terminal never adopts a session from another
+preset's home.
 
 ### CLI stores (Qwen, Kimi, Grok, Copilot, Antigravity)
 
@@ -1112,15 +1210,16 @@ folders in about 0.1 s.
 | Provider | Store (env override) | ADE-launched and other exclusions |
 |---|---|---|
 | Qwen (verified 0.22.3) | `<runtime>/projects/<sanitized cwd>/chats/<id>.jsonl`, where `<runtime>` is `QWEN_RUNTIME_DIR`, else `QWEN_HOME`, else `~/.qwen` (a leading `~` expands). The folder slug is not reversible, so the cwd comes from the records. | ADE's ACP chats never write an `attribution_snapshot` system row, and their first prompt opens with the `## ADE` guidance block. A session with both signs is left out. |
-| Kimi (0.39.1, unverified) | `KIMI_CODE_HOME` (default `~/.kimi-code`): `sessions/wd_<slug>_<hash12>/<id>/` with `state.json` and `agents/main/wire.jsonl` (legacy `context.jsonl`), plus `workspaces.json` and `session_index.jsonl`. | Archived sessions, deleted sessions (index tombstones), and child sessions (`custom.child_session_kind: "child"` or `parent_session_id`). No file marker tells ADE's chats apart, so a first prompt that opens with `## ADE` is the test. |
-| Grok (verified 1.0.40) | `$GROK_HOME/sessions/<percent-encoded cwd>/<id>/` (default `~/.grok`) with `summary.json` and `chat_history.jsonl`. The folder name is the cwd, so it is reversible. | `session_kind: "subagent"`, and any session with `updates.jsonl` (only an ACP client, that is ADE, writes it). The opening `<user_info>` workspace-context row is not a prompt. |
+| Kimi (verified Kimi Code 2.3.1) | `KIMI_CODE_HOME` (default `~/.kimi-code`, and each ADE preset and route home): `sessions/wd_<slug>_<hash12>/<id>/` with `state.json` and `agents/main/wire.jsonl` (legacy `context.jsonl`), plus `workspaces.json` and `session_index.jsonl`. | Archived sessions, deleted sessions (index tombstones), and child sessions (`custom.child_session_kind: "child"` or `parent_session_id`). No file marker tells ADE's chats apart, so a first prompt that opens with `## ADE` is the test. |
+| Grok (verified 1.0.46) | `$GROK_HOME/sessions/<percent-encoded cwd>/<id>/` (default `~/.grok`, and each ADE preset and route home) with `summary.json` and `chat_history.jsonl`. The folder name is the cwd, so it is reversible. | `session_kind: "subagent"`; `session_kind: "headless"` (a `grok --single` run, which is how ADE runs its naming and metadata tasks); and a first prompt that opens with `## ADE` (ADE's chats). `updates.jsonl` is no longer a sign: Grok 1.0.46 writes it from its own terminal UI too. The opening `<user_info>` workspace-context row is not a prompt, in the list and in the preview transcript. |
 | Copilot (verified CLI 1.0.88, SDK runtime 1.0.98) | `$COPILOT_HOME/session-state/<uuid>/` (default `~/.copilot`, `%USERPROFILE%\.copilot` on Windows) with `workspace.yaml` and `events.jsonl`. | `client_name` that starts with `ade` (`ade`, `ade-probe`, `ade-telemetry-probe`, …). ADE's SDK chats create their session with `clientName: "ade"`; a resume keeps the name the session was created with, so a CLI session continued in ADE keeps its own. SDK chats from before that recorded the SDK default `client_name: sdk`; those are left out when their first `system.message` carries ADE's coding-agent prompt ("You are ADE's software engineering agent working in"). Sub-agents run inside the parent session, so there are no child folders. Autopilot turns (`source: "autopilot"`) are not prompts. |
 | Antigravity (verified agy 1.5.6, Windows) | `~/.gemini/antigravity-cli/conversations/<id>.db`, one SQLite file per conversation from the TUI or ACP, with a WAL beside it while agy runs it (its time and size count). The cwd is the workspace in `trajectory_metadata_blob`; a conversation with none lists only in an unscoped import. | Subagent conversations (the first step is a message from the parent), and conversations whose ACP system prompt (`acp_system_prompt` in the metadata) opens with `## ADE`, which is every ADE chat. See [Antigravity provider](../chat/antigravity-provider.md#session-log). |
 
-Kimi is unverified: no Kimi session existed on the machine where the code was
-written. The discoverer, the converter, and the PTY watcher follow the shipped
-`kimi` bundle. Every read is defensive, so an unexpected shape gives a thinner
-row or no row, never a throw.
+Kimi was checked on 2026-11-13 against a real Kimi Code 2.3.1 session in an ADE
+route home: discovery listed it, the preview showed its prompt, and CLI continue
+resumed it (`kimi -S <id>`) in that home. The PTY watcher was not checked. Every
+read is defensive, so an unexpected shape gives a thinner row or no row, never
+a throw.
 
 The ACP stores are mostly sessions the importer drops, so a fixed read budget
 could be spent on rejects. `collectNewestSessions` reads candidates newest
@@ -1275,9 +1374,16 @@ startup output (a banner or the folder-trust prompt).
   `session/load`. To enable one, add it to `NATIVE_CHAT_CONTINUE_PROVIDERS`,
   seed its provider pointer in `importNativeContinueExternalChatSession`, and
   change the rule in both policy tables (TypeScript and Swift).
-- Kimi is unverified end to end. The discoverer, the event converter, and the
-  PTY watcher follow the shipped `kimi` 0.39.1 bundle, not real session files.
-  Check them against a real Kimi session.
+- The Kimi PTY watcher is not checked against a real Kimi session. Discovery,
+  the preview and CLI continue are (Kimi Code 2.3.1, 2026-11-13).
+- A Droid route (`--via`) cannot run today: Droid 1.0 sends the route's
+  `FACTORY_API_KEY` to Factory, which rejects it (401), and then cannot open a
+  session. So a Droid session from a route home lists in Import and the import
+  launches `droid --resume` in that home with the route's env, but Droid stops
+  with "Session not found". This is a route problem, not an import problem.
+- `external-sessions.list` blocks the brain's event loop for 2–5 s on this
+  machine (Claude 2–5 s and Pi 1–1.6 s of discovery). The ADE homes add about
+  0.1 ms per provider.
 - Qwen tool-call conversion is verified only for text turns. The tool shapes
   follow the Gemini CLI chat-recording format.
 - The iOS preview and policy port build and pass `ADETests` (2,167 tests,

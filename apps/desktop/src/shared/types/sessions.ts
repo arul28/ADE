@@ -281,6 +281,13 @@ export type TerminalResumeLaunchConfig = {
   presetId?: string | null;
   /** Stored API credential this tracked CLI launched under, when no preset. */
   credentialId?: string | null;
+  /**
+   * ADE route home (`provider-homes/route/<id>`) to resume in, when Import
+   * found the session there but could not name the route again. Set only
+   * when no instance, preset or key is. A resume runs the CLI in that home on
+   * its own sign-in; a home that is gone falls back to the default one.
+   */
+  routeHomeId?: string | null;
 };
 
 export type TerminalResumeMetadata = {

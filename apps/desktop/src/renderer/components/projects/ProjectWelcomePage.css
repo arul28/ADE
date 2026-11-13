@@ -595,6 +595,8 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   color: var(--kit-text-2);
 }
 .ade-home-projects > .ade-welcome-empty { padding: 2px 14px 14px; }
+/* Every project hidden: the way back, on its own line under the text. */
+.ade-welcome-empty .ade-welcome-hidden-toggle { display: block; margin: 6px 0 0 -6px; color: var(--color-fg); }
 
 .ade-welcome-list { min-height: 0; }
 
@@ -680,6 +682,25 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   color: var(--kit-text-3);
 }
 .ade-welcome-row-sub[data-tone="busy"] { font-family: var(--font-sans); color: var(--color-warning); }
+.ade-welcome-row-repo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* "N hidden" beside the Projects count: quiet until pointed at. */
+.ade-welcome-hidden-toggle {
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.ade-welcome-hidden-toggle:hover,
+.ade-welcome-hidden-toggle[aria-pressed="true"] { background: var(--kit-hover); color: var(--color-fg); }
+.ade-welcome-hidden-toggle:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+/* "Only on <computer>": a computer name, so no forced capitals. */
+.ade-welcome-local-head { text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The parent path gives way long before the folder name does. */
 .ade-welcome-path { display: flex; min-width: 0; white-space: nowrap; }
@@ -772,24 +793,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 /* ── machines chip ────────────────────────────────────────────────── */
 
 .ade-welcome-machines { position: relative; flex: none; }
-.ade-welcome-machines-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--kit-card-edge);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
-  color: var(--kit-text-2);
-  font: inherit;
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.ade-welcome-machines-chip:hover,
-.ade-welcome-machines-chip[aria-expanded="true"] { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
-.ade-welcome-machines-chip .kit-dot { width: 5px; height: 5px; }
+/* The computers chip (.ade-welcome-machines-chip) lives in index.css: the project sidebar uses it too. */
 /* Placed by AnchoredMenu (position, offset and stacking). */
 .ade-welcome-machines-menu {
   min-width: 220px;
@@ -1005,6 +1009,14 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-home-free:hover > span, .ade-home-free:focus-visible > span, .ade-home-free[data-editing] > span { opacity: 1; }
 .ade-home-free:not([data-editing]):not([data-first]) { pointer-events: none; }
 
-/* Projects card: the way back to lanes other accounts share (LaneShareHomeFoot). */
-.ade-home-shared-foot { flex: none; margin: 0 14px 12px; }
-.ade-home-shared-foot-text { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* "Shared with you" in the Projects card: lanes other accounts share, and invites. */
+.ade-home-shared { display: flex; flex: none; min-width: 0; flex-direction: column; gap: 1px; padding: 6px 6px 8px; border-top: 1px solid var(--kit-rule); }
+.ade-home-shared-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 4px 8px 4px; font-size: 11.5px; color: var(--kit-text-3); }
+.ade-home-shared-row { display: flex; min-width: 0; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; text-align: left; }
+.ade-home-shared-row:hover { background: var(--kit-hover); }
+.ade-home-shared-row:focus-visible { outline: 2px solid var(--kit-tag-accent); outline-offset: -2px; }
+.ade-home-shared-icon { flex: none; color: var(--kit-text-3); }
+.ade-home-shared-text { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.ade-home-shared-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-fg); }
+.ade-home-shared-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--kit-text-3); }
