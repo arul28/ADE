@@ -16,12 +16,11 @@ import {
   sessionFileCandidate,
   sortDiscoveryRecords,
   EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
-  adeHarnessConfigHomes,
-  uniqueByPath,
   type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 import { commandArrayToLine } from "../../../shared/shell";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";

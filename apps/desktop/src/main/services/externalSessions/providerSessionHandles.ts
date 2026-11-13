@@ -1,7 +1,8 @@
 import { qwenSessionRoot } from "./discoverQwen";
 import { execFile } from "node:child_process";
 import path from "node:path";
-import { adeHarnessConfigHomes, resolveHomeDir } from "./discoveryUtils";
+import { resolveHomeDir } from "./discoveryUtils";
+import { adeHarnessConfigHomes } from "./adeConfigHomes";
 import { claudeConfigHomeDirs } from "./discoverClaude";
 import { codexConfigHomeDirs } from "./discoverCodex";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";

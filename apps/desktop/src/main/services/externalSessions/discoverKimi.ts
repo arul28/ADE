@@ -13,12 +13,11 @@ import {
   resolveHomeDir,
   safeReadDir,
   safeStat,
-  adeHarnessConfigHomes,
-  uniqueByPath,
   type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 import {
   acpDiscoveryRecord,
   collectNewestSessions,
@@ -179,7 +178,6 @@ function listKimiCandidates(
   args: ExternalSessionDiscoveryArgs,
   home: string,
   lookupId: string | null,
-  deleted: Set<string>,
 ): KimiCandidate[] {
   const sessionsDir = path.join(home, "sessions");
   const workspaceRoots = readWorkspaceRoots(home);
@@ -194,7 +192,6 @@ function listKimiCandidates(
       ? [lookupId]
       : safeReadDir(workspaceDir).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     for (const id of ids) {
-      if (deleted.has(id)) continue;
       const sessionDir = path.join(workspaceDir, id);
       const history = kimiHistoryFile(sessionDir);
       if (!history) continue;
@@ -277,9 +274,8 @@ export async function discoverKimiSessions(
   const candidates: KimiHomeCandidate[] = [];
   for (const { home, configHome } of kimiHomes(args)) {
     if (!safeStat(path.join(home, "sessions"))?.isDirectory()) continue;
-    // Listed before the index is read: a route home can be another CLI's
-    // (Codex keeps a `session_index.jsonl` too), and its layout yields nothing.
-    const found = listKimiCandidates(args, home, lookupId, new Set());
+    // Listed first, so a home with no Kimi session never has its index read.
+    const found = listKimiCandidates(args, home, lookupId);
     if (!found.length) continue;
     const index = readSessionIndex(home);
     for (const candidate of found) {

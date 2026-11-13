@@ -21,13 +21,12 @@ import {
   slugMatchesScopeRoots,
   sortDiscoveryRecords,
   EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
-  adeHarnessConfigHomes,
-  uniqueByPath,
   type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 
 /**
  * Name of the per-project directory Droid creates under `~/.factory/sessions`.

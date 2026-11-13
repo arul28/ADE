@@ -12,12 +12,11 @@ import {
   resolveHomeDir,
   safeReadDir,
   safeStat,
-  adeHarnessConfigHomes,
-  uniqueByPath,
   type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 import {
   acpDiscoveryRecord,
   collectNewestSessions,

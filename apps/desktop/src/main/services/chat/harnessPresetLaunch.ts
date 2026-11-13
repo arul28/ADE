@@ -88,6 +88,7 @@ import {
   credentialConfigHome,
   routeConfigHome,
   pruneStaleRouteConfigHomes,
+  touchRouteConfigHome,
   type HarnessPresetOpenCodeProvider,
   presetConfigHome,
   pruneOrphanedPresetConfigHomes,
@@ -282,6 +283,9 @@ export function resolveHarnessPresetForLaunch(
       };
     }
     if (deps.writeConfig !== false) {
+      // This route is in use now. Its own home must not count as idle, or a
+      // resume or Import of a session in it would delete that session.
+      touchRouteConfigHome(adeHome, routeConfigHomeId(id), deps.logger);
       pruneStaleRouteConfigHomes(adeHome, { platform: deps.platform, logger: deps.logger });
     }
     return resolveHarnessPresetPlan(routePreset, { ...deps, adeHome });

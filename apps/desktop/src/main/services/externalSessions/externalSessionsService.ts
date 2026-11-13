@@ -6,6 +6,7 @@ import {
   buildTrackedCliResumeCommand,
   buildTrackedCliResumeLaunchCommand,
   harnessPresetLaunchEnv,
+  isRouteHomeId,
   trackedCliResumePresetId,
   type TrackedCliPresetLaunch,
   withCodexNoAltScreen,
@@ -49,6 +50,8 @@ import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { moveProviderThread } from "../chat/providerThreadMove";
 import { resolveTrackedCliPreset, routeConfigHomeId } from "../chat/harnessPresetLaunch";
 import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
+import { listApiCredentials } from "../ai/apiKeyStore";
+import { credentialStoreProviderForHarness } from "../../../shared/harnessCredentialProviders";
 import { isRoutePresetId } from "../../../shared/harnessRoutes";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
@@ -62,13 +65,11 @@ import {
   pathContains,
   realishPath,
   sortDiscoveryRecords,
-  ADE_HARNESS_HOME_ENV_KEY,
-  isAdeHarnessHomeProvider,
-  isAdeLaunchConfigHome,
   type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { ADE_HARNESS_HOME_ENV_KEY, isAdeHarnessHomeProvider, isAdeLaunchConfigHome } from "./adeConfigHomes";
 import { pathsEqual } from "../shared/pathCompare";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
@@ -439,6 +440,11 @@ function metadataForImport(args: {
   const instanceId = args.launchIdentity?.instanceId?.trim() || null;
   const presetId = args.launchIdentity?.presetId?.trim() || null;
   const credentialId = presetId ? null : args.launchIdentity?.credentialId?.trim() || null;
+  // A route home ADE could not name again: keep the home itself, so a later
+  // resume of this terminal runs there and not in the default store.
+  const routeHomeId = !instanceId && !presetId && !credentialId && isRouteHomeId(args.launchIdentity?.routeHomeId)
+    ? args.launchIdentity.routeHomeId
+    : null;
   const launch = {
     ...(overrides.model ? { model: overrides.model } : {}),
     ...(overrides.reasoningEffort ? { reasoningEffort: overrides.reasoningEffort } : {}),
@@ -450,6 +456,7 @@ function metadataForImport(args: {
     ...(instanceId ? { instanceId } : {}),
     ...(presetId ? { presetId } : {}),
     ...(credentialId ? { credentialId } : {}),
+    ...(routeHomeId ? { routeHomeId } : {}),
   };
   return {
     provider: args.provider,
@@ -1115,6 +1122,25 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   };
 
   /**
+   * The stored key a key home belongs to. The home's folder is the key id in
+   * lower case (`configHomeSegment` in harnessPresetConfigHomes.ts), but the
+   * key store matches ids exactly, so "Work" must be named again from it.
+   */
+  const storedCredentialId = (provider: ExternalSessionProvider, folderId: string): string => {
+    const wanted = folderId.toLowerCase();
+    try {
+      return listApiCredentials(credentialStoreProviderForHarness(provider))
+        .find((credential) => credential.credentialId.toLowerCase() === wanted)?.credentialId ?? folderId;
+    } catch (error) {
+      args.logger.warn("external_sessions.import_credential_lookup_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return folderId;
+    }
+  };
+
+  /**
    * The launch identity of the home a transcript lives in: an account, a saved
    * preset, a stored key, or a route named again from ADE's records. A route
    * nobody recorded keeps only its folder; the import still runs there, on the
@@ -1124,7 +1150,12 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     provider: ExternalSessionProvider,
     home: ExternalSessionConfigHome,
   ): ExternalSessionConfigHome => {
-    if (home.presetId || !home.routeHomeId) return home;
+    if (home.presetId) return home;
+    if (home.credentialId) {
+      const credentialId = storedCredentialId(provider, home.credentialId);
+      return credentialId === home.credentialId ? home : { ...home, credentialId };
+    }
+    if (!home.routeHomeId) return home;
     const presetId = routePresetIdForHome(home.routeHomeId);
     if (!presetId) {
       args.logger.warn("external_sessions.import_route_unresolved", { provider, routeHomeId: home.routeHomeId });
@@ -1150,8 +1181,13 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       presetId: identity.presetId ?? null,
       credentialId: identity.credentialId ?? null,
     };
+    await prepareHarnessLaunch(launchIdentity).catch((error: unknown) => {
+      args.logger.warn("external_sessions.import_preset_prepare_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     try {
-      await prepareHarnessLaunch(launchIdentity);
       const preset = resolveTrackedCliPreset(provider, launchIdentity)?.preset ?? null;
       if (!preset) {
         args.logger.warn("external_sessions.import_preset_unresolved", {
@@ -1234,7 +1270,9 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       && isAdeLaunchConfigHome(summary.configHome)
       ? launchIdentityOf(provider, summary.configHome)
       : null;
-    const sourceIdentity = sourceConfigHome && isAdeLaunchConfigHome(sourceConfigHome)
+    // Only a launch that stays in the source home needs its identity; picking
+    // another account runs under that account instead.
+    const sourceIdentity = !requestedAccount && sourceConfigHome && isAdeLaunchConfigHome(sourceConfigHome)
       ? launchIdentityOf(provider, sourceConfigHome)
       : sourceConfigHome;
     const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();

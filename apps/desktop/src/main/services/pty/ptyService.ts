@@ -146,6 +146,7 @@ import {
   trackedCliResumeCredentialId,
   trackedCliResumeInstanceId,
   trackedCliResumePresetId,
+  trackedCliResumeRouteHomeId,
   trackedCliTitleFromPromptSeed,
   type ProviderInstanceLaunchTarget,
   type TrackedCliLaunchCommand,
@@ -174,6 +175,7 @@ import {
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
 import { discoverPiSessions } from "../externalSessions/discoverPi";
 import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
+import { routeHomeLaunchEnv } from "../externalSessions/adeConfigHomes";
 import {
   captureProviderSessionFromPidTree,
   PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
@@ -6569,7 +6571,13 @@ export function createPtyService({
     if (!metadata) return null;
     const presetId = trackedCliResumePresetId(metadata);
     const credentialId = trackedCliResumeCredentialId(metadata);
-    if (!presetId && !credentialId) return null;
+    if (!presetId && !credentialId) {
+      // An Import from a route home ADE could not name again: no route env,
+      // only the home, so the CLI finds the session on its own sign-in.
+      const routeHomeId = trackedCliResumeRouteHomeId(metadata);
+      const env = routeHomeId ? routeHomeLaunchEnv(provider, routeHomeId) : null;
+      return env ? { env } : null;
+    }
     try {
       return resolveTrackedCliPreset(provider, { presetId, credentialId })?.preset ?? null;
     } catch {
@@ -6591,7 +6599,12 @@ export function createPtyService({
     const presetId = trackedCliResumePresetId(metadata);
     const credentialId = trackedCliResumeCredentialId(metadata);
     if (!presetId && !credentialId) return;
-    await prepareHarnessLaunch({ provider, presetId, credentialId }).catch(() => false);
+    await prepareHarnessLaunch({ provider, presetId, credentialId }).catch((error: unknown) => {
+      logger.warn("pty.resume_preset_prepare_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   /**

@@ -45,7 +45,8 @@ ADE first learns it.
 | `apps/desktop/src/main/services/externalSessions/sessionIds.ts` | Session id checks. `isWellFormedExternalSessionId` (strict UUID for Claude/Codex, `^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$` for the rest) and `validateExternalSessionId` (the same check plus the Cursor `agent-` refusal, throwing). Discoverers join the id into a store path, so an id with a separator must never reach them. |
 | `apps/desktop/src/shared/externalSessionPolicy.ts` | The one import policy. `PROVIDER_IMPORT_RULES` (the per-provider table), `effectiveImportRules` (the table narrowed by host capabilities), `planImport` (what the action bar shows), `importRejectionReason` (the host guard), and `importProviderLabel` (the provider label every desktop surface uses). The renderer and the host import all use it. iOS mirrors it in Swift. |
 | `apps/desktop/src/main/services/externalSessions/sessionHome.ts` | `createSessionHomeResolver`: maps a provider cwd to the lane that owns it (`ExternalSessionHome`). The deepest lane root wins. A folder under `.ade/worktrees/` that no live lane owns is a removed lane, not the primary lane. |
-| `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: the ADE config homes each provider can write (`providerConfigHomeDirs` for Claude/Codex, `adeHarnessConfigHomes` for Droid/Grok/Kimi/Pi, see [Where the other CLIs' sessions live](#where-the-other-clis-sessions-live)), `uniqueByPath`, safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
+| `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
+| `apps/desktop/src/main/services/externalSessions/adeConfigHomes.ts` | The config homes ADE owns under `<ADE_HOME>/provider-homes/` that can hold a CLI's sessions: `providerConfigHomeDirs` (Claude/Codex accounts, presets, keys and routes) and `adeHarnessConfigHomes` (Droid/Grok/Kimi/Pi presets and routes, and Droid keys), each tagged with the launch identity that writes there. Also `ADE_HARNESS_HOME_ENV_KEY` (the variable that points each CLI at its home) and `uniqueByPath`. See [Where the other CLIs' sessions live](#where-the-other-clis-sessions-live). |
 | `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under **every** Claude config home: `CLAUDE_CONFIG_DIR` or `~/.claude`, each account home under `<ADE_HOME>/provider-homes/claude/<instance>`, and the per-preset / per-credential homes ADE launches with. Reads `ai-title`/custom titles, excludes SDK-origin transcripts, collapses continuation chains to their leaf, and keeps the config home on the record so an import can resume under the account that owns the transcript. |
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from **every** Codex config home — `CODEX_HOME` / `~/.codex`, each `<ADE_HOME>/provider-homes/codex/<instance>`, and the preset / API-key homes ADE launches with — reading each home's `state_5.sqlite`: top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when a thread store is unusable, and keeps the config home on the record for import. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
@@ -295,7 +296,7 @@ there. Discovery lists those homes when the CLI's own files are in them.
 A harness preset or an ad-hoc route can move four more CLIs into a home that ADE
 owns. A session started that way is not in the CLI's default store, so
 discovery also reads these homes (`adeHarnessConfigHomes` in
-`discoveryUtils.ts`):
+`adeConfigHomes.ts`):
 
 | Provider | Variable ADE sets | What the variable names | Sessions inside |
 |---|---|---|---|
@@ -340,7 +341,18 @@ names a route with that hash. The resume metadata then records the preset or
 route, so a later resume of the imported terminal gets the same env. When the
 preset, key or route is gone, import logs `external_sessions.import_preset_unresolved`
 or `external_sessions.import_route_unresolved` and still resumes in the same
-home, on the CLI's own sign-in.
+home, on the CLI's own sign-in. For a route it cannot name, the resume metadata
+records the home itself (`launch.routeHomeId`), so a later resume also runs in
+that home (`routeHomeLaunchEnv`).
+
+A key home's folder is the key id in lower case, and so is a preset home's
+folder. The key store and the preset list match ids exactly, so import names
+the stored key or the saved preset again from its folder before it resolves
+the env.
+
+A route launch marks its own home as in use before the 30-day prune of idle
+route homes runs (`touchRouteConfigHome`). An import or a resume of a session
+in an old route home thus keeps that session.
 
 A route that goes through ADE's proxy resolves only while the proxy runs. Import
 and the terminal resume paths call `prepareHarnessLaunch` first, as a new launch
