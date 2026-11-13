@@ -1,4 +1,5 @@
 import type {
+  AdeAccountMachinePairResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
   PersonalChatMachineTarget,
@@ -691,7 +692,26 @@ export function createFederatedWebAdapter({
     },
   };
 
+  // Connect on an account machine in the Connections panel. The desktop pairs
+  // through its brain; this tab pairs through its own session manager, the
+  // same path a machine link or a project row takes. A machine this tab
+  // already has a pairing for reconnects with it instead of pairing again.
+  const accountOverrides = {
+    async pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult> {
+      const machine = accountClient.getSnapshot().machines.find((entry) => entry.machineKey === machineKey);
+      if (!machine) throw new Error("This machine is no longer on your account. Refresh the list, then try again.");
+      const session = await manager.connectAccountMachine(machine);
+      return {
+        targetId: session.targetId,
+        machineKey,
+        deviceId: machine.deviceId ?? session.environment.hostDeviceId,
+        name: machine.customName?.trim() || machine.name?.trim() || session.environment.machineName || "This machine",
+      };
+    },
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    account: accountOverrides,
     app: appOverrides,
     personalChats: personalChatsOverrides,
     project: projectOverrides,
