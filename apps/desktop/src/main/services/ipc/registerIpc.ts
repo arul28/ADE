@@ -12365,7 +12365,7 @@ export function registerIpc({
     return await ctx.githubService.listRepoLabels(owner, name);
   });
 
-  handle(IPC.githubGetAppInstallationStatus, async (_event, arg: { owner?: string; name?: string } = {}) => {
+  handle(IPC.githubGetAppInstallationStatus, async (_event, arg: { owner?: string; name?: string; forceRefresh?: boolean; userRequested?: boolean } = {}) => {
     const ctx = getCtx();
     return await ctx.githubService.getAppInstallationStatus(arg);
   });

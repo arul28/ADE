@@ -95,4 +95,41 @@ describe("fetchGitHubAppInstallationStatus account failures", () => {
     expect(status.appUserAuthFailure).toBeNull();
     expect(status.error).toBe("relay exploded");
   });
+
+  // After a Disconnect and a new Connect on another computer, this computer
+  // holds a token GitHub deleted. A 401 asks the account once; the check then
+  // retries once, and only with a token that is different. A loop here would
+  // send a refused token to GitHub on every check.
+  it.each([
+    { name: "a new token: one retry with it", replacement: "ghu_new", statuses: [401, 200], bearers: ["ghu_old", "ghu_new"], state: "configured" },
+    { name: "the same token: no retry", replacement: "ghu_old", statuses: [401], bearers: ["ghu_old"], state: "error" },
+    { name: "no token: the first answer stands", replacement: null, statuses: [401], bearers: ["ghu_old"], state: "error" },
+    { name: "the new token refused too: no second retry", replacement: "ghu_new", statuses: [401, 401], bearers: ["ghu_old", "ghu_new"], state: "error" },
+  ])("after a 401, asks the account once and retries at most once ($name)", async ({ replacement, statuses, bearers, state }) => {
+    const answers = [...statuses];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      void init;
+      const status = answers.shift();
+      expect(status, "no request past the planned answers").toBeDefined();
+      return status === 200
+        ? jsonResponse(200, { installed: true, installationId: 7 })
+        : jsonResponse(status!, { error: "GitHub auth token is required" });
+    });
+    const onAppUserTokenRejected = vi.fn(async () => replacement);
+
+    const status = await fetchGitHubAppInstallationStatus({
+      repo: REPO,
+      githubAppUserToken: "ghu_old",
+      onAppUserTokenRejected,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const sent = fetchImpl.mock.calls.map(([, init]) =>
+      String((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /, ""));
+    expect(sent).toEqual(bearers);
+    expect(onAppUserTokenRejected).toHaveBeenCalledTimes(1);
+    expect(onAppUserTokenRejected).toHaveBeenCalledWith("ghu_old");
+    expect(status.state).toBe(state);
+    if (state === "error") expect(status.error).toBe("GitHub auth token is required");
+  });
 });
