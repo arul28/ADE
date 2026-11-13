@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { captureError } from "../../../shared/sentry/capture";
+
 /**
  * Whether this brain started because the one before it on the same endpoint
  * stopped without an orderly stop (a crash, `kill -9`, an out-of-memory kill)
@@ -106,7 +108,7 @@ function writeRecord(filePath: string, record: BrainRunRecord): void {
 }
 
 /** `kill(pid, 0)` sends nothing; the same on macOS, Linux and Windows. EPERM: it runs as another user. */
-function pidRuns(pid: number): boolean {
+export function pidRuns(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -162,6 +164,11 @@ export function recordBrainRunStart(args: {
     }
   } catch (error) {
     process.stderr.write(`ADE brain could not save its run record: ${error instanceof Error ? error.message : String(error)}\n`);
+    captureError(error, {
+      level: "warning",
+      tags: { area: "brain_restart" },
+      fingerprint: ["brain_restart", "run_record_write_failed"],
+    });
   }
   state.restart = restart;
   return restart;
@@ -177,8 +184,13 @@ export function markBrainRunStoppedCleanly(by?: string): void {
     const record = readRecord(own.filePath);
     if (!record || record.pid !== own.pid || record.startedAt !== own.startedAt || record.stoppedAt) return;
     writeRecord(own.filePath, { ...record, stoppedAt: new Date().toISOString(), ...(by ? { stoppedBy: by } : {}) });
-  } catch {
+  } catch (error) {
     // The next start then reads a crash; the banner is the only effect.
+    captureError(error, {
+      level: "warning",
+      tags: { area: "brain_restart" },
+      fingerprint: ["brain_restart", "run_record_stop_failed"],
+    });
   }
 }
 

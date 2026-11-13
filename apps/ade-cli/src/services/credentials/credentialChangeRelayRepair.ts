@@ -59,17 +59,17 @@ export type CredentialChangeRelayRepairArgs = {
 };
 
 /**
- * What one read of the App credential produced.
+ * What one read of the relay credentials produced.
  *
  * "The read failed" is a separate answer from "the value is null", because the
  * two must lead to opposite decisions: an absent credential is a fact worth
  * comparing against, an unreadable store is no information at all.
  */
-type AppUserTokenRead =
+type RelayCredentialRead =
   | { kind: "value"; value: string | null }
   | { kind: "read_failed" };
 
-type AppUserTokenListener = (read: AppUserTokenRead) => void;
+type RelayCredentialListener = (read: RelayCredentialRead) => void;
 
 /**
  * Reads the App credentials the relay uses, or reports that they could not be
@@ -80,7 +80,7 @@ type AppUserTokenListener = (read: AppUserTokenRead) => void;
  * A store with no `getSync` is reported the same way a throwing one is: there
  * is nothing to scope the repair to, so every change has to force a poll.
  */
-function readAppUserToken(store: WatchableCredentialStore): AppUserTokenRead {
+function readRelayCredentials(store: WatchableCredentialStore): RelayCredentialRead {
   const getSync = store.getSync;
   if (typeof getSync !== "function") return { kind: "read_failed" };
   try {
@@ -94,13 +94,13 @@ function readAppUserToken(store: WatchableCredentialStore): AppUserTokenRead {
 }
 
 type SharedWatch = {
-  listeners: Set<AppUserTokenListener>;
+  listeners: Set<RelayCredentialListener>;
   /**
    * The most recent read over this file, and the baseline a listener that joins
    * later starts from. Kept here so N runtimes cost ONE locked decrypt per
    * change instead of one each.
    */
-  lastRead: AppUserTokenRead;
+  lastRead: RelayCredentialRead;
   dispose: () => void;
 };
 
@@ -118,14 +118,14 @@ function createWatch(
   store: WatchableCredentialStore,
   onDidChange: (listener: () => void) => () => void,
 ): SharedWatch {
-  const listeners = new Set<AppUserTokenListener>();
+  const listeners = new Set<RelayCredentialListener>();
   const watch: SharedWatch = {
     listeners,
-    lastRead: readAppUserToken(store),
+    lastRead: readRelayCredentials(store),
     dispose: () => undefined,
   };
   watch.dispose = onDidChange(() => {
-    const read = readAppUserToken(store);
+    const read = readRelayCredentials(store);
     watch.lastRead = read;
     for (const each of [...listeners]) {
       try {
@@ -143,8 +143,8 @@ function createWatch(
 function subscribeShared(
   store: WatchableCredentialStore,
   onDidChange: (listener: () => void) => () => void,
-  listener: AppUserTokenListener,
-): { baseline: AppUserTokenRead; unsubscribe: () => void } {
+  listener: RelayCredentialListener,
+): { baseline: RelayCredentialRead; unsubscribe: () => void } {
   let identity: string | null = null;
   try {
     identity = store.credentialStoreIdentity?.() ?? null;
@@ -211,7 +211,7 @@ export function watchCredentialsForRelayRepair(
    * byte on disk on every write, so only the decrypted value says whether THIS
    * key moved.
    */
-  let lastSeenAppUserToken: AppUserTokenRead = { kind: "read_failed" };
+  let lastSeenCredentials: RelayCredentialRead = { kind: "read_failed" };
   let lastForcedPollMs = Number.NEGATIVE_INFINITY;
   let pendingPoll: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -225,10 +225,10 @@ export function watchCredentialsForRelayRepair(
     }
   };
 
-  const onChange = (read: AppUserTokenRead): void => {
+  const onChange = (read: RelayCredentialRead): void => {
     if (stopped) return;
-    const previous = lastSeenAppUserToken;
-    lastSeenAppUserToken = read;
+    const previous = lastSeenCredentials;
+    lastSeenCredentials = read;
     // Every ADE process sees every write to this file, and account sessions
     // rotate far more often than the App credential does. Only the credential
     // the relay is waiting on is worth a forced poll.
@@ -268,7 +268,7 @@ export function watchCredentialsForRelayRepair(
   let unsubscribe: () => void;
   try {
     const subscription = subscribeShared(watched, onDidChange.bind(watched), onChange);
-    lastSeenAppUserToken = subscription.baseline;
+    lastSeenCredentials = subscription.baseline;
     unsubscribe = subscription.unsubscribe;
   } catch {
     return () => undefined;

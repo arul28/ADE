@@ -121,11 +121,8 @@ export function createGithubAccountAppCredential(deps: {
     : null;
 
   let lastToken: string | null = null;
-  /**
-   * What reads in this process saw: `undefined` before the first read, then the
-   * last answer (null included), and the last token that was not null.
-   */
-  let seenToken: string | null | undefined;
+  /** Whether a read happened in this process, and the last token one found. */
+  let readBefore = false;
   let lastNonNullToken: string | null = null;
 
   /**
@@ -135,8 +132,8 @@ export function createGithubAccountAppCredential(deps: {
    * gap (a network error) is not one either.
    */
   const noteToken = (token: string | null): boolean => {
-    const changed = token != null && seenToken !== undefined && token !== lastNonNullToken;
-    seenToken = token;
+    const changed = token != null && readBefore && token !== lastNonNullToken;
+    readBefore = true;
     if (token != null) lastNonNullToken = token;
     lastToken = token;
     return changed;

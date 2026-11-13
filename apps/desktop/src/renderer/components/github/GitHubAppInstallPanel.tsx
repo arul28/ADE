@@ -111,10 +111,10 @@ export function GitHubAppInstallPanel({
       const attemptCount = opts.retryAfterAuthorization
         ? POST_AUTH_STATUS_RETRY_DELAYS_MS.length + 1
         : 1;
+      // A press also reads the account's sign-in again: another computer
+      // may have connected a different GitHub user since the last read.
+      if (opts.userRequested) void refreshGithubAccountApp();
       for (let attempt = 0; attempt < attemptCount; attempt += 1) {
-        // A press also reads the account's sign-in again: another computer
-        // may have connected a different GitHub user since the last read.
-        if (opts.userRequested && attempt === 0) void refreshGithubAccountApp();
         latestStatus = await window.ade.github.getAppInstallationStatus({
           forceRefresh: forceRefresh || attempt > 0,
           ...(opts.userRequested && attempt === 0 ? { userRequested: true } : {}),

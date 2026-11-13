@@ -13616,9 +13616,11 @@ const adeBridge = {
     } = {}, pin?: OpenProjectBinding | null): Promise<GitHubAppInstallationStatus> => {
       const cacheArgs = { owner: args.owner, name: args.name };
       const forceRefresh = args.forceRefresh === true || args.userRequested === true;
-      const requestArgs = args.userRequested
-        ? { ...cacheArgs, forceRefresh: true, userRequested: true }
-        : forceRefresh ? { ...cacheArgs, forceRefresh: true } : cacheArgs;
+      const requestArgs = {
+        ...cacheArgs,
+        ...(forceRefresh ? { forceRefresh: true } : {}),
+        ...(args.userRequested ? { userRequested: true } : {}),
+      };
       // Pinned reads skip the installation cache, which is keyed by repo only
       // and holds the unpinned path's answer.
       if (pin) {

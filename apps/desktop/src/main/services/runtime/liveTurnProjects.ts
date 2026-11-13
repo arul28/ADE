@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { brainRunEndpointKey } from "./brainUnplannedRestart";
+import { captureError } from "../../../shared/sentry/capture";
+import { brainRunEndpointKey, pidRuns } from "./brainUnplannedRestart";
 
 /**
  * The projects in which a chat turn or an agent CLI turn is running in this
@@ -45,6 +46,9 @@ function holder(): Holder {
   return value;
 }
 
+/** One report per process: the write runs at every first and last turn of a project. */
+let writeFailureReported = false;
+
 function recordDir(runtimeDir: string): string {
   return path.join(runtimeDir, RECORD_DIR);
 }
@@ -76,8 +80,16 @@ async function flush(): Promise<void> {
       }
       await fs.promises.rename(tmpPath, filePath);
     } while (state.dirty);
-  } catch {
+  } catch (error) {
     // Without the file a crash leaves the projects to open on first use, as before.
+    if (!writeFailureReported) {
+      writeFailureReported = true;
+      captureError(error, {
+        level: "warning",
+        tags: { area: "brain_restart" },
+        fingerprint: ["brain_restart", "live_turns_write_failed"],
+      });
+    }
   } finally {
     state.writing = false;
   }
@@ -134,13 +146,12 @@ export function forgetLiveTurnProject(projectRoot: string): void {
   if (state.filePath) void flush();
 }
 
-function pidRuns(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+/** A leftover file costs a few bytes; a throw here would stop the brain's start. */
+function removeQuietly(filePath: string): void {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Windows can hold a just-closed file for a moment (EBUSY).
   }
 }
 
@@ -148,6 +159,7 @@ function pidRuns(pid: number): boolean {
  * The project roots that brains on this endpoint had a turn running in when
  * they stopped unplanned. Each file is claimed by a rename and deleted as it
  * is read; a file of a live pid (another brain on the endpoint) is left alone.
+ * A dead brain's half-written `.tmp` goes too.
  */
 export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string; socketPath: string }): string[] {
   const dir = recordDir(args.runtimeDir);
@@ -160,9 +172,15 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
   }
   const roots = new Set<string>();
   for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith(".json")) continue;
-    const pid = Number(name.slice(prefix.length, -".json".length));
+    if (!name.startsWith(prefix)) continue;
+    const tmp = name.endsWith(".json.tmp");
+    if (!tmp && !name.endsWith(".json")) continue;
+    const pid = Number(name.slice(prefix.length, tmp ? -".json.tmp".length : -".json".length));
     if (!Number.isInteger(pid) || pid === process.pid || pidRuns(pid)) continue;
+    if (tmp) {
+      removeQuietly(path.join(dir, name));
+      continue;
+    }
     const claimed = path.join(dir, `${name}.claimed-${process.pid}`);
     try {
       fs.renameSync(path.join(dir, name), claimed);
@@ -179,7 +197,7 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
     } catch {
       // Unreadable: nothing to open.
     } finally {
-      fs.rmSync(claimed, { force: true });
+      removeQuietly(claimed);
     }
   }
   return [...roots];

@@ -390,10 +390,11 @@ export async function fetchAppInstallationStatusForRepo(args: {
   getAccountAccessToken?: (() => Promise<string | null>) | null;
   fetchImpl?: typeof fetch;
 }): Promise<GitHubAppInstallationStatus> {
-  const userRequested = args.userRequested === true;
+  const pressOpts = args.userRequested === true ? { userRequested: true } : undefined;
+  const onTokenRejected = args.appUserAuth.onTokenRejected?.bind(args.appUserAuth);
   const appUserToken = await resolveAppUserTokenForRelay({
     appUserAuth: {
-      getValidTokenForRelay: () => args.appUserAuth.getValidTokenForRelay(userRequested ? { userRequested } : undefined),
+      getValidTokenForRelay: () => args.appUserAuth.getValidTokenForRelay(pressOpts),
     },
     logger: args.logger,
     event: "github.app_installation_status_auth_unavailable",
@@ -410,8 +411,6 @@ export async function fetchAppInstallationStatusForRepo(args: {
     appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
     accountAccessToken,
     auditLog: args.appUserAuth.auditLog,
-    onAppUserTokenRejected: args.appUserAuth.onTokenRejected
-      ? (token) => args.appUserAuth.onTokenRejected!(token, userRequested ? { userRequested } : undefined)
-      : null,
+    onAppUserTokenRejected: onTokenRejected ? (token) => onTokenRejected(token, pressOpts) : null,
   });
 }

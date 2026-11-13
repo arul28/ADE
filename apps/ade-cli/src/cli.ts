@@ -32223,7 +32223,7 @@ async function runServe(
           const startedMs = Date.now();
           let opened = 0;
           for (const root of roots) {
-            const record = projectRegistry.list().find((entry) => path.resolve(entry.rootPath) === root);
+            const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
             if (!record) continue;
             try {
               await scopeRegistry.get(record.projectId);
