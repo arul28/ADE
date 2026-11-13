@@ -37,6 +37,9 @@ fire closed to avoid duplicate delivery.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/shared/codePointText.ts` | Code-point-safe text cuts for provider limits and titles. |
+| `apps/desktop/src/main/services/runtime/brainUnplannedRestart.ts` | The brain's run record: decides whether this start follows an unplanned restart, and counts the chats and CLIs it continued for the banner. |
+| `apps/desktop/src/main/services/runtime/liveTurnProjects.ts` | The projects with a running turn, on disk, so the next brain opens exactly those after a crash; claim by rename, pending file, and the skipped project that was being opened. |
+| `apps/desktop/src/renderer/components/app/BrainRestartNotice.tsx` | The one dismissible banner per unplanned restart of the local brain. |
 | `apps/desktop/src/renderer/components/chat/ChipText.tsx`, `ChipHoverCard.tsx`, `chipMenu.ts`, `chipActions.ts`, `chipCardBodies.tsx`, `MachineChipCard.tsx`, `McpMentionCardBody.tsx`, `useMachineFacts.ts` | Transcript and composer chip display, held-hover and right-click actions, per-kind information cards, chat-machine-pinned navigation, focused Connections/MCP Settings routes, and the model chip's new-chat draft action. See [Chips](composer-and-ui.md#chips). |
 | `apps/desktop/src/shared/chips.ts`, `apps/desktop/src/shared/types/chatMentions.ts` | Canonical chip and chat mention contracts. `@mcp:<server>` is part of the same parser and token formatter used by desktop, hosted web, and iOS's Swift mirror. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserHitTest.ts` | Shared hit-testing for the browser element picker, drag-to-capture, and `ade browser select`. Converts viewport points to CDP document coordinates, falls back to the page's `elementFromPoint`, and reaches same-renderer and cross-site iframe content. |
@@ -1766,6 +1769,30 @@ accepted update alike, and the update dialog shows its answer per chat:
     gone brain. The notices and restart note land, worded "the agent is told
     on this turn", and this turn carries the note; nothing is armed, since a
     turn is already starting.
+- **After a crash, the brain does not wait for the first request.** Each
+  brain keeps a run record (`runtime/brain-run/<endpoint>.json`,
+  `brainUnplannedRestart.ts`). The next brain treats the start as an
+  unplanned restart only when that record is not marked stopped, its pid is
+  gone, it started after this boot and it ran the same build; an orderly stop,
+  a forced stop by another ADE process, an update or a reboot does not count.
+  A brain an app started takes the record without a record of its own, so the
+  next start does not report the same crash. Rows of the dead brain close at
+  once (`listDeadProcessIdentities` passes them to
+  `reconcileStaleRunningSessions` as `deadOwnerIdentities`, which skips the
+  fresh-activity grace). Projects that had a running turn are listed in
+  `runtime/live-turns/<endpoint>.<pid>.json` (`liveTurnProjects.ts`); the
+  next brain claims each dead brain's file with a rename and opens only those
+  projects, one at a time, so their chats and CLIs continue within seconds.
+  The projects it has not opened yet stay in its own
+  `<endpoint>.<pid>.pending.json`, so a second crash during the opens does not
+  lose them, and the next brain skips the project that was being opened, so
+  one project cannot crash every brain after it. With a restart loop or the
+  setting off, the files are claimed and nothing opens.
+  `getRuntimeStatus.lastUnplannedRestart` (`{ts, chats, cliSessions}`, counted
+  for 10 minutes) feeds one dismissible banner per restart in the window
+  (`BrainRestartNotice`, local brain only). In the chat, a restart resume
+  shows one quiet line with its time, with no wake divider, "late" mark or
+  "Scheduled wake-up" bubble, also in old transcripts.
 - On every path, rows the sweep leaves running on purpose (a delegate that is
   still alive: a live child chat, or a tracked CLI child, per
   `staleRunSweep.liveDelegateRowIds`) are not reported as lost.
