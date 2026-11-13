@@ -213,7 +213,7 @@ export type LaneDeviceRegistry = {
    *
    * Returns what was detached, or null when the lane had no device.
    */
-  deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"]; keep?: boolean }): Promise<AppleLaneDevice | null>;
+  deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"]; keep?: boolean; laneGone?: boolean }): Promise<AppleLaneDevice | null>;
   /**
    * The device this lane last gave up (`deviceDetach`) in this process, while
    * the lane has had no device since. Null once the lane holds one again.
@@ -1207,7 +1207,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       };
     },
     deviceDelete: remove,
-    async deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"]; keep?: boolean }) {
+    async deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"]; keep?: boolean; laneGone?: boolean }) {
       const laneId = requireLaneId(args.laneId);
       const device = readOne(laneId);
       if (!device) return null;
@@ -1251,7 +1251,9 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         if (!kept) deletesAfter = new Date(at.getTime() + APPLE_RELEASED_DEVICE_GRACE_MS).toISOString();
       }
       const by = args.by ?? "user";
-      releasedByLane.set(laneId, {
+      // `laneGone`: the lane itself went (a deleted work copy). A lane made
+      // later with the same id starts fresh, so no "gave up its device" is kept.
+      if (args.laneGone !== true) releasedByLane.set(laneId, {
         laneId,
         udid: device.udid,
         name: device.name,

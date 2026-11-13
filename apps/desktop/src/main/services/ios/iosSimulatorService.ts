@@ -2648,7 +2648,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         return false;
       });
     }
-    await laneDevices.deviceDetach({ laneId, by: "agent" }).catch((error: unknown) => {
+    await laneDevices.deviceDetach({ laneId, by: "agent", laneGone: true }).catch((error: unknown) => {
       args.logger.warn("apple.work_copy_device_detach_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
     });
     args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff });
