@@ -275,14 +275,7 @@ export function SavedMachineRow({
           opacity: section === "unavailable" ? 0.7 : 1,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "auto minmax(0,1fr) auto",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
+        <div className="ade-cx-row-grid">
           <MachineAvatar
             colorKey={machineColorKey(target)}
             name={target.name}
@@ -293,7 +286,7 @@ export function SavedMachineRow({
           />
           <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <span className="ade-cx-machine-name" style={nameStyle}>{target.name}</span>
+              <span style={nameStyle}>{target.name}</span>
               <PresenceDot state={presence} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
@@ -308,7 +301,7 @@ export function SavedMachineRow({
               <span role={updatePhase ? "status" : undefined} style={subTextStyle}>{detailLine}</span>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 2, justifyContent: "flex-end" }}>
+          <div className="ade-cx-row-actions" style={{ alignItems: "center", gap: 2 }}>
             {behind && onUpdateAndRestart && !updatePhase ? (
               <button
                 type="button"

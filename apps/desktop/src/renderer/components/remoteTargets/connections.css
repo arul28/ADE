@@ -191,7 +191,8 @@
 }
 .ade-cx-step-copy { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--kit-text-2, rgba(255, 255, 255, 0.75)); }
 .ade-cx-step-copy b { color: var(--color-fg); font-weight: 600; }
-.ade-cx-email { color: var(--color-fg); font-weight: 550; }
+/* An e-mail has no break points; a long one breaks anywhere, not past the card. */
+.ade-cx-email { color: var(--color-fg); font-weight: 550; overflow-wrap: anywhere; }
 .ade-cx-chip-btn {
   flex: none;
   display: inline-flex;
@@ -497,17 +498,61 @@
 @media (prefers-reduced-motion: reduce) {
   .ade-cx-cloud-wake, .ade-cx-cloud-shape { transition: none; }
 }
-/* A phone-width window (ADE Web on a phone): long machine names, cloud ids
-   and the account line wrap instead of losing their ends to an ellipsis. The
-   row styles are inline, so this one rule needs !important. */
-@media (max-width: 480px) {
-  .ade-cx-machine-name {
-    white-space: normal !important;
-    overflow-wrap: anywhere;
+/* ── narrow panel ────────────────────────────────────────────────────────
+   The panel and the machine list answer their OWN width, not the window's,
+   so ADE Web on a phone and a narrow desktop popover get the same layout.
+   At the normal width (560 px panel) none of these rules apply. */
+.ade-cx-panel { container: ade-cx-panel / inline-size; }
+.ade-cx-rows { container: ade-cx-rows / inline-size; }
+
+/* One machine row: avatar, name and status, actions. */
+.ade-cx-row-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+.ade-cx-row-actions { display: flex; justify-content: flex-end; }
+
+@container ade-cx-panel (max-width: 480px) {
+  /* Account keeps its icon and gives the name and e-mail the room. */
+  .ade-cx-head-btn-label { display: none; }
+  .ade-cx-head-btn[data-icon-only-narrow] { width: 28px; padding: 0; justify-content: center; }
+  @media (pointer: coarse) {
+    .ade-cx-head-btn { height: 34px; }
+    .ade-cx-head-close,
+    .ade-cx-head-btn[data-icon-only-narrow] { width: 34px; }
+    .ade-cx-head-btn::after { content: ""; position: absolute; inset: -5px; }
   }
-  .ade-cx-head-name,
-  .ade-cx-head-email {
-    white-space: normal;
-    overflow-wrap: anywhere;
+}
+
+@container ade-cx-rows (max-width: 460px) {
+  /* A row with a button besides ⋯: the buttons move under the name and
+     status, from the text's left edge, and ⋯ stays at the row's right. The
+     name keeps one line and the status gets the row's full text width. */
+  .ade-cx-row-grid:has(> .ade-cx-row-actions > :not(.ade-cx-kebab)) {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 10px;
+  }
+  .ade-cx-row-grid > .ade-cx-row-actions:has(> :not(.ade-cx-kebab)) {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .ade-cx-row-actions > .ade-cx-kebab { margin-left: auto; }
+  /* A cloud lane's row keeps the chevron and gives the lane name the room. */
+  .adecl-cx-details-label { display: none; }
+  /* Touch: controls draw at 36 px and take touches across 44 px. */
+  @media (pointer: coarse) {
+    .ade-cx-row-actions > button,
+    .ade-cx-list-head .ade-cx-add-btn,
+    .adecl-cx-row .kit-btn { position: relative; min-height: 36px; }
+    .ade-cx-kebab,
+    .ade-cx-icon-btn { position: relative; min-width: 36px; min-height: 36px; }
+    .ade-cx-row-actions > button::after,
+    .ade-cx-list-head .ade-cx-add-btn::after,
+    .adecl-cx-row .kit-btn::after { content: ""; position: absolute; inset: -4px 0; }
+    .ade-cx-kebab::after,
+    .ade-cx-icon-btn::after { content: ""; position: absolute; inset: -4px; }
   }
 }
