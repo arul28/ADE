@@ -1,4 +1,5 @@
 import type { IBufferCell, Terminal } from "@xterm/xterm";
+import { captureError } from "../../../shared/sentry/capture";
 import type { TerminalSnapshotCell, TerminalSnapshotRow } from "../../../shared/types";
 
 /**
@@ -49,6 +50,19 @@ function snapshotCell(cell: IBufferCell | undefined): TerminalSnapshotCell {
  * of a full-screen CLI that exited is the empty normal screen. Null when the
  * emulator does not load.
  */
+/**
+ * The caller shows the plain transcript instead, so the pane still reads; the
+ * report says why. No transcript text goes with it.
+ */
+function reportReplayFailure(error: unknown, stage: "load" | "replay"): void {
+  captureError(error, {
+    level: "warning",
+    handled: true,
+    tags: { stage },
+    fingerprint: ["terminal-preview-replay-failed", stage],
+  });
+}
+
 export async function previewRowsFromTranscript(
   transcript: string,
   size: { cols: number; rows?: number | null },
@@ -58,7 +72,8 @@ export async function previewRowsFromTranscript(
   let TerminalCtor: typeof Terminal;
   try {
     ({ Terminal: TerminalCtor } = await import("@xterm/xterm"));
-  } catch {
+  } catch (error) {
+    reportReplayFailure(error, "load");
     return null;
   }
   // The terminal's own size: a CLI places text by row and column, and a
@@ -87,7 +102,8 @@ export async function previewRowsFromTranscript(
       rows.push({ cells, text: line.translateToString(true), wrapped: line.isWrapped });
     }
     return rows.length > 0 ? rows : null;
-  } catch {
+  } catch (error) {
+    reportReplayFailure(error, "replay");
     return null;
   } finally {
     term.dispose();
