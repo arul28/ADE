@@ -25,10 +25,15 @@ import {
 } from "./sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { previewRowsFromTranscript } from "./terminalPreviewRows";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.
 const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 2_000_000;
+/** How long a preview waits for a one-shot subscribe snapshot before it pages history. */
+const ONE_SHOT_TERMINAL_SNAPSHOT_TIMEOUT_MS = 5_000;
+/** The most rows an ended session's preview shows, newest last. */
+const PREVIEW_MAX_ROWS = 400;
 
 /**
  * How many distinct `work.listSessions` argument shapes keep a mirrored copy of
@@ -228,6 +233,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   async function captureSnapshot(sessionId: string, maxBytes?: number | null): Promise<SyncTerminalSnapshotPayload | null> {
     if (!sessionId) return null;
+    if (!terminalSubscriptions.has(sessionId)) {
+      // The machine pages history only to a peer subscribed to the session, so
+      // an ended CLI session (nothing streams it) read back empty: a blank pane
+      // with only the row's last line. Its subscribe snapshot carries the tail.
+      const snapshot = await readSnapshotOnce(sessionId, maxBytes ?? 128 * 1024);
+      if (snapshot) return snapshot;
+    }
     const history = await client.requestTerminalHistory({
       sessionId,
       beforeOffset: Number.MAX_SAFE_INTEGER,
@@ -235,6 +247,39 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     });
     terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
     return historyToSnapshot(history);
+  }
+
+  /**
+   * Subscribe just long enough for the replacing snapshot, then let go. A live
+   * view that subscribes meanwhile takes the stream over: its handlers replace
+   * these, this wait ends on the timeout, and the stream is left running.
+   */
+  function readSnapshotOnce(sessionId: string, maxBytes: number): Promise<SyncTerminalSnapshotPayload | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (snapshot: SyncTerminalSnapshotPayload | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!terminalSubscriptions.has(sessionId)) client.unsubscribeTerminal(sessionId);
+        resolve(snapshot);
+      };
+      const timer = setTimeout(() => finish(null), ONE_SHOT_TERMINAL_SNAPSHOT_TIMEOUT_MS);
+      try {
+        client.subscribeTerminal(sessionId, { maxBytes }, {
+          snapshot: (payload) => {
+            if (payload.delta === true) return;
+            if (payload.error) return finish(null);
+            finish(payload.transcript || !payload.screen?.serialized
+              ? payload
+              : { ...payload, transcript: payload.screen.serialized });
+          },
+          error: () => finish(null),
+        });
+      } catch {
+        finish(null);
+      }
+    });
   }
 
   function notifySessionsChanged(sessionIds: readonly string[]): void {
@@ -665,13 +710,37 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const snapshot = await captureSnapshot(sessionId, numberField(record, "maxBytes"));
       const ptyId = terminalRegistry.ptyForSession(sessionId);
       const session = chatTerminalFromSummary(sessionId, terminalRegistry.summaryForSession(sessionId), ptyId);
+      const capturedAt = snapshot?.capturedAt ?? new Date().toISOString();
+      // Raw transcript text of a full-screen CLI is cursor moves with the
+      // spaces left out. The rows are what the terminal showed.
+      const cols = snapshot?.screen?.cols ?? 0;
+      const visibleRows = snapshot?.transcript && cols > 0
+        ? await previewRowsFromTranscript(snapshot.transcript, cols, PREVIEW_MAX_ROWS)
+        : null;
       return {
         terminalId: sessionId,
         session,
-        source: snapshot?.transcript ? "transcript" : "empty",
-        snapshot: null,
+        source: visibleRows ? "snapshot" : snapshot?.transcript ? "transcript" : "empty",
+        snapshot: visibleRows
+          ? {
+              version: 1,
+              terminalId: sessionId,
+              cols,
+              rows: visibleRows.length,
+              capturedAt,
+              status: session.status,
+              runtimeState: session.runtimeState,
+              bufferType: "normal",
+              cursorX: 0,
+              cursorY: 0,
+              baseY: 0,
+              viewportY: 0,
+              serialized: "",
+              visibleRows,
+            }
+          : null,
         transcript: snapshot?.transcript ?? null,
-        capturedAt: snapshot?.capturedAt ?? new Date().toISOString(),
+        capturedAt,
       };
     },
     write: async (args: unknown, pin?: RuntimePinArg) => {

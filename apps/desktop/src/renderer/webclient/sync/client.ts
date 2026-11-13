@@ -223,6 +223,12 @@ const DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS = 4;
 const DEFAULT_TERMINAL_INPUT_RETRY_WINDOW_MS = 30_000;
 const MAX_QUEUED_TERMINAL_INPUTS = 128;
 const MAX_QUEUED_TERMINAL_INPUT_BYTES = 512 * 1024;
+/**
+ * The most keystrokes that ride one terminal_input frame. Input waits for each
+ * frame's ACK, so without joining, every key typed while one frame is in
+ * flight waits a full round trip of its own and typing falls behind.
+ */
+const MAX_COALESCED_TERMINAL_INPUT_BYTES = 16 * 1024;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -1640,6 +1646,7 @@ export class AdeSyncClient {
       return;
     }
 
+    if (operation.firstSentAtMs == null) this.coalesceUnsentTerminalInput(operation);
     operation.attempts += 1;
     if (operation.firstSentAtMs == null) {
       operation.firstSentAtMs = Date.now();
@@ -1679,6 +1686,41 @@ export class AdeSyncClient {
       // A concurrent close will pause the queue. If the socket has not emitted
       // close yet, the bounded ACK timer below retries with the same dedupe id.
     }
+  }
+
+  /**
+   * Join the keys queued behind a frame that has never been sent into that
+   * frame: same session, in order, none of them sent either. A sent frame is
+   * never changed, because a retry must resend its id with the same bytes.
+   * Every caller's promise settles with the joined frame's ACK.
+   */
+  private coalesceUnsentTerminalInput(head: TerminalInputOperation): void {
+    let merged = 0;
+    for (let index = 1; index < this.terminalInputQueue.length; index += 1) {
+      const next = this.terminalInputQueue[index]!;
+      if (
+        next.sessionId !== head.sessionId
+        || next.firstSentAtMs != null
+        || head.byteLength + next.byteLength > MAX_COALESCED_TERMINAL_INPUT_BYTES
+      ) {
+        break;
+      }
+      head.data += next.data;
+      head.byteLength += next.byteLength;
+      const resolveHead = head.resolve;
+      const rejectHead = head.reject;
+      head.resolve = () => {
+        resolveHead();
+        next.resolve();
+      };
+      head.reject = (error) => {
+        rejectHead(error);
+        next.reject(error);
+      };
+      merged += 1;
+    }
+    // The joined keys' bytes stay counted, now on the head.
+    if (merged > 0) this.terminalInputQueue.splice(1, merged);
   }
 
   private pauseTerminalInputQueue(): void {
