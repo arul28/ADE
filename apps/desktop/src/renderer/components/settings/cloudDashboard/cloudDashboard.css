@@ -566,7 +566,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 }
 .adecd-plan-col {
   display: grid;
-  grid-template-rows: 44px repeat(4, 34px) minmax(34px, auto) 48px;
+  grid-template-rows: 44px repeat(var(--adecd-plan-facts, 4), 34px) minmax(34px, auto) 48px;
   align-items: center;
   min-width: 0;
   padding: 0 14px;

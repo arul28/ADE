@@ -40,7 +40,8 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
   if (idle && window.ade.cloud?.keepIdleComputer) {
     actions.push({
       key: "keep",
-      label: idle.held ? "Keep it (ADE couldn't save its work)" : `Keep it (${idleCleanupWhen(idle.deletesAt, Date.now())})`,
+      label: "Keep this computer",
+      ariaLabel: idle.held ? "Keep this computer. ADE couldn't save its work, so it wasn't deleted." : `Keep this computer. Otherwise it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`,
       icon: <Clock size={13} />,
       onSelect: () => void keepLaneComputer(computer.instanceId, name),
     });
@@ -90,7 +91,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
 /** "Keep it" from the chat header: the server restarts the computer's idle clock with no wake. */
 async function keepLaneComputer(instanceId: string, name: string): Promise<void> {
   const result = await window.ade.cloud?.keepIdleComputer?.(instanceId).catch((error: unknown) => ({ ok: false, message: error instanceof Error ? error.message : undefined }));
-  if (result?.ok) showToast({ tone: "success", title: `Kept ${name}'s computer`, message: "ADE Cloud won't delete it. The clock starts again from now." });
+  if (result?.ok) showToast({ tone: "success", title: `Kept ${name}'s computer`, message: "ADE Cloud won't delete it. Its unused days count again from now." });
   else showToast({ tone: "warning", title: `Couldn't keep ${name}'s computer`, message: result?.message || "Send a message in the lane to keep it." });
   refreshCloudMachines();
 }

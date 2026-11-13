@@ -100,7 +100,7 @@ struct CloudHero: View {
               label: "Computers",
               value: "\(computers.total)",
               of: nil,
-              fraction: 0,
+              fraction: nil,
               note: "\(computers.awake) awake now"
             )
           }
@@ -150,7 +150,8 @@ struct CloudMiniMeter: View {
   let label: String
   let value: String
   let of: String?
-  let fraction: Double
+  /// Nil for a count with nothing to fill toward: the meter's row stays, empty, so the two line up.
+  let fraction: Double?
   let note: String
 
   var body: some View {
@@ -164,10 +165,14 @@ struct CloudMiniMeter: View {
           Text(of).font(.system(size: 12)).foregroundStyle(ADEColor.textMuted)
         }
       }
-      ADEKitMeter(
-        fraction: fraction,
-        color: ADEUsagePressure.color(percentLeft: (1 - min(1, fraction)) * 100, fallback: ADEKit.fill)
-      )
+      if let fraction {
+        ADEKitMeter(
+          fraction: fraction,
+          color: ADEUsagePressure.color(percentLeft: (1 - min(1, fraction)) * 100, fallback: ADEKit.fill)
+        )
+      } else {
+        ADEKitMeter(fraction: 0, color: ADEKit.fill).hidden().accessibilityHidden(true)
+      }
       Text(note)
         .font(.system(size: 11.5))
         .foregroundStyle(ADEColor.textMuted)
@@ -255,6 +260,7 @@ struct CloudLanesCard: View {
     let rowView = CloudMachineRow(
       machine: machine,
       tier: cloudPhoneTier(of: machine, in: store.tiers),
+      idle: store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId },
       now: store.now,
       busy: store.busy.contains(machine.instanceId)
     )
@@ -275,6 +281,7 @@ struct CloudLanesCard: View {
 struct CloudMachineRow: View {
   let machine: CloudPhoneMachine
   let tier: CloudPhoneTier?
+  var idle: CloudPhoneAccount.IdleCleanup? = nil
   let now: Date
   var busy = false
 
@@ -291,7 +298,7 @@ struct CloudMachineRow: View {
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          if let mark = cloudMachineMark(machine, now: now) {
+          if let mark = cloudMachineMark(machine, idle: idle, now: now) {
             ADEKitTag(text: mark.text, tone: mark.tone)
           }
         }
@@ -359,6 +366,7 @@ struct CloudPlansCard: View {
     guard let billing = account.billing else { return nil }
     if billing.cancelAtPeriodEnd == true { return "Your plan ends \(cloudDate(billing.periodEnd)). You're on Free after that." }
     if let next = billing.nextPlanId, next != account.currentPlanId { return "You move to \(cloudPlanLabel(next)) on \(cloudDate(billing.periodEnd))." }
+    if billing.notice == "past_due" { return "Your last payment failed." }
     if account.plan == "paid" { return "Renews \(cloudDate(billing.periodEnd))." }
     return nil
   }
@@ -366,7 +374,8 @@ struct CloudPlansCard: View {
   var body: some View {
     ADEKitCard(title: "Plans", symbol: "square.stack.3d.up", hint: statusLine) {
       VStack(alignment: .leading, spacing: 12) {
-        HStack(alignment: .top, spacing: 8) {
+        // Two plans a row on a phone, all four side by side on an iPad.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8, alignment: .top)], alignment: .leading, spacing: 8) {
           ForEach(columns) { column in
             planColumn(column)
           }
@@ -381,7 +390,8 @@ struct CloudPlansCard: View {
 
   private func planColumn(_ column: Column) -> some View {
     let current = column.id == account.currentPlanId
-    let next = account.billing?.nextPlanId == column.id && !current
+    // The plan that starts at the period end: a move down, or Free after a cancel.
+    let next = !current && (account.billing?.nextPlanId == column.id || (account.billing?.cancelAtPeriodEnd == true && column.id == "free"))
     let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
     return VStack(alignment: .leading, spacing: 8) {
       VStack(alignment: .leading, spacing: 4) {
@@ -396,8 +406,17 @@ struct CloudPlansCard: View {
           Color.clear.frame(height: 18)
         }
       }
-      fact(Int(Double(column.facts.includedMilli) / 1000).formatted(), "hours a month")
-      fact(cloudGb(column.facts.diskGb), "disk in all")
+      // An account from before the new plans keeps its old hours and disk until its period ends.
+      if current, let old = oldTermsHours(column), let end = account.billing?.periodEnd {
+        fact(cloudHours(old), "hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))")
+      } else {
+        fact(cloudHours(column.facts.includedMilli), "hours a month")
+      }
+      if current, let old = oldTermsDisk(column), let end = account.billing?.periodEnd {
+        fact(cloudGb(old), "disk until \(cloudDate(end)), then \(cloudGb(column.facts.diskGb))")
+      } else {
+        fact(cloudGb(column.facts.diskGb), "disk in all")
+      }
       if let minutes = column.facts.phoneMinutes {
         fact("\(minutes)", "phone minutes")
       }
@@ -407,11 +426,24 @@ struct CloudPlansCard: View {
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(10)
-    .frame(maxWidth: .infinity, alignment: .topLeading)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(current ? ADEColor.accent.opacity(0.08) : Color.clear, in: shape)
     .overlay(shape.strokeBorder(current ? ADEColor.accent.opacity(0.45) : ADEKit.edge, lineWidth: current ? 1 : 0.75))
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(Int(Double(column.facts.includedMilli) / 1000)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes" } ?? "")")
+    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(cloudHours(column.facts.includedMilli)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes" } ?? "")")
+  }
+
+  /// The paid plan's hours this period when they aren't the table's (old terms), else nil.
+  private func oldTermsHours(_ column: Column) -> Int? {
+    guard account.plan == "paid", account.billing?.notice != "past_due" else { return nil }
+    let included = account.hours.includedMilli
+    return included > 0 && included != column.facts.includedMilli ? included : nil
+  }
+
+  /// The paid plan's disk this period when it isn't the table's (old terms), else nil.
+  private func oldTermsDisk(_ column: Column) -> Double? {
+    guard account.plan == "paid", account.billing?.notice != "past_due", let limit = account.disk?.limitGb else { return nil }
+    return limit != column.facts.diskGb ? limit : nil
   }
 
   private func fact(_ value: String, _ unit: String) -> some View {

@@ -595,7 +595,7 @@ function LaneActions({
     <>
       {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
       {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
-      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
+      {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. Its disk still counts toward your plan.</span> : null}
     </>
   );
 }

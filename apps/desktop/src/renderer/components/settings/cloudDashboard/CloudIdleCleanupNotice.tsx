@@ -2,9 +2,8 @@ import { useState } from "react";
 import {
   IDLE_CLEANUP_HELD_NEXT,
   formatCloudDate,
-  idleCleanupSaveSentence,
   idleCleanupWhen,
-  ignoredFilesSentence,
+  ignoredFilesList,
   type CloudAccountState,
   type CloudIdleCleanupEntry,
 } from "../../../../shared/adeCloud";
@@ -18,8 +17,9 @@ import { Banner } from "../../ui/notice";
  * its work is committed and pushed to the lane's branch first, which files
  * git ignores won't be kept, and "Keep it", which restarts the idle clock on
  * the server with no wake and no hours. A computer kept because its save
- * failed says why and what to do. The words are the server's shared
- * sentences, so ADE and the emails say the same.
+ * failed says why and what to do. The facts are the emails' (the same
+ * date, branch and ignored files), said in fewer words: a banner has a title
+ * and one short detail.
  *
  * Account level (`keepIdleComputer` is by the computer's ADE Cloud id), so no pin.
  */
@@ -29,11 +29,36 @@ export function idleEntryName(entry: CloudIdleCleanupEntry): string {
   return entry.laneName ?? entry.name ?? `Computer ${entry.instanceId.slice(0, 6)}`;
 }
 
+/** "pricing-page's computer": the idle cleanup deletes the computer; the lane stays. */
+function idleSubject(entry: CloudIdleCleanupEntry): string {
+  return entry.laneName ? `${entry.laneName}'s computer` : idleEntryName(entry);
+}
+
+/** What happens before the delete and what is lost, in two short sentences. */
+function idleDetail(entry: CloudIdleCleanupEntry): string {
+  const when = formatCloudDate(entry.deletesAt);
+  const head = entry.idleDays
+    ? `Computers unused for ${entry.idleDays} days are deleted; this one goes on ${when}.`
+    : `It isn't used, so ADE Cloud deletes it on ${when}.`;
+  const save = entry.laneName
+    ? ` ADE pushes its work to ${entry.branch ?? "the lane's branch"} first, and the lane and its chats stay.`
+    : " ADE pushes its work to GitHub first.";
+  const list = entry.ignoredFiles ? ignoredFilesList(entry.ignoredFiles) : null;
+  const ignored = entry.ignoredFiles === undefined
+    ? ""
+    : entry.ignoredFiles === null
+      ? " Files git ignores, such as .env, aren't pushed."
+      : list
+        ? ` Files git ignores aren't pushed, so these won't be kept: ${list}.`
+        : "";
+  return `${head}${save}${ignored}`;
+}
+
 /** The lane row's short mark: "Deleted in 1 day", or "Not deleted" for a computer kept after a failed save. */
 export function idleRowTag(entry: CloudIdleCleanupEntry, now: number): { label: string; title: string } {
-  if (entry.held) return { label: "Not deleted", title: `ADE didn't delete it: ${entry.held.reason}` };
+  if (entry.held) return { label: "Not deleted", title: `ADE didn't delete its computer: ${entry.held.reason}` };
   const when = idleCleanupWhen(entry.deletesAt, now);
-  return { label: when.charAt(0).toUpperCase() + when.slice(1), title: `Unused, so ADE Cloud deletes it on ${formatCloudDate(entry.deletesAt)} unless you keep it.` };
+  return { label: when.charAt(0).toUpperCase() + when.slice(1), title: `Unused, so ADE Cloud deletes its computer on ${formatCloudDate(entry.deletesAt)} unless you keep it. The lane stays.` };
 }
 
 export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: CloudAccountState; now: number; onChanged: () => void }) {
@@ -50,10 +75,10 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
     try {
       const result = await bridge(entry.instanceId);
       if (!result.ok) throw new Error(result.message ?? "ADE Cloud couldn't keep it.");
-      showToast({ tone: "success", title: `Kept ${idleEntryName(entry)}`, message: "ADE Cloud won't delete it. The clock starts again from now." });
+      showToast({ tone: "success", title: `Kept ${idleSubject(entry)}`, message: "ADE Cloud won't delete it. Its unused days count again from now." });
       onChanged();
     } catch (error) {
-      showToast({ tone: "error", title: `Couldn't keep ${idleEntryName(entry)}`, message: ipcErrorMessage(error) || "Try again in a moment, or open the lane." });
+      showToast({ tone: "error", title: `Couldn't keep ${idleSubject(entry)}`, message: ipcErrorMessage(error) || "Try again in a moment, or open the lane." });
     } finally {
       setBusy(null);
     }
@@ -61,7 +86,6 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
   return (
     <>
       {entries.map((entry) => {
-        const name = idleEntryName(entry);
         const action = { label: busy === entry.instanceId ? "Keeping…" : "Keep it", variant: "primary" as const, disabled: busy != null, onClick: () => void keep(entry) };
         if (entry.held) {
           return (
@@ -71,7 +95,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
               model={{
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
-                title: `ADE didn't delete ${name}: its work couldn't be saved`,
+                title: `${idleSubject(entry)} wasn't deleted: ADE couldn't save its work`,
                 detail: `${entry.held.reason} ${IDLE_CLEANUP_HELD_NEXT}`,
                 actions: [action],
                 report: false,
@@ -79,7 +103,6 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
             />
           );
         }
-        const days = entry.idleDays ? ` after ${entry.idleDays} days unused` : " because it isn't used";
         return (
           <Banner
             key={`idle-${entry.instanceId}`}
@@ -87,8 +110,8 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
             model={{
               id: `cloud-idle-${entry.instanceId}`,
               tone: "warning",
-              title: `${name} will be ${idleCleanupWhen(entry.deletesAt, now)}`,
-              detail: `ADE Cloud deletes its computer on ${formatCloudDate(entry.deletesAt)}${days}. ${idleCleanupSaveSentence(entry.branch)} ${ignoredFilesSentence(entry.ignoredFiles)}`,
+              title: `${idleSubject(entry)} will be ${idleCleanupWhen(entry.deletesAt, now)}`,
+              detail: idleDetail(entry),
               actions: [action],
               report: false,
             }}
