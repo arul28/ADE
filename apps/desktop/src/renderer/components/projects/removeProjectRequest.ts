@@ -44,6 +44,9 @@ export function notifyProjectCopiesChanged(): void {
  */
 export const REQUEST_COPIES_MENU_EVENT = "ade:request-copies-menu";
 
-export function requestCopiesMenu(anchor: { x: number; y: number }): void {
-  window.dispatchEvent(new CustomEvent<{ x: number; y: number }>(REQUEST_COPIES_MENU_EVENT, { detail: anchor }));
+/** Where the copies menu opens, and for which project: an account project id (Home), else the tab in front. */
+export type CopiesMenuRequest = { x: number; y: number; projectId?: string | null };
+
+export function requestCopiesMenu(request: CopiesMenuRequest): void {
+  window.dispatchEvent(new CustomEvent<CopiesMenuRequest>(REQUEST_COPIES_MENU_EVENT, { detail: request }));
 }

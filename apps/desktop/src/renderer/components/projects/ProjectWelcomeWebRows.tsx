@@ -252,6 +252,8 @@ function ProjectMachineStack({
   web,
   computers,
   onSelectMachine,
+  onShowCopies,
+  namedByGroup = false,
 }: {
   locations: readonly RecentProjectLocation[];
   primary: RecentProjectLocation;
@@ -260,12 +262,21 @@ function ProjectMachineStack({
   /** The shared count (`copyComputers`) of an account project; the chip shows it. */
   computers?: CopyComputers | null;
   onSelectMachine?: (location: RecentProjectLocation) => void;
+  /** An account project: the chip opens its copies menu (the top bar's), not this list. */
+  onShowCopies?: (anchor: { x: number; y: number }) => void;
+  /** The row sits under an "Only on <computer>" heading: one location needs no chip. */
+  namedByGroup?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement | null>(null);
   if (locations.length === 0) return null;
-  if (locations.length === 1 && (locations[0]!.summary.kind !== "remote" || isAccountNoCopyLocation(locations[0]!.summary))) return null;
-  if (computers && computers.count === 0) return null;
+  // An account project shows its computers whenever it has a copy anywhere,
+  // one computer included: the chip is the way to its copies.
+  if (computers) {
+    if (computers.count === 0) return null;
+  } else if (locations.length === 1 && (namedByGroup || locations[0]!.summary.kind !== "remote" || isAccountNoCopyLocation(locations[0]!.summary))) {
+    return null;
+  }
   const ordered = [
     ...locations.filter((location) => location.summary.kind !== "remote"),
     ...locations.filter((location) => location.summary.kind === "remote"),
@@ -291,7 +302,13 @@ function ProjectMachineStack({
         aria-label={`On ${computerCountLabel(count)}${reachable ? ", reachable now" : ", none reachable now"}`}
         title={summary}
         onClick={(event) => {
+          // The row behind opens the project; the chip only shows its copies.
           event.stopPropagation();
+          if (onShowCopies) {
+            const rect = event.currentTarget.getBoundingClientRect();
+            onShowCopies({ x: rect.left, y: rect.bottom + 4 });
+            return;
+          }
           setOpen((value) => !value);
         }}
       >
@@ -367,6 +384,8 @@ export function RecentProjectRow({
   computers = null,
   iconDataUrl = null,
   local = true,
+  onShowCopies,
+  namedByGroup = false,
 }: {
   rp: RecentProjectSummary;
   connectionState: RemoteRuntimeConnectionState | null;
@@ -388,6 +407,10 @@ export function RecentProjectRow({
   iconDataUrl?: string | null;
   /** A folder that is no account project (recents behavior: Reconnect, path). */
   local?: boolean;
+  /** An account project: its computers chip opens the copies menu. */
+  onShowCopies?: (anchor: { x: number; y: number }) => void;
+  /** Under an "Only on <computer>" heading, which already names the computer. */
+  namedByGroup?: boolean;
   onMerge?: () => void;
   /** Opens the project's right-click menu. */
   onContextMenu?: (event: ReactMouseEvent) => void;
@@ -513,6 +536,8 @@ export function RecentProjectRow({
           web={web}
           computers={computers}
           onSelectMachine={onSelectMachine}
+          onShowCopies={onShowCopies}
+          namedByGroup={namedByGroup}
         />
         <div className="ade-welcome-row-top">
           {isOpen ? (

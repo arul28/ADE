@@ -9,6 +9,7 @@ import { LaneShareHomeFoot } from "../laneShare/guest/LaneShareHomeFoot";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
 import type { HomeLocalGroup, HomeProjectRow } from "./homeProjectRows";
+import { requestCopiesMenu } from "./removeProjectRequest";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
 
 type WebMachine = ReturnType<typeof useWebMachines>[number];
@@ -42,8 +43,18 @@ function webMachineFor(ctx: RowContext, targetId: string | undefined): WebMachin
   return ctx.webMachineByKey.get(targetId) ?? null;
 }
 
-/** One project, with its live connection, open and busy state. */
-function ProjectsCardRowView({ row, ctx }: { row: HomeProjectRow; ctx: RowContext }) {
+/**
+ * One project, with its live connection, open and busy state. In the full
+ * Projects dialog, `closeDialog` shuts it: the copies menu belongs to the top
+ * bar, which a modal dialog covers, so a chip there closes the dialog first.
+ */
+function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false }: {
+  row: HomeProjectRow;
+  ctx: RowContext;
+  closeDialog?: () => void;
+  /** Under an "Only on <computer>" heading. */
+  namedByGroup?: boolean;
+}) {
   const { group, rp, key } = row;
   // The page keys an open in flight by the location it opens.
   const openKey = recentProjectLocationKey(rp);
@@ -100,6 +111,13 @@ function ProjectsCardRowView({ row, ctx }: { row: HomeProjectRow; ctx: RowContex
       computers={row.computers}
       iconDataUrl={row.iconDataUrl}
       local={row.kind === "local"}
+      namedByGroup={namedByGroup}
+      onShowCopies={row.kind === "account"
+        ? (anchor) => {
+            closeDialog?.();
+            requestCopiesMenu({ ...anchor, projectId: row.key });
+          }
+        : undefined}
       onSelectMachine={(location) => {
         // The copy on the machine picked here opens, and the tab stays on it
         // (F6): a row of another machine never opens as this computer's folder.
@@ -137,9 +155,9 @@ export function ProjectsCard({
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
   const hasProjects = rows.length > 0 || localGroups.some((group) => group.rows.length > 0);
-  const renderRows = () => (
+  const renderRows = (closeDialog?: () => void) => (
     <>
-      {rows.map((row) => <ProjectsCardRowView key={row.key} row={row} ctx={ctx} />)}
+      {rows.map((row) => <ProjectsCardRowView key={row.key} row={row} ctx={ctx} closeDialog={closeDialog} />)}
       {localGroups.map((group) => (
         <Fragment key={group.key}>
           {group.label ? (
@@ -147,7 +165,9 @@ export function ProjectsCard({
               {group.label}
             </div>
           ) : null}
-          {group.rows.map((row) => <ProjectsCardRowView key={row.key} row={row} ctx={ctx} />)}
+          {group.rows.map((row) => (
+            <ProjectsCardRowView key={row.key} row={row} ctx={ctx} closeDialog={closeDialog} namedByGroup={Boolean(group.label)} />
+          ))}
         </Fragment>
       ))}
     </>

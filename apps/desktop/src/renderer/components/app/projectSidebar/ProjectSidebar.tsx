@@ -180,6 +180,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
             </button>
           );
         })}
+        {/* The computers with a copy (the Home row's chip); opens the copies menu. */}
+        <ProjectComputersTag />
       </nav>
 
       <div ref={setBodyRef} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
@@ -217,8 +219,6 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
             </button>
           );
         })}
-        {/* The computers with a copy; opens the copies menu. */}
-        <ProjectComputersTag />
         {/* Help: ADE Tips, "Show me around again", docs. */}
         <HelpMenu
           align="start"

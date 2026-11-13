@@ -632,12 +632,29 @@ h6 {
 }
 
 /* The computers tag: its reachability dot sits on the glyph's corner. */
-.ade-project-sidebar-computers-dot {
-  position: absolute;
-  right: -2px;
-  bottom: -1px;
-  width: 6px;
-  height: 6px;
+/* The computers chip: a Home row's and the project sidebar's (one style). */
+.ade-welcome-machines-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--kit-card-edge);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-welcome-machines-chip:hover,
+.ade-welcome-machines-chip[aria-expanded="true"] { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
+.ade-welcome-machines-chip .kit-dot { width: 5px; height: 5px; }
+.ade-project-sidebar-tabs .ade-welcome-machines-chip {
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 /* Help and the settings cog sit together at the far end of the footer. */

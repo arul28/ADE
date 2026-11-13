@@ -775,24 +775,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 /* ── machines chip ────────────────────────────────────────────────── */
 
 .ade-welcome-machines { position: relative; flex: none; }
-.ade-welcome-machines-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--kit-card-edge);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
-  color: var(--kit-text-2);
-  font: inherit;
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.ade-welcome-machines-chip:hover,
-.ade-welcome-machines-chip[aria-expanded="true"] { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
-.ade-welcome-machines-chip .kit-dot { width: 5px; height: 5px; }
+/* The computers chip (.ade-welcome-machines-chip) lives in index.css: the project sidebar uses it too. */
 /* Placed by AnchoredMenu (position, offset and stacking). */
 .ade-welcome-machines-menu {
   min-width: 220px;

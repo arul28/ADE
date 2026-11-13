@@ -293,6 +293,43 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
     facts.iconDataUrl ??= recent.remote?.iconDataUrl ?? null;
     factsById.set(project.id, facts);
   }
+  // A connected computer's folders that are no account project show in its
+  // "Only on" group, as on the web, opened from here before or not. They
+  // never add an account row or change the count. A folder of an account
+  // project joins that project's row through its copies instead.
+  if (!webMode) {
+    const projectIds = new Set(projects.map((project) => project.id));
+    const listed = new Set(localCandidates.map(recentProjectLocationKey));
+    for (const connection of input.remoteSnapshot?.connections ?? []) {
+      if (connection.state !== "connected") continue;
+      for (const record of connection.projects ?? []) {
+        if (record.exists === false || record.catalogVisibility === "system") continue;
+        if (record.accountProjectId && projectIds.has(record.accountProjectId)) continue;
+        const origin = cachedGitRemoteIdentity(record.gitOriginUrl ?? null);
+        if (origin && projectByOrigin.has(origin)) continue;
+        const summary: RecentProjectSummary = {
+          rootPath: record.rootPath,
+          displayName: record.displayName,
+          lastOpenedAt: record.lastOpenedAt ? new Date(record.lastOpenedAt).toISOString() : "",
+          exists: true,
+          kind: "remote",
+          gitOriginUrl: record.gitOriginUrl,
+          remote: {
+            targetId: connection.target.id,
+            projectId: record.projectId,
+            runtimeName: connection.target.name,
+            hostname: connection.target.hostname,
+            gitOriginUrl: record.gitOriginUrl,
+            iconDataUrl: record.icon?.dataUrl ?? null,
+          },
+        };
+        const key = recentProjectLocationKey(summary);
+        if (listed.has(key)) continue;
+        listed.add(key);
+        localCandidates.push(summary);
+      }
+    }
+  }
 
   // Icons the connected computers report, by account project.
   const liveIconById = new Map<string, string>();
