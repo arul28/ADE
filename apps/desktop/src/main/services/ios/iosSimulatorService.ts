@@ -2627,14 +2627,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const device = laneDevices.get(laneId);
     if (!device) return;
     const heldElsewhere = laneDevices.list().some((other) => other.udid === device.udid && other.laneId !== laneId);
-    if (!heldElsewhere && bootedForRemoteChat.has(device.udid)) {
-      bootedForRemoteChat.delete(device.udid);
-      await power.powerOffDevice(device.udid, "power-off").catch((error: unknown) => {
+    let poweredOff = false;
+    if (!heldElsewhere && bootedForWorkCopy.get(device.udid) === laneId) {
+      bootedForWorkCopy.delete(device.udid);
+      poweredOff = await power.powerOffDevice(device.udid, "power-off").catch((error: unknown) => {
         args.logger.warn("apple.work_copy_device_power_off_failed", { laneId, udid: device.udid, error: error instanceof Error ? error.message : String(error) });
+        return false;
       });
     }
     await laneDevices.deviceDetach({ laneId, by: "agent" }).catch(() => null);
-    args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff: !heldElsewhere });
+    args.logger.info("apple.work_copy_device_released", { laneId, udid: device.udid, poweredOff });
   };
   const offWorkCopyReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
     void releaseWorkCopyDevice(laneId).catch((error: unknown) => {
@@ -2812,7 +2814,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // `fill-element` reads its field back itself, a better check than focus.
         typeText: ({ secure, ...textArgs }) => typeText({ ...textArgs, laneId: runtime.laneId }, { checkFocus: false, secure }),
         readElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
-        bootDevice: (device) => power.bootDevice(device),
+        bootDevice: async (device) => {
+          const bootedNow = await power.bootDevice(device);
+          noteBootFor(runtime.laneId, device.udid, bootedNow);
+          return bootedNow;
+        },
         powerOffDevice: (deviceUdid) => power.powerOffDevice(deviceUdid, "hub-power"),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
         getAppSessionOwner: () => runtime.activeSession?.chatSessionId ?? null,
@@ -3490,8 +3496,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * recording stop and the device-list refresh cannot be left out of a path.
    * Lambdas, because the functions they call are declared further down.
    */
-  /** Simulators a chat on another machine booted here, by udid (in memory). */
-  const bootedForRemoteChat = new Map<string, string>();
+  /**
+   * Simulators booted here for a work copy (a chat on another machine), by
+   * udid → the copy's lane id. When the copy goes, they go back powered off,
+   * as they were (`releaseWorkCopyDevice`). In memory: a restart forgets it.
+   */
+  const bootedForWorkCopy = new Map<string, string>();
+  const noteBootFor = (laneId: string | null | undefined, udid: string, bootedNow: boolean): void => {
+    if (bootedNow && laneId && isRemoteWorkLaneId(laneId)) bootedForWorkCopy.set(udid, laneId);
+  };
   const power = createSimulatorPower({
     run: (file, commandArgs, options) => run(file, commandArgs, options),
     waitForBootStatus: (device) => waitForSimulatorBootStatus(device),
@@ -3505,13 +3518,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // A shutdown leaves it: the shutdown can fail, and the record goes once
       // the device is seen off.
       if (reason === "boot") laneMaintenance().recordBootedBy(udid, agentCallChat.getStore() ?? null);
-      // A chat on another machine brought it up: when that chat's work copy
-      // goes, the device goes back powered off, as it was (`releaseWorkCopyDevice`).
-      if (reason === "boot") {
-        const chat = agentCallChat.getStore() ?? null;
-        if (chat?.startsWith("remote:")) bootedForRemoteChat.set(udid, chat);
-        else bootedForRemoteChat.delete(udid);
-      }
       return resetHelperDevice(udid, reason);
     },
     stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),
@@ -3524,8 +3530,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * caller passed `boot: true`. A viewer that only wants to watch gets
    * `APPLE_DEVICE_OFF` instead (see `startStream`).
    */
-  const ensureDeviceBooted = async (device: IosSimulatorDevice): Promise<void> => {
-    await power.bootDevice(device);
+  const ensureDeviceBooted = async (device: IosSimulatorDevice, laneId?: string | null): Promise<void> => {
+    noteBootFor(laneId, device.udid, await power.bootDevice(device));
   };
 
   /**
@@ -5164,7 +5170,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       } else {
         emitLaunchProgress(launchId, "boot-simulator", "running", "Booting simulator...", device.name, { deviceUdid: device.udid });
       }
-      await power.bootDevice(device);
+      noteBootFor(runtime.laneId, device.udid, await power.bootDevice(device));
       emitLaunchProgress(launchId, "boot-simulator", "complete", "Simulator services are ready.", device.name, { deviceUdid: device.udid });
 
       currentStep = "open-simulator";
@@ -6268,7 +6274,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // is off. An explicit start boots it here; a viewer never gets this far
     // with a device that is off (see the check above). A device that is still
     // booting is waited for, not booted again.
-    if (wantsBoot) await ensureDeviceBooted(device);
+    if (wantsBoot) await ensureDeviceBooted(device, runtime.laneId);
     else if (device.state === "Booting") await waitForSimulatorBootStatus(device);
     if (streamArgs.localViewer) markLocalViewer(runtime.laneId);
     const payload = await helper().send({
@@ -7416,7 +7422,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       phase("starting");
       const device = await resolveDevice(udid, runtime);
-      await ensureDeviceBooted(device);
+      await ensureDeviceBooted(device, laneId);
       invalidateStatus(runtime);
       phase("booted");
       // `boot: true`: this IS the explicit start, and a device list cached
@@ -7701,7 +7707,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     try {
       if (extra) await bootExtraDevice(extra);
       const device = await resolveDevice(targetUdid, runtime);
-      if (!extra) await ensureDeviceBooted(device);
+      if (!extra) await ensureDeviceBooted(device, runtime.laneId);
       invalidateDeviceList();
       const target = await resolveLaunchTarget({
         projectRoot,
@@ -7865,7 +7871,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
       const target = await resolveDevice(laneDevice.udid, runtime);
       device = target;
-      await ensureDeviceBooted(target);
+      await ensureDeviceBooted(target, runtime.laneId);
       activeTestUdids.add(target.udid);
       args.logger.info("apple.tests.start", { laneId: runtime.key, udid: target.udid, projectPath, scheme, derivedDataPath });
       // Same guard as a launch build: package state that names another folder goes first.
