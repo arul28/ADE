@@ -115,8 +115,9 @@ function selectedNoteText(entry: LaneShareGivenEntry, editable: boolean, laneGon
 
 export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRequest; onClose: () => void }) {
   const navigate = useNavigate();
-  const { laneId, laneName, pin, machineName } = request;
-  const { key, entry } = useLaneShareList(pin, { listKey: request.listKey });
+  const { laneId, laneName, machineName } = request;
+  // The list's machine: the request's pin, or the tab's copy for a lane of the tab's own.
+  const { key, entry, pin } = useLaneShareList(request.pin, { listKey: request.listKey });
   const revokePending = useLaneShareStore((s) => s.revokePending);
   const { defaults, loaded: defaultsLoaded } = useLaneShareDefaults();
   const [now, setNow] = React.useState(() => Date.now());

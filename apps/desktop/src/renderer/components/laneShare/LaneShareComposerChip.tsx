@@ -31,7 +31,7 @@ export const LaneShareComposerChip = React.memo(function LaneShareComposerChip({
   /** The open chat: "Move to <guest>'s computer" moves it. */
   sessionId?: string | null;
 }) {
-  const { key, entry } = useLaneShareList(pin, { enabled: Boolean(laneId) });
+  const { key, entry, pin: listPin } = useLaneShareList(pin, { enabled: Boolean(laneId) });
   const shares = entry?.shares;
   const live = React.useMemo(
     () => (laneId ? (shares ?? []).filter((share) => share.laneId === laneId && isLiveLaneShare(share)) : []),
@@ -60,7 +60,7 @@ export const LaneShareComposerChip = React.memo(function LaneShareComposerChip({
             listKey: key,
             laneId,
             laneName: laneName?.trim() || "this lane",
-            pin,
+            pin: listPin,
             machineName: pin?.kind === "remote" ? pin.runtimeName : null,
             grantId: live[0]?.grantId ?? null,
           }),
@@ -72,7 +72,7 @@ export const LaneShareComposerChip = React.memo(function LaneShareComposerChip({
               .slice(0, 2)
               .map((share) => ({
                 label: `Move to ${personLabel(share.receiverEmail)}'s computer`,
-                onClick: () => { void startLaneShareMove({ pin, share, sessionId }); },
+                onClick: () => { void startLaneShareMove({ pin: listPin, share, sessionId }); },
               }))
           : []),
       ]}
