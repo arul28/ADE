@@ -1,9 +1,11 @@
 import { CircleNotch, LockSimple } from "@phosphor-icons/react";
 import type { ImportPlan, ImportPlanAction, ImportSurface } from "../../../../shared/externalSessionPolicy";
+import type { ProviderInstance } from "../../../../shared/types/providerInstances";
 import { Banner } from "../../ui/notice";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
+import { ImportAccountPicker } from "./ImportAccountPicker";
 import { LaneDot } from "./ImportSessionParts";
 
 const SURFACE_LABELS: Record<ImportSurface, string> = {
@@ -18,6 +20,18 @@ export type ImportActionBarProps = {
   /** The session's home lane, shown on the locked pill when the lane list lacks it. */
   homeLane: { name: string; color: string | null } | null;
   onTargetLaneChange: (laneId: string) => void;
+  /**
+   * The account choice, when this provider and machine have one to offer.
+   * Null renders no picker; the browser owns that decision.
+   */
+  accountPicker: {
+    accounts: ProviderInstance[];
+    /** The chosen account; null keeps the account that owns the transcript. */
+    value: string | null;
+    /** The account whose home holds the transcript, when the host named it. */
+    sessionAccountId: string | null;
+    onChange: (accountId: string | null) => void;
+  } | null;
   /** Shown only for a chat copy. */
   model: string | null;
   onModelChange: (model: string) => void;
@@ -118,8 +132,9 @@ function LockedLanePill({ name, color, reason }: { name: string; color: string |
 }
 
 /**
- * Pinned to the bottom of the preview. Renders the plan from `planImport` and
- * nothing else: which surfaces, which lane, which buttons, which note.
+ * Pinned to the bottom of the preview. Renders the plan from `planImport` plus
+ * the account choice the browser hands it: which surfaces, which lane, which
+ * account, which buttons, which note.
  */
 export function ImportActionBar({
   plan,
@@ -127,6 +142,7 @@ export function ImportActionBar({
   lanes,
   homeLane,
   onTargetLaneChange,
+  accountPicker,
   model,
   onModelChange,
   running,
@@ -183,6 +199,18 @@ export function ImportActionBar({
               aria-label="Import into lane"
             />
           )}
+          {accountPicker ? (
+            <>
+              <span className="import-actions-label">on</span>
+              <ImportAccountPicker
+                accounts={accountPicker.accounts}
+                value={accountPicker.value}
+                sessionAccountId={accountPicker.sessionAccountId}
+                disabled={busy}
+                onChange={accountPicker.onChange}
+              />
+            </>
+          ) : null}
           {showModel && model ? (
             <div className="min-w-0 max-w-[220px]" data-testid="import-model">
               <ModelPicker value={model} onChange={(next) => onModelChange(next)} disabled={busy} />
