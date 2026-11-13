@@ -5,6 +5,7 @@ import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
+import { runPlanCleanupPicks } from "./cloud/planCleanup";
 import { createCloudProvider } from "./cloud/provider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
@@ -227,6 +228,12 @@ export default Sentry.withSentry(sentryOptions, {
         settle("cloud_project_deletes", async () => {
           const key = env.AGENT37_API_KEY?.trim();
           if (key) await runProjectComputerDeletes(env, createCloudProvider(key));
+        }),
+        // The computers a person picked to free for a cheaper plan: pushed,
+        // then freed, a few a tick. One indexed read when no pick waits.
+        settle("cloud_plan_cleanups", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runPlanCleanupPicks(env, createCloudProvider(key));
         }),
       ]);
     } catch (error) {

@@ -7162,14 +7162,19 @@ export function AgentChatPane({
    * a presentational component writing its parent's state on mount. A Custom
    * pick reads the source model's ladder; a plain chat reads its own row.
    */
+  // Only a draft falls back to the family's remembered effort. An open chat
+  // (or a launch's reserved one) runs on its own level, or the model default
+  // when it has none: the family's memory is the last pick in ANY chat, and
+  // showing it there read as the chat's effort changing by itself (B14-34).
+  const composerHasChat = Boolean(lockSessionId ?? selectedSessionId);
   const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
     tiers: reasoningTiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: reasoningDescriptor?.family
+    rememberedForFamily: !composerHasChat && reasoningDescriptor?.family
       ? getReasoningForFamily(reasoningDescriptor.family) ?? null
       : null,
     modelDefault: reasoningDescriptor?.defaultReasoningEffort ?? null,
-  }), [getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
+  }), [composerHasChat, getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -7652,6 +7657,8 @@ export function AgentChatPane({
     setCursorConfigValues({ ...nextCursorConfigValues });
   }, [setFastModeState]);
 
+  /** The chat whose summary last set the composer's effort; null for a draft. */
+  const composerEffortSessionIdRef = useRef<string | null>(null);
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
       // A chat whose summary is still loading (or failing). Locked Work chats
@@ -7685,9 +7692,23 @@ export function AgentChatPane({
         // still waiting for its chat shows the model it launches with.
         setModelId("");
       }
-      if (lockSessionId || transcriptModelId) {
+      // A chosen chat whose summary hasn't come (still loading, or its
+      // computer asleep) never takes the last launch's settings or the
+      // defaults: they are another chat's, and a send here would carry that
+      // chat's effort into this one (B14-34). Its summary sets them.
+      if (loadingSessionId) {
+        // The effort still on screen is the chat shown before the switch (a
+        // transcript can name this chat's model before its summary comes):
+        // show none until the summary says this chat's own. A draft's effort
+        // stays, since it is the effort the chat it just started runs on.
+        const effortOwner = composerEffortSessionIdRef.current;
+        if (effortOwner && effortOwner !== loadingSessionId) {
+          composerEffortSessionIdRef.current = loadingSessionId;
+          setReasoningEffort(null);
+        }
         return;
       }
+      composerEffortSessionIdRef.current = null;
       if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
         return;
       }
@@ -7741,6 +7762,7 @@ export function AgentChatPane({
     if (nextModelId) {
       setModelId(nextModelId);
     }
+    composerEffortSessionIdRef.current = session.sessionId;
     setReasoningEffort(session.reasoningEffort ?? null);
     // The owning brain's answer on this chat wins over this window's last
     // account read — it is the machine that will enforce it.

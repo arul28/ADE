@@ -6,7 +6,9 @@
  *  - `free` (default): Free plan, two lanes and one computer with no lane.
  *  - `empty`: Free plan, nothing made yet.
  *  - `plus`: Plus plan, six lanes, extra hours on, earned hours.
- *  - `pro`: Pro plan, a busy account.
+ *  - `pro`: Pro plan, a busy account over Plus's limits ("Move to Plus" asks first).
+ *  - `downgrade`: Pro with a move to Plus waiting (made in the billing portal), over Plus.
+ *  - `over`: Free plan in force, over its limits (a cancel made in the billing portal).
  *  - `full`: Free plan out of hours with the disk 92% full.
  *  - `blocked`: Free plan refused on this computer (another account used it).
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
@@ -14,11 +16,19 @@
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
  */
-import { CLOUD_MACHINE_DEFAULT_NAME, cloudFreePlanRefusedSentence, type CloudAccountState, type CloudMachine, type CloudMachinesResult } from "../shared/adeCloud";
+import {
+  CLOUD_MACHINE_DEFAULT_NAME,
+  cloudFreePlanRefusedSentence,
+  planCleanupSentence,
+  type CloudAccountState,
+  type CloudMachine,
+  type CloudMachinesResult,
+  type CloudPlanCleanup,
+} from "../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "full" | "blocked";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "full", "blocked"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -121,6 +131,8 @@ type Fixture = {
   recentUsedMilli?: number;
   /** Pro with a move to Plus waiting, over Plus's limits: the cleanup notice and "Stay on Pro". */
   downgrade?: boolean;
+  /** The plan in force is over its limits: new computers refused until the person picks. */
+  over?: boolean;
 };
 
 function fixture(scenario: Scenario): Fixture {
@@ -163,6 +175,8 @@ function fixture(scenario: Scenario): Fixture {
       };
     case "downgrade":
       return { ...fixture("pro"), downgrade: true };
+    case "over":
+      return { ...fixture("plus"), planId: "free", usedMilli: 9_000, extraHours: false, earnedMilli: undefined, over: true };
     case "full":
       return {
         planId: "free",
@@ -258,28 +272,37 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       nextPlanId: fix.downgrade ? "plus" : null,
       notice: null,
     },
-    ...(fix.downgrade
-      ? {
-          planCleanup: {
-            planId: "plus",
-            computers: machines.slice(0, 2).map((box) => ({
-              instanceId: box.instanceId,
-              name: box.name ?? null,
-              laneName: box.lane?.laneName ?? null,
-              branch: box.lane ? `ade/${box.lane.laneName}` : null,
-              diskGb: box.resources?.diskGb ?? 0,
-            })),
-            usedGb: diskUsed,
-            limitGb: CATALOG.plans.plus!.diskGb,
-            computerCount: machines.length,
-            computerLimit: CATALOG.plans.plus!.computerLimit,
-            dueAt: period.end + 3 * DAY,
-            sentence: "Plus allows 10 computers and 40 GB. ADE pushes the work of the 2 oldest computers to GitHub and frees them.",
-          },
-        }
-      : {}),
+    ...(fix.downgrade ? { planCleanup: mockCleanup(machines, "plus", period.end) } : {}),
+    ...(fix.over ? { planCleanup: mockCleanup(machines, "free", null) } : {}),
+    ...(fix.planId === "pro" && !fix.downgrade ? { downgradePreviews: { plus: mockCleanup(machines, "plus", period.end), free: mockCleanup(machines, "free", period.end) } } : {}),
     ...extra,
   } as CloudAccountState;
+}
+
+/** What goes over `planId` (oldest first), as the server's `planCleanupFor` says it. */
+function mockCleanup(machines: CloudLaneMachine[], planId: "free" | "plus", startsAt: number | null): CloudPlanCleanup {
+  const plan = CATALOG.plans[planId]!;
+  const diskOf = (box: CloudLaneMachine) => box.resources?.diskGb ?? 0;
+  const usedGb = machines.reduce((total, box) => total + diskOf(box), 0);
+  const choices = [...machines].sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0)).map((box) => ({
+    instanceId: box.instanceId,
+    name: box.name ?? null,
+    laneName: box.lane?.laneName ?? null,
+    branch: box.lane ? `ade/${box.lane.laneName}` : null,
+    diskGb: diskOf(box),
+    createdAt: box.createdAtMs ?? 0,
+  }));
+  const computers: typeof choices = [];
+  let count = machines.length;
+  let disk = usedGb;
+  for (const choice of choices) {
+    if (count <= plan.computerLimit && disk <= plan.diskGb) break;
+    computers.push(choice);
+    count -= 1;
+    disk -= choice.diskGb;
+  }
+  const facts = { planId, usedGb, limitGb: plan.diskGb, computerCount: machines.length, computerLimit: plan.computerLimit };
+  return { ...facts, computers, choices, startsAt, freeing: null, sentence: planCleanupSentence(facts) };
 }
 
 export function applyBrowserMockCloud(ade: any): void {
@@ -336,11 +359,24 @@ export function applyBrowserMockCloud(ade: any): void {
       for (const listener of statusListeners) listener();
       return state;
     },
-    openCheckout: async (plan?: string) => {
-      console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`);
+    openCheckout: async (plan?: string, cleanup?: { push: boolean; instanceIds: string[] }) => {
+      console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`, cleanup ?? "");
       // A paid account changes plan without a checkout page, as the server does: Pro to Plus waits for the period's end.
       if (fix.planId === "free" || !plan) return { opened: true };
-      return { opened: false, change: plan === "plus" && fix.planId === "pro" ? "next_period" : "now" };
+      const downgrade = plan === "plus" && fix.planId === "pro";
+      if (downgrade && cleanup) {
+        state.billing = { ...state.billing, nextPlanId: "plus" };
+        state.downgradePreviews = {};
+        state.planCleanup = { ...mockCleanup(machines, "plus", state.billing.periodEnd), freeing: { ...cleanup, at: Date.now() } };
+        for (const listener of statusListeners) listener();
+      }
+      return { opened: false, change: downgrade ? "next_period" : "now", ...(cleanup ? { freeing: cleanup.instanceIds } : {}) };
+    },
+    pickPlanCleanup: async (input: { planId: "free" | "plus"; push: boolean; instanceIds: string[] }) => {
+      console.info("[browser mock] cloud.pickPlanCleanup", input);
+      if (state.planCleanup) state.planCleanup = { ...state.planCleanup, freeing: { push: input.push, instanceIds: input.instanceIds, at: Date.now() } };
+      for (const listener of statusListeners) listener();
+      return state;
     },
     openBillingPortal: async () => {
       console.info("[browser mock] cloud.openBillingPortal");

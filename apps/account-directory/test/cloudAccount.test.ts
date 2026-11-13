@@ -5,14 +5,14 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import type { CloudAccountState } from "../src/cloud/contract";
-import { runPlanCleanups } from "../src/cloud/planCleanup";
+import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { runCloudMinuteCron } from "../src/cloud/cron";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
-import { applyCloudPlanChange, listComputers, type CloudEnv } from "../src/cloud/store";
+import { applyCloudPlanChange, type CloudEnv } from "../src/cloud/store";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
 
 /**
@@ -518,6 +518,27 @@ describe("ADE Cloud account", () => {
       harness.net.once.push({ match: /POST .*\/fork$/, reply: new Error("connection reset") });
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/fork`, { metadata: { ade_request_id: "req-copy" } })).status).toBe(502);
       expect(harness.rows("select request_id from cloud_computers where instance_id like 'pending:%'")).toEqual([expect.objectContaining({ request_id: "req-copy" })]);
+    }],
+    // An older desktop put the person's saved keys and Claude token in a new
+    // computer's env; the host keeps that env in plain text for the computer's life.
+    ["a create keeps only the client's ADE version in the new computer's env, never a sign-in or a launch's join", async () => {
+      const response = await harness.send(OWNER, "POST", "/cloud/instances", {
+        type: "default",
+        resources: { cpu: 2, memory: 4 },
+        env: {
+          ADE_MIN_VERSION: "1.4.2-beta.3",
+          OPENAI_API_KEY: "fixture-openai-value",
+          CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-value",
+          OPENROUTER_API_KEY: "fixture-openrouter-value",
+          ADE_LAUNCH_ID: "forged-launch",
+          ADE_LAUNCH_JOIN: "forged-join",
+        },
+      });
+      expect(response.status).toBe(201);
+      expect(providerCalls(harness, /POST .*\/instances$/)[0]?.body?.env).toEqual({ ADE_MIN_VERSION: "1.4.2-beta.3" });
+      // A version-named variable that is not a version is dropped too: the entrypoint passes it to an install.
+      await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, env: { ADE_MIN_VERSION: "1.0.0; curl x" } });
+      expect(providerCalls(harness, /POST .*\/instances$/)[1]?.body).not.toHaveProperty("env");
     }],
     ["a provider that refuses ADE's key is ADE's problem, and leaves nothing behind", async () => {
       harness.net.once.push({ match: /POST .*\/instances$/, reply: harness.net.reply({ error: { code: "invalid_api_key" } }, 401) });
@@ -1273,10 +1294,11 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
 });
 
 /**
- * A cheaper plan's limits free the oldest computers (`planCleanup.ts`). The
- * run deletes computers with nobody watching, from the cron only, so a test is
- * the one way to prove it never deletes work that isn't on GitHub, and never
- * a computer the account no longer has to give up.
+ * A cheaper plan's limits free only the computers the person picked
+ * (`planCleanup.ts`). The run deletes computers with nobody watching, from
+ * the cron only, so a test is the one way to prove it frees exactly the pick,
+ * never deletes work that isn't on GitHub when push is on, and never a
+ * computer whose pick no longer applies.
  */
 describe("ADE Cloud plan cleanup", () => {
   const NEWER = ["newer000001", "newer000002", "newer000003"];
@@ -1284,9 +1306,9 @@ describe("ADE Cloud plan cleanup", () => {
   const tally = (lanes: Row[], extra: Row = {}) => JSON.stringify({ result: { pushed: 0, failed: 0, skipped: 0, lanes, ...extra } });
   const quiet = JSON.stringify({ result: { interruptedChats: 0, interruptedClis: 0, stillRunning: 0, chatsUploaded: 0, chatsNotUploaded: 0, timedOut: false } });
 
-  /** The free plan allows 3 computers; the oldest of 4 was warned and is due. */
+  /** The free plan allows 3 computers; the person picked the oldest of 4, its work pushed first. */
   function seedOverFreePlan(): void {
-    seedAccount(harness, OWNER, { plan_cleanup_warned_json: JSON.stringify({ [INSTANCE]: NOW - HOUR }), plan_cleanup_due_at: NOW - HOUR });
+    seedAccount(harness, OWNER, { plan_cleanup_choice_json: JSON.stringify({ planId: "free", push: true, instanceIds: [INSTANCE], at: NOW - HOUR }) });
     seedComputer(harness, { created_at: NOW - 40 * DAY });
     provide(harness);
     NEWER.forEach((id, index) => seedComputer(harness, { instance_id: id, created_at: NOW - (10 - index) * DAY, disk_gb: 2 }));
@@ -1299,17 +1321,21 @@ describe("ADE Cloud plan cleanup", () => {
     }
   }
 
-  const run = async () => runPlanCleanups(harness.env, createCloudProvider("provider-key"), await listComputers(harness.env, OWNER), clock);
+  const run = async () => runPlanCleanupPicks(harness.env, createCloudProvider("provider-key"), clock);
 
   it.each<[string, () => void, boolean]>([
     ["every lane on GitHub, read against the remotes: freed", () => answerExecs(quiet, tally([lane(), lane({ laneId: "lane_x", primary: false, state: "pushed" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), true],
     ["a primary lane 'clean' from an ADE that counts against its own branch: kept", () => answerExecs(quiet, tally([lane()]), tally([lane()])), false],
     ["a lane in a state the server doesn't know: kept", () => answerExecs(quiet, tally([lane({ primary: false, state: "unknown" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), false],
     ["agents still running after prepare-stop: kept", () => answerExecs(JSON.stringify({ result: { stillRunning: 1, chatsNotUploaded: 0, timedOut: true } }), tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), false],
-    ["the person deleted a newer computer while it pushed, so the account fits: not freed", () => {
+    ["the person bought Plus while it pushed, so the pick no longer applies: not freed", () => {
       answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
       // Lands as the computer is read for the push: after the first check, before the delete.
-      harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, NEWER[2]); } });
+      harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active' where user_id = ?", OWNER); } });
+    }, false],
+    ["a move of it that began while it pushed: not freed, so the move keeps its files", () => {
+      answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+      harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { seedComputer(harness, { instance_id: "pending_move_target", moving_from: INSTANCE, status: "provisioning", created_at: NOW }); } });
     }, false],
     ["a sleeping computer it woke for the push and then kept goes back to sleep", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
@@ -1327,6 +1353,44 @@ describe("ADE Cloud plan cleanup", () => {
     // A computer it keeps ends as it started: one it woke is never left running.
     if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
+    // Only the pick: the newer computers are never touched.
+    for (const id of NEWER) expect(computer(harness, id).deleted_at).toBeNull();
+  });
+
+  it("a downgrade's pick is checked before Stripe is asked, then only the picked computers are freed, each pushed before its delete", async () => {
+    harness.env.STRIPE_PRO_PRICE_ID = "price_pro";
+    seedAccount(harness, OWNER, { plan: "paid", paid_plan: "pro", included_milli: 1_500_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" });
+    harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: "price_pro" } }, { id: "si_extra", price: { id: "price_extra" } }] } });
+    // 48 GB against Plus's 40: freeing the 4 GB computer leaves the account over, freeing the 44 GB one fits.
+    seedComputer(harness, { disk_gb: 44, created_at: NOW - 40 * DAY });
+    provide(harness);
+    seedComputer(harness, { instance_id: SECOND, disk_gb: 4, created_at: NOW - 10 * DAY });
+    provide(harness, SECOND);
+    const downgrade = (instanceIds: string[]) => harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan: "plus", cleanup: { push: true, instanceIds } });
+    const stored = () => harness.row("select paid_plan_next, plan_cleanup_choice_json is not null as picked from cloud_accounts where user_id = ?", OWNER);
+
+    const refused = await downgrade([SECOND]);
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error?: { code?: string } }).error?.code).toBe("cleanup_does_not_fit");
+    expect(providerCalls(harness, /\/subscription_items\//)).toHaveLength(0);
+    expect(stored()).toEqual({ paid_plan_next: null, picked: 0 });
+
+    const made = await downgrade([INSTANCE]);
+    expect(await made.json()).toEqual({ url: null, change: "next_period", freeing: [INSTANCE] });
+    expect(stored()).toEqual({ paid_plan_next: "plus", picked: 1 });
+
+    answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+    await run();
+    expect([computer(harness).deleted_at != null, computer(harness, SECOND).deleted_at != null]).toEqual([true, false]);
+    const pushedAt = harness.net.calls.findIndex((call) => call.url.endsWith(`/instances/${INSTANCE}/exec`) && String(call.body?.command).includes("ade cloud push-work"));
+    const deletedAt = harness.net.calls.findIndex((call) => call.method === "DELETE" && call.url.endsWith(`/instances/${INSTANCE}`));
+    expect(pushedAt).toBeGreaterThan(-1);
+    expect(deletedAt).toBeGreaterThan(pushedAt);
+    expect(providerCalls(harness, new RegExp(`(POST|DELETE) .*/instances/${SECOND}`))).toEqual([]);
+
+    // Nothing left to free: the next tick finishes the pick.
+    await run();
+    expect(stored()).toEqual({ paid_plan_next: "plus", picked: 0 });
   });
 });
 

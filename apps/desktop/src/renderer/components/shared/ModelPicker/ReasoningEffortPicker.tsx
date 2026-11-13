@@ -30,6 +30,13 @@ export type ReasoningEffortPickerProps = {
   harness?: HarnessPresetBody | null;
   /** When false, each picker uses only its explicit value (no shared per-family defaults). */
   useFamilyDefaults?: boolean;
+  /**
+   * When false, an unset value shows as Auto instead of the family's
+   * remembered effort; a pick is still remembered for the family. For a chat
+   * that already exists: its own level (or the model default) is what its
+   * turns run on, and the family's memory is another chat's pick.
+   */
+  showFamilyDefault?: boolean;
   compact?: boolean;
   disabled?: boolean;
   className?: string;
@@ -237,6 +244,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   reasoningTiers,
   harness,
   useFamilyDefaults = true,
+  showFamilyDefault = true,
   compact = false,
   disabled = false,
   className,
@@ -290,9 +298,9 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const displayedEffort = useMemo<string | null>(() => resolveDisplayedReasoningEffort({
     tiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: useFamilyDefaults && family ? getReasoningForFamily(family) ?? null : null,
+    rememberedForFamily: useFamilyDefaults && showFamilyDefault && family ? getReasoningForFamily(family) ?? null : null,
     modelDefault: descriptor?.defaultReasoningEffort ?? null,
-  }), [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, tiers, useFamilyDefaults]);
+  }), [descriptor?.defaultReasoningEffort, family, getReasoningForFamily, reasoningEffort, showFamilyDefault, tiers, useFamilyDefaults]);
 
   const activeIndex = displayedEffort ? tiers.findIndex((tier) => tier === displayedEffort) : -1;
   const previousActiveIndexRef = useRef(activeIndex);

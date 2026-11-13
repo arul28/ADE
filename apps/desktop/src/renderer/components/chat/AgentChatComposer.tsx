@@ -202,7 +202,7 @@ import {
   type ComposerAtChipKind,
 } from "./mentionChipMark";
 import { ComposerMachineChipPopover } from "./MachineChipCard";
-import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -985,6 +985,8 @@ function ComposerMachineChip({
   if (adeCloudLane) {
     return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
   }
+  // An ADE Cloud launch still being set up: no lane computer to name yet, but the cloud mark already.
+  const onAdeCloud = !cloud && machineName === ADE_CLOUD_NAME;
   if (action) {
     return (
       <>
@@ -1029,7 +1031,9 @@ function ComposerMachineChip({
         label: machineName,
         description: cloud
           ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
-          : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
+          : onAdeCloud
+            ? "This chat runs on its lane's own ADE Cloud computer, which is being set up."
+            : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
       }}
     >
       <span
@@ -1043,6 +1047,8 @@ function ComposerMachineChip({
       >
         {cloud ? (
           <CloudArrowUp size={11} weight="fill" className="shrink-0 text-violet-300/85" aria-hidden />
+        ) : onAdeCloud ? (
+          <CloudMark size={11} brand />
         ) : (
           <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
         )}
@@ -8199,6 +8205,8 @@ function AgentChatComposerImpl({
             reasoningTiers={reasoningTiers}
             harness={activeHarnessPreset?.harness}
             reasoningEffort={reasoningEffort}
+            // An open chat shows its own level: the family's memory is another chat's pick (B14-34).
+            showFamilyDefault={!sessionId}
             squeezed={modelHint.chip != null}
             onChange={handleReasoningEffortPickerChange}
             disabled={effortSelectionLocked ?? modelSelectionLocked}
@@ -8232,7 +8240,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
