@@ -29919,6 +29919,25 @@ export function createAgentChatService(args: {
       runtime.codexAgentIndexByTurn.clear();
       if (shouldMarkInterrupted && options?.silentDeadCodexSwap) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
+        // An older turn the dead process never finished still ends here: its
+        // exit event, if it comes, is suppressed. It is not the caller's new
+        // turn, so no "closing" notice and no idle mark.
+        if (interruptedTurnId) {
+          emitChatEvent(managed, {
+            type: "status",
+            turnStatus: "interrupted",
+            message: "The Codex process stopped before this turn finished.",
+            turnId: interruptedTurnId,
+          });
+          void emitTurnDiffSummaryIfChanged(managed, interruptedTurnId);
+          emitChatEvent(managed, {
+            type: "done",
+            turnId: interruptedTurnId,
+            status: "interrupted",
+            model: managed.session.model,
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          });
+        }
       } else if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
         emitChatEvent(managed, {
@@ -71871,12 +71890,31 @@ export function createAgentChatService(args: {
       // aimed at the chat once launched its marker as a shell command and
       // marked it `failed`). The scheduler cancels a row for an ended chat on
       // the spot, so reopen it first, as restart recovery and turn start do.
+      // Only a row an earlier process ended: one this brain ended (the user
+      // closed the chat, its lane went) was ended on purpose, and so was any
+      // `disposed` row. Those are settled, never retried.
       if (
         isChatToolType(row.toolType)
         && !row.archivedAt
         && row.status !== "running"
         && row.status !== "detached"
       ) {
+        const endedAtMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
+        const closedReason = row.status === "disposed"
+          ? "disposed"
+          : !Number.isFinite(endedAtMs)
+            ? "no_end_time"
+            : endedAtMs >= serviceStartedAtMs ? "ended_this_launch" : null;
+        if (closedReason) {
+          logger.warn("agent_chat.update_resume_dropped", {
+            sessionId: chat.sessionId,
+            reason: "not_schedulable",
+            closedReason,
+            status: row.status,
+          });
+          settled.push({ sessionId: chat.sessionId, reason: "not_schedulable" });
+          continue;
+        }
         logger.warn("agent_chat.update_resume_row_reopened", { sessionId: chat.sessionId, priorStatus: row.status });
         sessionService.reopen(chat.sessionId);
       }
@@ -72088,36 +72126,36 @@ export function createAgentChatService(args: {
     // One at a time: each reopen starts a CLI process.
     for (const entry of entries) {
       if (serviceDisposed) break;
+      // Read first, so every drop below logs for exactly the CLIs owed a continue.
+      const midTurn = entry.owner ? crashMidTurn(entry.owner) : entry.midTurn;
       const row = sessionService.get(entry.sessionId);
       if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) {
         tally.notReopenable += 1;
-        if (entry.midTurn) noteContinueDropped(entry.sessionId, "not_reopenable");
+        if (midTurn) noteContinueDropped(entry.sessionId, "not_reopenable");
         continue;
       }
       if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) {
         tally.alreadyOpen += 1;
-        if (entry.midTurn) noteContinueDropped(row.id, "already_open");
+        if (midTurn) noteContinueDropped(row.id, "already_open");
         continue;
       }
       const unexpected = entry.owner != null;
-      let midTurn = entry.midTurn;
       try {
         // Claimed right before its own reopen, so a stop during the reopens
         // leaves the rest to the next start.
         const claim = entry.owner ?? plannedClaim(row.id, row);
         if (claim && !claimCliReopen(projectRoot, claim)) {
           tally.claimedElsewhere += 1;
-          if (entry.midTurn) noteContinueDropped(row.id, "claimed_elsewhere");
+          if (midTurn) noteContinueDropped(row.id, "claimed_elsewhere");
           continue;
         }
         if (entry.owner) {
           // Counted before the reopen starts: a reopen that stops this runtime counts too.
           if (countCliCrashReopen(projectRoot, row.id, RESTART_RESUME_MAX_AGE_MS) > MAX_CONSECUTIVE_RESTART_RESUMES) {
             tally.capped += 1;
-            noteContinueDropped(row.id, "reopen_capped");
+            if (midTurn) noteContinueDropped(row.id, "reopen_capped");
             continue;
           }
-          midTurn = crashMidTurn(entry.owner);
         }
       } catch (error) {
         // A claim or count that cannot be written: it does not reopen.

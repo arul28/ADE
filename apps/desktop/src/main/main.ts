@@ -8806,6 +8806,13 @@ app.whenReady().then(async () => {
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
+  /** The next try of the update resume (`armOwedResumes`); cleared when quit starts. */
+  let updateResumeRetryTimer: NodeJS.Timeout | null = null;
+  const clearUpdateResumeRetry = (): void => {
+    if (!updateResumeRetryTimer) return;
+    clearTimeout(updateResumeRetryTimer);
+    updateResumeRetryTimer = null;
+  };
   /**
    * The bookend to `desktop.main_started`, in the same machine log. A launch
    * line with no exit line for the previous pid is a crash or a kill; without
@@ -9070,6 +9077,8 @@ app.whenReady().then(async () => {
     if (shutdownFinalized || shutdownPromise) return;
     shutdownRequested = true;
     shutdownReason = args.reason;
+    // A retry during teardown would call a runtime pool that is shutting down.
+    clearUpdateResumeRetry();
     quitWarningAcknowledged = true;
 
     const exitCode = args.exitCode ?? 0;
@@ -9509,7 +9518,11 @@ app.whenReady().then(async () => {
       localRuntimeLogger.warn("update_resume.retries_exhausted", { chats: remaining.length, attempts: attempt + 1 });
       return;
     }
-    const timer = setTimeout(() => {
+    if (shutdownRequested || shutdownFinalized) return;
+    clearUpdateResumeRetry();
+    updateResumeRetryTimer = setTimeout(() => {
+      updateResumeRetryTimer = null;
+      if (shutdownRequested || shutdownFinalized) return;
       void armOwedResumes(remaining, attempt + 1).catch((error: unknown) => {
         localRuntimeLogger.warn("update_resume.arm_chain_failed", {
           attempt: attempt + 1,
@@ -9517,7 +9530,7 @@ app.whenReady().then(async () => {
         });
       });
     }, delayMs);
-    timer.unref?.();
+    updateResumeRetryTimer.unref?.();
   };
 
   // Phones connected through ADE phone sync, which drop while ADE restarts.
@@ -11285,6 +11298,9 @@ app.whenReady().then(async () => {
   app.on("before-quit", (event) => {
     if (shutdownFinalized) return;
     if (autoUpdateService.isInstallQuitArmed()) {
+      // This quit goes ahead with no shutdown flow; a quit the user can still
+      // cancel clears the retry in `requestAppShutdown` instead.
+      clearUpdateResumeRetry();
       quitWarningAcknowledged = true;
       return;
     }

@@ -193,6 +193,8 @@ import {
   buildClaudeTurnHookSettings,
   claudeHookSubagentChange,
   createCliSubagentTracker,
+  CLI_SUBAGENT_LIVE_MAX_AGE_MS,
+  oldestCountedCliSubagentStart,
   pruneCliSubagentsSince,
   type CliSubagentTracker,
   claudeHookTurnSignal,
@@ -881,6 +883,8 @@ type PtyEntry = {
   cliSubagents: CliSubagentTracker | null;
   /** After an Esc / Ctrl-C in a Claude turn: end it once the screen goes quiet. */
   cliTurnInterruptTimer: ReturnType<typeof setTimeout> | null;
+  /** Records the turn again when the oldest live agent stops counting (`recordCliTurnRunning`). */
+  cliSubagentRecheckTimer: ReturnType<typeof setTimeout> | null;
   /**
    * For a resume/reattach launch only: the terminal end state this launch took
    * over. If the new process dies immediately (a launch failure — a bad flag,
@@ -2889,18 +2893,52 @@ export function createPtyService({
       })
     : null;
   /**
+   * The one rule for "this CLI is owed a continue if it stops now". Its own
+   * exact turn report (Claude hooks, Codex OSC) says working, or it reported
+   * background agents (Claude hooks) that still count as live: the stop kills
+   * them, and the CLI would wait for their report forever. An agent older than
+   * `CLI_SUBAGENT_LIVE_MAX_AGE_MS` does not count: its stop most likely never
+   * reached ADE. A CLI with no exact report counts only with `screenFallback`
+   * (a planned stop): still printing and not at its prompt, or live agents.
+   */
+  const cliTurnOwedContinue = (
+    entry: PtyEntry,
+    options: { screenFallback?: TerminalResumeProvider | null } = {},
+  ): boolean => {
+    const agentsLive = oldestCountedCliSubagentStart(entry.cliSubagents, Date.now()) != null;
+    const turn = entry.cliTurn;
+    if (turn && isExactCliTurnSource(turn.source)) return turn.phase === "working" || agentsLive;
+    const provider = options.screenFallback;
+    if (provider == null) return false;
+    const screenRunning = runtimeStates.get(entry.sessionId)?.state === "running"
+      && !agentCliInputReadyNow(entry.sessionId, provider);
+    return screenRunning || agentsLive;
+  };
+  /**
    * Only an exact signal counts: a turn guessed from output is not evidence
-   * enough to continue it. Background agents the CLI reported (Claude hooks)
-   * count too: a crash kills them, and the CLI would wait on them forever.
+   * enough to continue it (see `cliTurnOwedContinue`). While live agents alone
+   * keep it owed, it is checked again when the oldest of them stops counting,
+   * so an idle CLI does not stay recorded as mid-turn.
    */
   const recordCliTurnRunning = (entry: PtyEntry): void => {
     if (!cliTurnRecorder || !entry.tracked) return;
-    const turn = entry.cliTurn;
-    const running = !entry.disposed && turn != null && isExactCliTurnSource(turn.source)
-      && (turn.phase === "working" || (entry.cliSubagents?.live.size ?? 0) > 0);
+    if (entry.cliSubagentRecheckTimer) {
+      clearTimeout(entry.cliSubagentRecheckTimer);
+      entry.cliSubagentRecheckTimer = null;
+    }
+    const running = !entry.disposed && cliTurnOwedContinue(entry);
     cliTurnRecorder.setRunning(entry.sessionId, running);
     // The next brain opens this project at once if this one crashes mid-turn.
     noteLiveTurn(projectRoot, `cli:${entry.sessionId}`, running);
+    const oldestAgent = running ? oldestCountedCliSubagentStart(entry.cliSubagents, Date.now()) : null;
+    if (oldestAgent != null) {
+      const timer = setTimeout(() => {
+        entry.cliSubagentRecheckTimer = null;
+        recordCliTurnRunning(entry);
+      }, Math.max(0, oldestAgent + CLI_SUBAGENT_LIVE_MAX_AGE_MS - Date.now()) + 1_000);
+      timer.unref?.();
+      entry.cliSubagentRecheckTimer = timer;
+    }
   };
   const piLeaseIdentity = processRegistry
     ? {
@@ -5264,6 +5302,8 @@ export function createPtyService({
     scheduleTranscriptDependentWork(entry, "close");
     if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
     entry.cliTurnInterruptTimer = null;
+    if (entry.cliSubagentRecheckTimer) clearTimeout(entry.cliSubagentRecheckTimer);
+    entry.cliSubagentRecheckTimer = null;
     // A prompt the terminal showed is gone with it; an agent's own ask stays.
     resolveCliTurnAttention(entry);
     clearIdleTimer(entry.sessionId);
@@ -5711,7 +5751,10 @@ export function createPtyService({
     if (!turn || entry.disposed) return;
     const wasExact = isExactCliTurnSource(turn.source);
     const now = Date.now();
-    const interruptedTurnStartedAt = signal.kind === "ended" && signal.reason === "interrupted"
+    // A turn that ended with no Stop (an interrupt, or the quiet fallback
+    // when the interrupt watch missed it) cancelled the agents it started.
+    const interruptedTurnStartedAt = signal.kind === "ended"
+      && (signal.reason === "interrupted" || signal.reason === "quiet")
       ? turn.turnStartedAt
       : null;
     const transition = reduceCliTurn(turn, signal, origin, now);
@@ -8069,6 +8112,7 @@ export function createPtyService({
           )
           : null,
         cliTurnInterruptTimer: null,
+        cliSubagentRecheckTimer: null,
         cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
         cliSubagents: null,
         priorEndState,
@@ -10391,6 +10435,8 @@ export function createPtyService({
       scheduleTranscriptDependentWork(entry, "dispose");
       if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
       entry.cliTurnInterruptTimer = null;
+      if (entry.cliSubagentRecheckTimer) clearTimeout(entry.cliSubagentRecheckTimer);
+      entry.cliSubagentRecheckTimer = null;
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
       runtimeStates.delete(entry.sessionId);
@@ -10447,15 +10493,9 @@ export function createPtyService({
             // prompt) is not a turn to continue. When in doubt it only
             // reopens: a "continue" typed into an idle CLI would start work
             // nobody asked for.
-            const exactTurn = entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? entry.cliTurn : null;
-            const turnRunning = exactTurn
-              ? exactTurn.phase === "working"
-              : provider != null
-                && runtimeStates.get(entry.sessionId)?.state === "running"
-                && !agentCliInputReadyNow(entry.sessionId, provider);
             const midTurn = provider != null
               && !session.attentionRequestedAt
-              && (turnRunning || (entry.cliSubagents?.live.size ?? 0) > 0);
+              && cliTurnOwedContinue(entry, { screenFallback: provider });
             entries.push({ sessionId: entry.sessionId, midTurn });
           }
           recordCliSessionsToReopen(projectRoot, entries);

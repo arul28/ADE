@@ -2592,44 +2592,49 @@ export function createMultiProjectRpcRequestHandler(
     );
 
   /**
-   * The Lanes page's open lanes, kept while no sync scope can take them. It is
-   * a hint for paired phones, so it never starts a sync host by itself (that
-   * start timed out at 10 s and failed the write, ADE-DESKTOP-7). It goes out
-   * when a sync scope appears (a project opens or becomes the host), or when
-   * any sync call, a read included, finds a running sync service.
+   * The Lanes page's open lanes: the newest list, kept for the sync host. It
+   * is a hint for paired phones, so it never starts a sync host by itself
+   * (that start timed out at 10 s and failed the write, ADE-DESKTOP-7). Only
+   * the known host's own ready scope gets it: another scope has no host
+   * service, and a list stored there never reaches the real host. While no
+   * host is known, or its scope is not ready, the list waits. It goes out on
+   * each scope-ready or host-switch notice and on any sync call that finds a
+   * running sync service, whenever that host has not taken this list yet.
    */
-  let pendingLanePresence: string[] | null = null;
+  let lanePresence: { laneIds: string[]; generation: number } | null = null;
+  let lanePresenceGeneration = 0;
+  /** The newest list the host's sync service took, and which service took it. */
+  let lanePresenceSent: { syncService: object; generation: number } | null = null;
 
-  /**
-   * The sync service that gets the open lanes, or null to keep them pending.
-   * A known host gets them only from its own ready scope: another booted
-   * scope has no host service, so the real host would never get them. With
-   * no known host, a booted scope keeps them and applies them when its host
-   * starts.
-   */
-  const resolveLanePresenceSyncService = async () => {
+  /** The known sync host's ready scope's sync service, or null to keep the list waiting. */
+  const resolveLanePresenceSyncService = () => {
     const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId?.() ?? null;
-    if (activeHostProjectId) {
-      return scopeRegistry.getIfReady?.(activeHostProjectId)?.runtime.syncService ?? null;
-    }
-    return await resolveBootedSyncServiceForRead();
+    if (!activeHostProjectId) return null;
+    return scopeRegistry.getIfReady?.(activeHostProjectId)?.runtime.syncService ?? null;
   };
 
   /**
-   * Sends the held open lanes when a sync service can take them. Never
-   * throws: the sync call that runs it still answers.
+   * Sends the newest open lanes to the sync host when it has not taken them.
+   * A newer list always wins: a failed or late send of an older list never
+   * replaces it, because each send reads the newest list. Never throws
+   * unless `throwOnError` (the write that set the list); the list stays for
+   * the next chance either way.
    */
-  const applyPendingLanePresence = async (): Promise<void> => {
-    if (!pendingLanePresence) return;
-    const syncService = await resolveLanePresenceSyncService();
-    const laneIds = pendingLanePresence;
-    if (!syncService || !laneIds) return;
-    pendingLanePresence = null;
+  const applyPendingLanePresence = async (options: { throwOnError?: boolean } = {}): Promise<void> => {
+    const list = lanePresence;
+    if (!list) return;
+    const syncService = resolveLanePresenceSyncService();
+    if (!syncService) return;
+    const sent = lanePresenceSent;
+    if (sent?.syncService === syncService && sent.generation >= list.generation) return;
     try {
-      await syncService.setActiveLanePresence(laneIds);
+      await syncService.setActiveLanePresence(list.laneIds);
+      const latest = lanePresenceSent;
+      if (latest?.syncService !== syncService || latest.generation < list.generation) {
+        lanePresenceSent = { syncService, generation: list.generation };
+      }
     } catch (error) {
-      // Kept for the next chance, unless a newer list came in meanwhile.
-      pendingLanePresence ??= laneIds;
+      if (options.throwOnError) throw error;
       console.warn(
         "[sync] could not send the open lanes to the sync host",
         error instanceof Error ? error.message : String(error),
@@ -4567,13 +4572,8 @@ export function createMultiProjectRpcRequestHandler(
             (laneId): laneId is string => typeof laneId === "string",
           )
         : [];
-      const syncService = await resolveLanePresenceSyncService();
-      if (!syncService) {
-        pendingLanePresence = laneIds;
-        return null;
-      }
-      pendingLanePresence = null;
-      await syncService.setActiveLanePresence(laneIds);
+      lanePresence = { laneIds, generation: ++lanePresenceGeneration };
+      await applyPendingLanePresence({ throwOnError: true });
       return null;
     }
 
