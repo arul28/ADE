@@ -223,12 +223,15 @@ async function moveCodexThread(args: ProviderThreadMoveArgs): Promise<ProviderTh
   if (await destinationIsNewer(sourcePath, comparisonPath)) {
     return { ok: true, targetPath: comparisonPath, targetExisted: true, skipped: "destination_newer" };
   }
+  // Any copy already there counts as "existed": a caller that only wanted a
+  // scratch copy must not delete the refreshed one afterwards.
+  const targetExisted = existingTarget != null || fs.existsSync(targetPath);
+  await copyFileReplacing(sourcePath, targetPath);
   if (existingTarget && !pathsEqual(existingTarget, targetPath)) {
-    // A stale copy under another suffix would otherwise outlive the refresh.
+    // Only after the replacement landed: a failed copy leaves the previous
+    // transcript exactly where it was.
     await fs.promises.rm(existingTarget, { force: true }).catch(() => undefined);
   }
-  const targetExisted = fs.existsSync(targetPath);
-  await copyFileReplacing(sourcePath, targetPath);
   return { ok: true, targetPath, targetExisted };
 }
 

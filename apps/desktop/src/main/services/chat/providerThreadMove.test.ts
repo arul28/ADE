@@ -284,3 +284,33 @@ describe("findInstanceHoldingThread", () => {
     expect(fs.readFileSync(compressed, "utf8")).toBe("newer compressed copy");
     expect(fs.existsSync(path.join(targetDir, `rollout-2026-10-01T00-00-00-${threadId}.jsonl`))).toBe(false);
   });
+
+  it("keeps the old compressed copy until the replacement is written", async () => {
+    const threadId = "codex-thread-zst-stale";
+    const sourceDir = path.join(fromHome, "sessions", "2026", "10", "01");
+    fs.mkdirSync(sourceDir, { recursive: true });
+    const plainTarget = path.join(toHome, "sessions", "2026", "10", "01", `rollout-2026-10-01T00-00-00-${threadId}.jsonl`);
+    fs.writeFileSync(
+      path.join(sourceDir, `rollout-2026-10-01T00-00-00-${threadId}.jsonl`),
+      "newer source\n",
+      "utf8",
+    );
+    fs.mkdirSync(path.dirname(plainTarget), { recursive: true });
+    const compressed = plainTarget.replace(/\.jsonl$/, ".jsonl.zst");
+    fs.writeFileSync(compressed, "older compressed copy", "utf8");
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(compressed, past, past);
+
+    const result = await moveProviderThread({
+      provider: "codex",
+      threadId,
+      fromConfigHome: fromHome,
+      toConfigHome: toHome,
+    });
+
+    // A pre-existing copy (even under the compacted suffix) means this move did
+    // not create the target, so a scratch-copy caller must leave it alone.
+    expect(result).toMatchObject({ ok: true, targetExisted: true });
+    expect(fs.readFileSync(plainTarget, "utf8")).toBe("newer source\n");
+    expect(fs.existsSync(compressed)).toBe(false);
+  });
