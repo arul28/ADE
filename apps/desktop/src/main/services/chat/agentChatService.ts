@@ -50897,13 +50897,18 @@ export function createAgentChatService(args: {
       throw new AdeExpectedError("This CLI session is archived.", "user");
     }
     if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
+    // `@model:` / `@chat:` / `@lane:` … tokens from the input box get the same
+    // facts block a chat send appends, so the CLI agent reads exact ids and
+    // flags instead of guessing. The chat's own expansion step logs a failed
+    // lookup, sends the text as typed, and records the same usage event.
+    const typedText = (await chatMentionService.applyChatMentionExpansion({ sessionId, text })).text;
     // Queued texts go first: a later send must not jump the line.
     if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
-      const outcome = await deliverWakeToSession({ sessionId, text, kind: "auto" });
+      const outcome = await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" });
       if (outcome === "delivered") return { outcome };
     }
     if (args.holdUntilFree === true) {
-      await armQueuedAgentCliSend({ sessionId, text });
+      await armQueuedAgentCliSend({ sessionId, text: typedText });
       return { outcome: "held" };
     }
     return { outcome: "deferred" };
@@ -75235,6 +75240,14 @@ export function createAgentChatService(args: {
     if (!existing) throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
     if (isTrackedAgentCliRow(existing)) {
       await cancelScheduledWorkFor(trimmedSessionId);
+      // A card only the person can answer (a removal, a secret, a permission)
+      // dies with the chat: the agent waiting on it hears `cancel` now, not
+      // at its timeout. A card whose answer is still saving refuses the cancel
+      // and finishes.
+      for (const card of cliCardInputs.list(trimmedSessionId)) {
+        if (!isUserOnlyConsentCard(card.providerMetadata ?? null)) continue;
+        await cliCardInputs.respond({ sessionId: trimmedSessionId, itemId: card.itemId ?? card.requestId, decision: "cancel" }).catch(() => false);
+      }
       cliLifecycle.archiveCli(existing);
       return;
     }
@@ -75263,7 +75276,18 @@ export function createAgentChatService(args: {
     // An archived chat stops waiting on a provider start, so its bound goes with it.
     const archivedManaged = managedSessions.get(trimmedSessionId);
     const turnStarting = Boolean(archivedManaged?.turnAcceptedAt);
-    if (archivedManaged) clearTurnAccepted(archivedManaged);
+    if (archivedManaged) {
+      clearTurnAccepted(archivedManaged);
+      // Same rule as a tracked CLI above: a person-only card dies with the chat,
+      // and one whose answer is still saving finishes first.
+      let cancelledCard = false;
+      for (const [itemId, pending] of [...archivedManaged.localPendingInputs]) {
+        if (pending.accepting || !isUserOnlyConsentCard(pending.request.providerMetadata ?? null)) continue;
+        cancelLocalPendingInput(archivedManaged, itemId);
+        cancelledCard = true;
+      }
+      if (cancelledCard) persistChatState(archivedManaged);
+    }
     // This is the same teardown the idle sweep would run a few minutes later,
     // with the same guards plus queued steers and an accepted start. Providers
     // whose idle teardown keeps the thread resume it on the next send.

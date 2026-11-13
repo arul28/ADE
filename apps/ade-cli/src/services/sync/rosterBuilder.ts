@@ -119,7 +119,12 @@ export type RosterPtyService = {
    * hooks or OSC reports) its phase is the row's status; a heuristic one is
    * not trusted over "a live terminal is running".
    */
-  getTrackedCliTurn?(sessionId: string): { phase: "working" | "idle" | "needs-input"; source: string } | null;
+  getTrackedCliTurn?(sessionId: string): {
+    phase: "working" | "idle" | "needs-input";
+    source: string;
+    /** Agents the CLI reported still running after its turn ended (Claude hooks). */
+    backgroundAgentCount?: number;
+  } | null;
 };
 
 export type RosterBootedScope = {
@@ -877,7 +882,8 @@ async function buildRosterProject(
       ? liveChatStatus(live)
       : hasLivePty
         ? exactCliPhase === "idle"
-          ? "idle" as const
+          // Background agents outlive the turn, as for a chat (`liveChatStatus`).
+          ? (cliTurn?.backgroundAgentCount ?? 0) > 0 ? "running" as const : "idle" as const
           : exactCliPhase === "needs-input"
             ? "awaiting" as const
             : "running" as const

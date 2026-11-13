@@ -512,17 +512,24 @@ enum SyncConnectionRaceMailboxError: Error, LocalizedError {
   /// The candidate socket stopped delivering frames. `underlying` is the
   /// receive error that ended it, kept so callers can tell a socket that
   /// dropped (machine unreachable) from one the machine closed on purpose.
-  case closed(String, underlying: Error? = nil)
+  /// `closeCode` is the WebSocket close code, when the far end sent one.
+  case closed(String, underlying: Error? = nil, closeCode: Int? = nil)
 
   var errorDescription: String? {
     switch self {
-    case .closed(let message, _): return message
+    case .closed(let message, _, _): return message
     }
   }
 
   var underlying: Error? {
     switch self {
-    case .closed(_, let underlying): return underlying
+    case .closed(_, let underlying, _): return underlying
+    }
+  }
+
+  var closeCode: Int? {
+    switch self {
+    case .closed(_, _, let closeCode): return closeCode
     }
   }
 }
@@ -542,9 +549,9 @@ actor SyncConnectionRaceTextMailbox {
     }
   }
 
-  func finish(message: String, underlying: Error? = nil) {
+  func finish(message: String, underlying: Error? = nil, closeCode: Int? = nil) {
     guard terminalError == nil else { return }
-    let error = SyncConnectionRaceMailboxError.closed(message, underlying: underlying)
+    let error = SyncConnectionRaceMailboxError.closed(message, underlying: underlying, closeCode: closeCode)
     terminalError = error
     let pending = waiters.values
     waiters.removeAll()

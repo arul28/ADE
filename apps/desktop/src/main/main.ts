@@ -1,7 +1,5 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
-import { installNoticeLayer, placeNoticeLayer } from "./services/noticeLayer/noticeLayerWindow";
-import type { NoticeLayerRect } from "../shared/noticeLayer";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import {
@@ -1463,9 +1461,8 @@ async function createWindow(args: {
     }
   }
 
-  // Block unexpected external navigation/window creation. The one window the
-  // renderer may open is its own notice layer (`installNoticeLayer`).
-  installNoticeLayer(win);
+  // Block unexpected external navigation/window creation.
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, url) => {
     const allowed = getRendererUrl();
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -2164,14 +2161,6 @@ app.whenReady().then(async () => {
       }
     },
   );
-
-  // The bottom-right cards' own window over a live browser page (`noticeLayer`).
-  ipcMain.handle(IPC.appPlaceNoticeLayer, (event, arg: { rect?: NoticeLayerRect | null } = {}): boolean => {
-    if (!isTrustedAdeRendererSender(event)) return false;
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return false;
-    return placeNoticeLayer(win, arg?.rect ?? null);
-  });
 
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
     if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");

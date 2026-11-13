@@ -2044,6 +2044,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
+    $ ade machines remove <name|machine-key|device-id>   From a chat: asks the person (Remove / Keep card)
     $ ade machines reconnect
     $ ade machines connect <machine-key|device-id|unambiguous-name>
 
@@ -2069,6 +2070,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   requires \`--confirm REMOVE\`. The removed machine can only rejoin when someone
   confirms it on that computer (see \`reconnect\`); nothing this machine runs can
   bring it back.
+
+  Agents cannot remove a computer. Run from a chat, \`remove\` asks the person
+  instead: the chat shows a card with the computer's name, platform, last seen
+  time and online state, and Remove / Keep buttons (an online computer, or the
+  one the chat runs on, needs a second yes). The command waits for the answer
+  (--timeout 30m by default) and prints {status, removed, machine, next}:
+  status "removed" exits 0, "kept" or "timed_out" exits 2, and
+  "pending_approval" (another chat already asked about that computer) exits 3.
+  Only the person can answer the card; stopping the turn closes it.
 
   \`reconnect\` re-pairs THIS machine after it was removed from the account
   (takes no selector). Removal is terminal by design — heartbeats never
@@ -15822,7 +15832,8 @@ function iosSimulatorRootArgs(
  * may simply live on another machine on the account. The runtime answers with
  * the same "not found" for both, and an agent handed a deep link to a chat on
  * the Windows box read that as "the chat does not exist". Every `chat`
- * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
+ * subcommand except `handoff` and `move` takes `--machine` as its target, so
+ * the hint can name the fix.
  * Null when the command already targets a machine, or is not a `chat` command.
  */
 function chatOtherMachineHint(argv: string[]): string | null {
@@ -15832,7 +15843,8 @@ function chatOtherMachineHint(argv: string[]): string | null {
   } catch {
     return null;
   }
-  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
+  const chatSub = command[1]?.toLowerCase();
+  if (command[0]?.toLowerCase() !== "chat" || chatSub === "handoff" || chatSub === "move") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
   // Through ADE MCP the app names a computer with `machine`, and ADE MCP
@@ -26147,12 +26159,17 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
     // machine key and complain that --confirm has no value.
     const confirmation = readValue(args, ["--confirm", "--confirmation"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
+    // From a chat, an agent cannot remove a computer: the brain asks the
+    // person in that chat (a Remove / Keep card) and waits for them. The card
+    // is the confirmation, so --confirm is not needed there.
+    const fromChat = Boolean(process.env.ADE_CHAT_SESSION_ID?.trim());
     if (!machine?.trim()) {
-      throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
+      throw new CliUsageError(`machines ${sub} requires ${fromChat ? "a machine key, device id or name" : "a stable machine key"}.`);
     }
-    if (confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
+    if (!fromChat && confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
         `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
@@ -26160,6 +26177,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
     if (firstStandalonePositional(args)) {
       throw new CliUsageError(`machines ${sub} accepts one machine key.`);
     }
+    const timeoutMs = fromChat
+      ? (timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS)
+      : null;
     return {
       kind: "execute",
       label: "account machine remove",
@@ -26171,8 +26191,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
         machine: machine.trim(),
         // The action checks the same token again: an RPC caller that skips
         // this command must still say it.
-        confirmation,
+        ...(confirmation ? { confirmation } : {}),
+        ...(timeoutMs != null ? { timeoutMs } : {}),
       })],
+      ...(timeoutMs != null
+        ? {
+            // The wait for the person is the point of the command; the
+            // transport must outlive it.
+            minTimeoutMs: timeoutMs + 30_000,
+            progressNotice: `Pending approval: removing ${machine.trim()} from the ADE account needs the person's yes. Waiting for their Remove or Keep…`,
+            exitCodeFromResult: (result: unknown) => {
+              const answer = unwrapActionEnvelope(result);
+              const status = isRecord(answer) ? answer.status : undefined;
+              if (status === undefined || status === "removed") return 0;
+              return status === "pending_approval" ? 3 : 2;
+            },
+          }
+        : {}),
     };
   }
   if (sub === "reconnect" || sub === "repair") {
@@ -30269,6 +30304,16 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // A brain hosting phone sync with no project scope follows the shared
+  // listener's port moves itself (a scope's sync service does this when one
+  // hosts): the lease records the port and the account directory re-publishes.
+  sharedSyncListener?.onPortChanged((change) => {
+    brainSyncHostLease?.updatePort(change.to);
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
+  sharedSyncListener?.onLoopbackStatusChanged(() => {
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
   /** Set below; a project scope took sync hosting over from the projectless brain. */
   let releaseProjectlessHostLease: () => void = () => {};
   /** Set below; starts hosting the newest project, with no repair override. */
@@ -38724,6 +38769,17 @@ function formatTextOutput(
       return describeReconnectOutcome(result).message;
     }
     case "account-machine-remove": {
+      // From a chat: the person's answer to the Remove / Keep card.
+      const answer = unwrapActionEnvelope(value);
+      if (isRecord(answer) && typeof answer.status === "string" && typeof answer.next === "string") {
+        const machine = isRecord(answer.machine) ? asString(answer.machine.name) ?? asString(answer.machine.machineKey) : null;
+        const head = answer.status === "removed"
+          ? `Removed ${machine ?? "the computer"} from the ADE account.`
+          : answer.status === "pending_approval"
+            ? `Pending approval: ${machine ?? "the computer"} was not removed.`
+            : `Not removed: ${machine ?? "the computer"} stays on the ADE account.`;
+        return `${head}\n${answer.next}`;
+      }
       const removed = isRecord(value) ? asString(value.machineKey) : null;
       // The directory purges the removed machine's Activity as part of the same
       // request, so a plain success here means both landed; a partial removal

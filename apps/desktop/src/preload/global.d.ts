@@ -5411,11 +5411,6 @@ declare global {
         }) => Promise<{ applied: boolean }>;
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
       };
-      /** The bottom-right cards' own window over a live browser page. Absent or unavailable on the web build. */
-      noticeLayer?: {
-        available: boolean;
-        place: (rect: import("../shared/noticeLayer").NoticeLayerRect | null) => Promise<boolean>;
-      };
       cto?: {
         // CTO calls take the CTO home machine's pin; null = the tab's binding.
         getState: (args: CtoGetStateArgs | undefined, pin: OpenProjectBinding) => Promise<CtoSnapshot>;

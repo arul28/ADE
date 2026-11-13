@@ -7,8 +7,6 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
 import {
-  DEFAULT_SYNC_HOST_PORT,
-  SYNC_HOST_MAX_PORT,
   SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
   encodeSyncEnvelope,
   parseSyncEnvelope,
@@ -17,32 +15,22 @@ import {
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
 import type { LaneShareGuestHandoff } from "./laneShareGuestTypes";
 import {
-  assertAdeLoopbackListener,
   generateLoopbackNonce,
-  isLoopbackShadowedError,
-  probeAdeLoopbackListener,
   writeAdeLoopbackUpgradeResponse,
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
-import {
-  channelServeIdentity,
-  isStaleChannelServeCommandLine,
-  resolveAdeServeCliScriptPath,
-  resolveAdeServeCommand,
-  terminatePidGracefullyAsync,
-} from "../../serviceManager/common";
-import { getRuntimeServiceMainPid } from "../../serviceManager";
-import { resolveMachineAdeLayout } from "../projects/machineLayout";
-import {
-  inspectSyncListenerPort,
-  type SyncListenerPortDiagnosis,
-} from "./syncListenerPortInspect";
+import type { SyncListenerPortDiagnosis } from "./syncListenerPortInspect";
 import {
   createAttachmentUploadRegistry,
   type AttachmentUploadRegistry,
 } from "./attachmentUploadService";
 import { APPLE_STREAM_PATH_PREFIX, tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
+import {
+  createSyncListenerPortController,
+  SYNC_LISTENER_SELF_HEAL_INTERVAL_MS,
+  type SharedSyncListenerPortChange,
+} from "./syncListenerPortController";
 
 // Re-exported so existing importers (and `ade doctor`) keep their entry point.
 export {
@@ -55,24 +43,17 @@ export {
   inspectSyncListenerPort,
   type SyncListenerPortDiagnosis,
 } from "./syncListenerPortInspect";
+// These declarations moved to the port controller; the names stay here so
+// existing importers keep their entry point.
+export {
+  SYNC_LISTENER_SELF_HEAL_INTERVAL_MS,
+  type SharedSyncListenerPortChange,
+} from "./syncListenerPortController";
 
-// Bind the sync host on all interfaces by default so phones on the same
-// wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
-// so local desktop clients (and the unix RPC socket, which is separate)
-// keep working unchanged. Operators who want the old loopback-only posture can
-// set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
-// for new bootstrap-token devices (see the hello handler in syncHostService)
-// since loopback is already a trust boundary.
-export const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
-const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
-// When the host is bound to loopback only, the OS already restricts connections
-// to local processes, so first-pairing can fall back to the historical
-// bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
-// new devices behind the PIN flow.
-export const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
-  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
+// The bind host and its loopback-only rule live in syncBindHost.ts; existing
+// importers keep reaching them here.
+export { SYNC_HOST_BIND_HOST, SYNC_HOST_BIND_LOOPBACK_ONLY } from "./syncBindHost";
+import { SYNC_HOST_BIND_HOST } from "./syncBindHost";
 
 export const SYNC_HOST_MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
 export const SYNC_RELAY_BRIDGE_PROOF_HEADER = "x-ade-sync-relay-bridge";
@@ -93,11 +74,6 @@ const DEFAULT_PARKED_PEER_GRACE_MS = 30_000;
 // flooding an unowned socket.
 const PARKED_MESSAGE_BUFFER_LIMIT = 256;
 const PARKED_MESSAGE_BUFFER_BYTES = 512 * 1024;
-// Mirror of the syncService preferred-port semantics: insist on the first
-// candidate for ~3.2s before drifting, so a dying listener from a previous
-// brain process can free the port paired phones have saved.
-const PREFERRED_PORT_BIND_ATTEMPTS = 8;
-const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
 type SharedSyncListenerLogger = {
   debug?: (message: string, fields?: Record<string, unknown>) => void;
@@ -216,6 +192,15 @@ const HANDOFF_SOCKET_EVENTS = ["message", "close", "error"] as const;
 /** The listeners `ws` put on each accepted socket before any host saw it. */
 const serverSocketListeners = new WeakMap<WebSocket, Record<(typeof HANDOFF_SOCKET_EVENTS)[number], Function[]>>();
 
+/** Record the transport's own listeners on a socket before any host sees it. */
+function rememberServerSocketListeners(ws: WebSocket): void {
+  serverSocketListeners.set(ws, {
+    message: [...ws.listeners("message")],
+    close: [...ws.listeners("close")],
+    error: [...ws.listeners("error")],
+  });
+}
+
 /** Gives a lane share guest's socket to the host of its lane's project. */
 export type LaneShareGuestRouter = (handoff: LaneShareGuestHandoff) => Promise<boolean>;
 
@@ -232,6 +217,12 @@ export type SharedSyncListener = {
    */
   tryMigrateToPort(port: number): Promise<number | null>;
   getPort(): number | null;
+  /**
+   * The port `127.0.0.1` reaches this listener on: its own port, or a
+   * local-only side door when another program holds `127.0.0.1:<port>`.
+   * Tailscale Serve forwards here. Null when neither answers as ADE.
+   */
+  getLoopbackPort(): number | null;
   isListening(): boolean;
   getExpectedLoopbackNonce(): string;
   /** Private in-process credential attached only by the trusted relay tunnel client. */
@@ -248,6 +239,32 @@ export type SharedSyncListener = {
   revalidateLoopback(): Promise<void>;
   /** Subscribe to successful initial and explicit loopback validations. */
   onLoopbackValidated(handler: () => void): () => void;
+  /**
+   * Subscribe to every loopback verdict change (validated → shadowed and
+   * back). Route health and publication read the status on demand; this is
+   * the nudge that makes them re-read it.
+   */
+  onLoopbackStatusChanged(handler: () => void): () => void;
+  /**
+   * Subscribe to port moves: a move off a port another program shadowed, or
+   * back to the canonical port. Everything that advertises the port (Bonjour,
+   * Tailscale Serve, the sync lease, the account directory) re-reads it.
+   */
+  onPortChanged(handler: (change: SharedSyncListenerPortChange) => void): () => void;
+  /**
+   * Hand a relay pipe straight to the sync host, in process. The relay never
+   * dials this machine's port, so another program holding 127.0.0.1:<port>
+   * cannot intercept it. Returns false only once the listener is closed.
+   */
+  acceptRelayPipe(ws: WebSocket, options?: { path?: string | null }): boolean;
+  /** True until the listener is closed; a relay pipe needs no bound port. */
+  canAcceptRelayPipes(): boolean;
+  /**
+   * Check now that loopback still reaches this listener, and move to a free
+   * port when another program took it. Also runs on its own every
+   * {@link SYNC_LISTENER_SELF_HEAL_INTERVAL_MS} once listening.
+   */
+  healNow(): Promise<void>;
   /**
    * Install the connection handler for NEW sockets. Returns a detach function
    * that only clears the handler if it has not been superseded by a newer
@@ -291,47 +308,6 @@ type ParkedEntry = {
   onError: (error: Error) => void;
   expireTimer: ReturnType<typeof setTimeout>;
 };
-
-function isRetryableListenerBindError(error: unknown): boolean {
-  if (isLoopbackShadowedError(error)) return true;
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
-  return code === "EADDRINUSE" || code === "EACCES";
-}
-
-async function closeCandidateServer(
-  candidateServer: WebSocketServer,
-  candidateHttpServer: http.Server,
-): Promise<void> {
-  for (const client of candidateServer.clients) {
-    try {
-      client.terminate();
-    } catch {
-      // ignore cleanup failures on a rejected candidate
-    }
-  }
-  // Closing the WebSocketServer only detaches its listeners from the
-  // externally-supplied http server; the http server owns the port and must be
-  // closed explicitly so a rejected candidate does not leak the bind. ws's
-  // close() for an external server resolves only after every client drains, so
-  // close the http server directly (forcing lingering sockets) instead.
-  try {
-    candidateServer.close();
-  } catch {
-    // ignore
-  }
-  await new Promise<void>((resolve) => {
-    if (!candidateHttpServer.listening) {
-      resolve();
-      return;
-    }
-    try {
-      candidateHttpServer.close(() => resolve());
-      candidateHttpServer.closeAllConnections?.();
-    } catch {
-      resolve();
-    }
-  });
-}
 
 function rawDataBytes(data: RawData): number {
   if (typeof data === "string") return Buffer.byteLength(data, "utf8");
@@ -412,6 +388,14 @@ export function createSharedSyncListener(options: {
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
   loopbackProbe?: (port: number, expectedNonce: string, timeoutMs?: number) => Promise<SyncLoopbackProbeResult>;
+  /**
+   * This machine's own non-loopback addresses the self-check also probes
+   * (default: every external IPv4 interface address). A program can bind
+   * `<address>:<port>` over the wildcard just as it can loopback.
+   */
+  localAddresses?: () => string[];
+  /** Identity probe against one local address; defaults to an HTTP 426 probe. */
+  addressProbe?: (host: string, port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
   inspectPort?: (port: number) => SyncListenerPortDiagnosis | Promise<SyncListenerPortDiagnosis>;
   activeServicePid?: () => number | null;
   terminatePid?: (pid: number) => Promise<void>;
@@ -420,42 +404,6 @@ export function createSharedSyncListener(options: {
   const bindHost = options.bindHost ?? SYNC_HOST_BIND_HOST;
   const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
   const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
-  const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
-  const inspectPort = options.inspectPort ?? inspectSyncListenerPort;
-  const activeServicePid = options.activeServicePid ?? getRuntimeServiceMainPid;
-  const serviceCommand = resolveAdeServeCommand();
-  const staleServeMatch = {
-    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: resolveMachineAdeLayout().socketPath,
-  };
-  // A holder `findStaleHolder` matches names this channel's primary endpoint, so
-  // that endpoint is where a cooperative shutdown request goes. Windows has no
-  // catchable SIGTERM, so without this the reap was a `TerminateProcess` of a brain
-  // mid-write. The last-resort kill is a verified kill: the process is read again at
-  // kill time and must still be this channel's brain. A holder that is not proven
-  // is left running, and the caller treats the port as still occupied.
-  const terminatePid = options.terminatePid ?? (async (pid: number) => {
-    const outcome = await terminatePidGracefullyAsync(pid, {
-      runtimeSocketPath: staleServeMatch.primarySocketPath,
-      isExpectedProcess: channelServeIdentity(staleServeMatch),
-    });
-    if (outcome !== "stopped" && outcome !== "killed") {
-      throw new Error(`stale sync holder ${pid} could not be verified and was left running`);
-    }
-  });
-  const findStaleHolder = (
-    diagnosis: SyncListenerPortDiagnosis,
-  ): SyncListenerPortDiagnosis["holders"][number] | null => {
-    // Only exclude ourselves. Launchd's tracked main pid is often the wedged
-    // predecessor still bound to 8787; excluding it is how a replacement brain
-    // ended up stuck on 8788 with two listeners on the same machine.
-    const excludedPids = new Set([process.pid]);
-    return diagnosis.holders.find((holder) =>
-      !excludedPids.has(holder.pid)
-      && holder.command != null
-      && isStaleChannelServeCommandLine(holder.command, staleServeMatch),
-    ) ?? null;
-  };
   // One identity per listener instance. Every candidate bind for this
   // instance emits the same nonce, and only in-process validators receive the
   // expected value they must compare against.
@@ -468,65 +416,22 @@ export function createSharedSyncListener(options: {
   // ticket minted before a port migration is still honoured after it.
   const attachmentUploads = createAttachmentUploadRegistry({ logger });
 
-  let server: WebSocketServer | null = null;
-  // The http.Server fronting `server`. `ws` does not own/close an
-  // externally-supplied server, so we track it to free the port on close.
-  let httpServer: http.Server | null = null;
-  let listeningPromise: Promise<number> | null = null;
-  let migratePromise: Promise<number | null> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
   let laneShareGuestRouter: LaneShareGuestRouter | null = null;
   const handlerAttachedListeners = new Set<() => void>();
   let fallbackSuppressedUntilMs = 0;
   let closed = false;
-  const loopbackValidatedHandlers = new Set<() => void>();
-  let loopbackValidationStatus: SyncLoopbackValidationStatus = {
-    port: null,
-    loopbackAdeValidated: false,
-    lastFailureAt: null,
-    reason: "The shared sync listener has not been validated yet.",
-    lastSuccessAt: null,
-  };
   const parked = new Map<WebSocket, ParkedEntry>();
 
-  const notifyLoopbackValidated = (): void => {
-    for (const next of loopbackValidatedHandlers) {
+  /** Call every subscriber, from a snapshot; one that throws is logged, not fatal. */
+  const emit = <T>(handlers: Iterable<(value: T) => void>, value: T, failureEvent: string): void => {
+    for (const next of [...handlers]) {
       try {
-        next();
+        next(value);
       } catch (error) {
-        logger.warn?.("sync_listener.validation_handler_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logger.warn?.(failureEvent, { error: error instanceof Error ? error.message : String(error) });
       }
-    }
-  };
-
-  const validateLoopback = async (port: number): Promise<void> => {
-    try {
-      const result = await assertAdeLoopbackListener(
-        port,
-        expectedLoopbackNonce,
-        loopbackProbe,
-      );
-      loopbackValidationStatus = {
-        port,
-        loopbackAdeValidated: true,
-        lastFailureAt: loopbackValidationStatus.lastFailureAt,
-        reason: null,
-        lastSuccessAt: result.checkedAt,
-      };
-    } catch (error) {
-      if (isLoopbackShadowedError(error)) {
-        loopbackValidationStatus = {
-          port,
-          loopbackAdeValidated: false,
-          lastFailureAt: error.failedAt,
-          reason: error.message,
-          lastSuccessAt: loopbackValidationStatus.lastSuccessAt,
-        };
-      }
-      throw error;
     }
   };
 
@@ -631,330 +536,122 @@ export function createSharedSyncListener(options: {
     parked.set(ws, entry);
   };
 
-  const bindOnce = async (
-    portCandidates: number[],
-    bindOptions: { migrate?: boolean } = {},
-  ): Promise<number> => {
-    const candidates = portCandidates.length > 0 ? portCandidates : [DEFAULT_SYNC_HOST_PORT];
-    // A fixed preferred port is re-attempted so a dying listener can free it.
-    // An ephemeral port (0) is ALSO re-attempted, but for a different reason:
-    // each bind(0) yields a fresh OS-assigned port, so a loopback shadow on the
-    // first resolved port is escaped simply by re-binding. Both are bounded by
-    // PREFERRED_PORT_BIND_ATTEMPTS so a persistent shadow still terminates.
-    // Runtime migrate probes one candidate; the 3.2s retry storm is for the
-    // initial bind, not a 15s heal loop against a live ADE Beta on 8787.
-    const attemptPlan = bindOptions.migrate
-      ? [...candidates]
-      : candidates.flatMap((candidatePort, candidateIndex) =>
-        (candidateIndex === 0 && candidatePort !== 0) || candidatePort === 0
-          ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
-          : [candidatePort],
-      );
-    let lastError: unknown = null;
-    let previousAttemptedPort: number | null = null;
-    // Tracks RESOLVED shadowed ports. For port 0 the literal 0 is never added
-    // (each re-bind resolves a different port), so a shadow on one ephemeral
-    // port does not short-circuit the remaining fresh-port attempts.
-    const shadowedPorts = new Set<number>();
-    const occupiedPorts = new Set<number>();
-    const loggedConflictPorts = new Set<number>();
-    const zombieReapedPorts = new Set<number>();
-    const portDiagnoses = new Map<number, SyncListenerPortDiagnosis>();
-    const diagnosePort = async (
-      port: number,
-      refresh = false,
-    ): Promise<SyncListenerPortDiagnosis> => {
-      if (!refresh) {
-        const cached = portDiagnoses.get(port);
-        if (cached) return cached;
-      }
-      const diagnosis = await inspectPort(port);
-      portDiagnoses.set(port, diagnosis);
-      return diagnosis;
-    };
-    for (let attemptIndex = 0; attemptIndex < attemptPlan.length; attemptIndex += 1) {
-      const attemptedPort = attemptPlan[attemptIndex]!;
-      if (closed) throw new Error("The shared sync listener has been closed.");
-      if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
-      if (attemptedPort !== 0 && occupiedPorts.has(attemptedPort)) continue;
-      // The retry delay lets a dying listener free a FIXED port; an ephemeral
-      // re-bind gets a fresh port immediately, so skip the delay for port 0.
-      if (previousAttemptedPort === attemptedPort && attemptedPort !== 0) {
-        await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
-      }
-      previousAttemptedPort = attemptedPort;
-      const candidateHttpServer = http.createServer((request, response) => {
-        // WS upgrades never reach here (they are handled on `upgrade`), so the
-        // only non-upload request shape left is the loopback 426 probe.
-        if (attachmentUploads.handleRequest(request, response)) return;
-        writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
-      });
-      const candidateServer = new WebSocketServer({
-        server: candidateHttpServer,
-        maxPayload: maxPayloadBytes,
-        perMessageDeflate: SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
-        // Deliberately no `path` option: this listener serves TWO socket
-        // shapes — the sync protocol at `/`, and the Apple device video pipe
-        // at `/apple/stream/<ticket>`. `ws`'s built-in path filter accepts
-        // exactly one, so the check moves here where it can accept both and
-        // still refuse everything else at the HTTP layer with a 401.
-        verifyClient: (info: { origin?: string; req?: { url?: string | null } }) => {
-          const pathname = (info.req?.url ?? SYNC_WEBSOCKET_PATH).split("?")[0] ?? SYNC_WEBSOCKET_PATH;
-          if (pathname !== SYNC_WEBSOCKET_PATH && !pathname.startsWith(APPLE_STREAM_PATH_PREFIX)) {
-            logger.debug?.("sync_listener.path_rejected", { pathname });
-            return false;
-          }
-          const origin = info.origin?.trim();
-          if (!origin || SYNC_BROWSER_ORIGINS.has(origin)) return true;
-          logger.debug?.("sync_listener.origin_rejected", { origin });
-          return false;
-        },
-      });
-      candidateHttpServer.listen(attemptedPort, bindHost);
-      // Install the handler before the validation RTT so a LAN peer that
-      // arrives in that narrow window is parked/owned instead of orphaned.
-      candidateServer.on("connection", (ws, request) => {
-        // Apple device video rides a second socket on this listener
-        // (`/apple/stream/<ticket>`). Divert it before any host or the parking
-        // lot sees it: it is a binary pipe, not a sync peer, and parking one
-        // would hand a video socket to the next project's host on a switch.
-        if (tryRouteAppleStreamSocket(ws, request)) return;
-        serverSocketListeners.set(ws, {
-          message: [...ws.listeners("message")],
-          close: [...ws.listeners("close")],
-          error: [...ws.listeners("error")],
-        });
-        const transportOrigin = hasValidRelayBridgeProof(request, relayBridgeProofBytes)
-          ? "relay-bridge"
-          : "direct";
-        const connection: SharedSyncListenerConnection = {
-          ws,
-          remoteAddress: request.socket.remoteAddress ?? null,
-          remotePort: request.socket.remotePort ?? null,
-          transportOrigin,
-          upgradeHello: transportOrigin === "direct" ? readSyncUpgradeHelloHeader(request) : null,
-        };
-        const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
-        const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
-        if (activeHandler) {
-          activeHandler(connection);
-          return;
-        }
-        park({
-          ws,
-          remoteAddress: connection.remoteAddress,
-          remotePort: connection.remotePort,
-          transportOrigin: connection.transportOrigin,
-          metadata: null,
-          authKind: null,
-          pairedDeviceId: null,
-          connectedAt: new Date().toISOString(),
-        });
-      });
-      try {
-        const resolvedPort = await new Promise<number>((resolve, reject) => {
-          const onListening = async () => {
-            const address = candidateServer.address();
-            const port = typeof address === "object" && address ? address.port : attemptedPort;
-            try {
-              await validateLoopback(port);
-              cleanup();
-              resolve(port);
-            } catch (error) {
-              cleanup();
-              reject(error instanceof Error ? error : new Error(String(error)));
-            }
-          };
-          const onError = (error: unknown) => {
-            cleanup();
-            reject(error instanceof Error ? error : new Error(String(error)));
-          };
-          const handleListening = () => {
-            void onListening();
-          };
-          const cleanup = () => {
-            candidateServer.off("listening", handleListening);
-            candidateServer.off("error", onError);
-          };
-          candidateServer.on("listening", handleListening);
-          candidateServer.on("error", onError);
-        });
-        server = candidateServer;
-        httpServer = candidateHttpServer;
-        server.on("error", (error: unknown) => {
-          logger.warn?.("sync_listener.server_error", {
-            error: error instanceof Error ? error.message : String(error),
-            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
-            port: resolvedPort,
-          });
-        });
-        return resolvedPort;
-      } catch (error) {
-        lastError = error;
-        await closeCandidateServer(candidateServer, candidateHttpServer);
-        // Record the RESOLVED port (not the literal 0) so an ephemeral shadow
-        // does not poison the remaining fresh-port re-binds.
-        if (isLoopbackShadowedError(error)) {
-          shadowedPorts.add(attemptedPort === 0 ? error.port : attemptedPort);
-        }
-        const retryable = isRetryableListenerBindError(error)
-          && (attemptedPort !== 0 || isLoopbackShadowedError(error));
-        let diagnosis: SyncListenerPortDiagnosis | null = null;
-        let reapedStaleHolder = false;
-        if (
-          (error as NodeJS.ErrnoException | null | undefined)?.code === "EADDRINUSE"
-          && attemptedPort > 0
-          && !zombieReapedPorts.has(attemptedPort)
-        ) {
-          diagnosis = await diagnosePort(attemptedPort);
-          const staleHolder = attemptedPort >= DEFAULT_SYNC_HOST_PORT
-            && attemptedPort <= SYNC_HOST_MAX_PORT
-            ? findStaleHolder(diagnosis)
-            : null;
-          if (staleHolder) {
-            // Reconfirm ownership immediately before signaling. The original
-            // holder may have exited and its pid may have been reused while
-            // the first lsof/ps diagnosis was being assembled.
-            const confirmedHolder = findStaleHolder(await diagnosePort(attemptedPort, true));
-            if (
-              staleHolder.startTime != null
-              && confirmedHolder?.pid === staleHolder.pid
-              && confirmedHolder.startTime === staleHolder.startTime
-            ) {
-              zombieReapedPorts.add(attemptedPort);
-              try {
-                await terminatePid(staleHolder.pid);
-                reapedStaleHolder = true;
-              } catch (error) {
-                // Not proven, or the kill did not take: the holder still owns the port.
-                logger.warn?.("sync_listener.zombie_not_reaped", {
-                  port: attemptedPort,
-                  pid: staleHolder.pid,
-                  error: error instanceof Error ? error.message : String(error),
-                });
-              }
-              if (reapedStaleHolder) {
-                logger.info?.("sync_listener.zombie_reaped", {
-                  port: attemptedPort,
-                  pid: staleHolder.pid,
-                  servicePid: activeServicePid(),
-                });
-                // Non-preferred candidates occur only once in the normal plan.
-                // Insert exactly one immediate retry for the newly-freed port.
-                attemptPlan.splice(attemptIndex + 1, 0, attemptedPort);
-              }
-            }
-          }
-          // A confirmed live holder will not disappear during a 3.2 second
-          // retry loop. Advance immediately to the next candidate instead of
-          // fighting the desktop (or another runtime) and logging eight copies.
-          if (!reapedStaleHolder && diagnosis.holders.length > 0) {
-            occupiedPorts.add(attemptedPort);
-          }
-        }
-        const event = isLoopbackShadowedError(error)
-          ? "sync_listener.loopback_shadowed"
-          : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed";
-        if (event !== "sync_listener.bind_port_conflict" || !loggedConflictPorts.has(attemptedPort)) {
-          if (event === "sync_listener.bind_port_conflict") loggedConflictPorts.add(attemptedPort);
-          const log = bindOptions.migrate && event === "sync_listener.bind_port_conflict"
-            ? logger.debug
-            : logger.warn;
-          log?.(event, {
-            attemptedPort,
-            error: error instanceof Error ? error.message : String(error),
-            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
-            ...(diagnosis ? { holderPids: diagnosis.holders.map((holder) => holder.pid) } : {}),
-            retriesSkipped: occupiedPorts.has(attemptedPort)
-              ? attemptPlan.slice(attemptIndex + 1).filter((port) => port === attemptedPort).length
-              : 0,
-          });
-        }
-        if (!retryable) throw error;
-      }
+  // One owner for every new socket, whatever carried it (a direct upgrade or
+  // a relay pipe handed over in process): the attached project host, else the
+  // machine-wide fallback, else the parking lot until a host attaches.
+  const dispatchConnection = (connection: SharedSyncListenerConnection): void => {
+    const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
+    const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
+    if (activeHandler) {
+      activeHandler(connection);
+      return;
     }
-    const candidateDiagnosis = await Promise.all(
-      [...new Set(candidates)]
-        .filter((port) => port > 0)
-        .slice(0, 5)
-        .map((port) => diagnosePort(port)),
-    );
-    if (!bindOptions.migrate) {
-      logger.warn?.("sync_listener.bind_exhausted", {
-        candidates: candidateDiagnosis,
-        error: lastError instanceof Error ? lastError.message : String(lastError),
-      });
-    }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Unable to bind the shared sync listener.");
+    park({
+      ws: connection.ws,
+      remoteAddress: connection.remoteAddress,
+      remotePort: connection.remotePort,
+      transportOrigin: connection.transportOrigin,
+      metadata: null,
+      authKind: null,
+      pairedDeviceId: null,
+      connectedAt: new Date().toISOString(),
+    });
   };
 
-  return {
-    async ensureListening(portCandidates: number[]): Promise<number> {
-      if (closed) throw new Error("The shared sync listener has been closed.");
-      if (!listeningPromise) {
-        listeningPromise = bindOnce(portCandidates).catch((error) => {
-          // A failed bind must not poison future attempts.
-          listeningPromise = null;
-          throw error;
-        });
-      }
-      const port = await listeningPromise;
-      notifyLoopbackValidated();
-      return port;
-    },
-
-    async tryMigrateToPort(port: number): Promise<number | null> {
-      if (closed) return null;
-      if (migratePromise) return migratePromise;
-      const currentMigrate = (async (): Promise<number | null> => {
-        if (listeningPromise) {
-          await listeningPromise.catch(() => null);
+  /**
+   * One http + WebSocket server pair, wired exactly like every other entrance
+   * to this listener: the loopback 426 identity, the upload route, the path
+   * and Origin policy, the Apple stream route and the one connection dispatch.
+   * The connection handler is installed before the caller binds, so a peer
+   * that arrives during validation is owned or parked, never orphaned.
+   */
+  const createServerPair = (): { httpServer: http.Server; wsServer: WebSocketServer } => {
+    const pairHttp = http.createServer((request, response) => {
+      // WS upgrades never reach here (they are handled on `upgrade`), so the
+      // only non-upload request shape left is the loopback 426 probe.
+      if (attachmentUploads.handleRequest(request, response)) return;
+      writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
+    });
+    const pairWs = new WebSocketServer({
+      server: pairHttp,
+      maxPayload: maxPayloadBytes,
+      perMessageDeflate: SYNC_PER_MESSAGE_DEFLATE_OPTIONS,
+      // Deliberately no `path` option: this listener serves TWO socket
+      // shapes — the sync protocol at `/`, and the Apple device video pipe
+      // at `/apple/stream/<ticket>`. `ws`'s built-in path filter accepts
+      // exactly one, so the check moves here where it can accept both and
+      // still refuse everything else at the HTTP layer with a 401.
+      verifyClient: (info: { origin?: string; req?: { url?: string | null } }) => {
+        const pathname = (info.req?.url ?? SYNC_WEBSOCKET_PATH).split("?")[0] ?? SYNC_WEBSOCKET_PATH;
+        if (pathname !== SYNC_WEBSOCKET_PATH && !pathname.startsWith(APPLE_STREAM_PATH_PREFIX)) {
+          logger.debug?.("sync_listener.path_rejected", { pathname });
+          return false;
         }
-        if (closed) return null;
-        const currentAddress = server?.address();
-        const currentPort = typeof currentAddress === "object" && currentAddress
-          ? currentAddress.port
-          : null;
-        if (currentPort == null || server == null || httpServer == null) return null;
-        const target = Math.max(1, Math.min(65_535, Math.floor(port)));
-        if (currentPort === target) return currentPort;
-        const previousServer = server;
-        const previousHttp = httpServer;
-        let nextPort: number;
-        try {
-          nextPort = await bindOnce([target], { migrate: true });
-        } catch (error) {
-          logger.debug?.("sync_listener.canonical_port_still_busy", {
-            port: target,
-            from: currentPort,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return null;
-        }
-        listeningPromise = Promise.resolve(nextPort);
-        await closeCandidateServer(previousServer, previousHttp).catch(() => {});
-        logger.info?.("sync_listener.migrated_to_canonical_port", {
-          from: currentPort,
-          to: nextPort,
-        });
-        notifyLoopbackValidated();
-        return nextPort;
-      })();
-      migratePromise = currentMigrate.finally(() => {
-        migratePromise = null;
+        const origin = info.origin?.trim();
+        if (!origin || SYNC_BROWSER_ORIGINS.has(origin)) return true;
+        logger.debug?.("sync_listener.origin_rejected", { origin });
+        return false;
+      },
+    });
+    pairWs.on("connection", (ws, request) => {
+      // Apple device video rides a second socket on this listener
+      // (`/apple/stream/<ticket>`). Divert it before any host or the parking
+      // lot sees it: it is a binary pipe, not a sync peer, and parking one
+      // would hand a video socket to the next project's host on a switch.
+      if (tryRouteAppleStreamSocket(ws, request)) return;
+      rememberServerSocketListeners(ws);
+      // A relay bridge from an older in-process tunnel client (or a test)
+      // still dials loopback with the private proof; current clients hand
+      // pipes over through acceptRelayPipe instead.
+      const transportOrigin = hasValidRelayBridgeProof(request, relayBridgeProofBytes)
+        ? "relay-bridge"
+        : "direct";
+      dispatchConnection({
+        ws,
+        remoteAddress: request.socket.remoteAddress ?? null,
+        remotePort: request.socket.remotePort ?? null,
+        transportOrigin,
+        upgradeHello: transportOrigin === "direct" ? readSyncUpgradeHelloHeader(request) : null,
       });
-      return migratePromise;
+    });
+    return { httpServer: pairHttp, wsServer: pairWs };
+  };
+
+  // Which port this listener answers on, the local side door that keeps
+  // 127.0.0.1 reachable when another program shadows that port, and the
+  // self-check that repairs or moves either. Everything here is transport;
+  // dispatch, parking, relay handoff and uploads stay in this module.
+  const ports = createSyncListenerPortController({
+    logger,
+    bindHost,
+    createServerPair,
+    expectedLoopbackNonce,
+    hasConnectionHandler: () => handler !== null,
+    loopbackProbe: options.loopbackProbe,
+    localAddresses: options.localAddresses,
+    addressProbe: options.addressProbe,
+    inspectPort: options.inspectPort,
+    activeServicePid: options.activeServicePid,
+    terminatePid: options.terminatePid,
+  });
+
+  const api: SharedSyncListener = {
+    ensureListening(portCandidates: number[]): Promise<number> {
+      return ports.ensureListening(portCandidates);
     },
 
-    getPort(): number | null {
-      const address = server?.address();
-      return typeof address === "object" && address ? address.port : null;
+    tryMigrateToPort(port: number): Promise<number | null> {
+      return ports.tryMigrateToPort(port);
+    },
+
+    getPort: ports.getPort,
+
+    getLoopbackPort(): number | null {
+      return ports.getLoopbackPort();
     },
 
     isListening(): boolean {
-      return server?.address() != null;
+      return ports.isListening();
     },
 
     getExpectedLoopbackNonce(): string {
@@ -970,37 +667,64 @@ export function createSharedSyncListener(options: {
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
-      return { ...loopbackValidationStatus };
+      return ports.getLoopbackValidationStatus();
     },
 
-    async revalidateLoopback(): Promise<void> {
-      const address = server?.address();
-      if (typeof address !== "object" || !address) {
-        throw new Error("The shared sync listener is not listening.");
-      }
-      await validateLoopback(address.port);
-      notifyLoopbackValidated();
+    revalidateLoopback(): Promise<void> {
+      return ports.revalidateLoopback();
     },
 
     onLoopbackValidated(nextHandler: () => void): () => void {
-      loopbackValidatedHandlers.add(nextHandler);
-      return () => {
-        loopbackValidatedHandlers.delete(nextHandler);
-      };
+      return ports.onLoopbackValidated(nextHandler);
     },
+
+    onLoopbackStatusChanged(nextHandler: () => void): () => void {
+      return ports.onLoopbackStatusChanged(nextHandler);
+    },
+
+    onPortChanged(nextHandler: (change: SharedSyncListenerPortChange) => void): () => void {
+      return ports.onPortChanged(nextHandler);
+    },
+
+    acceptRelayPipe(ws: WebSocket, options?: { path?: string | null }): boolean {
+      if (closed) return false;
+      const path = options?.path?.trim() || null;
+      // The relay forwards the Apple video pipe on its own path, exactly as a
+      // direct upgrade would arrive; its ticket travels in that path.
+      if (path && path.startsWith(APPLE_STREAM_PATH_PREFIX)) {
+        if (tryRouteAppleStreamSocket(ws, { url: path, headers: {} })) return true;
+        try {
+          ws.close(1011, "stream unavailable");
+        } catch {
+          // already closing
+        }
+        return true;
+      }
+      // The tunnel's own close/error listeners belong to the transport, like
+      // `ws`'s on an accepted socket: a lane-share handoff must keep them.
+      rememberServerSocketListeners(ws);
+      dispatchConnection({
+        ws,
+        // Relay peers have always reached the host from loopback, and the
+        // host's per-address limits group them there. Keep that grouping.
+        remoteAddress: "127.0.0.1",
+        remotePort: null,
+        transportOrigin: "relay-bridge",
+        upgradeHello: null,
+      });
+      return true;
+    },
+
+    canAcceptRelayPipes(): boolean {
+      return !closed;
+    },
+
+    healNow: () => ports.healNow(),
 
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {
       handler = nextHandler;
       fallbackSuppressedUntilMs = 0;
-      for (const listener of [...handlerAttachedListeners]) {
-        try {
-          listener();
-        } catch (error) {
-          logger.warn?.("sync_listener.handler_attached_listener_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      emit(handlerAttachedListeners, undefined, "sync_listener.handler_attached_listener_failed");
       return () => {
         if (handler === nextHandler) {
           handler = null;
@@ -1072,11 +796,12 @@ export function createSharedSyncListener(options: {
       handler = null;
       fallbackHandler = null;
       attachmentUploads.dispose();
-      loopbackValidatedHandlers.clear();
       handlerAttachedListeners.clear();
-      if (listeningPromise) {
-        await listeningPromise.catch(() => {});
-      }
+      // The controller owns the self-check, the side door, retired servers and
+      // the live server. It closes everything up to the parked peers it does
+      // not own; those are terminated here, then the live server closes, which
+      // keeps final shutdown in the order it has always used.
+      await ports.closeEntrances();
       for (const entry of [...parked.values()]) {
         unpark(entry);
         try {
@@ -1085,41 +810,8 @@ export function createSharedSyncListener(options: {
           // ignore close failures
         }
       }
-      const current = server;
-      const currentHttp = httpServer;
-      server = null;
-      httpServer = null;
-      if (!current) return;
-      // Force-terminate every client. ws's close() for an EXTERNALLY-supplied
-      // http server resolves only after every client socket drains, so a single
-      // wedged socket would hang final shutdown; terminate side-steps that.
-      for (const ws of current.clients) {
-        try {
-          ws.terminate();
-        } catch {
-          // ignore close failures
-        }
-      }
-      try {
-        // Detach ws's listeners from the http server (external server: this does
-        // NOT close the http server, so we close it ourselves below).
-        current.close();
-      } catch {
-        // ignore
-      }
-      await new Promise<void>((resolve) => {
-        if (!currentHttp || !currentHttp.listening) {
-          resolve();
-          return;
-        }
-        try {
-          currentHttp.close(() => resolve());
-          // Force any lingering upgraded/keep-alive sockets so close() cannot hang.
-          currentHttp.closeAllConnections?.();
-        } catch {
-          resolve();
-        }
-      });
+      await ports.closeServer();
     },
   };
+  return api;
 }

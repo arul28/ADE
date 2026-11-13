@@ -16,6 +16,11 @@ export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
  * restarts for each `CFBundleShortVersionString`), so the gate compares the
  * pair: an older marketing version is refused, a newer one is always let in,
  * and the same one is compared by build.
+ *
+ * Local Xcode builds report the project's own `CURRENT_PROJECT_VERSION`
+ * (apps/ios/ADE.xcodeproj); release builds pass the App Store Connect number
+ * instead. Keep the project's number at or above this minimum, or every brain
+ * refuses a simulator build made from the same source.
  */
 export const MIN_SUPPORTED_MOBILE_APP_VERSION = "1.1.10";
 export const MIN_SUPPORTED_MOBILE_APP_BUILD = 5;

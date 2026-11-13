@@ -793,11 +793,23 @@ private struct AccountAdoptionRoutesExhaustedError: LocalizedError {
     default:
       routeSummary = "\(routeLabels.dropLast().joined(separator: ", ")), and \(routeLabels.last ?? "")"
     }
+    // The relay got through and only ADE on the computer stayed silent: the
+    // routes worked, so the message says what did not.
+    if syncErrorIsRelayHostDidNotAnswer(finalFailure) {
+      return syncRelayHostDidNotAnswerMessage(machineName: machineName)
+    }
     let failure = finalFailure.map { SyncUserFacingError.message(for: $0) }?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let suffix = failure.flatMap { $0.isEmpty ? nil : $0 }.map { " \($0)" } ?? ""
     return "Couldn't connect to \(machineName) after trying \(routeSummary).\(suffix)"
   }
+}
+
+/// The close code a WebSocket's far end sent, or nil when it sent none (the
+/// task reports `.invalid`, 0, until a close frame arrives).
+func syncWebSocketCloseCode(_ task: URLSessionWebSocketTask) -> Int? {
+  let code = Int(task.closeCode.rawValue)
+  return code == 0 ? nil : code
 }
 
 private func adeIsValidJSONFragment(_ object: Any) -> Bool {
@@ -3076,6 +3088,13 @@ enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     if let relayRequirement = error as? SyncRelayAuthorizationRequirement {
       return relayRequirement.localizedDescription
+    }
+    if let exhausted = error as? AccountAdoptionRoutesExhaustedError,
+       syncErrorIsRelayHostDidNotAnswer(exhausted.finalFailure) {
+      return exhausted.localizedDescription
+    }
+    if syncErrorIsRelayHostDidNotAnswer(error) {
+      return syncRelayHostDidNotAnswerMessage()
     }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
@@ -8428,7 +8447,11 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription, underlying: error)
+            await mailbox.finish(
+              message: error.localizedDescription,
+              underlying: error,
+              closeCode: syncWebSocketCloseCode(candidateTask)
+            )
           }
         }
         defer { reader.cancel() }
@@ -10253,7 +10276,24 @@ final class SyncService: ObservableObject {
         explicitTailscaleAddresses +
         normalizedCandidateAddresses
       ))
-      let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
+      // A computer advertising itself right now (Bonjour, matched by device id)
+      // names its live port. Sweeping ADE's default ports as well reached a
+      // different ADE install on the same computer first (ADE and ADE Beta, a
+      // dev home) and sent it the PIN. Sweep only without a live advertisement.
+      let liveDiscoveryPorts = matchingDiscovery.map(\.port).filter { $0 > 0 }
+      let pairsWithLiveAdvertisement = hostIdentity?.isEmpty == false
+        && liveDiscoveryPorts.contains(requestedPort)
+      let portCandidates = syncConnectPortCandidates(
+        primaryPort: requestedPort,
+        addresses: addressCandidates,
+        allowFallbackSweep: !pairsWithLiveAdvertisement
+      )
+      // Route history belongs to one machine. Ranking this pairing by the
+      // previous machine's history put that machine's address and port first.
+      let previousRouteHistory = previousProfile.flatMap { profile -> HostConnectionProfile? in
+        guard let hostIdentity, !hostIdentity.isEmpty else { return nil }
+        return profile.hostIdentity == hostIdentity || profile.lastHostDeviceId == hostIdentity ? profile : nil
+      }
       // Relay URLs (full wss://) ride their own path/port, so they're kept out
       // of the direct port sweep. The ranked route walker gives each direct or
       // relay route one attempt before trying alternate direct ports.
@@ -10283,7 +10323,7 @@ final class SyncService: ObservableObject {
         directAttempts: directAttempts,
         relayRoutes: relayWalkCandidates,
         relayPort: requestedPort,
-        endpointStates: lastSuccessfulAddress.isEmpty ? nil : activeHostProfile?.endpointStates,
+        endpointStates: lastSuccessfulAddress.isEmpty ? nil : previousRouteHistory?.endpointStates,
         lastSuccessfulAddress: lastSuccessfulAddress.first,
         liveDirectAddresses: Set(discoveryAddresses + discoveryTailscaleAddresses)
       )
@@ -18227,6 +18267,13 @@ final class SyncService: ObservableObject {
     let previous = profile
     transform(&profile)
     guard !syncProfilesEquivalentIgnoringUpdatedAt(previous, profile) else { return }
+    if previous.port != profile.port {
+      // Kept for a later drop report: what changed just before it.
+      CrashReporting.breadcrumb("sync.route", message: "saved port changed", data: [
+        "connection": "focused",
+        "live": canSendLiveRequests() ? "yes" : "no",
+      ])
+    }
     profile.updatedAt = syncDateFormatter.string(from: Date())
     saveProfile(profile)
   }
@@ -19234,11 +19281,18 @@ final class SyncService: ObservableObject {
       guard !trimmed.isEmpty else { return nil }
       return profile.hostIdentity == trimmed
     } ?? false
-    let nameMatches = hostName.flatMap { name in
+    // Two installs on one computer share its name; a differing device id
+    // means another machine, whatever the name says.
+    let identitiesDiffer = hostIdentity.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .flatMap { requested in
+        (syncNonEmpty(profile.hostIdentity) ?? syncNonEmpty(profile.lastHostDeviceId))
+          .map { !requested.isEmpty && $0 != requested }
+      } ?? false
+    let nameMatches = !identitiesDiffer && (hostName.flatMap { name in
       let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { return nil }
       return profile.hostName?.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
-    } ?? false
+    } ?? false)
     guard identityMatches || nameMatches else { return [] }
 
     let candidates = Set(deduplicatedAddresses(
@@ -19252,6 +19306,18 @@ final class SyncService: ObservableObject {
   }
 
   private func matchesDiscoveredHost(_ discovered: DiscoveredSyncHost, profile: HostConnectionProfile) -> Bool {
+    // Identity first. Several ADE installs on one computer (ADE and ADE Beta,
+    // a dev home) share its addresses but each has its own device id and
+    // port; matching on a shared address took another install's port, so the
+    // phone dialed the wrong ADE on Wi-Fi, was refused, and fell back to the
+    // relay. Address and name only decide when a side has no identity.
+    let discoveredIdentity = discovered.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let profileIdentities = [profile.hostIdentity, profile.lastHostDeviceId]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    if !discoveredIdentity.isEmpty, !profileIdentities.isEmpty {
+      return profileIdentities.contains(discoveredIdentity)
+    }
     let knownAddresses = Set(
       profile.savedAddressCandidates
       + profile.discoveredLanAddresses
@@ -20020,7 +20086,11 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription, underlying: error)
+            await mailbox.finish(
+              message: error.localizedDescription,
+              underlying: error,
+              closeCode: syncWebSocketCloseCode(candidateTask)
+            )
           }
         }
         defer { reader.cancel() }
@@ -22429,6 +22499,14 @@ final class SyncService: ObservableObject {
                 code: 24,
                 userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
               )
+            } else if syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue) {
+              // The receive error ("Socket is not connected") hides why the
+              // relay closed; say what the close code means. Copy only: the
+              // close code still drives recovery below.
+              failure = syncSocketCloseError(
+                closeCodeRawValue: closeCodeRawValue,
+                reason: task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+              )
             } else {
               failure = error
             }
@@ -23569,6 +23647,13 @@ final class SyncService: ObservableObject {
     case .ignore, .failOpening:
       return
     case .recoverTransport(let closeCodeRawValue):
+      // Before teardown, which clears the connection's age.
+      SyncLiveDropReport.report(
+        connection: "focused",
+        routeKind: currentAddress.map(syncConnectionRouteKind),
+        closeCode: closeCodeRawValue.map { $0 == 0 ? nil : $0 } ?? syncWebSocketCloseCode(task),
+        connectionAgeSeconds: connectionEstablishedUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+      )
       let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
       let flapBackoff = noteLiveConnectionClosed(
         closeCodeRawValue: closeCodeRawValue ?? task.closeCode.rawValue,

@@ -242,29 +242,29 @@ every toast on screen is sticky.
 ## Bottom-right notices and the browser
 
 A browser page is a native view drawn above the whole window, so a card the
-renderer draws in the notice corner either hides behind it or freezes it (the
-page is swapped for a still frame while anything overlaps it). So while a
-visible browser page covers the corner, `ToastViewport` draws its whole stack
-(toasts, the suggestion, the live panels) in the **notice layer** instead: a
-see-through, borderless child window of the ADE window, placed exactly over the
-same corner, above the page. The cards stay where they always are, and the
-page around them stays live and clickable.
+renderer draws over it either hides behind it or freezes it (the page is
+swapped for a still frame while anything overlaps it). So the notice stack
+(toasts, the suggestion, the live panels) avoids live pages
+(`ToastViewport`, `pickNoticeCorner` in `app/toast/cornerNoticeDock.ts`):
 
-- The renderer opens the layer itself (`window.open` under
-  `NOTICE_LAYER_FRAME_NAME`, `shared/noticeLayer.ts`), so it shares the
-  renderer's process and DOM: React portals the very same card components into
-  it, with their state, handlers and animations. `app/toast/noticeLayer.ts`
-  mirrors the app's stylesheets and theme attributes into it.
-- The main process (`services/noticeLayer/noticeLayerWindow.ts`) lets exactly
-  that one `about:blank` window through the app's deny-all `window.open` gate,
-  never lets it take focus (a click on a card leaves typing where it was), and
-  places it over the box the renderer reports, again when the window moves or
-  resizes. It hides while there are no cards.
-- The registry of live page rects is `app/toast/cornerNoticeDock.ts`; a page
-  counts while it is meant to be on screen, not while a menu briefly hides it,
-  so the decision does not flap.
-- Linux (where see-through windows depend on the compositor) and the web build
-  have no layer: the cards stay in the corner and the page pauses behind them.
+- **No page covers the bottom-right of the content area:** the stack sits
+  there, as always.
+- **A page covers it, but not the bottom-left** (the left sidebar is open and
+  the browser is not expanded): the stack slides in at the bottom-left, over the
+  sidebar.
+- **Both corners are covered** (an expanded browser, a collapsed sidebar, the
+  Browser tab): the stack is held, hidden and out of the occlusion pass, with
+  every toast's timer paused, and shows again once a corner is free. A card that
+  asks for a decision is never lost or timed out unseen.
+
+The stack stays mounted throughout, so a move between corners slides it without
+resetting any card. Browser panels publish their live page rects to
+`cornerNoticeDock.ts` while the page is meant to be on screen, not while a menu
+briefly hides it, so the decision does not flap.
+
+An earlier version drew the cards in a separate see-through window over the
+page. It was removed: in packaged builds the window could not load the app's
+stylesheets, which left an invisible, clickable card stuck in the corner.
 
 ## Stacking: `Z_LAYERS`
 

@@ -3228,7 +3228,7 @@ AppShell renders about 9 times in 30 s idle against 0–2 before; the cause is
 not found, and it is not `useTabCopyPin` or `useActiveRepositoryReader`
 (replacing both did not change the count).
 
-### Built-in browser: Chrome identity, notice layer, tab lifecycle (2026-11-12)
+### Built-in browser: Chrome identity, tab lifecycle (2026-11-12)
 
 Dev app on `ade/browser-overhaul` (on `cd5876050`), Mac Studio (Mac16,9, M4 Max),
 not the baseline machine; sync off, nothing streaming, the Browser top tab with
@@ -3238,7 +3238,6 @@ under about 20% are noise.
 | Row | Before | After | Ceiling |
 | --- | --- | --- | --- |
 | Page load, 400 requests to a local page, cache off, median of 8 (two sets): the Chrome-identity header hook on every tab request (`builtInBrowserChromeIdentity.ts`) | hook off (same tree, hook commented out): 329 ms, 254 ms; Electron main 3.0 s CPU over 9 loads | hook on: 287 ms, 353 ms; Electron main 2.5 s CPU over 9 loads | no measurable change |
-| Corner cards drawn in the notice layer over a live page (`noticeLayer.ts`), 15 s idle with one card | no card: main 2.4%, GPU 0.6% / 472 MB footprint, renderer 1.4% | card in the layer: main 2.9%, GPU 0.5% / 476 MB, renderer 0.9%; the layer kept open while hidden holds about 2 MB of JS heap | +10 MB GPU footprint |
 | Browser top tab, idle after load, warm visit (`route-sweep.mjs`) | — (new surface for this table) | 14.4–20.4 ms/s main-thread work, 0 IPC/min, 945 elements, no long task on opening | 30 ms/s |
 
 Not measured: the remote-tab row and viewer (a 5 s `workTools.getLaneState`

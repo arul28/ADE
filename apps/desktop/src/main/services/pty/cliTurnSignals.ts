@@ -283,7 +283,12 @@ export const CLI_TURN_HOOK_SOCKET_ENV = "ADE_CLI_TURN_HOOK_SOCKET";
  */
 export const CLI_TURN_HOOK_TOKEN_ENV = "ADE_CLI_TURN_HOOK_TOKEN";
 
-/** The hook events ADE listens to, and nothing else: each one costs a process. */
+/**
+ * The hook events ADE listens to, and nothing else: each one costs a process.
+ * SubagentStart / SubagentStop track, by agent id, the agents that outlive the
+ * turn (Claude sends Stop as soon as it starts a background agent); SessionEnd
+ * clears them when the conversation ends (`/clear`, exit).
+ */
 export const CLAUDE_TURN_HOOK_EVENTS = [
   "UserPromptSubmit",
   "Stop",
@@ -291,6 +296,9 @@ export const CLAUDE_TURN_HOOK_EVENTS = [
   "PermissionRequest",
   "Notification",
   "Elicitation",
+  "SubagentStart",
+  "SubagentStop",
+  "SessionEnd",
 ] as const;
 
 /**
@@ -427,10 +435,88 @@ export function claudeHookTurnSignal(payload: Record<string, unknown>): CliTurnS
   }
 }
 
+/**
+ * What one Claude hook payload means for the agents that run beside the turn,
+ * or null when it does not touch them. Feed it to `applyCliSubagentChange`.
+ */
+export function claudeHookSubagentChange(
+  payload: Record<string, unknown>,
+): { kind: "start" | "stop"; agentId: string } | { kind: "reset" } | null {
+  const event = stringField(payload, "hook_event_name");
+  if (event === "SessionEnd") return { kind: "reset" };
+  if (event !== "SubagentStart" && event !== "SubagentStop") return null;
+  const agentId = stringField(payload, "agent_id");
+  if (!agentId) return null;
+  return { kind: event === "SubagentStart" ? "start" : "stop", agentId };
+}
+
+export type CliSubagentChange = NonNullable<ReturnType<typeof claudeHookSubagentChange>>;
+
+/**
+ * The agents a CLI reported running beside its turn (Claude's SubagentStart /
+ * SubagentStop hooks): agent id -> start time (ms). The hooks run as separate
+ * async processes, so a short agent's stop can arrive before its start;
+ * `stopped` remembers those ids so the late start is dropped. Claude also
+ * sends SubagentStop for its own helpers with no start, so `stopped` is capped.
+ */
+export type CliSubagentTracker = {
+  live: Map<string, number>;
+  stopped: Set<string>;
+};
+
+const STOPPED_SUBAGENT_MEMORY = 64;
+
+export function createCliSubagentTracker(): CliSubagentTracker {
+  return { live: new Map(), stopped: new Set() };
+}
+
+/** Applies one hook change; true when the set of live agents changed. */
+export function applyCliSubagentChange(
+  tracker: CliSubagentTracker,
+  change: CliSubagentChange,
+  now: number,
+): boolean {
+  if (change.kind === "reset") {
+    const changed = tracker.live.size > 0;
+    tracker.live.clear();
+    tracker.stopped.clear();
+    return changed;
+  }
+  if (change.kind === "start") {
+    if (tracker.stopped.delete(change.agentId)) return false;
+    if (tracker.live.has(change.agentId)) return false;
+    tracker.live.set(change.agentId, now);
+    return true;
+  }
+  if (tracker.live.delete(change.agentId)) return true;
+  tracker.stopped.add(change.agentId);
+  if (tracker.stopped.size > STOPPED_SUBAGENT_MEMORY) {
+    const oldest = tracker.stopped.values().next().value;
+    if (oldest !== undefined) tracker.stopped.delete(oldest);
+  }
+  return false;
+}
+
+/**
+ * Drops the agents started at or after `sinceMs`. An interrupted turn
+ * (Esc / Ctrl-C) cancels the agents it started, and Claude sends no
+ * SubagentStop for them; agents from earlier turns keep running.
+ */
+export function pruneCliSubagentsSince(tracker: CliSubagentTracker, sinceMs: number): boolean {
+  let pruned = false;
+  for (const [agentId, startedAt] of tracker.live) {
+    if (startedAt >= sinceMs) {
+      tracker.live.delete(agentId);
+      pruned = true;
+    }
+  }
+  return pruned;
+}
+
 /** The fields of a hook payload worth sending to the runtime; the rest stays local. */
 export function claudeHookPayloadSummary(payload: Record<string, unknown>): Record<string, string> {
   const summary: Record<string, string> = {};
-  for (const key of ["hook_event_name", "prompt_id", "notification_type", "tool_name", "session_id"]) {
+  for (const key of ["hook_event_name", "prompt_id", "notification_type", "tool_name", "session_id", "agent_id", "agent_type"]) {
     const value = stringField(payload, key);
     if (value) summary[key] = value.slice(0, 200);
   }

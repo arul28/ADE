@@ -9,7 +9,7 @@ import type { UpdateInterruptedChat } from "../../../shared/types";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
-import { floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
+import { editingTextNow, floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
 import type { AnnouncementPageDef } from "./announcementPages";
 import {
   allAnnouncements,
@@ -19,6 +19,7 @@ import {
   markShowing,
   useSeenAnnouncements,
 } from "./announcementSeen";
+import { reconcileSeenAnnouncements, useAnnouncementSeenSync } from "./announcementSeenSync";
 import { releaseNotesDigest, type ReleaseNotesDigest } from "./releaseNotesDigest";
 import { ReleaseNotesPage } from "./ReleaseNotesPage";
 import "./announcements.css";
@@ -48,7 +49,8 @@ import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
  *   newest first, then this version's notes.
  *
  * A catalogue page counts as seen once it is on screen, whichever way it
- * opened, and never shows by itself again (`announcementSeen.ts`).
+ * opened, and never shows by itself again (`announcementSeen.ts`), on this
+ * computer or anywhere else the account is used (`announcementSeenSync.ts`).
  *
  * Cost: with nothing due (the usual case) this renders nothing and holds one
  * storage subscription. With pages due it checks the conditions every few
@@ -60,6 +62,8 @@ const AFTER_UPDATE_EVENT = "ade:open-whats-new-after-update";
 /** The project settles before anything shows over it. */
 const SETTLE_MS = 4_000;
 const CHECK_INTERVAL_MS = 3_000;
+/** The person must not have typed or clicked for this long before the modal may open over their work. */
+const INPUT_QUIET_MS = 8_000;
 
 export type AfterUpdateDetail = {
   version: string;
@@ -100,6 +104,7 @@ export function openWhatsNewAfterUpdate(detail: AfterUpdateDetail): void {
 }
 
 export function AnnouncementsHost() {
+  useAnnouncementSeenSync();
   const seen = useSeenAnnouncements();
   const due = useMemo(() => dueAnnouncements(seen), [seen]);
   const inProject = useAppStore((state) => Boolean(state.project) && !state.showWelcome);
@@ -123,17 +128,31 @@ export function AnnouncementsHost() {
       markShowing();
       setShownThisLaunch(true);
       cancelArrival();
-      cancelArrival = afterBootSplash(() => setShowing({
-        pages: dueAnnouncements(),
-        notes: {
-          digest: releaseNotesDigest(detail.version, detail.fromVersion),
-          resumedChats: detail.resumedChats,
-          changelogUrl: detail.changelogUrl,
-          githubReleaseUrl: detail.githubReleaseUrl,
-        },
-        onClose: detail.onClose,
-        arrival: { version: detail.version, from: bootSplashLogoBox() },
-      }));
+      // The account's copy is read while the splash plays, and the pages are
+      // picked once it is in (or given up on), like the in-project showing.
+      const accountRead = reconcileSeenAnnouncements();
+      let cancelled = false;
+      const cancelSplash = afterBootSplash(() => {
+        const from = bootSplashLogoBox();
+        void accountRead.then(() => {
+          if (cancelled) return;
+          setShowing({
+            pages: dueAnnouncements(),
+            notes: {
+              digest: releaseNotesDigest(detail.version, detail.fromVersion),
+              resumedChats: detail.resumedChats,
+              changelogUrl: detail.changelogUrl,
+              githubReleaseUrl: detail.githubReleaseUrl,
+            },
+            onClose: detail.onClose,
+            arrival: { version: detail.version, from },
+          });
+        });
+      });
+      cancelArrival = () => {
+        cancelled = true;
+        cancelSplash();
+      };
     };
     window.addEventListener(OPEN_EVENT, openAll);
     window.addEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
@@ -149,8 +168,19 @@ export function AnnouncementsHost() {
   useEffect(() => {
     if (!waiting) return undefined;
     const since = Date.now();
+    let lastInputAt = since;
+    const noteInput = () => { lastInputAt = Date.now(); };
+    window.addEventListener("keydown", noteInput, { capture: true, passive: true });
+    window.addEventListener("pointerdown", noteInput, { capture: true, passive: true });
+    // Pages seen on another computer or in ADE Web are not due here: the
+    // account's copy is read (or given up on) before anything shows.
+    let accountRead = false;
+    void reconcileSeenAnnouncements().then(() => {
+      accountRead = true;
+    });
     const check = () => {
-      if (document.hidden || Date.now() - since < SETTLE_MS) return;
+      if (!accountRead || document.hidden || Date.now() - since < SETTLE_MS) return;
+      if (Date.now() - lastInputAt < INPUT_QUIET_MS || editingTextNow()) return;
       if (!onboardingSettledBeforeThisLaunch() || floatingLayerBusy() || launchGateOpen()) return;
       setShownThisLaunch(true);
       if (!inProjectShowingAllowed()) return;
@@ -160,7 +190,11 @@ export function AnnouncementsHost() {
       setShowing({ pages, notes: null });
     };
     const interval = window.setInterval(check, CHECK_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("keydown", noteInput, { capture: true });
+      window.removeEventListener("pointerdown", noteInput, { capture: true });
+    };
   }, [waiting]);
 
   const showingRef = useRef(showing);

@@ -1102,6 +1102,49 @@ describe("ptyService", () => {
       expect(service.getTrackedCliTurn("session-hooked")).toMatchObject({ phase: "working", source: "claude-hooks" });
     });
 
+    it("keeps a Claude CLI's background agents as background work until each reports its stop", async () => {
+      const { service, loadPty, onSessionRuntimeSignal, sessionService } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
+      });
+      await service.create({
+        sessionId: "session-agents",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const token = (spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      expect(token.length, "the hooked launch carries a token").toBeGreaterThan(0);
+      const hook = (payload: Record<string, string>) =>
+        service.reportCliTurnHookEvent({ sessionId: "session-agents", provider: "claude", payload, token });
+      const agentCount = () => service.getTrackedCliTurn("session-agents")?.backgroundAgentCount;
+      const row = () => service.enrichSessions(sessionService.list({}).filter((s: any) => s.id === "session-agents"))[0];
+      const lastSignalAgents = () => onSessionRuntimeSignal.mock.calls.at(-1)?.[0]?.backgroundAgentIds;
+
+      // Claude sends Stop as soon as it hands work to a background agent.
+      hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-1" });
+      hook({ hook_event_name: "SubagentStart", agent_id: "agent-1" });
+      hook({ hook_event_name: "Stop" });
+      expect(service.getTrackedCliTurn("session-agents")).toMatchObject({ phase: "idle", backgroundAgentCount: 1 });
+      expect(row()).toMatchObject({ activeBackgroundTaskCount: 1 });
+      expect(lastSignalAgents()).toEqual(["agent-1"]);
+
+      // Each hook is its own process: a short agent's stop can arrive before its start.
+      hook({ hook_event_name: "SubagentStop", agent_id: "agent-2" });
+      hook({ hook_event_name: "SubagentStart", agent_id: "agent-2" });
+      expect(agentCount()).toBe(1);
+
+      hook({ hook_event_name: "SubagentStop", agent_id: "agent-1" });
+      expect(agentCount()).toBe(0);
+      expect(row()?.activeBackgroundTaskCount ?? 0).toBe(0);
+      expect(lastSignalAgents()).toEqual([]);
+    });
+
     it("resumes into the provider default when the stored account is gone", async () => {
       const { service, sessionService, loadPty } = createHarness();
       sessionService.create({

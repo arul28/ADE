@@ -37,9 +37,27 @@ struct SettingsMachine: Identifiable, Equatable {
   /// This machine's own ADE version, from its last hello or its LAN
   /// advertisement. Nil when the phone has not heard it.
   var appVersion: String? = nil
+  /// The computer alone ("Arul’s Mac Studio"), when `name` also carries the
+  /// install. Rows show it as the title so installs on one computer line up.
+  var computerName: String? = nil
+  /// Which ADE install on that computer ("ADE Beta", or its home such as
+  /// `~/.ade-dev`). Shown on its own line under the title.
+  var install: String? = nil
+
+  /// The row and page title: the computer, with the install shown apart.
+  var title: String { computerName ?? name }
+
+  /// The install is an ADE home path rather than a channel name.
+  var installIsPath: Bool {
+    guard let install else { return false }
+    return install.hasPrefix("~") || install.hasPrefix("/")
+  }
 
   /// The machine runs a Beta-track build of ADE.
   var runsBeta: Bool { adeVersionIsBetaTrack(appVersion) }
+
+  /// The Beta tag beside the title, unless the install line already says Beta.
+  var showsBetaTag: Bool { runsBeta && install != AccountMachineInstallChannel.beta.displayName }
 
   var isPrimary: Bool {
     if case .primary = link { return true }
@@ -192,7 +210,9 @@ func settingsMachines(
       hiddenIdentity: identity ?? "account:\(machine.machineKey)",
       detail: detail.isEmpty ? nil : detail,
       projects: projects(for: key),
-      appVersion: appVersion(for: key, identity: identity)
+      appVersion: appVersion(for: key, identity: identity),
+      computerName: machine.installLabel == nil ? nil : machine.rowComputerName,
+      install: machine.installLabel
     ))
   }
 
@@ -222,20 +242,37 @@ func settingsMachines(
 }
 
 /// Connected first (primary, then the rest by name), then available (online
-/// first, then by name).
+/// first, then by name). "By name" is what the row shows: the computer, then
+/// the install line under it, so installs on one computer sit together.
 func settingsMachineSections(_ machines: [SettingsMachine]) -> (connected: [SettingsMachine], available: [SettingsMachine]) {
+  func byVisibleName(_ lhs: SettingsMachine, _ rhs: SettingsMachine) -> Bool {
+    let titleOrder = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+    if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
+    return (lhs.install ?? "").localizedCaseInsensitiveCompare(rhs.install ?? "") == .orderedAscending
+  }
   let connected = machines.filter(\.isConnectedSet).sorted { lhs, rhs in
     if lhs.isPrimary != rhs.isPrimary { return lhs.isPrimary }
-    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    return byVisibleName(lhs, rhs)
   }
   let available = machines.filter { !$0.isConnectedSet }.sorted { lhs, rhs in
     if lhs.online != rhs.online { return lhs.online }
-    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    return byVisibleName(lhs, rhs)
   }
   return (connected, available)
 }
 
 // MARK: - Actions
+
+/// A failed action on one machine: a few words for its row and status line,
+/// and the full explanation for its page.
+struct SettingsMachineError: Equatable {
+  let summary: String
+  let message: String
+
+  static func connect(_ message: String) -> SettingsMachineError {
+    SettingsMachineError(summary: "Couldn’t connect", message: message)
+  }
+}
 
 struct SettingsMachineLimitPrompt: Identifiable {
   let target: SettingsMachine
@@ -251,7 +288,7 @@ final class SettingsMachineController: ObservableObject {
   /// Rows pairing next to the primary right now; each counts toward the limit.
   private var pairingAlongsideIds: Set<String> = []
   @Published var toast: ADEToastMessage?
-  @Published var errors: [String: String] = [:]
+  @Published var errors: [String: SettingsMachineError] = [:]
   @Published var limitPrompt: SettingsMachineLimitPrompt?
   @Published var renaming: AccountMachine?
 
@@ -292,7 +329,7 @@ final class SettingsMachineController: ObservableObject {
       }
       guard !candidates.isEmpty else {
         // Only pairings still in flight fill the limit: nothing to disconnect yet.
-        errors[machine.id] = "Wait for the machine that is pairing to finish, then connect this one."
+        errors[machine.id] = .connect("Wait for the machine that is pairing to finish, then connect this one.")
         return
       }
       limitPrompt = SettingsMachineLimitPrompt(target: machine, candidates: candidates)
@@ -345,7 +382,7 @@ final class SettingsMachineController: ObservableObject {
     // Never paired on this phone: pair through the account.
     guard let accountMachine = machine.account else { return }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
-      errors[machine.id] = "Your account session ended. Sign in again, then connect."
+      errors[machine.id] = .connect("Your account session ended. Sign in again, then connect.")
       return
     }
     guard syncService.primaryIsAttached else {
@@ -366,7 +403,7 @@ final class SettingsMachineController: ObservableObject {
       self.pairingAlongsideIds.remove(machine.id)
       switch result {
       case .failure(let failure):
-        self.errors[machine.id] = failure.message
+        self.errors[machine.id] = .connect(failure.message)
         return false
       case .success(let key):
         live = await fleet.connect(machineKey: key, timeout: .seconds(15))
@@ -433,7 +470,10 @@ final class SettingsMachineController: ObservableObject {
       do {
         try await AccountService.shared.removeMachineFromAccount(accountMachine)
       } catch {
-        self.errors[machine.id] = error.localizedDescription
+        self.errors[machine.id] = SettingsMachineError(
+          summary: "Couldn’t remove it from your account",
+          message: error.localizedDescription
+        )
         return false
       }
       self.syncService?.forgetMachineOnThisPhone(
@@ -465,11 +505,11 @@ final class SettingsMachineController: ObservableObject {
       } else {
         ADEHaptics.error()
         if errors[machine.id] == nil, let syncService {
-          errors[machine.id] = settingsMachineRowErrorMessage(
+          errors[machine.id] = .connect(settingsMachineRowErrorMessage(
             attemptFailure: syncService.lastConnectAttemptFailure,
             lastError: syncService.lastError,
             fallback: "ADE could not reach \(machine.name). Try again."
-          )
+          ))
         }
       }
     }
@@ -554,12 +594,12 @@ struct SettingsMachineSections: View {
   }
 }
 
-/// One machine row: icon, name (with "Primary"), state line, and one trailing
-/// control (live dot, Connect, Retry or a spinner).
+/// One machine row: icon, computer name (with "Primary"), the install, a state
+/// line, and one trailing control (live dot, Connect, Retry or a spinner).
 struct SettingsMachineRow: View {
   let machine: SettingsMachine
   var busy = false
-  var error: String?
+  var error: SettingsMachineError?
   var onConnect: () -> Void = {}
   var onRetry: () -> Void = {}
 
@@ -568,33 +608,27 @@ struct SettingsMachineRow: View {
       ADESettingsIconTile(symbol: machine.symbol, tint: machine.isLive ? .accent : .slate, size: 36)
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
-          Text(machine.name)
+          Text(machine.title)
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
           if machine.isPrimary {
             ADEKitTag(text: "Primary", tone: .accent)
           }
-          if machine.runsBeta {
+          if machine.showsBetaTag {
             ADEKitTag(text: "Beta", tone: .warn)
           }
         }
-        Text(machine.subtitle)
-          .font(.system(size: 12.5))
-          .foregroundStyle(machine.subtitleIsProblem ? ADEColor.warning : ADEColor.textSecondary)
-          .lineLimit(1)
-        if let error {
-          Text(error)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.danger)
-            .lineLimit(3)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        SettingsMachineInstallLabel(machine: machine)
+        SettingsMachineStateLine(machine: machine, error: error)
       }
-      // The name gets the row's width before the status word does.
       .layoutPriority(1)
       Spacer(minLength: 8)
+      // The control keeps its own width; the title truncates instead. Without
+      // this a long title squeezed Connect into an empty pill and wrapped
+      // "Offline" one letter per line.
       trailing
+        .fixedSize()
       ADESettingsChevron()
     }
     .padding(.horizontal, ADEKit.inset)
@@ -624,12 +658,19 @@ struct SettingsMachineRow: View {
         }
       case .available:
         if machine.online || machine.isPaired {
-          Button("Connect", action: onConnect)
-            .buttonStyle(ADEKitButtonStyle())
+          // After a failed connect the same action reads as a retry.
+          if error != nil {
+            Button("Retry", action: onConnect)
+              .buttonStyle(ADEKitButtonStyle(tone: .warn))
+          } else {
+            Button("Connect", action: onConnect)
+              .buttonStyle(ADEKitButtonStyle())
+          }
         } else {
           Text("Offline")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
         }
       }
     }
@@ -638,6 +679,59 @@ struct SettingsMachineRow: View {
   private var retryButton: some View {
     Button("Retry", action: onRetry)
       .buttonStyle(ADEKitButtonStyle(tone: .warn))
+  }
+}
+
+/// The install line under a machine's title ("ADE Beta", or an ADE home like
+/// `~/.ade-dev`). Nothing when the machine did not say which install it is.
+struct SettingsMachineInstallLabel: View {
+  let machine: SettingsMachine
+  var size: CGFloat = 12.5
+
+  var body: some View {
+    if let install = machine.install {
+      Text(install)
+        .font(machine.installIsPath ? .adeMono(size - 1) : .system(size: size, weight: .medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        // A home path keeps both ends: "~/.ade-dev…first-run".
+        .truncationMode(machine.installIsPath ? .middle : .tail)
+        .accessibilityLabel("Install: \(install)")
+    }
+  }
+}
+
+/// The one-line state under a machine's title. A failed action replaces the
+/// state with a short failure so the row never reads "Online" next to an
+/// error; the page carries the full explanation.
+struct SettingsMachineStateLine: View {
+  let machine: SettingsMachine
+  var error: SettingsMachineError?
+  var text: String? = nil
+  var size: CGFloat = 12.5
+  var showsDot = false
+
+  var body: some View {
+    HStack(spacing: 6) {
+      if let error {
+        Image(systemName: "exclamationmark.circle.fill")
+          .font(.system(size: size - 1.5, weight: .semibold))
+          .foregroundStyle(ADEColor.danger)
+          .accessibilityHidden(true)
+        Text(error.summary)
+          .font(.system(size: size, weight: .medium))
+          .foregroundStyle(ADEColor.danger)
+          .lineLimit(1)
+      } else {
+        if showsDot {
+          ADEKitDot(tone: machine.isLive ? .ok : (machine.subtitleIsProblem ? .warn : .neutral))
+        }
+        Text(text ?? machine.subtitle)
+          .font(.system(size: size))
+          .foregroundStyle(machine.subtitleIsProblem ? ADEColor.warning : ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+    }
   }
 }
 
@@ -747,7 +841,7 @@ func settingsMachineCanManageAccounts(_ machine: SettingsMachine, fleet: Machine
 struct SettingsMachinePageContent: View {
   let machine: SettingsMachine
   var busy = false
-  var error: String?
+  var error: SettingsMachineError?
   var actions = SettingsMachinePageActions()
   @State private var showsAllProjects = false
 
@@ -761,8 +855,10 @@ struct SettingsMachinePageContent: View {
         VStack(alignment: .leading, spacing: 14) {
           header
           actionBar
+          // The explanation only: the action bar above holds the one way to
+          // try again, so the card never offers two.
           if let error {
-            ADESettingsNotice(message: error, tone: .crit, actionTitle: "Retry", action: actions.retry)
+            ADESettingsNotice(message: error.message, tone: .crit)
           }
         }
         .adeKitCard()
@@ -842,11 +938,11 @@ struct SettingsMachinePageContent: View {
       ADESettingsIconTile(symbol: machine.symbol, tint: machine.isLive ? .accent : .slate, size: 48)
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
-          Text(machine.name)
+          Text(machine.title)
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
-          if machine.runsBeta {
+          if machine.showsBetaTag {
             ADEKitTag(text: "Beta", tone: .warn)
           }
           if let rename = actions.rename {
@@ -860,13 +956,8 @@ struct SettingsMachinePageContent: View {
             .accessibilityLabel("Rename")
           }
         }
-        HStack(spacing: 6) {
-          ADEKitDot(tone: machine.isLive ? .ok : (machine.subtitleIsProblem ? .warn : .neutral))
-          Text(stateLine)
-            .font(.system(size: 12.5))
-            .foregroundStyle(machine.subtitleIsProblem ? ADEColor.warning : ADEColor.textSecondary)
-            .lineLimit(2)
-        }
+        SettingsMachineInstallLabel(machine: machine, size: 13.5)
+        SettingsMachineStateLine(machine: machine, error: error, text: stateLine, showsDot: true)
       }
       Spacer(minLength: 0)
     }
@@ -889,7 +980,7 @@ struct SettingsMachinePageContent: View {
       if busy {
         ProgressView().controlSize(.small)
       } else if machine.isConnectedSet {
-        if machine.gaveUp || machine.subtitleIsProblem {
+        if machine.gaveUp || machine.subtitleIsProblem || error != nil {
           Button("Retry", action: actions.retry).buttonStyle(ADEKitButtonStyle(prominent: true))
         }
         Button("Disconnect", action: actions.disconnect).buttonStyle(ADEKitButtonStyle())
@@ -897,7 +988,9 @@ struct SettingsMachinePageContent: View {
           Button("Make primary", action: actions.makePrimary).buttonStyle(ADEKitButtonStyle())
         }
       } else {
-        Button("Connect", action: actions.connect).buttonStyle(ADEKitButtonStyle(prominent: true))
+        // Connecting again is the retry for a machine outside the connected set.
+        Button(error == nil ? "Connect" : "Try again", action: actions.connect)
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
       Spacer(minLength: 0)
     }
