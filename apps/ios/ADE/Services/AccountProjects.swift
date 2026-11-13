@@ -343,7 +343,13 @@ struct AccountProjectsClient {
       case 401, 403:
         throw ChangeError(status: http.statusCode, message: "Sign in to ADE again, then try again.")
       default:
-        throw ChangeError(status: http.statusCode, message: message ?? "Your ADE account could not make that change. Try again.")
+        // A server error can come after the change was saved, or from a proxy
+        // in front of the account: the change may have happened.
+        throw ChangeError(
+          status: http.statusCode,
+          message: message ?? "Your ADE account could not make that change. Try again.",
+          unconfirmed: http.statusCode >= 500
+        )
       }
     }
     do {

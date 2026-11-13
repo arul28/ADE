@@ -648,19 +648,32 @@ struct HubRemoveProjectsSheet: View {
           accountSteps[project.id] = .done
           accountRemoved += 1
         } catch let error as AccountProjectsClient.ChangeError where error.unconfirmed {
-          // The answer was lost or unreadable: the account may have removed
-          // it. Its list settles that; only a project still listed is kept.
+          // The answer was lost, unreadable or a server error: the account
+          // may have removed it. A fresh list of the same account settles
+          // that. A project still listed after the server answered is kept;
+          // after a lost answer the request may still be on its way.
+          if let status = error.status, status >= 500 {
+            CrashReporting.capture(error, context: ["area": "hub-remove-account-project"])
+          }
           let store = AccountProjectStore.shared
           let listedBefore = store.lastSuccessAt
           await store.refresh()
-          if accountUser != nil, store.activeUserId == accountUser,
-             let listed = store.lastSuccessAt, listed != listedBefore,
-             !store.liveProjects.contains(where: { $0.id == project.id }) {
-            accountSteps[project.id] = .done
-            accountRemoved += 1
-          } else {
+          let settled = accountUser != nil && store.activeUserId == accountUser
+            && store.lastSuccessAt != nil && store.lastSuccessAt != listedBefore
+          if !settled {
             accountSteps[project.id] = .unknown
             unconfirmed += 1
+          } else if store.liveProjects.contains(where: { $0.id == project.id }) {
+            if error.status != nil {
+              accountSteps[project.id] = .failed(error.message)
+              kept += 1
+            } else {
+              accountSteps[project.id] = .unknown
+              unconfirmed += 1
+            }
+          } else {
+            accountSteps[project.id] = .done
+            accountRemoved += 1
           }
         } catch {
           // A signed-out phone (no status) is told to sign in; anything else

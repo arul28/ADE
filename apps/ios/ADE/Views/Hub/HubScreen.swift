@@ -509,7 +509,9 @@ struct HubScreen: View {
         onOpenSettings: { syncService.settingsPresented = true }
       )
     }
-    if !hubProjectPresentations.isEmpty || !localSections.isEmpty || !hiddenEntries.isEmpty {
+    // While selecting, the header stays so Done can end select mode, also
+    // when the last row went away.
+    if selecting || !hubProjectPresentations.isEmpty || !localSections.isEmpty || !hiddenEntries.isEmpty {
       HubProjectsHeader(
         title: "Projects",
         count: hubListCount,
