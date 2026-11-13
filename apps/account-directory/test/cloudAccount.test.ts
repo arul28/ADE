@@ -136,6 +136,15 @@ function fakeNetwork() {
       }
       return reply({ error: { message: "no such item" } }, 404);
     }
+    // A new item joins its subscription, as Stripe does.
+    if (method === "POST" && url === `${STRIPE}/subscription_items`) {
+      const subscription = subscriptions.get(String(body?.subscription));
+      if (!subscription) return reply({ error: { message: "no such subscription" } }, 404);
+      const items = ((subscription.items ??= { data: [] }) as { data: Row[] }).data;
+      const added = { id: `si_new${items.length}`, price: { id: body?.price } };
+      items.push(added);
+      return reply(added);
+    }
     if (url.startsWith(STRIPE)) return reply({});
     if (url.startsWith(RESEND)) return reply({ id: "email_1" });
     // The one-time sign-in ticket the device approval mints for a user.
@@ -994,7 +1003,7 @@ describe("ADE Cloud account", () => {
     ["plus", "price_plan", "price_extra_plus"],
     ["pro", "price_pro", "price_extra_pro"],
     ["max", "price_max", "price_extra_max"],
-  ])("a new %s subscription bills extra hours at that plan's own price, and extra disk at the disk price", async (plan, planPrice, extraPrice) => {
+  ])("a new %s subscription sells only the plan; extra hours join at that plan's own price when turned on, once", async (plan, planPrice, extraPrice) => {
     Object.assign(harness.env, MONEY_ENV, EXTRA_PRICES);
     seedAccount(harness, OWNER, { stripe_customer_id: "cus_1" });
     harness.net.once.push({ match: /POST .*\/checkout\/sessions$/, reply: harness.net.reply({ url: "https://checkout.stripe.test/s" }) });
@@ -1003,7 +1012,42 @@ describe("ADE Cloud account", () => {
 
     expect(response.status).toBe(200);
     const session = providerCalls(harness, /POST .*\/checkout\/sessions$/)[0]?.body ?? {};
-    expect([session["line_items[0][price]"], session["line_items[1][price]"], session["line_items[2][price]"]]).toEqual([planPrice, extraPrice, "price_disk"]);
+    expect(Object.keys(session).filter((key) => key.startsWith("line_items[")).sort()).toEqual(["line_items[0][price]", "line_items[0][quantity]"]);
+    expect(session["line_items[0][price]"]).toBe(planPrice);
+
+    // Bought: the subscription holds the plan alone until extra hours go on.
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = ?, stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", plan, OWNER);
+    harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: planPrice } }] } });
+    const extraHours = (enabled: boolean) => harness.send(OWNER, "POST", "/cloud/billing/extra-hours", { enabled });
+    const added = () => providerCalls(harness, /POST .*\/subscription_items$/).map((call) => [call.body?.subscription, call.body?.price]);
+    expect((await extraHours(true)).status).toBe(200);
+    expect(added()).toEqual([["sub_1", extraPrice]]);
+    // Off leaves the item at zero (what was used before still bills); on again adds nothing.
+    expect((await extraHours(false)).status).toBe(200);
+    expect((await extraHours(true)).status).toBe(200);
+    expect(added()).toHaveLength(1);
+    expect(providerCalls(harness, /DELETE .*\/subscription_items\//)).toHaveLength(0);
+    expect(harness.row("select extra_enabled from cloud_accounts where user_id = ?", OWNER).extra_enabled).toBe(1);
+  });
+
+  it.each<[string, Row, Row[], RegExp | null, number, string | null]>([
+    // A subscription bought before Cloud 8 already bills extra hours (on the first price until its renewal moves it).
+    ["a subscription that already has an hours item gets no second one", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }, { id: "si_extra", price: { id: "price_extra" } }], null, 200, null],
+    // Pro with a move to Plus waiting still pays Pro's hour until the renewal.
+    ["a downgrade waiting adds the hour of the plan in force", { ...proAccount, paid_plan_next: "plus" }, [{ id: "si_plan", price: { id: "price_plan" } }], null, 200, "price_extra_pro"],
+    ["Stripe refusing the item leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], /POST .*\/subscription_items$/, 503, "price_extra_plus"],
+  ])("extra hours on: %s", async (_label, account, items, refuse, status, triedPrice) => {
+    Object.assign(harness.env, MONEY_ENV, EXTRA_PRICES);
+    seedAccount(harness, OWNER, account);
+    harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: items } });
+    if (refuse) harness.net.once.push({ match: refuse, reply: harness.net.reply({ error: { message: "no" } }, 500) });
+
+    const response = await harness.send(OWNER, "POST", "/cloud/billing/extra-hours", { enabled: true });
+
+    expect(response.status).toBe(status);
+    expect(providerCalls(harness, /POST .*\/subscription_items$/).map((call) => call.body?.price)).toEqual(triedPrice ? [triedPrice] : []);
+    // Never on without an item to bill it: an extra hour would be free.
+    expect(harness.row("select extra_enabled from cloud_accounts where user_id = ?", OWNER).extra_enabled).toBe(status === 200 ? 1 : 0);
   });
 
   it.each<[string, string, number, string | null]>([

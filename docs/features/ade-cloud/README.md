@@ -186,8 +186,14 @@ minutes are shown on the plan table only; nothing meters them yet.
   Plus 300, Pro 1,600) also start with the next period.
 - **Extra hours** are one flat price per plan (2¢, 1.5¢, 1.2¢), each its own
   Stripe metered price on the one extra-hours meter
-  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`). Checkout uses the plan's
-  price. An upgrade moves the subscription's hours item to the new plan's
+  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`). Checkout sells only the
+  plan (Cloud 8): the extra-hours item joins the subscription, at the price
+  of the plan in force, when the person first turns extra hours on
+  (`ensureExtraHoursItem`), before the switch goes on, so no extra hour is
+  ever reported with nothing to bill it (meter events bill by customer). It
+  stays at zero once off, which keeps billing hours used before. Extra disk
+  joins the same way (`setExtraDisk`). Subscriptions from before Cloud 8
+  keep the items they hold. An upgrade moves the subscription's hours item to the new plan's
   price at once; a downgrade or a subscription still on the old graduated
   price (1¢, then 0.85¢) and the old $1 disk price moves at its next renewal
   (`moveMeteredItems`, `cloud.metered_price_moved`).
@@ -212,8 +218,10 @@ minutes are shown on the plan table only; nothing meters them yet.
   downgrade is never refused: over the cheaper plan's disk, the answer
   carries `cleanup`, what that plan's disk will free (see **A cheaper plan's
   limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
-  subscription itself: Stripe's portal can't switch a subscription with more
-  than one item.
+  subscription itself. The billing portal doesn't switch plans (its setup
+  turns `subscription_update` off): ADE's switch is the one that checks the
+  cheaper plan's limits, and a portal downgrade would leave a subscription
+  schedule that refuses ADE's own changes.
 - **Not set up yet:** Pro and extra disk are offered only once their Stripe
   prices are set. Until then `catalog.plans.plus`/`pro`,
   `catalog.extraDiskCentsPer10GbMonth` and `account.extraDisk` are absent, a
@@ -260,7 +268,7 @@ minutes are shown on the plan table only; nothing meters them yet.
     frees exactly those computers at once, a few a tick, not at the period
     end. A request without a pick (an older build) changes the plan and
     deletes nothing.
-  - **Outside ADE (the billing portal, a plan that ended):** nothing is
+  - **Outside ADE (a cancel in the billing portal, a plan that ended):** nothing is
     deleted. Once the cheaper plan is in force and the account is still over
     it, a new computer or a copy is refused with 403 `over_plan_limits`
     (`overPlanLimitsSentence`), the ten-minute owner check emails the person

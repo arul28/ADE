@@ -141,14 +141,14 @@ function extraHoursPrices(env: CloudEnv): Set<string> {
   return new Set(prices.filter((price): price is string => Boolean(price)));
 }
 
-function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string; extraPrice: string; diskPrice: string | null } {
+/** The plan's price. Its extra-hours price must be set too: a plan is sold only once extra hours can be turned on. */
+function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string } {
   const planPrice = planPriceIds(env)[plan];
-  const extraPrice = extraHoursPriceFor(env, plan);
-  if (!planPrice || !extraPrice || !env.STRIPE_SECRET_KEY?.trim()) {
+  if (!planPrice || !extraHoursPriceFor(env, plan) || !env.STRIPE_SECRET_KEY?.trim()) {
     reportCloudFailure("cloud.billing_not_configured", { plan });
     throw unavailable();
   }
-  return { planPrice, extraPrice, diskPrice: env.STRIPE_DISK_PRICE_ID?.trim() || null };
+  return { planPrice };
 }
 
 /**
@@ -211,7 +211,7 @@ export async function createCheckoutUrl(
   cleanup?: CloudPlanCleanupPick,
 ): Promise<CloudCheckoutResult> {
   const plan = requested ?? "plus";
-  const { planPrice, extraPrice, diskPrice } = billingConfig(env, plan);
+  const { planPrice } = billingConfig(env, plan);
   const account = await loadAccount(env, userId, now);
   if (account.plan === "paid") {
     // A build that knows one paid plan names none: it only ever buys, never switches.
@@ -230,11 +230,10 @@ export async function createCheckoutUrl(
       customer,
       client_reference_id: userId,
       "managed_payments[enabled]": "true",
+      // Only the plan: extra hours and extra disk join the subscription when the person turns
+      // them on (`setExtraHours`, `setExtraDisk`), so Checkout and the portal show one price.
       "line_items[0][price]": planPrice,
       "line_items[0][quantity]": "1",
-      "line_items[1][price]": extraPrice,
-      // Extra disk rides its own meter and price, never the hours price.
-      ...(diskPrice ? { "line_items[2][price]": diskPrice } : {}),
       "metadata[ade_user_id]": userId,
       "subscription_data[metadata][ade_user_id]": userId,
       success_url: `${origin}${RETURN_PATH}?to=done`,
@@ -389,9 +388,9 @@ async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: Clo
     logCloud("cloud.metered_price_moved", { subscriptionId, what, plan, from: item.price, to: price });
   };
   const hoursPrice = extraHoursPriceFor(env, plan);
+  // None until the person turns extra hours on (Checkout sells only the plan); that adds it at the plan's price.
   const hoursItem = items.find((item) => item.price != null && hoursPrices.has(item.price));
-  if (!hoursItem) reportCloudFailure("cloud.extra_hours_item_missing", { subscriptionId });
-  else if (hoursPrice && hoursItem.price !== hoursPrice) await move(hoursItem, hoursPrice, "extra_hours");
+  if (hoursItem && hoursPrice && hoursItem.price !== hoursPrice) await move(hoursItem, hoursPrice, "extra_hours");
   const diskPrice = env.STRIPE_DISK_PRICE_ID?.trim();
   if (!options.disk || !diskPrice) return { diskCurrent: false };
   // An older disk price is a metered item that is neither the plan nor extra hours, on the disk price's meter.
@@ -404,10 +403,10 @@ async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: Clo
 }
 
 /**
- * A move between paid plans (Plus, Pro, Max) on the subscription itself. The
- * billing portal can't do it: Stripe refuses a portal plan switch on a
- * subscription with more than one item, and every ADE subscription has the
- * plan plus its meters.
+ * A move between paid plans (Plus, Pro, Max) on the subscription itself, never
+ * the billing portal: Stripe refuses a portal plan switch on a subscription
+ * with more than one item (one with extra hours or extra disk on), and ADE's
+ * own switch is the one that checks a downgrade's cleanup pick.
  * - Upgrade: charged now for the rest of the period; a declined card changes
  *   nothing. The higher plan's hours apply at once, the hours used stay, and
  *   extra hours move to its cheaper price.
@@ -622,9 +621,44 @@ export async function createPortalUrl(env: CloudEnv, userId: string, origin: str
   }
 }
 
+/**
+ * Makes sure the subscription bills extra hours before they can be used: a
+ * subscription bought since Cloud 8 has only the plan until the person turns
+ * extra hours on. Any extra-hours price counts as held (one from an older
+ * plan or before Cloud 7 moves at the renewal), so there is never a second
+ * item on the hours meter. Meter events bill by customer, so the item must be
+ * there before the first extra hour is reported; once added it stays, at
+ * zero while extra hours are off, which also keeps billing what was used
+ * before they went off.
+ */
+async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow): Promise<void> {
+  const subscriptionId = account.stripe_subscription_id;
+  // The plan in force: a downgrade waiting for the period end still bills the higher plan's hour.
+  const price = extraHoursPriceFor(env, paidPlanOf(account));
+  if (!subscriptionId || !price) {
+    reportCloudFailure("cloud.extra_hours_not_configured", { userId: account.user_id });
+    throw unavailable();
+  }
+  try {
+    const hoursPrices = extraHoursPrices(env);
+    const items = await subscriptionItems(env, subscriptionId);
+    if (items.some((item) => item.price != null && hoursPrices.has(item.price))) return;
+    await stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price }, `ade-cloud-hours-item-${subscriptionId}-${price}`);
+    logCloud("cloud.extra_hours_item_added", { userId: account.user_id, subscriptionId });
+  } catch (error) {
+    if (error instanceof StripeRequestError) {
+      reportCloudFailure("cloud.extra_hours_item_failed", { status: error.status, message: error.stripeMessage });
+      throw unavailable();
+    }
+    throw error;
+  }
+}
+
 export async function setExtraHours(env: CloudEnv, userId: string, enabled: boolean, now: number): Promise<void> {
   const account = await loadAccount(env, userId, now);
   if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
+  // Before the switch goes on: an extra hour with nothing on the subscription to bill it would be free.
+  if (enabled) await ensureExtraHoursItem(env, account);
   // Turning them off stops new use; what was already used is still reported.
   const owed = !enabled && extraActive(account)
     ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))

@@ -116,7 +116,22 @@ jobs:
       - name: Keep source maps off the public site
         run: find apps/desktop/dist/web-client -name '*.map' -delete
       - name: Deploy to Cloudflare Pages
-        run: npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false
+        # Cloudflare's API sometimes answers "malformed response" or "upstream
+        # connect error" during an incident, and a rerun passes. Three tries, a
+        # minute apart. Each try is a new Pages deployment, so a retry after a
+        # half-done upload is safe; the live check below proves which one won.
+        run: |
+          for attempt in 1 2 3; do
+            if npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::Cloudflare Pages deploy failed (try $attempt of 3); trying again in 60 s."
+              sleep 60
+            fi
+          done
+          echo "::error::Cloudflare Pages deploy failed 3 times."
+          exit 1
       - name: Verify live bundle
         run: |
           built="$(basename apps/desktop/dist/web-client/assets/index-*.js)"
