@@ -34,12 +34,11 @@ export function useLaneShareMenu(args: {
   /** The lane's type: the main checkout (`primary`) cannot be shared. */
   laneType?: LaneType | null;
 }): LaneMenuShareArgs | null {
-  const { key, entry } = useLaneShareList(args.pin, { enabled: !args.disabled && Boolean(args.laneId) });
+  const { key, entry, pin } = useLaneShareList(args.pin, { enabled: !args.disabled && Boolean(args.laneId) });
   // Sharing is for lanes on the person's own computers for now: a lane's ADE
   // Cloud computer would wake and spend the owner's hours for a guest.
   const onCloud = useAdeCloudLaneForBinding(args.pin ?? null) != null;
   const disabledReason = onCloud ? CLOUD_REASON : args.laneType === "primary" ? PRIMARY_REASON : null;
-  const pin = args.pin ?? null;
   const pinKey = pin?.key ?? null;
   const shares = entry?.shares;
   return useMemo(() => {
@@ -52,7 +51,7 @@ export function useLaneShareMenu(args: {
       laneId,
       laneName,
       pin,
-      machineName: args.machineName ?? (pin?.kind === "remote" ? pin.runtimeName : null),
+      machineName: args.machineName ?? (args.pin?.kind === "remote" ? args.pin.runtimeName : null),
       grantId: grantId ?? null,
     });
     return {

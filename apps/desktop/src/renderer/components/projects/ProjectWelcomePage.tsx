@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useLaneShareHomeRows } from "../laneShare/guest/LaneShareHomeRows";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
 import { HomeAppButton, openMusicApp } from "../music/musicApps";
@@ -325,6 +326,8 @@ export function ProjectWelcomePage() {
     [navigate, webMachineByKey, workspace],
   );
 
+  // Lanes shared with this account: they need no computer of its own.
+  const sharedRows = useLaneShareHomeRows();
   // Why the hosted client is showing no machines, in the account's own words.
   // Only computed when there is nothing to list — a populated list speaks for
   // itself even when the last directory read failed.
@@ -335,6 +338,7 @@ export function ProjectWelcomePage() {
           directoryLoading: workspace.directoryLoading,
           retryError: directoryRetryError,
           accountProjectCount,
+          sharedLaneCount: sharedRows.length,
           onGetAde: () => {
             void window.ade.app.openExternal(ADE_DOWNLOAD_PAGE_URL).catch(() => undefined);
           },
@@ -352,7 +356,7 @@ export function ProjectWelcomePage() {
           },
         })
       : null
-  ), [accountProjectCount, directoryRetryError, webMachines.length, webMode, workspace]);
+  ), [accountProjectCount, directoryRetryError, sharedRows.length, webMachines.length, webMode, workspace]);
 
   const openWebChats = useCallback(() => {
     if (!workspace || !activeWebMachine) return;
@@ -717,6 +721,7 @@ export function ProjectWelcomePage() {
       webMode={webMode}
       listRef={listRef}
       onListKeyDown={handleListKeyDown}
+      sharedRows={sharedRows}
       connectionByTarget={connectionByTarget}
       connectingKeys={connectingKeys}
       pendingForgetKeys={pendingForgetKeys}
@@ -742,6 +747,7 @@ export function ProjectWelcomePage() {
     project?.rootPath,
     projectBinding,
     rows,
+    sharedRows,
     visibleProjectGroups.length,
     webMachineByKey,
     webMode,

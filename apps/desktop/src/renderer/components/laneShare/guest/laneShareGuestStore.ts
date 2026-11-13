@@ -3,7 +3,7 @@ import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
 import { parseCodedErrorMessage } from "../../../../shared/codedError";
 import { LANE_SHARING_UNAVAILABLE } from "../../../../shared/laneShareDirectory";
-import { LANE_SHARE_ERROR_TEXT } from "../laneShareModel";
+import { LANE_SHARE_ERROR_TEXT, LANE_SHARE_PRESET_LABELS, laneShareRightsPreset, sameLaneShareRights } from "../laneShareModel";
 import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { fetchAccountStatus, subscribeAccountStatus } from "../../../lib/account";
 import {
@@ -231,6 +231,24 @@ export function clearLaneShareGuestNotice(grantId: string): void {
 }
 
 /**
+ * What the guest is told after the host let it back in, or null when nothing
+ * it can see changed: same rights and same lane state.
+ */
+function laneShareAccessChangeNotice(
+  before: LaneShareGuestState | null,
+  after: LaneShareGuestState | null,
+  giverLabel: string | null,
+): string | null {
+  if (!before || !after) return null;
+  const owner = giverLabel ?? "The owner";
+  if (before.state !== after.state) return after.state === "paused" ? `${owner} paused this lane.` : `${owner} opened this lane again.`;
+  if (sameLaneShareRights(before.rights, after.rights)) return null;
+  const preset = laneShareRightsPreset(after.rights);
+  const level = preset === "custom" ? "custom access" : `${LANE_SHARE_PRESET_LABELS[preset]} access`;
+  return `${owner} changed your access. You now have ${level}.`;
+}
+
+/**
  * Re-reads the guest's own rights, limits and who is present, from the host.
  * The host signals a change (`guestStateChanged`, no data); a slow timer of
  * an open view is the fallback. `withSessions` also re-reads the lane's
@@ -288,9 +306,17 @@ export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntr
     const offSessions = connection.on("sessions", (list) => {
       useLaneShareGuestStore.setState((state) => ({ sessions: { ...state.sessions, [entry.grantId]: list } }));
     });
+    // The host closed and let the guest back in. That happens for more than a
+    // rights change (a sync restart, a failed check of its shares), so the
+    // notice shows only when the rights or the lane's state really differ.
     const offAccess = connection.on("accessChanged", () => {
-      setNotice(entry.grantId, { code: "lane_share_rights_changed", message: "Access changed. The owner changed what you can do here." });
-      void refreshLaneShareGuestState(entry.grantId);
+      const before = useLaneShareGuestStore.getState().guestStates[entry.grantId] ?? null;
+      void refreshLaneShareGuestState(entry.grantId, { withSessions: true }).then(() => {
+        const after = useLaneShareGuestStore.getState().guestStates[entry.grantId] ?? null;
+        const giver = useLaneShareGuestStore.getState().received?.find((row) => row.grantId === entry.grantId)?.giverLabel ?? null;
+        const notice = laneShareAccessChangeNotice(before, after, giver);
+        if (notice) setNotice(entry.grantId, { code: "lane_share_rights_changed", message: notice });
+      });
     });
     // Rights can change what the guest sees, so the session list is read again too.
     const offChanged = connection.on("guestStateChanged", () => {
