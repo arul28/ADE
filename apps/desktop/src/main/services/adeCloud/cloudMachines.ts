@@ -51,6 +51,9 @@ type Logger = {
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
 export const CLOUD_MACHINE_KEY_METADATA = "ade_machine_key";
 
+/** Who a read of the account's computers was asked for, and when (`startRead`). */
+export type CloudRead = { accountId: string | null; startedAtMs: number };
+
 export type CloudMachinesDeps = {
   /** ADE Cloud for this account, or null when it has no access. */
   client: () => Promise<CloudProvider | null>;
@@ -66,6 +69,15 @@ export type CloudMachinesDeps = {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** Every good read of the account's computers (the lane follower, `cloudLaneFollow.ts`). */
   onInstancesRead?: (instances: CloudInstance[]) => void;
+  /**
+   * A good read listed other computers than the good read before it, for the
+   * same account: one was made or one is gone, perhaps from another device.
+   * `gone` are the computers the earlier read listed and this one does not,
+   * with the machine key each had joined with (null before it joined).
+   */
+  onMachinesChanged?: (change: { gone: Array<{ instanceId: string; machineKey: string | null }> }) => void;
+  /** The signed-in account, so a sign-in as someone else is never read as their computers going away. */
+  accountId?: () => string | null;
   logger?: Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -282,8 +294,55 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   let knownKeysRead: Promise<boolean> | null = null;
   /** From the last account read that worked, so a failed read doesn't bring deleted computers' rows back. */
   let lastDeletedInstanceIds: string[] = [];
+  /**
+   * The computers the last good read listed (id to machine key), and for
+   * which account. Null before the first good read of this process: a
+   * computer deleted while the app was closed is only missing from the lists,
+   * never "gone" here.
+   */
+  let lastListed: { accountId: string; startedAtMs: number; keys: Map<string, string | null> } | null = null;
 
-  function recordRead(instances: CloudInstance[]): void {
+  function startRead(): CloudRead {
+    return { accountId: deps.accountId?.() ?? null, startedAtMs: now() };
+  }
+
+  /**
+   * Compares one good read with the one before it. `read` is the account the
+   * read was asked for and when it was asked: a read that started before the
+   * last one compared is older news (a computer made since is missing from
+   * it), so it changes nothing.
+   */
+  function noteListed(instances: readonly CloudInstance[], read: CloudRead): void {
+    const { accountId, startedAtMs } = read;
+    if (!accountId || (deps.accountId && deps.accountId() !== accountId)) {
+      // Signed out, or the account changed while this read ran: nothing to compare with.
+      lastListed = null;
+      return;
+    }
+    const sameAccount = lastListed?.accountId === accountId;
+    if (sameAccount && startedAtMs < lastListed!.startedAtMs) return;
+    const keys = new Map<string, string | null>();
+    for (const instance of instances) {
+      if (instance.status === "deleted") continue;
+      keys.set(instance.id, instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null);
+    }
+    const previous = sameAccount ? lastListed!.keys : null;
+    lastListed = { accountId, startedAtMs, keys };
+    if (!previous) return;
+    const gone = [...previous]
+      .filter(([instanceId]) => !keys.has(instanceId))
+      .map(([instanceId, machineKey]) => ({ instanceId, machineKey }));
+    const made = [...keys.keys()].some((instanceId) => !previous.has(instanceId));
+    if (!gone.length && !made) return;
+    if (gone.length) logger.info?.("cloud.machines_gone", { instanceIds: gone.map((machine) => machine.instanceId) });
+    try {
+      deps.onMachinesChanged?.({ gone });
+    } catch (error) {
+      logger.warn?.("cloud.machines_changed_listener_failed", { error: getErrorMessage(error) });
+    }
+  }
+
+  function recordRead(instances: CloudInstance[], read: CloudRead): void {
     knownMachineKeys = liveMachineKeys(instances);
     lastRead = { instances, atMs: now() };
     try {
@@ -291,6 +350,8 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     } catch (error) {
       logger.warn?.("cloud.instances_read_listener_failed", { error: getErrorMessage(error) });
     }
+    // After the lane follower: a lane that moved is re-pointed before its old computer is forgotten.
+    noteListed(instances, read);
   }
 
   /** One bounded read of the account's computers, shared by concurrent callers. True when it worked. */
@@ -298,11 +359,12 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     if (knownKeysRead) return knownKeysRead;
     const read = (async () => {
       try {
+        const asked = startRead();
         recordRead(await withDeadline(
           client.listInstances(),
           KNOWN_KEYS_READ_TIMEOUT_MS,
           () => new Error(`ADE Cloud didn't answer in ${KNOWN_KEYS_READ_TIMEOUT_MS / 1000} s.`),
-        ));
+        ), asked);
         return true;
       } catch (error) {
         lastFailedReadAtMs = now();
@@ -323,6 +385,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   async function list(): Promise<CloudMachinesResult> {
     const client = await deps.client();
     if (!client) return emptyResult("not_connected", (await deps.whyNoClient?.()) ?? null);
+    const asked = startRead();
     let instances: CloudInstance[];
     try {
       instances = await client.listInstances();
@@ -335,7 +398,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     if (account) lastDeletedInstanceIds = account.deletedInstanceIds;
     const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");
-    recordRead(instances);
+    recordRead(instances, asked);
     const machines = live.map((instance) => toCloudMachine(instance, catalog));
     return {
       state: "ok",
@@ -369,7 +432,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
       };
     }
-    if (code === "out_of_hours" || code === "over_plan_disk") {
+    if (code === "out_of_hours" || code === "over_plan_disk" || code === "over_plan_limits") {
       return { ok: false, blocker: code, message: getErrorMessage(error) };
     }
     // A disk refusal keeps its reason, so a notice can offer the way out (extra disk, a bigger size).
@@ -570,6 +633,14 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       });
       if (client) await readKnownMachineKeys(client, "startup");
     },
+    /**
+     * A good read of the account's computers made elsewhere (the sleep watch):
+     * compared with the last one, so a computer made or deleted from another
+     * device is noticed on a read ADE makes anyway (`onMachinesChanged`).
+     */
+    noteInstances: (instances: CloudInstance[], read: CloudRead): void => noteListed(instances, read),
+    /** The account and time to hand `noteInstances` with a read made elsewhere: taken just before that read. */
+    startRead: (): CloudRead => startRead(),
     /** Every computer from the last good read, when it is at most `maxAgeMs` old; else null. */
     recentInstances: (maxAgeMs: number): CloudInstance[] | null =>
       lastRead && now() - lastRead.atMs <= maxAgeMs ? lastRead.instances : null,

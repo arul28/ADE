@@ -345,15 +345,20 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       };
     },
 
-    async billingCheckout(plan): Promise<CloudCheckoutResult> {
-      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus" } }));
+    async billingCheckout(plan, cleanup): Promise<CloudCheckoutResult> {
+      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", ...(cleanup ? { cleanup } : {}) } }));
       if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
-        // A downgrade over the cheaper plan's limits: what they will free, for the warning.
-        const cleanup = readCloudPlanCleanup(body.cleanup);
-        return { url: null, change: body.change, ...(cleanup ? { cleanup } : {}) };
+        // A downgrade with a pick: the computers ADE frees now. Without one, over the cheaper plan: what goes over.
+        const over = readCloudPlanCleanup(body.cleanup);
+        const freeing = Array.isArray(body.freeing) ? body.freeing.filter((id): id is string => typeof id === "string") : null;
+        return { url: null, change: body.change, ...(over ? { cleanup: over } : {}), ...(freeing ? { freeing } : {}) };
       }
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
+    },
+
+    async pickPlanCleanup(input): Promise<CloudAccountState> {
+      return await request("POST", CLOUD_PATHS.billingPlanCleanup, { body: input }) as CloudAccountState;
     },
 
     async billingPortal(): Promise<{ url: string }> {

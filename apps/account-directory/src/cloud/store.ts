@@ -171,11 +171,14 @@ export type AccountRow = {
   free_refused_at: number | null;
   /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
   account_created_at: number | null;
-  /** A cheaper plan's limits (migration 0027, `planCleanup.ts`): when ADE frees what is over them; null while the account fits. */
+  /** Unused since migration 0032 (the grace design's due time and warned list); always null. */
   plan_cleanup_due_at: number | null;
-  /** The computers the person was warned about, as JSON `{ instanceId: dueAt }`: only these are ever freed, each from its own due time. */
   plan_cleanup_warned_json: string | null;
-  /** The last run that freed or kept something (`CloudPlanCleanupDone` as JSON), and when. */
+  /** The person's pick of computers to free for a cheaper plan, while ADE frees it (migration 0032, `planCleanup.ts` `PlanCleanupChoice`). */
+  plan_cleanup_choice_json: string | null;
+  /** When the person was told the account is over the plan in force (new computers refused); null while it fits. */
+  plan_over_told_at: number | null;
+  /** The last pick's outcome so far (`CloudPlanCleanupDone` as JSON), and when it last changed. */
   plan_cleanup_result_json: string | null;
   plan_cleanup_result_at: number | null;
   /** Timed wake-ups cancelled this period (`accountNotices.ts`): when, how many, and why. */

@@ -822,11 +822,18 @@ export function createSyncAccountDirectoryHealth(
 export type SyncRouteHealth = {
   listener: {
     listenerBound: boolean;
+    /** Some local route (the port itself, or a side door) answers as ADE. */
     loopbackAdeValidated: boolean;
     port: number | null;
     lastFailureAt: string | null;
     reason: string | null;
     lastSuccessAt: string | null;
+    /**
+     * Program name of another process holding 127.0.0.1:<port> (e.g.
+     * "workerd"); never a path or arguments. Also set while a side door
+     * answers in its place.
+     */
+    shadowedBy?: string | null;
   };
   tailscale: {
     enabled: boolean;
@@ -2933,6 +2940,8 @@ export const PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS: readonly ProviderAccountRe
 
 export type SyncRemoteCommandAction =
   | "analytics.capture"
+  | "announcements.getSeen"
+  | "announcements.markSeen"
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"

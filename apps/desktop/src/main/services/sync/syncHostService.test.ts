@@ -832,6 +832,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     );
   });
 
+  // `tailscale serve` changes are machine-global and land in the order issued
+  // (one queue): a newer publish waits for an older one, so a failing older
+  // write can never land after it and leave the route stale.
   it("keeps newer forced tailnet publishes when an older serve attempt fails", async () => {
     const previousEnv = {
       ADE_TAILSCALE_CLI: process.env.ADE_TAILSCALE_CLI,
@@ -917,15 +920,16 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     await waitFor(() => execFileMock.mock.calls.length === 1);
 
     host.refreshLanDiscovery({ forceTailnet: true });
-    await waitFor(() => execFileMock.mock.calls.length === 2);
-
-    callbacks[1]?.(null, { stdout: "", stderr: "" } as any, "");
-    await waitFor(() => host.getTailnetDiscoveryStatus().state === "published");
+    // The newer publish waits for the older serve to finish.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(execFileMock.mock.calls.filter(([, args]) => args.includes("--bg"))).toHaveLength(1);
 
     const staleError = Object.assign(new Error("older tailscale serve failed"), { stderr: "temporary failure" });
     callbacks[0]?.(staleError, "", "temporary failure");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => callbacks.length === 2);
 
+    callbacks[1]?.(null, { stdout: "", stderr: "" } as any, "");
+    await waitFor(() => host.getTailnetDiscoveryStatus().state === "published");
     expect(host.getTailnetDiscoveryStatus().state).toBe("published");
     host.refreshLanDiscovery();
     await new Promise((resolve) => setTimeout(resolve, 0));

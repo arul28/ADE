@@ -77,7 +77,6 @@ export const IPC = {
   appCommandsReady: "ade.app.commandsReady",
   appRequestWindowClose: "ade.app.requestWindowClose",
   appSetTitleBarOverlay: "ade.app.setTitleBarOverlay",
-  appPlaceNoticeLayer: "ade.app.placeNoticeLayer",
   appProjectChanged: "ade.app.projectChanged",
   appProjectBindingChanged: "ade.app.projectBindingChanged",
   appOpenExternal: "ade.app.openExternal",
@@ -1195,6 +1194,7 @@ export const IPC = {
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
   cloudSetExtraDisk: "ade.cloud.setExtraDisk",
+  cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
   cloudRedeemInvite: "ade.cloud.redeemInvite",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",

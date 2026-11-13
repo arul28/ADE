@@ -24,7 +24,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { writeJsonWithPrevious } from "../state/durableFile";
-import { describe, expect, it, test, vi } from "vitest";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
 import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { createJiraCredentialService } from "../jira/jiraCredentialService";
@@ -1308,6 +1308,62 @@ describe("createAgentChatService", () => {
       expect(status?.phase).toBe("running");
       expect(status?.ownedElsewhere).toEqual({ pid: OWNER.pid, socketPath: OWNER.socketPath });
       service.forceDisposeAll();
+    });
+
+    // A lane's test brain that picked the chat up must not lock the person out:
+    // the machine brain asks it for the chat (over its socket, the boundary
+    // faked here) and sends once it lets go.
+    describe("taking it back from a lane's test brain", () => {
+      const live: Array<{ forceDisposeAll: () => void }> = [];
+      afterEach(() => {
+        for (const service of live.splice(0)) service.forceDisposeAll();
+      });
+      const twoBrains = async (askTestBrain?: (sessionId: string) => Promise<unknown>) => {
+        const testBrainRegistry = {
+          pid: process.pid,
+          startedAt: "2026-11-13T03:56:00.000Z",
+          isProcessIdentityLive: () => true,
+        };
+        installClaudeResponseFixture({ sdkSessionId: "sdk-test-brain", responseText: "Done in the test brain." });
+        const testBrain = createService({ processRegistry: testBrainRegistry, runtimeSocketPath: "/tmp/test-brain.sock" });
+        const session = await testBrain.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        await testBrain.service.runSessionTurn({ sessionId: session.id, text: "start", timeoutMs: 15_000 });
+        expect(readPersistedChatState(session.id).runtimeOwner?.socketPath).toBe("/tmp/test-brain.sock");
+        const machineBrain = createService({
+          processRegistry: { pid: process.pid, startedAt: "2026-11-13T04:03:16.000Z", isProcessIdentityLive: () => true },
+          runtimeSocketPath: "/tmp/machine-brain.sock",
+          requestChatRuntimeRelease: ({ sessionId }: { sessionId: string }) =>
+            askTestBrain ? askTestBrain(sessionId) : testBrain.service.releaseChatRuntime({ sessionId }),
+        });
+        live.push(testBrain.service, machineBrain.service);
+        return { machineBrain: machineBrain.service, testBrain: testBrain.service, sessionId: session.id };
+      };
+
+      it("sends from the machine brain once the test brain hands the chat back, and keeps it there", async () => {
+        const { machineBrain, testBrain, sessionId } = await twoBrains();
+        const { send } = installClaudeResponseFixture({ sdkSessionId: "sdk-test-brain", responseText: "Continued here." });
+
+        await machineBrain.runSessionTurn({ sessionId, text: "continue here", timeoutMs: 15_000 });
+
+        expect(send).toHaveBeenCalledWith(expect.stringContaining("continue here"));
+        expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/machine-brain.sock");
+        // The test brain still has the chat loaded; its next save must not
+        // erase the machine brain's claim.
+        await testBrain.updateSession({ sessionId, title: "Renamed in the test brain" });
+        expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/machine-brain.sock");
+      });
+
+      it("refuses in plain words, starting nothing, while the test brain is still working", async () => {
+        const { machineBrain, sessionId } = await twoBrains(async () => ({ released: false, reason: "busy" }));
+        const { send } = installClaudeResponseFixture({ sdkSessionId: "sdk-test-brain", responseText: "Must not run." });
+
+        const error = await machineBrain.sendMessage({ sessionId, text: "continue here" }).then(() => null, (caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(ChatRuntimeOwnedElsewhereError);
+        expect((error as Error).message).toContain("still working in another copy of ADE");
+        expect(send).not.toHaveBeenCalled();
+        expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/test-brain.sock");
+      });
     });
 
     it("adopts the chat once its owner is gone", async () => {

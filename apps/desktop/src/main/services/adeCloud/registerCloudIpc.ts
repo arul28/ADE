@@ -267,6 +267,20 @@ export function registerCloudIpc(args: {
     knownClient: () => knownCloudProvider(credentials),
     removeAccountMachine: args.removeAccountMachine,
     onInstancesRead: (instances) => laneFollower.note(instances),
+    accountId: () => credentials.accountId(),
+    // A computer made or deleted elsewhere (another device, the server's own
+    // cleanup): this computer's saved connections to one that is gone go, and
+    // every window reads the list again (the dashboard, the machine lists).
+    onMachinesChanged: ({ gone }) => {
+      for (const machine of gone) {
+        try {
+          args.forgetMachineConnections?.(machine);
+        } catch (error) {
+          logger.warn("cloud.gone_machine_forget_failed", { instanceId: machine.instanceId, error: getErrorMessage(error) });
+        }
+      }
+      sendToAllWindows(IPC.cloudStatusChanged);
+    },
     logger,
   });
   readMachinesNow = async () => (await machines.list()).state === "ok";
@@ -281,7 +295,16 @@ export function registerCloudIpc(args: {
     return await laneFollower.follow(typeof request.laneId === "string" ? request.laneId : "", { connect: request.connect !== false });
   });
   // Off the list this asks nothing: access is read at sign-in and on focus only.
-  startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
+  startCloudSleepWatch({
+    client: async () => knownCloudProvider(credentials),
+    logger,
+    firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000,
+    // Its read is one more good read of the list: a computer deleted from another device shows there.
+    onInstancesRead: () => {
+      const read = machines.startRead();
+      return (instances) => machines.noteInstances(instances, read);
+    },
+  });
   // Remote connections wake a sleeping box the person is about to use. Only a
   // machine known as a cloud box is looked up (`knowsBox`: at most one bounded
   // read for an unknown one), so a Connect to a laptop barely waits.
@@ -448,6 +471,22 @@ export function registerCloudIpc(args: {
     }
   });
 
+  /**
+   * The person's pick for an account already over a cheaper plan: the server
+   * frees exactly those computers. Account-level (the server acts on the
+   * account's computers, wherever they are), so no pin.
+   */
+  ipcMain.handle(IPC.cloudPickPlanCleanup, async (event, arg: { planId?: unknown; push?: unknown; instanceIds?: unknown }): Promise<CloudAccountState | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPickPlanCleanup)) return null;
+    const pick = readPick(arg);
+    const planId = arg?.planId === "free" || arg?.planId === "plus" || arg?.planId === "pro" ? arg.planId : null;
+    if (!pick || !planId) throw new Error("ADE couldn't read which computers to free.");
+    const account = await billingCall(async () => (await requireCloudProvider(credentials)).pickPlanCleanup({ planId, ...pick }));
+    logger.info("cloud.plan_cleanup_picked", { plan: planId, computers: pick.instanceIds.length, push: pick.push });
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return account;
+  });
+
   // Account-level: extra disk is the account's, shared by all its computers, so no pin.
   ipcMain.handle(IPC.cloudSetExtraDisk, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraDisk)) return null;
@@ -464,16 +503,24 @@ export function registerCloudIpc(args: {
   /**
    * Opens Stripe's checkout for a plan in the person's browser. On a paid
    * account asking for its other plan, the server changes the plan itself
-   * and nothing opens. Account-level, so no pin.
+   * and nothing opens; a downgrade carries the person's pick (`cleanup`).
+   * Account-level, so no pin: the server frees the picked computers itself,
+   * wherever they are.
    */
-  ipcMain.handle(IPC.cloudOpenCheckout, async (event, arg?: { plan?: unknown }): Promise<CloudOpenCheckoutResult> => {
+  ipcMain.handle(IPC.cloudOpenCheckout, async (event, arg?: { plan?: unknown; cleanup?: unknown }): Promise<CloudOpenCheckoutResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
     const plan = arg?.plan === "pro" || arg?.plan === "plus" ? arg.plan : undefined;
-    const result = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout(plan));
+    const cleanup = readPick(arg?.cleanup);
+    // A pick that was sent but can't be read must not become "no pick": the plan would change and nothing the person chose would go.
+    if (arg?.cleanup != null && !cleanup) {
+      logger.warn("cloud.plan_cleanup_pick_unreadable", { plan: plan ?? null });
+      throw new Error("ADE couldn't read the computers you picked, so your plan didn't change. Try again.");
+    }
+    const result = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout(plan, cleanup ?? undefined));
     if (result.url == null) {
-      logger.info("cloud.plan_changed", { change: result.change });
+      logger.info("cloud.plan_changed", { change: result.change, freeing: result.freeing?.length ?? 0 });
       sendToAllWindows(IPC.cloudStatusChanged);
-      return { opened: false, change: result.change, ...(result.cleanup ? { cleanup: result.cleanup } : {}) };
+      return { opened: false, change: result.change, ...(result.cleanup ? { cleanup: result.cleanup } : {}), ...(result.freeing ? { freeing: result.freeing } : {}) };
     }
     await openExternalUrl(result.url);
     args.recordPlan?.("plan_checkout");
@@ -661,6 +708,15 @@ export function registerCloudIpc(args: {
     return result.state === "refused" ? { state: "refused", message: result.message } : { state: result.state };
   };
   return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair, gitPreflight };
+}
+
+/** A pick from the renderer (`CloudPlanCleanupPick`), or null when it isn't one. The server checks it again. */
+function readPick(value: unknown): { push: boolean; instanceIds: string[] } | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { push?: unknown; instanceIds?: unknown };
+  if (typeof raw.push !== "boolean" || !Array.isArray(raw.instanceIds)) return null;
+  const ids = raw.instanceIds.filter((id): id is string => typeof id === "string" && isCloudInstanceId(id));
+  return ids.length === raw.instanceIds.length ? { push: raw.push, instanceIds: ids } : null;
 }
 
 /** This app's ADE release, or null for a development build (whose version may not be published). */

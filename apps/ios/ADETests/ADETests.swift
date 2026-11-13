@@ -3845,6 +3845,59 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.activeHostProfile?.discoveredLanAddresses, ["10.0.0.9"], "A new address is a move, not noise.")
   }
 
+  // Several ADE installs on one computer (ADE, ADE Beta, a dev home) share its
+  // addresses and name, each on its own port. Matching an advertisement by
+  // address took another install's port: the phone dialed the wrong ADE on
+  // Wi-Fi, was refused, and fell back to the relay.
+  @MainActor
+  func testDiscoveryMatchesTheSavedInstallByDeviceIdNotSharedAddress() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let beta = HostConnectionProfile(
+      hostIdentity: "studio-beta-id",
+      hostName: "Mac Studio",
+      port: 8793,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-beta-id",
+      lastSuccessfulAddress: "192.168.1.113",
+      savedAddressCandidates: ["192.168.1.113"],
+      discoveredLanAddresses: ["192.168.1.113"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(beta, token: "beta-secret", makeActive: true)
+    func advertisement(id: String, port: Int) -> DiscoveredSyncHost {
+      DiscoveredSyncHost(
+        id: id,
+        serviceName: "ADE Sync Mac Studio \(port)",
+        hostName: "Mac Studio",
+        hostIdentity: id,
+        port: port,
+        addresses: ["192.168.1.113"],
+        tailscaleAddress: nil,
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0",
+        projectIds: [],
+        projectNames: [],
+        projectCount: 0,
+        lastResolvedAt: "2026-05-10T10:00:00.000Z"
+      )
+    }
+
+    service.applyDiscoveredHostsForTesting([
+      advertisement(id: "studio-stable-id", port: 8787),
+      advertisement(id: "studio-beta-id", port: 8794),
+    ])
+
+    XCTAssertEqual(service.activeHostProfile?.port, 8794, "The saved install follows its own advertisement.")
+    let attempts = try service.endpointAttemptPlan(for: try XCTUnwrap(service.activeHostProfile), preferLiveCandidatesOnly: true)
+    let lan = attempts.filter { $0.address == "192.168.1.113" }
+    XCTAssertEqual(lan.first?.port, 8794, "The first Wi-Fi dial goes to this install's port.")
+    XCTAssertFalse(lan.contains { $0.port == 8787 }, "Never another install's live port.")
+  }
+
   @MainActor
   func testUserDisconnectedPrimaryListsAsAvailable() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))

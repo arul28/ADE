@@ -57,7 +57,7 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 | Project | Surface | Started in |
 |---|---|---|
-| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process (the notice layer window shares the renderer's process and runs none of its own code, so its errors are the renderer's) | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
+| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
 | `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
 | `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
 | `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
@@ -100,6 +100,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
 - a Copilot chat failure ADE could have caused (`main/services/chat/copilotSentry.ts`), tagged `provider: copilot`, `copilot.kind` and `copilot.model` and grouped per kind and cause: a `session.error` that is not sign-in, rate limit, quota or an outage (`session_error`, titled by its kind alone and grouped by error type and code, because a provider's message can quote the request; the message and both GitHub request ids are in the scrubbed extra), a failed turn that was not interrupted (`turn_failed`), the SDK worker dying under a live chat (`worker_exited`), the runtime refusing to list or run a slash command (`commands_list_failed`, `command_failed`), a refused model or permission change (`setting_failed`), and a permission or question handler that threw (`handler_failed`). Each sent turn leaves a `copilot` breadcrumb with its model, agent mode, permission level, attachment count and the command name, never the prompt. Its other failures (a lost conversation, a model list or MCP sign-in lookup that failed) are `agent_chat.copilot_*` warn lines, so Sentry Logs only;
 - a Work list (`sessions` or `lanes`) whose first load has failed for 30 seconds while the machine it reads is connected, or is this computer (`Work <surface> list could not load`, `renderer/lib/firstLoadRetry.ts`), once per retry run, grouped per surface and binding kind. It carries the attempts, how long it has been failing, a fixed error class and code (never the message, which can name an address), the connection state and the `correlationId` of the failed dial, so the issue links to that machine's `remote.connect_failed`. A machine that really is offline logs `work.first_load_waiting` instead, and a list that recovers logs `work.first_load_recovered`.
+- on iOS, a live machine connection (the focused one or a fleet roster link) that dropped without a close frame, code 1006 or none (`area: sync_live_drop`, `SyncLiveDropReport` in `SyncRecoveryPolicy.swift`). It carries the connection kind (`focused`, `fleet`), the route kind (`lan`, `tailnet`, `relay`), the close code and an age bucket (`under_10s` … `over_10m`), never an address or machine name, at most once per connection and route kind per 10 minutes. A saved-port change leaves a `sync.route` breadcrumb (connection kind and whether the link was live), so the report shows whether the computer's sync port moved just before. A drop with a close code (a host or relay closing on purpose) is not reported;
 - on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
 
 **Release-health lines.** A few info lines go to Sentry Logs (not issues, not breadcrumbs) so a release shows that it ran and updated cleanly: `app.started` (desktop, once per launch: version, running and selected track, package channel, platform, arch, whether it is the first launch after an update), `brain.started` (the brain, once per start: version, tracks, role, platform, arch), `sync.host_started` (the brain could take connections again), `autoUpdate.update_downloaded`, `autoUpdate.track_switch_started`, `autoUpdate.quit_and_install`, `db.snapshot_written` (the database copy taken before a new version opens it), `startupRecovery.went_back` (a machine left this build from the "ADE could not start" window: from and to version, trigger, databases restored) and `agent_chat.restart_resume_armed` (`RELEASE_HEALTH_EVENTS` in `shared/sentry/logBridge.ts`). They share the Sentry Logs budget below. The release skill's beta gate (`scripts/release-tools/beta-gate.mjs`) reads them, with the issues first seen in a beta and the error-level log lines, before a beta becomes stable.
@@ -223,7 +224,19 @@ asked for it.
 mis-reported as an event-loop stall. Sleeps of 2 to 59 seconds are logged as
 `brain.suspend_gap` too, and the watchdog's lines name the `pid` and
 `socketPath` of the brain that wrote them (`brain.recovered_from_wedge` is the
-exception, since it describes the previous process).
+exception, since it describes the previous process). A freeze the machine
+caused (memory pressure, a stuck drive) is waited out instead of killed:
+the worker writes `brain.loop_watchdog_waiting_on_machine` (warn, to stderr:
+cause, blocked time, fault and CPU counts) once per wait and
+`brain.loop_watchdog_machine_wait_ended` (info) when it ends, and every wedge
+record carries a closed `freezeCause` (`self`, `memory`, `drive`). A machine
+brain taking a chat back from a lane's test brain logs
+`agent_chat.runtime_reclaim` (info: session id, whether it was released),
+`agent_chat.runtime_reclaim_failed` (warn, so it reaches Sentry Logs through
+the log bridge) when the other brain did not answer, and the releasing brain
+logs `agent_chat.runtime_released_to_machine_brain`. None is a PostHog event:
+both happen without a person deciding anything, and a restart that does
+follow is already counted by `ade_brain_recovered`.
 `brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /
 `brain.memory_restart_deferred` record the RSS slope and the planned
@@ -834,6 +847,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
 | `chat` | `provider_sign_in` | `completed`, `cancelled`, `failed` | coarse provider family (`other` for the CLIs outside it); never the account, link, code, machine, or chat |
 | `chat` | `mcp_server_remove_requested` | `completed` (removed), `cancelled` (kept), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, or the chat |
+| `chat` | `machine_removal_requested` | `completed` (removed), `cancelled` (kept, or the card closed), `failed` (unanswered in time or the request failed) | omitted; never the computer's key, name or platform, the account, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
@@ -890,7 +904,11 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 at the brain action that owns it. The connect card and the MCP server card do
 the same: `chat/connect_requested` at `integration_connect.request`,
 `chat/mcp_server_requested` at `mcp_registry.request`, and
-`chat/mcp_server_remove_requested` at `mcp_registry.remove`. When an MCP server name
+`chat/mcp_server_remove_requested` at `mcp_registry.remove`. The computer
+removal card (`ade machines remove` from a chat) records
+`chat/machine_removal_requested` once, in the brain's `account.deleteMachine`
+route that raised it; a second chat told that a card is already open
+(`pending_approval`) asked nothing and records nothing. When an MCP server name
 is a built-in integration, the connect card runs instead and records only
 `connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day
@@ -2116,7 +2134,8 @@ event at the expansion owner boundary (`chatMentionService` via the
 `onChatMentionsExpanded` hook, produced by
 `captureChatMentionsExpandedAnalytics`) with `feature: "chat"`,
 `action: "mention_expanded"`, `outcome: "completed"`, and `source: "runtime"`.
-It fires only when a send's text actually gained `<ade-mention>` pointer
+It fires for chat sends and for text a CLI's input box sends
+(`typeIntoAgentCliNow`), only when the text actually gained `<ade-mention>` pointer
 blocks — never per keystroke, per suggestion query, or on the idempotent
 second expansion pass — and carries no mention targets, titles, previews, or
 counts. An installation-wide `chat_mention_expanded` deduplication key with a

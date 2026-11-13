@@ -287,6 +287,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       // The desktop's post-update resume arm: machine-wide, and each row it
       // creates spends a real turn. A session-bound agent must not drive it.
       "armUpdateResume",
+      // The machine brain taking a chat back from a lane's test brain. It
+      // stops that brain's agent process; an agent must not call it.
+      "releaseChatRuntime",
       // Thread comments are the user's unsent review of an agent's reply. An
       // agent that could write or delete them could edit what the user is
       // about to tell it.
@@ -937,6 +940,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // desktop names, and only the desktop's main process should do that.
     "listInterruptedChats",
     "armUpdateResume",
+    "releaseChatRuntime",
     "listClaudePlugins",
     "listCodexPlugins",
     "listClaudeSessions",

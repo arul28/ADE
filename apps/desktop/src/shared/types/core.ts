@@ -51,6 +51,8 @@ export type LocalRuntimeStatus = {
     lastCommand: string;
     blockedMs: number;
     ts: string;
+    /** Who froze the loop: the brain itself, or the machine past the wait ceiling. */
+    freezeCause?: "self" | "memory" | "drive";
   } | null;
   /**
    * "isolated" means the desktop fell back to an app-owned no-sync brain

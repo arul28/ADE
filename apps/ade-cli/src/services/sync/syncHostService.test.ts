@@ -194,9 +194,11 @@ describe("staleAdeTailnetServePorts", () => {
     const json = serveStatus({
       "8787": "127.0.0.1:8787",
       "8788": "127.0.0.1:8788",
+      // A side door a crashed brain pointed Tailscale at, a few ports above.
+      "8789": "127.0.0.1:8791",
       "8852": "127.0.0.1:8852",
     });
-    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788]);
+    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788, 8789]);
   });
 
   it("leaves a hand-rolled serve in the same range alone", () => {
@@ -12449,7 +12451,7 @@ describe("sync host handoff over a shared listener", () => {
   });
 });
 
-describe("shared listener waitUntilListening ADE-validation gate", () => {
+describe("shared listener waitUntilListening loopback verdict", () => {
   beforeEach(() => {
     publishMock.mockReset();
     spawnMock.mockReset();
@@ -12463,7 +12465,11 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
     publishMock.mockImplementation(() => ({ on: vi.fn(), stop: vi.fn() }));
   });
 
-  it("force re-probes a shared listener at handoff and blocks discovery for a post-bind shadow", async () => {
+  // A program holding 127.0.0.1:<port> costs only the Tailscale route (Serve
+  // forwards to loopback). Relay pipes arrive in process and LAN reaches the
+  // wildcard bind, so the host keeps hosting; refusing to host here once took
+  // every route down at once.
+  it("keeps hosting through a post-bind loopback shadow and records it", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     let probeOk = true;
     const loopbackProbe = vi.fn(async (
@@ -12491,6 +12497,7 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",
       loopbackProbe,
+      inspectPort: (port) => ({ port, holders: [] }),
     });
     const boundPort = await listener.ensureListening([0]);
     const bindProbeCalls = loopbackProbe.mock.calls.length;
@@ -12501,82 +12508,13 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
 
     try {
-      await expect(host.waitUntilListening()).rejects.toThrow(/post-bind shadow/);
+      await expect(host.waitUntilListening()).resolves.toBe(boundPort);
       expect(loopbackProbe.mock.calls.length).toBeGreaterThan(bindProbeCalls);
-      expect(loopbackProbe).toHaveBeenLastCalledWith(
-        boundPort,
-        listener.getExpectedLoopbackNonce(),
-      );
-      expect(listener.getLoopbackValidationStatus()).toMatchObject({
-        port: boundPort,
-        loopbackAdeValidated: false,
-        reason: expect.stringMatching(/post-bind shadow/),
-      });
       expect(host.getLoopbackValidationStatus()).toMatchObject({
         port: boundPort,
         loopbackAdeValidated: false,
         reason: expect.stringMatching(/post-bind shadow/),
       });
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
-    } finally {
-      await host.dispose();
-      await listener.close();
-      cleanup();
-    }
-  });
-
-  it("throws before discovery when the shared listener loopback is not ADE-validated", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
-    const boundPort = await listener.ensureListening([0]);
-    // The brain-level listener bound, but its loopback probe never confirmed ADE.
-    vi.spyOn(listener, "getLoopbackValidationStatus").mockReturnValue({
-      port: boundPort,
-      loopbackAdeValidated: false,
-      lastFailureAt: new Date().toISOString(),
-      reason: `127.0.0.1:${boundPort} did not answer as ADE.`,
-      lastSuccessAt: null,
-    });
-    const host = createSyncHostService({
-      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
-      sharedListener: listener,
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
-
-    try {
-      await expect(host.waitUntilListening()).rejects.toThrow(/was not ADE-validated/);
-      // The host must refuse to advertise an unvalidated shared listener.
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
-    } finally {
-      await host.dispose();
-      await listener.close();
-      cleanup();
-    }
-  });
-
-  it("throws before discovery when the shared listener validated a different port", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
-    const boundPort = await listener.ensureListening([0]);
-    // Loopback was validated, but for a stale port that no longer matches the
-    // listener's live bind — the host must reject rather than publish it.
-    vi.spyOn(listener, "getLoopbackValidationStatus").mockReturnValue({
-      port: boundPort + 1,
-      loopbackAdeValidated: true,
-      lastFailureAt: null,
-      reason: null,
-      lastSuccessAt: new Date().toISOString(),
-    });
-    const host = createSyncHostService({
-      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
-      sharedListener: listener,
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
-
-    try {
-      await expect(host.waitUntilListening()).rejects.toThrow(/was not ADE-validated/);
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
     } finally {
       await host.dispose();
       await listener.close();

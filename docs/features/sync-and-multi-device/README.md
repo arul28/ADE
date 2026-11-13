@@ -2274,7 +2274,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `running`). A CLI that reports its own turn (Claude hooks, Codex OSC 7501;
   `ptyService.getTrackedCliTurn`) reads `idle` between turns and `awaiting`
   while it waits on the person, instead of `running` for as long as the
-  terminal lives. `attentionCount` (which drives hub badges and
+  terminal lives. A Claude CLI whose turn ended while its background agents
+  still work reads `running` until the last agent stops
+  (`backgroundAgentCount`). `attentionCount` (which drives hub badges and
   attention-first project sorting) counts chat rows, shells attached to a
   chat, and live agent CLI sessions that wait on the person. A standalone CLI
   session that exited non-zero never counts: it must not pin its project to
@@ -2881,12 +2883,23 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   missing lease, account switch, or expiry closes the control socket and active
   pipes. The normal ADE sync
   hello/pairing then runs inside that pipe. TLS terminates at the relay, so the
-  relay can inspect the handshake and subsequent sync traffic. Bridge
-  validation is **proactive**: `validateCurrentBridge()` re-probes the
-  loopback sync listener (matching port + identity nonce) whenever the control
-  socket opens and whenever the shared listener reports a fresh loopback
-  validation, serializing probes through the same validation queue used by
-  inbound opens. The listener itself arrives through `attachHostListener()`,
+  relay can inspect the handshake and subsequent sync traffic. **The pipe is
+  handed to the sync host in process** (`openInProcessTunnel` →
+  `SharedSyncListener.acceptRelayPipe`): the pipe socket itself becomes the
+  peer's socket, with `relay-bridge` provenance set by code. The relay never
+  dials `127.0.0.1:<port>`, so another program holding that address (a
+  `wrangler dev` on 8787 cut a phone off this way twice) cannot intercept
+  relay traffic, a port move never drops a relay peer, and the bridge key
+  ignores the port. The pipe carries the host's own `maxPayload`, and the
+  host's backpressure limits apply to it directly. The legacy loopback bridge
+  (a second socket to the listener plus a private proof header, below) remains
+  only for a listener without `acceptRelayPipe`, which production never
+  attaches. Bridge validation is **proactive**: `validateCurrentBridge()`
+  confirms the attached listener is still open (in process; the legacy bridge
+  re-probes the loopback listener for matching port + identity nonce) whenever
+  the control socket opens and whenever the shared listener reports a fresh
+  loopback validation, serializing checks through the same validation queue
+  used by inbound opens. The listener itself arrives through `attachHostListener()`,
   which `relayTunnelAuthorityGate` calls on every start from the runtime that
   owns the shared listener — not from the construction factory. The client is shared one-per-machine
   (`getSharedSyncTunnelClientService`, keyed by `sync-cloud-relay.json`) and is
@@ -3658,6 +3671,32 @@ so this stops the ordinary agent path, not a process that strips its
 environment. The desktop Account page and the web client remove through the
 directory directly, behind their own dialogs.
 
+**Removing a computer from a chat.** A caller that names a chat
+(`ade machines remove <name|key|id>` from an agent's shell) does not get the
+refusal. The brain that holds the chat raises a card in it
+(`apps/ade-cli/src/services/account/machineRemovalRequest.ts`) and the command
+waits for the answer:
+
+- The card shows the computer's name, platform, install, last-seen time and
+  online state, and what removal does. The buttons are Keep and Remove.
+- An online computer, or the computer that runs the chat, needs a second
+  "Remove anyway". Remove without it keeps the card open.
+- The card is user-only (`MACHINE_REMOVAL_REQUEST_METADATA_KEY` in
+  `isUserOnlyConsentCard`): an agent, a peer chat, the CTO tools, a lane-share
+  guest and the subagent relay are refused, and the card takes no typed answer.
+- The removal runs inside the person's accepted answer, on the brain that holds
+  the chat, with the same directory call as the person's own removal. The
+  answer travels to that brain with the chat's pin, so "this computer" on the
+  card means the chat's computer, not the window's.
+- The command exits 0 for `removed`, 2 for `kept` or `timed_out`, and 3 for
+  `pending_approval` (another chat already has a card open for that computer;
+  the same chat asking again joins its card).
+- Stopping the turn, deleting the chat or archiving it closes the card, and the
+  agent gets `kept`. A removal that the person started before the card closed
+  still reports `removed`.
+- A brain that does not hold the chat refuses with a message that sends the
+  person to the Account page.
+
 A refusal must not read like an outage. When the directory reaches a decision it
 answers a `403` with a machine-readable code — `machine_revoked` or
 `pairing_authentication_required` — carried on the publisher health's
@@ -4118,8 +4157,9 @@ already constrained the path to the project root.
 Relay controllers negotiate bridge readiness before sending an ADE envelope.
 They first open `wss://…/connect/<machineKey>?ready=2`. A current Worker sends
 `{"t":"accepted","v":2}` immediately, then sends
-`{"t":"ready","v":2}` only after the runtime control pipe and validated
-loopback listener are both open. ADE `hello` is forbidden before `ready`.
+`{"t":"ready","v":2}` only after the runtime control pipe is open and the
+sync host owns it (handed over in process, in the same tick as the pipe's
+`open`). ADE `hello` is forbidden before `ready`.
 If no `accepted` arrives within the short negotiation window, the controller
 abandons that socket and retries the same route on a **fresh** URL without the
 `ready` parameter for an old Worker. It never sends a legacy hello on the
@@ -4340,12 +4380,14 @@ feature is merged or because a deliberately isolated-port host is running.
   device backups — a restored phone re-pairs with the PIN.
 - **Account bearer transport (plaintext `account`)**: every
   `hello.auth.kind = "account"` is
-  accepted only when the shared listener verified that the socket came from
-  ADE's in-process cloud-relay bridge. The tunnel client attaches a private,
-  per-process 256-bit proof to its loopback WebSocket upgrade; the listener
-  validates the decoded proof with a constant-time comparison and carries the
-  resulting `relay-bridge` provenance through parked-socket host handoffs.
-  Missing, forged, or stale proof fails closed as a direct connection. The
+  accepted only when the socket came from ADE's in-process cloud-relay
+  bridge. The tunnel client hands each relay pipe to the listener through
+  `acceptRelayPipe`, which only code in the brain process can call, so the
+  `relay-bridge` provenance cannot be claimed from the network. (The legacy
+  loopback bridge instead attaches a private, per-process 256-bit proof to its
+  WebSocket upgrade, which the listener checks with a constant-time
+  comparison.) The provenance survives parked-socket host handoffs. A direct
+  connection without it fails closed. The
   runtime rejects the plaintext `account` bearer on LAN, tailnet, loopback, and
   every other
   direct route before verifying the bearer, even when that device already has
@@ -4581,6 +4623,56 @@ cannot be changed until it is.
 | Work chat move to another machine (desktop, phone, CLI and agents; clean or with uncommitted work) | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
+
+### Another program on the sync port's loopback address
+
+macOS and Windows let a second program bind `127.0.0.1:<port>` while ADE holds
+`*:<port>`, and that program then gets all local traffic for the port. The
+usual offender is `wrangler dev`, whose default port is ADE's 8787. What each
+route needs from loopback:
+
+- **Relay:** nothing. Pipes are handed to the host in process.
+- **LAN:** nothing. Peers reach the wildcard bind, so the account directory
+  publishes LAN whenever the listener is bound (`listenerBound`), not only
+  when loopback validates.
+- **Tailscale:** everything. Serve forwards to 127.0.0.1, so Tailscale
+  publishes only while some local route answers as this listener.
+
+**The public port does not move for a loopback shadow.** A phone that sees its
+machine's port change redials (seen on a real iPhone: a Wi-Fi socket dropped
+110 ms after a move), so the listener keeps its port and opens a **side door**:
+a second server bound on exactly `127.0.0.1:<free port>` (one of the 24 ports
+above; never an OS-assigned one, so a stale Tailscale entry left by a crash is
+still recognized by its shape, `adeLoopbackForwardPort`), wired like the main
+one (`createServerPair`) and validated
+with the same identity probe. `getLoopbackPort()` returns it, the validation
+status records it as `loopbackPort` (with `shadowedBy`, program name only), and
+Tailscale Serve (`--tcp` and the HTTPS route) forwards there while the
+tailnet-facing port stays the sync port. The listener re-checks every
+`SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request per
+address) and on `healNow()`; it records only the final verdict, so a working
+side door never flaps Tailscale. When loopback answers as ADE again the side
+door closes (its sockets kept until they close). Logs:
+`sync_listener.loopback_side_door_opened` / `_closed`. A startup bind on a
+wildcard accepts a loopback-shadowed candidate for the same reason.
+
+The port **does** move (`sync_listener.loopback_shadowed_at_runtime`, then
+`sync_listener.moved_off_shadowed_port` and `onPortChanged`) only when it has
+to: another program answers on one of this machine's own LAN addresses (the
+self-check probes each external IPv4 address; only a foreign answer counts,
+never a timeout or refusal), a loopback-only bind is shadowed, or the side door
+cannot open. Already-connected sockets stay up through any move: the old
+server stops accepting but its upgraded sockets are kept. The scope's sync
+service (or the projectless brain) updates the lease port, the device row,
+Bonjour, Tailscale Serve and the directory. The move back to the preferred
+port (normally 8787) once it frees is the hosting scope's sync service's job
+(every 15 s while it hosts); with no project host attached, the listener's own
+30 s self-check does it. The move back validates its
+candidate without touching the live port's status, so it cannot flap the route.
+A project host never refuses to start over a shadow
+(`sync_host.loopback_shadowed_hosting_degraded`). A loopback-only bind
+(`ADE_SYNC_BIND_HOST=127.0.0.1`) has nothing else to serve, so one whose every
+candidate is shadowed fails to bind and the startup loop retries.
 
 - **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
   even when device-registry `lastPort` is 8788. Zombie reap may terminate a

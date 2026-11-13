@@ -9,7 +9,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
@@ -5011,9 +5011,17 @@ declare global {
         /**
          * Checkout for Plus (the default) or Pro. A paid account asking for its
          * other plan changes it in place: nothing opens and `change` says when
-         * it applies (`now` for Pro, `next_period` for Plus).
+         * it applies (`now` for Pro, `next_period` for Plus). A downgrade over
+         * Plus's limits carries the person's pick (`cleanup`): the server
+         * frees exactly those computers once the plan changed.
          */
-        openCheckout?: (plan?: CloudPaidPlanId) => Promise<CloudOpenCheckoutResult>;
+        openCheckout?: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick) => Promise<CloudOpenCheckoutResult>;
+        /**
+         * The person's pick for an account already over a cheaper plan (a
+         * cancel in the billing portal, a plan that ended). Account level: the
+         * server frees the account's computers itself, so no pin.
+         */
+        pickPlanCleanup?: (input: { planId: CloudPlanId } & CloudPlanCleanupPick) => Promise<CloudAccountState | null>;
         openBillingPortal?: () => Promise<{ opened: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
@@ -5408,11 +5416,6 @@ declare global {
           zoomFactor?: number;
         }) => Promise<{ applied: boolean }>;
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
-      };
-      /** The bottom-right cards' own window over a live browser page. Absent or unavailable on the web build. */
-      noticeLayer?: {
-        available: boolean;
-        place: (rect: import("../shared/noticeLayer").NoticeLayerRect | null) => Promise<boolean>;
       };
       cto?: {
         // CTO calls take the CTO home machine's pin; null = the tab's binding.

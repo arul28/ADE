@@ -732,6 +732,38 @@ describe("createAgentChatService", () => {
       });
       accountOnlyBrain.service.forceDisposeAll();
 
+      // A chat the machine brain ran waits for it even while it is down (no
+      // fresh heartbeat yet after a restart): the dev brain must not resume it.
+      writePersistedChatState(unowned.id, {
+        ...readPersistedChatState(unowned.id),
+        runtimeOwner: {
+          brainId: "brain-machine-killed",
+          pid: 987_654_320,
+          startedAt: "2026-10-20T11:00:00.000Z",
+          adeHome: null,
+          socketPath: "/Users/me/.ade/sock/ade.sock",
+          claimedAt: "2026-10-20T11:00:00.000Z",
+        },
+      });
+      const devBrainDuringMachineRestart = createService({
+        db: scheduledWork.db,
+        runtimeSocketPath: "/tmp/dev-brain.sock",
+        machineBrainPid: () => null,
+        isMachineBrainSocket: (socketPath: string) => socketPath === "/Users/me/.ade/sock/ade.sock",
+        processRegistry: {
+          pid: process.pid,
+          startedAt: "2026-10-20T12:00:00.000Z",
+          isProcessIdentityLive: (pid: number) => pid === process.pid,
+          listLiveProcessIdentities: () => [{ pid: process.pid, startedAt: "2026-10-20T12:00:00.000Z" }],
+        },
+      });
+      await devBrainDuringMachineRestart.service.getChatTranscript({ sessionId: unowned.id });
+      expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      expect(devBrainDuringMachineRestart.sessionService.get(unowned.id)?.status).toBe("detached");
+      expect(readPersistedChatState(unowned.id).runtimeOwner?.brainId).toBe("brain-machine-killed");
+      devBrainDuringMachineRestart.service.forceDisposeAll();
+      writePersistedChatState(unowned.id, { ...readPersistedChatState(unowned.id), runtimeOwner: null });
+
       const { send } = installClaudeResponseFixture({
         sdkSessionId: "sdk-owned-by-dev-brain",
         responseText: "The dev brain's own chat ran.",

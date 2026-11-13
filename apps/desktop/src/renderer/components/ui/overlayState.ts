@@ -32,6 +32,22 @@ export function floatingLayerBusy(): boolean {
   return document.querySelector(FLOATING_LAYER_SELECTOR) != null;
 }
 
+const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "email", "tel", "password", "number"]);
+
+/**
+ * The person may be in the middle of writing: a focused text field that holds
+ * text, or a focused terminal (its draft lives on the screen, not in the
+ * helper textarea). Opening a modal now would take the keyboard mid-sentence.
+ */
+export function editingTextNow(): boolean {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  if (active.closest(".xterm")) return true;
+  if (active instanceof HTMLTextAreaElement) return active.value.trim().length > 0;
+  if (active instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(active.type) && active.value.trim().length > 0;
+  return active.isContentEditable && (active.textContent ?? "").trim().length > 0;
+}
+
 /** The launch gate (first-run setup) is up; it is not always marked as a dialog. */
 export function launchGateOpen(): boolean {
   return document.querySelector(".ade-gate") != null;
