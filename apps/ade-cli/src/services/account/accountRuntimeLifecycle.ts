@@ -1,5 +1,9 @@
 import fs from "node:fs";
 
+import { createPasswordService, type PasswordService, type PasswordsRelay } from "../passwords/passwordService";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
+/** How often Passwords pulls other machines' changes. */
+const PASSWORDS_SYNC_INTERVAL_MS = 60_000;
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   createAccountStoreResultHelpers,
@@ -144,6 +148,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
 
   let accountSettingsStore: AccountSettingsStore | null = null;
   let accountVaultStore: AccountVaultStore | null = null;
+  let passwordService: PasswordService | null = null;
   const accountVaultBridge = createHeadlessAccountVaultBridge(() => accountVaultStore);
 
   if (options.enabled || options.storesOnly) {
@@ -179,6 +184,25 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
         logger: options.logger,
       }),
     );
+
+    // Passwords: sealed items and the vault key, through the same relay
+    // client. An ADE Cloud computer keeps the key in memory only.
+    passwordService = createPasswordService({
+      adeDir: options.accountStoreAdeDir,
+      // A test's injected relay may not speak Passwords; then it has none.
+      relay: "getPasswordItems" in accountStoreRelay ? accountStoreRelay as unknown as PasswordsRelay : null,
+      getAccountUserId: accountStoreUserId,
+      getDeviceId: accountStoreDeviceId,
+      machineKind: isAdeCloudComputer() ? "cloud" : "desktop",
+      logger: options.logger,
+    });
+    const passwordsSync = setInterval(() => {
+      void passwordService?.sync().catch((error: unknown) => {
+        options.logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+      });
+    }, PASSWORDS_SYNC_INTERVAL_MS);
+    passwordsSync.unref?.();
+    options.teardown.push(() => clearInterval(passwordsSync));
   }
 
   const purgeAccountOwnedCredentials = (): void => {
@@ -213,6 +237,9 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   const purgeAccountState = (): void => {
     accountMigrationGeneration += 1;
     accountVaultStore?.purge();
+    void passwordService?.purge().catch((error: unknown) => {
+      options.logger.warn("passwords.purge_failed", { error: error instanceof Error ? error.name : "unknown" });
+    });
     purgeAccountOwnedCredentials();
   };
 
@@ -362,6 +389,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   return {
     accountSettingsStore,
     accountVaultStore,
+    passwordService,
     getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
     initialize,
   };

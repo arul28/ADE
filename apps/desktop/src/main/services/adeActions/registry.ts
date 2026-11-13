@@ -4258,6 +4258,51 @@ export function buildProviderInstancesDomainService(
  * secret through the private secret card. `request` needs the chat service,
  * so it is absent on a runtime without one.
  */
+/**
+ * Passwords. Each method takes one plain object; `resolveForFill` is the only
+ * one that returns a value, and the policy tables keep it for this computer's
+ * own desktop app (user-only, this-desktop-only, secret-bearing).
+ */
+function buildPasswordsDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const passwords = runtime.passwordService;
+  if (!passwords) return null;
+  const objectArg = (args: unknown): Record<string, unknown> => (args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {});
+  const text = (value: unknown): string => (typeof value === "string" ? value : "");
+  return {
+    list: () => passwords.listSummaries(),
+    loginsForPage: (args?: unknown) => passwords.loginsForPage(text(objectArg(args).pageUrl)),
+    saveLogin: (args?: unknown) => {
+      const input = objectArg(args);
+      return passwords.saveLogin({
+        ...(typeof input.id === "string" ? { id: input.id } : {}),
+        title: text(input.title),
+        origins: Array.isArray(input.origins) ? input.origins.filter((origin): origin is string => typeof origin === "string") : [],
+        username: text(input.username),
+        password: text(input.password),
+        notes: text(input.notes),
+        totpUri: typeof input.totpUri === "string" ? input.totpUri : null,
+      });
+    },
+    saveSecret: (args?: unknown) => {
+      const input = objectArg(args);
+      return passwords.saveSecret({
+        ...(typeof input.id === "string" ? { id: input.id } : {}),
+        name: text(input.name),
+        value: text(input.value),
+        projectScope: typeof input.projectScope === "string" ? input.projectScope : null,
+        notes: text(input.notes),
+      });
+    },
+    remove: (args?: unknown) => passwords.remove(text(objectArg(args).id)),
+    importCsv: (args?: unknown) => passwords.importCsv(text(objectArg(args).text)),
+    sync: () => passwords.sync(),
+    resolveForFill: (args?: unknown) => {
+      const input = objectArg(args);
+      return passwords.resolveForFill({ itemId: text(input.itemId), pageUrl: text(input.pageUrl) });
+    },
+  } as unknown as OpaqueService;
+}
+
 function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectSecretService = runtime.projectSecretService;
   if (!projectSecretService) return null;
@@ -4752,6 +4797,7 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
+    passwords: toService(buildPasswordsDomainService(runtime)),
     integration_connect: buildIntegrationConnectDomainService(runtime),
     cloud: buildCloudDomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),

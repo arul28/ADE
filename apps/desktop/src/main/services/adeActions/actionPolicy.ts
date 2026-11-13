@@ -400,6 +400,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // Passwords: only the person adds, changes, imports or removes saved items;
+  // agents use logins through `ade browser signin` and never read a value.
+  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill"],
   // Sharing a gh sign-in with the account hands it to every computer the
   // person signs in to; only the person decides, from Settings › GitHub.
   github: ["setGhAccountSharing"],
@@ -486,6 +489,8 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   account: ["getToken", "createToken"],
   account_vault: ["get"],
   project_secret: ["get", "exportEnv"],
+  // The values of a saved login, for desktop main to fill a page with.
+  passwords: ["resolveForFill"],
   // A custom provider's launch env, tokens included.
   ai: ["harnessLaunchEnv"],
   // Raw proof bytes, streamed to the user's own desktop.
@@ -1182,6 +1187,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
+  // Passwords: `list`/`loginsForPage` return summaries only (agents use them
+  // to pick a login); every write and `resolveForFill` are user-only below.
+  passwords: ["list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.

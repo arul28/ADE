@@ -346,6 +346,13 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "request",
     ],
   },
+  // Passwords: agents read summaries (sites, usernames, never a value). The
+  // writes and the one value read (`resolveForFill`) are the person's, and
+  // `resolveForFill` only for this computer's own desktop app.
+  passwords: {
+    read: ["list", "loginsForPage"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill"],
+  },
   integration_connect: {
     read: ["status"],
     write: ["request"],
@@ -784,6 +791,9 @@ export function adeActionAccess(domain: string, action: string): AdeActionAccess
  * the brain.
  */
 export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  passwords: {
+    resolveForFill: "Saved logins are filled by ADE on the computer whose browser shows the page.",
+  },
   provider_logins: {
     allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",
   },
