@@ -1,11 +1,13 @@
 import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
-import { overPlanDiskSentence, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanFacts, type CloudPlanId } from "./contract";
+import { overPlanDiskSentence, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
 import type { CloudEmailEnv } from "./email";
 import {
   CLOUD_PLANS,
   EXTRA_DISK_MICROS_PER_GB_DAY,
   FREE_INCLUDED_MILLI,
+  PAID_PLAN_RANK,
+  planDiskGbFor,
   computeCostMicrosFor,
   type CloudOffers,
   freePeriodFor,
@@ -33,17 +35,27 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PLAN_PRICE_ID?: string;
-  /** The older name of extra hours' price: a Worker secret in production, so `STRIPE_EXTRA_HOURS_PRICE_ID` (a var) wins. */
+  /** The older name of the first extra-hours price: a Worker secret in production, so `STRIPE_EXTRA_HOURS_PRICE_ID` (a var) wins. */
   STRIPE_EXTRA_PRICE_ID?: string;
-  /** Extra hours' price on its own "Extra hours" product (`scripts/stripe-setup.mjs`). */
+  /**
+   * The extra-hours price before Cloud 7 (1 cent, 0.85 after 1,000 hours).
+   * Subscriptions that hold it keep it until their next renewal or plan
+   * change; it is also what a plan without its own price below uses.
+   */
   STRIPE_EXTRA_HOURS_PRICE_ID?: string;
+  /** Each paid plan's own extra-hours price, all on the one hours meter (`scripts/stripe-setup.mjs`). */
+  STRIPE_EXTRA_HOURS_PLUS_PRICE_ID?: string;
+  STRIPE_EXTRA_HOURS_PRO_PRICE_ID?: string;
+  STRIPE_EXTRA_HOURS_MAX_PRICE_ID?: string;
   STRIPE_METER_EVENT?: string;
   /** Pro's monthly price (`scripts/stripe-setup.mjs`). Unset: only Plus can be bought. */
   STRIPE_PRO_PRICE_ID?: string;
+  /** Max's monthly price. Unset (or Pro unset): Max isn't sold. */
+  STRIPE_MAX_PRICE_ID?: string;
   /** Extra disk's metered price and meter. Unset: extra disk can't be turned on. */
   STRIPE_DISK_PRICE_ID?: string;
   STRIPE_DISK_METER_EVENT?: string;
-  /** The billing portal setup that lets a person switch between Plus and Pro. */
+  /** The billing portal setup (card, cancel at period end, invoices). */
   STRIPE_PORTAL_CONFIG_ID?: string;
   /** Server-side product analytics (`analytics.ts`); unset sends nothing. */
   POSTHOG_PROJECT_TOKEN?: string;
@@ -171,6 +183,11 @@ export type AccountRow = {
   free_refused_at: number | null;
   /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
   account_created_at: number | null;
+  /**
+   * 1 while the period began before Cloud 7's plans (migration 0033): Plus and
+   * Pro keep their old disk until the next period starts (`planDiskGbFor`).
+   */
+  old_plan_terms?: number | null;
   /** Unused since migration 0032 (the grace design's due time and warned list); always null. */
   plan_cleanup_due_at: number | null;
   plan_cleanup_warned_json: string | null;
@@ -518,8 +535,11 @@ export function accountRules(account: Pick<AccountRow, "plan" | "stripe_status">
 
 /** Which paid plan the row names (the column defaults to Plus). */
 export function paidPlanOf(account: Pick<AccountRow, "paid_plan">): CloudPaidPlanId {
-  return account.paid_plan === "pro" ? "pro" : "plus";
+  return account.paid_plan === "pro" || account.paid_plan === "max" ? account.paid_plan : "plus";
 }
+
+/** Whether a move from one paid plan to another is a downgrade (it waits for the period end). */
+export const isPaidDowngrade = (from: CloudPaidPlanId, to: CloudPaidPlanId): boolean => PAID_PLAN_RANK[to] < PAID_PLAN_RANK[from];
 
 /** The plan whose limits are in force: `past_due` is the free plan until a paid invoice. */
 export function planIdOf(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan">): CloudPlanId {
@@ -531,10 +551,12 @@ export function boughtPlanIdOf(account: Pick<AccountRow, "plan" | "paid_plan">):
   return account.plan === "paid" ? paidPlanOf(account) : "free";
 }
 
-/** Pro and extra disk are sold only once their Stripe prices are set (`scripts/stripe-setup.mjs`). */
-export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE_PRO_PRICE_ID" | "STRIPE_DISK_PRICE_ID" | "STRIPE_DISK_METER_EVENT">): CloudOffers {
+/** Pro, Max and extra disk are sold only once their Stripe prices are set (`scripts/stripe-setup.mjs`). */
+export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE_PRO_PRICE_ID" | "STRIPE_MAX_PRICE_ID" | "STRIPE_DISK_PRICE_ID" | "STRIPE_DISK_METER_EVENT">): CloudOffers {
+  const pro = Boolean(env.STRIPE_PLAN_PRICE_ID?.trim() && env.STRIPE_PRO_PRICE_ID?.trim());
   return {
-    pro: Boolean(env.STRIPE_PLAN_PRICE_ID?.trim() && env.STRIPE_PRO_PRICE_ID?.trim()),
+    pro,
+    max: pro && Boolean(env.STRIPE_MAX_PRICE_ID?.trim()),
     extraDisk: Boolean(env.STRIPE_DISK_PRICE_ID?.trim() && env.STRIPE_DISK_METER_EVENT?.trim()),
   };
 }
@@ -557,22 +579,25 @@ export function freePlanOverDisk(account: Pick<AccountRow, "plan">, diskGb: numb
  * read it, so nothing grows into disk the next plan won't cover.
  */
 export function countedPlanDiskGb(
-  account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan" | "paid_plan_next">,
+  account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan" | "paid_plan_next" | "old_plan_terms">,
   base: CloudPlanId = planIdOf(account),
   next: CloudPaidPlanId | null = account.paid_plan_next,
 ): number {
-  const baseGb = CLOUD_PLANS[base].diskGb;
+  const baseGb = planDiskGbOf(account, base);
+  // The next plan starts with a new period, always on the new terms.
   return next && base !== "free" ? Math.min(baseGb, CLOUD_PLANS[next].diskGb) : baseGb;
 }
 
 export const overPlanDiskMessage = (diskGb: number): string => overPlanDiskSentence(diskGb, CLOUD_PLANS.free.diskGb);
 
-export function planFacts(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan">): CloudPlanFacts {
-  return CLOUD_PLANS[planIdOf(account)];
+/** `planId`'s disk for this account this period: a period that began before Cloud 7 keeps the old disk. */
+export function planDiskGbOf(account: Pick<AccountRow, "old_plan_terms">, planId: CloudPlanId): number {
+  return planDiskGbFor(planId, account.old_plan_terms === 1);
 }
 
-export function computerLimit(account: AccountRow): number {
-  return planFacts(account).computerLimit;
+/** The disk of the plan in force (`past_due` is the free plan's). */
+export function planDiskGb(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan" | "old_plan_terms">): number {
+  return planDiskGbOf(account, planIdOf(account));
 }
 
 /**
@@ -617,7 +642,7 @@ function diskDayBillable(account: Pick<AccountRow, "plan" | "stripe_status" | "e
     && Boolean(account.stripe_customer_id && account.stripe_subscription_id);
 }
 
-export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" | "stripe_status" | "extra_disk_state" | "stripe_customer_id" | "stripe_subscription_id">;
+export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" | "stripe_status" | "extra_disk_state" | "stripe_customer_id" | "stripe_subscription_id" | "old_plan_terms">;
 
 /**
  * Raises today's peak disk for the account to what its computers hold now,
@@ -638,7 +663,7 @@ export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: num
       peak_gb = max(peak_gb, excluded.peak_gb),
       plan_gb = max(plan_gb, excluded.plan_gb),
       billable = min(billable, excluded.billable)
-  `).bind(account.user_id, utcDay(now), account.user_id, CLOUD_PLANS[boughtPlanIdOf(account)].diskGb, diskDayBillable(account) ? 1 : 0);
+  `).bind(account.user_id, utcDay(now), account.user_id, planDiskGbOf(account, boughtPlanIdOf(account)), diskDayBillable(account) ? 1 : 0);
 }
 
 /** This period's billable extra disk so far, in micros: the days already billed plus the ones not yet reported. */
@@ -792,7 +817,7 @@ async function startFreshPeriod(
   const included = next.included === "free" ? `case when free_refused_at is not null then 0 else ${FREE_INCLUDED_MILLI} end` : "?";
   statements.push(env.DB.prepare(`
     update cloud_accounts set plan = ?, included_milli = ${included},
-      used_milli = 0, period_start = ?, period_end = ?,
+      used_milli = 0, period_start = ?, period_end = ?, old_plan_terms = 0,
       warned_80_at = null, warned_95_at = null, warned_zero_at = null, hours_restored_at = ?, updated_at = ?
     where user_id = ?
   `).bind(next.plan, ...(next.included === "free" ? [] : [next.included]), next.start, next.end, restored, now, account.user_id));
@@ -811,6 +836,7 @@ async function startFreshPeriod(
     used_milli: 0,
     period_start: next.start,
     period_end: next.end,
+    old_plan_terms: 0,
     warned_80_at: null,
     warned_95_at: null,
     warned_zero_at: null,
@@ -902,11 +928,11 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   const isPastDue = nextStripeStatus === "past_due";
   const currentPaidPlan = paidPlanOf(account);
   const requestedPaidPlan = change.paidPlan ?? currentPaidPlan;
-  // Pro to Plus waits for the next period: the person paid for Pro's hours and limits until then.
+  // A downgrade waits for the next period: the person paid for the higher plan's hours and disk until then.
   const newPeriod = change.periodStart !== undefined && change.periodStart !== account.period_start;
   const deferDowngrade = account.plan === "paid" && nextPlan === "paid" && !wasPastDue && !isPastDue
-    && currentPaidPlan === "pro" && requestedPaidPlan === "plus" && !newPeriod;
-  const nextPaidPlan: CloudPaidPlanId = deferDowngrade ? "pro" : requestedPaidPlan;
+    && isPaidDowngrade(currentPaidPlan, requestedPaidPlan) && !newPeriod;
+  const nextPaidPlan: CloudPaidPlanId = deferDowngrade ? currentPaidPlan : requestedPaidPlan;
   /** A new billing period: nothing is reported or owed in it yet. */
   const clearExtraReports: Array<[keyof AccountRow, unknown]> = [["extra_reported_milli", 0], ["extra_owed_milli", 0]];
 
@@ -917,9 +943,9 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   if (change.cancelAtPeriodEnd !== undefined) extras.push(["cancel_at_period_end", change.cancelAtPeriodEnd ? 1 : 0]);
   if (nextPaidPlan !== account.paid_plan) extras.push(["paid_plan", nextPaidPlan]);
   if (deferDowngrade) {
-    if (account.paid_plan_next !== "plus") extras.push(["paid_plan_next", "plus"]);
+    if (account.paid_plan_next !== requestedPaidPlan) extras.push(["paid_plan_next", requestedPaidPlan]);
   } else if ((change.paidPlan !== undefined || nextPlan === "free") && account.paid_plan_next != null) {
-    // The new period began, the person went back to Pro, or the plan ended.
+    // The new period began, the person went back to the higher plan, or the plan ended.
     extras.push(["paid_plan_next", null]);
   }
 
@@ -952,7 +978,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       extras.push(["extra_enabled", 0], ["extra_disk_state", "off"]);
       break;
   }
-  // Plus to Pro or back inside a running period (no new period start): the
+  // An upgrade, or back to the higher plan, inside a running period (no new period start): the
   // hours used stay, and the plan's hours change now. An upgrade at 0 hours
   // gives hours back, so the warnings start over.
   if (!transition && nextPlan === "paid" && account.plan === "paid" && !isPastDue && nextPaidPlan !== account.paid_plan) {
