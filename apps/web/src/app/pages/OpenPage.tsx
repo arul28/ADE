@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   AppWindow,
@@ -378,12 +378,28 @@ function setOgTag(property: string, content: string): void {
 /** Where the person chose to open ADE links, remembered on this browser. */
 type OpenPreference = "app" | "app-beta" | "web";
 const OPEN_PREFERENCE_KEY = "ade.openLinksIn";
-/** The web client: same query, its own origin (its sign-in and keys live there). */
-const WEB_CLIENT_OPEN_URL = "https://app.ade-app.dev/open";
+/**
+ * ADE Web's origin: its sign-in and keys live there. A dev build may point at
+ * a local web client to check the link page against it.
+ */
+const WEB_CLIENT_ORIGIN = (import.meta.env.DEV
+  ? (import.meta.env.VITE_ADE_WEB_CLIENT_ORIGIN as string | undefined)?.trim().replace(/\/+$/, "")
+  : undefined) || "https://app.ade-app.dev";
+/** The web client: same query, its own origin. */
+const WEB_CLIENT_OPEN_URL = `${WEB_CLIENT_ORIGIN}/open`;
+/** ADE Web's status frame (webclient/linkStatus in the desktop package). */
+const LINK_STATUS_URL = `${WEB_CLIENT_ORIGIN}/link-status`;
+/** How long the page waits for that frame before it stops asking. */
+const LINK_STATUS_WAIT_MS = 4_000;
 /** How long a remembered "app" waits before offering the browser instead. */
 const APP_FALLBACK_MS = 2_500;
-/** A remembered "browser" pauses this long, so the choice can still be changed. */
-const WEB_REDIRECT_MS = 800;
+/**
+ * A remembered choice opens after this pause, with "Change" and "Open now" in
+ * view. Long enough to read the line and press Change; "Open now" skips it.
+ */
+const AUTO_OPEN_MS = 2_000;
+/** `?choose=1` shows the choices even when one is remembered. */
+const CHOOSE_PARAM = "choose";
 
 /**
  * After trying the app: still waiting, the page went to the background (the
@@ -391,18 +407,47 @@ const WEB_REDIRECT_MS = 800;
  */
 type AppAttempt = "idle" | "trying" | "handedOff" | "noResponse";
 
-function statusLine(redirectingToWeb: boolean, attempt: AppAttempt): string {
-  if (redirectingToWeb && attempt === "idle") return "Opening in your browser…";
+/** What ADE Web on this browser knows: signed in, and which computers are online (null: unknown). */
+type LinkStatus = { signedIn: boolean; onlineComputers: string[] | null };
+
+function statusLine(attempt: AppAttempt): string {
   switch (attempt) {
     case "noResponse":
-      return "ADE didn't open? Open it in your browser instead, or install the app.";
+      return "ADE didn't open? Open it in ADE Web instead, or install the app.";
     case "handedOff":
-      return "Opened in the ADE app. Didn't work? Open it in your browser instead.";
+      return "Opened in the ADE app. Didn't work? Open it in ADE Web instead.";
     case "trying":
       return "Opening the ADE app…";
     case "idle":
       return "Open it in";
   }
+}
+
+function autoOpenLine(preference: OpenPreference): string {
+  if (preference === "web") return "Opening in ADE Web…";
+  if (preference === "app-beta") return "Opening in ADE Beta…";
+  return "Opening in the ADE app…";
+}
+
+/** "Studio is online.", "Studio and 2 more are online." */
+function onlineComputersLine(names: string[]): string {
+  const [first] = names;
+  if (!first) return "None of your computers is online right now.";
+  return names.length === 1 ? `${first} is online.` : `${first} and ${names.length - 1} more are online.`;
+}
+
+/** The frame's message, checked field by field: it crosses origins. */
+function readLinkStatus(data: unknown): LinkStatus | null {
+  if (!data || typeof data !== "object") return null;
+  const record = data as Record<string, unknown>;
+  if (record.type !== "ade-link-status" || record.version !== 1 || typeof record.signedIn !== "boolean") return null;
+  const raw = record.onlineComputers;
+  const onlineComputers = Array.isArray(raw)
+    ? raw.filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+      .slice(0, 50)
+      .map((name) => name.trim().slice(0, 80))
+    : null;
+  return { signedIn: record.signedIn, onlineComputers: record.signedIn ? onlineComputers : null };
 }
 
 /** iPhone and iPad, including an iPad that reports itself as a Mac. */
@@ -430,10 +475,50 @@ function writeOpenPreference(value: OpenPreference | null): void {
   }
 }
 
+/** The page's own query without the page-only `choose` flag. */
+function linkQuery(search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete(CHOOSE_PARAM);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
 /** The web client opens every kind of ADE link, so any link that parsed can go there. */
 function webClientUrlFor(target: OpenTarget, search: string): string | null {
   if (target.kind === "unknown") return null;
-  return `${WEB_CLIENT_OPEN_URL}${search}`;
+  return `${WEB_CLIENT_OPEN_URL}${linkQuery(search)}`;
+}
+
+/**
+ * Asks ADE Web's status frame whether this browser is signed in there and
+ * which computers are online. Null until it answers, and for good when it
+ * does not answer in time (signed out of a blocked frame, an old deploy).
+ */
+function useLinkStatus(enabled: boolean): { status: LinkStatus | null; frame: ReactNode } {
+  const [status, setStatus] = useState<LinkStatus | null>(null);
+  const [waiting, setWaiting] = useState(enabled);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    setWaiting(true);
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== WEB_CLIENT_ORIGIN || event.source !== frameRef.current?.contentWindow) return;
+      const next = readLinkStatus(event.data);
+      if (!next) return;
+      setStatus(next);
+      setWaiting(false);
+    };
+    window.addEventListener("message", onMessage);
+    const giveUp = setTimeout(() => setWaiting(false), LINK_STATUS_WAIT_MS);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      clearTimeout(giveUp);
+    };
+  }, [enabled]);
+  const frame = enabled && waiting ? (
+    <iframe ref={frameRef} src={LINK_STATUS_URL} title="ADE Web status" aria-hidden tabIndex={-1} hidden />
+  ) : null;
+  return { status, frame };
 }
 
 export function OpenPage() {
@@ -443,16 +528,24 @@ export function OpenPage() {
   // The whole query goes on unchanged, so nothing the link carries is lost.
   const webUrl = useMemo(() => webClientUrlFor(target, location.search), [target, location.search]);
   const { title, summary, valueLabel, value } = describeTarget(target);
+  const forceChoice = useMemo(() => new URLSearchParams(location.search).get(CHOOSE_PARAM) === "1", [location.search]);
   const [preference, setPreference] = useState<OpenPreference | null>(() => readOpenPreference());
-  // Only a choice remembered from an earlier visit opens on its own. A choice
-  // made on this page has already opened, and Change cancels a pending one.
-  const [autoOpen, setAutoOpen] = useState<OpenPreference | null>(preference);
+  // Only a choice remembered from an earlier visit opens on its own, after a
+  // pause with Change in view. A choice made on this page has already opened.
+  const [autoOpen, setAutoOpen] = useState<OpenPreference | null>(() => (forceChoice ? null : preference));
   const [remember, setRemember] = useState(true);
   const [appAttempt, setAppAttempt] = useState<AppAttempt>("idle");
   const [attemptCount, setAttemptCount] = useState(0);
   // The ADE Beta iPhone app registers `ade-beta://` instead of `ade://`.
   const betaUrl = useMemo(() => (adeUrl ? adeUrl.replace(/^ade:/, "ade-beta:") : null), [adeUrl]);
   const offerBeta = useMemo(() => isAppleMobile(), []);
+  const autoOpenUrl = autoOpen === "web" ? webUrl : autoOpen === "app" ? adeUrl : autoOpen === "app-beta" ? betaUrl : null;
+  const counting = autoOpenUrl != null && appAttempt === "idle";
+  // The computers matter only while the choices are on screen, and only on a
+  // computer: on a phone "the ADE app" is the phone's own app.
+  const { status: linkStatus, frame: linkStatusFrame } = useLinkStatus(
+    !counting && target.kind !== "unknown" && Boolean(adeUrl) && !offerBeta,
+  );
 
   useDocumentTitle(title);
 
@@ -476,12 +569,13 @@ export function OpenPage() {
   };
 
   // A click decides this visit: it cancels a remembered choice still pending,
-  // so the page never opens two places.
+  // so the page never opens two places. With "Remember" on it becomes the
+  // choice; with it off, the page forgets any earlier one.
   const choose = (value: OpenPreference) => {
     setAutoOpen(null);
-    if (preference || !remember) return;
-    writeOpenPreference(value);
-    setPreference(value);
+    const next = remember ? value : null;
+    writeOpenPreference(next);
+    setPreference(next);
   };
 
   const openInApp = (value: "app" | "app-beta") => {
@@ -497,28 +591,34 @@ export function OpenPage() {
     window.location.assign(webUrl);
   };
 
-  const forgetChoice = () => {
-    writeOpenPreference(null);
-    setPreference(null);
+  const openRemembered = (choice: OpenPreference, url: string) => {
+    setAutoOpen(null);
+    if (choice === "web") window.location.replace(url);
+    else launchApp(url);
+  };
+
+  /** Stop the automatic open and show every choice. */
+  const changeChoice = () => {
     setAutoOpen(null);
     setAppAttempt("idle");
   };
 
-  // A remembered choice runs on its own. Without one nothing launches until the
-  // person picks: a page can't tell whether an app took an ade:// link (some
-  // browsers ask, some do nothing at all), so guessing would strand them.
+  // A remembered choice opens on its own after the pause. Without one nothing
+  // launches until the person picks: a page can't tell whether an app took an
+  // ade:// link (some browsers ask, some do nothing at all), so guessing would
+  // strand them. Escape stops it, like Change.
   useEffect(() => {
-    if (autoOpen === "web") {
-      if (!webUrl) return;
-      // A pause long enough to press Change.
-      const redirect = setTimeout(() => window.location.replace(webUrl), WEB_REDIRECT_MS);
-      return () => clearTimeout(redirect);
-    }
-    const url = autoOpen === "app" ? adeUrl : autoOpen === "app-beta" ? betaUrl : null;
-    if (!url) return;
-    const launch = setTimeout(() => launchApp(url), 150);
-    return () => clearTimeout(launch);
-  }, [autoOpen, adeUrl, betaUrl, webUrl]);
+    if (!counting || !autoOpen || !autoOpenUrl) return;
+    const timer = setTimeout(() => openRemembered(autoOpen, autoOpenUrl), AUTO_OPEN_MS);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") changeChoice();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [counting, autoOpen, autoOpenUrl]);
 
   // Still here a while after trying the app: offer the browser and the
   // installer. A page that went to the background meanwhile handed off.
@@ -542,9 +642,50 @@ export function OpenPage() {
   }, [attemptCount]);
   const appFailed = appAttempt === "noResponse";
 
-  // Once the app did not answer, the browser is the way on, so it leads.
-  const browserLeads = appFailed || !adeUrl;
+  // Facts first: once the app did not answer, ADE Web is the way on. Signed in
+  // to ADE Web here, an online computer puts the app first and none puts ADE
+  // Web first. Otherwise the app leads, as it is fastest when installed.
+  const onlineComputers = linkStatus?.signedIn ? linkStatus.onlineComputers : null;
+  const browserLeads = appFailed || !adeUrl || (onlineComputers != null && onlineComputers.length === 0);
+  const appHint = onlineComputers
+    ? onlineComputersLine(onlineComputers)
+    : "On this device. Fastest when ADE is installed.";
   const KindIcon = KIND_ICONS[target.kind];
+
+  const appChoice = adeUrl ? (
+    <OpenChoice
+      key="app"
+      icon={<AppWindow className={CHOICE_ICON} />}
+      title="The ADE app"
+      hint={appHint}
+      lead={!browserLeads}
+      analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
+      onClick={() => openInApp("app")}
+    />
+  ) : null;
+  const webChoice = webUrl ? (
+    <OpenChoice
+      key="web"
+      icon={<Globe className={CHOICE_ICON} />}
+      title="ADE Web"
+      hint="In this browser. Nothing to install."
+      lead={browserLeads}
+      analyticsFeature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+      onClick={openInBrowser}
+    />
+  ) : null;
+  const betaChoice = betaUrl && offerBeta ? (
+    <OpenChoice
+      key="beta"
+      icon={<AppWindow className={CHOICE_ICON} />}
+      title="ADE Beta"
+      hint="The TestFlight app on this iPhone or iPad."
+      lead={false}
+      analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
+      onClick={() => openInApp("app-beta")}
+    />
+  ) : null;
+  const choices = browserLeads ? [webChoice, appChoice, betaChoice] : [appChoice, betaChoice, webChoice];
 
   return (
     <Page className="relative grid min-h-screen place-items-center overflow-hidden px-5 py-24 sm:px-6">
@@ -579,76 +720,62 @@ export function OpenPage() {
             Ask for a fresh link, or{" "}
             <a
               className="focus-ring rounded-sm font-medium underline underline-offset-4"
-              href={WEB_CLIENT_OPEN_URL.replace(/\/open$/, "/")}
+              href={`${WEB_CLIENT_ORIGIN}/`}
             >
-              open the ADE web app
+              open ADE Web
             </a>
             .
           </div>
         ) : null}
 
-        {adeUrl || webUrl ? (
+        {counting && autoOpen && autoOpenUrl ? (
           <div className="overflow-hidden rounded-2xl border border-border/80 bg-card/60 shadow-glass-md backdrop-blur-xl">
-            <p className="px-5 pb-1 pt-4 text-[13px] text-muted-fg" aria-live="polite">
-              {statusLine(autoOpen === "web", appAttempt)}
-            </p>
-            <div className="grid gap-1 p-2">
-              {adeUrl ? (
-                <OpenChoice
-                  icon={<AppWindow className={CHOICE_ICON} />}
-                  title="The ADE app"
-                  hint="On this device. Fastest when ADE is installed."
-                  lead={!browserLeads}
-                  analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
-                  onClick={() => openInApp("app")}
-                />
-              ) : null}
-              {betaUrl && offerBeta ? (
-                <OpenChoice
-                  icon={<AppWindow className={CHOICE_ICON} />}
-                  title="ADE Beta"
-                  hint="The TestFlight app on this iPhone or iPad."
-                  lead={false}
-                  analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
-                  onClick={() => openInApp("app-beta")}
-                />
-              ) : null}
-              {webUrl ? (
-                <OpenChoice
-                  icon={<Globe className={CHOICE_ICON} />}
-                  title="Your browser"
-                  hint="Nothing to install. Sign in with your ADE account."
-                  lead={browserLeads}
-                  analyticsFeature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
-                  onClick={openInBrowser}
-                />
-              ) : null}
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-border/70 px-5 py-3 text-xs text-muted-fg">
-              {preference ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-5 py-4">
+              <p className="min-w-0 flex-1 text-sm font-semibold text-fg" role="status" aria-live="polite">
+                {autoOpenLine(autoOpen)}
+              </p>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={forgetChoice}
-                  className="focus-ring rounded-sm text-left transition-colors hover:text-fg"
+                  onClick={changeChoice}
+                  className="focus-ring rounded-lg px-3 py-1.5 text-[13px] font-medium text-fg transition-colors hover:bg-fg/[0.07]"
                 >
-                  {preference === "web"
-                    ? "Links open in your browser."
-                    : preference === "app-beta"
-                      ? "Links open in ADE Beta."
-                      : "Links open in the ADE app."}{" "}
-                  <span className="underline underline-offset-4">Change</span>
+                  Change
                 </button>
-              ) : (
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input
-                    type="checkbox"
-                    className="accent-[var(--color-accent)]"
-                    checked={remember}
-                    onChange={(event) => setRemember(event.target.checked)}
-                  />
-                  Remember my choice on this browser
-                </label>
-              )}
+                <button
+                  type="button"
+                  onClick={() => openRemembered(autoOpen, autoOpenUrl)}
+                  className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-[13px] font-semibold text-accent-fg transition-opacity hover:opacity-90"
+                >
+                  Open now
+                </button>
+              </div>
+            </div>
+            {/* How long until it opens: a bar that fills over the pause. */}
+            <div aria-hidden className="h-[3px] bg-fg/[0.06] motion-reduce:hidden">
+              <div
+                className="h-full origin-left bg-accent/70"
+                style={{ animation: `ade-open-countdown ${AUTO_OPEN_MS}ms linear forwards` }}
+              />
+            </div>
+            <style>{"@keyframes ade-open-countdown { from { transform: scaleX(0); } to { transform: scaleX(1); } }"}</style>
+          </div>
+        ) : adeUrl || webUrl ? (
+          <div className="overflow-hidden rounded-2xl border border-border/80 bg-card/60 shadow-glass-md backdrop-blur-xl">
+            <p className="px-5 pb-1 pt-4 text-[13px] text-muted-fg" aria-live="polite">
+              {statusLine(appAttempt)}
+            </p>
+            <div className="grid gap-1 p-2">{choices}</div>
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-border/70 px-5 py-3 text-xs text-muted-fg">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="accent-[var(--color-accent)]"
+                  checked={remember}
+                  onChange={(event) => setRemember(event.target.checked)}
+                />
+                Remember my choice on this browser
+              </label>
               {appFailed || !preference ? (
                 <Link
                   to="/"
@@ -661,6 +788,7 @@ export function OpenPage() {
             </div>
           </div>
         ) : null}
+        {linkStatusFrame}
       </div>
     </Page>
   );

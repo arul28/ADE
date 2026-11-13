@@ -51,7 +51,20 @@ function webClientDevEntry(): Plugin {
         const isNavigation = accepts.includes("text/html");
         const isAsset = pathname.includes(".") && !pathname.endsWith(".html");
         // The scene frame is a real page of its own (public/scene-frame.html).
-        if (isNavigation && !isAsset && pathname !== "/webclient.html" && pathname !== "/scene-frame.html") {
+        // So is the link page's status frame, which Pages serves at
+        // `/link-status` from link-status.html.
+        if (pathname === "/link-status") {
+          req.url = "/link-status.html";
+          next();
+          return;
+        }
+        if (
+          isNavigation
+          && !isAsset
+          && pathname !== "/webclient.html"
+          && pathname !== "/scene-frame.html"
+          && pathname !== "/link-status.html"
+        ) {
           req.url = "/webclient.html";
         }
         next();
@@ -178,6 +191,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: path.resolve(__dirname, "src/renderer/webclient.html"),
+        // Framed by ade-app.dev/open; its own small entry (see webclient/linkStatus).
+        "link-status": path.resolve(__dirname, "src/renderer/link-status.html"),
       }
     }
   }
