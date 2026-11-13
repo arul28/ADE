@@ -562,7 +562,10 @@ outside still leaves the evidence. Every breadcrumb carries `freezeCause`
 `lastWedge`. When the freeze ends it logs
 `brain.loop_watchdog_machine_wait_ended` and removes its own breadcrumb (not
 one another brain on the same home wrote, and not one a kill already started
-from), so the next start reports no wedge. On 2026-11-13 a Mac Studio
+from), so the next start reports no wedge. The breadcrumb names its writer's
+`pid`: a brain starting on the same home while that writer is alive and the
+file is under 2 minutes old leaves it alone, so a live wait is never counted
+as a crash (or against a project's open strikes). On 2026-11-13 a Mac Studio
 with 12.6 of 13.3 GB of swap in use froze the brain for 35 s while it paged,
 and the old rule killed it and every Claude Code session and subagent under it.
 

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -418,6 +419,33 @@ describe("brainLoopWatchdog", () => {
         fs.readFileSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE), "utf8"),
       )).toEqual(breadcrumb);
       expect(readBrainLoopWatchdogLastWedge(runtimeDir)).toEqual(breadcrumb);
+    } finally {
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  // A brain starting beside one that is waiting out a machine-caused freeze
+  // (two brains on one home) must not count that live wait as a crash.
+  it.each([
+    ["leaves a fresh breadcrumb whose writer is still running", () => process.ppid, 0, false],
+    ["recovers a fresh breadcrumb whose writer has exited", () => spawnSync(process.execPath, ["-e", ""]).pid, 0, true],
+    ["recovers a live pid's breadcrumb once it is too old to be that writer's", () => process.ppid, 10 * 60_000, true],
+  ])("%s", (_name, writerPid, ageMs, recovers) => {
+    const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-loop-watchdog-writer-"));
+    const breadcrumb = {
+      pid: writerPid(),
+      lastCommand: "projects.open",
+      blockedMs: 45_000,
+      ts: new Date(Date.now() - ageMs).toISOString(),
+      freezeCause: "memory",
+    };
+    const breadcrumbPath = path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE);
+    fs.writeFileSync(breadcrumbPath, JSON.stringify(breadcrumb), "utf8");
+    try {
+      const recovered = recoverBrainLoopWatchdogBreadcrumb({ runtimeDir, warn: vi.fn() });
+      expect(recovered?.freezeCause ?? null).toBe(recovers ? "memory" : null);
+      expect(fs.existsSync(breadcrumbPath)).toBe(!recovers);
+      expect(readBrainLoopWatchdogLastWedge(runtimeDir)?.lastCommand ?? null).toBe(recovers ? "projects.open" : null);
     } finally {
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }
