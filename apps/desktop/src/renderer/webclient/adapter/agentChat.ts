@@ -53,6 +53,7 @@ import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import type { CommandCallOptions } from "./infra/commandCaller";
 import { requestFileBlob } from "./infra/fileBlob";
+import { noteChatHistorySettled, noteChatHistoryStarted } from "./infra/bootPriority";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -759,6 +760,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       // reads such as list/getSummary are also used for background rows, so this
       // is the adapter's authoritative selected-session signal.
       ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
+      // The heavy startup reads wait for this read, and go once its answer
+      // has painted (bootPriority.ts).
+      noteChatHistoryStarted();
       return await call(
         "chat.getChatEventHistory",
         {
@@ -784,7 +788,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
           sessionFound: false,
           unavailable: true,
         }
-      );
+      ).finally(noteChatHistorySettled);
     },
     getEventHistoryPage: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("getEventHistoryPage", pin);
