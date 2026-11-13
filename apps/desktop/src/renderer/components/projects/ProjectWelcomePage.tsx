@@ -721,6 +721,7 @@ export function ProjectWelcomePage() {
       webMode={webMode}
       listRef={listRef}
       onListKeyDown={handleListKeyDown}
+      sharedRows={sharedRows}
       connectionByTarget={connectionByTarget}
       connectingKeys={connectingKeys}
       pendingForgetKeys={pendingForgetKeys}
@@ -746,6 +747,7 @@ export function ProjectWelcomePage() {
     project?.rootPath,
     projectBinding,
     rows,
+    sharedRows,
     visibleProjectGroups.length,
     webMachineByKey,
     webMode,

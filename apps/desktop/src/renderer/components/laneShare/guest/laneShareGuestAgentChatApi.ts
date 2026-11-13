@@ -70,10 +70,45 @@ export function createLaneShareGuestAgentChatApi(
     return true;
   };
 
+  /** The streamed text the pane holds for the current text or reasoning run, per session. */
+  const textRuns = new Map<string, { key: string; text: string }>();
+  const textRunKey = (entry: AgentChatEventEnvelope): string | null => {
+    const event = entry.event as { type: string; text?: unknown; turnId?: unknown; itemId?: unknown; messageId?: unknown };
+    if ((event.type !== "text" && event.type !== "reasoning") || typeof event.text !== "string") return null;
+    return `${event.type}#${String(event.turnId ?? "")}#${String(event.itemId ?? "")}#${String(event.messageId ?? "")}`;
+  };
+
   const emit = (entry: AgentChatEventEnvelope) => {
+    const key = textRunKey(entry);
+    if (key) {
+      const run = textRuns.get(entry.sessionId);
+      const text = (entry.event as { text: string }).text;
+      textRuns.set(entry.sessionId, { key, text: run?.key === key ? run.text + text : text });
+    } else {
+      textRuns.delete(entry.sessionId);
+    }
     for (const listener of [...listeners]) {
       try { listener(entry); } catch { /* a listener's failure is its own */ }
     }
+  };
+
+  /**
+   * A row of a reconnect tail. The owner folds a run of streamed deltas into
+   * one row, so a run the pane already got in part comes back whole: only the
+   * part after what the pane holds is new.
+   */
+  const emitReplayed = (entry: AgentChatEventEnvelope) => {
+    const key = textRunKey(entry);
+    const run = textRuns.get(entry.sessionId);
+    if (key && run?.key === key) {
+      const text = (entry.event as { text: string }).text;
+      if (run.text.startsWith(text)) return;
+      if (text.startsWith(run.text)) {
+        emit({ ...entry, event: { ...entry.event, text: text.slice(run.text.length) } as AgentChatEventEnvelope["event"] });
+        return;
+      }
+    }
+    emit(entry);
   };
 
   const offSnapshot = connection.on("chatSnapshot", (snapshot) => {
@@ -83,7 +118,12 @@ export function createLaneShareGuestAgentChatApi(
       // A history read asked for this tail: it becomes the pane's history.
       waiting.delete(snapshot.sessionId);
       seen.delete(snapshot.sessionId);
+      textRuns.delete(snapshot.sessionId);
       for (const entry of snapshot.events) remember(entry);
+      // The history may end inside a streamed run: the pane holds that text.
+      const last = snapshot.events[snapshot.events.length - 1];
+      const lastKey = last ? textRunKey(last) : null;
+      if (last && lastKey) textRuns.set(snapshot.sessionId, { key: lastKey, text: (last.event as { text: string }).text });
       const history: AgentChatEventHistorySnapshot = {
         sessionId: snapshot.sessionId,
         events: snapshot.events,
@@ -95,7 +135,7 @@ export function createLaneShareGuestAgentChatApi(
       return;
     }
     // A tail after a reconnect: only what the pane has not had yet.
-    for (const entry of snapshot.events) if (remember(entry)) emit(entry);
+    for (const entry of snapshot.events) if (remember(entry)) emitReplayed(entry);
   });
   const offEvent = connection.on("chatEvent", (entry) => {
     if (!subscriptions.has(entry.sessionId)) return;
@@ -144,6 +184,21 @@ export function createLaneShareGuestAgentChatApi(
 
   const call = <T = unknown>(action: string, args: Record<string, unknown>) => connection.call<T>(action, args);
 
+  // The owner's computer reads an image only when the asking chat names it.
+  // The adapter does not know which open chat shows the image, so it asks as
+  // each one in turn (the main chat first, then subagent views).
+  const getImageDataUrl = async (path: string): Promise<{ dataUrl: string }> => {
+    let lastError: unknown = new Error("No chat on this shared lane shows that image.");
+    for (const sessionId of subscriptions.keys()) {
+      try {
+        return await call<{ dataUrl: string }>("chat.getImageDataUrl", { path, sessionId });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
+  };
+
   const summaryOf = (sessionId: string) => call<AgentChatSessionSummary | null>("chat.getSummary", { sessionId });
 
   const api = {
@@ -184,7 +239,21 @@ export function createLaneShareGuestAgentChatApi(
       if (typeof sendArgs.clientSendId !== "string") sendArgs.clientSendId = `lsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       await call("chat.send", sendArgs);
     },
-    steer: (args: Record<string, unknown>) => call("chat.steer", guestSendArgs(args)),
+    // "Send now" and "interrupt" ride on the dispatch mode; the owner's gate reads it.
+    steer: (args: Record<string, unknown>) => call("chat.steer", {
+      ...guestSendArgs(args),
+      ...(typeof args.dispatchMode === "string" ? { dispatchMode: args.dispatchMode } : {}),
+    }),
+    // Queue edits, subagent stops and turn recovery are the owner's; the pane
+    // still offers some of them, so they answer with a reason, not a crash.
+    moveSteer: boundChatRefusal("Reordering queued messages", WHERE),
+    dispatchSteer: boundChatRefusal("Sending a queued message now", WHERE),
+    cancelDispatchedSteer: boundChatRefusal("Taking back a sent message", WHERE),
+    restoreCancelledQueue: boundChatRefusal("Restoring the queue", WHERE),
+    resolveUnprocessedMessage: boundChatRefusal("Resending a message", WHERE),
+    recoverTurn: boundChatRefusal("Turn recovery", WHERE),
+    stopTask: boundChatRefusal("Stopping a subagent", WHERE),
+    startSideChat: boundChatRefusal("A side chat", WHERE),
     cancelSteer: (args: Record<string, unknown>) => call<void>("chat.cancelSteer", args),
     interrupt: (args: Record<string, unknown>) => call("chat.interrupt", args),
     respondToInput: (args: Record<string, unknown>) => call<void>("chat.respondToInput", args),
@@ -209,16 +278,13 @@ export function createLaneShareGuestAgentChatApi(
     getEventHistory,
     getAttachmentStagingMode: async () => CONSERVATIVE_ATTACHMENT_STAGING_MODE,
     saveTempAttachment: boundChatRefusal("Attachments", WHERE),
-    getImageDataUrl: (path: string) => call<{ dataUrl: string }>("chat.getImageDataUrl", { path, ...(firstSubscribed() ? { sessionId: firstSubscribed() } : {}) }),
+    getImageDataUrl,
     onEvent: (listener: Listener) => {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
   } satisfies PartialAgentChatApi;
 
-  function firstSubscribed(): string | null {
-    return subscriptions.keys().next().value ?? null;
-  }
 
   const dispose = () => {
     offSnapshot();
@@ -227,6 +293,7 @@ export function createLaneShareGuestAgentChatApi(
     for (const unsubscribe of subscriptions.values()) unsubscribe();
     subscriptions.clear();
     waiting.clear();
+    textRuns.clear();
     listeners.clear();
   };
   return Object.assign(api as PartialAgentChatApi as unknown as MachineBoundAgentChatApi, { dispose });

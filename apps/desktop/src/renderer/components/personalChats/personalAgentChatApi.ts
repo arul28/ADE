@@ -7,7 +7,7 @@ import type {
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
 } from "../../../shared/types";
-import type { AgentChatApi, MachineBoundAgentChatApi } from "../chat/agentChatApi";
+import type { MachineBoundAgentChatApi } from "../chat/agentChatApi";
 import { CONSERVATIVE_ATTACHMENT_STAGING_MODE } from "../chat/chatAttachmentStaging";
 import { boundChatRefusal, boundChatRefusals, sessionFromSummary, type PartialAgentChatApi } from "../chat/boundAgentChatApi";
 

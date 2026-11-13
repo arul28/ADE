@@ -5,7 +5,7 @@ import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { NoticePopover } from "../ui/notice/NoticePopover";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { cn } from "../ui/cn";
-import { isLiveLaneShare, laneShareAccessText } from "./laneShareModel";
+import { formatLaneShareEnd, isLiveLaneShare, laneShareAccessText } from "./laneShareModel";
 import { laneShareGuestShortName, startLaneShareMove } from "./LaneShareOwnerMove";
 import { openLaneShareSheet, useLaneShareList } from "./laneShareStore";
 import { LaneShareState } from "./laneShareUi";
@@ -108,7 +108,7 @@ function SharePersonRow({ share, onManage, onMove }: { share: LaneShareGivenEntr
   const facts = [
     share.state === "pending" ? "Invited, not accepted yet" : laneShareAccessText(share),
     left != null ? `${left} messages left today` : null,
-    share.endsAt ? `Ends ${new Date(share.endsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : null,
+    share.endsAt ? formatLaneShareEnd(share.endsAt) : null,
   ].filter(Boolean).join(". ");
   return (
     <li className="flex min-w-0 flex-col gap-1 rounded-lg px-2 py-1.5 hover:bg-fg/[0.04]">

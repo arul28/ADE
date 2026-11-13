@@ -15025,7 +15025,10 @@ export function AgentChatPane({
   const openSideChatFromComposer = useCallback((prompt: string, draftText: string, hasAttachments: boolean): boolean => {
     const mainSessionId = selectedSessionId;
     if (!mainSessionId) return false;
-    const unavailable = sideChatUnavailableReason(selectedSession ?? { provider: sessionProvider });
+    // A personal or shared chat has no Work tools pane to hold a side chat.
+    const unavailable = isBoundScopePane
+      ? "Side chats are not available in this chat."
+      : sideChatUnavailableReason(selectedSession ?? { provider: sessionProvider });
     if (unavailable) {
       setError({ message: unavailable, kind: "hint" });
       return true;
@@ -15058,7 +15061,7 @@ export function AgentChatPane({
         }
       });
     return true;
-  }, [selectedSession, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
+  }, [isBoundScopePane, selectedSession, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
 
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     const draft = draftStore.get();

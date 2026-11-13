@@ -231,12 +231,6 @@ export function clearLaneShareGuestNotice(grantId: string): void {
 }
 
 /**
- * Re-reads the guest's own rights, limits and who is present, from the host.
- * The host signals a change (`guestStateChanged`, no data); a slow timer of
- * an open view is the fallback. `withSessions` also re-reads the lane's
- * session list.
- */
-/**
  * What the guest is told after the host let it back in, or null when nothing
  * it can see changed: same rights and same lane state.
  */
@@ -250,10 +244,16 @@ function laneShareAccessChangeNotice(
   if (before.state !== after.state) return after.state === "paused" ? `${owner} paused this lane.` : `${owner} opened this lane again.`;
   if (sameLaneShareRights(before.rights, after.rights)) return null;
   const preset = laneShareRightsPreset(after.rights);
-  const level = preset === "custom" ? "custom access" : `${LANE_SHARE_PRESET_LABELS[preset] ?? "custom"} access`;
+  const level = preset === "custom" ? "custom access" : `${LANE_SHARE_PRESET_LABELS[preset]} access`;
   return `${owner} changed your access. You now have ${level}.`;
 }
 
+/**
+ * Re-reads the guest's own rights, limits and who is present, from the host.
+ * The host signals a change (`guestStateChanged`, no data); a slow timer of
+ * an open view is the fallback. `withSessions` also re-reads the lane's
+ * session list.
+ */
 export async function refreshLaneShareGuestState(grantId: string, options: { withSessions?: boolean } = {}): Promise<void> {
   const live = liveConnections.get(grantId);
   if (!live || live.connection.state.kind !== "connected") return;

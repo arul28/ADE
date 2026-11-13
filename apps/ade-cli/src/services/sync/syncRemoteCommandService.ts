@@ -5595,7 +5595,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   // What the chat's runtime can show (subagents, review mode). The web
   // client's adapter already asks for it and fell back to "nothing" when no
-  // host served it. Not yet in `SyncRemoteCommandAction`.
+  // host served it.
   register("chat.getSessionCapabilities", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionCapabilities({
       sessionId: requireString(payload.sessionId, "chat.getSessionCapabilities requires sessionId."),

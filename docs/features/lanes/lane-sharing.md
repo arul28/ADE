@@ -321,14 +321,14 @@ grant at the same time.
   itself (`LANE_SHARE_GUEST_HOST_COMMANDS`).
   The chat pane's reads have their own limits:
   - `chat.getImageDataUrl` reads only an image in the granted lane's
-    worktree (not ignored, not under `.ade/` or `.git`), or an ignored
-    worktree file or a staged `.ade/attachments` file that this chat's
-    events after the history cut name.
+    worktree that is not under `.ade/` or `.git`, or a staged
+    `.ade/attachments` file. A worktree file that git does not ignore needs
+    `tools.file`. Any other file must be named by this chat's events after
+    the history cut. A guest's own message does not count.
   - `chat.getTurnFileDiff` needs `tools.diff`, and the shas and file must
     match a `turn_diff_summary` event of the chat. It reads in the lane's
     worktree.
-  - `chat.listPendingInputs` and `chat.getSessionCapabilities` (trimmed to
-    the runtime switches) need only a visible session.
+  - `chat.listPendingInputs` needs only a visible session.
   - A chat's `session_meta_updated` and `status` events also send the
     debounced `lane_share_guest_changed`.
 - **Outbound envelopes**: replies to the guest's own requests, session

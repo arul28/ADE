@@ -48,13 +48,13 @@ export function webZeroMachinesNotice(args: {
   /** How many projects the account lists (they show below, each opens with no computer). */
   accountProjectCount: number;
   /** Lanes other accounts share with this one, and open invites: they run on the owner's computer. */
-  sharedLaneCount?: number;
+  sharedLaneCount: number;
 }): WebZeroMachinesNotice {
   const { account, directoryLoading } = args;
   switch (account.state) {
     case "signed_in":
       // A guest needs no computer: a shared lane runs on its owner's.
-      if ((args.sharedLaneCount ?? 0) > 0 && args.accountProjectCount === 0) {
+      if (args.sharedLaneCount > 0 && args.accountProjectCount === 0) {
         return {
           kind: "no_machines",
           headline: "Shared lanes need no computer.",

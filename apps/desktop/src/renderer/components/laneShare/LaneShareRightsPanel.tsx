@@ -8,8 +8,6 @@ import {
   LANE_SHARE_TOOL_DOMAINS,
   LANE_SHARE_TOOL_READS,
   laneShareLowRiskSummary,
-  laneSharePresetLabel,
-  laneSharePresetRights,
   laneShareRiskLevel,
   type LaneShareCliTyping,
   type LaneShareCliTypingUnavailableReason,
@@ -25,7 +23,6 @@ import {
   LANE_SHARE_RISK_LABELS,
   formatLaneShareEnd,
   laneShareQuickEnds,
-  sameLaneShareRights,
 } from "./laneShareModel";
 import { LANE_SHARE_MODE_TITLES, LANE_SHARE_REASONING_TITLES } from "./laneShareUi";
 import "./laneShare.css";

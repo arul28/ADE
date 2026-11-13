@@ -185,13 +185,11 @@ export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, LaneShareGuestCo
   // Open cards of a chat or a tracked CLI. Cards only the owner may answer
   // reach the guest reduced on the way out (`laneShareScrubOwnerOnlyCards`).
   "chat.listPendingInputs": { scope: "session", kinds: ["chat", "cli"], args: [], needs: always, kind: "read" },
-  // What the chat's runtime can show (subagent list, review mode), trimmed to
-  // those switches (`trimGuestCapabilities`).
-  "chat.getSessionCapabilities": { scope: "session", kinds: CHAT, args: [], needs: always, kind: "read" },
   // An image the chat shows. The host resolves the path itself and reads only
   // a file in the granted lane's worktree (outside `.ade/` and `.git`) or a
-  // staged attachment, and an attachment or an ignored file only when the
-  // chat's own events name it (`laneShareGuestImagePath`).
+  // staged attachment. Without the file right, and for an attachment or an
+  // ignored file, only when the chat's events (not a guest's) name it
+  // (`laneShareGuestImagePath`).
   "chat.getImageDataUrl": { scope: "session", kinds: CHAT, args: ["path"], needs: (rights) => rights.see.chats, kind: "read" },
   // One file of one turn's diff: the shas and the path must be a
   // `turn_diff_summary` of this chat (checked by the host), and the diff
@@ -842,24 +840,6 @@ function trimGuestSessionRecord(
   return out;
 }
 
-const GUEST_SUBAGENT_CAPABILITY_FIELDS = ["canList", "canViewFullTranscript", "statsFields", "kinds", "hasRichMetadata"] as const;
-
-/**
- * A chat's capabilities as a guest gets them: only the runtime's switches.
- * Control and messaging of subagents are off: no guest command does either.
- */
-function trimGuestCapabilities(result: unknown): unknown {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
-  const source = result as Record<string, unknown>;
-  const subagent = pickFields(source.subagent, GUEST_SUBAGENT_CAPABILITY_FIELDS);
-  return {
-    supportsSubagentInspection: source.supportsSubagentInspection === true,
-    supportsSubagentControl: false,
-    supportsReviewMode: source.supportsReviewMode === true,
-    ...(subagent && typeof subagent === "object" ? { subagent: { ...subagent, canMessage: false } } : {}),
-  };
-}
-
 /** One session record a guest's command returns, trimmed (`trimGuestSessionRecord`). Lists are trimmed per row by the filter. */
 function trimLaneShareGuestResult(
   action: string,
@@ -875,8 +855,6 @@ function trimLaneShareGuestResult(
     case "chat.create":
     case "chat.updateSession":
       return trimGuestSessionRecord(result, GUEST_CHAT_SUMMARY_FIELDS, role, resolveSession);
-    case "chat.getSessionCapabilities":
-      return trimGuestCapabilities(result);
     case "chat.getImageDataUrl":
       // Only the picture: nothing else the reader may add.
       return result && typeof result === "object" && typeof (result as { dataUrl?: unknown }).dataUrl === "string"

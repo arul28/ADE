@@ -103,12 +103,20 @@ function InviteStrip({
  */
 function OwnShareRedirect({ grantId }: { grantId: string }) {
   const navigate = useNavigate();
-  const { entry } = useLaneShareList(null);
+  const { key, entry } = useLaneShareList(null);
   const done = React.useRef(false);
+  // The list starts loading after the first render; give it a few seconds
+  // before this falls back to Settings (a tab that cannot read it never fills).
+  const [waitedLong, setWaitedLong] = React.useState(false);
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setWaitedLong(true), 5_000);
+    return () => window.clearTimeout(timer);
+  }, []);
   React.useEffect(() => {
     if (done.current) return;
     const share = entry?.shares.find((candidate) => candidate.grantId === grantId) ?? null;
-    if (!share && entry?.status === "loading") return;
+    const stillLoading = entry?.status === "loading" || (key != null && entry == null);
+    if (!share && stillLoading && !waitedLong) return;
     done.current = true;
     showToast({
       tone: "info",
@@ -118,7 +126,7 @@ function OwnShareRedirect({ grantId }: { grantId: string }) {
         : "The people you invite use it. Manage it here.",
     });
     navigate(share ? `/work?laneId=${encodeURIComponent(share.laneId)}` : settingsRouteFor("sharing.by-me"), { replace: true });
-  }, [entry, grantId, navigate]);
+  }, [entry, grantId, key, navigate, waitedLong]);
   return <div className="p-6 text-[12px] text-fg/50">Opening your lane…</div>;
 }
 

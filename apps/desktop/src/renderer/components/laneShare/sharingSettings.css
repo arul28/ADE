@@ -39,7 +39,7 @@
   grid-template-areas: "main access state end";
   padding-right: 10px;
 }
-.ade-modern-rows > .ade-shr-row + .ade-shr-row { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
+.ade-modern-rows > .ade-shr-row + .ade-shr-row { border-top: 1px solid var(--kit-rule); }
 
 .ade-shr-cell { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; }
 .ade-shr-main { grid-area: main; }

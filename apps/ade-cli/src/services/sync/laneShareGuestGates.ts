@@ -45,7 +45,7 @@ import {
 import { createLaneShareGuestCommandPrep } from "./laneShareGuestCommandPrep";
 import { LaneShareMoveError, type LaneShareMoveService } from "./laneShareMoveService";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
-import type { ChatScopeRequest, LaneShareGuestPeer, LaneShareGuestSyncHostDeps, LaneShareTurnOwner } from "./laneShareGuestTypes";
+import type { ChatScopeRequest, LaneShareGuestPeer, LaneShareGuestSyncHostDeps, LaneShareTurnOwner, LaneShareWorktreeLookup } from "./laneShareGuestTypes";
 import {
   commandErrorResult,
   evaluateRemoteCommandPolicy,
@@ -72,7 +72,7 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     /** The project folder (staged chat attachments live in its `.ade/attachments`). */
     projectRoot?: string | null;
     /** Where a lane's worktree is on this host (guest image and turn diff reads). */
-    laneService?: { getLaneBaseAndBranch(laneId: string): { worktreePath: string } } | null;
+    laneService?: LaneShareWorktreeLookup | null;
   };
   /** The guest host's state and rules. */
   host: {
