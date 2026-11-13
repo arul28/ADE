@@ -21156,14 +21156,17 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
 /**
  * `ade cloud push-work --json`: every lane's work committed and pushed. With
  * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
- * it. `--check` is `work-state`.
+ * it. `--check` is `work-state`. `--message <text>` is the commit message for
+ * uncommitted work (the idle cleanup's "saved by ADE before cleanup"); an
+ * older brain ignores it and uses its own.
  */
 function buildCloudPushWorkPlan(args: string[]): CliPlan {
   if (args.includes("--check")) return buildCloudWorkStatePlan();
+  const message = readValue(args, ["--message"])?.trim();
   return {
     kind: "execute",
     label: "cloud push-work",
-    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    steps: [{ key: "result", method: "cloud.pushWork", params: message ? { message: message.slice(0, 200) } : {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -29739,9 +29742,10 @@ async function runServe(
         scopeRegistry: () => scopeRegistry,
         getCloudBrainAccess,
         version: VERSION,
+        logger: headlessProjectLogger,
       })
     : null;
-  // What uses this computer's disk, and its last work: sent at the idle step for the dashboard.
+  // What uses this computer's disk, its last work and the files git ignores: sent at the idle step for the dashboard.
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
@@ -29749,6 +29753,7 @@ async function runServe(
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
+        readIgnored: cloudComputerReports.readIgnored,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
       })
@@ -31117,10 +31122,11 @@ async function runServe(
       holdCloudWork,
       remoteProviderSignIn,
       pushCloudWork: holdCloudWork
-        ? async ({ check }: { check: boolean }) => {
+        ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
+              message,
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));

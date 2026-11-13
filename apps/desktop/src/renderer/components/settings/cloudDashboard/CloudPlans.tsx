@@ -20,7 +20,6 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { PushAllWorkButton } from "../../remoteTargets/PushAllWorkButton";
 import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 
@@ -282,20 +281,6 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
                 </div>
               </div>
             ) : null}
-          </div>
-        ) : null}
-
-        {account.dueForDeletion.length ? (
-          <div className="kit-panel adecd-billing" aria-label="Computers due for deletion">
-            {account.dueForDeletion.map((computer) => (
-              <div key={computer.instanceId} className="adecd-billing-row">
-                <div>
-                  <b>{computer.name ?? computer.instanceId}</b>
-                  <small>Unused for 30 days. Deleted {formatCloudDate(computer.deletesAt)} unless it's used.</small>
-                </div>
-                <PushAllWorkButton instanceId={computer.instanceId} />
-              </div>
-            ))}
           </div>
         ) : null}
 

@@ -192,3 +192,16 @@
 /* The change-size dialog uses the ADE Cloud page's size cards (B14-23). */
 .adecl-tier-cards { margin-bottom: 12px; }
 .adecl-tier-now-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); margin-right: auto; }
+
+/* The chat header's cloud button while the idle cleanup warned about the lane's computer. */
+.adecl-idle-trigger { position: relative; display: inline-flex; }
+.adecl-idle-trigger i {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--kit-warn, #f59e0b);
+  box-shadow: 0 0 0 2px var(--kit-surface, transparent);
+}

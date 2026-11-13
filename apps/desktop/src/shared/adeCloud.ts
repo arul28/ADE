@@ -6,6 +6,8 @@ import type {
   CloudDiskUsageItem,
   CloudDiskUsageKind,
   CloudDiskUsageReport,
+  CloudIdleCleanupEntry,
+  CloudIgnoredFiles,
   CloudLaneWork,
   CloudHoursState,
   CloudPaidPlanId,
@@ -39,6 +41,15 @@ export {
 export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanState, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary };
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
 export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
+/** The idle cleanup's shared sentences (the server's emails say the same). */
+export {
+  CLOUD_IGNORED_FILES_MAX_PATHS,
+  IDLE_CLEANUP_HELD_NEXT,
+  idleCleanupSaveSentence,
+  idleCleanupWhen,
+  ignoredFilesList,
+  ignoredFilesSentence,
+} from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
 
@@ -742,7 +753,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming, CloudPlanFacts, CloudPlanId };
 export type { CloudPlanCleanup, CloudPlanCleanupComputer, CloudPlanCleanupDone, CloudPlanCleanupPick, CloudTimedWakesCancelled };
-export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
+export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudIdleCleanupEntry, CloudIgnoredFiles, CloudLaneWork };
 
 /**
  * What opening checkout did: a browser page opened, or the plan changed

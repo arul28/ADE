@@ -7,6 +7,7 @@ import {
   formatCloudHoursRate,
   type CloudAccountState,
   type CloudDiskUsage,
+  type CloudIdleCleanupEntry,
   type CloudLaneWork,
   type CloudMachine,
 } from "../../../../shared/adeCloud";
@@ -47,6 +48,8 @@ export type DashLane = {
   without: CloudLaneWithoutComputer | null;
   /** A computer the account pays for that holds no lane (made before lanes had their own computer). */
   noLane: boolean;
+  /** The idle cleanup's warning for its computer (or its kept-after-a-failed-save state), else null. */
+  idle: CloudIdleCleanupEntry | null;
 };
 
 function stateOf(machine: CloudMachine): DashLaneState {
@@ -80,6 +83,7 @@ export function dashLanes(input: {
   now: number;
 }): DashLane[] {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
+  const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
   // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
     .map((machine): DashLane => {
@@ -102,6 +106,7 @@ export function dashLanes(input: {
         machine,
         without: null,
         noLane: !machine.lane,
+        idle: idle.get(machine.instanceId) ?? null,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -126,6 +131,7 @@ export function dashLanes(input: {
         machine: null,
         without: lane,
         noLane: false,
+        idle: null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
@@ -168,6 +174,7 @@ export function lastRunText(lane: DashLane, now: number): string {
   if (lane.state === "none") {
     const reason = lane.without?.reason;
     if (reason === "inactive") return "Computer removed after 30 days";
+    if (reason === "idle_cleanup") return "Computer removed while unused";
     if (reason === "plan_limit") return "Computer removed to fit your plan";
     return "No computer now";
   }

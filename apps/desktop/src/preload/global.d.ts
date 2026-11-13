@@ -5034,6 +5034,8 @@ declare global {
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         personIsHere?: () => Promise<boolean>;
         pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
+        /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
+        keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
         /**
          * The life of a lane's computer: work check, delete lane, keep the
          * lane on a fresh computer, lanes without a computer, tier changes

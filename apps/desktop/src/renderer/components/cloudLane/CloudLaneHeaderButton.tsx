@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { Cloud, Cpu, MagnifyingGlass, Moon, Trash } from "@phosphor-icons/react";
+import { Clock, Cloud, Cpu, MagnifyingGlass, Moon, Trash } from "@phosphor-icons/react";
+import { idleCleanupWhen } from "../../../shared/adeCloud";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
@@ -19,15 +21,30 @@ import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
  *
  * `turnRunning`: this chat's turn is running, so Sleep asks first (sleep
  * freezes the computer, and the turn may fail), as Sleep does everywhere.
+ *
+ * When the idle cleanup warned about the lane's computer, the button carries
+ * a dot and its menu starts with "Keep it", from the account the header
+ * already reads (`useCloudAccount`, no read of its own). A message sent in the
+ * chat keeps it too: it wakes the computer, which restarts the clock.
  */
 export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string | null; turnRunning: boolean }) {
   const { computers } = useAdeCloudLaneComputers();
+  const account = useCloudAccount();
   const [sizing, setSizing] = useState(false);
   const computer = laneId ? computers.find((entry) => entry.laneId === laneId) ?? null : null;
   if (!computer) return null;
   const life = cloudLaneLifeAvailable();
   const name = computer.laneName || "this lane";
+  const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
   const actions: MachineAction[] = [];
+  if (idle && window.ade.cloud?.keepIdleComputer) {
+    actions.push({
+      key: "keep",
+      label: idle.held ? "Keep it (ADE couldn't save its work)" : `Keep it (${idleCleanupWhen(idle.deletesAt, Date.now())})`,
+      icon: <Clock size={13} />,
+      onSelect: () => void keepLaneComputer(computer.instanceId, name),
+    });
+  }
   if (life) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: () => setSizing(true) });
   actions.push({
     key: "disk",
@@ -57,11 +74,25 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
       <MachineActionsMenu
         label={`ADE Cloud computer of ${name}`}
         actions={actions}
-        trigger={{ icon: <Cloud size={16} weight="bold" />, className: WORK_HEADER_ICON_BUTTON_CLASS, title: "This lane's ADE Cloud computer" }}
+        trigger={{
+          icon: idle ? <span className="adecl-idle-trigger"><Cloud size={16} weight="bold" /><i aria-hidden="true" /></span> : <Cloud size={16} weight="bold" />,
+          className: WORK_HEADER_ICON_BUTTON_CLASS,
+          title: idle
+            ? (idle.held ? "This lane's computer wasn't deleted: ADE couldn't save its work" : `This lane's computer will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`)
+            : "This lane's ADE Cloud computer",
+        }}
       />
       {sizing ? <CloudTierChangeDialog instanceId={computer.instanceId} laneName={name} onClose={() => setSizing(false)} /> : null}
     </>
   );
+}
+
+/** "Keep it" from the chat header: the server restarts the computer's idle clock with no wake. */
+async function keepLaneComputer(instanceId: string, name: string): Promise<void> {
+  const result = await window.ade.cloud?.keepIdleComputer?.(instanceId).catch((error: unknown) => ({ ok: false, message: error instanceof Error ? error.message : undefined }));
+  if (result?.ok) showToast({ tone: "success", title: `Kept ${name}'s computer`, message: "ADE Cloud won't delete it. The clock starts again from now." });
+  else showToast({ tone: "warning", title: `Couldn't keep ${name}'s computer`, message: result?.message || "Send a message in the lane to keep it." });
+  refreshCloudMachines();
 }
 
 /** Sleep from the chat header: the shared confirm and IPC call, a toast either way, then the list read again. */

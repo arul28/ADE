@@ -13911,6 +13911,9 @@ const adeBridge = {
     /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    /** "Keep it" on an idle cleanup warning: restarts the computer's idle clock, no wake. Account level, by its ADE Cloud id. */
+    keepIdleComputer: (instanceId: string): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke(IPC.cloudKeepIdleComputer, { instanceId }),
     /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
     laneLife: <M extends CloudLaneLifeMethod>(request: CloudLaneLifeCallRequest<M>): Promise<CloudLaneLifeResults[M]> =>
       ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),

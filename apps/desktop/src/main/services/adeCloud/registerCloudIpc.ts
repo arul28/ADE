@@ -541,6 +541,29 @@ export function registerCloudIpc(args: {
     return result;
   });
 
+  /**
+   * "Keep it" on an idle cleanup warning: the server restarts the computer's
+   * idle clock with no wake. Account level, by the computer's ADE Cloud id
+   * (the server owns the clock wherever the computer is), so no pin.
+   */
+  ipcMain.handle(IPC.cloudKeepIdleComputer, async (event, arg: { instanceId?: unknown }): Promise<{ ok: boolean; message?: string }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudKeepIdleComputer)) return { ok: false, message: "ADE can't do that from here." };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isCloudInstanceId(instanceId)) return { ok: false, message: "ADE doesn't know that computer." };
+    const provider = await requireCloudProvider(credentials);
+    if (!provider.keepIdleComputer) return { ok: false, message: "This ADE Cloud can't keep a computer that way." };
+    try {
+      await provider.keepIdleComputer(instanceId);
+    } catch (error) {
+      logger.warn("cloud.idle_keep_failed", { error: getErrorMessage(error) });
+      return { ok: false, message: getErrorMessage(error) };
+    }
+    // The server records the product event (`ade_cloud_idle_cleanup` step `kept`).
+    logger.info("cloud.idle_kept", {});
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return { ok: true };
+  });
+
   ipcMain.handle(IPC.cloudOpenBillingPortal, async (event): Promise<{ opened: boolean }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenBillingPortal)) return { opened: false };
     const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingPortal());

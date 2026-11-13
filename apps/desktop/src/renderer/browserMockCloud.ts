@@ -11,6 +11,9 @@
  *  - `over`: Free plan in force, over its limits (a cancel made in the billing portal).
  *  - `full`: Free plan out of hours with the disk 92% full.
  *  - `blocked`: Free plan refused on this computer (another account used it).
+ *  - `idle`: Free plan, one lane unused 2 days (deleted in 1 day, ignored files listed) and one whose computer the idle cleanup removed.
+ *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
+ *  - `idleheld`: Free plan, one lane ADE didn't delete because its push was refused.
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
@@ -21,14 +24,15 @@ import {
   cloudFreePlanRefusedSentence,
   planCleanupSentence,
   type CloudAccountState,
+  type CloudIgnoredFiles,
   type CloudMachine,
   type CloudMachinesResult,
   type CloudPlanCleanup,
 } from "../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -124,7 +128,9 @@ type Fixture = {
   planId: "free" | "plus" | "pro";
   usedMilli: number;
   lanes: LaneSpec[];
-  without: Array<{ name: string; reason: "freed" | "inactive" | "plan_limit" }>;
+  without: Array<{ name: string; reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit" }>;
+  /** The idle cleanup's warnings, by lane id in `lanes` (`ignored: null` before the computer reported them). */
+  idle?: Array<{ id: string; inMs: number; days: number; ignored: CloudIgnoredFiles | null; held?: string }>;
   extraHours?: boolean;
   earnedMilli?: number;
   blocked?: boolean;
@@ -190,6 +196,30 @@ function fixture(scenario: Scenario): Fixture {
       };
     case "blocked":
       return { planId: "free", usedMilli: 0, lanes: [], without: [], blocked: true };
+    case "idle":
+    case "idleheld":
+      return {
+        planId: "free",
+        usedMilli: 8_400,
+        recentUsedMilli: 2_100,
+        lanes: [
+          { id: "a7c2e9k4", lane: "fix-login-redirect", tier: "small", diskGb: 4, state: "running", lastActiveAgoMs: 0, createdAgoMs: 2 * DAY, pr: "open" },
+          { id: "i9d1l2e3", lane: "pricing-page", tier: "small", diskGb: 4, state: "asleep", lastActiveAgoMs: 2 * DAY + HOUR, createdAgoMs: 6 * DAY, unpushed: true },
+        ],
+        without: scenario === "idle" ? [{ name: "onboarding-copy", reason: "idle_cleanup" }] : [],
+        idle: [{
+          id: "i9d1l2e3",
+          inMs: scenario === "idle" ? DAY - HOUR : 4 * HOUR,
+          days: 3,
+          ignored: { checkedAt: Date.now() - 2 * DAY, paths: [".env", ".env.local", "prisma/dev.db"], more: 2, rebuildable: 3 },
+          ...(scenario === "idleheld" ? { held: "Work that isn't on GitHub yet: pricing-page." } : {}),
+        }],
+      };
+    case "idlepaid":
+      return {
+        ...fixture("plus"),
+        idle: [{ id: "q9w8e7f5", inMs: 3 * DAY - HOUR, days: 10, ignored: null }],
+      };
     default:
       return {
         planId: "free",
@@ -261,7 +291,20 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       limit: plan.computerLimit,
     },
     recentUse: fix.recentUsedMilli ? { days: 7, usedMilli: fix.recentUsedMilli } : undefined,
-    dueForDeletion: [],
+    dueForDeletion: (fix.idle ?? []).map((entry) => {
+      const box = machines.find((candidate) => candidate.instanceId === entry.id);
+      return {
+        instanceId: entry.id,
+        name: box?.name ?? null,
+        deletesAt: entry.held ? now + DAY - 2 * HOUR : now + entry.inMs,
+        laneName: box?.lane?.laneName ?? null,
+        branch: box?.lane ? `ade/${box.lane.laneName}` : null,
+        warnedAt: now - DAY,
+        idleDays: entry.days,
+        ignoredFiles: entry.ignored,
+        held: entry.held ? { at: now - 2 * HOUR, reason: entry.held } : null,
+      };
+    }),
     deletedInstanceIds: [],
     catalog: CATALOG,
     billing: {
@@ -326,6 +369,8 @@ export function applyBrowserMockCloud(ade: any): void {
   const without: CloudLaneWithoutComputer[] = fix.without.map((lane, index) => ({
     laneId: `lane-without-${index}`,
     laneName: lane.name,
+    branchRef: `ade/${lane.name}`,
+    since: now - DAY,
     reason: lane.reason,
     type: "default",
     cpu: 2,
@@ -371,6 +416,12 @@ export function applyBrowserMockCloud(ade: any): void {
         for (const listener of statusListeners) listener();
       }
       return { opened: false, change: downgrade ? "next_period" : "now", ...(cleanup ? { freeing: cleanup.instanceIds } : {}) };
+    },
+    keepIdleComputer: async (instanceId: string) => {
+      console.info("[browser mock] cloud.keepIdleComputer", instanceId);
+      state.dueForDeletion = state.dueForDeletion.filter((entry) => entry.instanceId !== instanceId);
+      for (const listener of statusListeners) listener();
+      return { ok: true };
     },
     pickPlanCleanup: async (input: { planId: "free" | "plus"; push: boolean; instanceIds: string[] }) => {
       console.info("[browser mock] cloud.pickPlanCleanup", input);

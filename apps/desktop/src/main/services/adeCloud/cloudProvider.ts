@@ -91,6 +91,11 @@ export type CloudProvider = {
   sleepInstance(id: string): Promise<string>;
   /** The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. Answers with the new status. */
   requestIdleSleep(id: string): Promise<string>;
+  /**
+   * "Keep it" on an idle cleanup warning (`POST .../keep`): the idle clock
+   * restarts with no wake and no hours. Optional: only ADE's server has it.
+   */
+  keepIdleComputer?(id: string): Promise<void>;
   /** Wakes a sleeping machine or starts a stopped one. `push_work` is the one wake allowed at 0 hours. Answers with the new status. */
   startInstance(id: string, options?: { reason?: "push_work" }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
