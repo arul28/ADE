@@ -249,9 +249,14 @@ describe("shared sync listener upgrade policy", () => {
     try {
       const port = await listener.ensureListening([0]);
       const connectedBefore = await connect(port, "/");
-      blocker = http.createServer();
-      blocker.listen(port + 1, "127.0.0.1");
-      await once(blocker, "listening");
+      // Hold port + 1. Another program already holding it is just as good:
+      // either way the first port above is taken.
+      const candidateBlocker = http.createServer();
+      const held = await new Promise<boolean>((resolve) => {
+        candidateBlocker.once("error", () => resolve(false));
+        candidateBlocker.listen(port + 1, "127.0.0.1", () => resolve(true));
+      });
+      blocker = held ? candidateBlocker : null;
       shadowedPort = port;
 
       await listener.healNow();
