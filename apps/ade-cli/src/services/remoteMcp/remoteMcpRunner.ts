@@ -116,7 +116,7 @@ async function resolveLaunch(): Promise<Launch> {
   const { entry, tried } = resolveCliEntry(env, isEmbeddedAdeRuntime(), adeDir);
   if (!entry) {
     throw new Error(
-      `This computer's ADE could not find its own ade command (looked at ${tried.join(", ") || "nothing"}). `
+      `This machine's ADE could not find its own ade command (looked at ${tried.join(", ") || "nothing"}). `
       + "Restarting ADE on it usually fixes this.",
     );
   }
@@ -202,7 +202,7 @@ export async function runAdeForRemote(args: {
     return {
       exitCode: null,
       stdout: "",
-      stderr: (await args.missingCwdMessage?.()) ?? `The folder ${args.cwd} isn't on this computer.`,
+      stderr: (await args.missingCwdMessage?.()) ?? `The folder ${args.cwd} isn't on this machine.`,
       timedOut: false,
       truncated: false,
       durationMs: Date.now() - launchStarted,

@@ -1,6 +1,6 @@
 ---
 name: ade-computer-use
-description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade screen` — Mac Desktop on a Mac, Windows Desktop on Windows, Linux Desktop on Linux — `ade app-control`, `ade browser`) and covers the lane's own screen on every host, so you never drive the user's screen by accident.
+description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade screen` — Mac Desktop on a Mac, Windows Desktop on Windows, Linux Desktop on Linux — `ade app-control`, `ade browser`) and covers the lane's own screen on every machine, so you never drive the user's screen by accident.
 ---
 
 # ADE computer use
@@ -15,7 +15,7 @@ up (or `ade skill show ade-computer-use references/<file>`):
 
 | Topic | File |
 | --- | --- |
-| Driving a simulator, screen or app on another machine (`--machine`) | `references/other-machines.md` |
+| Finding and using a device on another machine (`ade devices`, `--device`) | `references/other-machines.md` |
 | Windows Desktop: the two seats, what needs the user, Windows specifics, proof | `references/windows-desktop.md` |
 | Linux Desktop: packages, browsers, Electron apps, stalled apps | `references/linux-desktop.md` |
 | Mac Desktop: `next:` hints, global and local points, documents and second copies, moving windows, panels, alerts and sheets | `references/mac-screen-details.md` |
@@ -32,7 +32,7 @@ Go down this list and stop at the first step that answers the question:
    SwiftUI view → `ade apple`. An Android app → `ade android`. They run in the
    background and never touch the user's
    screen, pointer or focus.
-3. **The lane's own screen** (`ade screen`, on every host),
+3. **The lane's own screen** (`ade screen`, on Mac, Windows and Linux),
    only for what steps 1 and 2 cannot reach:
    - a native or custom-drawn Mac app: the Mac app you are building, a DAW
      (FL Studio, Ableton, Logic), a game, a canvas or an OpenGL/Unity build;
@@ -54,13 +54,13 @@ stop it when you are done (see **Rules that will bite you**).
 | What you need to drive | Surface | Skill |
 |---|---|---|
 | An iOS app or an iOS SwiftUI view (a native macOS app, SwiftUI or not, is step 3) | `ade apple` | **ade-apple** |
-| An Android app (any host: the lane's emulator, never `emulator -avd`) | `ade android` | **ade-android** |
+| An Android app (any machine: the lane's emulator, never `emulator -avd`) | `ade android` | **ade-android** |
 | An Electron app — your dev build, or an installed one such as Slack — or anything whose DOM you need: labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
 | Step 3 above, on a Mac | `ade screen` (the lane's private display) | this skill, below |
-| A Windows app with no other route (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
-| Any GUI app on a Linux host — Chrome, Firefox, an Electron or GTK/Qt app — with no other route | `ade screen` (Linux Desktop: the lane's own X display) | this skill, **Linux Desktop** below |
+| A Windows app with no other route (on Windows) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
+| Any GUI app on Linux — Chrome, Firefox, an Electron or GTK/Qt app — with no other route | `ade screen` (Linux Desktop: the lane's own X display) | this skill, **Linux Desktop** below |
 
 App Control acts through an Electron app's DOM, so labels, selectors, test ids
 and hover work, and it records and proves the app's own window without a lane
@@ -73,7 +73,7 @@ ADE's browser is the default for web work. Attach to the user's own browser
 only when they ask for it, never on your own, and tell them which machine and
 tab you attached to.
 
-Lane screens (`ade screen`) exist on macOS, Windows and Linux hosts. On Linux
+Lane screens (`ade screen`) exist on macOS, Windows and Linux machines. On Linux
 each lane gets its own X display, so nothing you do there touches anyone's
 screen; see **Linux Desktop** below.
 
@@ -88,10 +88,11 @@ Note: `ade desktop` is a different command. It launches the ADE desktop app.
 
 ## A device on another machine
 
-`ade apple`, `ade screen` and `ade app-control` take `--machine <name>` to
-drive that machine's simulator, screen or app. The person at that Mac sees
-your session and can end it; stop it yourself when done. Flags, where proof
-lands, and building there: `references/other-machines.md`.
+`ade devices --text` lists every simulator, emulator, screen and app on the
+person's machines. `ade devices use "<kind>@<machine>"` picks one for this
+chat; then the usual `ade apple|android|screen|app-control` commands act on
+it. Your code there, long builds, turn end, cleanup and proof:
+`references/other-machines.md`.
 
 ## The same answer on every surface
 
@@ -163,14 +164,14 @@ session.
 For web tasks, use `ade browser` (step 2 above). Open Safari or another browser
 here only when the user names that app or asks for the Mac Desktop.
 
-On Windows and Linux the same `ade screen` verbs drive that host's screen;
-read the short section for your host below first.
+On Windows and Linux the same `ade screen` verbs drive that machine's screen;
+read the short section for your system below first.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
 chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
 ## Windows Desktop
 
-On a Windows host, `ade screen` is Windows Desktop, with the Mac verbs below.
+On Windows, `ade screen` is Windows Desktop, with the Mac verbs below.
 Start every task with `ade screen status --text` and follow its `next` line.
 The default **private** seat is a separate session of the user's account, not
 their screen. The **shared** seat is the user's main desktop and needs their
@@ -184,7 +185,7 @@ for the task. Seats, the ask-the-user table, Windows specifics and proof:
 
 ## Linux Desktop
 
-On a Linux host the lane screen is the lane's own X display, so point clicks,
+On Linux the lane screen is the lane's own X display, so point clicks,
 drags, keys and `--real` need no lease. Missing packages (Xvfb, AT-SPI,
 ffmpeg): you cannot install them; ask the user. Browsers, Electron apps,
 stalled apps, modifier keys and windows: `references/linux-desktop.md`.

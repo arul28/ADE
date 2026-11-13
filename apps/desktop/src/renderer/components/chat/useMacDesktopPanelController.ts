@@ -413,6 +413,15 @@ export function useMacDesktopPanelController({
   // that never ends.
   const connecting = Boolean(display) && !starting && live.status !== "playing" && live.status !== "error";
   useMacDesktopRecheck(connecting, refreshStatus);
+  // A video that broke because the display was stopped on purpose (`ade
+  // screen stop`, here or from another machine) must turn into the Off card,
+  // not "Video stopped… is still running": re-read once when it breaks.
+  const videoBroke = Boolean(display) && live.status === "error";
+  const refreshStatusRef = useRef(refreshStatus);
+  refreshStatusRef.current = refreshStatus;
+  useEffect(() => {
+    if (videoBroke) void refreshStatusRef.current().catch(() => undefined);
+  }, [videoBroke]);
   // And past a normal connect, the strip says so and offers the ways out.
   useEffect(() => {
     setConnectSlow(false);

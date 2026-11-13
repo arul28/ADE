@@ -4024,7 +4024,7 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
       if (!owner) throw new Error("remote_work.delete requires owner.");
       const projectId = isRecord(args) && typeof args.projectId === "string" ? args.projectId.trim() : "";
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
-        throw new Error("That work copy belongs to another project here; delete it through that project.");
+        throw new Error("That copy of a chat's code belongs to another project here; delete it through that project.");
       }
       // Refused while a command runs in it (RemoteWorkError "copy_busy").
       return { deleted: await here().release(owner) };

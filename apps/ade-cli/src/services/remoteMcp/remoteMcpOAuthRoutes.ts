@@ -231,7 +231,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
   const exchangeAccountCode = async (code: string, verifier: string): Promise<string> => {
     const oauth = deps.account.oauth();
     const callbackUrl = accountCallbackUrl();
-    if (!oauth || !callbackUrl) throw new Error("ADE sign-in isn't configured on this computer.");
+    if (!oauth || !callbackUrl) throw new Error("ADE sign-in isn't configured on this machine.");
     const response = await (deps.fetchImpl ?? fetch)(`${withoutTrailingSlash(oauth.issuer)}/oauth/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
@@ -357,7 +357,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
       deps.logger?.warn?.("remote_mcp.token_forward_failed", { error: getErrorMessage(error) });
       return json(503, {
         error: "temporarily_unavailable",
-        error_description: `${describeNetworkError(error, "the computer that holds this sign-in")} If it keeps failing, connect again.`,
+        error_description: `${describeNetworkError(error, "the machine that holds this sign-in")} If it keeps failing, connect again.`,
       });
     }
   };

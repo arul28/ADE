@@ -3410,6 +3410,10 @@ export type AgentChatRemoteWorkUse = {
   usesSimulator: boolean;
   /** The chat drove an Android emulator there through its work copy (`ade android … --machine`). */
   usesAndroidEmulator?: boolean;
+  /** The chat drove that machine's desktop screen (Mac, Windows or Linux Desktop) through its work copy (`ade screen … --machine`). */
+  usesDesktop?: boolean;
+  /** The chat drove an App Control session there through its work copy (`ade app-control … --machine`). */
+  usesAppControl?: boolean;
   lastStartedAt: string;
 };
 

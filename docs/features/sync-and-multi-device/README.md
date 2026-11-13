@@ -24,9 +24,15 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- [`devices-and-machines.md`](./devices-and-machines.md) — the one model
+  agents learn for using a device on any machine: the words (machine, device,
+  source, lane, "your code there"), `ade devices`, `devices use|current`,
+  `--machine`, `--code synced|as-is|fresh`, `--clone`,
+  `--no-code`, `--to` on `chat handoff|move`, MCP, and the ADE Cloud iPhone.
 - `cross-machine-agents.md` — agents and the CLI on other machines:
   `--machine`, `--all-machines`, children that wake parents across machines and
-  projects, remote device drive with proof filed back.
+  projects, remote device drive with proof filed back (the implementation
+  under `devices-and-machines.md`).
 - `cross-machine-session-handoff.md` — moving a Work chat to another
   machine: the brain-owned move record and its states, agent and CLI control,
   approval, the source banner and send routing, the Git contract (clean and
@@ -705,6 +711,13 @@ Runtime support files outside `services/sync/`:
   [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
   builds what a `--machine` call sends for it, and moves `ade files push|pull`
   chunks; `remoteWork/remoteWorkFiles.ts` is the host side of those transfers.
+  `remoteWork/remoteWorkScratch.ts` makes and sweeps the empty folders a
+  `--no-code` command runs in (`<ADE_HOME>/remote-work/scratch/`).
+- `apps/ade-cli/src/cliDevices.ts` — `ade devices` (list, `use`, `current`)
+  and the device commands following a chat's choice; the ids, the choice's
+  shape and the subcommand parse ADE MCP's command check shares live in
+  `apps/desktop/src/shared/types/deviceSources.ts` (see
+  [devices and machines](devices-and-machines.md)).
 - `apps/desktop/src/shared/rpcLiveness.ts` — whether a connection that went
   quiet still answers (`probeRpcLiveness`), shared by the desktop's
   `remoteConnectionPool.ts` and the brains' machine link pool

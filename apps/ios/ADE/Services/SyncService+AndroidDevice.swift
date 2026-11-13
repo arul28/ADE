@@ -62,7 +62,12 @@ struct AndroidDevicePosture: Codable, Equatable {
 /// opened from: that one is the person's own agent, not someone else's.
 func androidDeviceForeignOwner(_ owner: AndroidDeviceStatusOwner?, viewerChatSessionId: String?) -> AndroidDeviceStatusOwner? {
   guard let owner, let holder = owner.holder?.trimmingCharacters(in: .whitespacesAndNewlines), !holder.isEmpty else { return nil }
-  if let viewer = viewerChatSessionId, !viewer.isEmpty, owner.chatSessionId == viewer || holder == viewer { return nil }
+  // The viewer's chat working through another machine holds it there as
+  // `remote:<device>:<chat id>` (`deviceClaimIsViewerChat`).
+  if deviceClaimIsViewerChat(owner.chatSessionId ?? "", viewerChatSessionId: viewerChatSessionId)
+    || deviceClaimIsViewerChat(holder, viewerChatSessionId: viewerChatSessionId) {
+    return nil
+  }
   return owner
 }
 

@@ -95,7 +95,7 @@ export function describeNetworkError(error: unknown, target: string): string {
   const code = networkErrorCode(error);
   const suffix = code ? ` (${code})` : "";
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ENETUNREACH" || code === "EHOSTUNREACH") {
-    return `This computer couldn't reach ADE Relay to get to ${target}${suffix}. Check its internet connection, then try again.`;
+    return `This machine couldn't reach ADE Relay to get to ${target}${suffix}. Check its internet connection, then try again.`;
   }
   return `The connection to ${target} through ADE Relay dropped${suffix}. Try again in a moment.`;
 }

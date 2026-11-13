@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ANDROID_CODE_SYNC_ACTIONS, ANDROID_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/androidEmulator";
+import { APP_CONTROL_CODE_SYNC_ACTIONS, APP_CONTROL_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/appControl";
+import { MAC_DESKTOP_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/macDesktop";
 import {
   REMOTE_WORK_FILE_CHUNK_BYTES,
   REMOTE_WORK_FILE_MAX_BYTES,
@@ -11,6 +13,7 @@ import {
   remoteWorkFileTooLargeMessage,
   type RemoteWorkFileOp,
 } from "../../desktop/src/shared/types/remoteWork";
+import { GIT_HEADLESS_PROMPT_ENV, GIT_READ_ENV } from "../../desktop/src/main/services/git/gitReadEnv";
 import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
 import { fileSha256 } from "./services/tools/download";
 
@@ -25,18 +28,25 @@ import { fileSha256 } from "./services/tools/download";
    uncommitted change as one binary patch.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** How a `--machine` call readies the work copy: `--no-sync` → "none", `--discard`, or null for a sync. */
+/** How a `--machine` call readies the work copy: `--code as-is` → "none", `--code fresh` → "discard", or null for a sync. */
 export type MachineWorkCopySync = "none" | "discard" | null;
 
 /** What `cliMachineTargeting` reads for a call that runs in the work copy. */
-export type MachineWorkCopy = { sync: MachineWorkCopySync; argv?: string[] | null };
+export type MachineWorkCopy = {
+  sync: MachineWorkCopySync;
+  argv?: string[] | null;
+  /** `ade shell start --machine … --no-code`: no work copy and no repo; a temp folder there, removed after. */
+  scratch?: boolean;
+};
 
 /**
  * Apple actions about the machine, not a lane: they never need a work copy.
- * The lane-free reads match the brain's (`APPLE_LANE_FREE_ACTIONS` in adeRpcServer.ts).
+ * The lane-free reads match the brain's (`APPLE_LANE_FREE_ACTIONS` in adeRpcServer.ts),
+ * except `listLaunchTargets`: the apps to launch are the ones in this chat's
+ * work copy there, so it is made (at this commit) when missing.
  */
 const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set([
-  "getStatus", "runtimeList", "listDevices", "listLaunchTargets", "deviceList", "getStreamStatus",
+  "getStatus", "runtimeList", "listDevices", "deviceList", "getStreamStatus",
 ]);
 
 /**
@@ -54,13 +64,19 @@ export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: M
     const { laneId: _defaultLane, ...rest } = args;
     nextArgs = {
       ...rest,
-      remoteWork: {
-        ...(workCopy.sync === "none" ? readLocalHead(cwd) : readLocalWorkSource(cwd)),
-        ...(workCopy.sync ? { sync: workCopy.sync } : {}),
-        ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
-        // A command there ends its shell, so the next command can sync.
-        ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
-      },
+      remoteWork: workCopy.scratch
+        // No commit, no patch, no git at all: the command needs no code.
+        ? {
+          scratch: true,
+          ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
+          ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
+        }
+        : {
+          ...remoteWorkPayload(workCopy.sync === "none" ? "head" : "build", cwd, workCopy.sync),
+          ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
+          // A command there ends its shell, so the next command can sync.
+          ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
+        },
     };
   }
   return { ...params, arguments: { ...toolArgs, args: nextArgs } };
@@ -82,16 +98,136 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
   const builds = workCopy != null && sync !== "none";
   return {
     ...params,
+    arguments: { ...toolArgs, args: { ...args, remoteWork: remoteWorkPayload(builds ? "build" : "head", cwd, sync) } },
+  };
+}
+
+/**
+ * What a `--machine` call sends about this checkout: nothing but `sync:
+ * "none"` for a read about the machine (no copy made), this checkout's code
+ * for a verb that builds or runs it, else only its commit (a missing copy is
+ * made at it, an existing one used as it is).
+ */
+function remoteWorkPayload(kind: "machine" | "build" | "head", cwd: string, sync: MachineWorkCopySync = null): JsonObject {
+  if (kind === "machine") return { sync: "none" };
+  if (kind === "build") return { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) };
+  return { ...readLocalHead(cwd), sync: "none" };
+}
+
+/**
+ * The lane-free reads of `ade screen` (`mac_desktop`) and `ade app-control`
+ * (`app_control`): they send no commit and make no copy there, and name this
+ * chat's screen or session only when its copy is there already.
+ */
+const SCREEN_MACHINE_ACTIONS: ReadonlySet<string> = new Set(MAC_DESKTOP_LANE_FREE_ACTIONS);
+const APP_CONTROL_MACHINE_ACTIONS: ReadonlySet<string> = new Set(APP_CONTROL_LANE_FREE_ACTIONS);
+/** App Control verbs that run this chat's code there: the copy is synced to this checkout first. */
+const APP_CONTROL_CODE_SYNC: ReadonlySet<string> = new Set(APP_CONTROL_CODE_SYNC_ACTIONS);
+
+/**
+ * `ade screen … --machine` (Mac, Windows or Linux Desktop there): the screen
+ * there is this chat's work copy's, which stands in for a lane. A status or
+ * window list sends no commit and makes no copy; every other verb sends this
+ * commit, so a `start` or `open` can make the copy at it (the screen needs no
+ * code, so the copy is never synced for it). The chat id is the other
+ * machine's to set, from the caller's identity; a `--lane` is passed on, and
+ * the other machine refuses a lane that is not the copy's.
+ */
+export function withRemoteScreenArgs(params: JsonObject, cwd: string): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  if (!isRecord(toolArgs.args)) return params;
+  const action = asString(toolArgs.action) ?? "";
+  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
+  return {
+    ...params,
     arguments: {
       ...toolArgs,
       args: {
         ...args,
-        remoteWork: builds
-          ? { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) }
-          : { ...readLocalHead(cwd), sync: "none" },
+        remoteWork: remoteWorkPayload(SCREEN_MACHINE_ACTIONS.has(action) ? "machine" : "head", cwd),
       },
     },
   };
+}
+
+/**
+ * `ade app-control … --machine`: the App Control session there is this
+ * chat's work copy's. A launch syncs the copy to this checkout first (the app
+ * there is this code, uncommitted changes included) unless `--code as-is`, and
+ * its `--cwd`, which must be inside this checkout, becomes the same folder in
+ * the copy. A status or driver list sends no commit and makes no copy; every
+ * other verb uses the copy as it is.
+ */
+export function withRemoteAppControlArgs(params: JsonObject, cwd: string, workCopy: MachineWorkCopy | null): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  if (!isRecord(toolArgs.args)) return params;
+  const action = asString(toolArgs.action) ?? "";
+  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
+  const runsCode = APP_CONTROL_CODE_SYNC.has(action);
+  const sync = workCopy?.sync ?? null;
+  const launchCwd = runsCode ? asString(args.cwd) : null;
+  return {
+    ...params,
+    arguments: {
+      ...toolArgs,
+      args: {
+        ...args,
+        ...(launchCwd ? { cwd: checkoutRelativePath(launchCwd, cwd, "--cwd") } : {}),
+        remoteWork: remoteWorkPayload(
+          APP_CONTROL_MACHINE_ACTIONS.has(action) ? "machine" : runsCode && sync !== "none" ? "build" : "head",
+          cwd,
+          sync,
+        ),
+      },
+    },
+  };
+}
+
+/**
+ * A folder inside this checkout as the other machine finds it in the chat's
+ * work copy: relative to the checkout's top, `/`-separated ("" is the top).
+ */
+function checkoutRelativePath(target: string, cwd: string, flag: string, options: { mayBeMissingHere?: boolean } = {}): string {
+  return checkoutRelative(target, cwd, flag, options).relative.split(path.sep).join("/");
+}
+
+/** The real path of `target`'s nearest folder that exists here, with the rest of `target` after it. */
+function realPathOfExistingPart(target: string): string {
+  const rest: string[] = [];
+  let current = target;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...rest.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return target;
+      rest.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * `target` relative to this checkout's top (git names the top by its real
+ * path: macOS `/tmp` is `/private/tmp`). `mayBeMissingHere`: a path the other
+ * machine's copy may have and this checkout not (a build made only there).
+ */
+function checkoutRelative(target: string, cwd: string, flag: string, options: { mayBeMissingHere?: boolean } = {}): { top: string; relative: string } {
+  const { top } = localCheckout(cwd);
+  const typed = path.resolve(cwd, target);
+  let relative: string;
+  try {
+    relative = path.relative(
+      fs.realpathSync.native(top),
+      options.mayBeMissingHere ? realPathOfExistingPart(typed) : fs.realpathSync.native(typed),
+    );
+  } catch {
+    throw new CliUsageError(`${flag} ${target}: no such folder here.`);
+  }
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new CliUsageError(`${flag} ${target} is outside this checkout (${top}), so it means nothing on the other machine.`);
+  }
+  return { top, relative };
 }
 
 /**
@@ -111,27 +247,30 @@ const ANDROID_CODE_SYNC: ReadonlySet<string> = new Set(ANDROID_CODE_SYNC_ACTIONS
  * device list sends no commit and makes no copy. The chat id is the other
  * machine's to set, from the caller's identity.
  */
-export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObject {
+export function withRemoteAndroidArgs(params: JsonObject, cwd: string, workCopy: MachineWorkCopy | null = null): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
   if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
   const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
   // An install or launch builds only with `--gradle` or `--apk`; tests and previews always build.
   const optionalBuild = action === "installApp" || action === "launchApp";
-  const builds = ANDROID_CODE_SYNC.has(action) && (!optionalBuild || asString(args.apkPath) != null || args.gradle != null);
-  const apkPath = builds ? asString(args.apkPath) : null;
+  const buildVerb = ANDROID_CODE_SYNC.has(action) && (!optionalBuild || asString(args.apkPath) != null || args.gradle != null);
+  // `--code as-is`: the build uses the code there as it is (no patch sent);
+  // `--code fresh` throws away changes made there before the sync.
+  const sync = buildVerb ? workCopy?.sync ?? null : null;
+  const builds = buildVerb && sync !== "none";
+  const apkPath = buildVerb ? asString(args.apkPath) : null;
+  // `--code as-is` sends no patch: the APK is the one in the copy there
+  // (a build made only there), so it need not exist here; that machine
+  // checks it exists.
   return {
     ...params,
     arguments: {
       ...toolArgs,
       args: {
         ...args,
-        ...(apkPath ? { apkPath: remoteApkPath(apkPath, cwd) } : {}),
-        remoteWork: ANDROID_MACHINE_ACTIONS.has(action)
-          ? { sync: "none" }
-          : builds
-            ? readLocalWorkSource(cwd)
-            : { ...readLocalHead(cwd), sync: "none" },
+        ...(apkPath ? { apkPath: builds ? remoteApkPath(apkPath, cwd) : checkoutRelativePath(apkPath, cwd, "--apk", { mayBeMissingHere: true }) } : {}),
+        remoteWork: remoteWorkPayload(ANDROID_MACHINE_ACTIONS.has(action) ? "machine" : builds ? "build" : "head", cwd, sync),
       },
     },
   };
@@ -144,14 +283,9 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObje
  * output) is refused here with the way that works.
  */
 function remoteApkPath(apkPath: string, cwd: string): string {
-  const { top } = localCheckout(cwd);
-  // git names the top by its real path (macOS `/tmp` is `/private/tmp`).
-  const typed = path.resolve(cwd, apkPath);
-  if (!fs.existsSync(typed)) throw new CliUsageError(`--apk ${apkPath}: no such file here.`);
-  const relative = path.relative(fs.realpathSync.native(top), fs.realpathSync.native(typed));
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new CliUsageError(`--apk ${apkPath} is outside this checkout (${top}), so it cannot go to the other machine.`);
-  }
+  if (!fs.existsSync(path.resolve(cwd, apkPath))) throw new CliUsageError(`--apk ${apkPath}: no such file here.`);
+  const { top, relative } = checkoutRelative(apkPath, cwd, "--apk");
+  if (!relative) throw new CliUsageError(`--apk ${apkPath} names this checkout's top folder, not an APK file.`);
   const ignored = spawnSync("git", ["check-ignore", "-q", "--", relative], { cwd: top, windowsHide: true });
   if (ignored.status === 0) {
     throw new CliUsageError(
@@ -186,6 +320,13 @@ function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Buffer {
 
 const gitText = (cwd: string, args: string[]): string => gitHere(cwd, args).toString("utf8").trim();
 
+/** Whether this person set up their own ssh for git (env or `core.sshCommand`). */
+function hasOwnSshSetup(top: string): boolean {
+  if (process.env.GIT_SSH_COMMAND?.trim() || process.env.GIT_SSH?.trim()) return true;
+  const configured = spawnSync("git", ["config", "--get", "core.sshCommand"], { cwd: top, windowsHide: true, timeout: 5_000 });
+  return configured.status === 0 && configured.stdout.toString("utf8").trim().length > 0;
+}
+
 function localCheckout(cwd: string): { top: string; head: string; branch: string | null } {
   const top = gitText(cwd, ["rev-parse", "--show-toplevel"]);
   const branch = gitText(top, ["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -207,12 +348,38 @@ export function readLocalHead(cwd: string): JsonObject {
  */
 function readLocalWorkSource(cwd: string): JsonObject {
   const { top, head, branch } = localCheckout(cwd);
-  const remoteRefs = gitText(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
+  // `head` read once, not `HEAD` again: the patch and its declared base stay one commit.
+  const originRefsWithHead = (): string[] => gitText(top, ["branch", "-r", "--contains", head, "--format=%(refname:short)"])
     .split("\n").map((line) => line.trim()).filter((line) => line.startsWith("origin/") && line !== "origin/HEAD");
+  let remoteRefs = originRefsWithHead();
+  if (!remoteRefs.length) {
+    // Pushed from another checkout, or this one has not fetched since: ask
+    // origin once before refusing (the branch, or every branch when detached).
+    // Never a prompt: a fetch that needs a password fails at once instead of
+    // waiting on a dialog or the terminal the agent cannot answer.
+    const fetched = spawnSync("git", ["fetch", "--quiet", "origin", ...(branch ? [branch] : [])], {
+      cwd: top,
+      windowsHide: true,
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ...GIT_READ_ENV,
+        ...GIT_HEADLESS_PROMPT_ENV,
+        GCM_INTERACTIVE: "Never",
+        // ssh may not ask either, unless the person set up their own ssh
+        // (GIT_SSH_COMMAND, GIT_SSH or core.sshCommand: a key, plink, an
+        // agent); theirs is kept, and stdin closed plus the time limit stop a
+        // prompt there.
+        ...(hasOwnSshSetup(top) ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" }),
+      },
+    });
+    if (fetched.status === 0) remoteRefs = originRefsWithHead();
+  }
   if (!remoteRefs.length) {
     throw new CliUsageError(
-      `Commit ${head.slice(0, 12)} is not on origin yet, so the other machine cannot check it out. `
-      + "Push it first (git push); uncommitted changes travel by themselves.",
+      `Commit ${head.slice(0, 12)} is not on origin as far as this checkout knows, so the other machine cannot check it out. `
+      + "Push it (git push), or fetch if it was pushed from elsewhere (git fetch origin); uncommitted changes travel by themselves.",
     );
   }
   const fetchRef = (remoteRefs.find((ref) => ref === `origin/${branch}`) ?? remoteRefs[0]!).slice("origin/".length);
@@ -229,7 +396,7 @@ function readLocalWorkSource(cwd: string): JsonObject {
     gitHere(top, ["add", "-A"], env);
     patch = gitHere(top, [
       "diff", "--cached", "--binary", "--no-ext-diff", "--no-color", "--no-textconv",
-      "--src-prefix=a/", "--dst-prefix=b/", "HEAD",
+      "--src-prefix=a/", "--dst-prefix=b/", head,
     ], env);
   } finally {
     fs.rmSync(tempIndex, { force: true });

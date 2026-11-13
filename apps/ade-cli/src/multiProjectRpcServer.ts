@@ -170,6 +170,7 @@ import type { AgentMachineBridge } from "./services/account/agentMachineBridge";
 import type { CrossScopeChats } from "./services/chat/crossScopeChats";
 import {
   rememberChildWakeToken,
+  noteExternalChatTurn,
   rememberExternalChat,
 } from "../../desktop/src/main/services/chat/externalChats";
 import {
@@ -1526,16 +1527,22 @@ function readProjectRegistrationIntent(
 
 /**
  * A call that runs in the caller's work copy there: `ade shell start
- * --machine` (pty.create), or a lane-less `ade apple … --machine` or
- * `ade android … --machine`. Null for anything else.
+ * --machine` (pty.create), or a lane-less `ade apple … --machine`,
+ * `ade android … --machine`, `ade screen … --machine` (its desktop screen)
+ * or `ade app-control … --machine`. Null for anything else.
  */
-function remoteWorkCallKind(method: string, params: Record<string, unknown>): "shell" | "simulator" | "android" | null {
+function remoteWorkCallKind(
+  method: string,
+  params: Record<string, unknown>,
+): "shell" | "simulator" | "android" | "desktop" | "app_control" | null {
   if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
   const call = params.arguments;
   if (!isRecord(call.args) || !isRecord(call.args.remoteWork)) return null;
   if (call.domain === "pty" && call.action === "create") return "shell";
   if (call.domain === "ios_simulator") return "simulator";
   if (call.domain === "android_emulator") return "android";
+  if (call.domain === "mac_desktop") return "desktop";
+  if (call.domain === "app_control") return "app_control";
   return null;
 }
 
@@ -1994,6 +2001,8 @@ export function createMultiProjectRpcRequestHandler(
         machineName: typeof claim.machineName === "string" ? claim.machineName.trim().slice(0, 120) || null : null,
         permissionLevel: readPermissionLevel(claim.permissionLevel),
       });
+      // The latest turn it called in, for `release_remote_work_devices`.
+      if (typeof claim.turnId === "string") noteExternalChatTurn(foreignId, claim.turnId.trim().slice(0, 200));
     }
     return foreignId;
   };
@@ -3766,6 +3775,7 @@ export function createMultiProjectRpcRequestHandler(
           caller: {
             chatSessionId: callerChat,
             permissionLevel: located?.runtime.agentChatService?.permissionLevelOf(callerChat ?? "") ?? null,
+            turnId: callerChat ? located?.runtime.agentChatService?.remoteTurnIdOf(callerChat) ?? null : null,
             ...(wakeToken ? { wakeToken } : {}),
           },
           timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
@@ -3777,15 +3787,17 @@ export function createMultiProjectRpcRequestHandler(
         // Bookkeeping for the chat's views: the call already ran there, so a
         // failure here is logged and never turns it into a failed call.
         const workCopyLaneId = remoteWorkKind ? remoteWorkCopyLaneId(answer.result) : null;
-        // An Android status or device list with no copy there yet names no
-        // emulator, so it is not work there.
-        if (callerChat && remoteWorkKind && (remoteWorkKind !== "android" || workCopyLaneId)) {
+        // An Android, Desktop or App Control status read with no copy there
+        // yet names no device, screen or session, so it is not work there.
+        if (callerChat && remoteWorkKind && (remoteWorkKind === "shell" || remoteWorkKind === "simulator" || workCopyLaneId)) {
           try {
             located?.runtime.agentChatService?.noteRemoteWork({
               terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
               workCopyLaneId,
               usesSimulator: remoteWorkKind === "simulator",
               usesAndroidEmulator: remoteWorkKind === "android",
+              usesDesktop: remoteWorkKind === "desktop",
+              usesAppControl: remoteWorkKind === "app_control",
               sessionId: callerChat,
               machineKey: answer.machine.machineKey,
               machineName: answer.machine.name,
