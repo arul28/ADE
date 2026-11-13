@@ -23,6 +23,7 @@
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   PasswordImportResult,
@@ -31,6 +32,7 @@ import type {
   PasswordLoginSecret,
   PasswordSecretSecret,
   PasswordsStatus,
+  PasswordUseRecord,
 } from "../../../../desktop/src/shared/types/passwords";
 import { createStoreRegistry } from "../account/accountCacheStore";
 import { EncryptedFileCredentialStore, type CredentialStore } from "../credentials/credentialStore";
@@ -65,6 +67,9 @@ type CacheShape = { v: 1; accountId: string; cursor: string | null; items: Store
 
 const CACHE_KEY = "passwords.items.v1";
 const KEY_CACHE_KEY = "passwords.key.v1";
+const ACTIVITY_KEY = "passwords.activity.v1";
+/** Newest uses kept on this computer, for Settings › Passwords › Activity. */
+const ACTIVITY_LIMIT = 500;
 const ITEM_ID_BYTES = 12;
 const SYNC_INTERVAL_MS = 60_000;
 
@@ -349,10 +354,52 @@ export function createPasswordService(args: {
     opened = new Map();
     openedFor = null;
     await store.delete(CACHE_KEY);
+    await store.delete(ACTIVITY_KEY);
     logger.info("passwords.purged", {});
   }
 
   return {
+    /**
+     * Note one use of a saved item (a fill, a secret given to a command). Kept
+     * on this computer only, sealed in its encrypted store; never a value.
+     */
+    async recordUse(input: Omit<PasswordUseRecord, "at" | "machineName"> & { machineName?: string | null }): Promise<void> {
+      const accountId = args.getAccountUserId();
+      if (!accountId) return;
+      const record: PasswordUseRecord = {
+        itemId: input.itemId,
+        kind: input.kind,
+        target: input.target.slice(0, 300),
+        by: input.by,
+        chatSessionId: input.chatSessionId ?? null,
+        machineName: input.machineName ?? os.hostname(),
+        at: now().toISOString(),
+      };
+      let list: PasswordUseRecord[] = [];
+      try {
+        const raw = await store.get(ACTIVITY_KEY);
+        const parsed = raw ? JSON.parse(raw) as { accountId?: string; uses?: PasswordUseRecord[] } : null;
+        if (parsed?.accountId === accountId && Array.isArray(parsed.uses)) list = parsed.uses;
+      } catch {
+        list = [];
+      }
+      list.unshift(record);
+      await store.set(ACTIVITY_KEY, JSON.stringify({ accountId, uses: list.slice(0, ACTIVITY_LIMIT) }));
+    },
+
+    /** This computer's recorded uses, newest first. */
+    async activity(): Promise<PasswordUseRecord[]> {
+      const accountId = args.getAccountUserId();
+      if (!accountId) return [];
+      try {
+        const raw = await store.get(ACTIVITY_KEY);
+        const parsed = raw ? JSON.parse(raw) as { accountId?: string; uses?: PasswordUseRecord[] } : null;
+        return parsed?.accountId === accountId && Array.isArray(parsed.uses) ? parsed.uses : [];
+      } catch {
+        return [];
+      }
+    },
+
     /** Whether Passwords is on here, and what this computer holds. Never a value. */
     async status(): Promise<PasswordsStatus> {
       const accountId = args.getAccountUserId();

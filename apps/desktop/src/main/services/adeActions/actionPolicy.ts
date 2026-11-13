@@ -402,7 +402,7 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   lane: ["removeDeletedLane"],
   // Passwords: only the person adds, changes, imports or removes saved items;
   // agents use logins through `ade browser signin` and never read a value.
-  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset"],
+  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
   // Sharing a gh sign-in with the account hands it to every computer the
   // person signs in to; only the person decides, from Settings › GitHub.
   github: ["setGhAccountSharing"],
@@ -469,7 +469,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
   // Passwords is the account's, not a project's (`passwords.call`).
-  passwords: ["status", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset"],
+  passwords: ["status", "activity", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -1191,7 +1191,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
   // Passwords: `list`/`loginsForPage` return summaries only (agents use them
   // to pick a login); every write and `resolveForFill` are user-only below.
-  passwords: ["status", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin"],
+  passwords: ["status", "activity", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.

@@ -916,6 +916,8 @@ export type BuiltInBrowserPasswordsAccess = {
   sync?(): Promise<void>;
   /** Whether Passwords is on here: "Save to Passwords?" is offered only then. */
   enabled?(): Promise<boolean>;
+  /** Activity: the person filled a saved login with the key button. */
+  recordUse?(input: { itemId: string; target: string }): Promise<unknown>;
   /** The person's "Save to Passwords?" answer. */
   saveLogin?(input: { id?: string; origins?: string[]; username?: string; password: string }): Promise<unknown>;
 };
@@ -7050,13 +7052,13 @@ function createBuiltInBrowserWindowService(args: {
       const pick = async () => {
         if (askedItemId) {
           const values = await passwords.resolveForFill({ itemId: askedItemId, pageUrl });
-          return values ? { values, username: null as string | null } : null;
+          return values ? { values, username: null as string | null, itemId: askedItemId } : null;
         }
         const logins = await passwords.loginsForPage(pageUrl);
         const chosen = (wanted ? logins.find((login) => login.username === wanted) : null) ?? (wanted ? null : logins[0] ?? null);
         if (!chosen) return null;
         const values = await passwords.resolveForFill({ itemId: chosen.id, pageUrl });
-        return values ? { values, username: chosen.username } : null;
+        return values ? { values, username: chosen.username, itemId: chosen.id } : null;
       };
       let picked = await pick();
       if (!picked && passwords.sync) {
@@ -7101,7 +7103,7 @@ function createBuiltInBrowserWindowService(args: {
       logger()?.info("built_in_browser.signin_filled", { tabId: tab.id, fields: filled.join(",") });
       emitStatus();
       const result = await actionResult(tab, input);
-      return { ...result, signin: { site, username: username ?? values.username, filled } } as BuiltInBrowserAgentActionResult;
+      return { ...result, signin: { site, username: username ?? values.username, filled, itemId: picked.itemId } } as BuiltInBrowserAgentActionResult;
     });
   }
 
@@ -7145,7 +7147,11 @@ function createBuiltInBrowserWindowService(args: {
   async function fillSavedLogin(input: BuiltInBrowserTabArgs & { itemId: string }): Promise<{ filled: string[] }> {
     const result = await signin({ tabId: input.tabId, itemId: input.itemId });
     if (result.signin?.needsLogin) throw new AdeExpectedError("That saved login is not for this page.", "user");
-    return { filled: result.signin?.filled ?? [] };
+    const filled = result.signin?.filled ?? [];
+    if (filled.length && result.signin) {
+      void args.passwords?.recordUse?.({ itemId: input.itemId, target: result.signin.site }).catch(() => undefined);
+    }
+    return { filled };
   }
 
   async function clear(input: BuiltInBrowserClearArgs): Promise<BuiltInBrowserAgentActionResult> {

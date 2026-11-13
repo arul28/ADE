@@ -4272,6 +4272,13 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
   const text = (value: unknown): string => (typeof value === "string" ? value : "");
   return {
     status: () => passwords.status(),
+    activity: () => passwords.activity(),
+    // The person's own fills (the key button). Agent uses are recorded by `signin` itself.
+    recordUse: (args?: unknown) => {
+      const input = objectArg(args);
+      const kind = input.kind === "secret" ? "secret" : "login";
+      return passwords.recordUse({ itemId: text(input.itemId), kind, target: text(input.target), by: "person", chatSessionId: null });
+    },
     setEnabled: (args?: unknown) => passwords.setEnabled(objectArg(args).enabled === true),
     setCloudEnabled: (args?: unknown) => passwords.setCloudEnabled(objectArg(args).enabled === true),
     reset: (args?: unknown) => {
@@ -4330,6 +4337,12 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
           signin: (args?: unknown) => signInWithPasswords({
             browser: runtime.builtInBrowserService as unknown as BrowserSignin,
             passwords,
+            noteUse: async (use) => {
+              await passwords.recordUse({ itemId: use.itemId, kind: "login", target: use.site, by: "agent", chatSessionId: use.chatSessionId });
+              if (use.chatSessionId) {
+                runtime.agentChatService?.postQuietNotice?.(use.chatSessionId, `Signed in to ${use.site}${use.username ? ` as ${use.username}` : ""} with a saved login.`);
+              }
+            },
             requestLogin: runtime.agentChatService
               ? (input) => requestPasswordLoginFromUser({
                   requestChatInput: (request) => runtime.agentChatService!.requestChatInput(request),

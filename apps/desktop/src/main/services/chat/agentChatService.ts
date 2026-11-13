@@ -79712,6 +79712,25 @@ export function createAgentChatService(args: {
   /**
    * Create a blocking pending-input request for a chat session. Returns the user's answer.
    */
+  /**
+   * A quiet info line in one chat (no wake, no turn): what ADE did on the
+   * chat's behalf, e.g. "Signed in to vercel.com with a saved login". False
+   * when the chat is gone or runs on another brain.
+   */
+  const postQuietNotice = (sessionId: string, message: string): boolean => {
+    try {
+      assertChatRuntimeOwnedHere(sessionId, "post a quiet notice");
+      emitChatEvent(ensureManagedSession(sessionId), { type: "system_notice", noticeKind: "info", message });
+      return true;
+    } catch (error) {
+      logger.warn("agent_chat.quiet_notice_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
   const requestChatInput = async (args: RequestChatInputArgs): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
     const inferQuestionsFromBody = (bodyText: string): PendingInputQuestion[] | null => {
       const normalizedBody = bodyText.replace(/\r/g, "").trim();
@@ -81620,6 +81639,7 @@ export function createAgentChatService(args: {
     revokeMcpAppGrant,
     dismissPendingInputForSettlement,
     requestChatInput,
+    postQuietNotice,
     getAvailableModels,
     getModelCatalog,
     getSlashCommands,

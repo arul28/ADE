@@ -30,7 +30,7 @@ import type {
   PasswordItemSummary,
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
-  PasswordsStatus,
+  PasswordsStatus, PasswordUseRecord,
 } from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
@@ -12162,6 +12162,9 @@ const adeBridge = {
       callPasswords<PasswordsStatus>("reset", args, pin),
     list: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary[]> =>
       callPasswords<PasswordItemSummary[]>("list", args, pin),
+    /** The machine's recorded uses (site, who, chat, when), newest first. Never a value. */
+    activity: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordUseRecord[]> =>
+      callPasswords<PasswordUseRecord[]>("activity", args, pin),
     saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
       callPasswords<PasswordItemSummary>("saveLogin", args, pin),
     saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>

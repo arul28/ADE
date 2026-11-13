@@ -23,13 +23,23 @@ export async function signInWithPasswords(
   deps: {
     browser: BrowserSignin;
     passwords: { sync(): Promise<void> };
+    /** Activity and the chat's quiet line, after a fill. Failures never fail the sign-in. */
+    noteUse?: (use: { itemId: string; site: string; username: string | null; chatSessionId: string | null }) => Promise<void>;
     requestLogin: ((args: Record<string, unknown>) => Promise<PasswordLoginRequestResult>) | null;
   },
   args: Record<string, unknown>,
 ): Promise<BuiltInBrowserAgentActionResult & { signin?: Record<string, unknown> }> {
   const { chatSessionId, reason, timeoutMs, ...browserArgs } = args;
+  const chat = typeof chatSessionId === "string" && chatSessionId ? chatSessionId : null;
+  const noted = async <T extends BuiltInBrowserAgentActionResult>(result: T): Promise<T> => {
+    const done = result.signin;
+    if (done && !done.needsLogin && done.itemId && done.filled.length) {
+      await deps.noteUse?.({ itemId: done.itemId, site: done.site, username: done.username, chatSessionId: chat }).catch(() => undefined);
+    }
+    return result;
+  };
   const first = await deps.browser.signin(browserArgs);
-  if (!first.signin?.needsLogin) return first;
+  if (!first.signin?.needsLogin) return await noted(first);
   const site = first.signin.site;
   const pageUrl = first.signin.pageUrl ?? "";
   if (!deps.requestLogin || typeof chatSessionId !== "string" || !chatSessionId) {
@@ -42,7 +52,7 @@ export async function signInWithPasswords(
     if (filled.signin?.needsLogin) {
       throw new Error(`The login for ${site} was saved, but this computer could not open it yet. Run \`ade browser signin\` again in a moment.`);
     }
-    return filled;
+    return await noted(filled);
   }
   if ("signInYourself" in answer) {
     return {

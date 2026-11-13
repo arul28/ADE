@@ -1109,6 +1109,8 @@ export type BuiltInBrowserAgentActionResult = {
     site: string;
     username: string | null;
     filled: string[];
+    /** The saved item that was filled (an id, never a value), for Activity. */
+    itemId?: string;
     /** No saved login for this page: nothing was filled (`passwords.signin` then asks the person). */
     needsLogin?: boolean;
     /** The tab's page, with `needsLogin`, so the sign-in card names that exact site. */

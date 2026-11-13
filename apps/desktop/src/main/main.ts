@@ -2222,6 +2222,7 @@ app.whenReady().then(async () => {
         return Boolean(status && typeof status === "object" && (status as { enabled?: unknown }).enabled === true);
       },
       saveLogin: (input) => callLocalPasswords("saveLogin", input),
+      recordUse: (input) => callLocalPasswords("recordUse", { ...input, kind: "login" }),
     },
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {

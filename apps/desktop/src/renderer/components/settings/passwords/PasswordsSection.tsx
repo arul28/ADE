@@ -22,7 +22,7 @@ import {
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react";
-import type { PasswordItemSummary, PasswordsStatus } from "../../../../shared/types/passwords";
+import type { PasswordUseRecord, PasswordItemSummary, PasswordsStatus } from "../../../../shared/types/passwords";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { ipcErrorMessage } from "../../../lib/format";
@@ -136,8 +136,11 @@ export function PasswordsSection() {
   const [busy, setBusy] = useState<"enabled" | "cloud" | "import" | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [uses, setUses] = useState<PasswordUseRecord[]>([]);
   const loadItems = useCallback(async () => {
     setItems(await window.ade.passwords.list({}, pinRef.current));
+    // An older brain has no Activity yet; the tab then just stays empty.
+    setUses(await window.ade.passwords.activity?.({}, pinRef.current).catch(() => []) ?? []);
   }, []);
 
   const load = useCallback(async () => {
@@ -432,11 +435,30 @@ export function PasswordsSection() {
 
               {tab === "activity" ? (
                 <div role="tabpanel" aria-label="Activity">
-                  <EmptyState
-                    title="No activity yet"
-                    hint="When an agent signs in or uses a secret, it shows here."
-                    icon={<ShieldWarning size={18} weight="duotone" />}
-                  />
+                  {uses.length === 0 ? (
+                    <EmptyState
+                      title="No activity yet"
+                      hint="When an agent signs in or uses a secret, it shows here."
+                      icon={<ShieldWarning size={18} weight="duotone" />}
+                    />
+                  ) : (
+                    <ul className="ade-pw-activity" data-testid="passwords-activity-list">
+                      {uses.slice(0, 200).map((use, index) => {
+                        const item = items.find((candidate) => candidate.id === use.itemId);
+                        const what = use.kind === "secret" ? `Used ${item?.title ?? "a secret"}` : `Signed in to ${use.target}`;
+                        return (
+                          <li key={`${use.at}-${index}`} className="ade-pw-activity-row">
+                            <span className="ade-pw-activity-what">
+                              {what}
+                              {item?.username ? <span className="ade-pw-activity-sub"> as {item.username}</span> : null}
+                            </span>
+                            <span className="ade-pw-activity-who">{use.by === "agent" ? "Agent" : "You"}{use.machineName ? ` · ${use.machineName}` : ""}</span>
+                            <time className="ade-pw-activity-when" dateTime={use.at}>{new Date(use.at).toLocaleString()}</time>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </div>
               ) : (
                 <div className="ade-pw-split" role="tabpanel" aria-label={tab === "logins" ? "Saved logins" : "Saved secrets"}>
