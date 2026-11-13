@@ -6,9 +6,9 @@ import { requestCopiesMenu } from "../../projects/removeProjectRequest";
 /**
  * The computers of the project in front, at the top of the project sidebar:
  * the Home row's chip (same style, same count, `copyComputers`), with a dot
- * that is green while one of them is reachable. It opens the copies menu,
- * which the top bar owns. With the tab's own chip gone, this is the visible
- * way to the copies besides the tab's right-click menu.
+ * that is green while one of them is reachable. It opens the read-only
+ * "Computers with a copy" list, which the top bar owns. Nothing here moves the
+ * tab: the tab already shows the work of every one of them.
  */
 export function ProjectComputersTag() {
   const tab = useActiveRepositoryTab();
@@ -22,8 +22,8 @@ export function ProjectComputersTag() {
       type="button"
       className="ade-welcome-machines-chip"
       aria-haspopup="menu"
-      aria-label={`On ${label}${reachable ? ", reachable now" : ", none reachable now"}. Show copies`}
-      title={`On ${label}${reachable ? "" : ", none reachable now"}. Show copies`}
+      aria-label={`On ${label}${reachable ? ", reachable now" : ", none reachable now"}. Show computers with a copy`}
+      title={`On ${label}${reachable ? "" : ", none reachable now"}. Show computers with a copy`}
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         requestCopiesMenu({ x: rect.left, y: rect.bottom + 4 });

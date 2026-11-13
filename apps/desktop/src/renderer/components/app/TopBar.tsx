@@ -101,6 +101,7 @@ import {
 } from "./useRepositoryTabs";
 import { NoMachineRepositoryTabs } from "./NoMachineRepositoryTabs";
 import { useAccountProjectListClient } from "../../state/accountProjectListClient";
+import { useConnectRepositoryCopies } from "../../state/connectRepositoryCopies";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -1198,6 +1199,8 @@ export function TopBar({
   // one tab, keyed by the account project. The tab is the repo: its machines
   // are not picked here, every tab shows all of them.
   useAccountProjectListClient();
+  // Every online computer with a copy of the tab's repository joins the tab.
+  useConnectRepositoryCopies();
   const repositoryIdentity = useRepositoryIdentity();
   const tabGroups = useMemo(
     () =>
@@ -2065,11 +2068,9 @@ export function TopBar({
     openRemoveNoMachineDialog,
     openRemoveDialogWithTarget,
     closeRemoveDialog,
-    handleCopiesMenuSwitch,
     copiesMenuView,
     copiesMenuRows,
     copiesMenuComputers,
-    copiesSubmenuFor,
   } = useProjectCopiesMenu({
     tabGroups,
     remoteSnapshot,
@@ -2079,12 +2080,8 @@ export function TopBar({
     projectRootPath: project?.rootPath ?? null,
     hasOrigin,
     recentProjects,
-    knownRemoteProjectTabs,
     activeTabBindingKey,
-    isProjectBusy,
     handleClonedLocally,
-    handleSwitchProject,
-    handleSwitchRemoteProject,
   });
 
   // The Location page and a no-machine tab's page ask for the dialog here.
@@ -2295,7 +2292,6 @@ export function TopBar({
         : null,
       ...sections.open,
       { kind: "separator", key: "sep-project" },
-      copiesSubmenuFor(group, { x: tabMenu.x, y: tabMenu.y }),
       ...sections.project,
       { kind: "separator", key: "sep-copy" },
       ...sections.copy,
@@ -2351,7 +2347,6 @@ export function TopBar({
     addLocalCopyFromTab,
     closeTabGroups,
     cloneTargetForGroup,
-    copiesSubmenuFor,
     openRemoveDialog,
     handleMoveTabToNewWindow,
     hostIconByKey,
@@ -3144,7 +3139,6 @@ export function TopBar({
         onlyOneMachine={copiesMenuView?.onlyOneMachine ?? null}
         // The clone call takes only GitHub repositories, on every machine.
         canAddCopies={!webMode && Boolean(copiesMenuView?.repoKey?.startsWith("github.com/"))}
-        onSwitch={handleCopiesMenuSwitch}
         onAddCopy={(machine) => {
           if (!copiesMenuView?.repoKey) return;
           startCopyForRepo(copiesMenuView.repoKey, copiesMenuView.projectName, machine);

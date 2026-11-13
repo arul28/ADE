@@ -126,11 +126,6 @@ function ProjectsCardRowView({ row, ctx, closeDialog, namedByGroup = false, hidd
             requestCopiesMenu({ ...anchor, projectId: row.key });
           }
         : undefined}
-      onSelectMachine={(location) => {
-        // The copy on the machine picked here opens, and the tab stays on it
-        // (F6): a row of another machine never opens as this computer's folder.
-        ctx.onOpen(location.summary);
-      }}
       lastActiveAt={group.lastOpenedAt}
       web={web}
     />

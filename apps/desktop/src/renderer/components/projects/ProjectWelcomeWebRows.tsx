@@ -243,26 +243,22 @@ function machineLocationKey(location: RecentProjectLocation): string {
  * The machines that have this project, as one quiet chip: a monitor glyph and
  * "3 machines", with a dot that is green while any of them is online. Nothing
  * when the project lives only on this machine — the common case says nothing.
- * The chip opens a small menu listing every machine and its state; picking one
- * other than the row's own opens the project there.
+ * The chip opens a small list of every machine and its state. It is a list,
+ * not a switch: opening the row opens the project, with every machine's work.
  */
 function ProjectMachineStack({
   locations,
   primary,
-  busy,
   web,
   computers,
-  onSelectMachine,
   onShowCopies,
   namedByGroup = false,
 }: {
   locations: readonly RecentProjectLocation[];
   primary: RecentProjectLocation;
-  busy: boolean;
   web: WebRowChrome | null;
   /** The shared count (`copyComputers`) of an account project; the chip shows it. */
   computers?: CopyComputers | null;
-  onSelectMachine?: (location: RecentProjectLocation) => void;
   /** An account project: the chip opens its copies menu (the top bar's), not this list. */
   onShowCopies?: (anchor: { x: number; y: number }) => void;
   /** The row sits under an "Only on <computer>" heading: one location needs no chip. */
@@ -327,28 +323,22 @@ function ProjectMachineStack({
         zIndex={Z_LAYERS.popover}
         className="ade-welcome-machines-menu"
         role="menu"
-        aria-label="Open on machine"
+        aria-label="Computers with a copy"
       >
         {entries.map(({ location, name, dot }) => {
-          const isPrimary = location === primary;
           const missing = location.summary.exists === false;
-          const canSelect = !isPrimary && !missing && Boolean(onSelectMachine) && !busy;
           return (
             <button
               key={machineLocationKey(location)}
               type="button"
               role="menuitem"
               className="ade-welcome-machines-item"
-              disabled={!canSelect}
-              onClick={(event) => {
-                event.stopPropagation();
-                setOpen(false);
-                onSelectMachine?.(location);
-              }}
+              disabled
+              aria-disabled
             >
               <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
               <span className="ade-welcome-machines-name">{name}</span>
-              <span className="ade-welcome-machines-state">{isPrimary ? "this row" : missing ? "folder missing" : DOT_LABEL[dot]}</span>
+              <span className="ade-welcome-machines-state">{missing ? "folder missing" : DOT_LABEL[dot]}</span>
             </button>
           );
         })}
@@ -377,7 +367,6 @@ export function RecentProjectRow({
   onContextMenu,
   primary,
   locations,
-  onSelectMachine,
   lastActiveAt,
   web = null,
   removeLabel,
@@ -420,7 +409,6 @@ export function RecentProjectRow({
   onContextMenu?: (event: ReactMouseEvent) => void;
   primary: RecentProjectLocation;
   locations: readonly RecentProjectLocation[];
-  onSelectMachine?: (location: RecentProjectLocation) => void;
   lastActiveAt: string | null;
   /** Present only on the hosted client, where every row is a machine's repo. */
   web?: WebRowChrome | null;
@@ -536,10 +524,8 @@ export function RecentProjectRow({
         <ProjectMachineStack
           locations={locations}
           primary={primary}
-          busy={busy}
           web={web}
           computers={computers}
-          onSelectMachine={onSelectMachine}
           onShowCopies={onShowCopies}
           namedByGroup={namedByGroup}
         />
