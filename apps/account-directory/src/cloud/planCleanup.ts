@@ -12,7 +12,7 @@ import {
 import { sendCloudEmail } from "./email";
 import { cloudAccessAllows } from "./http";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
-import { CLOUD_PLANS, cloudSizeFor, extraDiskMonthFits, isMeteredStatus, tierOf } from "./plans";
+import { AWAKE_COMPUTER_CAP, CLOUD_PLANS, cloudSizeFor, extraDiskMonthFits, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   boughtPlanIdOf,
@@ -24,6 +24,7 @@ import {
   isProduction,
   listComputers,
   logCloud,
+  planDiskGbOf,
   powerLogStatement,
   reportCloudFailure,
   statusChangeStatements,
@@ -38,8 +39,8 @@ import {
  * there is no grace period. A move from Pro to Plus, a cancel, or a plan that
  * ends after failed payments is still never refused.
  *
- * - In ADE, a downgrade that would leave more computers or disk than the new
- *   plan allows asks first. The person cleans up themselves (the downgrade is
+ * - In ADE, a downgrade that would leave more disk than the new plan allows
+ *   asks first. Only disk counts: there is no limit on how many computers. The person cleans up themselves (the downgrade is
  *   not made), or picks the computers ADE frees and whether their work is
  *   pushed to GitHub first (`CloudPlanCleanupPick`). The server checks the
  *   pick names only the account's computers and makes the account fit
@@ -116,22 +117,30 @@ export function waitingPlanOf(account: Pick<AccountRow, "plan" | "stripe_status"
   return account.paid_plan_next ?? null;
 }
 
-type PlanRoom = { planId: CloudPlanId; computerLimit: number; diskCapGb: number; limitGb: number };
+type PlanRoom = { planId: CloudPlanId; diskCapGb: number; limitGb: number };
+
+/** What a cleanup reads of the account: its plan, its terms and its extra disk. */
+type CleanupAccount = Pick<AccountRow, "plan" | "paid_plan" | "stripe_status" | "old_plan_terms" | "extra_disk_state" | "extra_disk_limit_cents">;
 
 /**
- * What `planId` lets `computers` hold. On a paid plan, disk that extra disk
- * covers (on, set up, and a full month of the overage inside its limit) counts
- * as fitting.
+ * What `planId` lets `computers` hold: disk only. The plan in force keeps the
+ * account's terms (a period that began before Cloud 7 keeps the old disk); any
+ * other plan starts with a new period, on the new terms. On a paid plan, disk
+ * that extra disk covers (on, set up, and a full month of the overage inside
+ * its limit) counts as fitting.
  */
-function roomOf(env: CloudEnv, account: Pick<AccountRow, "extra_disk_state" | "extra_disk_limit_cents">, computers: ComputerRow[], planId: CloudPlanId): PlanRoom {
-  const plan = CLOUD_PLANS[planId];
-  const overGb = countedDiskGb(computers) - plan.diskGb;
+function roomOf(env: CloudEnv, account: CleanupAccount, computers: ComputerRow[], planId: CloudPlanId): PlanRoom {
+  const diskGb = planId === cleanupPlanOf(account) ? planDiskGbOf(account, planId) : CLOUD_PLANS[planId].diskGb;
+  const overGb = countedDiskGb(computers) - diskGb;
   const extraDiskCovers = planId !== "free" && overGb > 0 && cloudOffers(env).extraDisk && account.extra_disk_state === "on"
     && account.extra_disk_limit_cents != null && extraDiskMonthFits(overGb, account.extra_disk_limit_cents);
-  return { planId, computerLimit: plan.computerLimit, diskCapGb: extraDiskCovers ? Number.POSITIVE_INFINITY : plan.diskGb, limitGb: plan.diskGb };
+  return { planId, diskCapGb: extraDiskCovers ? Number.POSITIVE_INFINITY : diskGb, limitGb: diskGb };
 }
 
-const fitsRoom = (room: PlanRoom, computers: ComputerRow[]): boolean => computers.length <= room.computerLimit && countedDiskGb(computers) <= room.diskCapGb;
+const fitsRoom = (room: PlanRoom, computers: ComputerRow[]): boolean => countedDiskGb(computers) <= room.diskCapGb;
+
+/** What older builds read beside the disk: the count, and a limit never below it (only disk counts). */
+const oldBuildCounts = (computers: ComputerRow[]) => ({ computerCount: computers.length, computerLimit: Math.max(AWAKE_COMPUTER_CAP, computers.length) });
 
 /** The computers a pick may name: made (not a reservation), not in a move. Oldest first. */
 function pickable(computers: ComputerRow[]): ComputerRow[] {
@@ -159,7 +168,7 @@ const pickOf = (computer: ComputerRow): CloudPlanCleanupComputer => ({
  */
 export function planCleanupFor(
   env: CloudEnv,
-  account: Pick<AccountRow, "extra_disk_state" | "extra_disk_limit_cents">,
+  account: CleanupAccount,
   computers: ComputerRow[],
   planId: CloudPlanId,
 ): Omit<CloudPlanCleanup, "startsAt" | "freeing"> | null {
@@ -175,14 +184,8 @@ export function planCleanupFor(
     left.delete(computer.instance_id);
   }
   const usedGb = countedDiskGb(computers);
-  const facts = {
-    planId,
-    usedGb,
-    limitGb: Number.isFinite(room.diskCapGb) ? room.limitGb : usedGb,
-    computerCount: computers.length,
-    computerLimit: room.computerLimit,
-  };
-  return { ...facts, computers: suggested, choices: choices.map(pickOf), sentence: planCleanupSentence(facts) };
+  const facts = { planId, usedGb, limitGb: Number.isFinite(room.diskCapGb) ? room.limitGb : usedGb };
+  return { ...facts, ...oldBuildCounts(computers), computers: suggested, choices: choices.map(pickOf), sentence: planCleanupSentence(facts) };
 }
 
 /** The account's pick while ADE frees it, or null (none, or unreadable). */
@@ -191,7 +194,7 @@ export function choiceOf(account: Pick<AccountRow, "plan_cleanup_choice_json">):
   try {
     const raw = JSON.parse(account.plan_cleanup_choice_json) as Record<string, unknown>;
     const planId = raw.planId;
-    if (planId !== "free" && planId !== "plus" && planId !== "pro") return null;
+    if (planId !== "free" && planId !== "plus" && planId !== "pro" && planId !== "max") return null;
     if (typeof raw.push !== "boolean" || typeof raw.at !== "number" || !Array.isArray(raw.instanceIds)) return null;
     return { planId, push: raw.push, at: raw.at, instanceIds: raw.instanceIds.filter((id): id is string => typeof id === "string") };
   } catch {
@@ -232,7 +235,7 @@ export function overPlanInForce(env: CloudEnv, account: AccountRow, computers: C
  */
 export function planCleanupState(env: CloudEnv, account: AccountRow, computers: ComputerRow[], now: number): {
   planCleanup: CloudPlanCleanup | null;
-  downgradePreviews: { plus?: CloudPlanCleanup; free?: CloudPlanCleanup };
+  downgradePreviews: { pro?: CloudPlanCleanup; plus?: CloudPlanCleanup; free?: CloudPlanCleanup };
   planCleanupDone: CloudPlanCleanupDone | null;
 } {
   const inForce = cleanupPlanOf(account);
@@ -259,21 +262,18 @@ export function planCleanupState(env: CloudEnv, account: AccountRow, computers: 
       choices: [],
       usedGb: countedDiskGb(computers),
       limitGb: room.limitGb,
-      computerCount: computers.length,
-      computerLimit: room.computerLimit,
+      ...oldBuildCounts(computers),
       startsAt: choice.planId === inForce ? null : account.period_end,
       freeing: freeingFor(choice.planId),
       sentence: "",
     };
   }
-  const downgradePreviews: { plus?: CloudPlanCleanup; free?: CloudPlanCleanup } = {};
-  if (inForce === "pro") {
-    const plus = planCleanupFor(env, account, computers, "plus");
-    if (plus) downgradePreviews.plus = { ...plus, startsAt: account.period_end, freeing: null };
-  }
-  if (inForce === "plus" || inForce === "pro") {
-    const free = planCleanupFor(env, account, computers, "free");
-    if (free) downgradePreviews.free = { ...free, startsAt: account.period_end, freeing: null };
+  // Each cheaper plan the person could move to now; each starts at the period end.
+  const downgradePreviews: { pro?: CloudPlanCleanup; plus?: CloudPlanCleanup; free?: CloudPlanCleanup } = {};
+  const cheaper: Array<"pro" | "plus" | "free"> = inForce === "max" ? ["pro", "plus", "free"] : inForce === "pro" ? ["plus", "free"] : inForce === "plus" ? ["free"] : [];
+  for (const planId of cheaper) {
+    const preview = planCleanupFor(env, account, computers, planId);
+    if (preview) downgradePreviews[planId] = { ...preview, startsAt: account.period_end, freeing: null };
   }
   return { planCleanup, downgradePreviews, planCleanupDone: readDone(account, now) };
 }
@@ -336,7 +336,7 @@ export function checkPlanCleanupPick(env: CloudEnv, account: AccountRow, compute
   const rest = computers.filter((computer) => !picked.has(computer.instance_id));
   const room = roomOf(env, account, computers, planId);
   if (!fitsRoom(room, rest)) {
-    const still = planCleanupSentence({ planId, usedGb: countedDiskGb(rest), limitGb: room.limitGb, computerCount: rest.length, computerLimit: room.computerLimit });
+    const still = planCleanupSentence({ planId, usedGb: countedDiskGb(rest), limitGb: room.limitGb });
     return { ok: false, code: "cleanup_does_not_fit", message: `Without those, ${still.charAt(0).toLowerCase()}${still.slice(1)} Pick more computers.` };
   }
   return { ok: true, instanceIds: pick.instanceIds };
@@ -377,14 +377,14 @@ export async function warnPlanCleanupAhead(env: CloudEnv, account: AccountRow, c
   if (!cleanup) return;
   const starts = utcDate(account.period_end);
   const planName = CLOUD_PLAN_SENTENCE_NAMES[toPlan];
-  logCloud("cloud.plan_cleanup_warned_ahead", { userId: account.user_id, to: toPlan, computers: cleanup.computerCount });
+  logCloud("cloud.plan_cleanup_warned_ahead", { userId: account.user_id, to: toPlan, usedGb: cleanup.usedGb, limitGb: cleanup.limitGb });
   await sendCloudEmail(env, {
     userId: account.user_id,
-    subject: `Your ADE Cloud computers go past ${planName} on ${starts}`,
+    subject: `Your ADE Cloud computers hold more disk than ${planName} has from ${starts}`,
     text: [
       `You move to ${planName} on ${starts}.`,
       cleanup.sentence,
-      `From then, ADE can't make a new computer until your computers fit.`,
+      `From then, ADE can't make a new computer until your computers fit in ${planName}'s disk.`,
       WAYS_OUT,
     ].join("\n"),
   });
@@ -449,9 +449,9 @@ async function tellOver(env: CloudEnv, account: AccountRow, over: Omit<CloudPlan
   if ((claim.meta?.changes ?? 0) !== 1) return;
   const sent = await sendCloudEmail(env, {
     userId: account.user_id,
-    subject: `Your ADE Cloud computers are over ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]}`,
+    subject: `Your ADE Cloud computers hold more disk than ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} has`,
     text: [
-      `Your account is on ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} now and your computers hold more than it allows.`,
+      `Your account is on ${CLOUD_PLAN_SENTENCE_NAMES[over.planId]} now and your computers hold more disk than it has.`,
       over.sentence,
       "ADE can't make a new computer until your computers fit. Your computers and their work stay as they are.",
       WAYS_OUT,

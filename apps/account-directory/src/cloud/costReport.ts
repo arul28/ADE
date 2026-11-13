@@ -13,6 +13,7 @@ import {
   accountDiskSql,
   freePlanOverDisk,
   logCloud,
+  planDiskGbOf,
   planIdOf,
   readSetting,
   reportCloudFailure,
@@ -240,10 +241,11 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     // Extra hours: what was reported since yesterday's row in the same period.
     // With no row yesterday, the baseline is unknown, so the day counts none.
     const before = previous.get(account.user_id);
-    if (before && before.period_start === account.period_start) {
-      income += extraHoursIncomeMicros(before.extra_reported_milli, account.extra_reported_milli);
-    } else if (!before && account.period_start >= dayStart) {
-      income += extraHoursIncomeMicros(0, account.extra_reported_milli);
+    // At the plan's own price (a subscription bought before Cloud 7 pays the first price until its renewal: close enough here).
+    if (planId !== "free" && before && before.period_start === account.period_start) {
+      income += extraHoursIncomeMicros(planId, before.extra_reported_milli, account.extra_reported_milli);
+    } else if (planId !== "free" && !before && account.period_start >= dayStart) {
+      income += extraHoursIncomeMicros(planId, 0, account.extra_reported_milli);
     }
     income += (diskRow?.billed_gb ?? 0) * EXTRA_DISK_MICROS_PER_GB_DAY;
     rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start });
@@ -293,8 +295,8 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
   }
   for (const row of overDiskRows.results ?? []) {
     const planId = planIdOf(row);
-    if (planId !== "free" && row.extra_disk_state !== "on" && row.disk_gb > CLOUD_PLANS[planId].diskGb) {
-      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${CLOUD_PLANS[planId].diskGb} GB, with extra disk off: a downgrade (freed by the plan cleanup after its grace days) or a move that left its old computer. Nothing bills the difference.`);
+    if (planId !== "free" && row.extra_disk_state !== "on" && row.disk_gb > planDiskGbOf(row, planId)) {
+      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${planDiskGbOf(row, planId)} GB, with extra disk off: a downgrade (freed by the plan cleanup after its grace days) or a move that left its old computer. Nothing bills the difference.`);
     }
     if (!freePlanOverDisk(row, row.disk_gb)) continue;
     alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; the plan cleanup pushes and frees the oldest after its grace days.`);

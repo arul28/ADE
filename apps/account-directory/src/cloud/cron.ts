@@ -5,7 +5,7 @@ import { sendCloudEmail } from "./email";
 import { laneFactsOf, laneFactsOfRow, laneFactsStatement, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
-import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
+import { AWAKE_COMPUTER_CAP, cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanLimitChecks } from "./planCleanup";
 import { computersJoiningLaunches } from "./launches";
@@ -403,6 +403,12 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   } catch (error) {
     reportCloudFailure("cloud.plan_cleanup_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
+  // The hidden awake cap: a wake through ADE waits or is refused at it, but a request
+  // straight to a computer wakes it too, so an account past it is reported here.
+  const awakeByUser = new Map<string, number>();
+  for (const computer of computers) if (isMeteredStatus(computer.status)) awakeByUser.set(computer.user_id, (awakeByUser.get(computer.user_id) ?? 0) + 1);
+  const pastCap = [...awakeByUser].filter(([, count]) => count > AWAKE_COMPUTER_CAP);
+  for (const [userId, count] of pastCap) reportCloudFailure("cloud.awake_cap_passed", { userId, awake: count, cap: AWAKE_COMPUTER_CAP });
   let billing;
   try {
     billing = await provider.billing();
@@ -419,6 +425,7 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   if (billing.instanceLimit != null && awake >= billing.instanceLimit * AWAKE_LIMIT_ALERT_FRACTION) {
     alerts.push(`${awake} computers are awake, against a limit of ${billing.instanceLimit}.`);
   }
+  for (const [userId, count] of pastCap) alerts.push(`Account ${userId} has ${count} computers awake, past the cap of ${AWAKE_COMPUTER_CAP}.`);
   if (alerts.length === 0) return;
   const lastAlert = await readTimeSetting(env, "owner_alert_at");
   logCloud("cloud.owner_alert", { alerts });

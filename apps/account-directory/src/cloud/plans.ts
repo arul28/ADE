@@ -152,7 +152,7 @@ export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free"):
     },
     diskStepGb: DISK_STEP_GB,
     paidPriceUsd: CLOUD_PLANS.plus.priceUsd,
-    extraHourCents: CLOUD_PLANS[planId].extraHourCents ?? CLOUD_PLANS.plus.extraHourCents,
+    extraHourCents: CLOUD_PLANS[planId === "free" ? "plus" : planId].extraHourCents ?? 2,
     ...(offers.extraDisk ? { extraDiskCentsPer10GbMonth: EXTRA_DISK_CENTS_PER_10GB_MONTH } : {}),
   };
 }

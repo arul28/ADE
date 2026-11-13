@@ -31,6 +31,7 @@ import { overPlanInForce, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
+  AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
   DISK_STEP_GB,
   CENT_MICROS,
@@ -61,7 +62,6 @@ import {
   reportCloudFailure,
   PENDING_TIMEOUT_MS,
   adoptionStatements,
-  computerLimit,
   deleteComputer,
   goneFromProviderStatements,
   isOutOfHours,
@@ -148,6 +148,56 @@ function diskRefusal(code: string, message: string, reason: CloudDiskRefusalReas
 /** The ways out of a refused grow on a paid plan, the same on Plus and Pro. */
 const PAID_DISK_WAYS_OUT = "Delete a computer you no longer use, or turn on extra disk in Settings.";
 
+/*
+ * ---- The awake cap ----
+ *
+ * No plan limits how many computers an account has. One safety cap holds how
+ * many are awake (or being made) at once, `AWAKE_COMPUTER_CAP`: no real
+ * person should reach it, and it is never shown as a plan limit. A wake at
+ * the cap waits a few seconds for one to fall asleep, so a send while lanes
+ * wake and sleep doesn't fail at random; a create is refused at once. Each
+ * time the cap is hit it is logged and reported, so the owner sees it.
+ */
+const AWAKE_CAP_WAIT_MS = 12_000;
+const AWAKE_CAP_POLL_MS = 3_000;
+const TOO_MANY_AWAKE_MESSAGE = "Too many of your computers are awake at once. Put one you aren't using to sleep, then try again.";
+const tooManyAwake = (): Refused => ({ response: fail("too_many_awake", TOO_MANY_AWAKE_MESSAGE, 429), refusal: "awake_cap" });
+/** Awake, or a reservation still being made: what the cap counts, here and in `reserveComputer`'s one write. */
+const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status = 'provisioning' and created_at > ?))";
+
+/** How many of the account's computers count toward the cap now, `except` left out (the one about to wake). */
+async function awakeCount(env: CloudEnv, userId: string, now: number, except = ""): Promise<number> {
+  const row = await env.DB.prepare(`select count(*) as n from cloud_computers where user_id = ? and deleted_at is null and instance_id <> ? and ${AWAKE_CAP_COUNT_SQL}`)
+    .bind(userId, except, now - PENDING_TIMEOUT_MS).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+function reportAwakeCap(userId: string, action: "wake" | "create", awake: number): void {
+  reportCloudFailure("cloud.awake_cap_reached", { userId, action, awake, cap: AWAKE_COMPUTER_CAP });
+}
+
+/**
+ * Null when `computer` may wake: it is awake already, or the account has room
+ * under the cap, now or within `waitMs` (re-read every few seconds, as
+ * computers fall asleep). Else the refusal.
+ */
+async function awakeRoom(env: CloudEnv, computer: ComputerRow, now: number, waitMs = 0): Promise<Refused | null> {
+  if (isMeteredStatus(computer.status)) return null;
+  const started = Date.now();
+  for (;;) {
+    const awake = await awakeCount(env, computer.user_id, now, computer.instance_id);
+    if (awake < AWAKE_COMPUTER_CAP) {
+      if (Date.now() > started) logCloud("cloud.awake_cap_waited", { userId: computer.user_id, waitedMs: Date.now() - started });
+      return null;
+    }
+    if (Date.now() - started + AWAKE_CAP_POLL_MS > waitMs) {
+      reportAwakeCap(computer.user_id, "wake", awake);
+      return tooManyAwake();
+    }
+    await new Promise((resolve) => setTimeout(resolve, AWAKE_CAP_POLL_MS));
+  }
+}
+
 /** A disk past what this size's disk can grow to. `moving` is a computer whose disk is already that big. */
 function tierRefusal(size: CloudSize, diskGb: number, moving: boolean): Refused | null {
   if (diskGb <= size.diskMaxGb) return null;
@@ -204,8 +254,8 @@ async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number,
 }
 
 /**
- * Over the plan in force (a cheaper plan started with more computers or disk
- * than it allows, and nobody picked what goes): a new computer is refused
+ * Over the plan in force (a cheaper plan started with more disk than it
+ * allows, and nobody picked what goes): a new computer is refused
  * until the person cleans up or picks in ADE. Nothing is ever freed for it.
  */
 function overPlanLimits(env: CloudEnv, account: AccountRow, computers: ComputerRow[]): Refused | null {
@@ -296,8 +346,8 @@ async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Prom
 }
 
 /**
- * A reservation that makes the computer and disk limits hold under concurrent
- * creates. `capGb` is the most disk the account may hold at one time (from
+ * A reservation that makes the awake cap and the disk limit hold under
+ * concurrent creates. `capGb` is the most disk the account may hold at one time (from
  * `diskRoom`). A move leaves its source out of the sum and records it in
  * `moving_from`: the move deletes it, and one still there after
  * `MOVE_GRACE_MS` counts again (the tick's `endMoves`).
@@ -315,14 +365,13 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   lane: CloudLaneFacts;
   now: number;
 }): Promise<{ ok: true; pendingId: string } | ({ ok: false } & Refused) | { ok: false; response: Response; refusal: null } | { ok: false; replay: true }> {
-  const limit = computerLimit(account);
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
   const result = await env.DB.prepare(`
     insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from, channel,
       lane_id, lane_name, lane_project_origin, lane_branch)
     select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?
-    where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and (status != 'provisioning' or created_at > ?)) < ?
+    where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and ${AWAKE_CAP_COUNT_SQL}) < ?
       and ${accountDiskSql("?", { except: true })} + ? <= ?
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
       and not exists (select 1 from cloud_computers where request_id = ? and user_id = ? and deleted_at is null)
@@ -331,7 +380,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, args.size.multiplierMilli,
     args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     args.lane.laneId, args.lane.laneName, args.lane.projectOrigin, args.lane.branch,
-    account.user_id, cutoff, limit,
+    account.user_id, cutoff, AWAKE_COMPUTER_CAP,
     account.user_id, args.moveFromInstanceId ?? "", args.diskGb, args.capGb,
     args.requestId, account.user_id,
     args.requestId, account.user_id,
@@ -347,12 +396,10 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   const tagTaken = await env.DB.prepare("select 1 as taken from cloud_computers where request_id = ? and user_id <> ? limit 1")
     .bind(args.requestId, account.user_id).first<{ taken: number }>();
   if (tagTaken) return { ok: false, response: badRequest("That request can't be used."), refusal: null };
-  const computers = await listComputers(env, account.user_id);
-  if (computers.length >= limit) {
-    const message = planIdOf(account) === "free"
-      ? `The free plan allows ${limit} computers at one time. Delete one to make another, or move to a bigger plan.`
-      : `Your plan allows ${limit} computers at one time. Delete one to make another.`;
-    return { ok: false, response: fail("computer_limit", message, 403), refusal: "computer_limit" };
+  const awake = await awakeCount(env, account.user_id, args.now);
+  if (awake >= AWAKE_COMPUTER_CAP) {
+    reportAwakeCap(account.user_id, "create", awake);
+    return { ok: false, ...tooManyAwake() };
   }
   // Another create took the room after `diskRoom` said yes: say what is true now.
   const room = await diskRoom(env, account, await accountDiskGb(env, account.user_id, args.moveFromInstanceId ?? "") + args.diskGb, args.now);
@@ -645,6 +692,8 @@ async function resizeAwake(
   const wake = async (): Promise<Refused | null> => {
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
     if (blocked) return blocked;
+    const capped = await awakeRoom(env, { ...computer, status: "sleeping" }, now);
+    if (capped) return capped;
     const status = await provider.startInstance(computer.instance_id);
     await recordStatus(env, computer, status, now, "resize");
     return null;
@@ -792,6 +841,12 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     if (body.reason !== "push_work") return refuse(blocked);
     if (computer.free_wake_used_at != null && now - computer.free_wake_used_at < FREE_WAKE_COOLDOWN_MS) return refuse(blocked);
     freeWake = true;
+  }
+  // At the awake cap, a wake waits a few seconds for another computer to sleep before it says so.
+  const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
+  if (capped) {
+    const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "person", key: computer.instance_id, refusedAction: "wake", now });
+    return refuse(capped);
   }
   const status = await provider.startInstance(computer.instance_id);
   if (freeWake) {
@@ -1120,7 +1175,9 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingCheckout) {
       // Builds that know one paid plan send no body: that's Plus.
-      if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro))) return badRequest("That plan isn't one ADE Cloud offers.");
+      if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
+        return badRequest("That plan isn't one ADE Cloud offers.");
+      }
       // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
       const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
       if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
@@ -1319,7 +1376,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
           isAwake: isMeteredStatus(computer.status),
           isStopped: computer.status === "stopped",
           startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
-          wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response ?? null,
+          wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response
+            ?? (await awakeRoom(env, computer, now))?.response ?? null,
         });
       }
       if (instanceRoute.rest.length) return notFound();

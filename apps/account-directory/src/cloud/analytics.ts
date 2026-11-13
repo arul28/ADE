@@ -19,7 +19,8 @@ export type CloudActionOrigin = "person" | "agent" | "system";
 /** The refusals worth counting, as the codes and reasons the routes answer with. */
 export type CloudRefusal =
   | "out_of_hours"
-  | "computer_limit"
+  /** Past the hidden cap on computers awake at once (never a plan limit). */
+  | "awake_cap"
   | "plan_disk"
   | "needs_approval"
   | "extra_off"

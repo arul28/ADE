@@ -3,14 +3,13 @@ import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import { freePlanOf } from "./freePlan";
 import { planCleanupState } from "./planCleanup";
-import { CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
+import { AWAKE_COMPUTER_CAP, CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
 import {
   DELETION_WARNING_LATE_MS,
   accountRules,
   boughtPlanIdOf,
   cloudOffers,
-  computerLimit,
   countedDiskGb,
   deletionDueAt,
   earnedDrawMilli,
@@ -24,7 +23,7 @@ import {
   liveUsedMilli,
   loadAccount,
   percentUsed,
-  planFacts,
+  planDiskGb,
   reportCloudFailure,
   type AccountRow,
   type CloudEnv,
@@ -76,7 +75,6 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   }) : null;
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
-  const plan = planFacts(account);
   // The same total the wake rule and the limits use: a move's source stays out while the move runs.
   const diskUsed = countedDiskGb(computers);
   const offers = cloudOffers(env);
@@ -118,16 +116,18 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
         usedCents: Math.floor(extraDiskMicros / CENT_MICROS),
       },
     } : {}),
-    disk: { usedGb: diskUsed, limitGb: plan.diskGb },
+    disk: { usedGb: diskUsed, limitGb: planDiskGb(account) },
     computers: {
       total: computers.length,
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
-      limit: computerLimit(account),
+      // No limit on how many. Older builds show a count against this and stop a new
+      // lane at it, so it is the awake cap and always room for one more.
+      limit: Math.max(AWAKE_COMPUTER_CAP, computers.length + 1),
     },
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
-    catalog: cloudCatalog(offers),
+    catalog: cloudCatalog(offers, boughtPlanIdOf(account)),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,
