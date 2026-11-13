@@ -3868,12 +3868,12 @@ final class ADETests: XCTestCase {
       tailscaleAddress: nil
     )
     service.installSavedProfileForTesting(beta, token: "beta-secret", makeActive: true)
-    func advertisement(id: String, port: Int) -> DiscoveredSyncHost {
+    func advertisement(id: String, port: Int, identified: Bool = true) -> DiscoveredSyncHost {
       DiscoveredSyncHost(
         id: id,
         serviceName: "ADE Sync Mac Studio \(port)",
         hostName: "Mac Studio",
-        hostIdentity: id,
+        hostIdentity: identified ? id : nil,
         port: port,
         addresses: ["192.168.1.113"],
         tailscaleAddress: nil,
@@ -3896,6 +3896,11 @@ final class ADETests: XCTestCase {
     let lan = attempts.filter { $0.address == "192.168.1.113" }
     XCTAssertEqual(lan.first?.port, 8794, "The first Wi-Fi dial goes to this install's port.")
     XCTAssertFalse(lan.contains { $0.port == 8787 }, "Never another install's live port.")
+
+    // An older brain that sends no identity, on the shared address but
+    // another port, is another install: the saved one keeps its own port.
+    service.applyDiscoveredHostsForTesting([advertisement(id: "studio-anonymous", port: 8787, identified: false)])
+    XCTAssertEqual(service.activeHostProfile?.port, 8794, "An address match alone never moves the saved install to another port.")
   }
 
   @MainActor
@@ -7126,6 +7131,109 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.shouldShowProjectHub)
 
     database.close()
+  }
+
+  /// Remove… sends each folder's removal on the link of the computer that
+  /// holds it, never on the focused machine's link. A removed folder's saved
+  /// row stays off the phone's list (the machine never deletes it) until the
+  /// machine lists the folder again.
+  @MainActor
+  func testHubRemovalGoesOnlyToTheCopysComputerAndKeepsTheSavedRowOff() async throws {
+    let keys = [
+      "ade.sync.activeProjectId",
+      "ade.sync.activeProjectRootPath",
+      "ade.sync.activeProjectHostIdentity",
+      "ade.sync.hostProfile",
+      "ade.sync.hostProfiles",
+      "ade.sync.hiddenProjects",
+      "ade.sync.hiddenProjects.host-1",
+      "ade.sync.removedFromHostProjects.host-1",
+    ]
+    keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+    defer { keys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('db-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let hello: ([[String: Any]]) -> [String: Any] = { projects in
+      [
+        "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+        "features": ["projectCatalog": true],
+        "projects": projects,
+      ]
+    }
+    let service = SyncService(database: database)
+    try service.applyHelloPayloadForTesting(hello([]))
+    service.setActiveProjectForTesting(projectId: "db-project", rootPath: "/tmp/project-one")
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false, suspendAutoReconnect: true)
+      database.close()
+    }
+    let focused = try XCTUnwrap(service.focusedMachineKey)
+    func copy(on phoneKey: String?) -> HubRemovalCopy {
+      HubRemovalCopy(computerKey: "mk-any", computerName: "A computer", phoneKey: phoneKey, projectId: "db-project", rootPath: "/tmp/project-one")
+    }
+
+    // Another computer with no live link, and a copy with no link at all:
+    // refused as unreachable, and nothing goes out on the focused link.
+    for phoneKey in ["machine:mini-id", nil] as [String?] {
+      do {
+        try await hubRemoveCopy(copy(on: phoneKey), sync: service, fleet: MachineFleet())
+        XCTFail("A copy on \(phoneKey ?? "no link") must not be removed through the focused machine.")
+      } catch {
+        XCTAssertEqual((error as NSError).code, 14)
+      }
+    }
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 0)
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" })
+
+    // The focused computer's copy goes out on the focused link.
+    let removal = Task { try await hubRemoveCopy(copy(on: focused), sync: service, fleet: MachineFleet()) }
+    var requestId: String?
+    for _ in 0..<20 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "project_forget_request").first
+    }
+    let sent = try XCTUnwrap(requestId)
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 1)
+    service.completeCapturedRequestForTesting(requestId: sent, result: ["ok": true])
+    try await removal.value
+    XCTAssertNil(service.activeProjectId)
+    XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
+
+    // The saved row is still in the database; it stays off after a refresh
+    // and after the app starts again.
+    service.refreshProjectCatalog()
+    XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
+    let relaunched = SyncService(database: database)
+    try relaunched.applyHelloPayloadForTesting(hello([]))
+    XCTAssertFalse(relaunched.projects.contains { $0.id == "db-project" })
+
+    // Added back on the computer: its catalog lists the folder, so it shows.
+    try service.applyHelloPayloadForTesting(hello([[
+      "id": "db-project",
+      "displayName": "Project One",
+      "rootPath": "/tmp/project-one",
+      "defaultBaseRef": "main",
+      "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+      "laneCount": 1,
+      "isAvailable": true,
+      "isCached": false,
+    ]]))
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" })
+    // The mark is gone too: after the next start the saved row shows even
+    // before the catalog lists the folder.
+    let restarted = SyncService(database: database)
+    try restarted.applyHelloPayloadForTesting(hello([]))
+    XCTAssertTrue(restarted.projects.contains { $0.id == "db-project" })
   }
 
   @MainActor

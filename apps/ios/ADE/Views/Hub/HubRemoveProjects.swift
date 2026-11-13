@@ -592,6 +592,9 @@ struct HubRemoveProjectsSheet: View {
         results[target.id] = .unknown
         problems += 1
       } catch {
+        // The computer answered no (or the request could not be built): the
+        // row says why, and Sentry gets the failure without the folder.
+        CrashReporting.capture(error, context: ["area": "hub-remove-folder"])
         results[target.id] = .failed(SyncUserFacingError.message(for: error))
         problems += 1
       }
@@ -607,6 +610,10 @@ struct HubRemoveProjectsSheet: View {
           accountSteps[project.id] = .done
           accountRemoved += 1
         } catch {
+          // A signed-out phone (no status) is told to sign in; anything else
+          // is a failure the account server should not give.
+          let signedOut = (error as? AccountProjectsClient.ChangeError).map { $0.status == nil } ?? false
+          if !signedOut { CrashReporting.capture(error, context: ["area": "hub-remove-account-project"]) }
           accountSteps[project.id] = .failed((error as? AccountProjectsClient.ChangeError)?.message ?? SyncUserFacingError.message(for: error))
           problems += 1
         }
