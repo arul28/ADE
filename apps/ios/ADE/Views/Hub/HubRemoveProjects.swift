@@ -213,6 +213,9 @@ private enum HubRemovalResult: Equatable {
 private enum HubAccountStep: Equatable {
   case idle, running, done
   case failed(String)
+  /// The request may have reached the account and no readable answer came,
+  /// and the account's list could not settle it.
+  case unknown
 }
 
 // MARK: - The sheet
@@ -408,6 +411,9 @@ struct HubRemoveProjectsSheet: View {
     case .failed(let message):
       tone = .crit
       lines = ["Still on your account. \(message)"]
+    case .unknown:
+      tone = .warn
+      lines = ["Not known: ADE could not confirm the change. Open this again to check."]
     }
     return summaryRow(
       symbol: "person.crop.circle",
@@ -575,7 +581,9 @@ struct HubRemoveProjectsSheet: View {
     guard phase == .choose else { return }
     phase = .running
     var removed = 0
-    var problems = 0
+    // Kept: a computer or the account said no. Unconfirmed: no answer came.
+    var kept = 0
+    var unconfirmed = 0
     for target in targets {
       guard isReachable(target.copy.phoneKey) else {
         results[target.id] = .offline
@@ -590,13 +598,13 @@ struct HubRemoveProjectsSheet: View {
         // The request went out and no answer came (a timeout, or the link
         // dropped): the computer may have finished.
         results[target.id] = .unknown
-        problems += 1
+        unconfirmed += 1
       } catch {
         // The computer answered no (or the request could not be built): the
         // row says why, and Sentry gets the failure without the folder.
         CrashReporting.capture(error, context: ["area": "hub-remove-folder"])
         results[target.id] = .failed(SyncUserFacingError.message(for: error))
-        problems += 1
+        kept += 1
       }
     }
     // The account step runs after the computers, as on the desktop: a copy
@@ -609,13 +617,27 @@ struct HubRemoveProjectsSheet: View {
           try await AccountProjectStore.shared.remove(projectId: project.id)
           accountSteps[project.id] = .done
           accountRemoved += 1
+        } catch let error as AccountProjectsClient.ChangeError where error.unconfirmed {
+          // The answer was lost or unreadable: the account may have removed
+          // it. Its list settles that; only a project still listed is kept.
+          let store = AccountProjectStore.shared
+          let listedBefore = store.lastSuccessAt
+          await store.refresh()
+          if let listed = store.lastSuccessAt, listed != listedBefore,
+             !store.liveProjects.contains(where: { $0.id == project.id }) {
+            accountSteps[project.id] = .done
+            accountRemoved += 1
+          } else {
+            accountSteps[project.id] = .unknown
+            unconfirmed += 1
+          }
         } catch {
           // A signed-out phone (no status) is told to sign in; anything else
           // is a failure the account server should not give.
           let signedOut = (error as? AccountProjectsClient.ChangeError).map { $0.status == nil } ?? false
           if !signedOut { CrashReporting.capture(error, context: ["area": "hub-remove-account-project"]) }
           accountSteps[project.id] = .failed((error as? AccountProjectsClient.ChangeError)?.message ?? SyncUserFacingError.message(for: error))
-          problems += 1
+          kept += 1
         }
       }
     }
@@ -625,11 +647,17 @@ struct HubRemoveProjectsSheet: View {
       text = accountRemoved == 1 && single ? "Removed \(items[0].name) from your account" : "Removed \(accountRemoved) from your account"
     } else if removed > 0 {
       text = removed == 1 ? "Removed 1 folder from a computer" : "Removed \(removed) folders from computers"
+    } else if unconfirmed > 0 {
+      onFinished(kept > 0 ? "Some were kept; the rest is not confirmed" : "Not confirmed. Open Remove again to check")
+      return
     } else {
       onFinished("Nothing was removed")
       return
     }
-    onFinished(problems > 0 ? "\(text). Some were kept." : text)
+    var notes: [String] = []
+    if kept > 0 { notes.append("Some were kept.") }
+    if unconfirmed > 0 { notes.append("Some are not confirmed.") }
+    onFinished(notes.isEmpty ? text : "\(text). " + notes.joined(separator: " "))
   }
 }
 
@@ -682,7 +710,9 @@ struct HubProjectsHeader: View {
         hiddenMenu
       }
       Spacer(minLength: 8)
-      if canSelect {
+      // Done stays while selecting, even when the last selectable row left
+      // the list, so select mode can always end.
+      if canSelect || selecting {
         Button(selecting ? "Done" : "Select", action: onToggleSelect)
           .font(.system(size: 14, weight: selecting ? .semibold : .regular))
           .foregroundStyle(ADEColor.accent)

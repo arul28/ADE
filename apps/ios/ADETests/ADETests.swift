@@ -7198,11 +7198,11 @@ final class ADETests: XCTestCase {
     // The focused computer's copy goes out on the focused link.
     let removal = Task { try await hubRemoveCopy(copy(on: focused), sync: service, fleet: MachineFleet()) }
     var requestId: String?
-    for _ in 0..<20 where requestId == nil {
+    for _ in 0..<1_000 where requestId == nil {
       await Task.yield()
       requestId = service.capturedOutboundRequestIdsForTesting(type: "project_forget_request").first
     }
-    let sent = try XCTUnwrap(requestId)
+    let sent = try XCTUnwrap(requestId, "project_forget_request never went out")
     XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 1)
     service.completeCapturedRequestForTesting(requestId: sent, result: ["ok": true])
     try await removal.value

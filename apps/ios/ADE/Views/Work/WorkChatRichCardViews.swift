@@ -1674,7 +1674,7 @@ struct WorkEventCardView: View, Equatable {
       Text(ribbonText)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(restart ? 4 : 2)
+        .lineLimit(restart ? nil : 2)
         .fixedSize(horizontal: false, vertical: restart)
       Spacer(minLength: 8)
       Text(restart ? (workParsedDate(card.timestamp).map(workUsageLimitClockLabel) ?? relativeTimestamp(card.timestamp)) : relativeTimestamp(card.timestamp))

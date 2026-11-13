@@ -141,21 +141,13 @@ extension HubScreen {
   /// "Only on <computers>": the folders that are no account project, grouped
   /// by the reachable computers that hold them. The fleet merge folds one
   /// repository (or folder name) on two computers into one card, so that
-  /// card goes under both names, never under one. An unreachable computer's
-  /// folders do not show.
+  /// card goes under both names, never under one. A folder shows while any
+  /// computer that holds it is reachable.
   func hubLocalSections(_ local: [HubProjectPresentation], merge: HubFleetMerge) -> [HubLocalSectionModel] {
     var byComputer: [String: (name: String, presentations: [HubProjectPresentation])] = [:]
     for presentation in local {
-      let cardId = presentation.project.id
-      let owner = cardComputer(cardId, merge: merge)
-      guard owner.reachable else { continue }
-      var holders: [(key: String, name: String)] = [(owner.key, owner.name)]
-      for location in merge.projectLocations[cardId] ?? [] {
-        let other = hubCardComputer(phoneKey: location.machineKey, project: location.project)
-        if other.reachable, !holders.contains(where: { $0.key == other.key }) {
-          holders.append((other.key, other.name))
-        }
-      }
+      var holders = reachableHolders(presentation.project.id, merge: merge).map { (key: $0.key, name: $0.name) }
+      guard !holders.isEmpty else { continue }
       holders.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
       let key = holders.map(\.key).joined(separator: "+")
       byComputer[key, default: (hubRemovalNames(holders.map(\.name)), [])].presentations.append(presentation)
@@ -171,6 +163,37 @@ extension HubScreen {
         )
       }
       .sorted { $0.computerName.localizedCaseInsensitiveCompare($1.computerName) == .orderedAscending }
+  }
+
+  /// The reachable computers that hold a card's folder: its owner first,
+  /// then the other copies the fleet merge folded into it.
+  func reachableHolders(_ cardId: String, merge: HubFleetMerge? = nil) -> [HubCardComputer] {
+    let merge = merge ?? fleetMerge
+    var holders: [HubCardComputer] = []
+    let owner = cardComputer(cardId, merge: merge)
+    if owner.reachable { holders.append(owner) }
+    for location in merge.projectLocations[cardId] ?? [] {
+      let other = hubCardComputer(phoneKey: location.machineKey, project: location.project)
+      if other.reachable, !holders.contains(where: { $0.key == other.key }) {
+        holders.append(other)
+      }
+    }
+    return holders
+  }
+
+  /// The key "Hide on this iPhone" stores for a local folder. It names the
+  /// computer by the phone's own key for it, which stays the same before and
+  /// after the account's computer list loads.
+  func hubFolderHideKey(_ computer: HubCardComputer) -> String {
+    hubHiddenFolderKey(computerKey: computer.phoneKey ?? computer.key, projectId: computer.project.id)
+  }
+
+  /// Every key a hidden folder may be stored under: the stable one, and the
+  /// account computer key that earlier builds stored.
+  func hubFolderHideKeys(_ computer: HubCardComputer) -> [String] {
+    let stable = hubFolderHideKey(computer)
+    let account = hubHiddenFolderKey(computerKey: computer.key, projectId: computer.project.id)
+    return stable == account ? [stable] : [stable, account]
   }
 
   func hubCardComputer(phoneKey: String?, project: MobileProjectSummary) -> HubCardComputer {
@@ -242,7 +265,7 @@ extension HubScreen {
       ))
     }
     let hideKey = accountId.map(hubHiddenAccountKey)
-      ?? copies.first.map { hubHiddenFolderKey(computerKey: $0.computerKey, projectId: $0.projectId) }
+      ?? (accountOnly == nil ? hubFolderHideKey(cardComputer(cardId)) : nil)
       ?? "card:\(cardId)"
     return HubRemovalItem(
       id: cardId,

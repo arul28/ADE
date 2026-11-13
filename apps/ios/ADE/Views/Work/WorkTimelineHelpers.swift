@@ -1922,10 +1922,11 @@ func assembleWorkTimeline(
   })
 
   // A restart resume draws no schedule row: the restart notice says the
-  // agent continues (desktop `isRestartResumeScheduleId`).
+  // agent continues (desktop `isRestartResumeScheduleId`). One ADE could not
+  // send keeps its row, so the chat says why the agent did not continue.
   let scheduleSnapshots = scheduledSnapshots.filter {
     $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "background_task"
-      && !workIsRestartResumeScheduleId($0.id)
+      && !(workIsRestartResumeScheduleId($0.id) && !workIsUndeliveredSchedule(summary: $0.summary, error: $0.error))
   }
   entries.append(contentsOf: scheduleSnapshots.enumerated().map { index, snapshot in
     WorkTimelineEntry(
@@ -4949,8 +4950,9 @@ func eventCard(
       return nil
     case .scheduledWorkUpdate(let id, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
       // A restart resume's "Woke at" line: the restart notice already says
-      // the agent continues (desktop `isRestartResumeScheduleId`).
-      guard !workIsRestartResumeScheduleId(id) else { return nil }
+      // the agent continues (desktop `isRestartResumeScheduleId`). One ADE
+      // could not send still shows, with its reason.
+      guard !workIsRestartResumeScheduleId(id) || workIsUndeliveredSchedule(summary: summary, error: error) else { return nil }
       // Background shell commands are owned by the Chat Info pane's Background
       // section (and a compact timeline finish chip).
       //
@@ -5428,6 +5430,13 @@ func isLowSignalWorkReasoning(_ text: String) -> Bool {
 /// id `update-resume:<session>`. Same as desktop `isRestartResumeScheduleId`.
 func workIsRestartResumeScheduleId(_ scheduleId: String?) -> Bool {
   scheduleId?.hasPrefix("update-resume:") == true
+}
+
+/// A scheduled message ADE could not send: the host closes it with
+/// "Not delivered: <reason>" in its summary, or with an error.
+func workIsUndeliveredSchedule(summary: String?, error: String?) -> Bool {
+  if let error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+  return summary?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("not delivered") == true
 }
 
 /// A notice the host's `restartInterruptedNotice` wrote. Same as desktop

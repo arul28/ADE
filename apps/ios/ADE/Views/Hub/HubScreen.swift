@@ -433,7 +433,9 @@ struct HubScreen: View {
 
   @ViewBuilder
   private var rosterFilterBar: some View {
-    if !hubProjectPresentations.isEmpty {
+    // The local folders follow the filter too, so it stays while only they
+    // are left.
+    if !hubProjectPresentations.isEmpty || !localSections.isEmpty {
       HubRosterFilterBar(counts: hubRosterFilterCounts, selection: $rosterFilter)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
@@ -548,7 +550,7 @@ struct HubScreen: View {
         presentations: section.presentations,
         gitHubIdentities: gitHubIdentityByCard,
         selectedIds: selecting ? selectedIds : nil,
-        onOpen: { openHubProject($0.project) },
+        onOpen: { openLocalFolder($0.project) },
         onToggle: { toggleSelection($0.project.id) },
         onHide: { hideOnPhone([$0]) },
         onRemove: { presentRemoval([$0]) }
@@ -632,6 +634,21 @@ struct HubScreen: View {
     }
     // Lives only on another machine: focus that machine, then open it there.
     openFleetCopy(owner.project, onMachine: owner.machineKey, cardId: project.id)
+  }
+
+  /// A local folder opens on its own computer, or on another reachable
+  /// computer that holds it when that one is offline.
+  private func openLocalFolder(_ project: MobileProjectSummary) {
+    let owner = cardComputer(project.id)
+    guard !owner.reachable,
+          let holder = reachableHolders(project.id).first,
+          let machineKey = holder.phoneKey,
+          machineKey != syncService.focusedMachineKey
+    else {
+      openHubProject(project)
+      return
+    }
+    openFleetCopy(holder.project, onMachine: machineKey, cardId: project.id)
   }
 
   /// Focuses `machineKey` and opens its own `project` there.
@@ -1018,10 +1035,11 @@ struct HubScreen: View {
     var duplicates: [HubProjectPresentation] = []
     var hiddenMatched: [HubHiddenEntry] = []
     let hidden = hiddenList.keys
-    // A folder the user hid on this phone, by its computer and id.
+    // A folder the user hid on this phone, by its computer and id: the key
+    // it is stored under, else the key it would be stored under.
     func folderHideKey(_ cardId: String) -> String {
-      let computer = cardComputer(cardId, merge: merge)
-      return hubHiddenFolderKey(computerKey: computer.key, projectId: computer.project.id)
+      let keys = hubFolderHideKeys(cardComputer(cardId, merge: merge))
+      return keys.first(where: hidden.contains) ?? keys[0]
     }
     let cards = hubAccountJoinCards(
       focused: focusedRosters,

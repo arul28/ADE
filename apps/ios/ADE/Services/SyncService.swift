@@ -4985,10 +4985,11 @@ final class SyncService: ObservableObject {
   private var remoteProjectCatalog: [MobileProjectSummary] = []
   private var hiddenProjectKeys: Set<String> = []
   /// Folders this phone removed from the focused machine
-  /// (`removeProjectFromFocusedMachine`), by `hiddenKeys`. They hide only
-  /// this phone's cached rows, which the machine never deletes: its catalog
-  /// already left them out, and lists one again if it is added back there.
-  private var removedFromHostKeys: Set<String> = []
+  /// (`removeProjectFromFocusedMachine`): one entry per folder, holding all
+  /// its `hiddenKeys` (id and root). They hide only this phone's cached rows,
+  /// which the machine never deletes: its catalog already left them out, and
+  /// lists one again if it is added back there.
+  private var removedFromHostKeys: [Set<String>] = []
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
@@ -5858,6 +5859,11 @@ final class SyncService: ObservableObject {
     if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
       payload["rootPath"] = rootPath
     }
+    // The machine this goes to; the phone can move to another one while the
+    // request waits.
+    let hostKey = activeHostStorageKey()
+    let removedProject = projects.first(where: { $0.id == projectId })
+      ?? MobileProjectSummary(id: projectId, displayName: "", rootPath: rootPath, laneCount: 0, isAvailable: false, isCached: false)
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: false,
@@ -5872,10 +5878,10 @@ final class SyncService: ObservableObject {
         NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
       ])
     }
-    let removed = projects.first(where: { $0.id == projectId })
-      ?? MobileProjectSummary(id: projectId, displayName: "", rootPath: rootPath, laneCount: 0, isAvailable: false, isCached: false)
-    rememberRemovedFromHost(removed)
-    dropProjectLocally(removed)
+    if let hostKey { rememberRemovedFromHost(removedProject, hostKey: hostKey) }
+    // The list and the open project in front belong to that machine only
+    // while it is still the one in front.
+    if hostKey == activeHostStorageKey() { dropProjectLocally(removedProject) }
     syncConnectLog.info("project removed from focused machine")
   }
 
@@ -6805,41 +6811,59 @@ final class SyncService: ObservableObject {
   /// A cached row stays off the list while it is hidden or this phone
   /// removed it from the machine.
   private func isCachedProjectHidden(_ project: MobileProjectSummary) -> Bool {
-    isProjectHidden(project) || !removedFromHostKeys.isDisjoint(with: hiddenKeys(for: project))
+    if isProjectHidden(project) { return true }
+    let keys = hiddenKeys(for: project)
+    return removedFromHostKeys.contains { !$0.isDisjoint(with: keys) }
   }
 
   private func loadProjectVisibilityKeys() {
     hiddenProjectKeys = loadHiddenProjectKeys()
-    removedFromHostKeys = activeHostStorageKey()
-      .flatMap { UserDefaults.standard.stringArray(forKey: "\(removedFromHostProjectsKey).\($0)") }
-      .map(Set.init) ?? []
+    removedFromHostKeys = activeHostStorageKey().map(loadRemovedFromHostKeys(hostKey:)) ?? []
   }
 
-  private func saveRemovedFromHostKeys() {
-    guard let hostKey = activeHostStorageKey() else { return }
+  /// Stored as one line per folder, its keys joined by a newline.
+  private func loadRemovedFromHostKeys(hostKey: String) -> [Set<String>] {
+    (UserDefaults.standard.stringArray(forKey: "\(removedFromHostProjectsKey).\(hostKey)") ?? [])
+      .map { Set($0.split(separator: "\n").map(String.init)) }
+      .filter { !$0.isEmpty }
+  }
+
+  private func saveRemovedFromHostKeys(_ entries: [Set<String>], hostKey: String) {
     let key = "\(removedFromHostProjectsKey).\(hostKey)"
-    if removedFromHostKeys.isEmpty {
+    if entries.isEmpty {
       UserDefaults.standard.removeObject(forKey: key)
     } else {
-      UserDefaults.standard.set(removedFromHostKeys.sorted(), forKey: key)
+      UserDefaults.standard.set(entries.map { $0.sorted().joined(separator: "\n") }.sorted(), forKey: key)
     }
   }
 
-  private func rememberRemovedFromHost(_ project: MobileProjectSummary) {
+  /// Marks a folder removed from the machine `hostKey` names. A reply that
+  /// arrives after the phone moved to another machine is kept for the
+  /// machine that removed it, not for the one in front.
+  private func rememberRemovedFromHost(_ project: MobileProjectSummary, hostKey: String) {
     let keys = hiddenKeys(for: project)
-    guard !keys.isSubset(of: removedFromHostKeys) else { return }
-    removedFromHostKeys.formUnion(keys)
-    saveRemovedFromHostKeys()
+    guard !keys.isEmpty else { return }
+    if hostKey == activeHostStorageKey() {
+      guard !removedFromHostKeys.contains(where: { keys.isSubset(of: $0) }) else { return }
+      removedFromHostKeys.append(keys)
+      saveRemovedFromHostKeys(removedFromHostKeys, hostKey: hostKey)
+    } else {
+      var entries = loadRemovedFromHostKeys(hostKey: hostKey)
+      guard !entries.contains(where: { keys.isSubset(of: $0) }) else { return }
+      entries.append(keys)
+      saveRemovedFromHostKeys(entries, hostKey: hostKey)
+    }
   }
 
-  /// The machine lists a removed folder again (added back there): its cached
-  /// row may show again.
+  /// The machine lists a removed folder again (added back there, maybe under
+  /// a new id): its cached rows may show again, under every key it had.
   private func forgetRemovedFromHost(listedIn catalog: [MobileProjectSummary]) {
-    guard !removedFromHostKeys.isEmpty else { return }
+    guard !removedFromHostKeys.isEmpty, let hostKey = activeHostStorageKey() else { return }
     let listed = catalog.reduce(into: Set<String>()) { $0.formUnion(hiddenKeys(for: $1)) }
-    guard !removedFromHostKeys.isDisjoint(with: listed) else { return }
-    removedFromHostKeys.subtract(listed)
-    saveRemovedFromHostKeys()
+    let kept = removedFromHostKeys.filter { $0.isDisjoint(with: listed) }
+    guard kept.count != removedFromHostKeys.count else { return }
+    removedFromHostKeys = kept
+    saveRemovedFromHostKeys(kept, hostKey: hostKey)
   }
 
   private func hiddenProjectsStorageKey() -> String {

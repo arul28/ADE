@@ -277,6 +277,9 @@ struct AccountProjectsClient {
   struct ChangeError: Error, Equatable {
     let status: Int?
     let message: String
+    /// The request may have reached the account and the answer was lost or
+    /// unreadable: the change may have happened.
+    var unconfirmed: Bool = false
   }
 
   func add(baseURL: URL, token: String, identity: AccountProjectIdentity,
@@ -318,13 +321,13 @@ struct AccountProjectsClient {
       do {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-          throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.")
+          throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.", unconfirmed: true)
         }
         return (data, http)
       } catch let error as ChangeError {
         throw error
       } catch {
-        throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.")
+        throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.", unconfirmed: true)
       }
     }
     var (data, http) = try await send(token)
@@ -346,7 +349,7 @@ struct AccountProjectsClient {
     do {
       return try JSONDecoder().decode(Response.self, from: data)
     } catch {
-      throw ChangeError(status: http.statusCode, message: "Your ADE account sent an answer ADE can't read.")
+      throw ChangeError(status: http.statusCode, message: "Your ADE account sent an answer ADE can't read.", unconfirmed: true)
     }
   }
 }
