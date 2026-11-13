@@ -6346,6 +6346,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     archive: createMockArchive(),
     project: {
       openRepo: resolved(MOCK_PROJECT),
+      // Add project's first screen reads it to fill the folder field.
+      getDefaultParentDir: resolved("/Users/ade/Projects"),
       chooseDirectory: resolvedArg(null),
       browseDirectories: async (args?: { inputPath?: string }) => {
         const inputPath =
@@ -6384,6 +6386,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         clearedAt: new Date().toISOString(),
       }),
       listRecent: resolved(BROWSER_MOCK_RECENT_PROJECTS),
+      listThisComputer: resolved([]),
       findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({

@@ -40,6 +40,11 @@ function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof us
   };
 }
 
+/** One copy's key on this page: its computer and folder. */
+function copyKeyOf(copy: RepositoryCopy): string {
+  return `${copy.machineId}\n${copy.rootPath}`;
+}
+
 function openCopy(copy: RepositoryCopy): Promise<unknown> {
   const address = copy.address;
   const store = useAppStore.getState();
@@ -129,12 +134,15 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   /**
    * The web machine that can open this copy on a press: held by this tab, or
    * awake in the account directory ("available" alone also covers asleep and
-   * long-gone computers), and the copy names its folder.
+   * long-gone computers), and the copy names its folder. A machine that is
+   * dialing again (it stopped) is not one to pick, unless this page is
+   * opening that copy now.
    */
   const webMachineFor = (copy: RepositoryCopy): WebMachineEntry | null => {
     const machine = copy.checkoutId ? webMachineOf(copy) : null;
     if (!machine) return null;
-    const held = machine.status === "live" || machine.status === "connecting" || machine.status === "parked";
+    const opening = openingCopyKey === copyKeyOf(copy);
+    const held = machine.status === "live" || machine.status === "parked" || (machine.status === "connecting" && opening);
     const account = machine.accountMachine;
     const awake = account != null && resolveMachinePresence({
       connected: false,
@@ -148,7 +156,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry) => {
     const checkoutId = copy.checkoutId;
     if (!workspace || !checkoutId) return;
-    const copyKey = `${copy.machineId}\n${copy.rootPath}`;
+    const copyKey = copyKeyOf(copy);
     setOpenError(null);
     setOpeningCopyKey(copyKey);
     void (async () => {
@@ -214,7 +222,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           {copies.length > 0 ? (
             <div className="kit-panel flex flex-col py-1" role="list" aria-label="Copies">
               {copies.map((copy) => {
-                const copyKey = `${copy.machineId}\n${copy.rootPath}`;
+                const copyKey = copyKeyOf(copy);
                 const webMachine = webMode ? webMachineFor(copy) : null;
                 return (
                 <div key={copyKey} role="listitem" className="kit-row flex items-center gap-2 px-2.5 py-1.5">

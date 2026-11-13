@@ -35,6 +35,8 @@ export type CreateProjectFormProps = {
     projectId?: string;
   }) => void | Promise<void>;
   machineName?: string;
+  /** Why the project cannot be created right now (its computer is not connected); blocks Create. */
+  unavailableReason?: string | null;
   getDefaultParentDir?: () => Promise<string>;
   browseDirectories?: (
     input: ProjectBrowseInput,
@@ -93,6 +95,7 @@ export function CreateProjectForm({
   onCancel,
   onCreated,
   machineName,
+  unavailableReason = null,
   getDefaultParentDir,
   browseDirectories,
   chooseDirectory,
@@ -182,7 +185,8 @@ export function CreateProjectForm({
     parentDir.length > 0 &&
     !pathExists &&
     !pending &&
-    !parentDirLoading;
+    !parentDirLoading &&
+    !unavailableReason;
 
   const handleChooseParent = useCallback(async () => {
     if (!pickDirectory) return;
@@ -205,7 +209,7 @@ export function CreateProjectForm({
 
   const handleSubmit = useCallback(async () => {
     setSubmitAttempted(true);
-    if (!validation.ok || !parentDir || pathExists) return;
+    if (!validation.ok || !parentDir || pathExists || unavailableReason) return;
     setPending(true);
     setOpening(false);
     setError(null);
@@ -232,7 +236,7 @@ export function CreateProjectForm({
       setPending(false);
       setOpening(false);
     }
-  }, [create, onCreated, parentDir, pathExists, trimmedName, validation.ok]);
+  }, [create, onCreated, parentDir, pathExists, trimmedName, unavailableReason, validation.ok]);
 
   return (
     <div
@@ -268,7 +272,9 @@ export function CreateProjectForm({
         )}
       </Field>
 
-      {machineName ? (
+      {unavailableReason ? (
+        <InlineHint tone="danger">{unavailableReason}</InlineHint>
+      ) : machineName ? (
         <InlineHint tone="muted">Creating on {machineName}</InlineHint>
       ) : null}
 

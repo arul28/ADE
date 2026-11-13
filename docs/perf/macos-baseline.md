@@ -3269,3 +3269,59 @@ poll while a chat's browser is on another machine, and a frame read every
 250 ms, one in flight, only while someone watches a remote tab) need two
 machines. Sleeping tabs (30 min) and the 320 MB disk-cache cap lower memory and
 disk use over hours; a 15-minute window cannot show them.
+
+### Home lists the account's projects (account list as the one source, 2026-11-12)
+
+Dev app on `ade/account-list-single-source` at `65ed38ee6`, against the base
+`e35917691` renderer checked out over the same tree, so both share the app,
+the brain and the load. Mac Studio M4 Max (not the baseline machine), an
+isolated home (own `ADE_HOME`, user data, socket and CDP port, sync off), a
+loopback account directory with 20 account projects over 5 computers (3
+offline), one project with two folders here, and 60 folders here that are on
+no account project. Three project tabs open, nothing streaming. Passes
+interleaved base, after, base, after; load average 10–16 for the rows below
+(passes at higher load are not used). Probes: scratch CDP scripts, 8 runs a
+pass, the first run after a reload is the cold one.
+
+| Row | Before (`e35917691`) | After | Ceiling |
+| --- | --- | --- | --- |
+| Home "Add project" to the add form ready (input, folder and options filled), warm median | 150 ms (first screen, the tiles, 141 ms; the form one press later); long task 129 ms | 36–37 ms (form shown 30–31 ms); no long task | — |
+| Home "Add project" to the add form ready, cold (first open after a reload) | 156–160 ms; long task 132–135 ms | 43–44 ms; no long task | — |
+| Home: "+" to the first Projects row (the S4 probe: one frame after the row), warm median of each pass | 54.0–56.2 ms; a long frame of 62–64 ms in 5–6 of 14 runs | 48.4–51.2 ms; no long frame in 56 runs | — |
+| Home: "+" to the first Projects row painted / to settled frames (6 frames under 20 ms), warm median of each pass | 27.4–28.3 ms / 133 ms | 34.0–36.6 ms / 91–116 ms | — |
+| Home page elements / Projects card elements | 2,417 / 1,866 (81 rows, most hidden) | 1,422 / 871 (40 rows) | — |
+
+The add window cost one long task of 120–200 ms on every open, in the base
+too. The palette set its mode from the open intent in an effect, so the
+window committed once in the default mode with the whole command list (288
+rows) and removed it in the next commit. Three forced style passes of the
+open (the input focus, the Radix presence animation read and a motion scroll
+measure) each covered those rows: 5,000–6,600 elements a pass in a trace. The
+mode now follows the open in the same render (`65ed38ee6`). With 27 project
+tabs open the same open took 157–192 ms, so the cost grew with the page as
+well as with the list.
+
+Home's Projects card renders at most 40 rows inline (`INLINE_ROW_CAP`); the
+"N more" dialog shows every row. A hidden row still costs style and layout on
+every pass over the page. A cap of 24 measured the same as 40.
+
+The "+" rows were measured again on `1dc88e0c4` (2026-11-13): four
+interleaved pairs, 15 warm runs a pass after a warm-up pass, each pass waiting
+for a 1-minute load under 16 on the 14-core machine (load 9–14 at the start
+of the passes used, one after pass at 25). Two base passes that ran back to
+back measured like the branch code and are left out, since the pass did not
+record which renderer it measured. The base paints the first row 6–9 ms
+sooner, in a frame that then runs long; the branch has no long frame,
+settles sooner, and is not slower on the S4 probe. No ceiling is set for
+these rows.
+
+No timer or poll is added. Home reads this computer's folders from the
+brain's project catalog (`project.listThisComputer`, one local IPC) on mount,
+when the recents change, and when a brain that the last read missed connects
+(one listener on the existing `app.onRuntimeStatusChanged` event; a heartbeat
+of the same brain reads nothing). The recents keep 24 folders, and the
+catalog lists all of them; a read that fails or finds no brain keeps the last
+catalog. Home and the top bar's copies menu build their
+copies from the snapshot and recents they already hold. The computers tag on
+the project page reads the copies sources once on mount and on window focus
+(one `listRecent`).
