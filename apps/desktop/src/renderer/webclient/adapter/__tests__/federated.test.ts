@@ -6,6 +6,7 @@ import type { BrowserAccountClient } from "../../account/client";
 import type { AdeSyncClient } from "../../sync";
 import type { WebMachineSessionManager } from "../../workspace/WebMachineSessionManager";
 import { createFederatedWebAdapter } from "../federated";
+import { createReconnectHold } from "../reconnectHold";
 
 const adapters = vi.hoisted(() => new Map<object, {
   ade: Window["ade"];
@@ -882,5 +883,59 @@ describe("createFederatedWebAdapter", () => {
     federated.activateHub();
 
     expect(fixture.manager.setProtectedTargetId).toHaveBeenLastCalledWith("machine-a");
+  });
+});
+
+describe("createReconnectHold", () => {
+  const snapshotOf = (states: Record<string, "connected" | "connecting" | "error" | "parked">) => ({
+    connections: Object.entries(states).map(([id, state]) => ({ target: { id }, state })),
+    connectedCount: Object.values(states).filter((state) => state === "connected").length,
+    updatedAt: 0,
+  }) as unknown as Parameters<ReturnType<typeof createReconnectHold>["apply"]>[0];
+  const stateOf = (snapshot: { connections: Array<{ target: { id: string }; state: string }> }, id: string) =>
+    snapshot.connections.find((connection) => connection.target.id === id)?.state;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(document, "visibilityState");
+  });
+
+  it("holds a reconnecting machine for 30 s in front, then lets it go until it connects again", () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const clientStates: Record<string, string> = { a: "reconnecting", fresh: "connecting", refused: "error" };
+    const onExpire = vi.fn();
+    const hold = createReconnectHold((id) => clientStates[id] ?? null, onExpire);
+
+    hold.apply(snapshotOf({ a: "connected", fresh: "connecting", refused: "connected" }));
+    const dropped = hold.apply(snapshotOf({ a: "connecting", fresh: "connecting", refused: "error" }));
+    // Only a reconnect is held: never a first connect, never a refusal.
+    expect(stateOf(dropped, "a")).toBe("connected");
+    expect(stateOf(dropped, "fresh")).toBe("connecting");
+    expect(stateOf(dropped, "refused")).toBe("error");
+    expect(dropped.connectedCount).toBe(1);
+
+    // Time in the background does not count.
+    vi.advanceTimersByTime(20_000);
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(60_000);
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connected");
+
+    onExpire.mockClear();
+    vi.advanceTimersByTime(10_100);
+    expect(onExpire).toHaveBeenCalled();
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connecting");
+    // A spent hold does not start again on the next change or return to the page.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connecting");
+
+    // Connected again, the next drop is held again.
+    hold.apply(snapshotOf({ a: "connected" }));
+    expect(stateOf(hold.apply(snapshotOf({ a: "connecting" })), "a")).toBe("connected");
+    hold.dispose();
   });
 });
