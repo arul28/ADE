@@ -98,11 +98,19 @@ sign-in and device keys), plus **Install ADE**. "Remember my choice" stores
 `ade.openLinksIn` (`app` | `web`) in that browser's localStorage. With no
 choice remembered nothing launches until the person picks: a page cannot tell
 whether an app took an `ade://` link (browsers ask, or do nothing), so an
-automatic attempt would strand someone without the app. With `web` remembered
-the page goes to the web client after 0.8 s (long enough to press **Change**);
-with `app` it tries the app and, 2.5 s later, makes the browser the main button
-("ADE didn't open?") unless the page lost focus meanwhile, which means the app
-or the browser's prompt took over. A **Change** link forgets the choice. On an
+automatic attempt would strand someone without the app. With a choice
+remembered, the page opens it after 1.5 s, with **Change** and **Open now** in
+view and a bar that fills over the pause. Escape stops it, like **Change**, and
+`?choose=1` shows the choices even when one is remembered. After the app is
+tried, the page makes the browser the main button 2.5 s later ("ADE didn't
+open?") unless the page lost focus meanwhile, which means the app or the
+browser's prompt took over. **Change** forgets the choice. While the choices
+are on screen on a computer, the page frames ADE Web's hidden `/link-status`
+page (on `app.ade-app.dev`, which holds the sign-in) for up to 4 s. When this
+browser is signed in to ADE Web, the answer names the account's online
+computers: the page puts the ADE app first when one is online and ADE Web
+first when none is. The page accepts only a well-formed `ade-link-status`
+message from that origin. On an
 iPhone or iPad the page also offers **Open in ADE Beta** (`ade-beta://`, the
 Beta app's scheme; only the App Store app claims the universal link). Desktop
 betas are the same `com.ade.desktop` app as stable and claim `ade://`. Alpha
@@ -263,9 +271,10 @@ ADE CLI — outbound + inbound:
 Apps/web — landing page + OG unfurl:
 
 - `apps/web/src/app/pages/OpenPage.tsx` — React SPA page mounted at
-  `/open`. Reads the same query shape as the parser, attempts the
-  `ade://` upgrade, and falls back to a download / install card with
-  the parsed target described inline.
+  `/open`. Reads the same query shape as the parser, offers the app, the
+  browser and Install, opens a remembered choice after a short pause, and
+  orders the choices by the online computers that ADE Web's `/link-status`
+  frame reports.
 - `apps/web/api/open.ts` — Vercel serverless function for `/open`. Self-
   fetches `/index.html`, rewrites `<title>`, `og:*`, and `twitter:*`
   meta tags from query params so chat-app unfurlers (Slack, Discord,
