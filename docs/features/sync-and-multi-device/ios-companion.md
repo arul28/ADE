@@ -638,7 +638,12 @@ apps/ios/
 │   │   │                            #   HubAccountCards (card pass, chips,
 │   │   │                            #   saved order, account sheets),
 │   │   │                            #   ProjectLocationScreen,
-│   │   │                            #   DeleteProjectSheet, HubPhoneLayout.
+│   │   │                            #   DeleteProjectSheet, HubPhoneLayout,
+│   │   │                            #   HubRemoveProjects (Remove… sheet,
+│   │   │                            #   "Only on" sections, select bar,
+│   │   │                            #   hidden-on-phone list),
+│   │   │                            #   HubScreen+Selection (select mode,
+│   │   │                            #   hide, remove, where each folder is).
 │   │   │                            # Also ProjectHostRecoveryScreen (the
 │   │   │                            #   Swift mirror of
 │   │   │                            #   shared/syncHostRecoveryUi.ts:
@@ -1618,6 +1623,26 @@ A project is one GitHub repository. Each computer can hold copies of it.
   shows gets its own card.
 - The saved Hub order uses account project ids, so it is the same on every
   machine.
+- The main list has one card per account project. A second folder of the
+  same project gets no card; the tile's long-press menu opens it under
+  "Other folders". A folder that is no account project shows under "Only on
+  <computers>", grouped by the reachable computers that hold it (one folder
+  on two computers shows under both names).
+- Select (or a tile's menu) offers "Hide on this iPhone" and Remove…. Select
+  all, the count and both actions act only on the cards the status filter
+  shows. Hide changes nothing on a computer or the account: the keys live in
+  `UserDefaults` under `ade.hub.hiddenOnPhone.v1|<account or machine>`, and
+  "N hidden" lists them with Show and Show all. The header count stays the
+  account's count.
+- Remove… mirrors the desktop's remove dialog: from the computer the card is
+  on, from all my computers, or from the account (projects with a GitHub
+  repository only). Each folder's removal (`project_forget_request`) goes on
+  the link of the computer that holds it, the focused link or that
+  computer's fleet link, and never falls back to another machine
+  (`hubRemoveCopy`). A computer that is offline keeps its folder; a request
+  with no answer shows "Not known". A folder removed from the focused
+  computer stays off the phone's saved list until that computer lists it
+  again (`ade.sync.removedFromHostProjects.<host>`).
 - Start on lists the computers for a project: copies first, then computers
   that can get a copy. A pick connects that computer (the focused one
   reconnects). "Put a copy" clones the project from GitHub on that computer.

@@ -1224,6 +1224,10 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         if (metadata["kind"] as? String) == "continuity_recovery" {
           parsed.userMessageIsRecoveryHandOff = true
         }
+        if let wake = metadata["scheduledWake"] as? [String: Any],
+           workIsRestartResumeScheduleId(wake["scheduleId"] as? String) {
+          parsed.userMessageIsRestartResume = true
+        }
       }
       if type == "system_notice" {
         parsed.continuityNotice = workContinuityNotice(from: remoteJSONValue(from: eventDict["detail"]))

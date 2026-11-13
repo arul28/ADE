@@ -1663,7 +1663,10 @@ struct WorkEventCardView: View, Equatable {
   }
 
   private var ribbonBody: some View {
-    HStack(alignment: .center, spacing: 8) {
+    // The restart line names its clock time, as on the desktop, and has room
+    // for its whole sentence.
+    let restart = card.kind == "notice" && workIsRestartInterruptedNotice(card.title)
+    return HStack(alignment: restart ? .firstTextBaseline : .center, spacing: 8) {
       Image(systemName: card.icon)
         .font(.caption.weight(.semibold))
         .foregroundStyle(card.tint.color)
@@ -1671,11 +1674,14 @@ struct WorkEventCardView: View, Equatable {
       Text(ribbonText)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(2)
+        .lineLimit(restart ? nil : 2)
+        .fixedSize(horizontal: false, vertical: restart)
       Spacer(minLength: 8)
-      Text(relativeTimestamp(card.timestamp))
+      Text(restart ? (workParsedDate(card.timestamp).map(workUsageLimitClockLabel) ?? relativeTimestamp(card.timestamp)) : relativeTimestamp(card.timestamp))
         .font(.caption2)
+        .monospacedDigit()
         .foregroundStyle(ADEColor.textMuted)
+        .fixedSize()
     }
     // No surface, so no leading inset: the glyph starts on the thread's own
     // text edge (it sat ~10pt+ in from the messages around it).

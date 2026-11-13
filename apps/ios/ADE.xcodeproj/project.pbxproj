@@ -306,6 +306,7 @@
 		E20000000000000000000054 /* HubActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000054 /* HubActivityState.swift */; };
 		E20000000000000000000055 /* HubRosterFilterBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000055 /* HubRosterFilterBar.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
+		E2000000000000000000DE20 /* HubScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE20 /* HubScreen+Selection.swift */; };
 		E20000000000000000000053 /* HubComposerDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000053 /* HubComposerDrawer.swift */; };
 		E200000000000000000000A1 /* HubQuickConnect.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000A1 /* HubQuickConnect.swift */; };
 		E2000000000000000000C0F1 /* HubComposerFleetDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000C0F1 /* HubComposerFleetDestination.swift */; };
@@ -501,6 +502,7 @@
 		E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE09 /* HubAccountPreviews.swift */; };
 		E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE08 /* HubAccountProjects.swift */; };
 		E2000000000000000000DE0E /* HubAccountCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0E /* HubAccountCards.swift */; };
+		E2000000000000000000DE1F /* HubRemoveProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE1F /* HubRemoveProjects.swift */; };
 		E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0F /* HubPhoneLayout.swift */; };
 		E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE10 /* GitHubAccountCredential.swift */; };
 		FA55A0000000000000000B01 /* PasswordsVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA55A0000000000000000A01 /* PasswordsVault.swift */; };
@@ -829,6 +831,7 @@
 		D20000000000000000000054 /* HubActivityState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubActivityState.swift; path = ADE/Views/Hub/HubActivityState.swift; sourceTree = "<group>"; };
 		D20000000000000000000055 /* HubRosterFilterBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubRosterFilterBar.swift; path = ADE/Views/Hub/HubRosterFilterBar.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
+		D2000000000000000000DE20 /* HubScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+Selection.swift"; path = "ADE/Views/Hub/HubScreen+Selection.swift"; sourceTree = "<group>"; };
 		D20000000000000000000053 /* HubComposerDrawer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerDrawer.swift; path = ADE/Views/Hub/HubComposerDrawer.swift; sourceTree = "<group>"; };
 		D200000000000000000000A1 /* HubQuickConnect.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubQuickConnect.swift; path = ADE/Views/Hub/HubQuickConnect.swift; sourceTree = "<group>"; };
 		D2000000000000000000C0F1 /* HubComposerFleetDestination.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComposerFleetDestination.swift; path = ADE/Views/Hub/HubComposerFleetDestination.swift; sourceTree = "<group>"; };
@@ -1041,6 +1044,7 @@
 		D2000000000000000000DE09 /* HubAccountPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountPreviews.swift; path = ADE/Views/Hub/HubAccountPreviews.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE08 /* HubAccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountProjects.swift; path = ADE/Views/Hub/HubAccountProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0E /* HubAccountCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountCards.swift; path = ADE/Views/Hub/HubAccountCards.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE1F /* HubRemoveProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubRemoveProjects.swift; path = ADE/Views/Hub/HubRemoveProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0F /* HubPhoneLayout.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubPhoneLayout.swift; path = ADE/Views/Hub/HubPhoneLayout.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE10 /* GitHubAccountCredential.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubAccountCredential.swift; path = ADE/Services/GitHubAccountCredential.swift; sourceTree = "<group>"; };
 		FA55A0000000000000000A01 /* PasswordsVault.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PasswordsVault.swift; path = ADE/Services/PasswordsVault.swift; sourceTree = "<group>"; };
@@ -1272,6 +1276,7 @@
 				D2000000000000000000DE09 /* HubAccountPreviews.swift */,
 				D2000000000000000000DE08 /* HubAccountProjects.swift */,
 				D2000000000000000000DE0E /* HubAccountCards.swift */,
+				D2000000000000000000DE1F /* HubRemoveProjects.swift */,
 				D2000000000000000000DE0F /* HubPhoneLayout.swift */,
 				D2000000000000000000DE0A /* StartOnPicker.swift */,
 				D2000000000000000000DE0B /* DeleteProjectSheet.swift */,
@@ -1283,6 +1288,7 @@
 				D20000000000000000000054 /* HubActivityState.swift */,
 				D20000000000000000000055 /* HubRosterFilterBar.swift */,
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
+				D2000000000000000000DE20 /* HubScreen+Selection.swift */,
 				D20000000000000000000053 /* HubComposerDrawer.swift */,
 				D200000000000000000000A1 /* HubQuickConnect.swift */,
 				D2000000000000000000C0F1 /* HubComposerFleetDestination.swift */,
@@ -2314,6 +2320,7 @@
 				E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */,
 				E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */,
 				E2000000000000000000DE0E /* HubAccountCards.swift in Sources */,
+				E2000000000000000000DE1F /* HubRemoveProjects.swift in Sources */,
 				E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */,
 				E2000000000000000000DE0A /* StartOnPicker.swift in Sources */,
 				E2000000000000000000DE0B /* DeleteProjectSheet.swift in Sources */,
@@ -2325,6 +2332,7 @@
 				E20000000000000000000054 /* HubActivityState.swift in Sources */,
 				E20000000000000000000055 /* HubRosterFilterBar.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
+				E2000000000000000000DE20 /* HubScreen+Selection.swift in Sources */,
 				E20000000000000000000053 /* HubComposerDrawer.swift in Sources */,
 				E200000000000000000000A1 /* HubQuickConnect.swift in Sources */,
 				E2000000000000000000C0F1 /* HubComposerFleetDestination.swift in Sources */,

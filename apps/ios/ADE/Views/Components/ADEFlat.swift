@@ -124,6 +124,12 @@ struct ADEToastMessage: Equatable, Identifiable {
   let id = UUID()
   let text: String
   var kind: Kind = .success
+  /// One button on the toast ("Undo"). A toast with an action stays 6 s.
+  var action: ADEToastAction? = nil
+
+  static func == (lhs: ADEToastMessage, rhs: ADEToastMessage) -> Bool {
+    lhs.id == rhs.id
+  }
 
   var symbol: String {
     switch kind {
@@ -142,6 +148,12 @@ struct ADEToastMessage: Equatable, Identifiable {
   }
 }
 
+/// The button on a toast, such as Undo.
+struct ADEToastAction {
+  let title: String
+  let perform: () -> Void
+}
+
 private struct ADEToastModifier: ViewModifier {
   @Binding var message: ADEToastMessage?
   /// Extra space below the toast, for a screen with its own bar at the bottom.
@@ -158,19 +170,33 @@ private struct ADEToastModifier: ViewModifier {
             .font(.footnote.weight(.medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
+          if let action = message.action {
+            Button {
+              action.perform()
+              self.message = nil
+            } label: {
+              Text(action.title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .padding(.leading, 4)
+                .frame(minHeight: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+          }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, message.action == nil ? 10 : 4)
         .glassEffect(in: Capsule(style: .continuous))
         .padding(.bottom, 12 + bottomInset)
         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         .id(message.id)
         .task(id: message.id) {
-          try? await Task.sleep(for: .seconds(3))
+          try? await Task.sleep(for: .seconds(message.action == nil ? 3 : 6))
           guard !Task.isCancelled, self.message?.id == message.id else { return }
           self.message = nil
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: message.action == nil ? .combine : .contain)
         .accessibilityAddTraits(.isStaticText)
       }
     }
