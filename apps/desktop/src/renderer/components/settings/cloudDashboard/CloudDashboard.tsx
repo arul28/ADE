@@ -223,7 +223,11 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     }
   };
 
-  const banner = cloudAccountBanner(account);
+  // Over a plan's limits, the plan notice says it all: its "can't wake" and the
+  // disk share would only repeat it in two more banners.
+  const accountBanner = cloudAccountBanner(account);
+  const overPlan = account.planCleanup != null || accountBanner?.id === "cloud-over-plan-disk";
+  const banner = account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk" ? null : accountBanner;
   const diskLimit = account.disk.limitGb ?? 0;
   const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
 
@@ -241,7 +245,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
       <PlanNotices account={account} onChanged={refresh} />
-      {diskShare >= CLOUD_DISK_WARN_SHARE ? (
+      {!overPlan && diskShare >= CLOUD_DISK_WARN_SHARE ? (
         <Banner
           layout="inline"
           model={{
@@ -743,7 +747,7 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
             title: `Your computers don't fit ${plan}`,
             detail: `${cleanup.sentence} ${cleanup.startsAt != null
               ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-              : "ADE can't make a new computer until they fit. It deletes nothing on its own."}`,
+              : `ADE can't make a new computer${cloudAccountBanner(account)?.id === "cloud-over-plan-disk" ? " or wake one" : ""} until they fit. It deletes nothing on its own.`}`,
             actions: [{ label: "Choose what goes", variant: "primary", onClick: () => setAsking(true) }],
             report: false,
           }}
