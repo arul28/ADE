@@ -12228,6 +12228,11 @@ export function createAgentChatService(args: {
   processRegistry?: ProcessRegistryService | null;
   /** The installed machine brain's pid when it is live on this project. */
   machineBrainPid?: () => number | null;
+  /**
+   * Does this control socket belong to the machine brain? Supplied only to a
+   * brain on its own socket (a lane's dev or test brain).
+   */
+  isMachineBrainSocket?: (socketPath: string) => boolean;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   /**
    * "Continue chats after restarts" for this machine (`~/.ade/continue-after-
@@ -12476,6 +12481,7 @@ export function createAgentChatService(args: {
     sessionService,
     processRegistry,
     machineBrainPid,
+    isMachineBrainSocket,
     projectConfigService,
     db,
     lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
@@ -22412,15 +22418,24 @@ export function createAgentChatService(args: {
    * lane's scheduled "/ship 1821" wake and running it with the dev lane's code.
    * Its own chats stay its own: its stamp, or its dead predecessor on the same
    * socket (a restart keeps the socket; a sibling brain has its own).
+   *
+   * A chat the machine brain ran waits for the machine brain even while that
+   * brain is down: the service manager restarts it, and it recovers its own
+   * chats. Liveness alone left a gap. On 2026-11-13 the installed brain was
+   * killed under load, and before its replacement had opened the project, a
+   * test brain from another lane found the owner dead, resumed the "Cloud
+   * coordinator" chat on that lane's code, and then held it, so the installed
+   * brain refused every send. An explicit send from this brain still adopts.
    */
   const yieldsToMachineBrain = (
     state: PersistedChatState | null | undefined,
     verdict: ChatRuntimeOwnershipDecision["verdict"],
   ): boolean => {
-    if (!machineBrainPid || !processRegistry) return false;
     const owner = state?.runtimeOwner ?? null;
     if (verdict === "self") return false;
     if (owner?.socketPath && runtimeSocketPath && pathsEqual(owner.socketPath, runtimeSocketPath)) return false;
+    if (owner?.socketPath && isMachineBrainSocket?.(owner.socketPath)) return true;
+    if (!machineBrainPid || !processRegistry) return false;
     const selfPid = processRegistry.pid ?? process.pid;
     const installedBrainPid = machineBrainPid();
     return installedBrainPid !== null

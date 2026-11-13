@@ -3166,6 +3166,8 @@ export async function createAdeRuntime(args: {
             const beat = readBrainHeartbeat(machineRuntimeLayout.runtimeDir);
             return beat && Date.now() - beat.ts <= BRAIN_HEARTBEAT_STALE_MS ? beat.pid : null;
           },
+          isMachineBrainSocket: (socketPath: string) =>
+            servesMachineRuntimeEndpoint(socketPath, resolveMachineEndpointNames().runtime),
         } : {}),
         projectConfigService,
         db,
