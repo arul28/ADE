@@ -30738,6 +30738,11 @@ async function runServe(
         appVersion: VERSION,
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
         logger: headlessProjectLogger,
+        // An account project id also matches a folder there by its origin.
+        resolveAccountProjectId: (id) => {
+          const resolved = resolveAccountProject({ kind: "id", id }, readAccountProjectState(path.dirname(projectRegistry.path)).projects);
+          return resolved.kind === "found" ? resolved : null;
+        },
         // A call to a sleeping cloud box wakes it with the account's key.
         wakeForUse: async (machine) => (await getCloudBrainAccess()).wakeForUse(machine),
       }),
@@ -38036,9 +38041,11 @@ function shapeAccountProjects(list: unknown, roster: unknown): JsonObject {
     throw new CliUsageError(`ADE projects belong to your ADE account. ${ACCOUNT_SIGN_IN_NEXT_STEP}`);
   }
   if (state !== "ready") {
-    throw new CliExecutionError("ADE has not read your account's projects on this computer yet.", {
-      nextAction: "Keep the ADE brain running for a minute (`ade brain start`), then run this again. `ade doctor` shows the account state.",
-    });
+    // A usage error (exit 2), as for signed out: a script treats both the same.
+    throw new CliUsageError(
+      "ADE has not read your account's projects on this computer yet. "
+      + "Keep the ADE brain running for a minute (`ade brain start`), then run this again. `ade doctor` shows the account state.",
+    );
   }
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   const byKey = new Map(machines.map((machine) => [asString(machine.machineKey) ?? "", machine]));
@@ -41284,6 +41291,20 @@ async function runCli(
  * the one this machine's brain last read (`account-projects.json`), so a
  * signed-out computer gets a message that says so.
  */
+/**
+ * The account signed in on this computer: its user id, null when signed out,
+ * or undefined when that cannot be told (the saved list then counts as before).
+ */
+function signedInAccountUserIdForSelector(secretsDir: string): string | null | undefined {
+  try {
+    const status = getSharedAccountAuthService({ secretsDir }).getStatus();
+    if (!status.signedIn) return null;
+    return status.userId?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function applyAccountProjectSelector(options: GlobalOptions): Promise<void> {
   const remote = Boolean(options.machine?.trim()) || Boolean(options.allMachines);
   const typed = options.projectSelector?.trim() || (remote ? options.machineProject?.trim() : null) || null;
@@ -41292,11 +41313,18 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
   if (!selector) return;
   const layout = resolveMachineAdeLayout();
   const state = readAccountProjectState(layout.adeDir);
-  const listed = state.userId !== null && state.cursor !== null;
+  // The saved list stays on disk after a sign-out, and a new account replaces
+  // it only at its first sync: it counts for the account signed in now only.
+  const signedInUserId = signedInAccountUserIdForSelector(layout.secretsDir);
+  const listed = state.userId !== null && state.cursor !== null
+    && (signedInUserId === undefined || state.userId === signedInUserId);
   if (remote && !listed) {
     // This shell's own home has no list (another home, or `--socket` to
     // another brain): the other machine matches the value against its own
-    // folders, by account link or by origin.
+    // folders, by account link or by origin. `--project-root` carried it, so
+    // it moves to the machine's selector; dropped, the call would run in the
+    // repository of the current folder.
+    options.machineProject = typed;
     options.projectSelector = null;
     return;
   }

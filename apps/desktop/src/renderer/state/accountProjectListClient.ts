@@ -9,7 +9,8 @@
  *   `project.accountList` reads the account directory (only the changes
  *   after the first read), so its focus reads are spaced further apart.
  * - A copy in localStorage paints the first frame and covers a brain that is
- *   still starting or offline. A signed-out answer clears it.
+ *   still starting or offline. A signed-out answer clears it. ADE Web keeps
+ *   no copy: a browser can be shared.
  * - Reads: once at start and on window focus (at most one in 15 s), and when
  *   a caller asks (`refreshAccountProjectList`, after an open or a clone). No
  *   timer and no poll.
@@ -37,6 +38,8 @@ type CachedList = {
 };
 
 function readCache(): CachedList | null {
+  // A browser can be shared: ADE Web keeps the account's projects in memory only.
+  if (isWebClientMode()) return null;
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(ACCOUNT_PROJECT_LIST_CACHE_KEY) ?? "null");
     if (!parsed || typeof parsed !== "object") return null;
@@ -57,7 +60,8 @@ function readCache(): CachedList | null {
 
 function writeCache(next: CachedList | null): void {
   try {
-    if (next) window.localStorage.setItem(ACCOUNT_PROJECT_LIST_CACHE_KEY, JSON.stringify(next));
+    // ADE Web keeps no copy; it also drops one an older build left.
+    if (next && !isWebClientMode()) window.localStorage.setItem(ACCOUNT_PROJECT_LIST_CACHE_KEY, JSON.stringify(next));
     else window.localStorage.removeItem(ACCOUNT_PROJECT_LIST_CACHE_KEY);
   } catch {
     // Storage full or unavailable: the list still holds in memory.
@@ -213,22 +217,12 @@ export function refreshAccountProjectList(options?: { force?: boolean }): Promis
 function start(): () => void {
   starts += 1;
   if (starts === 1) {
+    // ADE Web keeps no copy: drop one an older build left, before any read.
+    if (isWebClientMode()) writeCache(null);
     const cached = readCache();
     if (cached && current.state === "unknown") {
       currentUserId = cached.userId;
-      // On the web the copy paints only for the account that left it; the
-      // browser's account status is an in-memory read there.
-      if (!isWebClientMode()) publish({ state: "ready", projects: cached.projects, machineNames: cached.machineNames });
-      else {
-        void window.ade?.account?.status?.()
-          .then((status) => {
-            forgetOtherAccount(status?.userId ?? null);
-            if (cached.userId && status?.userId === cached.userId && current.state === "unknown") {
-              publish({ state: "ready", projects: cached.projects, machineNames: cached.machineNames });
-            }
-          })
-          .catch(() => undefined);
-      }
+      publish({ state: "ready", projects: cached.projects, machineNames: cached.machineNames });
     }
   }
   void refreshAccountProjectList({ force: starts === 1 });

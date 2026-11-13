@@ -618,10 +618,12 @@ export function foreignCopyPaths(args: {
 }
 
 /**
- * Home rows for the account's projects that no recent row shows: a project
- * added on another machine, or cloned there. Each copy is a location: this
- * computer's folder, a connected machine's checkout, or a machine with no
- * saved connection (`account-machine:<key>`, which opens the no-machine tab).
+ * Home rows with the account's projects: `shownGroups` (the recents), with
+ * each account copy no recent row shows added to its project's row, then a
+ * row for each account project no recent row shows (added or cloned on
+ * another machine). Each copy is a location: this computer's folder, a
+ * connected machine's checkout, or a machine with no saved connection
+ * (`account-machine:<key>`, which opens the no-machine tab).
  */
 export function accountProjectGroups(args: {
   projects: readonly AccountProjectView[];
@@ -629,22 +631,26 @@ export function accountProjectGroups(args: {
   remoteSnapshot?: RemoteRuntimeConnectionSnapshot | null;
   thisMachineKey: string | null;
   machineNames?: Readonly<Record<string, string>>;
+  /** A shown row's machine id to its account machine key, when they differ (the web). */
+  accountMachineKeys?: ReadonlyMap<string, string>;
 }): RecentProjectGroup[] {
-  const { projects, shownGroups, remoteSnapshot = null, thisMachineKey, machineNames = {} } = args;
+  const { projects, shownGroups, remoteSnapshot = null, thisMachineKey, machineNames = {}, accountMachineKeys } = args;
   const connections = remoteSnapshot?.connections ?? [];
-  const shownOrigins = new Set<string>();
-  for (const group of shownGroups) {
+  // The shown row of each repository, by origin.
+  const shownByOrigin = new Map<string, number>();
+  shownGroups.forEach((group, index) => {
     for (const location of group.locations) {
       const origin = cachedGitRemoteIdentity(location.summary.gitOriginUrl ?? location.summary.remote?.gitOriginUrl ?? null);
-      if (origin) shownOrigins.add(origin);
+      if (origin && !shownByOrigin.has(origin)) shownByOrigin.set(origin, index);
     }
-  }
+  });
+  const shown = [...shownGroups];
   const groups: RecentProjectGroup[] = [];
   for (const project of projects) {
     const origins = [project.repoKey, ...project.aliases]
       .map((key) => cachedGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key))
       .filter((origin): origin is string => origin != null);
-    if (origins.some((origin) => shownOrigins.has(origin))) continue;
+    const shownIndex = origins.map((origin) => shownByOrigin.get(origin)).find((index) => index != null);
     const address = project.repoKey.startsWith("repo:") ? project.repoKey.slice("repo:".length) : project.repoKey;
     const gitOriginUrl = `https://${address}`;
     const locations: RecentProjectLocation[] = [];
@@ -695,6 +701,31 @@ export function accountProjectGroups(args: {
         reachable: state === "connected" && row != null && row.exists !== false,
       });
     }
+    if (shownIndex != null) {
+      // Until this computer's identity is read, its copy looks like another
+      // computer's (`account-machine:`); merging then would list it twice.
+      if (!thisMachineKey && !accountMachineKeys) continue;
+      // A recent row shows this repository: add the copies on computers it
+      // lacks (a computer with no saved connection, for example).
+      const group = shown[shownIndex]!;
+      // By machine: a recent row's path can be spelled another way than the account's.
+      const has = new Set(group.locations.flatMap((location) => {
+        const accountKey = accountMachineKeys?.get(location.machineId);
+        return accountKey ? [location.machineId, `${ACCOUNT_MACHINE_TARGET_PREFIX}${accountKey}`] : [location.machineId];
+      }));
+      const missing = locations.filter((location) => !has.has(location.machineId));
+      if (missing.length > 0) {
+        const merged = [...group.locations, ...missing];
+        // An added copy on this computer opens before an offline recent.
+        const primary = group.primary.reachable
+          ? group.primary
+          : merged.find((location) => location.summary.kind !== "remote" && location.reachable)
+            ?? merged.find((location) => location.reachable)
+            ?? group.primary;
+        shown[shownIndex] = { ...group, locations: merged, primary };
+      }
+      continue;
+    }
     // A project with no copy is still the account's (added with no
     // computer, or every copy removed): its row opens the no-machine tab,
     // where a copy can be added.
@@ -739,5 +770,5 @@ export function accountProjectGroups(args: {
       lastOpenedAt: primary.summary.lastOpenedAt,
     });
   }
-  return groups;
+  return [...shown, ...groups];
 }
