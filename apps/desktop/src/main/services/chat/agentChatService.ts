@@ -23758,6 +23758,10 @@ export function createAgentChatService(args: {
   ): Extract<AgentChatEvent, { type: "error" }> => {
     const existingInfo = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
     if (existingInfo?.agentCli) return event;
+    // A runtime that already named the failure a sign-in (Cursor's expired
+    // session after its own reconnect) built the card it wants; the wider
+    // sign-in words below must not replace it with the generic CLI card.
+    if (existingInfo?.category === "auth") return event;
 
     const text = `${event.message}\n${event.detail ?? ""}`;
     // Signed in, but the plan or the model is the refusal: no button fixes

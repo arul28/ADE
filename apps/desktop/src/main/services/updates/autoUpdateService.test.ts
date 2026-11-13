@@ -985,6 +985,7 @@ describe("createAutoUpdateService", () => {
         targetVersion: "1.2.3",
         releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
+        handoffStep: "quit_started",
       },
       restoreUpdateWorkspaceOnLaunch: true,
     });
@@ -1498,6 +1499,7 @@ describe("createAutoUpdateService", () => {
         targetVersion: "1.2.4",
         releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.4",
         requestedAt: "2026-04-06T15:21:00.000Z",
+        handoffStep: "quit_started",
       },
       restoreUpdateWorkspaceOnLaunch: true,
     });

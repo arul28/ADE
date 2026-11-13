@@ -32,10 +32,21 @@ message is definitely absent and no turn started. After a 60-second settling
 window, a delivered message, started turn, or unreadable transcript keeps the
 fire closed to avoid duplicate delivery.
 
+A plan refusal or a model refusal shows a plain card and does not mark the
+provider broken. `classifyProviderAccountRefusal`
+(`apps/desktop/src/shared/providerAccountRefusal.ts`) reads the provider's own
+words and returns `plan`, `auth`, `model` or none. A usage limit is never a
+plan refusal: it keeps its own card, its reset time and its auto-resume. The
+provider health check sends a `plan` or `model` verdict to Sentry as a warning
+and leaves the provider state alone. Only an `auth` verdict marks the sign-in
+failed.
+
 ## Source file map
 
 | Path | Role |
 |---|---|
+| `apps/desktop/src/shared/providerAccountRefusal.ts` | The one verdict for a provider's own failure words: `plan`, `auth`, `model`, or none. A usage limit is never `plan`. Provider health, the chat and CLI cards, and agent-turn analytics read it. |
+| `apps/desktop/src/renderer/components/chat/chatEventSubscription.ts` | `subscribeWhenChatApiReady` attaches the chat event feed as soon as the chat API has `onEvent`. ADE Web can render a pane before its bridge is ready, so it retries on a bounded schedule (about 30 s in all) and stops on unsubscribe. |
 | `apps/desktop/src/shared/codePointText.ts` | Code-point-safe text cuts for provider limits and titles. |
 | `apps/desktop/src/main/services/runtime/brainUnplannedRestart.ts` | The brain's run record: decides whether this start follows an unplanned restart, and counts the chats and CLIs it continued for the banner. |
 | `apps/desktop/src/main/services/runtime/liveTurnProjects.ts` | The projects with a running turn, on disk, so the next brain opens exactly those after a crash; claim by rename, pending file, and the skipped project that was being opened. |
@@ -1722,6 +1733,15 @@ accepted update alike, and the update dialog shows its answer per chat:
   the same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`, so it re-runs
   what it still needs instead of waiting for a report that cannot come.
 - Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h).
+- **An accepted update continues each chat at work.** After an update restart,
+  the brain arms one continue message for each chat at work (`armUpdateResume`,
+  `UPDATE_RESUME_PROMPT`). ADE reopens and arms a chat row that an earlier
+  process left `failed`. ADE does not reopen a `disposed` chat or a chat that
+  ended in this launch; it reports those as `settled` with `not_schedulable`,
+  and the desktop does not ask again for them. A chat that is not armed stays
+  owed. The desktop retries it at 15 s, 60 s, 3 min and 10 min
+  (`UPDATE_RESUME_RETRY_DELAYS_MS`, `apps/desktop/src/main/main.ts`). After the
+  last retry the chat stays owed until the next launch.
 - Tracked agent CLIs (Claude Code, Codex, … in a terminal) follow the same
   setting (`reopenCliSessionsAfterRestart`, store in
   `apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`). Two

@@ -310,8 +310,9 @@ project-published discovery to re-run), `sync.listDevices` returns an empty list
 runtime state that fills that list is a project's device registry), and
 `sync.getRuntimeName` returns `null` because a runtime name is a per-project
 setting. Mutating project-scoped methods (`sync.setRuntimeName`,
-`sync.updateLocalDevice`, transfer readiness, lane presence) keep failing with
-the register-a-project error, which is the truth for them. A
+`sync.updateLocalDevice`, transfer readiness) keep failing with the
+register-a-project error, which is the truth for them. Lane presence is the
+exception: the call is accepted, and the list waits for the sync host. A
 just-written PIN is echoed back on the returned snapshot by
 `machineSyncStatusWithPin`, because a store only reports a plaintext code it set
 itself and the snapshot builder may read through a different handle — without
@@ -2542,6 +2543,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   tried to, is ready, it answers as it is and host activation is not re-entered.
   A blocked or backed-off activation therefore no longer turns the Phone tab
   into "Another ADE brain is already hosting mobile sync".
+  `sync.getStatus` is a read too. It answers from the ready scope of the project
+  it names, else the ready scope of the sync host, else any booted project
+  scope, else the machine's own state. A status read never starts a sync host.
+  Lane presence (`sync.setActiveLanePresence`) is kept for the host. The newest
+  list goes to the host's sync service only when that host's scope is ready.
+  It goes out again on each scope-ready or host-switch notice until the host
+  has it, and a failed send never brings back an older list.
 
   The loop also classifies what it caught rather than retrying everything the
   same way. Each failure goes through `classifyStorageFault`

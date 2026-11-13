@@ -1202,7 +1202,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "brain-failures-by-code-and-channel",
           "Brain action failures by code and channel",
-          `Machines whose brain refused or failed an action, per error code and release channel, over the last 14 days. Failures ADE already classes as an answer (\`expected_kind\` other than \`unexpected\`) are left out. \`unknown\` is a failure that carries no code; a code that appears only on beta is the next stable's regression.${MINIMUM_VOLUME_NOTE}`,
+          `Machines whose brain refused or failed an action, per error code and release channel, over the last 14 days. Expected refusals are left out. \`unknown\` is a failure that carries no code; a code that appears only on beta is the next stable's regression.${MINIMUM_VOLUME_NOTE}`,
           trends({
             series: [eventNode(EVENTS.BRAIN_ACTION_FAILED, "Machines", { ...MACHINES, properties: [EXCLUDE_EXPECTED_BRAIN_FAILURES] })],
             breakdowns: [PROPERTIES.ERROR_CODE, PROPERTIES.RELEASE_CHANNEL],

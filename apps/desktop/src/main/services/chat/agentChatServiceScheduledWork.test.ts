@@ -313,6 +313,31 @@ describe("createAgentChatService", () => {
         .toEqual([]);
     });
 
+    it.each([
+      // Ended by an earlier process (a stamped row): reopened and armed.
+      ["a chat an earlier process left failed", "failed", 30 * 60_000, { armed: true, settled: false }],
+      // Ended on purpose: never reopened, settled and not retried.
+      ["a disposed chat", "disposed", 30 * 60_000, { armed: false, settled: true }],
+      // Ended after this launch started: settled and not retried.
+      ["a chat ended during this launch", "failed", 0, { armed: false, settled: true }],
+    ] as const)("arms an update resume for %s only when an earlier process ended it", async (_label, status, endedMsAgo, expected) => {
+      const scheduledWork = createScheduledWorkDb();
+      const { service, sessionService } = createService({ db: scheduledWork.db });
+      const chat = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-opus-5-5" });
+      sessionService.end({
+        sessionId: chat.id,
+        status,
+        exitCode: 127,
+        endedAt: new Date(Date.now() - endedMsAgo).toISOString(),
+      });
+
+      const result = await service.armUpdateResume({ sessionIds: [chat.id] });
+
+      expect(result.chats.map((armed) => armed.sessionId)).toEqual(expected.armed ? [chat.id] : []);
+      expect(result.settled ?? []).toEqual(expected.settled ? [{ sessionId: chat.id, reason: "not_schedulable" }] : []);
+      service.forceDisposeAll();
+    });
+
     it("resumes an ended tracked CLI session when its durable one-shot becomes due", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
