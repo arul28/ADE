@@ -44,7 +44,21 @@ describe("remote work copy", () => {
       const kept = await service.prepare(owner, source);
       kept.done();
       expect(kept.synced).toBe(true);
+      expect(kept.keptFiles).toEqual(["generated.txt"]);
       expect(fs.readFileSync(path.join(first.path, "generated.txt"), "utf8")).toBe("made by a tool\n");
+
+      // The chat's next commit has a file of the same name: the sync is
+      // refused, naming it, and the file made there is left as it was.
+      fs.writeFileSync(path.join(projectRoot, "generated.txt"), "the chat's own\n");
+      git(projectRoot, "add", "-A");
+      git(projectRoot, "commit", "-m", "same name");
+      const clashing = { ...source, head: git(projectRoot, "rev-parse", "HEAD") };
+      await expect(service.prepare(owner, clashing)).rejects.toMatchObject({
+        code: "copy_has_unsynced_work",
+        message: expect.stringContaining("generated.txt"),
+      });
+      expect(fs.readFileSync(path.join(first.path, "generated.txt"), "utf8")).toBe("made by a tool\n");
+      expect(git(first.path, "rev-parse", "HEAD")).toBe(head);
 
       // An agent edits a tracked file in the copy and commits it there, without a push.
       fs.writeFileSync(path.join(first.path, "app.txt"), "work\n");
