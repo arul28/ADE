@@ -610,6 +610,7 @@ export function registerCloudIpc(args: {
   };
   // The CLI and agents make, copy and move machines through this app (the
   // new machine signs in through its approval window), over the desktop bridge.
+  const approvalWindows = new Map<string, AbortController>();
   setCloudDesktopActions({
     create: async (machine) => {
       const { madeByChat, madeByAgent, ...shape } = machine;
@@ -630,6 +631,21 @@ export function registerCloudIpc(args: {
       const result = await moveCloudMachine(copyDeps, input, () => undefined);
       sendToAllWindows(IPC.cloudStatusChanged);
       return result;
+    },
+    // A lane launch an agent or the CLI started in the brain: its new
+    // computer signs in through this app's window, as the app's own do.
+    approveWindow: async ({ id, url, mode, title }) => {
+      approvalWindows.get(id)?.abort();
+      const controller = new AbortController();
+      approvalWindows.set(id, controller);
+      try {
+        return await openCloudApprovalWindow({ url, mode, title, signal: controller.signal, onNeedsPerson: () => undefined }, logger);
+      } finally {
+        if (approvalWindows.get(id) === controller) approvalWindows.delete(id);
+      }
+    },
+    closeApprovalWindow: ({ id }) => {
+      approvalWindows.get(id)?.abort();
     },
   });
 

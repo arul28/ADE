@@ -425,24 +425,42 @@ export async function approveCloudMachineSignIn(
       logger.warn?.("cloud.self_approval_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
       // The approval may have landed (a page can end on an unclear title)
       // with the box still collecting its session; a fresh code now would
-      // kill that sign-in, so give it the same grace a signed-in page gets.
-      const graceDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
-      for (;;) {
-        checkCancelled();
-        if (await readSignedIn()) return;
-        if (Date.now() > graceDeadline) break;
-        await sleep(POLL_MS);
-      }
-      // /device/approve claimed the first code, so the link needs a new one.
-      const fresh = await args.restartSignIn?.().catch((restartError: unknown) => {
-        logger.warn?.("cloud.sign_in_restart_failed", { instanceId, error: errorText(restartError) });
-        return null;
-      });
-      if (!fresh) throw error;
-      return await handOff(fresh);
+      // kill that sign-in, so it gets the same grace a signed-in page gets.
+      return await handOffWithFreshCode(error);
     }
   }
-  await approveWithTicket(deps.approveInWindow);
+  if (!deps.handOffApproval || !args.restartSignIn) return await approveWithTicket(deps.approveInWindow);
+  // A brain borrowing a desktop's window (its lane launch): if that window
+  // can't finish (the desktop left, closed it, or is too old to have it),
+  // the person still gets a link.
+  try {
+    await approveWithTicket(deps.approveInWindow);
+  } catch (error) {
+    checkCancelled();
+    logger.warn?.("cloud.approval_window_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
+    await handOffWithFreshCode(error);
+  }
+
+  /**
+   * After an approval here that failed: waits the moment a landed approval
+   * needs, then sends the person a link with a fresh code (`/device/approve`
+   * claimed the first one).
+   */
+  async function handOffWithFreshCode(cause: unknown): Promise<void> {
+    const graceDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
+    for (;;) {
+      checkCancelled();
+      if (await readSignedIn()) return;
+      if (Date.now() > graceDeadline) break;
+      await sleep(POLL_MS);
+    }
+    const fresh = await args.restartSignIn?.().catch((restartError: unknown) => {
+      logger.warn?.("cloud.sign_in_restart_failed", { instanceId, error: errorText(restartError) });
+      return null;
+    });
+    if (!fresh) throw cause;
+    await handOff(fresh);
+  }
 
   async function approveWithTicket(openWindow: NonNullable<CloudMachineCreatorDeps["approveInWindow"]>): Promise<void> {
     const token = await deps.getAccountToken();

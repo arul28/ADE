@@ -214,8 +214,8 @@ import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
-import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
-import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
+import { CloudJoinApprovalCard, CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
+import { CLOUD_JOIN_APPROVAL_CARD_VARIANT, CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
@@ -4664,6 +4664,10 @@ function renderEvent(
     // An agent asks the person for a new ADE Cloud size: the tier-change card, then its steps.
     if (event.variant === CLOUD_TIER_REQUEST_CARD_VARIANT) {
       return <CloudTierRequestCard card={event} sessionId={options?.sessionId ?? null} />;
+    }
+    // A lane launch's new computer waits for the person to approve it joining the account.
+    if (event.variant === CLOUD_JOIN_APPROVAL_CARD_VARIANT) {
+      return <CloudJoinApprovalCard card={event} />;
     }
     // An MCP App: the page a server ships with a tool, run in the scene
     // sandbox. Where this build cannot host one (the web client) the card

@@ -1,6 +1,9 @@
 import { useState } from "react";
+import { ArrowSquareOut, CheckCircle } from "@phosphor-icons/react";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { cloudTierRequestOfCard, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
+import { cloudJoinApprovalOfCard, cloudTierRequestOfCard, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { CloudMark } from "../remoteTargets/cloudBrand";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { CHAT_CARD_WIDTH_CLASS } from "../chat/chatCardPrimitives";
@@ -24,6 +27,10 @@ import { cloudLaneLifeAvailable } from "./cloudLaneActions";
  * - `CloudTierRequestCard`: an agent's `ade cloud resize --request` card in
  *   the transcript, drawn as the tier-change card; once the person says yes
  *   it shows the change's steps in its place.
+ * - `CloudJoinApprovalCard`: a lane launch's new computer waits for the
+ *   person to approve it joining the account (no desktop window could):
+ *   Approve opens the account service's own approval page in ADE's browser,
+ *   where the person is signed in and confirms the computer by name.
  * - `CloudLaneChatStatus`: above the prompt box of a chat on a cloud lane,
  *   the lane's size change or move: its start, its steps, its finish ("Moved
  *   to a Large computer · your chat follows") or its failure with the reason
@@ -116,6 +123,44 @@ export function CloudTierRequestCard({ card, sessionId }: { card: AdeCardPayload
           setDismissed(true);
         }}
       />
+    </div>
+  );
+}
+
+export function CloudJoinApprovalCard({ card }: { card: AdeCardPayload }) {
+  const approval = cloudJoinApprovalOfCard(card);
+  if (!approval) {
+    return <p className={cn(CHAT_CARD_WIDTH_CLASS, "adecl-muted px-3.5 py-2.5")}>{card.fallbackText}</p>;
+  }
+  if (approval.state !== "waiting") {
+    return (
+      <p className={cn(CHAT_CARD_WIDTH_CLASS, "adecl-answered")} data-cloud-join-approval={approval.state}>
+        {approval.state === "joined" ? <CheckCircle size={12} weight="fill" className="adecl-join-done" aria-hidden /> : null}
+        {card.title}
+      </p>
+    );
+  }
+  return (
+    <div className={CHAT_CARD_WIDTH_CLASS}>
+      <div className="adecl-nocomp adecl-join" role="status" data-cloud-join-approval="waiting">
+        <span className="adecl-nocomp-mark" aria-hidden><CloudMark size={16} brand /></span>
+        <div className="adecl-nocomp-text">
+          <span className="adecl-join-title">{card.title}</span>
+          <span className="adecl-muted">{card.subtitle ?? "The lane waits up to 10 minutes."} You confirm it on ADE&apos;s sign-in page; your phone works too.</span>
+        </div>
+        <div className="adecl-nocomp-actions">
+          <button
+            type="button"
+            className="kit-btn adecl-btn-sky"
+            data-size="xs"
+            // The approval is the account's, not a machine's: this computer's ADE browser, where the person is signed in.
+            onClick={() => openUrlInAdeBrowser(approval.url)}
+          >
+            Approve
+            <ArrowSquareOut size={11} />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
