@@ -17,7 +17,8 @@ import { brainRunEndpointKey, pidRuns } from "./brainUnplannedRestart";
  * or loses its last one. An orderly stop deletes the file
  * (`closeLiveTurnProjectsRecord`), so a file left behind means its brain
  * stopped unplanned. The next brain on the same endpoint claims such a file
- * with a rename, so two brains never both act on it.
+ * with a rename, so two brains never both act on it, and keeps the projects
+ * it has not opened yet in its own `<endpoint>.<pid>.pending.json`.
  *
  * Process-global (`globalThis`) because the chat and terminal services are
  * bundled more than once.
@@ -32,6 +33,12 @@ type Holder = {
   turns: Map<string, Set<string>>;
   writing: boolean;
   dirty: boolean;
+  /**
+   * Projects this brain took from a crashed brain and has not opened yet
+   * (`<endpoint>.<pid>.pending.json`). If this brain crashes too before it
+   * opens them, the next brain takes this file like any other.
+   */
+  pending: { filePath: string; roots: string[] } | null;
 };
 
 const HOLDER_KEY = Symbol.for("ade.liveTurnProjects");
@@ -40,7 +47,7 @@ function holder(): Holder {
   const scope = globalThis as { [HOLDER_KEY]?: Holder };
   let value = scope[HOLDER_KEY];
   if (!value) {
-    value = { filePath: null, turns: new Map(), writing: false, dirty: false };
+    value = { filePath: null, turns: new Map(), writing: false, dirty: false, pending: null };
     scope[HOLDER_KEY] = value;
   }
   return value;
@@ -106,14 +113,13 @@ export function enableLiveTurnProjectsRecord(args: { runtimeDir: string; socketP
 export function closeLiveTurnProjectsRecord(): void {
   const state = holder();
   const filePath = state.filePath;
+  const pendingPath = state.pending?.filePath ?? null;
   state.filePath = null;
+  state.pending = null;
   state.turns.clear();
-  if (!filePath) return;
-  try {
-    fs.rmSync(filePath, { force: true });
-  } catch {
-    // A file left behind only opens those projects early at the next start.
-  }
+  // A file left behind only opens those projects early at the next start.
+  if (filePath) removeQuietly(filePath);
+  if (pendingPath) removeQuietly(pendingPath);
 }
 
 /**
@@ -156,12 +162,48 @@ function removeQuietly(filePath: string): void {
 }
 
 /**
+ * `<endpoint>.` then `<pid>.json` (a brain's live turns), `<pid>.pending.json`
+ * (projects a brain took after a crash and had not opened yet), either one
+ * with `.tmp` (half written) or `.claimed-<pid>` (a brain was reading it).
+ */
+const RECORD_NAME = /^(\d+)(?:\.pending)?\.json(?:(\.tmp)|\.claimed-(\d+))?$/;
+
+function writePending(state: Holder): void {
+  const pending = state.pending;
+  if (!pending) return;
+  try {
+    if (pending.roots.length === 0) {
+      state.pending = null;
+      fs.rmSync(pending.filePath, { force: true });
+      return;
+    }
+    const file: RecordFile = { version: 1, pid: process.pid, projects: pending.roots };
+    const tmpPath = `${pending.filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(file));
+    fs.renameSync(tmpPath, pending.filePath);
+  } catch (error) {
+    if (!writeFailureReported) {
+      writeFailureReported = true;
+      captureError(error, {
+        level: "warning",
+        tags: { area: "brain_restart" },
+        fingerprint: ["brain_restart", "live_turns_write_failed"],
+      });
+    }
+  }
+}
+
+/**
  * The project roots that brains on this endpoint had a turn running in when
- * they stopped unplanned. Each file is claimed by a rename and deleted as it
- * is read; a file of a live pid (another brain on the endpoint) is left alone.
- * A dead brain's half-written `.tmp` goes too.
+ * they stopped unplanned. Each file is claimed by a rename, so two brains
+ * never take one file; a file of a live pid (another brain on the endpoint)
+ * is left alone, and a dead brain's half-written `.tmp` goes. The roots stay
+ * on disk as this brain's pending file until each project opens
+ * (`settleLiveTurnProjectAfterCrash`), so a crash during the opens leaves
+ * them to the next brain.
  */
 export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string; socketPath: string }): string[] {
+  const state = holder();
   const dir = recordDir(args.runtimeDir);
   const prefix = `${brainRunEndpointKey(args.socketPath)}.`;
   let names: string[];
@@ -171,22 +213,26 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
     return [];
   }
   const roots = new Set<string>();
+  const claimedPaths: string[] = [];
   for (const name of names) {
     if (!name.startsWith(prefix)) continue;
-    const tmp = name.endsWith(".json.tmp");
-    if (!tmp && !name.endsWith(".json")) continue;
-    const pid = Number(name.slice(prefix.length, tmp ? -".json.tmp".length : -".json".length));
-    if (!Number.isInteger(pid) || pid === process.pid || pidRuns(pid)) continue;
-    if (tmp) {
+    const match = RECORD_NAME.exec(name.slice(prefix.length));
+    if (!match) continue;
+    // The process that may still act on the file: its reader, else its writer.
+    const actor = Number(match[3] ?? match[1]);
+    if (actor === process.pid || pidRuns(actor)) continue;
+    if (match[2]) {
       removeQuietly(path.join(dir, name));
       continue;
     }
-    const claimed = path.join(dir, `${name}.claimed-${process.pid}`);
+    const base = match[3] ? name.slice(0, name.lastIndexOf(".claimed-")) : name;
+    const claimed = path.join(dir, `${base}.claimed-${process.pid}`);
     try {
       fs.renameSync(path.join(dir, name), claimed);
     } catch {
       continue;
     }
+    claimedPaths.push(claimed);
     try {
       const parsed = JSON.parse(fs.readFileSync(claimed, "utf8")) as Partial<RecordFile>;
       if (parsed?.version === 1 && Array.isArray(parsed.projects)) {
@@ -196,9 +242,36 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
       }
     } catch {
       // Unreadable: nothing to open.
-    } finally {
-      removeQuietly(claimed);
     }
   }
-  return [...roots];
+  const taken = [...roots].slice(0, MAX_PROJECTS);
+  if (taken.length > 0) {
+    state.pending = {
+      filePath: path.join(dir, `${prefix}${process.pid}.pending.json`),
+      roots: taken,
+    };
+    writePending(state);
+  }
+  // Only now: until the pending file exists, the claimed files are the record.
+  for (const claimed of claimedPaths) removeQuietly(claimed);
+  return taken;
+}
+
+/** This brain opened the project (or it no longer exists): the next brain does not need it. */
+export function settleLiveTurnProjectAfterCrash(root: string): void {
+  const state = holder();
+  const pending = state.pending;
+  if (!pending) return;
+  const next = pending.roots.filter((entry) => entry !== root);
+  if (next.length === pending.roots.length) return;
+  pending.roots = next;
+  writePending(state);
+}
+
+/** This brain opens none of the taken projects (a restart loop, the setting off). */
+export function dropLiveTurnProjectsAfterCrash(): void {
+  const state = holder();
+  if (!state.pending) return;
+  state.pending.roots = [];
+  writePending(state);
 }

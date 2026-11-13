@@ -717,7 +717,9 @@ import {
 } from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
 import {
   closeLiveTurnProjectsRecord,
+  dropLiveTurnProjectsAfterCrash,
   enableLiveTurnProjectsRecord,
+  settleLiveTurnProjectAfterCrash,
   takeLiveTurnProjectsFromStoppedBrains,
 } from "../../desktop/src/main/services/runtime/liveTurnProjects";
 import {
@@ -32218,17 +32220,23 @@ async function runServe(
       const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
       if (hold) {
         headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
+        dropLiveTurnProjectsAfterCrash();
       } else {
         void (async () => {
           const startedMs = Date.now();
           let opened = 0;
           for (const root of roots) {
             const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
-            if (!record) continue;
+            if (!record) {
+              settleLiveTurnProjectAfterCrash(root);
+              continue;
+            }
             try {
               await scopeRegistry.get(record.projectId);
               opened += 1;
+              settleLiveTurnProjectAfterCrash(root);
             } catch (error) {
+              // Kept on disk: if this brain crashes too, the next one tries it again.
               headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
                 projectId: record.projectId,
                 error: error instanceof Error ? error.message : String(error),
