@@ -408,7 +408,8 @@ struct HubScreen: View {
     DuoHomeWide(
       presentations: hubOverviewPresentations,
       actions: hubToolbarActions,
-      showsOverview: canShowProjects || !hubProjectPresentations.isEmpty,
+      // Local folders of other reachable computers have agents too.
+      showsOverview: canShowProjects || !hubOverviewPresentations.isEmpty,
       onOpenAgent: { item in
         openHubChat(item.row.chat, lane: item.lane, project: item.project)
       },

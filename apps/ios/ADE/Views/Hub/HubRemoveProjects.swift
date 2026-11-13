@@ -420,7 +420,8 @@ struct HubRemoveProjectsSheet: View {
         ? "Your project list forgets it. Lanes and chats come back if you add it again."
         : "Your project list forgets \(project.name). Lanes and chats come back if you add it again."]
       let projectTargets = targets.filter { $0.item.accountProject?.id == project.id }
-      let offline = projectTargets.filter { !isReachable($0.copy.phoneKey) }.count
+      // One computer can hold two folders of a project: count computers.
+      let offline = Set(projectTargets.filter { !isReachable($0.copy.phoneKey) }.map(\.copy.computerKey)).count
       if offline == 1 {
         lines.append("1 computer is offline and keeps its folder.")
       } else if offline > 1 {
@@ -605,6 +606,9 @@ struct HubRemoveProjectsSheet: View {
   private func run() async {
     guard phase == .choose else { return }
     phase = .running
+    // The account the sheet was opened for. The computer removals can
+    // suspend; after an account switch the account step sends nothing.
+    let accountUser = AccountProjectStore.shared.activeUserId
     var removed = 0
     // Kept: a computer or the account said no. Unconfirmed: no answer came.
     var kept = 0
@@ -638,10 +642,12 @@ struct HubRemoveProjectsSheet: View {
     // that stays (offline, refused) keeps its folder either way.
     var accountRemoved = 0
     if scope == .account {
-      // The account the removals go to; a list read after a switch is
-      // another account's and settles nothing.
-      let accountUser = AccountProjectStore.shared.activeUserId
       for project in items.compactMap(\.accountProject) {
+        guard AccountProjectStore.shared.activeUserId == accountUser else {
+          accountSteps[project.id] = .failed("You switched accounts. Open this again to remove it.")
+          kept += 1
+          continue
+        }
         accountSteps[project.id] = .running
         do {
           try await AccountProjectStore.shared.remove(projectId: project.id)
