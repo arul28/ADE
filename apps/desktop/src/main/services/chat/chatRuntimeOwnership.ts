@@ -61,6 +61,20 @@ export type ChatRuntimeOwnershipVerdict =
   /** Claimed by a brain instance that is still heartbeating. Hands off. */
   | "live-foreign-brain";
 
+/** What a brain answers when the machine brain asks for one of its chats back. */
+export type ChatRuntimeReleaseResult =
+  /** `not_held`: that brain never held the chat, so there was nothing to stop. */
+  | { released: true; reason?: "not_held" }
+  /** A turn, an accepted send or background work is running there. */
+  | { released: false; reason: "busy" };
+
+export function isChatRuntimeReleaseResult(value: unknown): value is ChatRuntimeReleaseResult {
+  if (!value || typeof value !== "object") return false;
+  const record = value as { released?: unknown; reason?: unknown };
+  if (record.released === true) return record.reason === undefined || record.reason === "not_held";
+  return record.released === false && record.reason === "busy";
+}
+
 export type ChatRuntimeOwnershipDecision = {
   /** May this brain adopt, relaunch, interrupt, or terminalize the session? */
   adoptable: boolean;
@@ -165,14 +179,18 @@ export class ChatRuntimeOwnedElsewhereError extends Error {
   readonly code = "chat_runtime_owned_elsewhere";
   readonly owner: ChatRuntimeOwner;
 
-  constructor(args: {
-    sessionId: string;
-    owner: ChatRuntimeOwner;
-    self: Pick<ChatRuntimeOwnerSelf, "pid" | "socketPath">;
-    /** What was refused, as a verb phrase: "send to", "interrupt". */
-    action: string;
-  }) {
-    super(describeChatRuntimeOwnedElsewhere(args));
+  constructor(
+    args:
+      | {
+        sessionId: string;
+        owner: ChatRuntimeOwner;
+        self: Pick<ChatRuntimeOwnerSelf, "pid" | "socketPath">;
+        /** What was refused, as a verb phrase: "send to", "interrupt". */
+        action: string;
+      }
+      | { owner: ChatRuntimeOwner; message: string },
+  ) {
+    super("message" in args ? args.message : describeChatRuntimeOwnedElsewhere(args));
     this.name = "ChatRuntimeOwnedElsewhereError";
     this.owner = args.owner;
   }
@@ -180,6 +198,25 @@ export class ChatRuntimeOwnedElsewhereError extends Error {
 
 export function describeChatRuntimeOwner(owner: Pick<ChatRuntimeOwner, "pid" | "socketPath">): string {
   return owner.socketPath ? `pid ${owner.pid}, socket ${owner.socketPath}` : `pid ${owner.pid}`;
+}
+
+/**
+ * The machine brain asked the brain holding the chat to hand it back, and that
+ * brain is still working in it. Said for a person, not an operator: the next
+ * send takes the chat back once the work ends.
+ */
+export class ChatRuntimeBusyElsewhereError extends ChatRuntimeOwnedElsewhereError {
+  constructor(args: { owner: ChatRuntimeOwner }) {
+    super({ owner: args.owner, message: describeChatRuntimeBusyElsewhere(args.owner) });
+    this.name = "ChatRuntimeBusyElsewhereError";
+  }
+}
+
+export function describeChatRuntimeBusyElsewhere(owner: Pick<ChatRuntimeOwner, "pid" | "socketPath">): string {
+  return [
+    `This chat is still working in another copy of ADE on this computer (${describeChatRuntimeOwner(owner)}), usually a test copy started from a lane.`,
+    "Send again when it finishes and ADE takes the chat back, or close that copy.",
+  ].join(" ");
 }
 
 export function describeChatRuntimeOwnedElsewhere(args: {
