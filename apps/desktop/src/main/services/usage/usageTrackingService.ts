@@ -173,6 +173,7 @@ import {
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { createPeerLiveQuota, type AccountLiveQuotaFetcher } from "./peerLiveQuota";
+import type { AccountResetCreditSpender } from "./accountUsageLiveRefresh";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
 import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 import { buildCostBreakdown } from "./usageCostBreakdown";
@@ -281,6 +282,11 @@ const COST_REFRESH_RETRY_MAX_MS = 15 * 60_000;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
 const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
+/**
+ * A spend sent to the machine that holds the credit: the claim (up to 25 s for
+ * Claude) plus that machine's quota re-read (up to 20 s), with room for the hop.
+ */
+const PEER_RESET_CREDIT_TIMEOUT_MS = 60_000;
 /**
  * Schema *and computation* version of the persisted usage snapshot.
  *
@@ -4739,6 +4745,12 @@ export function createUsageTrackingService({
     fetchAccountRollups = fetcher;
   }
 
+  /** How a reset banked on another machine is spent there; null until the brain installs it. */
+  let spendPeerResetCredit: AccountResetCreditSpender | null = null;
+  function setAccountResetCreditSpender(spender: AccountResetCreditSpender | null): void {
+    spendPeerResetCredit = spender;
+  }
+
   /**
    * Store what a fan-out over the account's machines returned.
    *
@@ -6078,6 +6090,7 @@ export function createUsageTrackingService({
       return quotaForDisplay(await poll(options));
     },
     setAccountLiveQuotaFetcher: peerQuota.setFetcher,
+    setAccountResetCreditSpender,
     getOwnLiveQuota,
   };
 
@@ -6144,6 +6157,47 @@ export function createUsageTrackingService({
     // Reached straight off the action domain, so the argument is whatever the
     // caller sent — a missing one must answer like every other bad account id
     // rather than throwing a TypeError out of the RPC.
+    const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
+    // A login whose banked resets only another machine can read: that machine
+    // holds the working login, so the claim has to run there.
+    const lentFrom = accountId
+      ? quotaForDisplay(lastSnapshot).accounts?.find((account) => account.id === accountId)?.resetCreditsOn
+      : undefined;
+    if (lentFrom) return await consumePeerResetCredit(accountId, lentFrom);
+    return await consumeOwnResetCredit({ accountId });
+  }
+
+  /**
+   * Spend a reset that a peer holds, on that peer, then read its quota again
+   * so the lent count and the windows catch up.
+   */
+  async function consumePeerResetCredit(
+    accountId: string,
+    lentFrom: NonNullable<UsageAccount["resetCreditsOn"]>,
+  ): Promise<UsageResetCreditResult> {
+    const provider = resetCreditProviderForAccountId(accountId) ?? undefined;
+    const result = spendPeerResetCredit
+      ? await spendPeerResetCredit({ ...lentFrom, timeoutMs: PEER_RESET_CREDIT_TIMEOUT_MS })
+      : {
+        ok: false,
+        status: "failure" as const,
+        message: `This reset is banked on ${lentFrom.label}, and ADE here cannot reach it. Spend it there.`,
+      };
+    if (result.status === "failure") {
+      logger.warn("usage.peer_reset_credit_failed", { provider, error: result.message ?? null });
+    }
+    peerQuota.refresh({ force: true });
+    captureResetCreditOutcome(result, provider);
+    return result;
+  }
+
+  /**
+   * Spend one of this machine's own banked resets. A peer that sends the spend
+   * here calls this directly, so a claim never travels on to a third machine.
+   */
+  async function consumeOwnResetCredit(
+    args: { accountId: string },
+  ): Promise<UsageResetCreditResult> {
     const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
     if (!accountId) {
       const failure: UsageResetCreditResult = {
@@ -6679,6 +6733,7 @@ export function createUsageTrackingService({
       ...accountQuotaReads,
       noteQuotaDemand,
       consumeResetCredit,
+      consumeOwnResetCredit,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
       getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
@@ -6723,6 +6778,7 @@ export function createUsageTrackingService({
     ...accountQuotaReads,
     noteQuotaDemand,
     consumeResetCredit,
+    consumeOwnResetCredit,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
     getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),

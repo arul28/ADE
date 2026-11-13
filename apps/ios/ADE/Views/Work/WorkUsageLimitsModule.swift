@@ -247,7 +247,7 @@ struct ADEUsageLimitsProviderSection: View {
               Text(adeUsageAccountTitle(account))
                 .font(ADEUsageType.detailFont(.medium))
                 .foregroundStyle(account.notSignedInHere ? ADEColor.textSecondary : ADEColor.textPrimary)
-              ADEUsageAccountCues(account: account, showsReading: false)
+              ADEUsageAccountCues(account: account)
               Text("No usage yet")
                 .font(ADEUsageType.microFont())
                 .foregroundStyle(ADEColor.textMuted)
@@ -353,7 +353,7 @@ private struct ADEUsageAccountLimitRowView: View {
   /// The identity as VoiceOver reads it on each meter, with whose numbers they are.
   private var spokenIdentity: String {
     guard let account = row.account else { return identity }
-    return [identity, adeUsageAccountCuesSpoken(account, showsReading: !row.segments.isEmpty)]
+    return [identity, adeUsageAccountCuesSpoken(account)]
       .compactMap { $0 }
       .joined(separator: ", ")
   }
@@ -384,7 +384,7 @@ private struct ADEUsageAccountLimitRowView: View {
         }
       }
       if let account = row.account {
-        ADEUsageAccountCues(account: account, showsReading: !row.segments.isEmpty)
+        ADEUsageAccountCues(account: account)
       }
       ForEach(row.segments) { segment in
         ADEUsageWindowMeter(
@@ -399,45 +399,26 @@ private struct ADEUsageAccountLimitRowView: View {
   }
 }
 
-/// Whose numbers a row shows, desktop `UsageAccountRow`'s two tags: "Not signed
-/// in here" for a login only another machine holds (display only: it cannot take
-/// a chat here, so nothing on the phone offers it), and "via <machine>" when the
-/// bars are another machine's fresher reading. Renders nothing for the host's own.
+/// The "Not signed in here" tag, desktop `UsageAccountRow`'s: a login only
+/// another machine holds is display only, since it cannot take a chat here and
+/// nothing on the phone offers it. Renders nothing for the host's own logins.
 struct ADEUsageAccountCues: View {
   let account: ADEUsageAccountView
-  /// "via" only makes sense above bars; an account with none says nothing about it.
-  var showsReading = true
-
-  private var readingLabel: String? {
-    guard showsReading else { return nil }
-    let label = account.readingFrom?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return label.isEmpty ? nil : label
-  }
 
   var body: some View {
-    if account.notSignedInHere || readingLabel != nil {
-      HStack(spacing: 5) {
-        if account.notSignedInHere {
-          ADEKitTag(text: "Not signed in here", tone: .warn)
-        }
-        if let readingLabel {
-          // A machine name is the user's own, so its case is kept.
-          ADEKitTag(text: "via \(readingLabel)", keepsCase: true)
-        }
-      }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(adeUsageAccountCuesSpoken(account, showsReading: showsReading) ?? "")
+    if account.notSignedInHere {
+      ADEKitTag(text: "Not signed in here", tone: .warn)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(adeUsageAccountCuesSpoken(account) ?? "")
     }
   }
 }
 
-/// The cues as a sentence for VoiceOver; nil when the reading is the host's own.
-func adeUsageAccountCuesSpoken(_ account: ADEUsageAccountView, showsReading: Bool) -> String? {
+/// The cue as a sentence for VoiceOver; nil for a login signed in here.
+func adeUsageAccountCuesSpoken(_ account: ADEUsageAccountView) -> String? {
+  guard account.notSignedInHere else { return nil }
   let reading = account.readingFrom?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  if account.notSignedInHere {
-    return "signed in on \(reading.isEmpty ? "another computer" : reading), not on this one"
-  }
-  return showsReading && !reading.isEmpty ? "read on \(reading)" : nil
+  return "signed in on \(reading.isEmpty ? "another computer" : reading), not on this one"
 }
 
 /// A window read as headroom: the tinted fill IS the percent left, so a row

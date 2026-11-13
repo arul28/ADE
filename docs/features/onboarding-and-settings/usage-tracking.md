@@ -596,8 +596,8 @@ machine's own snapshot into two views:
   future.
 - **For display** (the popover, `ade usage limits`, Settings): that, plus logins
   signed in only on another machine, marked `notSignedInHere`. They show as
-  **Not signed in here**, with a `via <machine>` tag, so every login's room is
-  in one place. They can take no chat here, so smart balance never picks them
+  **Not signed in here**, so every login's room is in one place. The machine
+  that read it is in the window's details ("Read on"). They can take no chat here, so smart balance never picks them
   and budget caps ignore their windows.
 
 How fresh a reading is comes from the windows themselves: each window carries
@@ -1274,6 +1274,16 @@ for each provider, mainly Claude and Codex. The wire contract is in
   "Could not use the reset credit." A host whose usage service cannot spend
   credits answers "Reset credits are not available on this host yet." rather
   than reporting a reset it did not perform.
+- A machine reads a login's banked resets with that login's token. When it
+  cannot (its token expired, or the login is signed in only on another
+  machine), the account shows the credits of the freshest peer whose working
+  login reports some, and `UsageAccount.resetCreditsOn` names that peer and
+  its id for the account (`poolPeerQuota`). **Use reset** then runs on that
+  peer: the host sends `usage.consumeResetCredit` over its agents' paired
+  connection, and the peer spends one of its own credits
+  (`consumeOwnResetCredit`), never forwarding again. The host then pulls the
+  peers' quota again. A peer too old for the method answers "Update ADE on
+  <machine> to spend its reset from here, or spend it there."
 - Accounts pool by email: the same login reported by two machines is one
   account with two `Via` entries, freshest reading first, and its numbers are
   the freshest reading from either ([Quota belongs to the login](#quota-belongs-to-the-login)).
@@ -1307,9 +1317,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   `countProviderLogins` and excludes copies.
 - The popover row is the email with the plan as a quiet second word, its pace
   in words, then each window as a name-and-headroom line over a full-width bar.
-  Tags say where the numbers came from: **Last reading** (this machine's token
-  expired, so the bars are its last reading; the account still takes chats),
-  **via <machine>**, and **Not signed in here**. A login with an expired token
+  Tags say what this machine can do with the login: **Last reading** (this
+  machine's token expired, so the bars are its last reading; the account still
+  takes chats) and **Not signed in here**. The row shows no tag for a reading
+  that another machine took; the window's details name it ("Read on"). A login with an expired token
   and no bars reads "Login expired — renews on its next chat", not "No usage
   yet". The header shows only the windows a provider reports, so a Claude
   account without a five-hour window (weekly only) gets no phantom 5h slot; the

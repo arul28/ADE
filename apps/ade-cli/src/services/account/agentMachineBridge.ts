@@ -193,10 +193,13 @@ const WOKEN_MACHINE_CONNECT_RETRY_MS = 90_000;
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
-/** The usage reads another machine answers for this brain's account-wide merge. */
-export type AgentUsageMethod = "usage.getUsageRollup" | "usage.getLiveQuota";
+/**
+ * The usage calls another machine answers for this brain: the reads for the
+ * account-wide merge, and the spend of a reset banked there.
+ */
+export type AgentUsageMethod = "usage.getUsageRollup" | "usage.getLiveQuota" | "usage.consumeResetCredit";
 export function isAgentUsageMethod(method: string): method is AgentUsageMethod {
-  return method === "usage.getUsageRollup" || method === "usage.getLiveQuota";
+  return method === "usage.getUsageRollup" || method === "usage.getLiveQuota" || method === "usage.consumeResetCredit";
 }
 
 export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
@@ -571,6 +574,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     machineKey: string,
     method: AgentUsageMethod,
     timeoutMs: number,
+    params: Record<string, unknown> = {},
   ): Promise<unknown> => {
     const machines = await pool.listAccountMachines();
     const machine = machines.find((candidate) => candidate.machineKey === machineKey);
@@ -584,7 +588,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       entry,
       method,
       method,
-      {},
+      params,
       clampMachineCallTimeout(timeoutMs),
     );
   };

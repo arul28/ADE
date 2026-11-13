@@ -1697,8 +1697,9 @@ Renderer — settings:
   provider limits link), edge-anchored so it cannot overhang the 420px popover.
   A row carrying a banked reset credit also offers **Use reset**
   (`ade.usage.consumeResetCredit`, sent to the machine that produced the row).
-  A login read on another machine carries a `via <machine>` tag, and one signed
-  in only elsewhere reads **Not signed in here**. Full behaviour in
+  A login signed in only elsewhere reads **Not signed in here**. When only
+  another machine can read a login's banked resets, the row shows them and
+  **Use reset** spends one on that machine. Full behaviour in
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
   balance selector for new Claude/Codex chats. It picks the signed-in account

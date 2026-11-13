@@ -11,6 +11,7 @@ import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { AccountResetCreditSpender } from "../../desktop/src/main/services/usage/accountUsageLiveRefresh";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
@@ -23,6 +24,7 @@ import { CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
+  setSharedAccountResetCreditSpender,
   setSharedAccountRollupFetcher,
 } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { consumeCliViaCmdMarker } from "../../desktop/src/main/services/cli/windowsCliLauncher";
@@ -31035,11 +31037,11 @@ async function runServe(
         callMachineMethod: async <T,>(
           machineKey: string,
           method: string,
-          _params?: Record<string, unknown>,
+          params?: Record<string, unknown>,
           callOptions?: { timeoutMs?: number },
         ): Promise<T> => {
           if (!isAgentUsageMethod(method)) throw new Error(`${method} can't run on another machine from here.`);
-          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000) as T;
+          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000, params ?? {}) as T;
         },
         localMachineKey: () => bridge.localMachineKey() ?? "",
         logger: headlessProjectLogger,
@@ -31061,6 +31063,18 @@ async function runServe(
     };
     setSharedAccountRollupFetcher(lazyFetcher((factories, deps) => factories.createAccountRollupFetcher(deps)));
     setSharedAccountLiveQuotaFetcher(lazyFetcher((factories, deps) => factories.createAccountLiveQuotaFetcher(deps)));
+    // The spend rides the same connection, built on its first use.
+    let resetSpender: Promise<AccountResetCreditSpender> | null = null;
+    setSharedAccountResetCreditSpender(async (args) => {
+      resetSpender ??= Promise.all([import("../../desktop/src/main/services/usage/accountUsageLiveRefresh"), fetcherDeps()])
+        .then(([factories, deps]) => factories.createAccountResetCreditSpender(deps))
+        .catch((error) => { resetSpender = null; throw error; });
+      try {
+        return await (await resetSpender)(args);
+      } catch (error) {
+        return { ok: false, status: "failure", message: `Could not reach ${args.label} to spend the reset: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    });
   }
 
   // Moving a chat to another machine rides the same paired connection. The
