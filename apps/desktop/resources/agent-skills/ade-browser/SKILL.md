@@ -203,11 +203,42 @@ ade browser proof --browser-session <session-id> --caption "Checkout confirmatio
 Use `inspect-start`, `select`, `select-current`, and `clear-selection` when a
 DOM-backed context item belongs in the chat rather than in proof.
 
-### 5. Hand off a login to the human
+### 5. Sign in with Passwords, or hand off a login to the human
 
-Stop when a page needs credentials, CAPTCHA, HTTP/proxy authentication, or a
-client-certificate choice. Hand off the exact tab with an actionable
-`--reason`.
+When a page asks you to sign in, try `ade browser signin` first. It types a
+login saved in Passwords into the page itself; you never see the password.
+Prefer it over typing credentials you were given, and never ask the person to
+paste a password in chat. If Passwords has no login for the site, the command
+asks the person in your chat with a secure sign-in card and waits: they save a
+login (ADE fills it and the command finishes signed in), or they choose to type
+it themselves (the command says so; then run `ade browser handoff` to wait for
+them). On a page that asks for an authenticator code, run `ade browser signin`
+again: it fills the saved login's current code. Otherwise `ade code wait --site
+<host> --text` returns the saved authenticator code, or the next code texted
+to the person's Mac (when Messages is connected). For an email one-time code,
+open Gmail or Outlook in the ADE browser (it is already signed in) and read the
+newest code. Passkeys saved in ADE work by themselves in ADE's browser: the
+person confirms each use with Touch ID.
+
+```bash
+ade browser signin --tab <tab-id> --text
+ade browser signin --tab <tab-id> --account me@example.com --text
+```
+
+To create an account, fill the email or username yourself, then run `ade
+browser signup` on the sign-up form. ADE makes a strong password, types it
+into the password and confirm boxes, and saves the login to Passwords once the
+form holds all of it; you never see it. Submit the form yourself. From then on `ade browser signin`
+uses that login.
+
+```bash
+ade browser signup --tab <tab-id> --text
+ade browser signup --tab <tab-id> --account me@example.com --text
+```
+
+Stop when a page needs a CAPTCHA, HTTP/proxy
+authentication, or a client-certificate choice. Hand off the exact tab with an
+actionable `--reason`.
 
 ```bash
 ade browser handoff --browser-session <session-id> --reason "Sign in to staging" --timeout 5m --text
@@ -303,8 +334,9 @@ Dev servers you start are found on their own, even in the background:
 
 On a machine without ADE Desktop, and with no desktop connected to this chat,
 only `open`, `new-tab`, and `panel` can still land on a Desktop with this lane
-pinned; page actions such as `observe`, `click`, `fill`, and `screenshot` have
-no browser to run in. Do not retry a page action after that failure.
+pinned; page actions such as `observe`, `click`, `fill`, `signin`, and
+`screenshot` have no browser to run in. Do not retry a page action after that
+failure.
 
 ```bash
 ade browser open localhost:5173 --new-tab --text

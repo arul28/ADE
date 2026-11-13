@@ -30,6 +30,13 @@ import type {
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
+import type {
+  PasswordImportResult,
+  PasswordItemSummary,
+  PasswordLoginSaveInput,
+  PasswordSecretSaveInput,
+  PasswordsStatus,
+} from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
@@ -4075,6 +4082,15 @@ declare global {
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /** Passwords for the person (the key button, "Save to Passwords?"). Optional for older preloads. Never a value. */
+        savedLoginsForTab?: (args: { tabId: string }) => Promise<Array<{ id: string; username: string | null; sites: string[] }>>;
+        /** The Messages integration on this Mac. Optional for older preloads. */
+        messagesIntegrationStatus?: () => Promise<import("../shared/types/messagesIntegration").MessagesIntegrationStatus>;
+        messagesIntegrationSet?: (next: Partial<import("../shared/types/messagesIntegration").MessagesIntegrationSettings>) => Promise<import("../shared/types/messagesIntegration").MessagesIntegrationStatus>;
+        fillSavedLogin?: (args: { tabId: string; itemId: string }) => Promise<{ filled: string[] }>;
+        loginOfferForTab?: (args: { tabId: string }) => Promise<import("../shared/types/builtInBrowserLoginCapture").BuiltInBrowserSaveLoginOffer | null>;
+        acceptLoginOffer?: (args: { offerId: string }) => Promise<{ saved: boolean }>;
+        dismissLoginOffer?: (args: { offerId: string }) => Promise<null>;
         reload: (
           args?: BuiltInBrowserTabTargetArgs,
           pin?: OpenProjectBinding | null,
@@ -4342,6 +4358,31 @@ declare global {
         remove: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         /** A capture, an apply or a setting change on the bound or pinned brain. */
         onChanged: (cb: () => void, pin?: OpenProjectBinding | null) => () => void;
+      };
+      /**
+       * Settings › Passwords: the account's saved logins and secrets.
+       *
+       * Every method takes the machine's pin from
+       * `useSettingsMachineScope().pin`; with none it reaches the tab's bound
+       * runtime, or this computer's brain through `passwords.call`. Only
+       * summaries cross this boundary. No method returns a saved value, and
+       * `resolveForFill` is not exposed to a renderer.
+       */
+      passwords: {
+        status: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
+        setEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
+        setCloudEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
+        /** Wipes every saved item on every computer. The person types `reset` first. */
+        reset: (args: { confirm: "reset" }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
+        list: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary[]>;
+        activity: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
+        code?: (args: { itemId: string }, pin?: OpenProjectBinding | null) => Promise<{ code: string; secondsLeft: number } | null>;
+        reveal?: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }) => Promise<{ value?: string; copied?: true }>;
+        saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
+        saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
+        remove: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
+        importCsv: (args: { text: string }, pin?: OpenProjectBinding | null) => Promise<PasswordImportResult>;
+        sync: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<void>;
       };
       providerInstances: {
         list: (
@@ -4826,6 +4867,8 @@ declare global {
           owner?: string;
           name?: string;
           forceRefresh?: boolean;
+          /** A person pressed Refresh: implies `forceRefresh`. */
+          userRequested?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<GitHubAppInstallationStatus>;
         createRepoAutolink: (args: {
           owner?: string;
@@ -5023,6 +5066,8 @@ declare global {
          */
         pickPlanCleanup?: (input: { planId: CloudPlanId } & CloudPlanCleanupPick) => Promise<CloudAccountState | null>;
         openBillingPortal?: () => Promise<{ opened: boolean }>;
+        /** Save a card with no charge so a too-new GitHub account gets the free hours now (`unlocked`: a card on file did it). Account level: no pin. */
+        openFreeUnlock?: () => Promise<{ opened: boolean; unlocked: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
@@ -5034,6 +5079,8 @@ declare global {
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         personIsHere?: () => Promise<boolean>;
         pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
+        /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
+        keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
         /**
          * The life of a lane's computer: work check, delete lane, keep the
          * lane on a fresh computer, lanes without a computer, tier changes

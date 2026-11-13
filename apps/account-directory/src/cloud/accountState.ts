@@ -2,33 +2,30 @@ import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import { freePlanOf } from "./freePlan";
+import { freePlanGithubOf } from "./freePlanGithub";
+import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
-import { CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
+import { AWAKE_COMPUTER_CAP, CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
 import {
-  DELETION_WARNING_LATE_MS,
   accountRules,
   boughtPlanIdOf,
   cloudOffers,
-  computerLimit,
   countedDiskGb,
-  deletionDueAt,
   earnedDrawMilli,
   earnedLeftMilli,
   extraActive,
   extraDiskMicrosThisPeriod,
   extraUsedMilli,
   hoursState,
-  isPendingId,
   listComputers,
   liveUsedMilli,
   loadAccount,
   percentUsed,
-  planFacts,
+  planDiskGb,
   reportCloudFailure,
   type AccountRow,
   type CloudEnv,
-  type ComputerRow,
 } from "./store";
 
 /**
@@ -74,19 +71,18 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     reportCloudFailure("cloud.referral.summary_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "cloud-referrals");
     return null;
   }) : null;
+  const freeGithub = await freePlanGithubOf(env, account).catch((error: unknown) => {
+    reportCloudFailure("cloud.free_plan.github_view_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "cloud-free-plan");
+    return undefined;
+  });
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
-  const plan = planFacts(account);
   // The same total the wake rule and the limits use: a move's source stays out while the move runs.
   const diskUsed = countedDiskGb(computers);
   const offers = cloudOffers(env);
   const extraDiskMicros = offers.extraDisk && rules === "paid" && account.extra_disk_state === "on" ? await extraDiskMicrosThisPeriod(env, account) : 0;
-  const due = computers
-    .filter((computer) => !isPendingId(computer.instance_id))
-    .map((computer) => ({ computer, deletesAt: deletionDueAt(computer, account, live) }))
-    .filter((entry): entry is { computer: ComputerRow; deletesAt: number } => entry.deletesAt != null && entry.deletesAt - now <= DELETION_WARNING_LATE_MS)
-    .sort((a, b) => a.deletesAt - b.deletesAt)
-    .map(({ computer, deletesAt }) => ({ instanceId: computer.instance_id, name: computer.name, deletesAt }));
+  // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
+  const due = idleCleanupEntries(account, computers, live, now);
   return {
     plan: account.plan,
     rules,
@@ -108,7 +104,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       usedThisPeriodMilli: earnedDrawMilli(account, live),
       grantedMilli: account.earned_granted_milli,
     },
-    freePlan: freePlanOf(account, growth?.has_claim === 1),
+    freePlan: { ...freePlanOf(account, growth?.has_claim === 1), ...(freeGithub ? { github: freeGithub } : {}) },
     ...(referral ? { referral } : {}),
     ...(offers.extraDisk ? {
       extraDisk: {
@@ -118,16 +114,18 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
         usedCents: Math.floor(extraDiskMicros / CENT_MICROS),
       },
     } : {}),
-    disk: { usedGb: diskUsed, limitGb: plan.diskGb },
+    disk: { usedGb: diskUsed, limitGb: planDiskGb(account) },
     computers: {
       total: computers.length,
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
-      limit: computerLimit(account),
+      // No limit on how many. Older builds show a count against this and stop a new
+      // lane at it, so it is the awake cap and always room for one more.
+      limit: Math.max(AWAKE_COMPUTER_CAP, computers.length + 1),
     },
     recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
-    catalog: cloudCatalog(offers),
+    catalog: cloudCatalog(offers, boughtPlanIdOf(account), account),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

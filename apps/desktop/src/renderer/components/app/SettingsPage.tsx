@@ -20,6 +20,7 @@ import {
   MagnifyingGlass,
   MapPin,
   Palette,
+  Password,
   PuzzlePiece,
   Robot,
   ShareNetwork,
@@ -100,6 +101,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   storage: HardDrives,
   location: MapPin,
   secrets: Key,
+  passwords: Password,
   integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
@@ -133,6 +135,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "stats",
   "sharing",
   "secrets",
+  "passwords",
   "behaviour",
   "ade-mcp",
   "ade-cloud",
@@ -666,11 +669,11 @@ export function SettingsPage({
     const search = next.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
-  // Providers and Android devices name their machine in the title.
+  // Providers, Android devices and Passwords name their machine in the title.
   // Providers also offers ADE Cloud (`?machine=ade-cloud`), even beside one machine.
   const offersAdeCloud = section === "agents" && machinesEnabled && cloudEnabled;
   const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
-  const titlePicker = (section === "agents" || section === "android") && machinesEnabled && !standalone
+  const titlePicker = (section === "agents" || section === "android" || section === "passwords") && machinesEnabled && !standalone
     && (reachableMachines(machines).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({

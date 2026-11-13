@@ -37,7 +37,7 @@ struct CloudMachineFacts: View {
       HStack(spacing: 8) {
         ADEKitDot(tone: cloudStateTone(machine), size: 8)
         Text(machine.stateLabel).font(.headline)
-        if let mark = cloudMachineMark(machine, now: store.now) {
+        if let mark = cloudMachineMark(machine, idle: store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId }, now: store.now) {
           ADEKitTag(text: mark.text, tone: mark.tone)
         }
       }

@@ -202,7 +202,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   cloud: {
     status: {
-      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computers_full | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, computers, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake, max}, lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
+      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake} (no limit on how many), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
       input: "no input",
       example: "ade cloud status --text",
     },
@@ -340,9 +340,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade secrets list --text",
     },
     get: {
-      description: "Read one ADE project secret value when the user explicitly asked for that secret.",
+      description: "Read one ADE project secret value. The person only, in the desktop app; agents run a command with the secrets instead (`project_secret.exec`, `ade secrets exec -- <command>`).",
       input: "object { name: string }",
-      example: "ade secrets get STRIPE_API_KEY --text",
+      example: "ade secrets exec -- ./scripts/deploy.sh",
     },
     set: {
       description: "Create or replace one ADE project secret.",
@@ -1621,7 +1621,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     import: {
       description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
-      input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
+      input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode?, accountId? }",
       example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
     },
     getDetail: {

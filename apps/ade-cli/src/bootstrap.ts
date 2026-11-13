@@ -1,4 +1,5 @@
 import "./lib/packagedRuntimeFlag";
+import type { PasswordService } from "./services/passwords/passwordService";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
@@ -535,6 +536,8 @@ export type AdeRuntime = {
   accountSettingsStore?: AccountSettingsStore | null;
   /** Machine-scoped, so null on a `--no-sync` brain. */
   accountVaultStore?: AccountVaultStore | null;
+  /** Passwords: sealed logins and secrets for the signed-in account (null when signed out or sync is off). */
+  passwordService?: PasswordService | null;
   /** Shared by every project scope in the brain; the desktop owns the GUI prompt. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /** Machine-level ADE MCP (MCP over ADE Relay); shared by every scope. */
@@ -1542,6 +1545,9 @@ export async function createAdeRuntime(args: {
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),
         knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
+        // A crashed brain's rows close now, not after the 2-minute grace, so
+        // the restart sweep (3 s after start) continues its chats.
+        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -1644,6 +1650,7 @@ export async function createAdeRuntime(args: {
     const {
       accountSettingsStore,
       accountVaultStore,
+      passwordService,
     } = accountRuntimeLifecycle;
     // The registry's secret values for the tracked agent CLIs this brain
     // starts (`trackedCliUserMcp.ts`): one account vault per brain process.
@@ -4597,6 +4604,7 @@ export async function createAdeRuntime(args: {
       projectSecretService,
       accountSettingsStore,
       accountVaultStore,
+      passwordService,
       keepAwakeService,
       remoteMcpService,
       conflictService,

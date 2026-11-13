@@ -108,8 +108,8 @@ enum CloudPreviews {
     "account":{"plan":"paid","planId":"plus","rules":"paid",
       "hours":{"includedMilli":500000,"usedMilli":117500,"leftMilli":382500,"percentUsed":23.5,"state":"none"},
       "extraHours":{"available":true,"enabled":false,"usedMilli":0},
-      "disk":{"usedGb":37.6,"limitGb":60},
-      "computers":{"total":4,"awake":1,"limit":5},
+      "disk":{"usedGb":17.6,"limitGb":30},
+      "computers":{"total":4,"awake":1,"limit":25},
       "recentUse":{"days":7,"usedMilli":63000},
       "billing":{"periodStart":1793491200000,"periodEnd":1796083200000,"cancelAtPeriodEnd":false,"nextPlanId":null,"notice":null},
       "earnedHours":{"leftMilli":40000,"usedThisPeriodMilli":0,"grantedMilli":40000},
@@ -120,16 +120,17 @@ enum CloudPreviews {
       "dueForDeletion":[],"deletedInstanceIds":[],
       "catalog":{
         "plans":{
-          "free":{"includedMilli":50000,"computerLimit":1,"diskGb":12,"priceUsd":0},
-          "paid":{"includedMilli":500000,"computerLimit":5,"diskGb":60,"priceUsd":20},
-          "plus":{"includedMilli":500000,"computerLimit":5,"diskGb":60,"priceUsd":20},
-          "pro":{"includedMilli":2000000,"computerLimit":15,"diskGb":200,"priceUsd":60}},
+          "free":{"includedMilli":100000,"diskGb":12,"priceUsd":0,"phoneMinutes":20,"extraHourCents":null},
+          "paid":{"includedMilli":300000,"diskGb":30,"priceUsd":5,"phoneMinutes":30,"extraHourCents":2},
+          "plus":{"includedMilli":300000,"diskGb":30,"priceUsd":5,"phoneMinutes":30,"extraHourCents":2},
+          "pro":{"includedMilli":1600000,"diskGb":80,"priceUsd":20,"phoneMinutes":160,"extraHourCents":1.5},
+          "max":{"includedMilli":5000000,"diskGb":175,"priceUsd":50,"phoneMinutes":500,"extraHourCents":1.2}},
         "sizes":[
           {"type":"default","cpu":2,"memoryGb":4,"multiplierMilli":1000,"tier":"small","label":"Small","diskMaxGb":20},
           {"type":"default","cpu":4,"memoryGb":8,"multiplierMilli":2000,"tier":"medium","label":"Medium","diskMaxGb":40},
           {"type":"vm","cpu":4,"memoryGb":8,"multiplierMilli":5000,"tier":"large","label":"Large","diskMaxGb":60},
           {"type":"vm","cpu":4,"memoryGb":16,"multiplierMilli":7000,"tier":"xlarge","label":"X-Large","diskMaxGb":100}],
-        "diskStepGb":10,"paidPriceUsd":20,"extraHourCents":4}}}
+        "diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
     """
   }
 

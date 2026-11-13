@@ -61,6 +61,7 @@ import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { whenBootPriorityOpen } from "../../webclient/adapter/infra/bootPriority";
 import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
@@ -945,12 +946,26 @@ function ProjectTabHost() {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
-    if (typeof idleWindow.requestIdleCallback === "function") {
-      const handle = idleWindow.requestIdleCallback(preload, { timeout: 900 });
-      return () => idleWindow.cancelIdleCallback?.(handle);
-    }
-    const handle = window.setTimeout(preload, 150);
-    return () => window.clearTimeout(handle);
+    let cancelled = false;
+    let cancelScheduled: (() => void) | null = null;
+    const schedule = () => {
+      if (cancelled) return;
+      if (typeof idleWindow.requestIdleCallback === "function") {
+        const handle = idleWindow.requestIdleCallback(preload, { timeout: 900 });
+        cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
+        return;
+      }
+      const handle = window.setTimeout(preload, 150);
+      cancelScheduled = () => window.clearTimeout(handle);
+    };
+    // ADE Web downloads this code over the network: on a page that opens on a
+    // chat, it waits until the chat has painted (bootPriority.ts).
+    if (isWebClientMode()) void whenBootPriorityOpen().then(schedule);
+    else schedule();
+    return () => {
+      cancelled = true;
+      cancelScheduled?.();
+    };
   }, [activeSurfaceKey]);
 
   React.useEffect(() => {

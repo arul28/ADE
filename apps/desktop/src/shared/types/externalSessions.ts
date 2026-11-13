@@ -216,6 +216,13 @@ export interface ExternalSessionSummary {
   home?: ExternalSessionHome | null;
   /** Size of the provider's session store entry on disk, when one stat call finds it. */
   sizeBytes?: number | null;
+  /**
+   * The provider account ("instance") whose config home holds the transcript,
+   * for the two providers that have per-account homes (Claude, Codex). Optional:
+   * older hosts do not send it, and a session in the provider's default home
+   * has none. The Import dialog preselects it in the account picker.
+   */
+  accountId?: string | null;
 }
 
 export interface ExternalSessionListArgs {
@@ -238,6 +245,14 @@ export interface ExternalSessionImportArgs {
   reasoningEffort?: string;
   fastMode?: boolean;
   permissionMode?: string;
+  /**
+   * Provider account to run the import under, for the two providers with
+   * per-account config homes (Claude, Codex). Omitted means "the account that
+   * owns the transcript", which is the session's own home and needs no copy.
+   * Any other account gets the transcript copied into its home first, so the
+   * CLI can find the id it is told to resume.
+   */
+  accountId?: string | null;
 }
 
 export type ExternalSessionImportResult =

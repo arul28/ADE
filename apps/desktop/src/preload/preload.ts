@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../shared/types/messagesIntegration";
+import type { BuiltInBrowserSaveLoginOffer } from "../shared/types/builtInBrowserLoginCapture";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -24,6 +26,13 @@ import type {
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
+import type {
+  PasswordImportResult,
+  PasswordItemSummary,
+  PasswordLoginSaveInput,
+  PasswordSecretSaveInput,
+  PasswordsStatus, PasswordUseRecord,
+} from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
@@ -2600,6 +2609,55 @@ function callLaneShareAction<T>(
 function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
     ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+}
+
+/**
+ * Passwords: the account's saved logins and secrets on the pinned machine,
+ * else the tab's bound runtime, else this computer's brain with no project
+ * (`passwords.call`). Only summaries and person-only writes cross this
+ * boundary: no method here returns a saved value, and `resolveForFill` is
+ * never wired (the browser fills pages in main, not in a renderer).
+ */
+/**
+ * Passwords actions that carry a value or wipe the vault always run on this
+ * computer's own brain, through main: a value never travels to the machine
+ * the page follows (the vault is the account's, so it syncs from here), and a
+ * reset always gets main's Touch ID / Windows Hello check first.
+ */
+const PASSWORDS_THIS_COMPUTER_ACTIONS = new Set(["saveLogin", "saveSecret", "importCsv", "reset"]);
+
+async function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  const local = (name: string, input: Record<string, unknown>) => ipcRenderer.invoke(IPC.passwordsCall, { action: name, args: { ...input } }) as Promise<T>;
+  if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
+    return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
+  }
+  const remotePin = pin && !isBoundCopyPin(pin) ? pin : null;
+  if (remotePin) {
+    // Passwords off on this computer but on where Settings is pointed: the
+    // write goes there (over the paired connection). A reset still asks the
+    // person here first.
+    const localOn = await local("status", {})
+      .then((status) => Boolean(status && typeof status === "object" && (status as { enabled?: unknown }).enabled === true))
+      .catch(() => false);
+    if (!localOn) {
+      if (action === "reset" && !(await ipcRenderer.invoke(IPC.passwordsCall, { action: "confirmReset", args: {} }))) {
+        throw new Error("Reset cancelled.");
+      }
+      return await callPinnedOrBoundRuntimeActionOr<T>(remotePin, "passwords", action, { args: { ...args } }, () => local(action, args));
+    }
+  }
+  // An edit by id needs the item on this computer: pull first. A failure here
+  // surfaces as the write's own error just below.
+  if (typeof args.id === "string" && args.id) {
+    await local("sync", {}).catch((error: unknown) => console.warn("[preload] Passwords sync before an edit failed", error));
+  }
+  const result = await local(action, args);
+  // The page lists the pinned machine's copy: it pulls this write now.
+  if (remotePin) {
+    await callPinnedOrBoundRuntimeActionOr<unknown>(remotePin, "passwords", "sync", { args: {} }, async () => undefined)
+      .catch((error: unknown) => console.warn("[preload] the pinned machine could not pull Passwords yet", error));
+  }
+  return result;
 }
 
 /**
@@ -11508,6 +11566,22 @@ const adeBridge = {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
       ),
+    // The Messages integration on this Mac (never another machine's).
+    messagesIntegrationStatus: (): Promise<MessagesIntegrationStatus> =>
+      ipcRenderer.invoke(IPC.messagesIntegrationStatus, {}),
+    messagesIntegrationSet: (next: Partial<MessagesIntegrationSettings>): Promise<MessagesIntegrationStatus> =>
+      ipcRenderer.invoke(IPC.messagesIntegrationSet, next),
+    // Passwords for the person: the tab is always on this computer.
+    savedLoginsForTab: (args: { tabId: string }): Promise<Array<{ id: string; username: string | null; sites: string[] }>> =>
+      ipcRenderer.invoke(IPC.builtInBrowserSavedLogins, args),
+    fillSavedLogin: (args: { tabId: string; itemId: string }): Promise<{ filled: string[] }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserFillSavedLogin, args),
+    loginOfferForTab: (args: { tabId: string }): Promise<BuiltInBrowserSaveLoginOffer | null> =>
+      ipcRenderer.invoke(IPC.builtInBrowserLoginOffer, args),
+    acceptLoginOffer: (args: { offerId: string }): Promise<{ saved: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserAcceptLoginOffer, args),
+    dismissLoginOffer: (args: { offerId: string }): Promise<null> =>
+      ipcRenderer.invoke(IPC.builtInBrowserDismissLoginOffer, args),
     reload: async (
       args: BuiltInBrowserTabTargetArgs = {},
       _pin?: OpenProjectBinding | null,
@@ -12111,6 +12185,48 @@ const adeBridge = {
     onChanged: (cb: () => void, pin?: OpenProjectBinding | null): (() => void) =>
       subscribePinnedFanoutEvents(pin, remoteProviderLoginsChangedFanout, () => cb(), "providerLogins.onChanged")
         ?? remoteProviderLoginsChangedFanout.subscribe(() => cb()),
+  },
+  /**
+   * Settings › Passwords: the account's saved logins and secrets on the
+   * machine in front of the page. Every method takes the machine's pin from
+   * `useSettingsMachineScope().pin`. Nothing here returns a saved value:
+   * `list` and `save*` answer with the same summaries agents may see, and the
+   * value-reading `resolveForFill` is deliberately absent (only a browser
+   * fill in main may read one).
+   */
+  passwords: {
+    status: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("status", args, pin),
+    setEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setEnabled", args, pin),
+    setCloudEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setCloudEnabled", args, pin),
+    reset: (args: { confirm: "reset" }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("reset", args, pin),
+    list: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary[]> =>
+      callPasswords<PasswordItemSummary[]>("list", args, pin),
+    /** The machine's recorded uses (site, who, chat, when), newest first. Never a value. */
+    activity: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordUseRecord[]> =>
+      callPasswords<PasswordUseRecord[]>("activity", args, pin),
+    /**
+     * Show or copy one saved value, after Touch ID / Windows Hello on this
+     * computer. A copy goes to the clipboard in main and returns no value.
+     */
+    reveal: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }): Promise<{ value?: string; copied?: true }> =>
+      ipcRenderer.invoke(IPC.passwordsReveal, args),
+    /** A login's current authenticator code (never its key), and its seconds left. */
+    code: (args: { itemId: string }, pin?: OpenProjectBinding | null): Promise<{ code: string; secondsLeft: number } | null> =>
+      callPasswords<{ code: string; secondsLeft: number } | null>("code", args, pin),
+    saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveLogin", args, pin),
+    saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveSecret", args, pin),
+    remove: (args: { id: string }, pin?: OpenProjectBinding | null): Promise<boolean> =>
+      callPasswords<boolean>("remove", args, pin),
+    importCsv: (args: { text: string }, pin?: OpenProjectBinding | null): Promise<PasswordImportResult> =>
+      callPasswords<PasswordImportResult>("importCsv", args, pin),
+    sync: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<void> =>
+      callPasswords<void>("sync", args, pin),
   },
   providerInstances: {
     list: async (
@@ -13610,9 +13726,16 @@ const adeBridge = {
       owner?: string;
       name?: string;
       forceRefresh?: boolean;
+      /** A person pressed Refresh: implies `forceRefresh`. */
+      userRequested?: boolean;
     } = {}, pin?: OpenProjectBinding | null): Promise<GitHubAppInstallationStatus> => {
       const cacheArgs = { owner: args.owner, name: args.name };
-      const requestArgs = args.forceRefresh ? { ...cacheArgs, forceRefresh: true } : cacheArgs;
+      const forceRefresh = args.forceRefresh === true || args.userRequested === true;
+      const requestArgs = {
+        ...cacheArgs,
+        ...(forceRefresh ? { forceRefresh: true } : {}),
+        ...(args.userRequested ? { userRequested: true } : {}),
+      };
       // Pinned reads skip the installation cache, which is keyed by repo only
       // and holds the unpinned path's answer.
       if (pin) {
@@ -13624,7 +13747,7 @@ const adeBridge = {
         );
       }
       const cacheKey = serializeIpcCacheArgs(cacheArgs);
-      if (args.forceRefresh) {
+      if (forceRefresh) {
         githubAppInstallationStatusCache.clear(cacheKey);
         return callProjectRuntimeActionOr(
           "github",
@@ -13910,6 +14033,9 @@ const adeBridge = {
     /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    /** "Keep it" on an idle cleanup warning: restarts the computer's idle clock, no wake. Account level, by its ADE Cloud id. */
+    keepIdleComputer: (instanceId: string): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke(IPC.cloudKeepIdleComputer, { instanceId }),
     /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
     laneLife: <M extends CloudLaneLifeMethod>(request: CloudLaneLifeCallRequest<M>): Promise<CloudLaneLifeResults[M]> =>
       ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),
@@ -13943,6 +14069,7 @@ const adeBridge = {
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
+    openFreeUnlock: (): Promise<{ opened: boolean; unlocked: boolean }> => ipcRenderer.invoke(IPC.cloudOpenFreeUnlock),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudCopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>

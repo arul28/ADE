@@ -55,65 +55,142 @@ export const DISK_ON_CREATE_GB = 4;
 /** Disk grows in steps of this many GB. */
 export const DISK_STEP_GB = 4;
 
-/** Every limit is on what exists at one time, never on what a person makes in a month. */
-export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanFacts>> = {
-  free: { includedMilli: 50_000, computerLimit: 3, diskGb: 12, priceUsd: 0 },
-  plus: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
-  pro: { includedMilli: 1_500_000, computerLimit: 30, diskGb: 120, priceUsd: 20 },
+/**
+ * The plans (the owner's table of 2026-11-13). Disk is what the account has
+ * at one time, shared by all its computers; hours and phone minutes are a
+ * month's. There is no limit on how many computers an account has: only a
+ * hidden safety cap on how many are awake at once (`AWAKE_COMPUTER_CAP`),
+ * never shown as a plan limit. Phone minutes are shown on the plan table
+ * only: nothing meters them yet. `extraHourCents` is what an hour past the
+ * plan costs; null on the free plan, where work stops instead.
+ */
+export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanTerms>> = {
+  free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
+  plus: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+  pro: { includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
+  max: { includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
 };
 
-export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => value === "plus" || value === "pro";
+/** A plan as `CLOUD_PLANS` holds it; the catalog adds what older builds read. */
+export type CloudPlanTerms = Required<Omit<CloudPlanFacts, "computerLimit">>;
+
+/** Paid plans, cheapest first: a move to a lower rank is a downgrade (it waits for the period end). */
+export const PAID_PLAN_RANK: Readonly<Record<CloudPaidPlanId, number>> = { plus: 1, pro: 2, max: 3 };
+
+export const isPaidPlanId = (value: unknown): value is CloudPaidPlanId => value === "plus" || value === "pro" || value === "max";
 
 export const FREE_INCLUDED_MILLI = CLOUD_PLANS.free.includedMilli;
 
-/** What Stripe charges (`scripts/stripe-setup.mjs` makes the prices). */
-const EXTRA_HOUR_CENTS = 1;
-/** Extra disk: $1 for each 10 GB a month, counted by the day on the GB above the plan's disk. */
-export const EXTRA_DISK_CENTS_PER_10GB_MONTH = 100;
+/**
+ * Plus's and Pro's disk before Cloud 7. An account whose period began before
+ * the new plans (`old_plan_terms`, migration 0033) keeps it until its next
+ * period, so nobody's disk shrinks mid-period. Hours need no copy: each
+ * period stores its own (`included_milli`).
+ */
+const DISK_GB_BEFORE_CLOUD_7: Readonly<Partial<Record<CloudPlanId, number>>> = { plus: 40, pro: 120 };
+
+/** Plus's and Pro's hours before Cloud 7, for a paid period restored after a failed payment (`restored_same_period`). */
+const INCLUDED_MILLI_BEFORE_CLOUD_7: Readonly<Partial<Record<CloudPlanId, number>>> = { plus: 500_000, pro: 1_500_000 };
+
+/** `planId`'s hours for an account on the old terms or the new. */
+export function planIncludedMilliFor(planId: CloudPlanId, oldTerms: boolean): number {
+  return (oldTerms ? INCLUDED_MILLI_BEFORE_CLOUD_7[planId] : undefined) ?? CLOUD_PLANS[planId].includedMilli;
+}
+
+/** `planId`'s disk for an account on the old terms or the new. */
+export function planDiskGbFor(planId: CloudPlanId, oldTerms: boolean): number {
+  return (oldTerms ? DISK_GB_BEFORE_CLOUD_7[planId] : undefined) ?? CLOUD_PLANS[planId].diskGb;
+}
+
+/**
+ * The most computers one account may have awake at once: a safety cap no real
+ * person should reach, never a plan limit. A wake at the cap waits briefly for
+ * one to fall asleep, then says so in a plain sentence; a create is refused
+ * the same way. Older builds read it as `computers.limit` and a plan's
+ * `computerLimit`.
+ */
+export const AWAKE_COMPUTER_CAP = 25;
+
+/** Extra disk: $2 for each 10 GB a month, counted by the day on the GB above the plan's disk. */
+export const EXTRA_DISK_CENTS_PER_10GB_MONTH = 200;
+/**
+ * Extra disk before Cloud 7: $1 for each 10 GB. A subscription whose disk item
+ * is still on that price (`extra_disk_old_price`, migration 0033) keeps it
+ * until its renewal moves it (`moveMeteredItems`), so its limit and its usage
+ * are priced at what Stripe actually charges it. An account on the old plan
+ * terms with no disk item gets the current price when extra disk turns on.
+ */
+const EXTRA_DISK_CENTS_PER_10GB_MONTH_BEFORE_CLOUD_7 = 100;
 /** One cent in micros (1e-6 USD), the unit money is counted in. */
 export const CENT_MICROS = 10_000;
 /** A month of extra disk, for "up to $X a month": the limit must hold for a full one. */
 export const EXTRA_DISK_MONTH_DAYS = 30;
-/** One GB-day of extra disk, in micros: a 30-day month of 10 GB is $1. */
-export const EXTRA_DISK_MICROS_PER_GB_DAY = Math.round((EXTRA_DISK_CENTS_PER_10GB_MONTH * CENT_MICROS) / 10 / EXTRA_DISK_MONTH_DAYS);
-
-/** What `gb` of extra disk kept a full month costs, in micros: the amount a monthly limit must cover. */
-export const extraDiskMonthMicros = (gb: number): number => gb * EXTRA_DISK_MICROS_PER_GB_DAY * EXTRA_DISK_MONTH_DAYS;
-
-/** Whether `gb` of extra disk kept a full month fits a monthly limit of `limitCents`. */
-export const extraDiskMonthFits = (gb: number, limitCents: number): boolean => extraDiskMonthMicros(gb) <= limitCents * CENT_MICROS;
-
-/** The most extra disk, in whole GB, that a monthly limit of `limitCents` keeps for a full month. */
-export const extraDiskMonthMaxGb = (limitCents: number): number =>
-  Math.max(0, Math.floor((limitCents * CENT_MICROS) / (EXTRA_DISK_MICROS_PER_GB_DAY * EXTRA_DISK_MONTH_DAYS)));
-
-/** The GB-days of extra disk a monthly limit of `limitCents` pays for. */
-export const extraDiskGbDaysIn = (limitCents: number): number => Math.floor((limitCents * CENT_MICROS) / EXTRA_DISK_MICROS_PER_GB_DAY);
-/** Graduated extra-hours price: 1 cent each, 0.85 cents after 1,000 in a period. */
-export const EXTRA_HOUR_MICROS = 10_000;
-export const EXTRA_HOUR_VOLUME_MICROS = 8_500;
-export const EXTRA_HOUR_VOLUME_AFTER = 1_000;
-
-/** What this Worker sells now: Pro and extra disk only once their Stripe prices are set (`cloudOffers`). */
-export type CloudOffers = { pro: boolean; extraDisk: boolean };
 
 /**
- * What `GET /cloud/account` tells a client about sizes and plans. Pro and
- * extra disk are left out until they are set up, so no client offers them.
+ * Whose extra disk price applies: an account whose subscription's disk item is
+ * on the price from before Cloud 7 pays the old one. Null (or a plan that
+ * starts later, with a new period) is the current price.
  */
-export function cloudCatalog(offers: CloudOffers): CloudCatalog {
+export type ExtraDiskTerms = { extra_disk_old_price?: number | null };
+
+/** The extra disk price an account pays, in cents for each 10 GB a month. */
+export const extraDiskCentsPer10GbMonthOf = (terms?: ExtraDiskTerms | null): number =>
+  terms?.extra_disk_old_price === 1 ? EXTRA_DISK_CENTS_PER_10GB_MONTH_BEFORE_CLOUD_7 : EXTRA_DISK_CENTS_PER_10GB_MONTH;
+
+/**
+ * One GB-day of extra disk, in micros: a 30-day month of 10 GB is $2 (6,666.67
+ * micros a GB-day). Rounded down, so a limit of $X always admits X/2 × 10 GB
+ * for a full month; Stripe bills from its own price, never from this.
+ */
+export const extraDiskMicrosPerGbDayOf = (terms?: ExtraDiskTerms | null): number =>
+  Math.floor((extraDiskCentsPer10GbMonthOf(terms) * CENT_MICROS) / 10 / EXTRA_DISK_MONTH_DAYS);
+
+/** What `gb` of extra disk kept a full month costs, in micros: the amount a monthly limit must cover. */
+export const extraDiskMonthMicros = (gb: number, terms?: ExtraDiskTerms | null): number => gb * extraDiskMicrosPerGbDayOf(terms) * EXTRA_DISK_MONTH_DAYS;
+
+/** Whether `gb` of extra disk kept a full month fits a monthly limit of `limitCents`. */
+export const extraDiskMonthFits = (gb: number, limitCents: number, terms?: ExtraDiskTerms | null): boolean => extraDiskMonthMicros(gb, terms) <= limitCents * CENT_MICROS;
+
+/** The most extra disk, in whole GB, that a monthly limit of `limitCents` keeps for a full month. */
+export const extraDiskMonthMaxGb = (limitCents: number, terms?: ExtraDiskTerms | null): number =>
+  Math.max(0, Math.floor((limitCents * CENT_MICROS) / (extraDiskMicrosPerGbDayOf(terms) * EXTRA_DISK_MONTH_DAYS)));
+
+/** The GB-days of extra disk a monthly limit of `limitCents` pays for. */
+export const extraDiskGbDaysIn = (limitCents: number, terms?: ExtraDiskTerms | null): number => Math.floor((limitCents * CENT_MICROS) / extraDiskMicrosPerGbDayOf(terms));
+
+/** One extra hour on each paid plan, in micros: a flat price per plan, each a bit above that plan's own rate. */
+export const EXTRA_HOUR_MICROS: Readonly<Record<CloudPaidPlanId, number>> = {
+  plus: Math.round(2 * CENT_MICROS),
+  pro: Math.round(1.5 * CENT_MICROS),
+  max: Math.round(1.2 * CENT_MICROS),
+};
+
+/** What this Worker sells now: Pro, Max and extra disk only once their Stripe prices are set (`cloudOffers`). */
+export type CloudOffers = { pro: boolean; max: boolean; extraDisk: boolean };
+
+/** A plan as the catalog sends it: `computerLimit` is the awake cap, for builds that still show a computer count. */
+const catalogPlan = (terms: CloudPlanTerms): CloudPlanFacts => ({ ...terms, computerLimit: AWAKE_COMPUTER_CAP });
+
+/**
+ * What `GET /cloud/account` tells a client about sizes and plans. Pro, Max and
+ * extra disk are left out until they are set up, so no client offers them.
+ * `extraHourCents` at the top is for builds that know one price: the
+ * account's own plan's, or Plus's for a free account.
+ */
+export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", terms?: ExtraDiskTerms | null): CloudCatalog {
   return {
     sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => ({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb })),
     plans: {
-      free: CLOUD_PLANS.free,
+      free: catalogPlan(CLOUD_PLANS.free),
       // `paid` is Plus, for builds that know only two plans.
-      paid: CLOUD_PLANS.plus,
-      ...(offers.pro ? { plus: CLOUD_PLANS.plus, pro: CLOUD_PLANS.pro } : {}),
+      paid: catalogPlan(CLOUD_PLANS.plus),
+      ...(offers.pro ? { plus: catalogPlan(CLOUD_PLANS.plus), pro: catalogPlan(CLOUD_PLANS.pro) } : {}),
+      ...(offers.pro && offers.max ? { max: catalogPlan(CLOUD_PLANS.max) } : {}),
     },
     diskStepGb: DISK_STEP_GB,
     paidPriceUsd: CLOUD_PLANS.plus.priceUsd,
-    extraHourCents: EXTRA_HOUR_CENTS,
-    ...(offers.extraDisk ? { extraDiskCentsPer10GbMonth: EXTRA_DISK_CENTS_PER_10GB_MONTH } : {}),
+    extraHourCents: CLOUD_PLANS[planId === "free" ? "plus" : planId].extraHourCents ?? 2,
+    ...(offers.extraDisk ? { extraDiskCentsPer10GbMonth: extraDiskCentsPer10GbMonthOf(terms) } : {}),
   };
 }
 
@@ -134,14 +211,10 @@ export function computeCostMicrosFor(ms: number, shape: { type: string; cpu: num
   return Math.round((perMonth * ms) / (HOURS_PER_MONTH * 3_600_000));
 }
 
-/** What the extra hours from `fromMilli` to `toMilli` in one period charge, in micros (the graduated price). */
-export function extraHoursIncomeMicros(fromMilli: number, toMilli: number): number {
-  const at = (milli: number) => {
-    const hours = Math.max(0, milli) / 1000;
-    const first = Math.min(hours, EXTRA_HOUR_VOLUME_AFTER);
-    return first * EXTRA_HOUR_MICROS + Math.max(0, hours - EXTRA_HOUR_VOLUME_AFTER) * EXTRA_HOUR_VOLUME_MICROS;
-  };
-  return Math.max(0, Math.round(at(toMilli) - at(fromMilli)));
+/** What the extra hours from `fromMilli` to `toMilli` in one period on `planId` charge, in micros: the plan's flat price. */
+export function extraHoursIncomeMicros(planId: CloudPaidPlanId, fromMilli: number, toMilli: number): number {
+  const hours = (Math.max(0, toMilli) - Math.max(0, fromMilli)) / 1000;
+  return Math.max(0, Math.round(hours * EXTRA_HOUR_MICROS[planId]));
 }
 
 /** ADE's wake URL (`CLOUD_WAKE_PORT` on the desktop): the only public port allowed. */

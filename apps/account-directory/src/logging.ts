@@ -380,7 +380,8 @@ export function logGithubApp(args: {
     | "github_app.retired"
     | "github_app.disconnected"
     | "github_app.keepalive"
-    | "github_app.abandoned_confirms_dropped";
+    | "github_app.abandoned_confirms_dropped"
+    | "github_app.account_age_save_failed";
   userId: string;
   [field: string]: string | number | boolean | undefined;
 }): void {
@@ -392,6 +393,28 @@ export function logGithubApp(args: {
   }
   const failed = event === "github_app.refresh_failed"
     || event === "github_app.refresh_unpersisted"
-    || event === "github_app.refresh_unpersisted_dropped";
+    || event === "github_app.refresh_unpersisted_dropped"
+    || event === "github_app.account_age_save_failed";
   (failed ? console.error : console.log)(JSON.stringify(line));
+  // Worker logs keep one request in ten, so a failed sign-in can leave no
+  // record of GitHub's reason. Sentry keeps every one. Kind and GitHub's
+  // short code only, never a token, code, state or verifier.
+  if (event === "github_app.sign_in_failed") {
+    const kind = typeof fields.kind === "string" ? fields.kind.slice(0, 64) : "unknown";
+    const oauthError = typeof fields.oauthError === "string" ? fields.oauthError.slice(0, 64) : null;
+    Sentry.captureMessage(`${event}: ${kind}`, {
+      level: "warning",
+      fingerprint: [event, kind, oauthError ?? "none"],
+      tags: {
+        area: "github_app",
+        "github_app.kind": kind,
+        ...(oauthError ? { "github_app.oauth_error": oauthError } : {}),
+        ...(typeof fields.client === "string" ? { "github_app.client": fields.client.slice(0, 16) } : {}),
+      },
+      extra: {
+        ...(typeof fields.attempts === "number" ? { attempts: fields.attempts } : {}),
+        ...(typeof fields.status === "number" ? { status: fields.status } : {}),
+      },
+    });
+  }
 }

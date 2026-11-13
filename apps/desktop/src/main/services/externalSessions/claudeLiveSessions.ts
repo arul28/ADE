@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { claudeConfigDir } from "./discoverClaude";
+import { claudeConfigHomeDirs } from "./discoverClaude";
 import { safeParseJson, safeStat, type ExternalSessionDiscoveryArgs } from "./discoveryUtils";
 
 /**
@@ -28,15 +28,7 @@ function processAlive(pid: number): boolean {
   }
 }
 
-/**
- * Session ids Claude currently has open, from its own live-session registry.
- * Returns null when the registry does not exist, so callers keep their mtime
- * heuristic instead of silently reporting nothing as active.
- */
-export function liveClaudeSessionIds(
-  args: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env"> = {},
-): Set<string> | null {
-  const dir = path.join(claudeConfigDir(args), "sessions");
+function liveIdsInRegistry(dir: string): Set<string> | null {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -70,4 +62,24 @@ export function liveClaudeSessionIds(
     live.add(sessionId.trim());
   }
   return live;
+}
+
+/**
+ * Session ids Claude currently has open, from every config home ADE runs it
+ * under (the default home, account homes, preset and API-key homes). Returns
+ * null when no home has a registry at all, so callers keep their mtime
+ * heuristic instead of silently reporting nothing as active.
+ */
+export function liveClaudeSessionIds(
+  args: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env"> = {},
+): Set<string> | null {
+  const live = new Set<string>();
+  let answered = false;
+  for (const home of claudeConfigHomeDirs(args)) {
+    const ids = liveIdsInRegistry(path.join(home.dir, "sessions"));
+    if (!ids) continue;
+    answered = true;
+    for (const id of ids) live.add(id);
+  }
+  return answered ? live : null;
 }

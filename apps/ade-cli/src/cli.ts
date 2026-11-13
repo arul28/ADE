@@ -71,6 +71,7 @@ import {
 import { buildGithubIssuePlan } from "./cliGithubIssue";
 import { buildJiraPlan } from "./cliJira";
 import { buildIssuePlan } from "./cliIssue";
+import { buildCodePlan, buildMessagesPlan, buildPasswordsPlan, formatPasswords, formatPasswordsCode, formatSecretsExec } from "./cliPasswords";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -710,7 +711,20 @@ import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
-import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import {
+  brainUnplannedRestart,
+  markBrainRunStoppedCleanly,
+  recordBrainRunStart,
+} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import {
+  closeLiveTurnProjectsRecord,
+  dropLiveTurnProjectsAfterCrash,
+  enableLiveTurnProjectsRecord,
+  noteLiveTurnProjectOpening,
+  settleLiveTurnProjectAfterCrash,
+  takeLiveTurnProjectsFromStoppedBrains,
+} from "../../desktop/src/main/services/runtime/liveTurnProjects";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -1088,7 +1102,10 @@ export type FormatterId =
   | "models-sheet"
   | "update-status"
   | "notify"
-  | "remote-mcp";
+  | "remote-mcp"
+  | "passwords"
+  | "secrets-exec"
+  | "passwords-code";
 
 type ChatWaitTarget =
   | "idle"
@@ -1653,6 +1670,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -4324,9 +4344,28 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
   they click Allow, so do not re-issue the open to retry it. Page actions
-  (observe/click/fill/screenshot) are not forwarded and still fail here.
+  (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
-  Login handoff (you cannot sign in; a person must):
+  Signing in with Passwords:
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ADE types the
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run \`ade browser handoff\` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
+
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, types it into the password
+  (and confirm) boxes, and saves the login once the form holds all of it.
+  You never see it. Submit the form yourself; later sign-ins use \`ade browser signin\`.
+  --account names the username when the form has none filled in.
+
+  Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
@@ -4360,6 +4399,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
     $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -4441,6 +4483,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
     --value <text>       Explicit value for browser fill, including an empty string,
                          or the text for browser clipboard write.
+    --site <host>        Browser signin: check that the open tab is on this host.
+    --account <username>
+                         Browser signin: which saved login to use.
     --html <markup>      HTML flavor for browser clipboard write.
     --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
@@ -4844,12 +4889,19 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Account-linked projects default to account storage, but only when the account
   vault is reachable: otherwise the secret is saved for this machine and the
   list says so. List output never reveals values and shows where each secret
-  lives; use get only for the specific secret you need.
+  lives.
+
+  Agents use secrets, they never read them: \`ade secrets exec\` runs a command
+  with the project's secrets (and Passwords' secrets for it) in its
+  environment, on this computer, and prints its output with every value masked
+  (also in base64 and URL-encoded form; values under 8 characters are not
+  masked, and it says which). \`get\` and \`export\` are the person's, in the ADE
+  desktop app. --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
     $ ade secrets pull --text                       Take account secrets from the vault
-    $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
-    $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
+    $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
+    $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
     $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
     $ ade secrets set TOKEN --value local --storage device
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
@@ -4873,6 +4925,54 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
       Your commands can read it, so never print it. Deleted when the chat is
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
+`,
+  passwords: `${ADE_BANNER}
+  ADE Passwords
+
+  Saved logins and API keys, encrypted on the person's account. Agents use
+  them and never see them: nothing here prints a password or a secret value.
+
+    $ ade passwords list --text      Sites, usernames and kinds of saved items
+    $ ade passwords status --text    Whether Passwords is on for this computer
+    $ ade passwords sync --text      Pull what other computers saved
+
+  To sign in to a site, open its sign-in page and run \`ade browser signin\`:
+  ADE types the saved login into the page. With no saved login, the person is
+  asked in your chat. To create an account, run \`ade browser signup\` on the
+  sign-up form: ADE makes the password, saves it, and types it in. Changing
+  and removing items is the person's, in Settings › Passwords.
+`,
+  code: `${ADE_BANNER}
+  ADE sign-in codes
+
+    $ ade code --site github.com --text                The current authenticator code
+    $ ade code --site github.com --account me@x.com --text
+    $ ade code wait --site github.com --text           The authenticator, else the next texted code
+    $ ade code wait --from messages --timeout 3m --text
+
+  \`code wait\` returns the site's saved authenticator code at once when it has
+  one; otherwise it waits for the newest code texted to the person's Mac
+  (Messages must be connected there) after you ask, up to --timeout (2m).
+
+  The code comes from the authenticator saved with the site's login in
+  Passwords; you get the code (it lasts seconds), never the key. \`ade browser
+  signin\` also fills it by itself on a page that asks for one. A code sent by
+  email: open the mail in the ADE browser (already signed in) and read it.
+`,
+  messages: `${ADE_BANNER}
+  ADE Messages (the person's texts, on their Mac)
+
+    $ ade messages status --text
+    $ ade messages recent --limit 10 --text          Newest texts (yours and theirs)
+    $ ade messages recent --from +15551234567 --since 1h --text
+    $ ade messages chats --text                      Recent conversations
+    $ ade messages send --to +15551234567 --text "On my way"
+
+  Off until the person connects Messages in Settings › Integrations ›
+  Messages on a Mac (ADE needs Full Disk Access there to read). Reading
+  follows its Read Texts switch. Every text you send is shown to the person
+  on a card in your chat first, unless they turned on Send Without Asking.
+  From a cloud lane, these reach the Mac the person is using.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -4938,11 +5038,13 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
   Earned hours never expire; they are used after the plan's hours and before
-  extra hours. The free plan is given once per computer.
+  extra hours. The free plan is given once per computer and once per GitHub
+  account, which must be at least 30 days old (or add a card, no charge).
 
-  Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
-  Change it in Settings › ADE Cloud › Plan and hours.
-  Disk and computers are what you have at one time, not a monthly amount.
+  Plans: Free, Plus, Pro and Max. \`ade cloud hours\` shows yours, with its hours and disk.
+  Change it in Settings › ADE Cloud › Plans.
+  Disk is what all your computers hold at one time, not a monthly amount.
+  No plan limits how many computers you have.
   On a paid plan, extra disk past the plan's is counted by the day, inside a
   monthly limit you set. A grow past it is refused with a sentence that says why.
 
@@ -5535,7 +5637,7 @@ function parseScheduledWorkDelaySeconds(value: string): number {
  * live in `sessionSnoozeDuration.ts`; this wrapper only turns its result union
  * into the `CliUsageError` the argv layer already knows how to report.
  */
-function parseSnoozeDurationMs(value: string): number {
+export function parseSnoozeDurationMs(value: string): number {
   const parsed = parseSnoozeDuration(value);
   if (!parsed.ok) throw new CliUsageError(parsed.message);
   return parsed.ms;
@@ -18533,6 +18635,8 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   click: ["click"],
   type: ["type", "type-text"],
   fill: ["fill"],
+  signin: ["signin"],
+  signup: ["signup"],
   // `clear` is deliberately ambiguous at the CLI: with an element target it
   // clears a field, without one it clears the selection. `buildBrowserPlan`
   // keeps that branch written out because the disambiguation is a flag test,
@@ -18808,6 +18912,21 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
       ? undefined
       : `Handed the browser tab to the human: ${reason}. Waiting for Hand back…`,
   };
+}
+
+/**
+ * The host a `--site` value or a page URL names, lowercased. `--site` is only
+ * a check: signin always uses the tab's own page, so an unreadable value is
+ * refused before the browser is called rather than guessed at.
+ */
+function browserSiteHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -19381,6 +19500,31 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           }),
         ),
       ],
+    };
+  }
+  if (sub === "signin" || sub === "signup") {
+    // The site is always the tab's own top-frame page. `--site` only checks
+    // that the tab is where the caller thinks it is; the browser checks it on
+    // the exact tab it fills, before any login is typed. `signup` makes a new
+    // password, saves the login, and types it into the sign-up form.
+    const site = readValue(args, ["--site"])?.trim() || null;
+    const account = readValue(args, ["--account", "--username", "--email"])?.trim() || null;
+    const expectedSite = site ? browserSiteHost(site) : null;
+    if (site && !expectedSite) {
+      throw new CliUsageError(`browser ${sub} --site must be a host name like example.com, not "${site}".`);
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const signinArgs: JsonObject = {
+      ...actionArgs,
+      ...(account ? { username: account } : {}),
+      ...(expectedSite ? { expectedSite } : {}),
+    };
+    return {
+      kind: "execute",
+      label: `browser ${sub}`,
+      // With no saved login, signin asks the person in the chat; wait for them.
+      ...(sub === "signin" ? { minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000 } : {}),
+      steps: [actionStep("result", "passwords", sub, collectGenericObjectArgs(args, signinArgs))],
     };
   }
   if (
@@ -21204,14 +21348,17 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
 /**
  * `ade cloud push-work --json`: every lane's work committed and pushed. With
  * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
- * it. `--check` is `work-state`.
+ * it. `--check` is `work-state`. `--message <text>` is the commit message for
+ * uncommitted work (the idle cleanup's "saved by ADE before cleanup"); an
+ * older brain ignores it and uses its own.
  */
 function buildCloudPushWorkPlan(args: string[]): CliPlan {
   if (args.includes("--check")) return buildCloudWorkStatePlan();
+  const message = readValue(args, ["--message"])?.trim();
   return {
     kind: "execute",
     label: "cloud push-work",
-    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    steps: [{ key: "result", method: "cloud.pushWork", params: message ? { message: message.slice(0, 200) } : {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -21367,22 +21514,28 @@ function formatCloudAccount(value: unknown): string {
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
-  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" ? account.planId : undefined;
+  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
   const disk = isRecord(account.disk) && typeof account.disk.usedGb === "number"
     ? typeof account.disk.limitGb === "number" ? `${account.disk.usedGb} of ${account.disk.limitGb} GB disk` : `${account.disk.usedGb} GB disk`
     : null;
-  const computers = isRecord(account.computers) && typeof account.computers.total === "number" && typeof account.computers.limit === "number"
-    ? `${account.computers.total} of ${account.computers.limit} computers`
+  // No plan limits how many computers an account has: a count, never "of N".
+  const computers = isRecord(account.computers) && typeof account.computers.total === "number"
+    ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
     : null;
-  const atOneTime = disk || computers ? `\n${[disk, computers].filter(Boolean).join(", ")} at one time.` : "";
+  const atOneTime = disk || computers ? `\n${[disk && `${disk} in use`, computers].filter(Boolean).join(", ")}.` : "";
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
-  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine;
+  // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
+  const github = freePlan.github;
+  const githubLine = github && github.state !== "ok" && github.sentence
+    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
+    : "";
+  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */
@@ -21511,10 +21664,32 @@ function buildMcpServersPlan(args: string[]): CliPlan {
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
+  // The command after `--` first: its own flags (`--help` included) are its own.
+  const execTail = args[0] === "exec" || args[0] === "run" ? takeArgsAfterTerminator(args) : null;
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
   }
   const sub = firstPositional(args) ?? "list";
+  if (sub === "exec" || sub === "run") {
+    if (!execTail?.length) {
+      throw new CliUsageError("secrets exec needs the command after `--`: ade secrets exec [--env NAME] -- npm run deploy");
+    }
+    const names = readRepeatedValues(args, ["--env", "--name"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 10 * 60_000;
+    return {
+      kind: "execute",
+      label: "secrets exec",
+      formatter: "secrets-exec",
+      steps: [actionStep("result", "project_secret", "exec", {
+        command: execTail,
+        cwd: process.cwd(),
+        ...(names.length ? { names } : {}),
+        timeoutMs,
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+    };
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
@@ -23358,6 +23533,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
  * is a boolean `readFlag` anywhere, so this table can never widen the CLI.
  */
 const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--account",
   "--action",
   // `collectGenericObjectArgs` is called straight out of the browser plan and
   // consumes these, so they carry a value here like any other browser flag —
@@ -23455,6 +23631,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--session",
   "--session-id",
   "--settle-ms",
+  "--site",
   "--state",
   "--steps",
   "--tab",
@@ -23811,7 +23988,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
  * terminator, so scanning `browser upload --selector input --upload -- --help`
  * with the global set stopped at the `--` and hid a real `--help`.
  */
-function hasHelpFlag(
+export function hasHelpFlag(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): boolean {
@@ -24280,6 +24457,12 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "passwords" || primary === "password")
+    return buildPasswordsPlan(args);
+  if (primary === "code" || primary === "codes")
+    return buildCodePlan(args);
+  if (primary === "messages" || primary === "texts" || primary === "imessage")
+    return buildMessagesPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -29811,9 +29994,10 @@ async function runServe(
         scopeRegistry: () => scopeRegistry,
         getCloudBrainAccess,
         version: VERSION,
+        logger: headlessProjectLogger,
       })
     : null;
-  // What uses this computer's disk, and its last work: sent at the idle step for the dashboard.
+  // What uses this computer's disk, its last work and the files git ignores: sent at the idle step for the dashboard.
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
@@ -29821,6 +30005,7 @@ async function runServe(
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
+        readIgnored: cloudComputerReports.readIgnored,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
       })
@@ -29838,6 +30023,13 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
+  // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
+  const cloudCpuWatch = cloudComputerReports
+    ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
+        report: cloudComputerReports.reportSustainedCpu,
+        logger: headlessProjectLogger,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -29867,6 +30059,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -30753,7 +30946,11 @@ async function runServe(
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
-    if (!stoppingOnFailure) markBrainStoppedCleanly();
+    if (!stoppingOnFailure) {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     resolveDone?.();
   };
 
@@ -31031,6 +31228,10 @@ async function runServe(
   // a brain with sync off (a test brain) never opens the account's vault. One
   // runtime object, so a background make keeps its maker.
   let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
+  const startedPasswords = <T extends { startPeriodicSync(): void }>(service: T): T => {
+    service.startPeriodicSync();
+    return service;
+  };
   const machineAccountDomains = async () => {
     const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
     return buildMachineAccountDomainServices(await getMachineAccountRuntime());
@@ -31074,6 +31275,7 @@ async function runServe(
         accountVaultStore: vault,
         // Read from its local copy only (cloud.status reads the default lane size).
         accountSettingsStore: stores?.settings ?? null,
+        passwordService: stores ? startedPasswords(stores.passwords) : null,
         productAnalyticsService: brainProductAnalytics,
       };
     })();
@@ -31218,10 +31420,11 @@ async function runServe(
       holdCloudWork,
       remoteProviderSignIn,
       pushCloudWork: holdCloudWork
-        ? async ({ check }: { check: boolean }) => {
+        ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
+              message,
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));
@@ -31306,6 +31509,7 @@ async function runServe(
             lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+          lastUnplannedRestart: brainUnplannedRestart(),
         };
       },
       disposeScopesOnDispose: false,
@@ -31512,7 +31716,11 @@ async function runServe(
   startSyncHostOnDemand = () => startSyncHost();
   // Stops the account project sync of the brain (set where that sync is built).
   let stopAccountProjectSync: (() => void) | null = null;
+  // Set first thing in shutdown: the projects-after-crash opens stop, so no
+  // project opens after `disposeAll` took its list of open scopes.
+  let serveShutdownStarted = false;
   const disposeServeResources = async () => {
+    serveShutdownStarted = true;
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
@@ -31902,6 +32110,32 @@ async function runServe(
     } catch {}
   }
 
+  /**
+   * Whether this brain came back after an unplanned stop (the window's
+   * restart banner), and the record of projects with a running turn that the
+   * next brain opens after a crash. Only now, with the endpoint bound: a brain
+   * that loses the race for the socket must not replace the record of the
+   * brain that crashed.
+   *
+   * Every brain reads and takes what the brain before it left, including a
+   * brain an app started because the service brain was gone. Only a brain no
+   * other process owns (the service on any platform, a hand-run `ade serve`)
+   * writes its own record: an app can end the brain it started with a kill
+   * when the app quits, which is not a crash.
+   */
+  const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (!embedded) {
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    recordBrainRunStart({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+      writeOwnRecord: writesBrainRun,
+    });
+    if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
+  }
+
   let tcpUrl: string | null = null;
   if (port != null) {
     const tcpState = createHeadlessRpcServer(createHandler);
@@ -32272,6 +32506,57 @@ async function runServe(
     platform: process.platform,
     arch: process.arch,
   });
+  if (!embedded) {
+    /**
+     * Open, one at a time, the projects in which the brain before this one
+     * had a chat or CLI turn running when it stopped unplanned. Opening a
+     * project is what runs its CLI reopen and chat restart recovery, so they
+     * continue within seconds instead of when a window or phone next opens
+     * the project. Only those projects: no other project database is opened.
+     * Nothing opens in a restart loop or with "Continue chats after restarts"
+     * off; the files are claimed either way.
+     */
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const roots = takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath: serveSocketPath });
+    if (roots.length > 0) {
+      const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
+      if (hold) {
+        headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
+        dropLiveTurnProjectsAfterCrash();
+      } else {
+        void (async () => {
+          const startedMs = Date.now();
+          let opened = 0;
+          for (const root of roots) {
+            if (serveShutdownStarted) break;
+            const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
+            if (!record) {
+              settleLiveTurnProjectAfterCrash(root);
+              continue;
+            }
+            noteLiveTurnProjectOpening(root);
+            try {
+              await scopeRegistry.get(record.projectId);
+              opened += 1;
+              settleLiveTurnProjectAfterCrash(root);
+            } catch (error) {
+              // Kept on disk: if this brain crashes too, the next one tries it again.
+              noteLiveTurnProjectOpening(null);
+              headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
+                projectId: record.projectId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          headlessProjectLogger.info("brain.projects_opened_after_crash", {
+            projects: roots.length,
+            opened,
+            durationMs: Date.now() - startedMs,
+          });
+        })();
+      }
+    }
+  }
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
   scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
@@ -32615,7 +32900,11 @@ async function runServe(
             : "unknown";
     // A live brain already holds the endpoint (an update's handover, a second
     // start): this one leaving is not a crash for the restart-loop report.
-    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
+    if (code === "socket_owned_by_other") {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
@@ -37436,8 +37725,28 @@ function domElementTable(elements: JsonObject[]): string {
 function formatBrowserAction(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const trace = firstRecord(result, ["trace"]);
+  const signin = firstRecord(result, ["signin"]);
+  const signinFilled = Array.isArray(signin?.filled)
+    ? signin.filled.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  // The result names the site, the account and which fields were filled —
+  // never a value. The password stays inside the page.
+  const signinSite = asString(signin?.site) ?? "the page";
+  const signinLine = !signin
+    ? null
+    : signin.created === true
+      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`ade browser signin\` uses it from now on.`
+      : signin.signInYourself === true
+        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+        : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
-    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    ...(signinLine ? [signinLine] : []),
+    ...formatActionAnswerLines(result, {
+      action: asString(trace?.action),
+      // signin targets no single element: it types into whichever login fields
+      // the page presented, and the `signed in` line already says which.
+      ...(signin ? { noElement: "the page's login fields" } : {}),
+    }),
     "",
     formatBrowserObservation(value),
   ].join("\n");
@@ -39055,6 +39364,12 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "passwords":
+      return formatPasswords(value);
+    case "secrets-exec":
+      return formatSecretsExec(value);
+    case "passwords-code":
+      return formatPasswordsCode(value);
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":
@@ -39318,6 +39633,8 @@ function inferFormatter(
     label === "browser key" ||
     label === "browser scroll" ||
     label === "browser fill" ||
+    label === "browser signin" ||
+    label === "browser signup" ||
     label === "browser clear" ||
     label === "browser wait" ||
     label === "browser hover" ||
@@ -42288,7 +42605,6 @@ export {
   MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
-  parseSnoozeDurationMs,
   resolveSnoozeUntilIso,
   checkLinearReadiness,
   findProjectRoots,

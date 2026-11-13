@@ -934,6 +934,20 @@ final class AccountService: ObservableObject {
   func bootstrap() async {
     guard !didConfigure else { return }
     didConfigure = true
+#if DEBUG
+    // `-adeLiveAccountFixture <state>`: the full app (live pairing and sync)
+    // over a fixture account, so a paired dev test machine can be checked
+    // against an account list with no Clerk and no account directory.
+    if let state = HubAccountPreviewData.liveFixtureState {
+      HubAccountPreviewData.seed(state: state)
+      // The access gate never shows over a seeded account, so a launch
+      // `-adePairingLink` goes to Settings, which opens it like a scanned code.
+      if let raw = UserDefaults.standard.string(forKey: "adePairingLink"), !raw.isEmpty {
+        SyncService.shared?.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: raw)
+      }
+      return
+    }
+#endif
     guard let key = AccountConfig.clerkPublishableKey else {
       phase = .unconfigured
       ProductAnalytics.shared.captureColdStart(afterReconcilingAccount: nil)
@@ -953,6 +967,12 @@ final class AccountService: ObservableObject {
     // still being restored. A paired phone can still continue while loading.
     if accountSessionStatusAllowsAccess(Clerk.shared.session?.status), Clerk.shared.user != nil {
       syncFromClerk()
+    } else if !localSignOutState.isSuppressed, let ownerId = deviceOwnershipStore.state.ownerId {
+      // The phone has an owner but Clerk has not restored the session yet.
+      // The Hub lists that account's saved projects meanwhile: with no
+      // account list it falls back to every folder of every computer it
+      // reaches. A refresh that answers signed out deletes the list.
+      AccountProjectStore.shared.activate(userId: ownerId, beforeSession: true)
     }
 
     do {
@@ -1033,6 +1053,8 @@ final class AccountService: ObservableObject {
       AccountProjectStore.shared.activate(userId: nextIdentity.userId)
       // The account's GitHub sign-in: another account's cached token is dropped.
       GitHubAccountConnection.shared.activate(userId: nextIdentity.userId)
+      // Passwords: another account's vault key leaves this device.
+      PasswordsVault.shared.activate(userId: nextIdentity.userId)
       ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
       SessionReplay.syncIdentity()
       if phase != .signedIn {
@@ -1108,6 +1130,8 @@ final class AccountService: ObservableObject {
     // An owner signing out takes the saved project list with them.
     AccountProjectStore.shared.deactivate(deletingCacheOf: previousOwnerId)
     GitHubAccountConnection.shared.deactivate()
+    // Passwords: the vault key and every opened item leave this device.
+    PasswordsVault.shared.deactivate()
     phase = .signedOut
     clearAttentionSnapshot()
     LiveActivityService.shared.prepareForAccountSignOut()

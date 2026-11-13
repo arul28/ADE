@@ -777,6 +777,15 @@ export const IPC = {
   builtInBrowserKeepTab: "ade.builtInBrowser.keepTab",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
+  // The Messages integration on this Mac (Settings › Integrations › Messages).
+  messagesIntegrationStatus: "ade.messagesIntegration.status",
+  messagesIntegrationSet: "ade.messagesIntegration.set",
+  // Passwords for the person in the browser: the key button and "Save to Passwords?".
+  builtInBrowserSavedLogins: "ade.builtInBrowser.savedLogins",
+  builtInBrowserFillSavedLogin: "ade.builtInBrowser.fillSavedLogin",
+  builtInBrowserLoginOffer: "ade.builtInBrowser.loginOffer",
+  builtInBrowserAcceptLoginOffer: "ade.builtInBrowser.acceptLoginOffer",
+  builtInBrowserDismissLoginOffer: "ade.builtInBrowser.dismissLoginOffer",
   builtInBrowserGoBack: "ade.builtInBrowser.goBack",
   builtInBrowserGoForward: "ade.builtInBrowser.goForward",
   builtInBrowserStop: "ade.builtInBrowser.stop",
@@ -1198,8 +1207,11 @@ export const IPC = {
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
   cloudRedeemInvite: "ade.cloud.redeemInvite",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
+  /** Opens Stripe's page to save a card with no charge (a too-new GitHub account's free hours start now). Account level: no pin. */
+  cloudOpenFreeUnlock: "ade.cloud.openFreeUnlock",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
+  cloudKeepIdleComputer: "ade.cloud.keepIdleComputer",
   /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
   cloudLaneLifeCall: "ade.cloud.laneLife.call",
   /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
@@ -1242,6 +1254,15 @@ export const IPC = {
    * A bound or pinned window calls the `provider_logins` action domain instead.
    */
   providerLoginsCall: "ade.providerLogins.call",
+  /**
+   * Passwords on this computer's brain, with no project bound: `{ action, args }`
+   * through the brain's `passwords.call`. A bound or pinned window calls the
+   * `passwords` action domain instead. The handler allows summaries and
+   * person-only writes; it never exposes `resolveForFill` or a value.
+   */
+  passwordsCall: "ade.passwords.call",
+  /** Settings › Passwords: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
+  passwordsReveal: "ade.passwords.reveal",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and

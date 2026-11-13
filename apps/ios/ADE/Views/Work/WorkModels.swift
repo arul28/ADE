@@ -2350,6 +2350,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// The other person on a shared lane who wrote this user message (`metadata.author`).
   var userMessageGuestAuthorName: String? = nil
   var userMessageIsRecoveryHandOff = false
+  /// True for the message that continues a chat after ADE restarted
+  /// (`workIsRestartResumeScheduleId`). Never a bubble.
+  var userMessageIsRestartResume = false
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.

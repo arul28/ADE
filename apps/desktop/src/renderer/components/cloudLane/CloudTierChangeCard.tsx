@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { cloudCatalogOf, cloudHoursLeftMilli, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudExtraHourCentsOf, cloudHoursLeftMilli, cloudPlanIdOf, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
 import { cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { ipcErrorMessage } from "../../lib/format";
@@ -145,7 +145,7 @@ export function CloudTierChangeCard({
             picked={picked}
             onPick={setPicked}
             leftMilli={leftMilli}
-            extraHourCents={account?.extraHours?.available ? cloudCatalogOf(account).extraHourCents : null}
+            extraHourCents={account?.extraHours?.available ? cloudExtraHourCentsOf(cloudPlanIdOf(account), cloudCatalogOf(account)) : null}
             markId={facts.fromSizeId}
             markLabel="Now"
             ariaLabel="New size"

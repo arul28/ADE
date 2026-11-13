@@ -6,7 +6,7 @@
  * `ade_request_id`, which is the launch id.
  */
 
-import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
+import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudFreePlanOf, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchSnapshot } from "./types/chatLaunch";
 import { isChatLaunchSucceeded } from "./chatLaunch";
@@ -26,7 +26,7 @@ export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cl
  * and each caller says what it does with unknown.
  */
 export type CloudLaneStartBlock = {
-  code: "out_of_hours" | "computers_full" | "disk_full";
+  code: "out_of_hours" | "disk_full";
   message: string;
   /** One short line for a narrow prompt box, so a label never wraps there. */
   short: string;
@@ -38,23 +38,21 @@ export function cloudLaneStartBlock(
 ): CloudLaneStartBlock | null {
   if (!account) return null;
   // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
-  const { extraHours, computers, disk } = account as Partial<CloudAccountState>;
+  const { extraHours, disk } = account as Partial<CloudAccountState>;
   if (cloudOutOfHours(account) && !extraHours?.enabled) {
-    return { code: "out_of_hours", message: CLOUD_OUT_OF_HOURS_MESSAGE, short: "Out of ADE Cloud hours." };
+    // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
+    const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
+    const why = github && github.state !== "ok" ? github.sentence : null;
+    return { code: "out_of_hours", message: why ?? CLOUD_OUT_OF_HOURS_MESSAGE, short: why ? "Free hours wait on GitHub." : "Out of ADE Cloud hours." };
   }
   if (!options.newLane) return null;
-  if (computers && computers.limit > 0 && computers.total >= computers.limit) {
-    const count = computers.limit;
-    return {
-      code: "computers_full",
-      message: count === 1
-        ? "You're using your one ADE Cloud computer."
-        : `You're using all ${count} ADE Cloud computers.`,
-      short: count === 1 ? "Your ADE Cloud computer is in use." : `All ${count} computers in use.`,
-    };
-  }
+  // No plan limits how many computers an account has; only the disk can be full.
   if (disk && disk.limitGb != null && disk.usedGb >= disk.limitGb) {
-    return { code: "disk_full", message: "Your ADE Cloud disk space is full.", short: "ADE Cloud disk full." };
+    return {
+      code: "disk_full",
+      message: "Your ADE Cloud computers use all your plan's disk. Delete a lane you no longer use in Settings › ADE Cloud, then try again.",
+      short: "ADE Cloud disk full.",
+    };
   }
   return null;
 }

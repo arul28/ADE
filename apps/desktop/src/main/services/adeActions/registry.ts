@@ -276,6 +276,7 @@ import {
   captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  capturePasswordsAnalytics,
   captureGhAccountSharingAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
@@ -311,6 +312,9 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { runWithSecrets } from "../secrets/secretExec";
+import { buildPasswordsDomainService } from "../passwords/passwordsDomain";
+import { buildMessagesDomain, type MessagesBridge } from "../messagesIntegration/messagesDomain";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
@@ -647,7 +651,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService" | "passwordService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -3467,6 +3471,7 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         owner: typeof actionArgs.owner === "string" ? actionArgs.owner : undefined,
         name: typeof actionArgs.name === "string" ? actionArgs.name : undefined,
         forceRefresh: actionArgs.forceRefresh === true,
+        userRequested: actionArgs.userRequested === true,
       });
     },
     async listRepoCollaborators(args?: unknown) {
@@ -4257,6 +4262,7 @@ export function buildProviderInstancesDomainService(
  * secret through the private secret card. `request` needs the chat service,
  * so it is absent on a runtime without one.
  */
+
 function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectSecretService = runtime.projectSecretService;
   if (!projectSecretService) return null;
@@ -4267,6 +4273,54 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
     // the account holds now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
+    // `ade secrets exec -- <command>`: this runtime runs the command with the
+    // project's secrets (and Passwords' secrets for it) in its environment,
+    // and returns its output masked. No value is ever returned.
+    exec: async (args?: unknown) => {
+      const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
+      const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
+      const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : runtime.projectRoot;
+      const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch((error: unknown) => {
+        runtime.logger.warn("project_secret.exec_lanes_failed", { error: getErrorMessage(error) });
+        return [];
+      });
+      const scope = projectSecretService.accountScope();
+      const fromPasswords = await runtime.passwordService?.secretValuesForProject(scope).catch((error: unknown) => {
+        runtime.logger.warn("project_secret.exec_passwords_secrets_failed", { error: getErrorMessage(error) });
+        return {};
+      }) ?? {};
+      // A project secret of the same name wins: it is the one this project set.
+      const secrets = { ...fromPasswords, ...projectSecretService.valuesForProcess() };
+      const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
+      const chosen = only?.length ? Object.fromEntries(Object.entries(secrets).filter(([name]) => only.includes(name))) : secrets;
+      const missing = only?.filter((name) => !(name in secrets)) ?? [];
+      if (missing.length) throw new AdeExpectedError(`No secret named ${missing.join(", ")} in this project. \`ade secrets list\` shows the names.`, "user");
+      const result = await runWithSecrets({
+        command,
+        cwd,
+        allowedRoots: [runtime.projectRoot, ...lanes.map((lane) => lane.worktreePath).filter(Boolean)],
+        secrets: chosen,
+        timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+      }).catch((error: unknown) => {
+        capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: "failed" });
+        throw error;
+      });
+      // The command ran: its own exit code is the caller's business, not a failure of exec.
+      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: result.timedOut ? "failed" : "completed" });
+      const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : null;
+      // One Activity row per run: which names, and the command they went to.
+      // Who ran it is stamped by the RPC server, never taken from the caller.
+      if (result.injected.length) {
+        void runtime.passwordService?.recordUse({
+          itemId: result.injected.join(", "),
+          kind: "secret",
+          target: command.join(" ").slice(0, 200),
+          by: input.calledBy === "person" ? "person" : "agent",
+          chatSessionId,
+        }).catch((error: unknown) => runtime.logger.warn("project_secret.exec_activity_failed", { error: getErrorMessage(error) }));
+      }
+      return result;
+    },
     ...(agentChatService
       ? {
           request: async (args?: unknown) => {
@@ -4525,12 +4579,15 @@ export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime)
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
   provider_logins: OpaqueService | null;
+  passwords: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
+    // Settings › Passwords and the browser's fill with no project open.
+    passwords: buildPasswordsDomainService(runtime),
   };
 }
 
@@ -4751,6 +4808,16 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
+    passwords: toService(buildPasswordsDomainService(runtime)),
+    messages: runtime.builtInBrowserService
+      ? toService(buildMessagesDomain({
+          bridge: runtime.builtInBrowserService,
+          requestChatInput: runtime.agentChatService ? (input) => runtime.agentChatService!.requestChatInput(input) : null,
+          authenticatorCode: runtime.passwordService
+            ? async (site, username) => await runtime.passwordService!.currentCode({ site, username })
+            : undefined,
+        }))
+      : null,
     integration_connect: buildIntegrationConnectDomainService(runtime),
     cloud: buildCloudDomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),

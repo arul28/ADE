@@ -1169,10 +1169,38 @@ describe("sessionService resume metadata", () => {
       ownerPid: 99_999,
       ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
     });
-    db.run(
-      "update terminal_sessions set last_output_at = ? where id = ?",
-      ["2026-03-17T00:19:50.000Z", "session-fresh-output"],
-    );
+    // A brain that crashed: its rows had output seconds ago, but a dead
+    // process cannot still be streaming, so they close without the grace.
+    // One row has no owner start time and is matched by its pid alone.
+    service.create({
+      sessionId: "session-dead-owner",
+      laneId: "lane-1",
+      ptyId: "pty-dead-owner",
+      tracked: true,
+      title: "Dead owner",
+      startedAt: "2026-03-17T00:19:30.000Z",
+      transcriptPath: "/tmp/session-dead-owner.log",
+      toolType: "claude",
+      ownerPid: 77_777,
+      ownerProcessStartedAt: "2026-03-17T00:05:00.000Z",
+    });
+    service.create({
+      sessionId: "session-dead-owner-pid-only",
+      laneId: "lane-1",
+      ptyId: "pty-dead-owner-pid-only",
+      tracked: true,
+      title: "Dead owner, pid only",
+      startedAt: "2026-03-17T00:19:30.000Z",
+      transcriptPath: "/tmp/session-dead-owner-pid-only.log",
+      toolType: "codex",
+      ownerPid: 77_777,
+    });
+    for (const sessionId of ["session-fresh-output", "session-dead-owner", "session-dead-owner-pid-only"]) {
+      db.run(
+        "update terminal_sessions set last_output_at = ? where id = ?",
+        ["2026-03-17T00:19:50.000Z", sessionId],
+      );
+    }
 
     const reconciled = service.reconcileStaleRunningSessions({
       endedAt: "2026-03-17T00:20:00.000Z",
@@ -1180,9 +1208,12 @@ describe("sessionService resume metadata", () => {
       liveOwnerPids: new Set([12_345]),
       liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:00:00.000Z" }],
       freshActivityGraceMs: 60_000,
+      deadOwnerIdentities: [{ pid: 77_777, startedAt: "2026-03-17T00:05:00.000Z" }],
     });
 
-    expect(reconciled).toBe(1);
+    expect(reconciled).toBe(3);
+    expect(service.get("session-dead-owner")).toEqual(expect.objectContaining({ status: "detached", ptyId: null }));
+    expect(service.get("session-dead-owner-pid-only")).toEqual(expect.objectContaining({ status: "detached", ptyId: null }));
     expect(service.get("session-stale-owner")).toEqual(expect.objectContaining({
       status: "detached",
       ptyId: null,

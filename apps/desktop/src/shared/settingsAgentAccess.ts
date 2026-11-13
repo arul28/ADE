@@ -87,6 +87,9 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "integrations.jira",
     "integrations.ade-cloud",
     "integrations.ade-cloud-sign-ins",
+    // Saved logins and secrets: the person's vault, never an agent's to change.
+    "passwords.logins",
+    "passwords.secrets",
   ],
   money: [
     // What cloud machines spent, what unattended agents may spend, the optional cap.

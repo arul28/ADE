@@ -140,14 +140,22 @@
     // ADE Cloud prices and meter in the Stripe SANDBOX. `scripts/stripe-setup.mjs`
     // creates or finds them and prints these ids.
     "STRIPE_PLAN_PRICE_ID": "price_1UZkLZBsy4QVYccDJhyDhBPZ",
-    // Extra hours' price, on its own "Extra hours" product (2026-11-11), so
-    // Checkout names the line. Read before the older STRIPE_EXTRA_PRICE_ID.
+    // The first extra-hours price (1 cent, 0.85 after 1,000), on the "Extra
+    // hours" product. Subscriptions bought before Cloud 7 keep it until their
+    // next renewal or plan change. Read before the older STRIPE_EXTRA_PRICE_ID.
     "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
+    // Each plan's own extra-hours price (Cloud 7, 2026-11-13): 2, 1.5 and 1.2
+    // cents an hour, all on the one hours meter.
+    "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbECABsy4QVYccDEYv5HvpZ",
+    "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UbECABsy4QVYccDRUVKf1y7",
+    "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UbECABsy4QVYccD0aD7kNA5",
     "STRIPE_METER_EVENT": "ade_cloud_small_hours",
-    // Pro, extra disk (its own meter, never the hours price) and the billing
-    // portal setup (card, cancel, invoices). Same script, same sandbox.
+    // Pro, Max, extra disk ($2 per 10 GB a month, its own meter, never the
+    // hours price) and the billing portal setup (card, cancel, invoices).
+    // Same script, same sandbox.
     "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
-    "STRIPE_DISK_PRICE_ID": "price_1UadQVBsy4QVYccDH47NVQxH",
+    "STRIPE_MAX_PRICE_ID": "price_1UbEC9Bsy4QVYccD16fLtkI2",
+    "STRIPE_DISK_PRICE_ID": "price_1UbECBBsy4QVYccDXcCUZEYt",
     "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
     "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
     // The ADE GitHub App's public client id (also a constant in the desktop),
@@ -223,22 +231,23 @@
         "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
         "MUSICKIT_TEAM_ID": "VQ372F39G6",
         "MUSICKIT_TOKEN_TTL_SECONDS": "2592000",
-        // Production bills in the Stripe SANDBOX while ADE Cloud is owner-only.
-        // STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PLAN_PRICE_ID,
-        // STRIPE_EXTRA_PRICE_ID and STRIPE_METER_EVENT are Worker secrets there
-        // (never restate one here: a var and a secret can't share a name).
-        // These five are the sandbox ids for Pro, extra hours, extra disk and
-        // the portal. STRIPE_EXTRA_HOURS_PRICE_ID is a var, read before the
-        // STRIPE_EXTRA_PRICE_ID secret, so the "Extra hours" product's price
-        // ships with this file.
-        // For real money: `scripts/stripe-setup.mjs` made the live objects on
-        // 2026-11-10; swap all nine values, add a live webhook, and clear the
-        // sandbox customer and subscription ids in D1 first.
-        "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
-        "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
-        "STRIPE_DISK_PRICE_ID": "price_1UadQVBsy4QVYccDH47NVQxH",
+        // Production bills in LIVE Stripe (the "ADE" account) since Cloud 7,
+        // 2026-11-13. STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+        // STRIPE_PLAN_PRICE_ID (Plus), STRIPE_EXTRA_PRICE_ID and
+        // STRIPE_METER_EVENT are Worker secrets there (never restate one here:
+        // a var and a secret can't share a name). These are the live ids for
+        // Pro, Max, extra hours (the pre-Cloud-7 price and each plan's), extra
+        // disk and the portal, from `scripts/stripe-setup.mjs` run on live.
+        // The sandbox ids stay in the top-level vars for local and staging.
+        "STRIPE_PRO_PRICE_ID": "price_1UaNNMPWulQjqSYP5RzGDNiy",
+        "STRIPE_MAX_PRICE_ID": "price_1UbMTjPWulQjqSYPlV8gvD3N",
+        "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UaNNNPWulQjqSYPQ2Pz5CXM",
+        "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbMTjPWulQjqSYPb3jzlykP",
+        "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UbMTjPWulQjqSYPROgTWr6C",
+        "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UbMTkPWulQjqSYPhPcWm3l6",
+        "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-        "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
+        "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.
         "GITHUB_APP_CLIENT_ID": "Iv23liy35Ed4L0oQODtl",

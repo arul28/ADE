@@ -11,7 +11,7 @@ import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
 function cloudHoursText(value: unknown): string {
-  return typeof value === "number" ? String(Math.round(value * 10) / 10) : "—";
+  return typeof value === "number" ? (Math.round(value * 10) / 10).toLocaleString("en-US") : "—";
 }
 
 /**
@@ -49,7 +49,6 @@ export function formatCloudStatus(value: unknown): string {
     const disk = typeof includes.diskGb === "number" ? `${includes.diskGb} GB disk shared by all computers` : null;
     const facts = [
       typeof includes.hours === "number" ? `${cloudHoursText(includes.hours)} hours` : null,
-      typeof includes.computers === "number" ? `${includes.computers} computers at once` : null,
       disk,
     ].filter(Boolean).join(", ");
     const pastDue = plan.pastDue === true ? " · last payment failed, free plan rules until paid" : "";
@@ -64,7 +63,8 @@ export function formatCloudStatus(value: unknown): string {
   const disk = isRecord(status.disk) ? status.disk : null;
   if (disk) rows.push(["Disk", `${cloudHoursText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
   const computers = isRecord(status.computers) ? status.computers : null;
-  if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} of ${String(computers.max ?? "—")} in use · ${String(computers.awake ?? 0)} awake`]);
+  // No plan limits how many computers an account has: a count, never "of N" (an older app may still send max).
+  if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} ${computers.inUse === 1 ? "computer" : "computers"} · ${String(computers.awake ?? 0)} awake`]);
   rows.push(["Default size", typeof status.defaultSize === "string" ? status.defaultSize : "unknown here (the app's choice)"]);
   const agents = isRecord(status.agents) ? status.agents : null;
   if (agents) {
@@ -93,7 +93,7 @@ export function formatCloudStatus(value: unknown): string {
       String(box.state ?? ""),
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       cloudUpdateText(box.update),
-      typeof box.deletesAt === "string" ? `deleted ${box.deletesAt.slice(0, 10)} unless used` : "",
+      typeof box.deletesAt === "string" ? `computer deleted ${box.deletesAt.slice(0, 10)} unless used or kept` : "",
     ];
   });
   const sizes = Array.isArray(status.sizes) ? status.sizes.filter(isRecord) : [];

@@ -1,11 +1,12 @@
 import { runCloudWakes } from "./cloudWake";
-import { createComputer, handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { createComputerSettled, handleCloudRequest, isCloudRequest } from "./cloud/routes";
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
 import { runPlanCleanupPicks } from "./cloud/planCleanup";
+import { runIdleCleanup } from "./cloud/idleCleanup";
 import { createCloudProvider } from "./cloud/provider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
@@ -220,7 +221,8 @@ export default Sentry.withSentry(sentryOptions, {
           const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
           await runCloudAutomations(env, {
             provider,
-            createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
+            // The free plan's GitHub rules are settled first, as a launch's request settles them.
+            createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
           });
         }),
         // "Delete the project's cloud computers" jobs: a few computers a tick.
@@ -234,6 +236,13 @@ export default Sentry.withSentry(sentryOptions, {
         settle("cloud_plan_cleanups", async () => {
           const key = env.AGENT37_API_KEY?.trim();
           if (key) await runPlanCleanupPicks(env, createCloudProvider(key));
+        }),
+        // Idle cleanup: warnings and follow-up emails for unused computers,
+        // then each one's work saved and the computer deleted, its lane kept,
+        // a few a tick. Two indexed reads when no computer is idle.
+        settle("cloud_idle_cleanup", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runIdleCleanup(env, createCloudProvider(key), Date.now(), (promise) => ctx.waitUntil(promise));
         }),
       ]);
     } catch (error) {

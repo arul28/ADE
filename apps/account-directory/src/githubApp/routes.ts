@@ -33,6 +33,7 @@ import {
   type GithubAppEnv,
   type GithubAppRuntime,
 } from "./grants";
+import { recordGithubAccountCreated } from "../cloud/freePlanGithub";
 import { checkToken, deleteToken, exchangeCode, readGithubUser, refreshTokens, type GithubTokens, type GithubUser } from "./oauth";
 import { confirmPage, connectedPage, failurePage, installedPage, maskEmail, type FailureKind } from "./pages";
 import { constantTimeEqual, randomBase64Url, randomHex, seal, sha256Base64Url, sha256Hex, signInAad, signInTokensAad, unseal } from "./seal";
@@ -359,13 +360,29 @@ async function finishSignIn(rt: GithubAppRuntime, row: SignInRow, status: "faile
   `).bind(status, resultCode, row.id).run();
 }
 
-function failureResponse(row: SignInRow | null, kind: FailureKind, redirectStatus: 302 | 303 = 302): Response {
-  if (row && (kind === "denied" || kind === "error" || kind === "expired")) {
-    const location = clientReturn(row, kind);
+function failureResponse(
+  row: SignInRow | null,
+  kind: FailureKind,
+  redirectStatus: 302 | 303 = 302,
+  githubCode: string | null = null,
+): Response {
+  if (row && (kind === "denied" || kind === "error" || kind === "refused" || kind === "github_busy" || kind === "expired")) {
+    // Clients know one failure: `error`. The page says which.
+    const location = clientReturn(row, kind === "refused" || kind === "github_busy" ? "error" : kind);
     if (location) return redirect(location, redirectStatus);
   }
-  return failurePage(kind);
+  return failurePage(kind, githubCode);
 }
+
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Waits before each new `GET /user` with a token GitHub just issued. A 401 or
+ * a failed request there is not a refusal: GitHub had answered the exchange a
+ * moment before. Bounded well below the callback's own time.
+ */
+const USER_READ_RETRY_DELAYS_MS = [1_000, 2_500] as const;
+/** One more exchange after a 5xx or a network failure: GitHub may never have used the code. */
+const EXCHANGE_RETRY_DELAY_MS = 1_000;
 
 /**
  * `GET /github/app/callback?code&state` (or `?error&state`). The state finds
@@ -411,8 +428,9 @@ async function handleCallback(request: Request, env: GithubAppEnv, url: URL, wai
   if (githubError) {
     const resultCode = githubError === "access_denied" ? "denied" : "error";
     await finishSignIn(rt, row, "failed", resultCode);
-    logGithubApp({ event: "github_app.sign_in_failed", userId: row.user_id, client: row.client_kind, kind: resultCode });
-    return failureResponse(row, resultCode);
+    const oauthError = resultCode === "error" ? githubError.slice(0, 64) : undefined;
+    logGithubApp({ event: "github_app.sign_in_failed", userId: row.user_id, client: row.client_kind, kind: resultCode === "denied" ? "denied" : "github_error", oauthError });
+    return failureResponse(row, resultCode === "denied" ? "denied" : "refused", 302, oauthError ?? null);
   }
   const code = url.searchParams.get("code") ?? "";
   // The redirect GitHub sends back must be this Worker's own callback, the same URL the sign-in was started with.
@@ -430,28 +448,51 @@ async function handleCallback(request: Request, env: GithubAppEnv, url: URL, wai
     await finishSignIn(rt, row, "failed", "error");
     return failureResponse(row, "error");
   }
-  const exchanged = await exchangeCode(rt.config, { code, redirectUri: row.redirect_uri, codeVerifier: verifier }, Date.now());
+  const exchange = () => exchangeCode(rt.config, { code, redirectUri: row.redirect_uri, codeVerifier: verifier }, Date.now());
+  let exchanged = await exchange();
+  let exchangeAttempts = 1;
+  if (!exchanged.ok && exchanged.kind === "transient") {
+    await pause(EXCHANGE_RETRY_DELAY_MS);
+    exchanged = await exchange();
+    exchangeAttempts += 1;
+  }
   if (!exchanged.ok) {
     await finishSignIn(rt, row, "failed", "error");
+    const oauthError = exchanged.kind === "refused" || exchanged.kind === "client_credentials" ? exchanged.oauthError : undefined;
     logGithubApp({
       event: "github_app.sign_in_failed",
       userId: row.user_id,
       client: row.client_kind,
       kind: exchanged.kind,
-      oauthError: exchanged.kind === "refused" || exchanged.kind === "client_credentials" ? exchanged.oauthError : undefined,
+      oauthError,
+      attempts: exchangeAttempts,
+      status: exchanged.kind === "transient" ? exchanged.status : undefined,
     });
-    return failureResponse(row, "error");
+    // A wrong client id or secret is this Worker's setting, not GitHub refusing the person.
+    const kind: FailureKind = exchanged.kind === "refused" ? "refused" : exchanged.kind === "transient" ? "github_busy" : "error";
+    return failureResponse(row, kind, 302, exchanged.kind === "refused" ? exchanged.oauthError : null);
   }
-  const user = await readGithubUser(rt.config, exchanged.tokens.accessToken);
+  let user = await readGithubUser(rt.config, exchanged.tokens.accessToken);
+  let userAttempts = 1;
+  for (const delayMs of USER_READ_RETRY_DELAYS_MS) {
+    if (user.ok) break;
+    await pause(delayMs);
+    user = await readGithubUser(rt.config, exchanged.tokens.accessToken);
+    userAttempts += 1;
+  }
   if (!user.ok) {
     // A token we cannot name is not kept.
     const dropped = deleteToken(rt.config, exchanged.tokens.accessToken);
     if (waitUntil) waitUntil(dropped); else await dropped;
     await finishSignIn(rt, row, "failed", "error");
-    logGithubApp({ event: "github_app.sign_in_failed", userId: row.user_id, client: row.client_kind, kind: `user_${user.kind}` });
-    return failureResponse(row, "error");
+    logGithubApp({ event: "github_app.sign_in_failed", userId: row.user_id, client: row.client_kind, kind: `user_${user.kind}`, attempts: userAttempts });
+    return failureResponse(row, "github_busy");
   }
 
+  // The GitHub account's age, for the free plan's rules (`cloud/freePlanGithub.ts`). Best effort: a settle reads it later otherwise.
+  await recordGithubAccountCreated(rt.db, user.user, Date.now()).catch((error: unknown) => {
+    logGithubApp({ event: "github_app.account_age_save_failed", userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
+  });
   const confirm = randomBase64Url(32);
   const held = await rt.db.prepare(`
     update github_app_sign_ins set status = 'confirming', github_login = ?, github_user_id = ?, tokens_sealed = ?, confirm_hash = ?, expires_at = ?
@@ -678,6 +719,9 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
     const read = await readGithubUser(rt.config, tokens.accessToken);
     if (!read.ok) return read.kind === "transient" ? githubUnavailable(60) : fail("not_this_app", "GitHub doesn't know this sign-in as one of the ADE GitHub App's.", 400);
     user = read.user;
+    await recordGithubAccountCreated(rt.db, user, Date.now()).catch((error: unknown) => {
+      logGithubApp({ event: "github_app.account_age_save_failed", userId, message: error instanceof Error ? error.message : "unknown" });
+    });
   }
 
   const { saved, previous } = await saveGrant(rt, userId, user, tokens, "adopted_device_flow", Date.now(), { onlyIfNotActive: true });

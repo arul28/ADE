@@ -952,9 +952,10 @@ export function WebClientRoot({
  * How long an owned link waits to learn whether its chat or lane still exists.
  * The check only decides between "open it" and "it is gone"; with no answer
  * the link opens anyway, so a project that is still starting on the computer
- * must not hold the page for the full request timeout.
+ * must not hold the page for the full request timeout (6 s before; a
+ * project still starting there held "Finding the chat" for all of it).
  */
-const OWNED_LINK_CHECK_MS = 6_000;
+const OWNED_LINK_CHECK_MS = 3_000;
 
 /** The check's answer, or null (could not say) when it takes too long. */
 function answerWithin(check: Promise<boolean | null>): Promise<boolean | null> {

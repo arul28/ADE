@@ -3868,12 +3868,12 @@ final class ADETests: XCTestCase {
       tailscaleAddress: nil
     )
     service.installSavedProfileForTesting(beta, token: "beta-secret", makeActive: true)
-    func advertisement(id: String, port: Int) -> DiscoveredSyncHost {
+    func advertisement(id: String, port: Int, identified: Bool = true) -> DiscoveredSyncHost {
       DiscoveredSyncHost(
         id: id,
         serviceName: "ADE Sync Mac Studio \(port)",
         hostName: "Mac Studio",
-        hostIdentity: id,
+        hostIdentity: identified ? id : nil,
         port: port,
         addresses: ["192.168.1.113"],
         tailscaleAddress: nil,
@@ -3896,6 +3896,11 @@ final class ADETests: XCTestCase {
     let lan = attempts.filter { $0.address == "192.168.1.113" }
     XCTAssertEqual(lan.first?.port, 8794, "The first Wi-Fi dial goes to this install's port.")
     XCTAssertFalse(lan.contains { $0.port == 8787 }, "Never another install's live port.")
+
+    // An older brain that sends no identity, on the shared address but
+    // another port, is another install: the saved one keeps its own port.
+    service.applyDiscoveredHostsForTesting([advertisement(id: "studio-anonymous", port: 8787, identified: false)])
+    XCTAssertEqual(service.activeHostProfile?.port, 8794, "An address match alone never moves the saved install to another port.")
   }
 
   @MainActor
@@ -7128,34 +7133,26 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  /// Remove… sends each folder's removal on the link of the computer that
+  /// holds it, never on the focused machine's link. A removed folder's saved
+  /// row stays off the phone's list (the machine never deletes it) until the
+  /// machine lists the folder again.
   @MainActor
-  func testSyncServiceForgetProjectHidesCachedAndRemoteRowsByRoot() throws {
-    let activeProjectIdKey = "ade.sync.activeProjectId"
-    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
-    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
-    let profileKey = "ade.sync.hostProfile"
-    let profilesKey = "ade.sync.hostProfiles"
-    let hiddenProjectsKey = "ade.sync.hiddenProjects"
-    let hostHiddenProjectsKey = "\(hiddenProjectsKey).host-1"
-    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
-    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
-    UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
-    UserDefaults.standard.removeObject(forKey: profileKey)
-    UserDefaults.standard.removeObject(forKey: profilesKey)
-    UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
-    UserDefaults.standard.removeObject(forKey: hostHiddenProjectsKey)
-    defer {
-      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
-      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
-      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
-      UserDefaults.standard.removeObject(forKey: profileKey)
-      UserDefaults.standard.removeObject(forKey: profilesKey)
-      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
-      UserDefaults.standard.removeObject(forKey: hostHiddenProjectsKey)
-    }
+  func testHubRemovalGoesOnlyToTheCopysComputerAndKeepsTheSavedRowOff() async throws {
+    let keys = [
+      "ade.sync.activeProjectId",
+      "ade.sync.activeProjectRootPath",
+      "ade.sync.activeProjectHostIdentity",
+      "ade.sync.hostProfile",
+      "ade.sync.hostProfiles",
+      "ade.sync.hiddenProjects",
+      "ade.sync.hiddenProjects.host-1",
+      "ade.sync.removedFromHostProjects.host-1",
+    ]
+    keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+    defer { keys.forEach { UserDefaults.standard.removeObject(forKey: $0) } }
 
-    let baseURL = makeTemporaryDirectory()
-    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
     try database.executeSqlForTesting("""
       insert into projects (
@@ -7163,68 +7160,80 @@ final class ADETests: XCTestCase {
       ) values
         ('db-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
     """)
-
+    let hello: ([[String: Any]]) -> [String: Any] = { projects in
+      [
+        "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+        "features": ["projectCatalog": true],
+        "projects": projects,
+      ]
+    }
     let service = SyncService(database: database)
-    try service.applyHelloPayloadForTesting([
-      "brain": [
-        "deviceId": "host-1",
-        "deviceName": "Mac Studio",
-      ],
-      "features": [
-        "projectCatalog": true,
-      ],
-      "projects": [],
-    ])
-    let cachedProject = try XCTUnwrap(service.projects.first(where: { $0.id == "db-project" }))
-    service.setActiveProjectForTesting(projectId: cachedProject.id, rootPath: cachedProject.rootPath)
-    XCTAssertEqual(service.activeProjectId, "db-project")
+    try service.applyHelloPayloadForTesting(hello([]))
+    service.setActiveProjectForTesting(projectId: "db-project", rootPath: "/tmp/project-one")
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false, suspendAutoReconnect: true)
+      database.close()
+    }
+    let focused = try XCTUnwrap(service.focusedMachineKey)
+    func copy(on phoneKey: String?) -> HubRemovalCopy {
+      HubRemovalCopy(computerKey: "mk-any", computerName: "A computer", phoneKey: phoneKey, projectId: "db-project", rootPath: "/tmp/project-one")
+    }
 
-    let registryProject = MobileProjectSummary(
-      id: "registry-project",
-      displayName: "Project One",
-      rootPath: "/tmp/project-one/",
-      defaultBaseRef: "main",
-      lastOpenedAt: "2026-04-22T02:00:00.000Z",
-      laneCount: 2,
-      isAvailable: true,
-      isCached: false
-    )
-    service.seedRemoteProjectCatalogForTesting([registryProject])
-    XCTAssertTrue(service.projects.contains { $0.id == "db-project" || $0.id == "registry-project" })
+    // Another computer with no live link, and a copy with no link at all:
+    // refused as unreachable, and nothing goes out on the focused link.
+    for phoneKey in ["machine:mini-id", nil] as [String?] {
+      do {
+        try await hubRemoveCopy(copy(on: phoneKey), sync: service, fleet: MachineFleet())
+        XCTFail("A copy on \(phoneKey ?? "no link") must not be removed through the focused machine.")
+      } catch {
+        XCTAssertEqual((error as NSError).code, 14)
+      }
+    }
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 0)
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" })
 
-    service.forgetProject(cachedProject)
-
+    // The focused computer's copy goes out on the focused link.
+    let removal = Task { try await hubRemoveCopy(copy(on: focused), sync: service, fleet: MachineFleet()) }
+    var requestId: String?
+    for _ in 0..<1_000 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "project_forget_request").first
+    }
+    let sent = try XCTUnwrap(requestId, "project_forget_request never went out")
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "project_forget_request"), 1)
+    service.completeCapturedRequestForTesting(requestId: sent, result: ["ok": true])
+    try await removal.value
     XCTAssertNil(service.activeProjectId)
-    XCTAssertNil(service.activeProjectRootPath)
-    XCTAssertTrue(service.shouldShowProjectHub)
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
-    XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
-    XCTAssertNil(UserDefaults.standard.stringArray(forKey: hiddenProjectsKey))
-    XCTAssertEqual(
-      UserDefaults.standard.stringArray(forKey: hostHiddenProjectsKey),
-      ["id:db-project", "root:/tmp/project-one"]
-    )
 
-    service.seedRemoteProjectCatalogForTesting([
-      MobileProjectSummary(
-        id: "registry-project",
-        displayName: "Project One",
-        rootPath: "/tmp/project-one/",
-        defaultBaseRef: "main",
-        lastOpenedAt: "2026-04-22T03:00:00.000Z",
-        laneCount: 3,
-        isAvailable: true,
-        isCached: false
-      ),
-    ])
+    // The saved row is still in the database; it stays off after a refresh
+    // and after the app starts again.
+    service.refreshProjectCatalog()
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
-    XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
+    let relaunched = SyncService(database: database)
+    try relaunched.applyHelloPayloadForTesting(hello([]))
+    XCTAssertFalse(relaunched.projects.contains { $0.id == "db-project" })
 
-    service.disconnect(clearCredentials: false, suspendAutoReconnect: true)
-    service.selectProject(registryProject)
-    XCTAssertNil(UserDefaults.standard.stringArray(forKey: hostHiddenProjectsKey))
-
-    database.close()
+    // Added back on the computer: its catalog lists the folder, so it shows.
+    try service.applyHelloPayloadForTesting(hello([[
+      "id": "db-project",
+      "displayName": "Project One",
+      "rootPath": "/tmp/project-one",
+      "defaultBaseRef": "main",
+      "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+      "laneCount": 1,
+      "isAvailable": true,
+      "isCached": false,
+    ]]))
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" })
+    // The mark is gone too: after the next start the saved row shows even
+    // before the catalog lists the folder.
+    let restarted = SyncService(database: database)
+    try restarted.applyHelloPayloadForTesting(hello([]))
+    XCTAssertTrue(restarted.projects.contains { $0.id == "db-project" })
   }
 
   @MainActor
@@ -16192,16 +16201,21 @@ final class ADETests: XCTestCase {
 
   // MARK: - Scheduled work partitioning + background lifecycle
 
+  @MainActor
   func testScheduledWorkExcludesBackgroundTaskFromScheduleAndTimelineCard() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","title":"Nightly","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"npm run build","prompt":"cd /repo && npm run build","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"update-resume:chat-1","kind":"wakeup","status":"scheduled","reason":"Resume after ADE restart","turnId":"turn-1"}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
     let snapshots = buildWorkScheduledWorkSnapshots(from: transcript)
-    // Schedule section excludes background_task.
+    // Schedule section excludes background_task and the restart resume.
     XCTAssertEqual(workChatInfoScheduleItems(snapshots).map(\.kind), ["cron"])
+    // The restart transcript, saved and live: only the ordinary wake is listed.
+    XCTAssertEqual(workChatInfoScheduleItems(buildWorkScheduledWorkSnapshots(from: WorkRestartResumePreviewData.savedTranscript)).map(\.id), ["wake-ci"])
+    XCTAssertEqual(workChatInfoScheduleItems(buildWorkScheduledWorkSnapshots(from: WorkRestartResumePreviewData.liveTranscript)).map(\.id), ["wake-ci"])
     // Background section carries exactly the background_task.
     XCTAssertEqual(workChatInfoBackgroundItems(snapshots).map(\.id), ["bg-1"])
 

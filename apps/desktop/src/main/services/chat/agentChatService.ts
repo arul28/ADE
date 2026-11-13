@@ -31,7 +31,7 @@ import {
   placeClaudeForkFromTransport,
   transplantClaudeSession as staticTransplantClaudeSession,
 } from "../externalSessions/claudeSessionTransplant";
-import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
+import { findCodexRolloutPathBySessionId, findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
 import { loadExternalSessionEvents } from "../externalSessions/events";
 import { loadExternalSessionDetail } from "../externalSessions/externalSessionDetail";
 import {
@@ -1226,6 +1226,7 @@ import {
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
   isPendingUpdateResumeScheduledWork,
+  isUpdateResumeScheduledWork,
   isUsageLimitChatError,
   resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
@@ -1858,6 +1859,8 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { forgetLiveTurnProject, noteLiveTurn } from "../runtime/liveTurnProjects";
+import { noteRestartContinuation } from "../runtime/brainUnplannedRestart";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
 import { createClaudeCliScheduleMirror } from "./claudeCliScheduledWork";
@@ -23080,6 +23083,8 @@ export function createAgentChatService(args: {
     managed.session.idleSinceAt = null;
     // The accepted turn has started, so it no longer waits on a provider start.
     clearTurnAccepted(managed);
+    // The next brain opens this project at once if this one crashes mid-turn.
+    noteLiveTurn(projectRoot, `chat:${managed.session.id}`, true);
   };
 
   /**
@@ -23098,6 +23103,7 @@ export function createAgentChatService(args: {
     managed.session.currentTurnStartedAt = null;
     managed.turnReasoningEffort = undefined;
     clearTurnAccepted(managed);
+    noteLiveTurn(projectRoot, `chat:${managed.session.id}`, false);
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
@@ -23336,6 +23342,8 @@ export function createAgentChatService(args: {
           provider: managed.session.provider,
           streak: restartResumeStreak,
         });
+        // For the window's restart banner; counted only after an unplanned restart.
+        if (resume.prompt === RESTART_RESUME_PROMPT) noteRestartContinuation("chat");
       } catch (error) {
         logger.warn("agent_chat.restart_resume_arm_failed", {
           sessionId,
@@ -57448,7 +57456,10 @@ export function createAgentChatService(args: {
     if (hasPathSeparator(externalSessionId)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
     }
-    const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome);
+    // A reopened chat names the account it was on; an external import names the
+    // account the user picked (or the one that owns the transcript).
+    const accountId = reopen?.instanceId ?? args.instanceId?.trim() ?? null;
+    const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome ?? args.configHome);
     if (!source) {
       const sourceHint = args.cwd?.trim()
         ? ` for cwd '${args.cwd.trim()}'`
@@ -57505,7 +57516,7 @@ export function createAgentChatService(args: {
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
         ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
-        ...(reopen?.instanceId ? { instanceId: reopen.instanceId } : {}),
+        ...(accountId ? { instanceId: accountId } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -57593,6 +57604,7 @@ export function createAgentChatService(args: {
     reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalThreadId = args.externalSessionId.trim();
+    const accountId = reopen?.instanceId ?? args.instanceId?.trim() ?? null;
     let createdSessionId: string | null = null;
     let forkedProviderThreadId: string | null = null;
     let forkedProviderRuntime: CodexRuntime | null = null;
@@ -57645,7 +57657,7 @@ export function createAgentChatService(args: {
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
         ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
-        ...(reopen?.instanceId ? { instanceId: reopen.instanceId } : {}),
+        ...(accountId ? { instanceId: accountId } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -57654,7 +57666,12 @@ export function createAgentChatService(args: {
         managed,
         "codex",
         externalThreadId,
-        path.resolve(reopen?.configHome?.trim() || process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
+        path.resolve(
+          reopen?.configHome?.trim()
+            || args.configHome?.trim()
+            || process.env.CODEX_HOME?.trim()
+            || path.join(os.homedir(), ".codex"),
+        ),
       );
       const runtime = await ensureCodexSessionRuntime(managed);
       forkedProviderRuntime = runtime;
@@ -57741,6 +57758,124 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * One in-flight Codex replay read per reader account + thread. Two imports
+   * that share a reader home must not interleave: the first places a scratch
+   * rollout and removes it afterwards, and the second would read a file that
+   * just went away. They share this promise and get the same envelopes.
+   */
+  type CodexReplayTurns = Parameters<typeof codexTurnsToChatEvents>[0];
+  const codexReplayReadsInFlight = new Map<string, Promise<CodexReplayTurns>>();
+
+  const fileIsNewer = async (candidate: string | null, than: string | null): Promise<boolean> => {
+    if (!candidate || !than) return false;
+    const [left, right] = await Promise.all([
+      fs.promises.stat(candidate).catch(() => null),
+      fs.promises.stat(than).catch(() => null),
+    ]);
+    return Boolean(left && right && left.mtimeMs > right.mtimeMs);
+  };
+
+  /**
+   * Read one external Codex thread's turns for a replay import.
+   *
+   * The reader's app-server only sees threads in its own config home. When the
+   * source lives elsewhere this places a scratch copy there — unless the home
+   * already holds the thread, which belongs to an ADE chat resuming from it and
+   * is never overwritten. That existing copy is read only when it is at least
+   * as new as the selected source; otherwise the import is refused rather than
+   * seeded from stale turns.
+   */
+  const readCodexThreadForReplay = async (opts: {
+    externalSessionId: string;
+    laneId: string;
+    instanceId: string | null;
+    sourceHome: string;
+    /** Raw turns only: each caller builds its own events for its own lane. */
+  }): Promise<CodexReplayTurns> => {
+    let readerSessionId: string | null = null;
+    // A rollout copied in for the reader is scratch: a replay creates a fresh
+    // chat with no thread pointer, so the copy is removed afterwards.
+    let placedRolloutPath: string | null = null;
+    try {
+      const reader = await createSession({
+        laneId: opts.laneId,
+        provider: "codex",
+        model: defaultCodexModel(),
+        // The source rollout is in its own account's home; the reader must
+        // run there to see the thread it is asked to read.
+        ...(opts.instanceId ? { instanceId: opts.instanceId } : {}),
+      });
+      readerSessionId = reader.id;
+      const readerManaged = ensureManagedSession(reader.id);
+      const readerHome = sessionConfigHome(readerManaged);
+      if (readerHome && !pathsEqual(readerHome, opts.sourceHome)) {
+        const readerCopy = await findCodexRolloutPathBySessionIdAsync(opts.externalSessionId, {
+          env: { CODEX_HOME: readerHome },
+        });
+        if (readerCopy) {
+          // The reader home already holds this thread. Never replace it (it is
+          // what another ADE chat resumes from), and never import older turns.
+          const sourceCopy = await findCodexRolloutPathBySessionIdAsync(opts.externalSessionId, {
+            env: { CODEX_HOME: opts.sourceHome },
+          });
+          if (await fileIsNewer(sourceCopy, readerCopy)) {
+            throw externalChatImportError(
+              "EXTERNAL_CHAT_SESSION_READ_FAILED",
+              `This Codex thread has newer activity in ${opts.sourceHome} than the copy ${readerHome} holds; open it from the account that owns the newer copy.`,
+            );
+          }
+        } else {
+          const placement = await moveProviderThread({
+            provider: "codex",
+            threadId: opts.externalSessionId,
+            fromConfigHome: opts.sourceHome,
+            toConfigHome: readerHome,
+          });
+          if (!placement.ok) {
+            throw externalChatImportError(
+              "EXTERNAL_CHAT_SESSION_READ_FAILED",
+              `Could not read the external Codex thread from ${opts.sourceHome}: ${placement.message}`,
+            );
+          }
+          placedRolloutPath = placement.targetExisted || placement.skipped ? null : placement.targetPath;
+        }
+      }
+      const runtime = await ensureCodexSessionRuntime(readerManaged);
+      const readResponse = await runtime.request<unknown>("thread/read", {
+        threadId: opts.externalSessionId,
+        includeTurns: true,
+      });
+      const sourceThread = extractCodexThreadTurns(readResponse, opts.externalSessionId);
+      if (!sourceThread.foundThread) {
+        throw externalChatImportError(
+          "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+          `External Codex thread '${opts.externalSessionId}' was not found by thread/read.`,
+        );
+      }
+      return sourceThread.turns;
+    } finally {
+      if (readerSessionId) {
+        await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
+            sessionId: readerSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      if (placedRolloutPath) {
+        // Leave the reader's home exactly as it was: the default-home copy
+        // would otherwise outrank the real transcript by mtime on the next
+        // list, re-attributing the session to the wrong account.
+        await fs.promises.rm(placedRolloutPath, { force: true }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_codex_replay_copy_cleanup_failed", {
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+    }
+  };
+
   const importExternalChatSessionViaReplay = async (
     args: AgentChatImportExternalSessionArgs,
     options: {
@@ -57757,7 +57892,7 @@ export function createAgentChatService(args: {
       if (hasPathSeparator(externalSessionId)) {
         throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
       }
-      const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome);
+      const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome ?? args.configHome);
       if (!source) {
         throw externalChatImportError(
           "EXTERNAL_CHAT_SESSION_NOT_FOUND",
@@ -57775,44 +57910,36 @@ export function createAgentChatService(args: {
         transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
       });
     } else if (args.provider === "codex") {
-      let readerSessionId: string | null = null;
-      try {
-        const reader = await createSession({
-          laneId: args.laneId,
-          provider: "codex",
-          model: defaultCodexModel(),
-        });
-        readerSessionId = reader.id;
-        const readerManaged = ensureManagedSession(reader.id);
-        const runtime = await ensureCodexSessionRuntime(readerManaged);
-        const readResponse = await runtime.request<unknown>("thread/read", {
-          threadId: externalSessionId,
-          includeTurns: true,
-        });
-        const sourceThread = extractCodexThreadTurns(readResponse, externalSessionId);
-        if (!sourceThread.foundThread) {
-          throw externalChatImportError(
-            "EXTERNAL_CHAT_SESSION_NOT_FOUND",
-            `External Codex thread '${externalSessionId}' was not found by thread/read.`,
-          );
-        }
-        envelopes = codexTurnsToChatEvents(sourceThread.turns, {
-          sessionId: "import-preview",
-          provider: "codex",
+      // Two imports of one thread into the same reader account share a single
+      // read: the first places a scratch rollout and removes it afterwards, so
+      // an interleaved second read could run against a file that just vanished.
+      const replayKey = `${args.instanceId?.trim() || "default"}\u0000${externalSessionId}`;
+      let read = codexReplayReadsInFlight.get(replayKey);
+      if (!read) {
+        read = readCodexThreadForReplay({
           externalSessionId,
-          importedAt: options.importedAt,
           laneId: args.laneId,
+          instanceId: args.instanceId?.trim() || null,
+          sourceHome: path.resolve(
+            reopen?.configHome?.trim()
+              || args.configHome?.trim()
+              || process.env.CODEX_HOME?.trim()
+              || path.join(os.homedir(), ".codex"),
+          ),
         });
-      } finally {
-        if (readerSessionId) {
-          await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
-            logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
-              sessionId: readerSessionId,
-              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-            });
-          });
-        }
+        codexReplayReadsInFlight.set(replayKey, read);
+        const clear = (): void => {
+          if (codexReplayReadsInFlight.get(replayKey) === read) codexReplayReadsInFlight.delete(replayKey);
+        };
+        read.then(clear, clear);
       }
+      envelopes = codexTurnsToChatEvents(await read, {
+        sessionId: "import-preview",
+        provider: "codex",
+        externalSessionId,
+        importedAt: options.importedAt,
+        laneId: args.laneId,
+      });
     } else {
       envelopes = await loadExternalImportEvents(args, options.importedAt, reopen);
     }
@@ -57839,6 +57966,11 @@ export function createAgentChatService(args: {
         model: targetModel,
         modelId: options.targetDescriptor.id,
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        // The account choice belongs to the source provider; a replay into
+        // another provider's model must not inherit it.
+        ...(args.instanceId?.trim() && options.targetProvider === args.provider
+          ? { instanceId: args.instanceId.trim() }
+          : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -70591,13 +70723,16 @@ export function createAgentChatService(args: {
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
     try {
       scheduledWorkPaused = scope.projectConfig().effective.ai?.chat?.scheduledWorkPaused === true;
-      const next = scheduledWorkScheduler?.nextWakeAt(row.id, scheduledWorkPaused) ?? null;
+      // ADE's own resume after a restart is not a wake the user scheduled: the
+      // Work row shows no wake time and the drawer no Schedule row for it.
+      const next = scheduledWorkScheduler?.nextWakeAt(row.id, scheduledWorkPaused, isUpdateResumeScheduledWork) ?? null;
       nextWakeAt = next == null ? null : new Date(next).toISOString();
       scheduledWorkPaused =
         scheduledWorkScheduler?.isSessionPaused(row.id) === true
         || scheduledWorkPaused;
       scheduledWork = (scheduledWorkScheduler?.list(row.id) ?? [])
         .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
+        .filter((schedule) => !isUpdateResumeScheduledWork(schedule))
         .map(toScheduledWorkItem);
     } catch (error) {
       logger.warn("agent_chat.scheduled_work_summary_failed", {
@@ -71758,6 +71893,7 @@ export function createAgentChatService(args: {
       alreadyOpen: 0,
       notReopenable: 0,
       failed: 0,
+      plannedReopened: 0,
     };
     if (hold) {
       // Claimed all the same: a later start must not reopen what this one held back.
@@ -71877,6 +72013,7 @@ export function createAgentChatService(args: {
         }
         ptyService.showSessionNotice?.(row.id, cliReopenedNotice({ unexpected, continued }));
         tally.reopened += 1;
+        if (!unexpected) tally.plannedReopened += 1;
         if (continued) tally.continued += 1;
       } catch (error) {
         // No resume target, a deleted lane, moved to another machine: it stays ended, as before.
@@ -71884,6 +72021,7 @@ export function createAgentChatService(args: {
         logger.warn("agent_chat.cli_reopen_failed", { sessionId: row.id, error: errorText(error) });
       }
     }
+    noteRestartContinuation("cli", tally.reopened - tally.plannedReopened);
     logger.info("agent_chat.cli_reopened_after_restart", {
       planned: planned.length,
       crash: crash.cutOff.length,
@@ -71919,7 +72057,8 @@ export function createAgentChatService(args: {
       throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
     }
     await scheduledWorkReady;
-    const nextWakeAt = scheduledWorkScheduler?.nextWakeAt(normalizedSessionId) ?? null;
+    // The same view as the session summary: ADE's restart resume is not listed.
+    const nextWakeAt = scheduledWorkScheduler?.nextWakeAt(normalizedSessionId, undefined, isUpdateResumeScheduledWork) ?? null;
     return {
       sessionId: normalizedSessionId,
       paused:
@@ -71928,6 +72067,7 @@ export function createAgentChatService(args: {
       nextWakeAt: nextWakeAt == null ? null : new Date(nextWakeAt).toISOString(),
       items: (scheduledWorkScheduler?.list(normalizedSessionId) ?? [])
         .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
+        .filter((schedule) => !isUpdateResumeScheduledWork(schedule))
         .map(toScheduledWorkItem),
     };
   };
@@ -72145,7 +72285,7 @@ export function createAgentChatService(args: {
     // resurrect the schedule behind this decision.
     if (paused) autoResume.noteSessionPaused(normalizedSessionId);
     await scheduledWorkScheduler.setSessionPaused(normalizedSessionId, paused);
-    const nextWakeAt = scheduledWorkScheduler.nextWakeAt(normalizedSessionId);
+    const nextWakeAt = scheduledWorkScheduler.nextWakeAt(normalizedSessionId, undefined, isUpdateResumeScheduledWork);
     const effectivelyPaused = scheduledWorkScheduler.isSessionPaused(normalizedSessionId)
       || projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true;
     return {
@@ -75482,6 +75622,7 @@ export function createAgentChatService(args: {
     // First, before anything in the drain can emit a turn's `done` event:
     // whatever the turn-settled path defers from here on must not run.
     serviceDisposed = true;
+    forgetLiveTurnProject(projectRoot);
     runtimeBudget.unregister(runtimeBudgetParticipant);
     clearTimeout(mcpAppOrphanSweepTimer);
     for (const watch of acceptedStartWatches.values()) clearTimeout(watch);
@@ -79722,6 +79863,25 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * A quiet info line in one chat (no wake, no turn): what ADE did on the
+   * chat's behalf, e.g. "Signed in to vercel.com with a saved login". False
+   * when the chat is gone or runs on another brain.
+   */
+  const postQuietNotice = (sessionId: string, message: string): boolean => {
+    try {
+      assertChatRuntimeOwnedHere(sessionId, "post a quiet notice");
+      emitChatEvent(ensureManagedSession(sessionId), { type: "system_notice", noticeKind: "info", message });
+      return true;
+    } catch (error) {
+      logger.warn("agent_chat.quiet_notice_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
+  /**
    * Create a blocking pending-input request for a chat session. Returns the user's answer.
    */
   const requestChatInput = async (args: RequestChatInputArgs): Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }> => {
@@ -81636,6 +81796,7 @@ export function createAgentChatService(args: {
     revokeMcpAppGrant,
     dismissPendingInputForSettlement,
     requestChatInput,
+    postQuietNotice,
     getAvailableModels,
     getModelCatalog,
     getSlashCommands,

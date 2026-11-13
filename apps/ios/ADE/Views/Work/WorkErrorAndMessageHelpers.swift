@@ -159,6 +159,9 @@ struct WorkChatMessageFold {
       previousEnvelopeWasAssistantText = false
       // ADE's hand-off to a rebuilt thread was never typed by the user.
       if envelope.userMessageIsRecoveryHandOff { return }
+      // Nor the message that continues a chat after a restart: the restart
+      // notice says so (desktop `isRestartResumeScheduleId`).
+      if envelope.userMessageIsRestartResume { return }
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         return
@@ -1115,6 +1118,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
   envelope.userMessageGuestAuthorName = entry.userMessageGuestAuthorName
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
+  envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
   envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)

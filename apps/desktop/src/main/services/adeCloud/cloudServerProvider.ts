@@ -8,7 +8,7 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState } from "../../../shared/adeCloud";
+import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
@@ -239,6 +239,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return statusOf(await request("POST", instancePath(id, "sleep"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
+    async keepIdleComputer(id: string): Promise<void> {
+      await request("POST", instancePath(id, "keep"), { body: {} });
+    },
+
     async requestIdleSleep(id: string): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "idle"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
@@ -278,6 +282,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async reportDiskUsage(id, report): Promise<void> {
       await request("POST", instancePath(id, "disk-usage"), { body: report });
+    },
+
+    async reportSustainedCpu(id, report): Promise<void> {
+      await request("POST", instancePath(id, "cpu-report"), { body: report });
     },
 
     async resizeInstance(id, resources, options): Promise<string> {
@@ -346,7 +354,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async billingCheckout(plan, cleanup): Promise<CloudCheckoutResult> {
-      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", ...(cleanup ? { cleanup } : {}) } }));
+      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", knowsMax: true, ...(cleanup ? { cleanup } : {}) } }));
       if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
         // A downgrade with a pick: the computers ADE frees now. Without one, over the cheaper plan: what goes over.
         const over = readCloudPlanCleanup(body.cleanup);
@@ -365,6 +373,13 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       const body = record(await request("POST", "/cloud/billing/portal"));
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
+    },
+
+    async billingFreeUnlock(): Promise<CloudFreeUnlockResult> {
+      const body = record(await request("POST", CLOUD_PATHS.billingFreeUnlock, { body: {} }));
+      if (body?.unlocked === true) return { url: null, unlocked: true };
+      if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { url: body.url, unlocked: false };
     },
 
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {

@@ -132,6 +132,7 @@ import type {
 } from "../shared/types/remoteMcp";
 import type { ProviderCompactionSettings } from "../shared/compactionSettings";
 import type { ProviderInstanceSettingsPatch } from "../shared/types/providerInstances";
+import type { PasswordItemSummary, PasswordsStatus } from "../shared/types/passwords";
 import type {
   ApiCredentialGetArgs,
   ApiCredentialListArgs,
@@ -6041,6 +6042,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           syncPort: null,
           publishHealth: null,
           lastWedge: null,
+          lastUnplannedRestart: null,
           runtimeMode: "primary",
           versionSkew: {
             state: "none",
@@ -6272,6 +6274,130 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       importEnv: resolvedArg({ imported: [], replaced: [] }),
       exportEnv: resolved({ filePath: "", secretCount: 0 }),
     },
+    // Sample Passwords items so Settings › Passwords renders its lists in the
+    // preview. Fake data only, and no field here holds a value: the real
+    // summaries never carry one either.
+    passwords: (() => {
+      const items: PasswordItemSummary[] = [
+        {
+          id: "pw-login-github",
+          kind: "login",
+          title: "GitHub",
+          sites: ["github.com"],
+          username: "octocat-preview",
+          hasPassword: true,
+          hasTotp: true,
+          projectScope: null,
+          updatedAt: now,
+        },
+        {
+          id: "pw-login-vercel",
+          kind: "login",
+          title: "Vercel",
+          sites: ["vercel.com"],
+          username: "preview@example.com",
+          hasPassword: true,
+          hasTotp: false,
+          projectScope: null,
+          updatedAt: new Date(Date.parse(now) - 3 * 86_400_000).toISOString(),
+        },
+        {
+          id: "pw-secret-openai",
+          kind: "secret",
+          title: "OPENAI_API_KEY",
+          sites: [],
+          username: null,
+          hasPassword: true,
+          hasTotp: false,
+          projectScope: null,
+          updatedAt: now,
+        },
+        {
+          id: "pw-secret-stripe",
+          kind: "secret",
+          title: "STRIPE_SECRET_KEY",
+          sites: [],
+          username: null,
+          hasPassword: true,
+          hasTotp: false,
+          projectScope: "github.com/ade/preview",
+          updatedAt: new Date(Date.parse(now) - 9 * 86_400_000).toISOString(),
+        },
+      ];
+      let enabled = true;
+      let cloudEnabled = true;
+      const status = (): PasswordsStatus => ({
+        signedIn: true,
+        enabled,
+        machineKind: "desktop",
+        cloudEnabled,
+        itemCount: enabled ? items.length : null,
+      });
+      return {
+        status: async () => status(),
+        setEnabled: async (args: { enabled: boolean }) => {
+          enabled = args.enabled;
+          return status();
+        },
+        setCloudEnabled: async (args: { enabled: boolean }) => {
+          cloudEnabled = args.enabled;
+          return status();
+        },
+        reset: async () => {
+          items.splice(0);
+          return status();
+        },
+        list: async () => [...items],
+        activity: async () => [],
+        // A fixture code that changes every 30 s, like a real authenticator.
+        code: async () => {
+          const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30);
+          return { code: String(Math.floor(Date.now() / 30_000) % 1_000_000).padStart(6, "0"), secondsLeft };
+        },
+        saveLogin: async (args: { id?: string; title?: string; origins: string[]; username: string }) => {
+          const saved: PasswordItemSummary = {
+            id: args.id ?? `pw-login-${items.length + 1}`,
+            kind: "login",
+            title: args.title?.trim() || args.origins[0] || "Login",
+            sites: args.origins,
+            username: args.username || null,
+            hasPassword: true,
+            hasTotp: false,
+            projectScope: null,
+            updatedAt: new Date().toISOString(),
+          };
+          const index = items.findIndex((item) => item.id === saved.id);
+          if (index >= 0) items[index] = saved;
+          else items.push(saved);
+          return saved;
+        },
+        saveSecret: async (args: { id?: string; name: string; projectScope: string | null }) => {
+          const saved: PasswordItemSummary = {
+            id: args.id ?? `pw-secret-${items.length + 1}`,
+            kind: "secret",
+            title: args.name,
+            sites: [],
+            username: null,
+            hasPassword: true,
+            hasTotp: false,
+            projectScope: args.projectScope,
+            updatedAt: new Date().toISOString(),
+          };
+          const index = items.findIndex((item) => item.id === saved.id);
+          if (index >= 0) items[index] = saved;
+          else items.push(saved);
+          return saved;
+        },
+        remove: async (args: { id: string }) => {
+          const index = items.findIndex((item) => item.id === args.id);
+          if (index < 0) return false;
+          items.splice(index, 1);
+          return true;
+        },
+        importCsv: async () => ({ imported: 0, skippedDuplicate: 0, skippedInvalid: 0 }),
+        sync: async () => undefined,
+      };
+    })(),
     storage: {
       getPressure: resolved({
         state: "normal" as const,

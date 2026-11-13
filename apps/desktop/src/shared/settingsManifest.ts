@@ -50,6 +50,9 @@ export const SETTINGS_TAB_IDS = [
   // The Android SDK belongs to one machine, so the page follows `?machine=`.
   "android",
   "keyboard",
+  // Saved logins and API keys, on the machine the page follows. Not the
+  // project's (Project → Secrets): these are the account's.
+  "passwords",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
   // still lands.
   "lanes-git",
@@ -133,7 +136,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
  * (a machine's own page).
  * Absent means This computer.
  */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "machines"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "passwords", "machines"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -217,6 +220,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // Keys are read by the window you type into, and each computer has its own
   // keyboard and OS shortcuts, so the page is per computer.
   { id: "keyboard", label: "Keyboard", description: "Shortcuts and Quick slots on this computer.", group: "app" },
+  // The account's saved sign-ins, followed one machine at a time: the switch
+  // is per computer, the cloud switch is the account's.
+  { id: "passwords", label: "Passwords", description: "Saved logins and API keys. Agents can use them to sign in and run commands, but never see them.", group: "app" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
@@ -1661,7 +1667,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-cloud.plans",
     label: "ADE Cloud plans and billing",
-    keywords: ["plan", "plans", "upgrade", "plus", "pro", "free", "price", "billing", "extra hours", "extra disk", "manage billing", "subscription", "invoice", "cancel"],
+    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "extra disk", "manage billing", "subscription", "invoice", "cancel"],
     tab: "ade-cloud",
     anchor: "cloud-plan",
     // The plans side by side, extra hours and extra disk; the account's Stripe subscription.
@@ -1869,6 +1875,41 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account-repo",
     web: "hidden",
     group: "Secrets",
+  },
+
+  // ── Passwords ────────────────────────────────────────────────────────────
+  // The account's saved sign-ins, one machine at a time. Scope `account`
+  // because what is kept is the account's; the switch beside it is this
+  // computer's, and the page follows a machine picker.
+  {
+    id: "passwords.logins",
+    label: "Saved logins",
+    keywords: ["password", "login", "sign in", "site", "username", "vault", "credential", "authenticator", "2fa"],
+    tab: "passwords",
+    anchor: "passwords-logins",
+    scope: "account",
+    web: "hidden",
+    group: "Passwords",
+  },
+  {
+    id: "passwords.secrets",
+    label: "Saved secrets",
+    keywords: ["secret", "api key", "token", "environment", "variable", "vault", "credential"],
+    tab: "passwords",
+    anchor: "passwords-secrets",
+    scope: "account",
+    web: "hidden",
+    group: "Passwords",
+  },
+  {
+    id: "passwords.activity",
+    label: "Password activity",
+    keywords: ["activity", "history", "used", "filled", "sign in", "audit"],
+    tab: "passwords",
+    anchor: "passwords-activity",
+    scope: "account",
+    web: "hidden",
+    group: "Passwords",
   },
 
   // ── Stats ────────────────────────────────────────────────────────────────
