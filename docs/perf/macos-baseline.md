@@ -3315,10 +3315,13 @@ sooner, in a frame that then runs long; the branch has no long frame,
 settles sooner, and is not slower on the S4 probe. No ceiling is set for
 these rows.
 
-No timer, poll or subscription is added. Home reads this computer's folders
-from the brain's project catalog (`project.listThisComputer`, one local IPC)
-on mount and when the recents change; the recents keep 24 folders, and the
-catalog lists all of them. Home and the top bar's copies menu build their
+No timer or poll is added. Home reads this computer's folders from the
+brain's project catalog (`project.listThisComputer`, one local IPC) on mount,
+when the recents change, and when a brain that the last read missed connects
+(one listener on the existing `app.onRuntimeStatusChanged` event; a heartbeat
+of the same brain reads nothing). The recents keep 24 folders, and the
+catalog lists all of them; a read that fails or finds no brain keeps the last
+catalog. Home and the top bar's copies menu build their
 copies from the snapshot and recents they already hold. The computers tag on
 the project page reads the copies sources once on mount and on window focus
 (one `listRecent`).
