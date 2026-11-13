@@ -1,7 +1,7 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraDisk, setExtraHours } from "./billing";
+import { CloudBillingError, createCheckoutUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours } from "./billing";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
@@ -26,7 +26,8 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
-import { CLOUD_LAUNCH_ENV, CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_LAUNCH_ENV, CLOUD_PATHS, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { overPlanInForce, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
@@ -190,6 +191,16 @@ async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number,
     };
   }
   return { ok: true, capGb: nextTotalGb };
+}
+
+/**
+ * Over the plan in force (a cheaper plan started with more computers or disk
+ * than it allows, and nobody picked what goes): a new computer is refused
+ * until the person cleans up or picks in ADE. Nothing is ever freed for it.
+ */
+function overPlanLimits(env: CloudEnv, account: AccountRow, computers: ComputerRow[]): Refused | null {
+  const over = overPlanInForce(env, account, computers);
+  return over ? { response: fail("over_plan_limits", overPlanLimitsSentence(over), 403), refusal: "over_plan_limits" } : null;
 }
 
 /** On the free plan with more disk than it has, a wake is refused (`freePlanOverDisk`). */
@@ -455,13 +466,16 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
-  const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
+  const { account, computers, outOfHours: empty } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(clientMetadata);
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: originOf(clientMetadata), key: requestId, refusedAction: action, now });
   if (empty) return refused(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
   if ((await ownerLimitState(env)).reached) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
+  // A move replaces its computer, so it adds nothing: only a new computer waits for the account to fit.
+  const over = isMove ? null : overPlanLimits(env, account, computers);
+  if (over) return refused(refuse(over));
 
   // A move carries the old computer's disk; a plain create always starts at the smallest.
   let diskGb = DISK_ON_CREATE_GB;
@@ -523,7 +537,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
 async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const { account, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
+  const { account, computers, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
   const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
   if (!metadataIn) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   // A repeat of a copy this account asked for gets that computer, before any
@@ -537,6 +551,8 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   });
   if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
   if ((await ownerLimitState(env)).reached) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
+  const over = overPlanLimits(env, account, computers);
+  if (over) return refuse(over);
 
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = resources
@@ -1069,7 +1085,7 @@ async function refuseForeignWake(request: { text(): Promise<string> }, env: Clou
   return wakeUrl && normalized(wakeUrl) === normalized(body.url) ? null : badRequest("That isn't this computer's wake address.");
 }
 
-const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk]);
+const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingPlanCleanup]);
 /** The most a person may set as extra disk's monthly limit, in dollars. */
 const EXTRA_DISK_LIMIT_MAX_USD = 1000;
 
@@ -1087,7 +1103,16 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
     if (path === CLOUD_PATHS.billingCheckout) {
       // Builds that know one paid plan send no body: that's Plus.
       if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro))) return badRequest("That plan isn't one ADE Cloud offers.");
-      return json(await createCheckoutUrl(env, userId, url.origin, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil));
+      // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
+      const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
+      if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
+      return json(await createCheckoutUrl(env, userId, url.origin, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
+    }
+    if (path === CLOUD_PATHS.billingPlanCleanup) {
+      const pick = readPlanCleanupPick(body);
+      if (!pick) return badRequest("Name the computers to free and whether to push their work first.");
+      await pickPlanCleanup(env, userId, body.planId, pick, now);
+      return json(await buildAccountState(env, userId, now));
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingExtraDisk) {

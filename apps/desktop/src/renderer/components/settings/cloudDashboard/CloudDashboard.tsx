@@ -2,9 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
+  CLOUD_PLAN_LABELS,
   cloudAccountBanner,
   cloudEarnedHoursOf,
   cloudFreePlanOf,
+  cloudCatalogOf,
+  cloudPlanLabelOf,
   formatCloudDate,
   formatCloudGb,
   formatCloudHours,
@@ -12,6 +15,7 @@ import {
   planCleanupDoneSentence,
   timedWakesCancelledSentence,
   type CloudAccountState,
+  type CloudPlanCleanupPick,
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
@@ -29,6 +33,7 @@ import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash 
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
+import { CloudPlanLimitsDialog } from "./CloudPlanLimitsDialog";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
@@ -235,7 +240,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       />
 
       {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
-      <PlanNotices account={account} />
+      <PlanNotices account={account} onChanged={refresh} />
       {diskShare >= CLOUD_DISK_WARN_SHARE ? (
         <Banner
           layout="inline"
@@ -690,37 +695,67 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
 }
 
 /**
- * What a cheaper plan's limits will remove (and when), what the last cleanup
- * removed, and timed wakes that were cancelled: each one sentence from the
- * server's shared wording, so the app and the emails say the same thing.
+ * A cheaper plan's limits, what the last pick freed, and timed wakes that
+ * were cancelled: each from the server's shared wording, so the app and the
+ * emails say the same thing. Over a cheaper plan (in force, or a cancel made
+ * in the billing portal waiting), the notice opens the same question as a
+ * downgrade (CloudPlanLimitsDialog); while ADE frees a pick it says so.
  */
-function PlanNotices({ account }: { account: CloudAccountState }) {
+function PlanNotices({ account, onChanged }: { account: CloudAccountState; onChanged: () => void }) {
   const cleanup = account.planCleanup ?? null;
   const done = account.planCleanupDone ?? null;
   const wakes = account.timedWakesCancelled ?? null;
+  const [asking, setAsking] = useState(false);
   if (!cleanup && !done && !wakes) return null;
+  const plan = cleanup ? CLOUD_PLAN_LABELS[cleanup.planId] : "";
+  const freeing = cleanup?.freeing ?? null;
+  const freeingCount = freeing?.instanceIds.length ?? 0;
+  const pickFor = async (pick: CloudPlanCleanupPick) => {
+    if (!cleanup) return;
+    const bridge = window.ade.cloud?.pickPlanCleanup;
+    if (!bridge) throw new Error("This version of ADE can't do that here.");
+    await bridge({ planId: cleanup.planId, ...pick });
+    showToast({ tone: "success", title: `ADE ${pick.push ? "is pushing the work of and freeing" : "is deleting"} ${pick.instanceIds.length === 1 ? "1 computer" : `${pick.instanceIds.length} computers`} now.` });
+    onChanged();
+  };
   return (
     <>
-      {cleanup ? (
+      {cleanup && freeing ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: `cloud-plan-freeing-${freeing.at}`,
+            tone: "info",
+            busy: true,
+            title: `ADE is freeing ${freeingCount === 1 ? "1 computer" : `${freeingCount} computers`} to fit ${plan}`,
+            detail: freeing.push
+              ? "It pushes each lane's work to GitHub first. Their lanes and chats stay."
+              : "Their lanes and chats stay.",
+            report: false,
+          }}
+        />
+      ) : cleanup ? (
         <Banner
           layout="inline"
           model={{
             id: "cloud-plan-cleanup",
             tone: "warning",
-            title: cleanup.sentence,
-            detail: cleanup.dueAt ? `This happens on ${formatCloudDate(cleanup.dueAt)}. To choose which go, delete computers yourself before then.` : undefined,
-            extra: cleanup.computers.length ? (
-              <ul className="adecd-cleanup-list">
-                {cleanup.computers.map((computer) => (
-                  <li key={computer.instanceId}>
-                    <b>{computer.laneName ?? computer.name ?? computer.instanceId}</b>
-                    <span>{computer.branch ? `work goes to ${computer.branch}` : "no lane"}, {formatCloudGb(computer.diskGb)}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : undefined,
+            title: `Your computers don't fit ${plan}`,
+            detail: `${cleanup.sentence} ${cleanup.startsAt != null
+              ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
+              : "ADE can't make a new computer until they fit. It deletes nothing on its own."}`,
+            actions: [{ label: "Choose what goes", variant: "primary", onClick: () => setAsking(true) }],
             report: false,
           }}
+        />
+      ) : null}
+      {asking && cleanup && !freeing ? (
+        <CloudPlanLimitsDialog
+          cleanup={cleanup}
+          mode="resolve"
+          currentPlanLabel={cloudPlanLabelOf(account, cloudCatalogOf(account))}
+          onClose={() => setAsking(false)}
+          onPick={pickFor}
         />
       ) : null}
       {done ? <Banner layout="inline" model={{ id: `cloud-cleanup-done-${done.at}`, tone: "info", title: "ADE freed computers for your plan", detail: planCleanupDoneSentence(done), report: false }} /> : null}

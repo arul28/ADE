@@ -188,11 +188,18 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let sentence: String?
   }
 
-  /// The computers a cheaper plan's limits will free (`CloudPlanCleanup`):
-  /// the server's warning and when ADE frees them (null in a preview).
+  /// What goes over a cheaper plan's limits (`CloudPlanCleanup`). ADE frees
+  /// nothing on its own: the person picks on the desktop. `startsAt`: when a
+  /// waiting cheaper plan starts (nil once it is in force, when no new
+  /// computer can be made). `freeing`: ADE is freeing the person's pick now.
   struct PlanCleanup: Decodable, Equatable {
+    struct Freeing: Decodable, Equatable {
+      let instanceIds: [String]?
+    }
+    let planId: String?
     let sentence: String?
-    let dueAt: Double?
+    let startsAt: Double?
+    let freeing: Freeing?
   }
 
   /// What a cheaper plan's limits freed and kept (`CloudPlanCleanupDone`, no
@@ -203,6 +210,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let branch: String?
       /// The computer held a lane, which ADE kept; nil (an older server) reads as no.
       let laneKept: Bool?
+      /// False when the person chose to delete it without pushing; nil (an older server) reads as pushed.
+      let pushed: Bool?
     }
     struct Kept: Decodable, Equatable {
       let name: String

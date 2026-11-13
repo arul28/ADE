@@ -210,27 +210,47 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   "Push all work to GitHub" wake, which does not restart the 30-day delete
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
   and the 30-day delete of unused computers still runs. The owner report
-  lists these accounts. A cheaper plan's limits then free the oldest
-  computers (below).
-- **A cheaper plan's limits** (`planCleanup.ts`, migration 0027; "never stop
-  a person from paying less; warn them"): Pro to Plus, a cancel, or a plan
-  that ends after failed payments is never refused. Once the cheaper plan is
-  on and the account holds more computers or disk than it allows (disk that
-  extra disk covers counts as fitting; `past_due` is never cleaned), the
-  ten-minute owner check sets `plan_cleanup_due_at` 3 days out and emails the
-  list; at that time it frees the OLDEST computers past the limits, at most 4
-  a run. Each computer's own ADE interrupts its agents, saves its chats and
-  pushes every lane's work (`ade cloud prepare-stop`, `push-work`, run over
-  exec in a free 15-minute wake), a `work-state` read must find nothing left,
-  then the computer is deleted and its lane kept as a lane without a computer
-  (reason `plan_limit`); the next message to the lane makes a new computer.
-  A computer whose work can't all be pushed stays, the person is told, and it
-  is tried again a day later; nothing else goes in its place. The person sees
-  it before (the sentence `planCleanupSentence` at the change in ADE,
-  `downgradePreviews` and `planCleanup` on the account, an email when the
-  downgrade or cancel is made and another when the cheaper plan starts) and
-  after (an email naming each computer and the branch its work went to,
-  `planCleanupDone` for 14 days).
+  lists these accounts. A cheaper plan's limits apply too (below).
+- **A cheaper plan's limits** (`planCleanup.ts`, migrations 0027 and 0032;
+  the owner's rules of 2026-11-13): ADE never removes a computer on its own,
+  and there is no grace period. Disk that extra disk covers counts as
+  fitting; a `past_due` account is never cleaned.
+  - **In ADE (Pro to Plus):** a move that fits asks nothing special. A move
+    that would leave more computers or disk than Plus allows
+    (`downgradePreviews.plus`) opens a question first
+    (`CloudPlanLimitsDialog.tsx`): "I'll clean up myself" (nothing changes;
+    it lists the oldest computers whose delete would be enough) or "Let ADE
+    handle it" (a "Push all work to GitHub first" switch, on by default, and
+    the computers to free, the oldest that make it fit checked to start; the
+    send stays off until the pick fits). The checkout request carries the
+    pick (`cleanup`, `CloudPlanCleanupPick`); the server checks it names only
+    the account's computers and makes the account fit before Stripe is asked
+    (409 `cleanup_does_not_fit` / `cleanup_changed` / `cleanup_running`
+    change nothing), changes the plan, and records the pick
+    (`plan_cleanup_choice_json`). The minute cron (`runPlanCleanupPicks`)
+    frees exactly those computers at once, a few a tick, not at the period
+    end. A request without a pick (an older build) changes the plan and
+    deletes nothing.
+  - **Outside ADE (the billing portal, a plan that ended):** nothing is
+    deleted. Once the cheaper plan is in force and the account is still over
+    it, a new computer or a copy is refused with 403 `over_plan_limits`
+    (`overPlanLimitsSentence`), the ten-minute owner check emails the person
+    once (`plan_over_told_at`), and the dashboard's notice opens the same
+    question ("Choose what goes"), which sends `POST
+    /cloud/billing/plan-cleanup`. A cancel waiting for the period end gets an
+    email and the same notice, with the date.
+  - **Freeing one computer** keeps its lane. With push on, the computer's own
+    ADE interrupts its agents, saves its chats and pushes every lane's work
+    (`ade cloud prepare-stop`, `push-work`, run over exec in a free 15-minute
+    wake), a `work-state` read must find nothing left, then the computer is
+    deleted. A computer whose work can't all be pushed stays and the person
+    is told; nothing else goes in its place. With push off (a second
+    confirmation in ADE), an awake computer saves its chats and the computer
+    is deleted. Either way the lane stays as a lane without a computer
+    (reason `plan_limit`), with its chats; the next message to it makes a new
+    computer. After the pick, an email names each computer and the branch its
+    work went to, and the account carries `planCleanupDone` for 14 days. The
+    phone shows the notices and sends the person to the desktop to pick.
 - **Timed wake-ups cancelled:** when a blocked account's timed wakes are
   deleted (0 hours, or the free plan over its disk), the person gets one
   email a period, and the account carries `timedWakesCancelled` while that

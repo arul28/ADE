@@ -369,7 +369,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
       };
     }
-    if (code === "out_of_hours" || code === "over_plan_disk") {
+    if (code === "out_of_hours" || code === "over_plan_disk" || code === "over_plan_limits") {
       return { ok: false, blocker: code, message: getErrorMessage(error) };
     }
     // A disk refusal keeps its reason, so a notice can offer the way out (extra disk, a bigger size).

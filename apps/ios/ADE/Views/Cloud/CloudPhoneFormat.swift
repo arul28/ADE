@@ -45,7 +45,7 @@ func cloudPlanSentenceName(_ id: String) -> String {
 func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> String? {
   var parts: [String] = []
   if !done.freed.isEmpty {
-    let list = done.freed.map { entry in entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
+    let list = done.freed.map { entry in entry.pushed == false ? entry.name : entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
     let these = done.freed.count == 1 ? "this computer" : "these computers"
     // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
     let lanesKept = done.freed.filter { $0.laneKept == true }.count
@@ -57,12 +57,26 @@ func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> 
     } else {
       kept = " \(lanesKept == 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay"); the next message to a lane makes a new computer."
     }
-    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE pushed each lane's work to GitHub and removed \(these): \(list).\(kept)")
+    let how = done.freed.allSatisfy { $0.pushed != false } ? "pushed each lane's work to GitHub and removed" : "removed"
+    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE \(how) \(these): \(list).\(kept)")
   }
   if !done.kept.isEmpty {
-    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.")
+    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself, or pick again in ADE.")
   }
   return parts.isEmpty ? nil : parts.joined(separator: " ")
+}
+
+/// A cheaper plan's limits on the phone: the server's sentence, then what
+/// holds until the person picks on the desktop (the phone can't pick). Nil
+/// when there is nothing to say.
+func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String? {
+  if let ids = cleanup.freeing?.instanceIds {
+    return "ADE is freeing \(ids.count == 1 ? "1 computer" : "\(ids.count) computers") you picked to fit \(cloudPlanSentenceName(cleanup.planId ?? "plus")). Their lanes and chats stay."
+  }
+  guard let sentence = cloudPhoneWords(cleanup.sentence) else { return nil }
+  let when = cleanup.startsAt.map { "You move to \(cloudPlanSentenceName(cleanup.planId ?? "plus")) on \(cloudDate($0))." }
+    ?? "ADE can't make a new computer until they fit."
+  return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
 }
 
 /// Why timed wake-ups were cancelled and how they come back
