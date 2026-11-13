@@ -853,8 +853,15 @@ struct HubScreen: View {
     Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { filter in
       // The local folders are filtered too, so their chats count.
       // A project's second folders are folded into its tile; their chats count.
-      (filter, hubRosterFilterCount(hubProjectPresentations + duplicatePresentations + localSections.flatMap(\.presentations), filter: filter))
+      (filter, hubRosterFilterCount(hubProjectPresentations + shownDuplicateFolders + localSections.flatMap(\.presentations), filter: filter))
     })
+  }
+
+  /// The second folders whose project has a tile on the list; a hidden
+  /// project's folders count nowhere.
+  private var shownDuplicateFolders: [HubProjectPresentation] {
+    let shown = Set(hubProjectPresentations.compactMap { accountJoin.accountIdByCardId[$0.project.id] })
+    return duplicatePresentations.filter { accountJoin.duplicateCardIds[$0.project.id].map(shown.contains) ?? false }
   }
 
   var filteredHubProjectPresentations: [HubProjectPresentation] {
