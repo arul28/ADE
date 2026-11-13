@@ -5872,7 +5872,11 @@ final class SyncService: ObservableObject {
     ) {
       self.sendEnvelope(type: "project_forget_request", requestId: requestId, payload: payload)
     }
-    let result = try decode(raw, as: MobileProjectForgetResultPayload.self)
+    guard let result = try? decode(raw, as: MobileProjectForgetResultPayload.self) else {
+      throw NSError(domain: "ADE", code: mobileProjectForgetUnreadableReplyCode, userInfo: [
+        NSLocalizedDescriptionKey: "The computer sent an unreadable answer.",
+      ])
+    }
     guard result.ok else {
       throw NSError(domain: "ADE", code: 15, userInfo: [
         NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",

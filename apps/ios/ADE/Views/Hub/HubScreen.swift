@@ -1052,11 +1052,10 @@ struct HubScreen: View {
     var duplicates: [HubProjectPresentation] = []
     var hiddenMatched: [HubHiddenEntry] = []
     let hidden = hiddenList.keys
-    // A folder the user hid on this phone, by its computer and id: the key
-    // it is stored under, else the key it would be stored under.
-    func folderHideKey(_ cardId: String) -> String {
-      let keys = hubFolderHideKeys(cardComputer(cardId, merge: merge))
-      return keys.first(where: hidden.contains) ?? keys[0]
+    // The stored keys that hide a folder row: any folder behind it (a merged
+    // row has one per computer), under either key form.
+    func folderHiddenKeys(_ cardId: String) -> Set<String> {
+      hubFolderHideKeySet(cardId, merge: merge).intersection(hidden)
     }
     let cards = hubAccountJoinCards(
       focused: focusedRosters,
@@ -1094,12 +1093,12 @@ struct HubScreen: View {
         hiddenMatched.append(HubHiddenEntry(key: hubHiddenAccountKey(project.id), name: project.name, computerKey: nil))
       }
       for presentation in pass.localPresentations {
-        let key = folderHideKey(presentation.project.id)
-        if hidden.contains(key) {
+        let keys = folderHiddenKeys(presentation.project.id)
+        if let key = keys.sorted().first {
           // Listed while any computer that holds it is reachable, as the
           // "Only on" row is.
           if let computer = reachableHolders(presentation.project.id, merge: merge).first {
-            hiddenMatched.append(HubHiddenEntry(key: key, name: "\(presentation.project.displayName) on \(computer.name)", computerKey: computer.key))
+            hiddenMatched.append(HubHiddenEntry(key: key, name: "\(presentation.project.displayName) on \(computer.name)", computerKey: computer.key, keys: keys))
           }
         } else {
           local.append(presentation)
@@ -1111,9 +1110,9 @@ struct HubScreen: View {
       // The machine-only Hub (signed out, or an older server): every folder
       // is a card, less the ones removed from this list.
       nextPresentations = nextPresentations.filter { presentation in
-        let key = folderHideKey(presentation.project.id)
-        guard hidden.contains(key) else { return true }
-        hiddenMatched.append(HubHiddenEntry(key: key, name: presentation.project.displayName, computerKey: nil))
+        let keys = folderHiddenKeys(presentation.project.id)
+        guard let key = keys.sorted().first else { return true }
+        hiddenMatched.append(HubHiddenEntry(key: key, name: presentation.project.displayName, computerKey: nil, keys: keys))
         return false
       }
     }

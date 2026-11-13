@@ -683,7 +683,7 @@ final class MachineConnection {
       timeoutMessage: "Timed out removing that project."
     )
     guard let result = machineConnectionDecode(raw, as: MobileProjectForgetResultPayload.self) else {
-      throw NSError(domain: "ADE", code: 15, userInfo: [
+      throw NSError(domain: "ADE", code: mobileProjectForgetUnreadableReplyCode, userInfo: [
         NSLocalizedDescriptionKey: "The computer sent an unreadable answer.",
       ])
     }

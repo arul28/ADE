@@ -101,7 +101,7 @@ extension HubScreen {
   /// changes on a computer or the account. Undo or "N hidden" shows them.
   func hideOnPhone(_ presentations: [HubProjectPresentation]) {
     let items = presentations.map(removalItem)
-    let keys = Set(items.map(\.hideKey))
+    let keys = items.reduce(into: Set<String>()) { $0.formUnion($1.hideKeys) }
     guard !keys.isEmpty else { return }
     hiddenList.hide(keys)
     projectOpenFailureToast = ADEToastMessage(
@@ -188,6 +188,20 @@ extension HubScreen {
     hubHiddenFolderKey(computerKey: computer.phoneKey ?? computer.key, projectId: computer.project.id)
   }
 
+  /// The hide keys of every folder behind a card: its own and the copies the
+  /// fleet merge folded into it, on any computer. `stableOnly` leaves out
+  /// the account-key form that earlier builds stored.
+  func hubFolderHideKeySet(_ cardId: String, merge: HubFleetMerge? = nil, stableOnly: Bool = false) -> Set<String> {
+    let merge = merge ?? fleetMerge
+    var computers = [cardComputer(cardId, merge: merge)]
+    for location in merge.projectLocations[cardId] ?? [] {
+      computers.append(hubCardComputer(phoneKey: location.machineKey, project: location.project))
+    }
+    return computers.reduce(into: Set<String>()) { keys, computer in
+      if stableOnly { keys.insert(hubFolderHideKey(computer)) } else { keys.formUnion(hubFolderHideKeys(computer)) }
+    }
+  }
+
   /// Every key a hidden folder may be stored under: the stable one, and the
   /// account computer key that earlier builds stored.
   func hubFolderHideKeys(_ computer: HubCardComputer) -> [String] {
@@ -263,9 +277,9 @@ extension HubScreen {
         rootPath: copy.rootPath
       ))
     }
-    let hideKey = accountId.map(hubHiddenAccountKey)
-      ?? (accountOnly == nil ? hubFolderHideKey(cardComputer(cardId)) : nil)
-      ?? "card:\(cardId)"
+    let hideKeys: Set<String> = accountId.map { [hubHiddenAccountKey($0)] }
+      ?? (accountOnly == nil ? hubFolderHideKeySet(cardId, stableOnly: true) : nil)
+      ?? ["card:\(cardId)"]
     return HubRemovalItem(
       id: cardId,
       name: accountProject?.name ?? presentation.project.displayName,
@@ -273,7 +287,7 @@ extension HubScreen {
       current: current,
       copies: copies,
       hasRepository: accountProject != nil || gitHubIdentityByCard[cardId] != nil,
-      hideKey: hideKey
+      hideKeys: hideKeys
     )
   }
 

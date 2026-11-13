@@ -320,6 +320,10 @@ struct MobileProjectSwitchResultPayload: Codable, Equatable {
   var connection: MobileProjectConnectionPayload?
 }
 
+/// `NSError` code (domain "ADE") for a removal reply the phone could not
+/// read: the computer may have removed the folder.
+let mobileProjectForgetUnreadableReplyCode = 45
+
 struct MobileProjectForgetResultPayload: Codable, Equatable {
   var ok: Bool
   var message: String?

@@ -94,8 +94,9 @@ struct HubRemovalItem: Hashable, Identifiable {
   /// It has a GitHub repository, so other computers can hold copies of it
   /// (desktop: `repoKey`). A folder with none lives on one computer only.
   let hasRepository: Bool
-  /// What "Hide on this iPhone" stores.
-  let hideKey: String
+  /// What "Hide on this iPhone" stores: the account project's key, or one
+  /// key per folder behind the row (a merged row has one on each computer).
+  let hideKeys: Set<String>
 }
 
 /// The desktop remove dialog's choices, by the same names: "From <computer>",
@@ -177,7 +178,10 @@ struct HubHiddenEntry: Identifiable, Equatable {
   /// Nil for a row of the main list; else the computer of an "Only on"
   /// folder.
   let computerKey: String?
+  /// Every stored key that hides this row; showing it clears them all.
+  var keys: Set<String> = []
   var id: String { key }
+  var allKeys: Set<String> { keys.union([key]) }
 }
 
 // MARK: - Sending a removal
@@ -594,9 +598,11 @@ struct HubRemoveProjectsSheet: View {
         try await hubRemoveCopy(target.copy, sync: sync, fleet: fleet)
         results[target.id] = .removed
         removed += 1
-      } catch let error as NSError where error.domain == "ADE" && error.code == 23 || !isReachable(target.copy.phoneKey) {
-        // The request went out and no answer came (a timeout, or the link
-        // dropped): the computer may have finished.
+      } catch let error as NSError where error.domain == "ADE" && [23, mobileProjectForgetUnreadableReplyCode].contains(error.code)
+                || !isReachable(target.copy.phoneKey) {
+        // The request went out and no readable answer came (a timeout, an
+        // unreadable reply, or the link dropped): the computer may have
+        // finished.
         results[target.id] = .unknown
         unconfirmed += 1
       } catch {
@@ -611,6 +617,9 @@ struct HubRemoveProjectsSheet: View {
     // that stays (offline, refused) keeps its folder either way.
     var accountRemoved = 0
     if scope == .account {
+      // The account the removals go to; a list read after a switch is
+      // another account's and settles nothing.
+      let accountUser = AccountProjectStore.shared.activeUserId
       for project in items.compactMap(\.accountProject) {
         accountSteps[project.id] = .running
         do {
@@ -623,7 +632,8 @@ struct HubRemoveProjectsSheet: View {
           let store = AccountProjectStore.shared
           let listedBefore = store.lastSuccessAt
           await store.refresh()
-          if let listed = store.lastSuccessAt, listed != listedBefore,
+          if accountUser != nil, store.activeUserId == accountUser,
+             let listed = store.lastSuccessAt, listed != listedBefore,
              !store.liveProjects.contains(where: { $0.id == project.id }) {
             accountSteps[project.id] = .done
             accountRemoved += 1
@@ -730,14 +740,14 @@ struct HubProjectsHeader: View {
     Menu {
       Section("Hidden on this iPhone") {
         Button {
-          onShowHidden(Set(hidden.map(\.key)))
+          onShowHidden(hidden.reduce(into: Set<String>()) { $0.formUnion($1.allKeys) })
         } label: {
           Label(hidden.count == 1 ? "Show it" : "Show all \(hidden.count)", systemImage: "eye")
         }
       }
       Section {
         ForEach(hidden) { entry in
-          Button(entry.name) { onShowHidden([entry.key]) }
+          Button(entry.name) { onShowHidden(entry.allKeys) }
         }
       }
     } label: {
