@@ -31,14 +31,16 @@ import {
   type ChatCommandMenuItem,
   type ComposerPrSuggestion,
 } from "../chat/ChatCommandMenu";
-import { composerModelSuggestion, initialModelMention } from "../chat/composerModelChip";
+import { composerModelSuggestionsFor, initialModelMention } from "../chat/composerModelChip";
+import { searchComposerPullRequests } from "../chat/composerPrSearch";
+import { ensureRuntimeCatalogDescriptors } from "../shared/ModelPicker/modelCatalog";
+import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { rememberMentionSuggestionLabels } from "../chat/mentionChipLabels";
 import { formatChatMentionToken } from "../../../shared/chatMentions";
 import { formatModelMentionToken, type ComposerModelSuggestion } from "../../../shared/modelMentions";
-import { getModelById } from "../../../shared/modelRegistry";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { useAppStore } from "../../state/appStore";
@@ -358,64 +360,44 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
 
   const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
     const currentPin = pinRef.current;
-    if (!currentPin) return [];
-    try {
-      const all = await window.ade.prs.listAll?.(currentPin);
-      if (!all?.length) return [];
-      const trimmed = query.trim().toLowerCase();
-      const digits = /^\d+$/.test(trimmed);
-      return all
-        .filter((pr) => {
-          if (pr.detached) return false;
-          if (!trimmed) return true;
-          if (digits) return String(pr.githubPrNumber).startsWith(trimmed);
-          return (pr.title ?? "").toLowerCase().includes(trimmed) || String(pr.githubPrNumber).startsWith(trimmed);
-        })
-        .slice(0, 20)
-        .map((pr) => ({
-          number: pr.githubPrNumber,
-          title: pr.title ?? "",
-          state: pr.state,
-          url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
-          repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
-        }));
-    } catch {
-      return [];
-    }
+    return currentPin ? await searchComposerPullRequests(currentPin, query) : [];
   }, []);
 
-  // Models the CLI's machine can start, read once when an @ menu first opens.
-  const [modelOptions, setModelOptions] = useState<ComposerModelSuggestion[] | null>(null);
+  // Models the CLI's machine can start, read once per machine when an @ menu
+  // first opens. Kept with the machine's key so another machine's list never shows.
+  const [loadedModels, setLoadedModels] = useState<{ key: string; options: ComposerModelSuggestion[] } | null>(null);
   const modelsRequestedForRef = useRef<string | null>(null);
   const atMenuOpen = commandMenuTrigger?.type === "at";
   useEffect(() => {
     const currentPin = pinRef.current;
     if (!atMenuOpen || !currentPin || modelsRequestedForRef.current === currentPin.key) return;
-    modelsRequestedForRef.current = currentPin.key;
+    const key = currentPin.key;
+    modelsRequestedForRef.current = key;
     let cancelled = false;
-    void (async () => {
-      try {
-        const status = await window.ade.ai.getStatus({}, currentPin);
+    let settled = false;
+    // Like the chat composer: load the machine's runtime catalog first, so a
+    // model's reasoning levels (and its default effort) are known.
+    const catalogReady = getSharedRuntimeCatalog(key)
+      ? Promise.resolve()
+      : fetchSharedRuntimeCatalog({ scopeKey: key, mode: "cached", pin: currentPin }).then(() => undefined, () => undefined);
+    void Promise.all([window.ade.ai.getStatus({}, currentPin), catalogReady])
+      .then(([status]) => {
+        settled = true;
         if (cancelled) return;
-        const out: ComposerModelSuggestion[] = [];
-        const seen = new Set<string>();
-        for (const id of deriveConfiguredModelIds(status ?? null)) {
-          const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, currentPin.key) ?? getModelById(id);
-          if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
-          seen.add(descriptor.id);
-          out.push(composerModelSuggestion(descriptor));
-        }
-        setModelOptions(out);
-      } catch {
-        if (!cancelled) modelsRequestedForRef.current = null;
-      }
-    })();
-    return () => { cancelled = true; };
+        ensureRuntimeCatalogDescriptors(key, true);
+        setLoadedModels({ key, options: composerModelSuggestionsFor(deriveConfiguredModelIds(status ?? null), key) });
+      })
+      .catch(() => {
+        settled = true;
+        if (modelsRequestedForRef.current === key) modelsRequestedForRef.current = null;
+      });
+    return () => {
+      cancelled = true;
+      // A read cut off before it answered is asked again on the next open.
+      if (!settled && modelsRequestedForRef.current === key) modelsRequestedForRef.current = null;
+    };
   }, [atMenuOpen, pinKey]);
-  useEffect(() => {
-    modelsRequestedForRef.current = null;
-    setModelOptions(null);
-  }, [pinKey]);
+  const modelOptions = loadedModels && loadedModels.key === pinKey ? loadedModels.options : NO_MODELS;
   const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents({ hydrate: false });
 
   // Auto-grow from one line, capped so the terminal keeps the room.
@@ -603,7 +585,7 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
           onFileSearch={laneId ? searchFiles : undefined}
           onMentionSearch={searchMentions}
           onPrSearch={searchPullRequests}
-          modelOptions={modelOptions ?? NO_MODELS}
+          modelOptions={modelOptions}
           recentModelIds={modelRecents}
           anchor={commandMenuAnchor}
           onSelect={handleMenuSelect}

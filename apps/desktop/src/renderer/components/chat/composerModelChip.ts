@@ -24,12 +24,14 @@ import {
 } from "../../../shared/modelMentions";
 import { modelPermissionLabel, defaultModelPermission, resolveModelPermissionValue } from "../../../shared/modelPermissions";
 import {
+  getModelById,
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
   usesCodexNamedEffortLabels,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { subProviderKey, subProviderLabel } from "../shared/ModelPicker/modelFacts";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import {
   reasoningEffortTierLabel,
   reasoningEffortToneColor,
@@ -244,6 +246,22 @@ export function composerModelInfo(descriptor: ModelDescriptor | null | undefined
     providerModelId: descriptor.providerModelId,
     openCodeProviderId: descriptor.openCodeProviderId,
   };
+}
+
+/**
+ * The `@` menu's model rows for these ids: one per known, non-deprecated model,
+ * resolved against the runtime catalog of `scopeKey` first.
+ */
+export function composerModelSuggestionsFor(ids: readonly string[], scopeKey: string): ComposerModelSuggestion[] {
+  const out: ComposerModelSuggestion[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, scopeKey) ?? getModelById(id);
+    if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
+    seen.add(descriptor.id);
+    out.push(composerModelSuggestion(descriptor));
+  }
+  return out;
 }
 
 export function composerModelSuggestion(descriptor: ModelDescriptor): ComposerModelSuggestion {

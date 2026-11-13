@@ -15809,7 +15809,8 @@ function iosSimulatorRootArgs(
  * may simply live on another machine on the account. The runtime answers with
  * the same "not found" for both, and an agent handed a deep link to a chat on
  * the Windows box read that as "the chat does not exist". Every `chat`
- * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
+ * subcommand except `handoff` and `move` takes `--machine` as its target, so
+ * the hint can name the fix.
  * Null when the command already targets a machine, or is not a `chat` command.
  */
 function chatOtherMachineHint(argv: string[]): string | null {
@@ -15819,7 +15820,8 @@ function chatOtherMachineHint(argv: string[]): string | null {
   } catch {
     return null;
   }
-  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
+  const chatSub = command[1]?.toLowerCase();
+  if (command[0]?.toLowerCase() !== "chat" || chatSub === "handoff" || chatSub === "move") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
   // Through ADE MCP the app names a computer with `machine`, and ADE MCP
