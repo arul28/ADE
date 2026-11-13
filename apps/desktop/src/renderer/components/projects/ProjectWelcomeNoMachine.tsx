@@ -40,6 +40,11 @@ function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof us
   };
 }
 
+/** One copy's key on this page: its computer and folder. */
+function copyKeyOf(copy: RepositoryCopy): string {
+  return `${copy.machineId}\n${copy.rootPath}`;
+}
+
 function openCopy(copy: RepositoryCopy): Promise<unknown> {
   const address = copy.address;
   const store = useAppStore.getState();
@@ -136,7 +141,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const webMachineFor = (copy: RepositoryCopy): WebMachineEntry | null => {
     const machine = copy.checkoutId ? webMachineOf(copy) : null;
     if (!machine) return null;
-    const opening = openingCopyKey === `${copy.machineId}\n${copy.rootPath}`;
+    const opening = openingCopyKey === copyKeyOf(copy);
     const held = machine.status === "live" || machine.status === "parked" || (machine.status === "connecting" && opening);
     const account = machine.accountMachine;
     const awake = account != null && resolveMachinePresence({
@@ -151,7 +156,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry) => {
     const checkoutId = copy.checkoutId;
     if (!workspace || !checkoutId) return;
-    const copyKey = `${copy.machineId}\n${copy.rootPath}`;
+    const copyKey = copyKeyOf(copy);
     setOpenError(null);
     setOpeningCopyKey(copyKey);
     void (async () => {
@@ -217,7 +222,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           {copies.length > 0 ? (
             <div className="kit-panel flex flex-col py-1" role="list" aria-label="Copies">
               {copies.map((copy) => {
-                const copyKey = `${copy.machineId}\n${copy.rootPath}`;
+                const copyKey = copyKeyOf(copy);
                 const webMachine = webMode ? webMachineFor(copy) : null;
                 return (
                 <div key={copyKey} role="listitem" className="kit-row flex items-center gap-2 px-2.5 py-1.5">
