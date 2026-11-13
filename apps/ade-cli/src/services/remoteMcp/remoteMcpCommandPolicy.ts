@@ -51,13 +51,13 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "action", "actions", "ade-browser", "cloud", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
-  "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
-  "health", "help", "history", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
-  "mac-desk", "mac-desktop", "machine", "machines", "models", "new", "notify", "open", "operation",
-  "operations", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
+  "code", "codes", "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
+  "health", "help", "history", "imessage", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
+  "mac-desk", "mac-desktop", "machine", "machines", "messages", "models", "new", "notify", "open", "operation",
+  "operations", "password", "passwords", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
   "quotas", "report-issue", "router", "scene", "scenes", "screen", "search", "secret", "secrets", "session",
   "sessions", "setting", "settings", "shell", "simulator", "skill", "skills", "status", "storage", "sync",
-  "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui", "update", "updates", "usage",
+  "term", "terminal", "test", "tests", "texts", "tools", "tools-pane", "triage", "ui", "update", "updates", "usage",
   "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
 ]);
 
@@ -76,6 +76,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["config", new Set(["find", "search", "where"])],
   ["auth", new Set(["status"])],
   // Connected or not, and as whom; never a credential.
+  // Saved logins: sites and usernames, never a value (codes and texts need full access).
+  ["passwords", new Set(["list", "ls", "status"])],
+  ["password", new Set(["list", "ls", "status"])],
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
   // cloud machines: names, states, prices, never the key.

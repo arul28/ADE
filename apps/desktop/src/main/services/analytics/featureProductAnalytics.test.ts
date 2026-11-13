@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
   captureMcpServerSignInAnalytics,
+  capturePasswordsAnalytics,
   captureChatAccountSwitchedAnalytics,
   captureFeatureUsedAnalytics,
   captureNewLaneLaunchAnalytics,
@@ -217,6 +218,9 @@ describe("webhook, secret-card, provider CLI update, and custom notification ana
     ["custom notification failed", (analytics: FeatureAnalytics) => captureNotificationSentAnalytics({ analytics, surface: "api", outcome: "failed" }), "attention", "notification_sent", "failed"],
     ["MCP server signed in", (analytics: FeatureAnalytics) => captureMcpServerSignInAnalytics({ analytics, surface: "desktop", outcome: "completed" }), "mcp_servers", "sign_in", "completed"],
     ["MCP server sign-in cancelled", (analytics: FeatureAnalytics) => captureMcpServerSignInAnalytics({ analytics, surface: "desktop", outcome: "cancelled" }), "mcp_servers", "sign_in", "cancelled"],
+    ["Passwords turned on", (analytics: FeatureAnalytics) => capturePasswordsAnalytics({ analytics, surface: "api", action: "passwords_switched", outcome: "enabled" }), "passwords", "passwords_switched", "enabled"],
+    ["agent signed up", (analytics: FeatureAnalytics) => capturePasswordsAnalytics({ analytics, surface: "api", action: "agent_signed_up", outcome: "completed" }), "passwords", "agent_signed_up", "completed"],
+    ["secrets exec failed", (analytics: FeatureAnalytics) => capturePasswordsAnalytics({ analytics, surface: "api", action: "secrets_exec", outcome: "failed" }), "passwords", "secrets_exec", "failed"],
   ] as const)("%s survives the allowlist with only closed values", (_label, capture, feature, action, outcome, provider?: string) => {
     const { analytics, captured } = recorder();
     capture(analytics);

@@ -9,6 +9,7 @@ import type {
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import { PROJECT_SECRET_DELIVERY_QUESTION_ID } from "../../../shared/projectSecretRequest";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestComposer, passwordLoginSelfAnswers } from "../chat/PasswordLoginCard";
 import { useAppStore } from "../../state/appStore";
 import { ChatRuntimeScopeProvider } from "../chat/ChatRuntimeScope";
 import { ChatSubagentsPanel } from "../chat/ChatSubagentsPanel";
@@ -494,6 +495,20 @@ function CliCard({
         error={null}
         chatProvider={provider}
         onConnect={(answers) => { void onAnswer(request, "accept", answers); }}
+        onDecline={decline}
+      />
+    );
+  }
+  if (nativeCard?.kind === "login") {
+    return (
+      <PasswordLoginRequestComposer
+        request={request}
+        card={nativeCard.card}
+        responding={responding}
+        error={null}
+        chatProvider={provider}
+        onSave={(answers) => { void onAnswer(request, "accept", answers); }}
+        onSelf={() => { void onAnswer(request, "accept", passwordLoginSelfAnswers()); }}
         onDecline={decline}
       />
     );

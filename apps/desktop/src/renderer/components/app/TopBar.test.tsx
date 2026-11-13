@@ -510,14 +510,22 @@ describe("TopBar", () => {
     });
   });
 
-  it("hides the desktop Connections panel controls in hosted web mode", () => {
+  it("opens the Connections panel in hosted web mode from the web open event", async () => {
     globalThis.window.__adeWebClient = true;
 
-    render(<TopBar />);
+    renderTopBarWithRouter();
 
-    expect(screen.queryByRole("button", { name: /^Connections, (?:not )?connected$/ })).toBeNull();
-    act(() => openConnectionsPanel("machines"));
+    const connectionsButton = getConnectionsControl();
     expect(screen.queryByRole("dialog", { name: "Connections" })).toBeNull();
+    // Pages outside the top bar (Home's side panel) send this event.
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab: "machines" } }));
+    });
+    await act(async () => {
+      await flushMicrotasks(2);
+    });
+    expect(screen.getByRole("dialog", { name: "Connections" })).toBeTruthy();
+    expect(connectionsButton.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("retires the Hub tab and opens a new project tab in hosted web mode", () => {

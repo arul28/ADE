@@ -1,4 +1,5 @@
 import type { NewLaneDefaults } from "../../../shared/laneStart";
+import { checkPerson } from "../passwords/personCheck";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import {
   resolveContinueAfterRestart,
@@ -7290,6 +7291,7 @@ export function registerIpc({
       ...(typeof record.reasoningEffort === "string" ? { reasoningEffort: record.reasoningEffort } : {}),
       ...(typeof record.fastMode === "boolean" ? { fastMode: record.fastMode } : {}),
       ...(typeof record.permissionMode === "string" ? { permissionMode: record.permissionMode } : {}),
+      ...(typeof record.accountId === "string" ? { accountId: record.accountId } : {}),
     };
   };
 
@@ -11344,6 +11346,52 @@ export function registerIpc({
     return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab), win);
   });
 
+  // Passwords in the browser, for the person in front of this window. The tab
+  // is on this computer; main reads its URL itself, and no value comes back.
+  const readTabId = (arg: unknown, channel: string): string => {
+    const tabId = arg && typeof arg === "object" ? (arg as { tabId?: unknown }).tabId : null;
+    if (typeof tabId !== "string" || !tabId.trim()) throw new Error(`${channel} needs a tabId.`);
+    return tabId.trim();
+  };
+  const readOfferId = (arg: unknown, channel: string): string => {
+    const offerId = arg && typeof arg === "object" ? (arg as { offerId?: unknown }).offerId : null;
+    if (typeof offerId !== "string" || !offerId.trim()) throw new Error(`${channel} needs an offerId.`);
+    return offerId.trim();
+  };
+  // Messages is this Mac's (its database, its Messages app): no pin, no other machine.
+  handle(IPC.messagesIntegrationStatus, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.messagesIntegrationStatus, { windowMs: 10_000, max: 30 });
+    return ensureBuiltInBrowser().messagesStatus();
+  });
+  handle(IPC.messagesIntegrationSet, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.messagesIntegrationSet, { windowMs: 10_000, max: 30 });
+    // The service keeps only its four boolean switches.
+    return ensureBuiltInBrowser().messagesSetSettings(arg && typeof arg === "object" ? arg as Record<string, unknown> : {});
+  });
+  handle(IPC.builtInBrowserSavedLogins, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSavedLogins, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().savedLoginsForTab({ tabId: readTabId(arg, IPC.builtInBrowserSavedLogins) }, win);
+  });
+  handle(IPC.builtInBrowserFillSavedLogin, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFillSavedLogin, { windowMs: 10_000, max: 20 });
+    const itemId = arg && typeof arg === "object" ? (arg as { itemId?: unknown }).itemId : null;
+    if (typeof itemId !== "string" || !itemId) throw new Error("fillSavedLogin needs an itemId.");
+    return ensureBuiltInBrowser().fillSavedLogin({ tabId: readTabId(arg, IPC.builtInBrowserFillSavedLogin), itemId }, win);
+  });
+  handle(IPC.builtInBrowserLoginOffer, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginOffer, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().loginOfferForTab({ tabId: readTabId(arg, IPC.builtInBrowserLoginOffer) }, win);
+  });
+  handle(IPC.builtInBrowserAcceptLoginOffer, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAcceptLoginOffer, { windowMs: 10_000, max: 20 });
+    return ensureBuiltInBrowser().acceptLoginOffer({ offerId: readOfferId(arg, IPC.builtInBrowserAcceptLoginOffer) });
+  });
+  handle(IPC.builtInBrowserDismissLoginOffer, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserDismissLoginOffer, { windowMs: 10_000, max: 20 });
+    ensureBuiltInBrowser().dismissLoginOffer({ offerId: readOfferId(arg, IPC.builtInBrowserDismissLoginOffer) });
+    return null;
+  });
+
   handle(IPC.builtInBrowserReload, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserReload, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().reload(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserReload), win);
@@ -12803,32 +12851,115 @@ export function registerIpc({
 
   registerCloudSavedChatsIpc({ logger: getCtx().logger });
 
-  // The account's provider sign-ins with no project bound: this computer's
-  // brain, through its machine route (`providerLogins.call`). The writes there
-  // are refused to anything but this desktop (user-only).
-  handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
-    const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
-    const action = typeof request.action === "string" ? request.action : "";
-    if (!isProviderLoginAction(action)) {
-      throw new Error(`provider_logins has no ${action || "?"} action.`);
-    }
+  /**
+   * One account-wide action on this computer's own brain, through a machine
+   * route (no project bound). The time limit is the action's in the table.
+   */
+  const callLocalMachineDomain = async (
+    route: "providerLogins.call" | "passwords.call",
+    domain: "provider_logins" | "passwords",
+    action: string,
+    args: unknown,
+  ): Promise<unknown> => {
     const pool = localRuntimeConnectionPool;
     if (!pool) {
       throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
     }
     try {
-      const response = await pool.callSync<{ result?: unknown }>("providerLogins.call", {
+      const response = await pool.callSync<{ result?: unknown }>(route, {
         action,
-        ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
+        ...(args && typeof args === "object" ? { args } : {}),
       }, {
-        // The OS keyring and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
-        timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action),
+        timeoutMs: localRuntimeActionTimeoutMs(domain, action),
       });
       return response?.result;
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       throw carryExpected(error, new Error(stripElectronErrorWrapper(error.message)));
     }
+  };
+  const readActionRequest = (arg: unknown): { action: string; args: unknown } => {
+    const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
+    return { action: typeof request.action === "string" ? request.action : "", args: request.args };
+  };
+
+  // The account's provider sign-ins with no project bound. The writes there
+  // are refused to anything but this desktop (user-only). The OS keyring and
+  // GitHub CLI reads have the long limit in the table: they wait for the person.
+  handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
+    const { action, args } = readActionRequest(arg);
+    if (!isProviderLoginAction(action)) {
+      throw new Error(`provider_logins has no ${action || "?"} action.`);
+    }
+    return await callLocalMachineDomain("providerLogins.call", "provider_logins", action, args);
+  });
+
+  // Passwords with no project bound: this computer's brain, through its
+  // machine route (`passwords.call`). Summaries and the person's own writes
+  // only — the value reads (`resolveForFill`, `loginsForPage`) are refused
+  // here, so a renderer can never ask for one.
+  const PASSWORDS_CALL_ACTIONS: ReadonlySet<string> = new Set([
+    "status",
+    "setEnabled",
+    "setCloudEnabled",
+    "reset",
+    "list",
+    "saveLogin",
+    "saveSecret",
+    "remove",
+    "importCsv",
+    "sync",
+    "activity",
+    "code",
+  ]);
+  handle(IPC.passwordsCall, async (_event, arg: unknown): Promise<unknown> => {
+    const { action, args } = readActionRequest(arg);
+    // A reset Settings sends to another machine: the person proves it is them
+    // here, on the computer they sit at, first.
+    if (action === "confirmReset") {
+      return Boolean(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"));
+    }
+    if (!PASSWORDS_CALL_ACTIONS.has(action)) {
+      throw new Error(`passwords has no ${action || "?"} action.`);
+    }
+    // Starting over deletes every saved item on every computer: the person
+    // proves it is them first (Touch ID / Windows Hello, else a confirm).
+    if (action === "reset" && !(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"))) {
+      throw new AdeExpectedError("Reset cancelled.", "user");
+    }
+    return await callLocalMachineDomain("passwords.call", "passwords", action, args);
+  });
+
+  // Settings › Passwords › Reveal / Copy. The person proves it is them first;
+  // a copy goes to the clipboard here in main (the value never reaches the
+  // renderer) and is cleared after 90 s if it is still there. This computer's
+  // own brain answers, whatever machine the page follows: values are the account's.
+  let clearCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  handle(IPC.passwordsReveal, async (_event, arg: unknown): Promise<{ value?: string; copied?: true }> => {
+    const request = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const itemId = typeof request.itemId === "string" ? request.itemId : "";
+    const field = request.field === "username" || request.field === "value" || request.field === "notes" ? request.field : "password";
+    const copy = request.copy === true;
+    const label = typeof request.label === "string" ? request.label.slice(0, 80) : "this item";
+    if (!itemId) throw new Error("passwords.reveal needs an itemId.");
+    // A username is not a secret: no prompt for it.
+    if (field !== "username" && !(await checkPerson(`${copy ? "copy" : "show"} the saved ${field === "value" ? "secret" : field} for ${label}`, copy ? "Copy" : "Show"))) {
+      throw new AdeExpectedError("Cancelled.", "user");
+    }
+    const revealed = await callLocalMachineDomain("passwords.call", "passwords", "revealValue", { itemId, field });
+    const value = typeof revealed === "string" ? revealed : null;
+    if (value === null) throw new AdeExpectedError("That saved item isn't available on this computer.", "user");
+    if (!copy) return { value };
+    clipboard.writeText(value);
+    if (clearCopiedTimer) clearTimeout(clearCopiedTimer);
+    clearCopiedTimer = setTimeout(() => {
+      clearCopiedTimer = null;
+      void Promise.resolve(clipboard.readText()).then((current) => {
+        if (current === value) clipboard.writeText("");
+      });
+    }, 90_000);
+    clearCopiedTimer.unref?.();
+    return { copied: true };
   });
 
   // Contract C2: any machine of the account by its key (machineConnector.ts).

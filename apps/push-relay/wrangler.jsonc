@@ -43,6 +43,10 @@
     "CLAIM_RATE_LIMIT_PER_MIN": "10",
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev"
   },
+  // Passwords: the key service that wraps and unwraps each account's vault key
+  // (apps/password-key-service). Needs the secret KEY_SERVICE_AUTH_SECRET, the
+  // same value as that Worker's; unset, the Passwords routes answer 503.
+  "services": [{ "binding": "PASSWORD_KEY_SERVICE", "service": "ade-password-key-service" }],
   "d1_databases": [
     {
       "binding": "DB",

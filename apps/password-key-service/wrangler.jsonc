@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The Passwords key service: the one place that can wrap or unwrap an
+  // account's Passwords vault key. Kept apart from ade-push-relay, which
+  // stores the sealed items and the wrapped key, so a dump of that Worker's
+  // database, or its secrets, opens no vault on its own.
+  "name": "ade-password-key-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30",
+  "compatibility_flags": ["nodejs_compat"],
+  // No public address at all: only ade-push-relay reaches it, over a service
+  // binding, and it still checks KEY_SERVICE_AUTH_SECRET on every call.
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+  // REQUIRED SECRETS (set out of band, never committed):
+  //   wrangler secret put PASSWORD_KEK_MASTER      32 random bytes, base64
+  //   wrangler secret put KEY_SERVICE_AUTH_SECRET  same value as ade-push-relay's
+  // Unset, every call answers 503: a key service that silently made weak keys
+  // would be worse than one that refuses.
+}

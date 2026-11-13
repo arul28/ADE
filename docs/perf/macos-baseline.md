@@ -63,6 +63,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Settings › Overview, Project › Lanes, Location, Computer › ADE service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
 | Settings › Machines (list with each machine's load) and one machine's page (Right now, What it can run), idle after load: main-thread work | — | list 4.7–7.6 ms/s, machine page 2.2–2.4 ms/s, no long task on opening; one `machine_stats.get` per machine on open, no poll (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-10-30, branch `ade/machine-stats-and-preferences`, CPU 80–100% busy from other agents, not the baseline machine) | 30 ms/s |
 | Settings › Integrations (home with the 95-server MCP catalogue grid; the MCP servers and GitHub pages), idle after load: main-thread work and page elements | — | 2026-11-09, 95 servers (98 tiles): 2,940 elements against 2,987 for main's 72 servers in the same setup, so 23 more tiles cost nothing; a tile is 19 elements, was 25 (a logo's copies are its own `<svg>` with no wrapping span, and tiles and cards no longer draw the floor shadow they hid), pixel-identical; idle 0.2–0.5 ms/s, no long task on opening (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, branch `ade/rakazo-ideas-discussion`). Earlier, home 0.3–1.3 ms/s, 2,480 elements (77 small 3D logos; 4,043 before a straight logo drew its thin edge with fewer copies); MCP page 0.4 ms/s, 808 elements; GitHub page 0.5 ms/s, 625 elements; no long task on opening (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-04, branch `ade/integration-connect-cards-81787be4` on `27ed4b1dd`, sync off, load average ~5 from other agents, not the baseline machine) | 30 ms/s; 3k elements |
+| Settings › Passwords (Logins with a login selected that has an authenticator code, so the live code counts down), idle after load: main-thread work and page elements | — | 2.4–2.8 ms/s (Settings › Integrations in the same session 1.1–3.3 ms/s), about one layout per second from the code countdown (by design; the code is fetched again only when it runs out, every 30 s), 1,083 elements, no long task on opening (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, 2026-11-13, branch `ade/passwords`) | 30 ms/s; 3k elements |
 | Settings › Storage & cleanup › Recently deleted (39-chat list with a conversation preview), idle after load: main-thread work and page elements; list and reopen latency | — | 0.7–3.4 ms/s, 1,204–1,207 elements, no long task on opening, no animation, 0 IPC/min idle; `chat.listDeletedChats` adds no measurable time over an empty action (551–573 ms vs 552–561 ms CLI round trip); a 48 MB Claude conversation previews in ~1.4 s and reopens in ~1.0–1.4 s (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-05, branch `ade/recently-deleted-chats-ef31f148` on `aa6f998f1`, sync off, not the baseline machine) | 30 ms/s; 3k elements |
 | Settings › Account (profile banner: avatar float + mesh), idle after 30 s: frames drawn, GPU swap, main-thread work | float looped forever: 240 frames/s, 54 ms/s GPU swap, 12.9 style recalcs/s, 7.9 ms/s | float stops after 3 cycles (18 s) and the mesh freezes at 20 s: 0 frames/s, 0.1 style recalcs/s, 6.6 ms/s; the first 18 s draw at the display rate like any CSS animation (Mac Studio M4 Max dev build, 2026-10-29, load average ~8 from other agents, not the baseline machine) | 0 frames/s after 30 s idle; 30 ms/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
@@ -841,6 +842,23 @@ streaming measurements include the branch's follow-up fixes. They are recorded
 in the branch review evidence (`before-after.md` and the interleaved
 `after.json` capture), not a fresh idle or GPU measurement. Streaming numbers are
 interleaved A/B on this same machine under load; compare like conditions.
+The remote CLI terminal row was measured on 2026-11-12 on the Mac Studio
+(Mac16,9) against a dev test machine on the same Mac, relay only, at commit
+`154479ddc`. Each key waits for one ACK, about 35-60 ms over the relay, so the
+before number grows with the length of the burst.
+The chat link rows were measured on 2026-11-13 on the same Mac Studio,
+headless Chrome, signed in, against the same dev test machine over the relay,
+with Chrome network emulation at 150 ms RTT and 5 Mbit/s each way. The chat
+has a 128 KB history (about 400 turns). Before is the client and machine
+build at `e35917691`; after is the client at `357fdc7bc` and the machine at
+`65ba5dca8` or later. Runs alternate before and after, at load average 9-23
+on 14 cores; one before run at load 54 is left out. The local build is served
+over HTTP/1.1 with six connections, so the account roster and the lazy
+chunks queue before the route; that part (about 10 s) is the same on both
+sides and is not in the route-to-transcript row. Before is the mean of the
+two valid runs (19,276 and 25,188 ms; the old machine build answers the
+startup reads one at a time, so it varies); after is the median of three
+(16,855 to 16,959 ms).
 
 | Scenario / metric | Before | Baseline after | Ceiling | How |
 | --- | ---: | ---: | ---: | --- |
@@ -857,6 +875,12 @@ interleaved A/B on this same machine under load; compare like conditions.
 | App Control polls / hidden minute | 20 | 0 | 0 | `npm run bench:webclient` in `apps/desktop` |
 | OAuth reads / five minutes | 300 | 108 | 140 | `npm run bench:webclient` in `apps/desktop` |
 | Streaming script ms / event | 12.8 | 11.7 | 15.0 | `scripts/perf-chat-stream.mjs` |
+| Remote CLI terminal: 15 keys typed 30 ms apart, last key's ACK after the first key (ms) | 1,241 | 507 | 700 | CDP key events into a Claude CLI terminal on another computer over the relay; `terminal_input` / `terminal_input_ack` frame times |
+| Chat link to transcript on screen, throttled (ms, median) | 22,232 | 16,949 | 21,000 | CDP: open `/open?type=session…` for a chat on another computer; time from navigation to the chat's last line on screen |
+| Chat link: route to transcript on screen, throttled (ms, median) | 11,769 | 6,122 | 7,650 | Same runs; from the `/work` route to the chat's last line on screen |
+| Chat link: commands sent before the chat history | 68 | 25 | 32 | Same runs; sync `command` frames sent before `chat.getChatEventHistory` |
+| Chat link: answer bytes before the chat history is done (KB) | 873 | 44 | 60 | Same runs; sum of command answers that arrive before the history answer |
+| Chat link: `ai.getStatus` reads per open | 3–4 | 1 | 1 | Same runs; count of `ai.getStatus` command frames |
 
 The zero-baseline long-task row has a small absolute ceiling rather than a
 percentage margin; hidden-tab reads have a strict zero ceiling. These rows do

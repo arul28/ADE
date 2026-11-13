@@ -610,6 +610,7 @@ describe("BrowserAccountClient", () => {
     const requestOrder: string[] = [];
     const initialToken = accessToken("user_3GYkProfileOnly", {});
     const restoredToken = accessToken("user_3GYkProfileOnly", {});
+    let rejectNextDirectoryRead = false;
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://clerk.example/oauth/token") {
@@ -631,6 +632,10 @@ describe("BrowserAccountClient", () => {
         }), { status: 200 });
       }
       requestOrder.push("directory");
+      if (rejectNextDirectoryRead) {
+        rejectNextDirectoryRead = false;
+        return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+      }
       return new Response(JSON.stringify({ machines: [] }), { status: 200 });
     }) as typeof fetch;
     const config = {
@@ -657,8 +662,7 @@ describe("BrowserAccountClient", () => {
       imageUrl: "https://img.clerk.com/profile.png",
     });
 
-    requestOrder.length = 0;
-    const restoredClient = new BrowserAccountClient({
+    const restoreClient = () => new BrowserAccountClient({
       config,
       fetchImpl,
       location: browserLocation([]),
@@ -666,9 +670,25 @@ describe("BrowserAccountClient", () => {
       storage: new MemorySessionStorage(),
       sessionStore,
     });
+
+    // A reload within the stored access token's life reads the directory with
+    // it: no refresh (the refresh token rotates on every use) and no profile read.
+    requestOrder.length = 0;
+    await expect(restoreClient().bootstrap()).resolves.toMatchObject({
+      state: "signed_in",
+      userId: "user_3GYkProfileOnly",
+      email: "profile@example.test",
+    });
+    expect(requestOrder).toEqual(["directory"]);
+    await expect(sessionStore.load()).resolves.toMatchObject({ refreshToken: "refresh-original" });
+
+    // The directory turns the stored token down: refresh once, then read again.
+    requestOrder.length = 0;
+    rejectNextDirectoryRead = true;
+    const restoredClient = restoreClient();
     const restored = await restoredClient.bootstrap();
 
-    expect(requestOrder).toEqual(["token:refresh_token", "userinfo", "directory"]);
+    expect(requestOrder).toEqual(["directory", "token:refresh_token", "userinfo", "directory"]);
     expect(restored).toMatchObject({
       state: "signed_in",
       userId: "user_3GYkProfileOnly",

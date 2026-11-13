@@ -6,6 +6,7 @@ import {
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
+import { BUILT_IN_BROWSER_MESSAGES_METHODS } from "../../desktop/src/shared/types/builtInBrowserRemote";
 import { CHAT_HAS_NO_PROOF_YET } from "../../desktop/src/shared/proofProvenance";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
@@ -353,6 +354,17 @@ function withoutIncludeThreadComments(args: Record<string, unknown>): Record<str
   if (!("includeThreadComments" in args)) return args;
   const { includeThreadComments: _notTheUser, ...rest } = args;
   return rest;
+}
+
+/** Actions whose caller's own chat is stamped into the arguments (never taken from them). */
+const STAMP_OWN_CHAT_ACTIONS: ReadonlySet<string> = new Set(["project_secret.exec", "messages.send"]);
+
+/**
+ * Who a Passwords use or `secrets exec` is credited to in Activity. An outside
+ * AI app on ADE MCP has no chat, but it is still an agent, never the person.
+ */
+function activityCaller(session: SessionState): "agent" | "person" {
+  return isUserClientSession(session) && !session.identity.remoteMcpConnectionId ? "person" : "agent";
 }
 
 /**
@@ -3950,6 +3962,7 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
   "integration_connect.request": "ade integrations connect",
   "mcp_registry.request": "ade mcp servers add",
   "mcp_registry.remove": "ade mcp servers remove",
+  "passwords.requestLogin": "ade browser signin",
 };
 
 /**
@@ -4300,6 +4313,8 @@ function scopeBuiltInBrowserAdeActionArgs(
     action === "getProfileDiagnostics"
     || action === "listPermissions"
     || action === "clearPermissions"
+    // Messages is the `messages` domain: its send goes through the approval card.
+    || (BUILT_IN_BROWSER_MESSAGES_METHODS as readonly string[]).includes(action)
   ) {
     builtInBrowserAccessDenied(method);
   }
@@ -6745,6 +6760,43 @@ async function runTool(args: {
       ensureAskUserAllowed(session);
       scopedObjectArgs = { ...secretArgs, chatSessionId: targetChatSessionId };
     }
+    if (domain === "project_secret" && action === "exec" && isRemoteBrainCallerClientName(session.clientName)) {
+      // Runs a command on THIS computer with its secrets: never for a call
+      // relayed from another machine's brain, which could not otherwise run
+      // commands here.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "`ade secrets exec` runs only on the computer that holds the secrets. Run it in a chat on that computer.");
+    }
+    if (STAMP_OWN_CHAT_ACTIONS.has(`${domain}.${action}`)) {
+      // The caller's own chat (exec's Activity row, a text's approval card)
+      // and who called are stamped here, never taken from the arguments.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.${action} requires object arguments.`);
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, calledBy: _ignoredCaller, ...ownArgs } = rawObjectArgs;
+      const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      scopedObjectArgs = {
+        ...ownArgs,
+        ...(boundChat ? { chatSessionId: boundChat } : {}),
+        calledBy: activityCaller(session),
+      };
+    }
+    if (domain === "passwords" && (action === "signin" || action === "signup")) {
+      // `ade browser signin` may raise the secure sign-in card, and only in
+      // the caller's own chat. Stamped here, never taken from the arguments,
+      // and not rate-limited: most sign-ins fill a saved login and ask nobody
+      // (the card itself joins one ask per chat and site).
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `passwords.${action} requires object arguments.`);
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, calledBy: _ignoredCaller, ...signinArgs } = rawObjectArgs;
+      // The browser half acts as this caller, exactly like `ade browser fill`
+      // (its own chat's tabs, its lane): the same scoping stamps it. Who
+      // called is stamped for Activity.
+      scopedObjectArgs = {
+        ...scopeBuiltInBrowserAdeActionArgs(runtime, session, action, signinArgs),
+        calledBy: activityCaller(session),
+      };
+    }
     if (domain === "automations" && action === "webhookSendTest" && !isUserClient && !callerIsCto) {
       // `config` is the builder's unsaved draft, and it names the secret the
       // test is signed with. An agent tests the rule as saved, so it cannot
@@ -7222,6 +7274,11 @@ async function runTool(args: {
         rawObjectArgs,
       );
     } else if (domain === "built_in_browser") {
+      // Saved logins are filled only through `passwords.signin`, which records
+      // the use in Activity and the chat; never as a bare browser action.
+      if (action === "signin" || action === "signup") {
+        throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `Use \`ade browser ${action}\` (the \`passwords.${action}\` action).`);
+      }
       // Decided once, here: the scoping authorizes the call for this
       // destination and stamps it, and the router obeys the stamp. Asking
       // again at dispatch would let an attachment that ended (or began) in

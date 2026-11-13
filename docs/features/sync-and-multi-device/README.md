@@ -803,7 +803,7 @@ Runtime support files outside `services/sync/`:
   and `workspace/webWorkspaceModel.ts` — hosted-browser directory/session
   projection. `mergeWebMachines` merges account rows with browser-saved
   environments and cached catalogs into one row per physical machine, rendered
-  by `WebConnectionsChip.tsx` (the top-bar popover that replaced the Hub page),
+  by the hosted mode of `ConnectionsPanel.tsx` (the top-bar panel that replaced the Hub page),
   while the manager serializes admission into a four-client pool, reports
   Live/Reconnecting/Parked/Offline, retains parked catalogs, and reconnects a
   parked machine when its project or Chats surface is selected.
@@ -1316,8 +1316,8 @@ Runtime support files outside `services/sync/`:
   machine adds tomorrow still has to arrive, and the one-shot migration can
   never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
   Secrets > Pull from account) forces a vault sync with the relay and then runs
-  the same pull. `project_secret.get` / `list` (agents, `ade secrets get|list`,
-  the Secrets page) refresh from the account first — at most one request per
+  the same pull. `project_secret.get` / `list` / `exec` (`ade secrets list|exec`, the
+  person's own `get`, the Secrets page) refresh from the account first — at most one request per
   10 s, and waiting at most 3 s before answering from this machine's copy — so
   a secret added on another machine moments ago is found. A miss says whether
   the account was checked or could not be reached. Rows this machine saved
@@ -2406,7 +2406,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   answered with a plain "pair with a code, or open a project" under
   `account_session_changed` rather than `auth_failed`, because the device's
   saved pairing is untouched by that refusal. `connectionAttempt` metadata is
-  now parsed rather than silently discarded. It
+  now parsed rather than silently discarded. Routed project commands run off
+  the message queue with the project host's peer-queue rule: up to
+  `MAX_CONCURRENT_PEER_READS` routed reads (`isConcurrentReadEnvelope`) overlap
+  behind the last routed write (`commandWriteBarrier`), a routed write waits
+  for all earlier routed work, and a freed read slot goes to the oldest waiting
+  read. One slow read no longer holds a browser's chat history behind it. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
   per-project host, applies the same failed-PIN cooldown, attributes its
   `auth_failed` rejections with the same `host: { deviceId, name }`

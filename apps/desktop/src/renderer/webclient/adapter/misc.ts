@@ -634,7 +634,22 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     // adapter's single connection.
     getStatus: async (args?: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.getStatus", pin, infra);
-      return await call("ai.getStatus", args, aiStatus());
+      // The host reads only these two flags. `undefined`, `{}` and the
+      // all-false form are one request, so the readers that start together
+      // (the AI cache, Cloud agents, the model options) share one answer of
+      // ~47 KB instead of each sending its own. A plain read keeps its answer
+      // for a few seconds; a forced read always asks the host.
+      const record = asRecord(args);
+      const force = record.force === true;
+      const refreshOpenCodeInventory = record.refreshOpenCodeInventory === true;
+      return await commands.call(
+        "ai.getStatus",
+        {
+          ...(force ? { force: true } : {}),
+          ...(refreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+        },
+        { fallback: aiStatus(), ...(force || refreshOpenCodeInventory ? {} : { cacheTtlMs: AI_STATUS_SHARED_READ_MS }) },
+      );
     },
     // The connected brain answers; offline, or on any failure, `null` means
     // the caller's own logic decides, exactly as on desktop.
@@ -1655,6 +1670,9 @@ function onboardingStatus(): Record<string, unknown> {
     steps: [],
   };
 }
+
+/** How long readers share one plain `ai.getStatus` answer. A forced read never waits on it. */
+const AI_STATUS_SHARED_READ_MS = 5_000;
 
 function aiStatus(): Record<string, unknown> {
   return {

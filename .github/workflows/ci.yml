@@ -381,6 +381,21 @@ jobs:
           key: nm-webhook-relay-v1-${{ runner.os }}-${{ hashFiles('apps/webhook-relay/package-lock.json') }}
       - run: cd apps/webhook-relay && npm test
 
+  # Small and dependency-light, so it installs on its own instead of joining
+  # the shared node_modules cache.
+  test-password-key-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cd apps/password-key-service && npm ci
+      - run: cd apps/password-key-service && npm run typecheck
+      - run: cd apps/password-key-service && npm test
+
   test-push-relay:
     needs: install
     runs-on: ubuntu-latest
@@ -1183,6 +1198,7 @@ jobs:
       - test-chat-ui
       - test-webhook-relay
       - test-push-relay
+      - test-password-key-service
       - test-tunnel-relay
       - test-account-directory
       - build

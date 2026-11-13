@@ -148,14 +148,6 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
 
-// Hosted-client only: kept out of the desktop bundle's critical path, and out
-// of the desktop bundle's dependency graph for the sync client entirely.
-const WebConnectionsChip = React.lazy(() =>
-  import("../../webclient/workspace/WebConnectionsChip").then((module) => ({
-    default: module.WebConnectionsChip,
-  })),
-);
-
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
@@ -896,18 +888,10 @@ export function TopBar({
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
   const closeConnections = useCallback(() => setConnectionsOpen(false), []);
   const openConnections = useCallback((tab: ConnectionsPanelTab = "machines", machineId?: string) => {
-    if (webMode) {
-      // The hosted client has no header Connections panel — the connections
-      // chip in the top right owns that surface, and it listens for this event
-      // (WEB_OPEN_CONNECTIONS_EVENT in webclient/workspace/WebConnectionsChip).
-      // Returning early here is what left "Connect another machine…" inert.
-      window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab, machineId } }));
-      return;
-    }
     setConnectionsTab(tab);
     setConnectionsMachineId(machineId ?? null);
     setConnectionsOpen(true);
-  }, [webMode]);
+  }, []);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
@@ -1529,10 +1513,20 @@ export function TopBar({
   // Let other surfaces (e.g. the Account page) open the Connections panel to a
   // specific tab.
   useEffect(() => {
-    if (webMode) return;
-    return subscribeOpenConnectionsPanel((tab, machineId) => {
+    const unsubscribe = subscribeOpenConnectionsPanel((tab, machineId) => {
       openConnections(tab, machineId);
     });
+    if (!webMode) return unsubscribe;
+    // ADE Web callers that still send the old chip's open event.
+    const onWebOpenRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ tab?: ConnectionsPanelTab; machineId?: string } | null>).detail;
+      openConnections(detail?.tab ?? "machines", detail?.machineId);
+    };
+    window.addEventListener("ade-web:open-connections", onWebOpenRequest);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("ade-web:open-connections", onWebOpenRequest);
+    };
   }, [openConnections, webMode]);
 
   const checkForActiveWorkloads = useCallback(
@@ -2403,15 +2397,8 @@ export function TopBar({
     ? <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
     : null;
 
-  const renderWebConnectionsControl = () => (
-    <React.Suspense fallback={null}>
-      <WebConnectionsChip />
-    </React.Suspense>
-  );
-
-  const renderDesktopConnectionsControl = () => webMode
-    ? renderWebConnectionsControl()
-    : (
+  // ADE Web shows the same Connections menu as the desktop app.
+  const renderDesktopConnectionsControl = () => (
       <ShellConnectionChip
         label="Connections"
         onboardingAnchor="connections"
@@ -2453,21 +2440,19 @@ export function TopBar({
           deferInitialRead={Boolean(remoteBinding)}
         />
       ) : null}
-      {webMode ? renderWebConnectionsControl() : (
-        <ShellConnectionChip
-          layout="menu-row"
-          label="Connections"
-          connected={anyConnectionActive}
-          title="Machines, mobile, and web clients"
-          ariaExpanded={connectionsOpen}
-          onClick={() => {
-            openConnections("machines");
-            onActivate();
-          }}
-          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
-          trailing={<HeaderAccountAvatar />}
-        />
-      )}
+      <ShellConnectionChip
+        layout="menu-row"
+        label="Connections"
+        connected={anyConnectionActive}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => {
+          openConnections("machines");
+          onActivate();
+        }}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
     </div>
   );
 
@@ -3113,7 +3098,7 @@ export function TopBar({
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
       <HeaderSheet
-        open={connectionsOpen && !webMode}
+        open={connectionsOpen}
         bare
         panelRef={connectionsPanelRef}
         title="Connections"
@@ -3121,6 +3106,7 @@ export function TopBar({
         onClose={closeConnections}
       >
         <ConnectionsPanel
+          variant={webMode ? "web" : "desktop"}
           initialTab={connectionsTab}
           machineId={connectionsMachineId}
           onClose={closeConnections}

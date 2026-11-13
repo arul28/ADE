@@ -293,7 +293,7 @@ export function SavedMachineRow({
           />
           <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <span style={nameStyle}>{target.name}</span>
+              <span className="ade-cx-machine-name" style={nameStyle}>{target.name}</span>
               <PresenceDot state={presence} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>

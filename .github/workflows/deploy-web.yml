@@ -18,6 +18,7 @@ on:
       - "apps/webhook-relay/**"
       - "apps/tunnel-relay/**"
       - "apps/push-relay/**"
+      - "apps/password-key-service/**"
       - ".github/workflows/deploy-web.yml"
   workflow_dispatch:
 
@@ -41,6 +42,7 @@ jobs:
       webhook-relay: ${{ steps.filter.outputs.webhook-relay }}
       tunnel-relay: ${{ steps.filter.outputs.tunnel-relay }}
       push-relay: ${{ steps.filter.outputs.push-relay }}
+      password-key-service: ${{ steps.filter.outputs.password-key-service }}
       # The Sentry release every deploy in this run reports under.
       sentry-release: ${{ steps.release.outputs.release }}
       sentry-version: ${{ steps.release.outputs.version }}
@@ -76,6 +78,8 @@ jobs:
               - "apps/tunnel-relay/**"
             push-relay:
               - "apps/push-relay/**"
+            password-key-service:
+              - "apps/password-key-service/**"
 
   webclient:
     needs: changes
@@ -236,9 +240,27 @@ jobs:
           echo "::error::tunnel relay health did not reach protocol v2 at Worker tag $GITHUB_SHA"
           exit 1
 
-  push-relay:
+  # The Passwords key service. Deployed before push-relay, whose service
+  # binding to it would fail to deploy if the Worker did not exist yet. Its
+  # secrets (PASSWORD_KEK_MASTER, KEY_SERVICE_AUTH_SECRET) are set once by the
+  # owner with `wrangler secret put`, never from CI; unset, it answers 503.
+  password-key-service:
     needs: changes
-    if: needs.changes.outputs.push-relay == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.changes.outputs.password-key-service == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: cd apps/password-key-service && npm ci
+      - run: cd apps/password-key-service && npm run deploy
+
+  push-relay:
+    needs: [changes, password-key-service]
+    # Runs after the key service when both changed; still runs when that job
+    # was skipped, never after it failed.
+    if: ${{ !cancelled() && needs.password-key-service.result != 'failure' && (needs.changes.outputs.push-relay == 'true' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     env:
       SENTRY_RELEASE: ${{ needs.changes.outputs.sentry-release }}
@@ -279,7 +301,7 @@ jobs:
   # only the surfaces this run deployed. Skips without POSTHOG_PERSONAL_API_KEY
   # and never fails the run.
   annotate:
-    needs: [webclient, account-directory, webhook-relay, tunnel-relay, push-relay]
+    needs: [webclient, account-directory, webhook-relay, tunnel-relay, push-relay, password-key-service]
     if: ${{ always() && contains(needs.*.result, 'success') }}
     runs-on: ubuntu-latest
     steps:

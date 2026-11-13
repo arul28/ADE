@@ -24,3 +24,16 @@
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable
+
+# The link page (ade-app.dev/open) frames this, hidden, to learn whether this
+# browser is signed in to ADE Web and which computers are online
+# (webclient/linkStatus/main.ts). Only that site may frame it.
+/link-status.html
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src https:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors https://ade-app.dev https://www.ade-app.dev
+
+/link-status
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src https:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors https://ade-app.dev https://www.ade-app.dev
