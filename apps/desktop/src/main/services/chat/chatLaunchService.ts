@@ -1175,6 +1175,17 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         const late = await cleanupCancelled(record, { final: true });
         record.snapshot.error = late.length ? `Cleanup incomplete — ${late.join("; ")}` : null;
         publish(record);
+      }).catch((error: unknown) => {
+        // Nothing awaits this callback, and its reads (the interrupted-lane
+        // lookup reads the database) can throw: report it like any other
+        // cleanup that could not finish.
+        logger.error("chat_launch.cancel_cleanup_incomplete", {
+          launchId,
+          failureKinds: [`late:${cancelCleanupFailureKind(error)}`],
+          final: true,
+        });
+        record.snapshot.error = `Cleanup incomplete — ${getErrorMessage(error)}`;
+        publish(record);
       });
     }
     logger.info("chat_launch.cancelled", { launchId });

@@ -31,7 +31,6 @@
  * can lose a start, a reused pid reads as alive, and a brain the computer
  * killed by restarting is not counted (it started before this boot).
  */
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
@@ -40,7 +39,8 @@ import { isPidAlive } from "../serviceManager/common";
 import { resolveWindowsServicePidPath } from "../serviceManager/installWindows";
 import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
 import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
-import { brainLogAttachment, desktopLogsAttachment } from "./brainServiceDiagnostics";
+import { LAST_FAILURE_FILE_NAME } from "../../../desktop/src/main/services/runtime/lastFailureStore";
+import { brainLogAttachment, desktopLogsAttachment, readStateFile } from "./brainServiceDiagnostics";
 import {
   BRAIN_STARTS_FILE,
   readStartsFile,
@@ -217,26 +217,17 @@ function readStartCause(runtimeDir: string, previous: BrainStart | undefined): B
   } catch {
     // Unknown stays null.
   }
-  const wedge = readJsonRecord(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE));
+  const wedge = readStateFile(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE));
   // The brain's own watchdog names its pid; the Windows supervisor's kill
   // record has no pid, only its time.
   if (wedge && previous && (wedge.pid === previous.pid || (wedge.pid === undefined && sincePrevious(wedge.ts)))) {
     cause.previousWedge = typeof wedge.lastCommand === "string" ? wedge.lastCommand.slice(0, 80) : "unknown";
   }
-  const failure = readJsonRecord(path.join(runtimeDir, "last-failure.json"));
+  const failure = readStateFile(path.join(runtimeDir, LAST_FAILURE_FILE_NAME));
   if (failure && typeof failure.code === "string" && sincePrevious(failure.at)) {
     cause.previousFailureCode = failure.code.slice(0, 80);
   }
   return cause;
-}
-
-function readJsonRecord(filePath: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
 }
 
 function countedStartsInWindow(starts: readonly BrainStart[], nowMs: number): number {

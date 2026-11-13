@@ -244,6 +244,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { subscribeWhenChatApiReady } from "./chatEventSubscription";
 import {
   markCloudWakeForSend,
   savedChatAwareAgentChatApi,
@@ -10373,8 +10374,11 @@ export function AgentChatPane({
     const retainedBinding = chatRuntimePin;
     return () => {
       retainChatSession(selectedSessionId, {
-        subscribe: (listener) => (retainedBinding && typeof agentChatApiRef.current?.onEvent === "function"
-          ? agentChatApiRef.current.onEvent(listener, retainedBinding, { forcePinned: true })
+        subscribe: (listener) => (retainedBinding
+          ? subscribeWhenChatApiReady(
+              () => agentChatApiRef.current ?? savedChatAwareAgentChatApi(window.ade?.agentChat),
+              (api) => api.onEvent(listener, retainedBinding, { forcePinned: true }),
+            )
           : () => undefined),
       });
     };
@@ -10865,10 +10869,15 @@ export function AgentChatPane({
     const subscribe: ((listener: ChatEventListener) => () => void) | null = personalScope
       ? (listener) => personalScope.agentChat.onEvent(listener)
       // ADE Web can render the pane before its bridge has the chat API
-      // (ADE-WEB-7): no feed yet, rather than a TypeError that takes the pane
-      // down. The effect runs again when the pin or visibility changes.
-      : chatRuntimePin && typeof agentChatApiRef.current?.onEvent === "function"
-        ? (listener) => agentChatApiRef.current.onEvent(listener, chatRuntimePin)
+      // (ADE-WEB-7): the feed attaches when the API appears, rather than a
+      // TypeError that takes the pane down. The ref is read again on each
+      // look, with `window.ade` as the fallback for a pane that has not
+      // rendered since.
+      : chatRuntimePin
+        ? (listener) => subscribeWhenChatApiReady(
+            () => agentChatApiRef.current ?? savedChatAwareAgentChatApi(window.ade?.agentChat),
+            (api) => api.onEvent(listener, chatRuntimePin),
+          )
         : null;
     if (!subscribe) return undefined;
     const unsubscribe = subscribe((envelope) => {

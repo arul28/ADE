@@ -333,7 +333,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
 
   // Read on window focus by every surface. An account with no ADE Cloud, or a
   // signed-out app, has no such lanes: the answer is the empty list, not the
-  // refusal (24 Sentry events from one account on focus, ADE-DESKTOP-BE).
+  // refusal, which focus would otherwise report again and again.
   const lanesWithoutComputer = async (): Promise<CloudLaneWithoutComputer[]> => {
     let client: CloudProvider;
     try {

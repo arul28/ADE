@@ -1,7 +1,7 @@
 import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
 import { resolveProviderRemediation } from "../../../desktop/src/shared/providerRemediation";
 import type { ShippedProvider } from "../../../desktop/src/shared/providers";
-import { classifyProviderAccountRefusal } from "../../../desktop/src/shared/providerAccountRefusal";
+import { classifyProviderAccountRefusal, isProviderAuthRefusalText } from "../../../desktop/src/shared/providerAccountRefusal";
 
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
 
@@ -323,8 +323,7 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   // Signed in, but the plan does not include this (Kimi's 403 also says
   // "authentication required"): a sign-in card would send the person to fix
   // the wrong thing.
-  const refusal = classifyProviderAccountRefusal(text);
-  if (refusal === "plan") return null;
+  if (classifyProviderAccountRefusal(text) === "plan") return null;
   const candidates = preferred
     ? [preferred, ...AGENT_CLI_REGISTRY.filter((descriptor) => descriptor !== preferred)]
     : AGENT_CLI_REGISTRY;
@@ -354,13 +353,11 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
     }
     // A bare 401/403 anywhere in the text is not a sign-in failure: 403 is as
     // often a region, plan or balance refusal, and a number can be a line or
-    // PR number. Only an HTTP 401 or an explicit auth phrase counts.
-    if (
-      /\b(not logged in|not authenticated|unauthorized|authentication failed|login required|invalid api key)\b/i.test(text)
-      || /\b(?:status(?:\s+code)?|http(?:\s+status)?|error)\s*[:=]?\s*401\b/i.test(text)
-      // The table provider health reads: an invalid token, "send failed: 401", a Chinese provider's wording.
-      || refusal === "auth"
-    ) {
+    // PR number. Only an HTTP 401 or an explicit auth phrase counts: the
+    // words provider health reads (an invalid token, "send failed: 401", a
+    // Chinese provider's wording). Read directly, not as the verdict, which
+    // puts a model refusal before a sign-in.
+    if (isProviderAuthRefusalText(text)) {
       return toMatch(preferred, "unauthenticated", text);
     }
   }

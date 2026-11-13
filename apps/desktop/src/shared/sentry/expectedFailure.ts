@@ -195,13 +195,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bfatal: '.+' is already (?:used|checked out) by worktree at /,
   // Refusals the person or agent acts on, from the throw sites marked in this
   // pass: ADE Cloud not on this account, a cloud launch that can't run there,
-  // a protected branch, the Android service before a project opens.
+  // a protected branch.
   /^ADE Cloud isn't available on this account yet\.$/,
   /^ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin\.$/,
   /^Refusing to clean up protected branch "/,
-  /^The Android emulator service is not available\. Open a project\b/,
   /^A move to .+ may have landed\. Retry it, or open .+ to check, or dismiss it\.$/,
-  /^The computer this runs on is not connected\.$/,
 ];
 
 /**

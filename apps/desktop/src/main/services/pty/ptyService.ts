@@ -2886,11 +2886,16 @@ export function createPtyService({
         logger.warn("pty.cli_turn_record_failed", { error: error instanceof Error ? error.message : String(error) });
       })
     : null;
-  /** Only an exact signal counts: a turn guessed from output is not evidence enough to continue it. */
+  /**
+   * Only an exact signal counts: a turn guessed from output is not evidence
+   * enough to continue it. Background agents the CLI reported (Claude hooks)
+   * count too: a crash kills them, and the CLI would wait on them forever.
+   */
   const recordCliTurnRunning = (entry: PtyEntry): void => {
     if (!cliTurnRecorder || !entry.tracked) return;
     const turn = entry.cliTurn;
-    const running = !entry.disposed && turn != null && isExactCliTurnSource(turn.source) && turn.phase === "working";
+    const running = !entry.disposed && turn != null && isExactCliTurnSource(turn.source)
+      && (turn.phase === "working" || (entry.cliSubagents?.live.size ?? 0) > 0);
     cliTurnRecorder.setRunning(entry.sessionId, running);
     // The next brain opens this project at once if this one crashes mid-turn.
     noteLiveTurn(projectRoot, `cli:${entry.sessionId}`, running);
@@ -5686,6 +5691,8 @@ export function createPtyService({
 
   /** The CLI's live agents changed: refresh the row and tell the push publisher now. */
   const publishCliSubagentsChanged = (entry: PtyEntry): void => {
+    // A CLI waiting only on its agents is still owed a continue after a crash.
+    recordCliTurnRunning(entry);
     try {
       sessionService.notifyChanged(entry.sessionId);
     } catch (error) {
@@ -9419,6 +9426,14 @@ export function createPtyService({
                 ) ?? {},
               } satisfies TerminalResumeMetadata
             : null);
+        // `chat:<provider>[:<id>]` marks a chat ADE drives through an SDK or
+        // protocol: it has no CLI to relaunch, and run as a shell command it
+        // only fails (exit 127) and stamps the live chat's row `failed`, which
+        // then makes its scheduled work, update resume included, read as ended.
+        if (!metadata && /^chat:/i.test(session.resumeCommand?.trim() ?? "")) {
+          logger.info("pty.reattach_chat_cli_refused", { chatSessionId, toolType: session.toolType, reason: "sdk_chat" });
+          throw markExpected(new Error(`Session '${chatSessionId}' is an agent chat, not a CLI session; it has no terminal to reattach.`), "user");
+        }
         const codexComputerUse = metadata?.provider === "codex"
           ? await resolveCodexComputerUseMcpConfig()
           : null;
@@ -10386,14 +10401,25 @@ export function createPtyService({
             const session = sessionService.get(entry.sessionId);
             if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
             const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
-            // Mid-turn: still printing and not at its prompt. Waiting on the
-            // person (a permission prompt) is not a turn to continue. When in
-            // doubt it only reopens: a "continue" typed into an idle CLI would
-            // start work nobody asked for.
+            // Mid-turn, by the best signal the CLI gives: its own turn report
+            // (Claude hooks, Codex OSC) when it has one, else still printing
+            // and not at its prompt. Claude draws its input box while it works,
+            // so for it the screen check alone misses any quiet moment. A CLI
+            // waiting on background agents it started (Stop came when they
+            // started) is owed one too: the stop kills them, and it would wait
+            // for their report forever. Waiting on the person (a permission
+            // prompt) is not a turn to continue. When in doubt it only
+            // reopens: a "continue" typed into an idle CLI would start work
+            // nobody asked for.
+            const exactTurn = entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? entry.cliTurn : null;
+            const turnRunning = exactTurn
+              ? exactTurn.phase === "working"
+              : provider != null
+                && runtimeStates.get(entry.sessionId)?.state === "running"
+                && !agentCliInputReadyNow(entry.sessionId, provider);
             const midTurn = provider != null
               && !session.attentionRequestedAt
-              && runtimeStates.get(entry.sessionId)?.state === "running"
-              && !agentCliInputReadyNow(entry.sessionId, provider);
+              && (turnRunning || (entry.cliSubagents?.live.size ?? 0) > 0);
             entries.push({ sessionId: entry.sessionId, midTurn });
           }
           recordCliSessionsToReopen(projectRoot, entries);

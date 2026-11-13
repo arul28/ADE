@@ -500,7 +500,7 @@ const TEXT_KINDS: ReadonlyArray<readonly [RegExp, TurnFailureKind]> = [
   [/insufficient (?:account )?(?:funds|credits?|balance)|out of credits|payment required|billing/i, "budget"],
   // A model the provider does not serve. Above the overloaded server, which
   // shares "unavailable" and "capacity".
-  [/model\b[^\n]{0,60}\b(?:not found|not available|unavailable|does not exist|not supported|unsupported|deprecated|retired)|unknown model|invalid model|model_not_found|no such model|model unavailable|not in the catalog|model is at capacity|hosted outside/i, "model_unavailable"],
+  [/model\b[^\n]{0,60}\b(?:not found|not available|unavailable|does not exist|not supported|unsupported|deprecated|retired)|model\b[^\n]{0,80}\bis not supported when using|(?:unknown|invalid|unsupported) model|model_not_found|no such model|model unavailable|not in the catalog|model is at capacity|hosted outside/i, "model_unavailable"],
   // A local model server that is not running.
   [/connection ?refused|ECONNREFUSED|unable to connect|no models are currently loaded|is the computer able to access/i, "network"],
   [/overloaded|\b(?:500|502|503|529)\b|service unavailable|bad gateway|internal server error|server error|over capacity/i, "server_overloaded"],
@@ -524,10 +524,11 @@ export function turnFailureKind(
 ): TurnFailureKind {
   const words = text ?? "";
   const refusal = classifyProviderAccountRefusal(words);
-  // A plan refusal reads as a sign-in to the classifier (a 403, "authentication
-  // required"), but signing in again does not fix it.
-  if (refusal === "plan") return "plan";
   const fromCategory = category ? TURN_ERROR_KIND[category] : "other";
+  // A plan refusal reads as a sign-in to the classifier (a 403, "authentication
+  // required"), but signing in again does not fix it. A rate limit that also
+  // offers an upgrade stays a rate limit.
+  if (refusal === "plan" && fromCategory !== "rate_limit") return "plan";
   // A category the classifier is sure of (a sign-in, a rate limit) wins; the
   // words only refine its two catch-alls.
   if (fromCategory !== "network" && fromCategory !== "other") return fromCategory;
@@ -536,7 +537,6 @@ export function turnFailureKind(
   if (refusal === "auth") return "permission";
   const fromText = TEXT_KINDS.find(([pattern]) => pattern.test(words))?.[1];
   if (fromText) return fromText;
-  if (refusal === "model") return "model_unavailable";
   return fromCategory;
 }
 

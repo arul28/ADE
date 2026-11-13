@@ -324,7 +324,9 @@ import type {
   OpenProjectBinding,
   RemoteOpenProjectBinding,
   AppNavigationRequest,
+  AgentChatArmUpdateResumeResult,
   AgentChatInterruptedChatRef,
+  AgentChatUpdateResumeSettledReason,
   AttentionItem,
   AttentionPreferences,
   AppMenuCommand,
@@ -9386,25 +9388,32 @@ app.whenReady().then(async () => {
   // launch that lands an install, with the ids the previous process persisted
   // (a freshly started brain has no live turns to discover), and after a
   // quit-prompt Repair.
-  const armResumeForChats = async (
+  const armResumeForChatsDetailed = async (
     chats: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
-  ): Promise<UpdateInterruptedChat[]> => {
-    if (chats.length === 0) return [];
+  ): Promise<{ armed: UpdateInterruptedChat[]; settled: Map<string, AgentChatUpdateResumeSettledReason> }> => {
+    const settled = new Map<string, AgentChatUpdateResumeSettledReason>();
+    if (chats.length === 0) return { armed: [], settled };
     const sessionIds = chats.map((chat) => chat.sessionId);
     const armed: UpdateInterruptedChat[] = [];
     // A chat's project may have no tab open; its root is how the arm reaches it.
     const chatRoots = chats.flatMap((chat) => (chat.projectRoot ? [chat.projectRoot] : []));
     const projectsAsked = await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
-        const refs = inProcessService
-          ? runtimeChatRefs(await inProcessService.armUpdateResume({ sessionIds }))
-          : runtimeChatRefs((await localRuntimePool.callActionForRoot(projectRoot, {
+        const result: unknown = inProcessService
+          ? await inProcessService.armUpdateResume({ sessionIds })
+          : (await localRuntimePool.callActionForRoot(projectRoot, {
               domain: "chat",
               action: "armUpdateResume",
               args: { sessionIds },
-            })).result);
-        for (const chat of refs) {
+            })).result;
+        for (const chat of runtimeChatRefs(result)) {
           armed.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+        }
+        // Only the project that has the chat can settle it; the others answer
+        // nothing for it. An older brain sends no `settled`: all stays owed.
+        const settledRefs = (result as Partial<AgentChatArmUpdateResumeResult> | undefined)?.settled;
+        for (const entry of Array.isArray(settledRefs) ? settledRefs : []) {
+          if (typeof entry?.sessionId === "string") settled.set(entry.sessionId, entry.reason);
         }
       } catch (error) {
         localRuntimeLogger.warn("update_resume.arm_failed", {
@@ -9421,8 +9430,11 @@ app.whenReady().then(async () => {
     if (projectsAsked === 0) {
       localRuntimeLogger.warn("update_resume.arm_no_project", { chats: sessionIds.length });
     }
-    return armed;
+    return { armed, settled };
   };
+  const armResumeForChats = async (
+    chats: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
+  ): Promise<UpdateInterruptedChat[]> => (await armResumeForChatsDetailed(chats)).armed;
 
   /**
    * Drops the sessions that actually armed from the persisted resume list, so
@@ -9459,17 +9471,53 @@ app.whenReady().then(async () => {
   };
 
   /**
-   * Arms one continue row per chat it is handed, and drops the ones that armed
-   * from the record. Its contract is one call per launch: a chat armed twice
-   * gets its row re-scheduled, and a row that has already fired tells the chat
-   * to continue a second time. The single call site is in the launch, on the
-   * far side of the update transaction that would refuse the runtime.
+   * Arms one continue row per chat it is handed, and drops from the record the
+   * ones that armed or that their brain settled for good (held by the continue
+   * rule, paused, already continued). Its contract is one arm per chat per
+   * launch: a chat armed twice gets its row re-scheduled, and a row that has
+   * already fired tells the chat to continue a second time. So only chats no
+   * project armed or settled are asked again, a few times over the next
+   * minutes (a project that opens late, a brain still starting), and every one
+   * of them leaves a log line. What is still owed after the last try stays on
+   * the record for the next launch. The single call site is in the launch, on
+   * the far side of the update transaction that would refuse the runtime.
    */
+  const UPDATE_RESUME_RETRY_DELAYS_MS = [15_000, 60_000, 180_000, 600_000] as const;
   const armOwedResumes = async (
     owed: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
+    attempt = 0,
   ): Promise<void> => {
-    const armed = await armResumeForChats(owed);
-    consumeArmedResumeChats(armed.map((chat) => chat.sessionId));
+    const { armed, settled } = await armResumeForChatsDetailed(owed);
+    const armedIds = new Set(armed.map((chat) => chat.sessionId));
+    const settledIds = [...settled.keys()].filter((sessionId) => !armedIds.has(sessionId));
+    for (const sessionId of settledIds) {
+      localRuntimeLogger.info("update_resume.settled", { sessionId, reason: settled.get(sessionId) ?? null, attempt });
+    }
+    consumeArmedResumeChats([...armedIds, ...settledIds]);
+    const remaining = owed.filter((chat) => !armedIds.has(chat.sessionId) && !settled.has(chat.sessionId));
+    if (remaining.length === 0) return;
+    const delayMs = UPDATE_RESUME_RETRY_DELAYS_MS[attempt];
+    for (const chat of remaining) {
+      localRuntimeLogger.warn("update_resume.not_armed", {
+        sessionId: chat.sessionId,
+        attempt,
+        retryInMs: delayMs ?? null,
+      });
+    }
+    if (delayMs === undefined) {
+      // Still owed: the next launch asks again.
+      localRuntimeLogger.warn("update_resume.retries_exhausted", { chats: remaining.length, attempts: attempt + 1 });
+      return;
+    }
+    const timer = setTimeout(() => {
+      void armOwedResumes(remaining, attempt + 1).catch((error: unknown) => {
+        localRuntimeLogger.warn("update_resume.arm_chain_failed", {
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, delayMs);
+    timer.unref?.();
   };
 
   // Phones connected through ADE phone sync, which drop while ADE restarts.
@@ -11086,9 +11134,10 @@ app.whenReady().then(async () => {
       }
     }
     if (armsResume) {
-      // Armed once, when the pool can answer: with no update transaction running
+      // Armed when the pool can answer: with no update transaction running
       // that is now, and otherwise it is the moment that transaction lets go —
       // the same instant everything above needed, however long the install took.
+      // Chats no project armed or settled are asked again a few times.
       void (postUpdateTransactionDone ?? Promise.resolve())
         .then(() => armOwedResumes(resumedAfterUpdate))
         .catch((error: unknown) => {

@@ -35,7 +35,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { isCodedError, parseCodedErrorMessage } from "../../../shared/codedError";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import {
   CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeAcceptCrossMachineHandoffResult,
@@ -685,14 +685,15 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
   const refuseIfMoving = (sourceSessionId: string): CrossMachineHandoffPersisted | null => {
     const existing = deps.readPersisted(sourceSessionId);
     if (existing && isCrossMachineHandoffActive(existing.record)) {
-      throw markExpected(new Error(
+      throw new AdeExpectedError(
         `This chat is already moving to ${existing.record.targetMachineName}. Cancel that move first.`,
-      ), "user");
+        "user",
+      );
     }
     if (mayHaveLanded(existing?.record)) {
       const name = existing!.record.targetMachineName;
       // The person decides: the message names the three ways out.
-      throw markExpected(new Error(`A move to ${name} may have landed. Retry it, or open ${name} to check, or dismiss it.`), "user");
+      throw new AdeExpectedError(`A move to ${name} may have landed. Retry it, or open ${name} to check, or dismiss it.`, "user");
     }
     // Moving a chat that already continues elsewhere would leave two live
     // copies. The person picks "Work here instead" first, then it may move.

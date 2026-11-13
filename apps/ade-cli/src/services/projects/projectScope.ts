@@ -225,6 +225,7 @@ export class ProjectScopeRegistry {
    */
   private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
+  private readonly syncScopeReadyListeners = new Set<() => void>();
   private readonly reportUnknownProjectIdOnce = createReportOnce();
   private readonly logUnknownPeerProjectIdOnce = createReportOnce();
   private syncHostProjectId: ProjectId | null = null;
@@ -469,6 +470,30 @@ export class ProjectScopeRegistry {
   }
 
   /**
+   * A scope that can answer sync calls appeared: a project finished opening,
+   * or a project became the sync host. Called synchronously; a listener that
+   * throws is logged and never fails the open or the switch.
+   */
+  onSyncScopeReady(listener: () => void): () => void {
+    this.syncScopeReadyListeners.add(listener);
+    return () => {
+      this.syncScopeReadyListeners.delete(listener);
+    };
+  }
+
+  private notifySyncScopeReady(): void {
+    for (const listener of this.syncScopeReadyListeners) {
+      try {
+        listener();
+      } catch (error) {
+        this.options.logger?.warn("project_scope.sync_scope_ready_listener_failed", {
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
+  }
+
+  /**
    * Non-booting lookup of an already-booted (or currently-booting) scope.
    * Returns the cached scope promise when one exists, or `null` when the
    * project has never been activated. Unlike `get()` this NEVER boots a scope,
@@ -642,6 +667,7 @@ export class ProjectScopeRegistry {
         this.failedScopes.delete(projectId);
         // It opened, so whatever froze it before is not freezing it now.
         this.options.openStrikes?.clear(projectId, "opened");
+        this.notifySyncScopeReady();
         try {
           this.options.onProjectOpened?.(record.rootPath);
         } catch (hookError) {
@@ -1139,6 +1165,7 @@ export class ProjectScopeRegistry {
       // Publish authority only after the target has fully activated. Until
       // this assignment every failure/timeout still resolves to the old host.
       this.syncHostProjectId = projectId;
+      this.notifySyncScopeReady();
       return scope;
     } catch (error) {
       await rollback();

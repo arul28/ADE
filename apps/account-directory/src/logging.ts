@@ -76,9 +76,9 @@ export function logDirectoryRefusal(args: {
   }));
   // A kept duplicate is not a refusal: the machine registered, and the line
   // above answers "why is my Mac listed twice". Registration rides the
-  // heartbeat, so a warning per call made one issue per minute per machine
-  // (ADE-WORKERS-17, 700 events in two days). The line stays; Sentry gets
-  // only the refusals a user is actually stuck behind.
+  // heartbeat, so a warning per call made one issue per minute per machine.
+  // The line stays; Sentry gets only the refusals a user is actually stuck
+  // behind.
   if (args.event === "directory.supersede_refused") return;
   Sentry.captureMessage(`${args.event}: ${args.code}`, {
     level: "warning",

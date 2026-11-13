@@ -1,5 +1,4 @@
-import type { ChatErrorPresentation } from "./chatErrorPresentation";
-import { providerDisplayLabel } from "./pendingInputLabels";
+import { isUsageLimitFailureText } from "./usageLimitResumePresentation";
 
 /**
  * A provider failure that is the person's account, not a broken agent:
@@ -11,9 +10,11 @@ import { providerDisplayLabel } from "./pendingInputLabels";
  *   token, "authentication failed" in any of the providers' languages).
  * - `model`: the provider does not serve this model for this account.
  *
- * Every provider and both surfaces read their failures through this one
- * table: the chat card, the tracked CLI card, provider health, and the
- * failed turn's `error_kind`. Only the verdict leaves; never the text.
+ * These surfaces read their plan and model verdicts from this table: the
+ * chat card (`decorateAgentCliError`), the tracked CLI card's plan veto
+ * (`classifyAgentCliError`), provider health, and the failed turn's
+ * `error_kind`. Sign-in words also live in `isAcpAuthError` (the ACP probe).
+ * Only the verdict leaves; never the text.
  */
 export type ProviderAccountRefusal = "plan" | "auth" | "model";
 
@@ -28,7 +29,9 @@ const PLAN_REFUSAL = new RegExp([
   // is a file or GitHub refusal, not the provider's plan.
   String.raw`\b(?:subscription|plan|tier)\b[^\n]{0,40}\b(?:does not|doesn't|do not|don't) (?:have|include|grant) access to\b`,
   String.raw`\bnot available (?:for|on|to) (?:free|your current|your) (?:users|plan|tier|account|subscription)\b`,
-  String.raw`\bupgrade (?:your|to an?|to) (?:plan|subscription|pro|paid|higher)\b`,
+  // The plan must be named: a usage limit says "Upgrade to Pro or try again
+  // later", and that is a limit that resets, not a plan refusal.
+  String.raw`\bupgrade (?:your |to (?:an? )?)?(?:\w+ )?(?:plan|subscription|tier)\b`,
   String.raw`\bnot included in your (?:plan|subscription)\b`,
   String.raw`\brequires? an? (?:paid|pro|higher|premium) (?:plan|subscription|tier|account)\b`,
 ].join("|"), "i");
@@ -53,7 +56,7 @@ const AUTH_REFUSAL = new RegExp([
   String.raw`\bplease (?:log|sign) in\b`,
   String.raw`\binvalid (?:api[ _-]?key|authori[sz]ation token|auth(?:entication)? token|access token|bearer token|credentials?)\b`,
   String.raw`\b(?:token|credentials?|session token|api key) (?:has |have |is )?(?:expired|revoked)\b`,
-  String.raw`\b(?:status(?: code)?|http(?: status)?|error|failed)\s*[:=]?\s*\(?401\b`,
+  String.raw`\b(?:status(?:\s+code)?|http(?:\s+status)?|error|failed)\s*[:=]?\s*\(?401\b`,
   String.raw`\b401\s*(?:unauthori[sz]ed|:\s*\{)`,
   // Chinese providers (GLM, Kimi, Qwen endpoints) answer in Chinese.
   String.raw`身份验证失败|认证失败|鉴权失败|未登录|令牌无效`,
@@ -65,37 +68,19 @@ export function classifyProviderAccountRefusal(
 ): ProviderAccountRefusal | null {
   const text = texts.filter((value): value is string => typeof value === "string" && value.length > 0).join("\n");
   if (!text.trim()) return null;
-  if (PLAN_REFUSAL.test(text)) return "plan";
+  // A usage limit often offers an upgrade too. It keeps its own card, its
+  // reset time and its auto-resume, so it is never a plan refusal.
+  if (PLAN_REFUSAL.test(text) && !isUsageLimitFailureText(text)) return "plan";
   if (MODEL_REFUSAL.test(text)) return "model";
   if (AUTH_REFUSAL.test(text)) return "auth";
   return null;
 }
 
 /**
- * The card for a plan or model refusal. A sign-in refusal keeps the agent
- * card, which offers the sign-in; these two have no button that fixes them.
+ * Whether the words are a refused sign-in, read on their own. The verdict
+ * above puts plan and model first; a caller that only asks "is this a
+ * sign-in failure" reads this.
  */
-export function presentProviderAccountRefusal(args: {
-  refusal: Exclude<ProviderAccountRefusal, "auth">;
-  provider?: string | null;
-  message?: string | null;
-  detail?: string | null;
-}): ChatErrorPresentation {
-  const raw = args.provider?.trim() ?? "";
-  const provider = raw ? (raw === raw.toLowerCase() ? providerDisplayLabel(raw, raw) : raw) : "";
-  const technical = [args.message?.trim(), args.detail?.trim()]
-    .filter((line, index, all): line is string => Boolean(line) && all.indexOf(line) === index)
-    .join("\n");
-  const copy = args.refusal === "plan"
-    ? {
-        title: "Not included in your plan",
-        body: provider ? `Your ${provider} plan does not include this.` : "Your plan with this provider does not include this.",
-        nextAction: provider ? `Upgrade your ${provider} plan, or choose another model.` : "Upgrade your plan, or choose another model.",
-      }
-    : {
-        title: "Model not available",
-        body: provider ? `${provider} does not offer this model to your account.` : "This provider does not offer this model to your account.",
-        nextAction: "Choose another model, then retry.",
-      };
-  return { ...copy, ...(technical ? { technicalDetail: technical } : {}) };
+export function isProviderAuthRefusalText(text: string): boolean {
+  return AUTH_REFUSAL.test(text);
 }

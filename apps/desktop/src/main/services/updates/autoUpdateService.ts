@@ -4,6 +4,8 @@ import { app } from "electron";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
 import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
+  isPendingInstallHandoffStep,
+  type PendingInstallHandoffStep,
   type AutoUpdateErrorDetails,
   type AutoUpdateErrorKind,
   type AutoUpdateInstallAbortReason,
@@ -453,7 +455,7 @@ function reconcilePersistedUpdateState(args: {
   cacheCleanupReason: string | null;
   failedInstall: { targetVersion: string; attempt: number } | null;
   /** Where the failed install's quit stopped, and how long before this launch it began. */
-  failedInstallHandoff: { step: string | null; ageMs: number | null } | null;
+  failedInstallHandoff: { step: PendingInstallHandoffStep | null; ageMs: number | null } | null;
   /**
    * This launch is the one that found `failedInstall` (its pending install did
    * not land). False when the failure is only carried over from an earlier
@@ -472,7 +474,7 @@ function reconcilePersistedUpdateState(args: {
   let cacheCleanupReason: string | null = null;
   let failedInstall: { targetVersion: string; attempt: number } | null = null;
   let failedInstallFoundNow = false;
-  let failedInstallHandoff: { step: string | null; ageMs: number | null } | null = null;
+  let failedInstallHandoff: { step: PendingInstallHandoffStep | null; ageMs: number | null } | null = null;
 
   if (
     nextState.recentlyInstalledUpdate
@@ -548,7 +550,7 @@ function reconcilePersistedUpdateState(args: {
       const requestedAtMs = Date.parse(pendingInstall.requestedAt);
       const nowMsValue = Date.parse(args.now);
       failedInstallHandoff = {
-        step: typeof pendingInstall.handoffStep === "string" ? pendingInstall.handoffStep : null,
+        step: isPendingInstallHandoffStep(pendingInstall.handoffStep) ? pendingInstall.handoffStep : null,
         ageMs: Number.isFinite(requestedAtMs) && Number.isFinite(nowMsValue)
           ? Math.max(0, nowMsValue - requestedAtMs)
           : null,
@@ -931,7 +933,7 @@ export function createAutoUpdateService({
   }
 
   /** Record how far the install's quit got in the pending record (see `PendingInstallUpdate.handoffStep`). */
-  function notePendingInstallHandoff(step: string): void {
+  function notePendingInstallHandoff(step: PendingInstallHandoffStep): void {
     try {
       const currentState = readGlobalState(globalStatePath);
       const pending = currentState.pendingInstallUpdate;

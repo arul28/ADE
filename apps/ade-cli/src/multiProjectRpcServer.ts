@@ -2555,8 +2555,11 @@ export function createMultiProjectRpcRequestHandler(
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
     // A known target answers only from its own ready scope. A missing target
     // scope must never redirect a destructive action.
-    if (targetProjectId) return scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null;
-    return await resolveBootedSyncServiceForRead();
+    const syncService = targetProjectId
+      ? scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null
+      : await resolveBootedSyncServiceForRead();
+    if (syncService) await applyPendingLanePresence();
+    return syncService;
   };
 
   // Disconnect rewrites the saved connection and clears the device records, so
@@ -2589,21 +2592,61 @@ export function createMultiProjectRpcRequestHandler(
     );
 
   /**
-   * The Lanes page's open lanes, kept while no sync scope is running. It is a
-   * hint for paired phones, so it never starts a sync host by itself (that
-   * start timed out at 10 s and failed the write, ADE-DESKTOP-7). The next
-   * host that a sync call starts gets it.
+   * The Lanes page's open lanes, kept while no sync scope can take them. It is
+   * a hint for paired phones, so it never starts a sync host by itself (that
+   * start timed out at 10 s and failed the write, ADE-DESKTOP-7). It goes out
+   * when a sync scope appears (a project opens or becomes the host), or when
+   * any sync call, a read included, finds a running sync service.
    */
   let pendingLanePresence: string[] | null = null;
+
+  /**
+   * The sync service that gets the open lanes, or null to keep them pending.
+   * A known host gets them only from its own ready scope: another booted
+   * scope has no host service, so the real host would never get them. With
+   * no known host, a booted scope keeps them and applies them when its host
+   * starts.
+   */
+  const resolveLanePresenceSyncService = async () => {
+    const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId?.() ?? null;
+    if (activeHostProjectId) {
+      return scopeRegistry.getIfReady?.(activeHostProjectId)?.runtime.syncService ?? null;
+    }
+    return await resolveBootedSyncServiceForRead();
+  };
+
+  /**
+   * Sends the held open lanes when a sync service can take them. Never
+   * throws: the sync call that runs it still answers.
+   */
+  const applyPendingLanePresence = async (): Promise<void> => {
+    if (!pendingLanePresence) return;
+    const syncService = await resolveLanePresenceSyncService();
+    const laneIds = pendingLanePresence;
+    if (!syncService || !laneIds) return;
+    pendingLanePresence = null;
+    try {
+      await syncService.setActiveLanePresence(laneIds);
+    } catch (error) {
+      // Kept for the next chance, unless a newer list came in meanwhile.
+      pendingLanePresence ??= laneIds;
+      console.warn(
+        "[sync] could not send the open lanes to the sync host",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+  const removeSyncScopeReadyListener =
+    typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onSyncScopeReady === "function"
+      ? scopeRegistry.onSyncScopeReady(() => {
+          void applyPendingLanePresence().catch(() => {});
+        })
+      : null;
 
   const getSyncService = async () => {
     const syncService = await resolveSyncService();
     if (!syncService) throw syncServiceUnavailable();
-    if (pendingLanePresence) {
-      const laneIds = pendingLanePresence;
-      pendingLanePresence = null;
-      await syncService.setActiveLanePresence(laneIds);
-    }
+    await applyPendingLanePresence();
     return syncService;
   };
 
@@ -2623,7 +2666,10 @@ export function createMultiProjectRpcRequestHandler(
     machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
   ): Promise<TFallback | TService> => {
     const syncService = await resolveSyncService();
-    if (syncService) return await run(syncService);
+    if (syncService) {
+      await applyPendingLanePresence();
+      return await run(syncService);
+    }
     const controls = options.projectlessSyncControls;
     if (controls) return await machineFallback(controls);
     throw syncServiceUnavailable();
@@ -2648,9 +2694,11 @@ export function createMultiProjectRpcRequestHandler(
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;
-    if (readySyncService) return await run(readySyncService);
-    const bootedSyncService = await resolveBootedSyncServiceForRead();
-    if (bootedSyncService) return await run(bootedSyncService);
+    const runningSyncService = readySyncService ?? await resolveBootedSyncServiceForRead();
+    if (runningSyncService) {
+      await applyPendingLanePresence();
+      return await run(runningSyncService);
+    }
     const controls = options.projectlessSyncControls;
     if (controls) return await machineFallback(controls);
     throw syncServiceUnavailable();
@@ -3501,8 +3549,8 @@ export function createMultiProjectRpcRequestHandler(
       if (!publisher) {
         // A brain with no project it can open (signed out, a fresh install, or
         // only projects whose folders are gone) has no push publisher, and no
-        // work to show. A read answers with an empty snapshot; that brain was
-        // the largest source of "unavailable" reports (ADE-DESKTOP-12).
+        // work to show. A read answers with an empty snapshot, not an
+        // "unavailable" error.
         const hasOpenableProject = projectRegistry.list()
           .some((record) => !projectRegistry.isProjectDataMissing(record));
         if (!activeScope && !hasOpenableProject && (action === "getSnapshot" || action === "getMachineSnapshot")) {
@@ -3510,10 +3558,7 @@ export function createMultiProjectRpcRequestHandler(
             contractVersion: ATTENTION_CONTRACT_VERSION,
             scope: "machine",
             // The same owner the publisher stamps: the signed-in user, else none.
-            accountOwnerId: (() => {
-              const status = accountAuthService.getStatus();
-              return status.signedIn ? status.userId?.trim() || null : null;
-            })(),
+            accountOwnerId: currentAccountOwnerUserId(),
             streamId: null,
             revision: 0,
             generatedAt: new Date().toISOString(),
@@ -4522,16 +4567,13 @@ export function createMultiProjectRpcRequestHandler(
             (laneId): laneId is string => typeof laneId === "string",
           )
         : [];
-      const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId?.() ?? null;
-      const runningSyncService = (activeHostProjectId
-        ? scopeRegistry.getIfReady?.(activeHostProjectId)?.runtime.syncService ?? null
-        : null) ?? await resolveBootedSyncServiceForRead();
-      if (!runningSyncService) {
+      const syncService = await resolveLanePresenceSyncService();
+      if (!syncService) {
         pendingLanePresence = laneIds;
         return null;
       }
       pendingLanePresence = null;
-      await runningSyncService.setActiveLanePresence(laneIds);
+      await syncService.setActiveLanePresence(laneIds);
       return null;
     }
 
@@ -4680,6 +4722,7 @@ export function createMultiProjectRpcRequestHandler(
     }
     foreignHandlers.clear();
     removeScopeDisposeListener?.();
+    removeSyncScopeReadyListener?.();
     if (options.disposeScopesOnDispose ?? !options.scopeRegistry) {
       void scopeRegistry.disposeAll();
     }

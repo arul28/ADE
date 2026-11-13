@@ -19,7 +19,7 @@ import {
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -105,6 +105,11 @@ export class ActivityAcknowledgmentStaleError extends Error {
     );
     this.name = "ActivityAcknowledgmentStaleError";
   }
+}
+
+/** No brain to ask yet: a state of this computer, not a defect. */
+function accountActivityNotReadyError(): AdeExpectedError {
+  return new AdeExpectedError("Account Activity is unavailable until this computer's ADE brain is ready.", "environment");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -478,7 +483,7 @@ export class AttentionAccountCoordinator {
       const pool = this.options.localRuntimeConnectionPool;
       if (!pool) {
         // A state of this computer (no brain to ask yet), not a defect; the same for the throws below.
-        throw markExpected(new Error("Machine Activity is unavailable until this computer's ADE brain is ready."), "environment");
+        throw new AdeExpectedError("Machine Activity is unavailable until this computer's ADE brain is ready.", "environment");
       }
       // The host caps a batch at the same 64, so chunk here too rather than
       // report success for ids that were never sent. It answers per CHUNK, not
@@ -739,7 +744,7 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (!this.options.localRuntimeConnectionPool) {
-      throw markExpected(new Error("Account Activity is unavailable until this computer's ADE brain is ready."), "environment");
+      throw accountActivityNotReadyError();
     }
     await this.options.localRuntimeConnectionPool.callAttention<void>(
       "putPreferences",
@@ -769,7 +774,7 @@ export class AttentionAccountCoordinator {
       !this.options.accountAttentionClient
       || !this.options.accountAttentionClient.putActivityMachinePreferences
     ) {
-      throw markExpected(new Error("Account Activity is unavailable until this computer's ADE brain is ready."), "environment");
+      throw accountActivityNotReadyError();
     }
     await this.options.accountAttentionClient.putActivityMachinePreferences(
       accountOwnerId,
@@ -799,7 +804,7 @@ export class AttentionAccountCoordinator {
       throw new Error("Sign in to mute a chat's notifications.");
     }
     if (!this.options.accountAttentionClient?.setAttentionSessionMuted) {
-      throw markExpected(new Error("Account Activity is unavailable until this computer's ADE brain is ready."), "environment");
+      throw accountActivityNotReadyError();
     }
     await this.options.accountAttentionClient.setAttentionSessionMuted(
       accountOwnerId,

@@ -14,7 +14,7 @@ function bucketLabels(table: BucketTable, ...extra: string[]): Set<string> {
 }
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
-import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS, PENDING_INSTALL_HANDOFF_STEPS } from "../../../shared/types";
 import {
   RENDERER_GONE_ANALYTICS_REASONS,
   RENDERER_GONE_UNKNOWN_REASON,
@@ -871,7 +871,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
   // How far a failed update's quit got (`PendingInstallUpdate.handoffStep`).
-  handoff_step: new Set(["none", "quit_started", "native_staged", "quit_escalated_hard_deadline", "quit_escalated_post_staging"]),
+  handoff_step: new Set(["none", ...PENDING_INSTALL_HANDOFF_STEPS]),
   install_source: new Set(["direct_download", "homebrew", "install_script", "development", "unknown"]),
   trigger: new Set(["work_session_completed", "cli_session_started"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),

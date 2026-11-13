@@ -17,7 +17,12 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createCodexAppServerPool, type CodexAppServerClient, type CodexAppServerHost } from "./codexAppServerPool";
+import {
+  createCodexAppServerPool,
+  isCodexAppServerProcessAlive,
+  type CodexAppServerClient,
+  type CodexAppServerHost,
+} from "./codexAppServerPool";
 import { createHash, randomUUID } from "node:crypto";
 import {
   crossMachineDestinationIdempotencyKey,
@@ -1239,6 +1244,7 @@ import {
   buildRestartNote,
   collectRestartCancelledWork,
   RESTART_RESUME_PROMPT,
+  CLI_RESTART_RESUME_PROMPT,
   MAX_CONSECUTIVE_RESTART_RESUMES,
   cliReopenedNotice,
   nextRestartResumeStreak,
@@ -1544,6 +1550,7 @@ import {
 } from "./acpHost/acpModelDiscovery";
 import {
   acquireDroidSdkConnection,
+  isDroidSdkPooledAlive,
   releaseDroidSdkConnection,
   type DroidSdkPooled,
 } from "./droidSdkPool";
@@ -1753,10 +1760,11 @@ import {
   presentChatFailure,
   presentDiskFullRefusal,
   presentExternalProcessStop,
+  presentProviderAccountRefusal,
   sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
-import { classifyProviderAccountRefusal, presentProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
+import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
@@ -23754,8 +23762,12 @@ export function createAgentChatService(args: {
     const text = `${event.message}\n${event.detail ?? ""}`;
     // Signed in, but the plan or the model is the refusal: no button fixes
     // it, so the card says so in plain words instead of a crash frame. A card
-    // the runtime already built keeps its own words.
-    const refusal = existingInfo?.presentation ? null : classifyProviderAccountRefusal(text);
+    // the runtime already built keeps its own words. A usage limit (Codex's
+    // `usageLimitExceeded`, "Upgrade to Pro or try again later") keeps its
+    // own words too: rewriting it would hide the reset and skip auto-resume.
+    const refusal = existingInfo?.presentation || isUsageLimitChatError(event)
+      ? null
+      : classifyProviderAccountRefusal(text);
     if (refusal === "plan" || refusal === "model") {
       const providerLabel = existingInfo?.provider
         ?? providerDisplayLabel(managed.session.provider, String(managed.session.provider));
@@ -29822,6 +29834,13 @@ export function createAgentChatService(args: {
        * loss without scheduling a wake that would race that send.
        */
       backgroundLossTurnImminent?: boolean;
+      /**
+       * Codex: the process is already dead and a caller is about to start a
+       * fresh one (a send that found it dead). Drop it without the "stopped
+       * while ADE was closing" notice and without marking the chat idle,
+       * which would land on the turn that caller is starting.
+       */
+      silentDeadCodexSwap?: boolean;
     },
   ): void => {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
@@ -29898,7 +29917,9 @@ export function createAgentChatService(args: {
       );
       settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
       runtime.codexAgentIndexByTurn.clear();
-      if (shouldMarkInterrupted) {
+      if (shouldMarkInterrupted && options?.silentDeadCodexSwap) {
+        markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
+      } else if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
         emitChatEvent(managed, {
           type: "system_notice",
@@ -47380,8 +47401,7 @@ export function createAgentChatService(args: {
   /** False once the app-server behind this runtime has exited or closed its input. */
   const isCodexRuntimeProcessAlive = (runtime: CodexRuntime): boolean => {
     if (codexHostByRuntime.get(runtime)?.host.isGone()) return false;
-    const proc = runtime.process;
-    return proc.exitCode == null && proc.signalCode == null && proc.stdin.writable;
+    return isCodexAppServerProcessAlive(runtime.process);
   };
 
   const codexRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CodexRuntime> }>();
@@ -47396,7 +47416,7 @@ export function createAgentChatService(args: {
         reason: "not_alive_on_reuse",
         closed: managed.closed,
       });
-      teardownRuntime(managed, "idle_ttl");
+      teardownRuntime(managed, "idle_ttl", { silentDeadCodexSwap: true });
     }
     return joinRuntimeStart(codexRuntimeStarts, managed, () => attachNewCodexRuntime(managed));
   };
@@ -64455,9 +64475,7 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "droid") {
       const existing = managed.runtime;
-      const workerAlive = existing.sdk.process.exitCode == null
-        && !existing.sdk.process.killed
-        && existing.sdk.process.connected !== false;
+      const workerAlive = isDroidSdkPooledAlive(existing.sdk);
       if (existing.poolKey === poolKey && !workerAlive) {
         // The worker died between turns. Reusing the runtime would send the
         // next turn to a dead process; the pool starts a fresh worker.
@@ -71765,6 +71783,9 @@ export function createAgentChatService(args: {
     continueAfterRestart: continueAfterRestartEnabled(),
   });
 
+  /** Chats whose update-resume row the scheduler cancelled on arrival, in this brain. */
+  const updateResumeNotArmedIds = new Set<string>();
+
   /**
    * Arms one durable "continue" row per chat.
    *
@@ -71775,16 +71796,25 @@ export function createAgentChatService(args: {
    *
    * Only rows that actually landed `scheduled` are reported back: a chat whose
    * scheduled work is paused, or whose session is no longer active, is not a
-   * resume anyone should be told about.
+   * resume anyone should be told about. Requested chats that will not be armed
+   * for good come back in `settled`; every other one stays owed, and the
+   * desktop asks again. Each chat that is not armed leaves a log line.
    */
   const armUpdateResume = async (
     input?: { sessionIds?: readonly string[] },
   ): Promise<AgentChatArmUpdateResumeResult> => {
     await scheduledWorkReady;
-    if (!scheduledWorkScheduler) return { chats: [] };
     const requested = Array.isArray(input?.sessionIds)
       ? new Set(input.sessionIds.filter((id): id is string => typeof id === "string" && id.length > 0))
       : null;
+    if (!scheduledWorkScheduler) {
+      // Left owed: the desktop retries what this answer does not arm.
+      logger.warn("agent_chat.update_resume_dropped", {
+        reason: "scheduler_unavailable",
+        chats: requested?.size ?? null,
+      });
+      return { chats: [] };
+    }
     const candidates: AgentChatInterruptedChatRef[] = requested == null
       ? liveTurnChatRefs()
       : Array.from(requested, (sessionId) => {
@@ -71794,15 +71824,27 @@ export function createAgentChatService(args: {
         });
     const createdAt = Date.now();
     const armed: AgentChatInterruptedChatRef[] = [];
+    const settled: NonNullable<AgentChatArmUpdateResumeResult["settled"]> = [];
     for (const chat of candidates) {
       const row = sessionService.get(chat.sessionId);
-      if (!row || !isSchedulableAgentSession(row)) continue;
+      if (!row) {
+        // Normal when the desktop asks every open project: the chat lives in
+        // another one. Info, and left owed for the project that has it.
+        logger.info("agent_chat.update_resume_dropped", { sessionId: chat.sessionId, reason: "session_missing" });
+        continue;
+      }
+      if (!isSchedulableAgentSession(row)) {
+        logger.warn("agent_chat.update_resume_dropped", { sessionId: chat.sessionId, reason: "not_schedulable" });
+        settled.push({ sessionId: chat.sessionId, reason: "not_schedulable" });
+        continue;
+      }
       // The same rule a crash or reboot follows (`continueAfterRestartHold`):
       // the setting is on, the chat is not settled, archived or waiting on the
       // user's answer. The cap starts again: the user accepted this restart.
       const hold = continueAfterRestartHold(chat.sessionId, { acceptedUpdate: true });
       if (hold !== null) {
         logger.info("agent_chat.update_resume_held", { sessionId: chat.sessionId, hold });
+        settled.push({ sessionId: chat.sessionId, reason: "held" });
         continue;
       }
       // No second resume: this brain's own restart recovery may already have
@@ -71813,11 +71855,30 @@ export function createAgentChatService(args: {
         const sinceStart = (scheduledWorkScheduler.list(chat.sessionId) ?? []).find((schedule) =>
           schedule.id === updateResumeScheduleId(chat.sessionId)
           && schedule.createdAt >= serviceStartedAtMs
-          && schedule.status !== "scheduled");
+          && schedule.status !== "scheduled"
+          // A row the scheduler cancelled on arrival never continued
+          // anything: the retry arms it again.
+          && !(updateResumeNotArmedIds.has(chat.sessionId) && schedule.lastFiredAt == null));
         if (sinceStart) {
           logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: sinceStart.status });
+          settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
           continue;
         }
+      }
+      // The chat had a live turn when the update stopped ADE (the previous
+      // process listed it from its running turns), so a row that reads ended
+      // is wrong: something stamped it while the turn ran (a terminal write
+      // aimed at the chat once launched its marker as a shell command and
+      // marked it `failed`). The scheduler cancels a row for an ended chat on
+      // the spot, so reopen it first, as restart recovery and turn start do.
+      if (
+        isChatToolType(row.toolType)
+        && !row.archivedAt
+        && row.status !== "running"
+        && row.status !== "detached"
+      ) {
+        logger.warn("agent_chat.update_resume_row_reopened", { sessionId: chat.sessionId, priorStatus: row.status });
+        sessionService.reopen(chat.sessionId);
       }
       try {
         const schedule = await scheduledWorkScheduler.upsert({
@@ -71835,7 +71896,23 @@ export function createAgentChatService(args: {
           // The user accepted this update: a fresh start for the resume cap.
           restartResumeStreak: 0,
         });
-        if (schedule.status === "scheduled" && schedule.pausedFlag !== true) armed.push(chat);
+        if (schedule.status === "scheduled" && schedule.pausedFlag !== true) {
+          updateResumeNotArmedIds.delete(chat.sessionId);
+          armed.push(chat);
+        } else if (schedule.status === "paused") {
+          // The row stays and fires when scheduled work is resumed.
+          logger.info("agent_chat.update_resume_dropped", { sessionId: chat.sessionId, reason: "paused" });
+          settled.push({ sessionId: chat.sessionId, reason: "paused" });
+        } else {
+          // Cancelled at once by the scheduler: the session read as ended,
+          // archived or missing when the row landed. Left owed for a retry.
+          updateResumeNotArmedIds.add(chat.sessionId);
+          logger.warn("agent_chat.update_resume_dropped", {
+            sessionId: chat.sessionId,
+            reason: "not_armed",
+            status: schedule.status,
+          });
+        }
       } catch (error) {
         logger.warn("agent_chat.update_resume_arm_failed", {
           sessionId: chat.sessionId,
@@ -71843,7 +71920,7 @@ export function createAgentChatService(args: {
         });
       }
     }
-    return { chats: armed };
+    return { chats: armed, settled };
   };
 
   /**
@@ -71855,6 +71932,9 @@ export function createAgentChatService(args: {
    * never collateral.
    */
   const cancelPendingUpdateResume = async (sessionId: string): Promise<void> => {
+    // The user is driving the chat now: a later retry of an arm the scheduler
+    // refused must read its cancelled row as settled, not arm it again.
+    updateResumeNotArmedIds.delete(sessionId);
     try {
       await scheduledWorkReady;
       const pending = (scheduledWorkScheduler?.list(sessionId) ?? [])
@@ -72001,16 +72081,22 @@ export function createAgentChatService(args: {
       ...planned,
       ...crash.cutOff.map((owner) => ({ owner, sessionId: owner.sessionId, midTurn: false })),
     ];
+    /** A CLI owed a continue that will not get one here: one line per session, never silent. */
+    const noteContinueDropped = (sessionId: string, reason: string): void => {
+      logger.info("agent_chat.cli_continue_dropped", { sessionId, reason });
+    };
     // One at a time: each reopen starts a CLI process.
     for (const entry of entries) {
       if (serviceDisposed) break;
       const row = sessionService.get(entry.sessionId);
       if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) {
         tally.notReopenable += 1;
+        if (entry.midTurn) noteContinueDropped(entry.sessionId, "not_reopenable");
         continue;
       }
       if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) {
         tally.alreadyOpen += 1;
+        if (entry.midTurn) noteContinueDropped(row.id, "already_open");
         continue;
       }
       const unexpected = entry.owner != null;
@@ -72021,12 +72107,14 @@ export function createAgentChatService(args: {
         const claim = entry.owner ?? plannedClaim(row.id, row);
         if (claim && !claimCliReopen(projectRoot, claim)) {
           tally.claimedElsewhere += 1;
+          if (entry.midTurn) noteContinueDropped(row.id, "claimed_elsewhere");
           continue;
         }
         if (entry.owner) {
           // Counted before the reopen starts: a reopen that stops this runtime counts too.
           if (countCliCrashReopen(projectRoot, row.id, RESTART_RESUME_MAX_AGE_MS) > MAX_CONSECUTIVE_RESTART_RESUMES) {
             tally.capped += 1;
+            noteContinueDropped(row.id, "reopen_capped");
             continue;
           }
           midTurn = crashMidTurn(entry.owner);
@@ -72043,6 +72131,11 @@ export function createAgentChatService(args: {
         const streak = wantsContinue && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
         const continues = wantsContinue && scheduledWorkScheduler != null && streak <= MAX_CONSECUTIVE_RESTART_RESUMES;
         if (wantsContinue && !continues) tally.continueHeld += 1;
+        if (midTurn && !continues) {
+          noteContinueDropped(row.id, row.attentionRequestedAt
+            ? "awaiting_user"
+            : !scheduledWorkScheduler ? "scheduler_unavailable" : "continue_capped");
+        }
         const reopened = await ptyService.resumeSession({ sessionId: row.id }, { reopenAfterRestart: true });
         // A CLI child's card closed with its process; reopening it reopens the card.
         if (reopened.resumed) notifyParentOfCliChildSpawn(row.id, { resumed: true });
@@ -72054,7 +72147,9 @@ export function createAgentChatService(args: {
             id: updateResumeScheduleId(row.id),
             sessionId: row.id,
             kind: "wakeup",
-            prompt: RESTART_RESUME_PROMPT,
+            // Says that its background agents stopped too: a CLI that was only
+            // waiting on them would otherwise go on waiting.
+            prompt: CLI_RESTART_RESUME_PROMPT,
             reason: RESTART_RESUME_REASON,
             fireAt: createdAt,
             createdAt,

@@ -1124,7 +1124,7 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
-import { withDeadline, withTimeout } from "../shared/withTimeout";
+import { withTimeout } from "../shared/withTimeout";
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
 import { prepareMcpAppDocument, prepareSceneDocument } from "../scenes/sceneDocumentStore";
 import {
@@ -5662,10 +5662,6 @@ export function registerIpc({
     return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
   });
 
-  // The last status an open project's read answered, served when a later
-  // plain read runs past its budget. Kept per project root: another project's
-  // status is never served.
-  let lastOpenProjectAiStatus: { projectRoot: string | null; status: AiSettingsStatus } | null = null;
   handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
     const aiIntegrationService = ctx.aiIntegrationService;
@@ -5692,40 +5688,33 @@ export function registerIpc({
         return getUnavailableAiStatus();
       }
     }
-    const projectRoot = ctx.project?.rootPath ?? null;
     try {
-      const read = aiIntegrationService.getStatus({
-        force: arg?.force === true,
-        refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
-      });
       // A plain read gets the same budget as the no-project read: past it the
-      // window gets the last good status for this project (or "unavailable")
-      // instead of the 30 s IPC timeout (ADE-DESKTOP-9E). The read keeps going
-      // and fills the service's cache for the next call. A forced read is the
-      // user asking for a fresh check and keeps its own longer IPC limit.
-      let status: Awaited<typeof read> | null;
+      // window gets this project's last good status (or "unavailable")
+      // instead of the 30 s IPC timeout. A forced read is the user asking for
+      // a fresh check and keeps its own longer IPC limit.
+      let status: Awaited<ReturnType<typeof aiIntegrationService.getStatus>>;
       if (arg?.force === true) {
-        status = await read;
-      } else {
-        const startedAt = Date.now();
-        const overBudget = new Error("ai.getStatus read budget");
-        // A failed read still throws below; only the budget reads as null.
-        status = await withDeadline(read, GLOBAL_AI_STATUS_BUDGET_MS, () => overBudget).catch((error: unknown) => {
-          if (error === overBudget) return null;
-          throw error;
+        status = await aiIntegrationService.getStatus({
+          force: true,
+          refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
         });
-        if (!status) {
+      } else {
+        const answer = await aiIntegrationService.getStatusWithinBudget({
+          budgetMs: GLOBAL_AI_STATUS_BUDGET_MS,
+          refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
+        });
+        if (answer.slow) {
           // Which step was still running, for the next report of a slow machine.
           ctx.logger.warn("ai.get_status.open_project_slow", {
-            phase: aiIntegrationService.getStatusReadPhase(),
+            phase: answer.slow.phase,
             budgetMs: GLOBAL_AI_STATUS_BUDGET_MS,
-            elapsedMs: Date.now() - startedAt,
-            servedLastGood: lastOpenProjectAiStatus?.projectRoot === projectRoot,
+            elapsedMs: answer.slow.elapsedMs,
+            servedLastGood: answer.status != null,
           });
-          return lastOpenProjectAiStatus?.projectRoot === projectRoot
-            ? lastOpenProjectAiStatus.status
-            : getUnavailableAiStatus();
         }
+        if (!answer.status) return getUnavailableAiStatus();
+        status = answer.status;
       }
       // Single query for all feature daily usage instead of N individual queries
       const usageBatch = aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
@@ -5754,7 +5743,6 @@ export function registerIpc({
           dailyLimit: aiIntegrationService.getDailyBudgetLimit(feature)
         }))
       };
-      lastOpenProjectAiStatus = { projectRoot, status: result };
       return result;
     } catch (error) {
       if (isDatabaseClosedError(error)) {

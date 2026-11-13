@@ -329,6 +329,14 @@ export const RESTART_RESUME_PROMPT =
 export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 
 /**
+ * The continue a reopened agent CLI gets. The restart stopped the CLI process,
+ * and every background agent or task it started stopped with it, so a CLI
+ * that was only waiting on them must hear that their reports will never come.
+ */
+export const CLI_RESTART_RESUME_PROMPT =
+  "ADE restarted while you were working, so your last turn ended early and any background agents or tasks you started were stopped before they reported back. Continue the task from where it stopped: re-run the stopped work you still need, and do not redo work that already completed.";
+
+/**
  * The one line a reopened agent CLI shows in its own terminal, so every viewer
  * of the session (this desktop, another computer, a phone) sees why it came
  * back. `unexpected`: the runtime crashed, was killed, or lost power, rather

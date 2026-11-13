@@ -40,9 +40,8 @@ export type BrainStart = {
 /**
  * The facts a start can read about its own start and about the brain before
  * it. A restart-loop report lists them for each start, so the report says
- * what ended each brain. Without them the 1.2.129 Windows reports
- * (ADE-BRAIN-69) showed only that brains died, not why. Every field is null
- * when the start could not read it.
+ * what ended each brain, not only that brains died. Every field is null when
+ * the start could not read it.
  */
 export type BrainStartCause = {
   /** The process that started this brain. */
@@ -99,7 +98,7 @@ export function markBrainStoppedBy(
 export function readStartsFile(filePath: string): BrainStartsState {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
-    const starts = Array.isArray(parsed.starts) ? parsed.starts.filter(isBrainStart) : [];
+    const starts = Array.isArray(parsed.starts) ? parsed.starts.filter(isBrainStart).map(withValidCause) : [];
     return {
       starts,
       loopFoundAt: typeof parsed.loopFoundAt === "string" ? parsed.loopFoundAt : null,
@@ -113,6 +112,30 @@ export function readStartsFile(filePath: string): BrainStartsState {
     }
     return { starts: [], loopFoundAt: null, lastReportedAt: null };
   }
+}
+
+const BRAIN_STARTED_BY: ReadonlySet<string> = new Set<BrainStartCause["startedBy"]>(["supervisor", "launchd", "systemd", "other"]);
+
+const isNumberOrNull = (value: unknown): boolean => value === null || typeof value === "number";
+const isStringOrNull = (value: unknown): boolean => value === null || typeof value === "string";
+
+function isBrainStartCause(value: unknown): value is BrainStartCause {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const cause = value as Record<string, unknown>;
+  return typeof cause.startedBy === "string"
+    && BRAIN_STARTED_BY.has(cause.startedBy)
+    && isNumberOrNull(cause.supervisorPid)
+    && isNumberOrNull(cause.supervisorRestartCount)
+    && isNumberOrNull(cause.previousExitCode)
+    && isStringOrNull(cause.previousWedge)
+    && isStringOrNull(cause.previousFailureCode);
+}
+
+/** A hand-edited or older file's `cause` that is not one is dropped; the start itself is kept. */
+function withValidCause(start: BrainStart): BrainStart {
+  if (start.cause === undefined || isBrainStartCause(start.cause)) return start;
+  const { cause: _invalid, ...rest } = start;
+  return rest;
 }
 
 function isBrainStart(value: unknown): value is BrainStart {

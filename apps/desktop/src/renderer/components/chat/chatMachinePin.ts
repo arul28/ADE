@@ -5,17 +5,17 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 export const NO_CHAT_MACHINE_MESSAGE = "The computer this runs on is not connected.";
 
 /**
- * The chat's computer, for a call that must name one. A missing pin is an
- * error, never "the tab's computer": the call would reach the wrong machine.
- */
-/**
  * The chat's machine is not known yet (its lane is still resolving) or is not
  * connected: a state the caller shows or waits out, never a defect.
  */
-function noChatMachineError(): AdeExpectedError {
+export function noChatMachineError(): AdeExpectedError {
   return new AdeExpectedError(NO_CHAT_MACHINE_MESSAGE, "environment");
 }
 
+/**
+ * The chat's computer, for a call that must name one. A missing pin is an
+ * error, never "the tab's computer": the call would reach the wrong machine.
+ */
 export function requireChatPin(pin: OpenProjectBinding | null | undefined): OpenProjectBinding {
   if (!pin) throw noChatMachineError();
   return pin;

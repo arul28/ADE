@@ -90,6 +90,8 @@ import {
   getLastFetchedAt as getModelsDevLastFetchedAt,
 } from "./modelsDevService";
 import { getErrorMessage, isRecord, toOptionalString } from "../shared/utils";
+import { withDeadline } from "../shared/withTimeout";
+import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
@@ -1439,7 +1441,7 @@ export function createAiIntegrationService(args: {
         return repos;
       } catch (error) {
         const message = getErrorMessage(error);
-        const planRefusal = message.includes("[plan_required]");
+        const planRefusal = classifyProviderAccountRefusal(message) === "plan";
         const rateLimited = CURSOR_REPOS_RATE_LIMIT.test(message);
         if (planRefusal || rateLimited) {
           // The account's plan, or Cursor's limit: an answer, not a defect.
@@ -2145,8 +2147,10 @@ export function createAiIntegrationService(args: {
     loginGeneration: number;
   } | null = null;
   const statusRequestsInFlight = new Map<string, Promise<AiIntegrationStatus>>();
-  /** The step a status read is in now, for a caller whose wait ran out (`getStatusReadPhase`). */
+  /** The step a status read is in now, for a caller whose wait ran out (`getStatusWithinBudget`). */
   let statusReadPhase: string | null = null;
+  /** The last status a read answered, served when a later plain read runs past its budget. */
+  let lastGoodStatus: AiIntegrationStatus | null = null;
   let providerReadinessCacheGeneration = 0;
   let seenLoginGeneration = providerLoginGeneration();
 
@@ -2613,6 +2617,7 @@ export function createAiIntegrationService(args: {
             providerAvailability: availability,
             opencodeModelCount: opencodeInventory.modelIds.length,
           });
+          lastGoodStatus = result;
           return result;
         } catch (error) {
           logger.warn("ai.status.failed", {
@@ -2636,8 +2641,29 @@ export function createAiIntegrationService(args: {
       }
     },
 
-    /** The step a status read in flight is in, or null when none runs. */
-    getStatusReadPhase: (): string | null => statusReadPhase,
+    /**
+     * A plain status read with a time budget, so a window is not held until
+     * its IPC timeout. Past the budget it answers with the last status a read
+     * returned (or null) and the step still running; the read keeps going and
+     * fills the cache for the next call. A failed read still throws.
+     */
+    getStatusWithinBudget: async (options: {
+      budgetMs: number;
+      refreshOpenCodeInventory?: boolean;
+    }): Promise<
+      | { status: AiIntegrationStatus; slow: null }
+      | { status: AiIntegrationStatus | null; slow: { phase: string | null; elapsedMs: number } }
+    > => {
+      const startedAt = Date.now();
+      const read = service.getStatus({ refreshOpenCodeInventory: options.refreshOpenCodeInventory === true });
+      const overBudget = new Error("ai.getStatus read budget");
+      const status = await withDeadline(read, options.budgetMs, () => overBudget).catch((error: unknown) => {
+        if (error === overBudget) return null;
+        throw error;
+      });
+      if (status) return { status, slow: null };
+      return { status: lastGoodStatus, slow: { phase: statusReadPhase, elapsedMs: Date.now() - startedAt } };
+    },
 
     executeTask,
 

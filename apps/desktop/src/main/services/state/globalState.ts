@@ -6,6 +6,7 @@ import type {
   AutoUpdatePreferences,
   KeepAwakePreferences,
   OpenProjectBinding,
+  PendingInstallHandoffStep,
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
   UpdateInterruptedChat,
@@ -84,7 +85,7 @@ export type PendingInstallUpdate = {
    * `quit_escalated_<reason>` (ADE force-quit a quit that would not finish).
    * Fixed values only, never a path.
    */
-  handoffStep?: string;
+  handoffStep?: PendingInstallHandoffStep;
 };
 
 // Consecutive installs of the same version that quit without landing. The

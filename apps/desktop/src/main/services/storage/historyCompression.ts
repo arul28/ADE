@@ -1,4 +1,4 @@
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { FileHandle } from "node:fs/promises";
@@ -283,20 +283,20 @@ function startNextHistoryInflateAdmission(): void {
 }
 
 /**
+ * The viewer moved to another chat before this read was admitted. The caller's
+ * retryable history path handles it; it is the queue working, not a defect.
+ */
+function supersededHistoryReadError(): Error {
+  return new AdeExpectedError("compressed_history_read_superseded", "user");
+}
+
+/**
  * Admit one inflater at a time and retain only the newest queued request.
  * Rapid chat switching can therefore leave at most the active archive plus
  * the current destination; superseded queued reads fail through the existing
  * retryable history-error path instead of keeping the brain busy long after
  * the viewer moved on.
  */
-/**
- * The viewer moved to another chat before this read was admitted. The caller's
- * retryable history path handles it; it is the queue working, not a defect.
- */
-function supersededHistoryReadError(): Error {
-  return markExpected(new Error("compressed_history_read_superseded"), "user");
-}
-
 function withAsyncHistoryInflateAdmission<T>(
   read: () => Promise<T>,
   sequence: number,
