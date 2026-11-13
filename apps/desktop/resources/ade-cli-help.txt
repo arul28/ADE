@@ -95,6 +95,9 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -261,6 +264,9 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -1096,6 +1102,9 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -1371,6 +1380,9 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -2180,10 +2192,12 @@ ADE browser
     $ ade browser signin --tab <tab-id> --text
     $ ade browser signin --tab <tab-id> --account me@example.com --text
   Sign in to the open page's site with a login saved in Passwords. ADE types the
-  username and password into the page itself; you never see the password. Fails
-  if Passwords has no login for this site (ask the person to add one in
-  Settings › Passwords). --site <host> is only a check that the tab is on the
-  site you expect; the site is always the tab's own page.
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run `ade browser handoff` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
 
   Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
@@ -2456,6 +2470,9 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip

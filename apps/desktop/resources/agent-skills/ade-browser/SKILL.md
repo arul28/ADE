@@ -212,8 +212,13 @@ paste a password in chat. If Passwords has no login for the site, the command
 asks the person in your chat with a secure sign-in card and waits: they save a
 login (ADE fills it and the command finishes signed in), or they choose to type
 it themselves (the command says so; then run `ade browser handoff` to wait for
-them). For an email one-time code, open Gmail or Outlook in the ADE browser (it
-is already signed in) and read the newest code.
+them). On a page that asks for an authenticator code, run `ade browser signin`
+again: it fills the saved login's current code. Otherwise `ade code wait --site
+<host> --text` returns the saved authenticator code, or the next code texted
+to the person's Mac (when Messages is connected). For an email one-time code,
+open Gmail or Outlook in the ADE browser (it is already signed in) and read the
+newest code. Passkeys saved in ADE work by themselves in ADE's browser: the
+person confirms each use with Touch ID.
 
 ```bash
 ade browser signin --tab <tab-id> --text
