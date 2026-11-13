@@ -566,7 +566,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 }
 .adecd-plan-col {
   display: grid;
-  grid-template-rows: 44px repeat(4, 34px) minmax(34px, auto) 48px;
+  grid-template-rows: 44px repeat(var(--adecd-plan-facts, 4), 34px) minmax(34px, auto) var(--adecd-plan-foot, 48px);
   align-items: center;
   min-width: 0;
   padding: 0 14px;
@@ -586,7 +586,8 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   border-color: color-mix(in srgb, var(--adec-400) 40%, transparent);
   background: color-mix(in srgb, var(--adec-600) 8%, transparent);
 }
-.adecd-plan-col > span.adecd-plan-wrap { padding: 8px 0; white-space: normal; line-height: 1.35; }
+/* Stretched, so its top rule sits on the row's top in every column, whatever its height. */
+.adecd-plan-col > span.adecd-plan-wrap { align-self: stretch; display: flex; align-items: center; padding: 8px 0; white-space: normal; line-height: 1.35; }
 .adecd-plan-foot { display: flex; align-items: center; }
 .adecd-plan-fine { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--kit-text-3); }
 .adecd-plan-fine[data-tone="warn"] { color: var(--kit-warn); }

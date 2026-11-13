@@ -4915,10 +4915,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
   Earned hours never expire; they are used after the plan's hours and before
-  extra hours. The free plan is given once per computer.
+  extra hours. The free plan is given once per computer and once per GitHub
+  account, which must be at least 30 days old (or add a card, no charge).
 
   Plans: Free, Plus, Pro and Max. \`ade cloud hours\` shows yours, with its hours and disk.
-  Change it in Settings › ADE Cloud › Plan and hours.
+  Change it in Settings › ADE Cloud › Plans.
   Disk is what all your computers hold at one time, not a monthly amount.
   No plan limits how many computers you have.
   On a paid plan, extra disk past the plan's is counted by the day, inside a

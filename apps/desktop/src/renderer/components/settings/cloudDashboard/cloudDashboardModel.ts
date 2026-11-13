@@ -169,14 +169,22 @@ export function hoursForecast(account: CloudAccountState, now: number): string |
   return `At this pace your hours last until ${formatCloudDate(endsAt)}`;
 }
 
-/** The last-run phrase a lane row shows. */
+/** Why a lane has no computer, in a few words (the row's tooltip), or null for one that never had one here. */
+export function removedReasonText(lane: DashLane): string | null {
+  const reason = lane.without?.reason;
+  if (reason === "inactive") return "Removed after 30 days unused";
+  if (reason === "idle_cleanup") return "Removed while unused, after its work was pushed";
+  if (reason === "plan_limit") return "Removed to fit your plan, after its work was pushed";
+  if (reason === "freed") return "Freed to save space";
+  return null;
+}
+
+/** The last-run phrase a lane row shows: for a lane without a computer, when it went (the reason is the tooltip). */
 export function lastRunText(lane: DashLane, now: number): string {
   if (lane.state === "none") {
-    const reason = lane.without?.reason;
-    if (reason === "inactive") return "Computer removed after 30 days";
-    if (reason === "idle_cleanup") return "Computer removed while unused";
-    if (reason === "plan_limit") return "Computer removed to fit your plan";
-    return "No computer now";
+    const since = lane.without?.since;
+    if (since != null && Number.isFinite(since)) return `Removed ${formatAgo(since, now)}`;
+    return removedReasonText(lane) ?? "No computer now";
   }
   if (lane.state === "awake") return "Running now";
   if (lane.lastActiveAt == null) return "Not used yet";

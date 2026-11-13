@@ -8,6 +8,7 @@ import {
   cloudCatalogHasPro,
   cloudCatalogOf,
   cloudExtraHourCentsOf,
+  cloudFreePlanOf,
   cloudPlanIdOf,
   cloudPlanLabelOf,
   formatCloudCents,
@@ -72,6 +73,19 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     (account.downgradePreviews as Partial<Record<CloudPlanId, CloudPlanCleanup>> | undefined)?.[plan] ?? null;
   const showPhoneMinutes = columns.some((column) => column.facts.phoneMinutes != null);
   const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
+  // An account from before the new plans keeps its old hours and disk until its
+  // period ends; the table lists the new ones, so the plan's column says so.
+  const currentFacts = columns.find((column) => column.id === current)?.facts ?? null;
+  const oldTerms = paid && !pastDue && currentFacts
+    ? {
+        hoursMilli: account.hours.includedMilli > 0 && account.hours.includedMilli !== currentFacts.includedMilli ? account.hours.includedMilli : null,
+        diskGb: account.disk.limitGb != null && account.disk.limitGb !== currentFacts.diskGb ? account.disk.limitGb : null,
+      }
+    : null;
+  const keepsOldTerms = oldTerms != null && (oldTerms.hoursMilli != null || oldTerms.diskGb != null);
+  const until = formatCloudDate(billing.periodEnd);
+  const githubState = account.rules === "free" ? cloudFreePlanOf(account).github?.state : undefined;
+  const githubHeld = githubState != null && githubState !== "ok";
 
   const run = async (work: (() => Promise<unknown>) | undefined) => {
     if (!work) return;
@@ -172,7 +186,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     if (pastDue || billing.cancelAtPeriodEnd) return null;
     if (!paid) return { label: `Get ${CLOUD_PLAN_LABELS[column.id]}`, primary: column.id === "plus" };
     if (nextPlanId === column.id) return null;
-    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] > CLOUD_PLAN_RANK[current] };
+    // One filled button per card: the next plan up.
+    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 };
   };
 
   // Extra disk (paid only, and only when the server sells it).
@@ -185,13 +200,18 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   const diskLimitOptions = (EXTRA_DISK_LIMITS.includes(shownDiskLimit) ? EXTRA_DISK_LIMITS : [...EXTRA_DISK_LIMITS, shownDiskLimit].sort((a, b) => Number(a) - Number(b)))
     .map((value) => ({ value, label: `Up to $${value} a month` }));
 
-  const statusLine = billing.cancelAtPeriodEnd
-    ? `Your plan ends ${formatCloudDate(billing.periodEnd)}. You're on Free after that.`
-    : nextPlanId
-      ? `You move to ${CLOUD_PLAN_LABELS[nextPlanId]} on ${formatCloudDate(billing.periodEnd)}.`
-      : paid
-        ? `Renews ${formatCloudDate(billing.periodEnd)}.`
-        : "Free needs no card. Upgrade any time; you pay the difference for the rest of the month.";
+  // No button in any column (a cancel waiting, a failed payment, Max with nothing above): no empty button row.
+  const anyAction = columns.some((column) => actionFor(column) != null);
+
+  const statusLine = pastDue
+    ? "Your last payment failed. Update your card in Manage billing."
+    : billing.cancelAtPeriodEnd
+      ? `Your plan ends ${until}, then you're on Free. To keep it, use Manage billing.`
+      : nextPlanId
+        ? `You move to ${CLOUD_PLAN_LABELS[nextPlanId]} on ${until}.`
+        : paid
+          ? `Renews ${until}.`
+          : "Upgrade any time; you pay the difference for the rest of the month.";
 
   return (
     <section id="cloud-plan" className="kit-card adecd-card" aria-label="Plans">
@@ -207,14 +227,14 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
       </header>
       <div className="kit-card-body">
         <CloudFreeGithubNotice account={account} onChanged={onChanged} />
-        <div className="adecd-plans" style={{ ["--adecd-plan-cols" as string]: columns.length }}>
+        <div className="adecd-plans" style={{ ["--adecd-plan-cols" as string]: columns.length, ["--adecd-plan-facts" as string]: showPhoneMinutes ? 4 : 3, ["--adecd-plan-foot" as string]: anyAction ? "48px" : "12px" }}>
           <div className="adecd-plan-col adecd-plan-keys" aria-hidden="true">
             <span className="adecd-plan-top" />
             <span>Price</span>
             <span>Hours a month</span>
             <span>Disk</span>
             {showPhoneMinutes ? <span>Phone minutes</span> : null}
-            <span className="adecd-plan-wrap">Past your hours</span>
+            <span className="adecd-plan-wrap">Extra hours</span>
             <span className="adecd-plan-foot" />
           </div>
           {columns.map((column) => {
@@ -225,17 +245,30 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
               <div key={column.id} className="adecd-plan-col" data-current={isCurrent || undefined} role="group" aria-label={`${label}${isCurrent ? ", your plan" : ""}`}>
                 <span className="adecd-plan-top">
                   <b>{label}</b>
-                  {isCurrent ? <span className="kit-tag" data-tone="accent">Your plan</span> : nextPlanId === column.id ? <span className="kit-tag">From {formatCloudDate(billing.periodEnd)}</span> : null}
+                  {isCurrent ? <span className="kit-tag" data-tone="accent">Your plan</span>
+                    : nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free") ? <span className="kit-tag">From {until}</span>
+                    : null}
                 </span>
                 <span><b className="kit-num" data-face="ui">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b><small>{column.facts.priceUsd ? " a month" : " forever"}</small></span>
-                <span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b><small> hours</small></span>
-                <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
+                {isCurrent && oldTerms?.hoursMilli != null ? (
+                  <span title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b><small> until {until}</small></span>
+                ) : (
+                  <span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b><small> hours</small></span>
+                )}
+                {isCurrent && oldTerms?.diskGb != null ? (
+                  <span title={`${column.facts.diskGb} GB from ${until}`}><b className="kit-num" data-face="ui">{oldTerms.diskGb} GB</b><small> until {until}</small></span>
+                ) : (
+                  <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
+                )}
                 {showPhoneMinutes ? (
                   <span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b><small> a month</small></span>
                 ) : null}
                 <span className="adecd-plan-wrap">{(() => {
                   const cents = cloudExtraHourCentsOf(column.id, catalog);
-                  return cents == null ? <small>Work stops until the next month</small> : <small>{formatCloudCentsPerHour(cents)} an hour, if you turn it on</small>;
+                  // The row is "Extra hours": a price per hour (on only if you turn it on, below), or none on Free.
+                  return cents == null
+                    ? <small title="Work stops until your hours reset">None: work stops</small>
+                    : <span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b><small> an hour</small></span>;
                 })()}</span>
                 <span className="adecd-plan-foot">
                   {action ? (
@@ -255,13 +288,20 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
           })}
         </div>
         {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
-          <p className="adecd-plan-fine" data-tone="warn">
-            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until their disk fits; you clean up or pick what ADE frees here.
+          // A what-if, not a state: quiet text, not a warning colour.
+          <p className="adecd-plan-fine">
+            If you cancel: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ADE frees here.
           </p>
         ) : null}
-        {!paid ? (
+        {keepsOldTerms && currentFacts ? (
           <p className="adecd-plan-fine">
-            Free needs a GitHub account at least {CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. One free plan per GitHub account and per computer.
+            {CLOUD_PLAN_LABELS[current]} keeps your old {[oldTerms?.hoursMilli != null ? `${formatCloudHours(oldTerms.hoursMilli)} hours` : null, oldTerms?.diskGb != null ? `${oldTerms.diskGb} GB` : null].filter(Boolean).join(" and ")} until {until}. From then it has {[oldTerms?.hoursMilli != null ? `${formatCloudHours(currentFacts.includedMilli)} hours` : null, oldTerms?.diskGb != null ? `${currentFacts.diskGb} GB` : null].filter(Boolean).join(" and ")}, as in the table.
+          </p>
+        ) : null}
+        {/* The rule, unless the GitHub notice above already says how it applies to you. */}
+        {!paid && !githubHeld ? (
+          <p className="adecd-plan-fine">
+            Free needs a GitHub account at least {CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old, or a card on file (no charge). One free plan per GitHub account and per computer.
           </p>
         ) : null}
         <p className="adecd-plan-fine">
@@ -274,8 +314,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
               <div>
                 <b>Extra hours</b>
                 <small>
-                  Keep working past your plan's hours at {formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)} a Small-hour, billed after use.
-                  {extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} h used this month.` : ""}
+                  Keep working past your plan's hours at {formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)} an hour, billed after use.
+                  {extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} hours used this month.` : ""}
                 </small>
               </div>
               <SettingsToggle

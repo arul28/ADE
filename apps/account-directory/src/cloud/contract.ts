@@ -896,7 +896,7 @@ export function planCleanupSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "
  * (`over_plan_limits`): the server's refusal and ADE's notice say the same.
  */
 export function overPlanLimitsSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "usedGb" | "limitGb">): string {
-  return `${planCleanupSentence(cleanup)} ADE can't make a new computer until your computers fit. Delete or shrink computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
+  return `${planCleanupSentence(cleanup)} ADE can't make a new computer until their disk fits. Delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
 }
 
 /** Largest part of a chat the server accepts, in bytes of its text. */

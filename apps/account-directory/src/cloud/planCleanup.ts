@@ -384,7 +384,7 @@ export async function recordPlanCleanupPick(env: CloudEnv, userId: string, planI
 const utcDate = (ms: number): string => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
 /** Where in ADE the person picks, and what ADE does with a pick: every email says it the same. */
-const WAYS_OUT = "ADE deletes nothing on its own. In ADE, open Settings › ADE Cloud › Plans: delete or shrink computers yourself, or pick the computers ADE frees. It pushes their work to GitHub first, and their lanes and chats stay.";
+const WAYS_OUT = "ADE deletes nothing on its own. In ADE, delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees. It pushes their work to GitHub first, and their lanes and chats stay.";
 
 /**
  * The email when a downgrade or cancel is made outside ADE's question (the

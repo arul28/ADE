@@ -129,12 +129,23 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
   "deleted \(cloudInHowLong(deletesAt, now: now))"
 }
 
-/// What the warning says about files git ignores (`ignoredFilesSentence`).
-func cloudIgnoredFilesSentence(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
-  guard let ignored else {
-    return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept."
+/// One idle cleanup notice on the phone, in the desktop's words, with how to
+/// keep it from here (send a message in the lane) since "Keep it" is on the desktop.
+func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
+  let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
+  if let held = entry.held {
+    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now))."
   }
-  let builds = (ignored.rebuildable ?? 0) > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : ""
+  let save = entry.laneName != nil
+    ? "ADE pushes its work to \(entry.branch ?? "the lane's branch") first, and the lane and its chats stay."
+    : "ADE pushes its work to GitHub first."
+  let ignored = cloudIgnoredFilesShort(entry.ignoredFiles)
+  return "\(subject) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)), on \(cloudDate(entry.deletesAt)), because it isn't used. \(save)\(ignored) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
+}
+
+/// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
+func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
+  guard let ignored else { return " Files git ignores, such as .env, aren't pushed." }
   let list: String?
   if ignored.paths.isEmpty {
     list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
@@ -143,25 +154,11 @@ func cloudIgnoredFilesSentence(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredF
     list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
   }
   if ignored.incomplete == true {
-    guard let list else {
-      return "ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never pushed, so they won't be kept.\(builds)"
-    }
-    return "Files git ignores are never pushed, so these won't be kept: \(list). ADE couldn't read every lane on it, so there may be more.\(builds)"
+    guard let list else { return " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't pushed." }
+    return " Files git ignores aren't pushed, so these won't be kept: \(list). ADE couldn't read every lane, so there may be more."
   }
-  guard let list else { return "No files that git ignores were found on it.\(builds)" }
-  return "Files git ignores are never pushed, so these won't be kept: \(list).\(builds)"
-}
-
-/// One idle cleanup notice on the phone, in the desktop's words, with how to
-/// keep it from here (send a message in the lane) since "Keep it" is on the desktop.
-func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
-  let name = entry.displayName
-  if let held = entry.held {
-    return "ADE didn't delete \(name): its work couldn't be saved. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now))."
-  }
-  let branch = entry.branch.map { "the lane's branch, \($0)," } ?? "the lane's branch"
-  let days = entry.idleDays.map { " after \($0) days unused" } ?? " because it isn't used"
-  return "\(name) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)) (\(cloudDate(entry.deletesAt)))\(days). Before that, ADE commits its work and pushes it to \(branch) on GitHub; the lane and its chats stay. \(cloudIgnoredFilesSentence(entry.ignoredFiles)) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
+  guard let list else { return "" }
+  return " Files git ignores aren't pushed, so these won't be kept: \(list)."
 }
 
 /// Why timed wake-ups were cancelled and how they come back
@@ -208,8 +205,14 @@ func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
   return "At this pace your hours last until \(cloudDate(endsAt))"
 }
 
-/// One mark at most, so the name keeps its room: no lane, then unused, then safe to delete.
-func cloudMachineMark(_ machine: CloudPhoneMachine, now: Date) -> (text: String, tone: ADEKitTone)? {
+/// One mark at most, so the name keeps its room: the idle cleanup's warning,
+/// no lane, then unused, then safe to delete.
+func cloudMachineMark(_ machine: CloudPhoneMachine, idle: CloudPhoneAccount.IdleCleanup? = nil, now: Date) -> (text: String, tone: ADEKitTone)? {
+  if let idle {
+    if idle.held != nil { return ("Not deleted", .warn) }
+    let when = cloudIdleCleanupWhen(idle.deletesAt, now: now.timeIntervalSince1970 * 1000)
+    return (when.prefix(1).uppercased() + when.dropFirst(), .warn)
+  }
   if machine.noLane { return ("No lane", .neutral) }
   if cloudMachineOld(machine, now: now) { return ("Unused", .warn) }
   if machine.laneWork?.prState == "merged", machine.laneWork?.unpushed == false { return ("Safe to delete", .ok) }
@@ -369,11 +372,11 @@ func cloudPlanName(_ account: CloudPhoneAccount) -> String {
   "\(cloudPlanLabel(account.currentPlanId)) plan"
 }
 
-/// Hours from thousandths, as the desktop writes them: "118", "42.5".
+/// Hours from thousandths, as the desktop writes them: "1,600", "118", "42.5".
 func cloudHours(_ milli: Int) -> String {
   let hours = Double(max(0, milli)) / 1000
   let shown = hours >= 100 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
-  return shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))
+  return shown.formatted(.number.precision(.fractionLength(0...1)).locale(Locale(identifier: "en_US")))
 }
 
 /// "2.5× hours", as the desktop writes it.

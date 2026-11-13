@@ -47,7 +47,7 @@ function hoursLeftPct(state: CloudAccountState): number {
   return totalMilli > 0 ? (leftMilli / totalMilli) * 100 : 0;
 }
 
-/** "ADE Cloud 43.8 h of 50 h left" for the control's title. */
+/** "ADE Cloud 43.8 h of 100 h left" for the control's title. */
 export function headerCloudTitle(state: CloudAccountState): string {
   const { leftMilli, totalMilli } = hoursOf(state);
   return `ADE Cloud ${formatCloudHours(leftMilli)} h of ${formatCloudHours(totalMilli)} h left`;
@@ -110,7 +110,7 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
       <div className="flex items-center gap-2">
         <CloudMark size={14} brand bold />
         <span className={cn("font-semibold text-fg", USAGE_TEXT.body)}>ADE Cloud</span>
-        <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>Resets {formatCloudDate(state.billing.periodEnd)}</span>
+        <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>{state.billing.cancelAtPeriodEnd ? "Plan ends" : "Resets"} {formatCloudDate(state.billing.periodEnd)}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
         <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)} h</span>

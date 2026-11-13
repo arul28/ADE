@@ -93,7 +93,7 @@ export function formatCloudStatus(value: unknown): string {
       String(box.state ?? ""),
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       cloudUpdateText(box.update),
-      typeof box.deletesAt === "string" ? `deleted ${box.deletesAt.slice(0, 10)} unless used` : "",
+      typeof box.deletesAt === "string" ? `computer deleted ${box.deletesAt.slice(0, 10)} unless used or kept` : "",
     ];
   });
   const sizes = Array.isArray(status.sizes) ? status.sizes.filter(isRecord) : [];

@@ -48,7 +48,11 @@ export function cloudLaneStartBlock(
   if (!options.newLane) return null;
   // No plan limits how many computers an account has; only the disk can be full.
   if (disk && disk.limitGb != null && disk.usedGb >= disk.limitGb) {
-    return { code: "disk_full", message: "Your ADE Cloud disk space is full.", short: "ADE Cloud disk full." };
+    return {
+      code: "disk_full",
+      message: "Your ADE Cloud computers use all your plan's disk. Delete a lane you no longer use in Settings › ADE Cloud, then try again.",
+      short: "ADE Cloud disk full.",
+    };
   }
   return null;
 }
