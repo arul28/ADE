@@ -439,6 +439,37 @@ export function buildRepositoryCopies(
   return copies;
 }
 
+/** How many computers have a copy of a repository, and whether one of them is reachable now. */
+export type CopyComputers = {
+  /** Distinct computers with at least one copy, online or offline. ADE Cloud lane computers do not count. */
+  count: number;
+  /** At least one of those computers is reachable now (this computer, or a connected one). */
+  reachable: boolean;
+};
+
+/**
+ * The one count rule for a repository's copies. Home, the copies menu and
+ * Settings › Location all use it, so a project shows the same number on each.
+ * A computer counts once however many folders it has. A computer is known by
+ * its account machine key, else by its machine id.
+ */
+export function copyComputers(
+  copies: readonly Pick<RepositoryCopy, "machineKey" | "machineId" | "online" | "isAdeCloud">[],
+): CopyComputers {
+  const online = new Map<string, boolean>();
+  for (const copy of copies) {
+    if (copy.isAdeCloud) continue;
+    const key = copy.machineKey?.trim() || copy.machineId;
+    online.set(key, (online.get(key) ?? false) || copy.online);
+  }
+  return { count: online.size, reachable: [...online.values()].some(Boolean) };
+}
+
+/** "1 computer", "3 computers". */
+export function computerCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "computer" : "computers"}`;
+}
+
 function folderName(rootPath: string): string {
   const trimmed = rootPath.replace(/[\\/]+$/, "");
   const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));

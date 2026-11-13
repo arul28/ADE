@@ -680,6 +680,9 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   color: var(--kit-text-3);
 }
 .ade-welcome-row-sub[data-tone="busy"] { font-family: var(--font-sans); color: var(--color-warning); }
+.ade-welcome-row-repo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* "Only on <computer>": a computer name, so no forced capitals. */
+.ade-welcome-local-head { text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The parent path gives way long before the folder name does. */
 .ade-welcome-path { display: flex; min-width: 0; white-space: nowrap; }

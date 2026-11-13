@@ -2,18 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import { useAccountProjectList } from "../../state/useRepositoryCopies";
-import {
-  accountProjectGroups,
-  foreignCopyPaths,
-  groupRecentProjects,
-  type RecentProjectGroup,
-} from "../app/projectTabGrouping";
+import { useAccountProjectList, useRepositoryCopySources } from "../../state/useRepositoryCopies";
+import { foreignCopyPaths } from "../app/projectTabGrouping";
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
+import { buildHomeProjectList, type HomeProjectList, type HomeWebComputer } from "./homeProjectRows";
+import { useHomeHiddenProjects } from "./homeHiddenProjects";
 
 /** This computer's account machine key: read once per app session, so Home does not render twice on each open. */
 let thisMachineKeyCache: string | null | undefined;
-function useThisMachineKey(enabled: boolean): string | null {
+export function useThisMachineKey(enabled: boolean): string | null {
   const [machineKey, setMachineKey] = useState<string | null>(() => thisMachineKeyCache ?? null);
   useEffect(() => {
     if (!enabled || thisMachineKeyCache !== undefined) return undefined;
@@ -41,57 +38,73 @@ function accountProjectForOrigin(projects: readonly AccountProjectView[], gitOri
 }
 
 /**
- * Home's project rows with the account's projects (S4): every project of the
- * account shows, also one added or cloned on another machine, and a row of
- * another machine's copy opens that machine's copy (F6). `openNoMachineTab`
- * opens a row's repository as a tab with no machine (0M); it returns false
- * when the row has no repository address.
+ * Icons seen this session, by account project id: a row keeps its icon after
+ * its computer goes offline or the browser disconnects it. Memory only.
+ */
+const rememberedIcons = new Map<string, string>();
+
+/**
+ * Home's project list (one source, see `homeProjectRows`): one row per
+ * account project, the same projects and count on every client, with or
+ * without a machine connection; this computer's other folders in groups
+ * below. `openNoMachineTab` opens a row's repository as a tab with no machine
+ * (0M); it returns false when the row has no repository address.
  */
 export function useHomeAccountProjects(args: {
   webMode: boolean;
   recentProjects: readonly RecentProjectSummary[];
   webRecents: readonly RecentProjectSummary[];
-  /** On the web: each recent row's machine key to its account machine key. */
-  webAccountMachineKeys: ReadonlyMap<string, string>;
+  /** Web: computers by account machine key, and by web machine row key. */
+  webComputers: ReadonlyMap<string, HomeWebComputer>;
+  webComputersByKey: ReadonlyMap<string, HomeWebComputer>;
   remoteSnapshot: RemoteRuntimeConnectionSnapshot | null;
   pendingForgetKeys: ReadonlySet<string>;
 }): {
-  visibleProjectGroups: RecentProjectGroup[];
+  list: HomeProjectList;
   openNoMachineTab: (rp: RecentProjectSummary) => boolean;
-  /** How many live projects the account has; 0 until the list is read. */
-  accountProjectCount: number;
 } {
-  const { webMode, recentProjects, webRecents, webAccountMachineKeys, remoteSnapshot, pendingForgetKeys } = args;
+  const { webMode, recentProjects, webRecents, webComputers, webComputersByKey, remoteSnapshot, pendingForgetKeys } = args;
   const accountList = useAccountProjectList();
   const accountProjects = accountList.state === "ready" ? accountList.projects : null;
-  // Only the F6 rule needs it, and only with the account's list.
+  // This computer's key: the F6 rule and the copies (which copy is this computer's).
   const thisMachineKey = useThisMachineKey(!webMode && accountProjects != null);
-  const visibleProjectGroups = useMemo(() => {
-    const foreign = webMode ? new Set<string>() : foreignCopyPaths({ projects: accountProjects, thisMachineKey });
-    const kept = (webMode ? webRecents : recentProjects).filter((rp) => {
-      if (rp.kind === "remote") return true;
-      if (foreign.has(rp.rootPath)) return false;
-      return rp.exists && !rp.rootPath.includes("ade-project");
-    });
-    const groups = groupRecentProjects({
-      recentProjects: kept,
+  // The same sources as the copies menu and Settings › Location, so the
+  // computer count agrees on all three. Home already holds the recents and
+  // the connections on the desktop, so nothing is read a second time; ADE
+  // Web reads its in-browser connections (no IPC there).
+  const sources = useRepositoryCopySources(true, webMode ? null : {
+    snapshot: remoteSnapshot,
+    recents: recentProjects,
+    machineKey: thisMachineKey,
+  });
+  const hidden = useHomeHiddenProjects();
+  const thisMachineName = (thisMachineKey ? accountList.machineNames?.[thisMachineKey]?.trim() : null) || "this computer";
+
+  const list = useMemo(() => {
+    const built = buildHomeProjectList({
+      projects: accountProjects,
+      sources,
+      recents: webMode ? webRecents : recentProjects,
       remoteSnapshot: webMode ? null : remoteSnapshot,
+      webMode,
+      webComputers,
+      webComputersByKey,
+      hidden,
+      foreignPaths: webMode ? new Set() : foreignCopyPaths({ projects: accountProjects, thisMachineKey }),
+      thisMachineName,
+      rememberedIcons,
     });
-    // On the web too (S14): the account's projects come from the account
-    // directory there, so a project on a computer this browser never
-    // connected to, or on no computer, still has a row.
-    const withAccount = accountProjects
-      ? accountProjectGroups({
-          projects: accountProjects,
-          shownGroups: groups,
-          remoteSnapshot: webMode ? null : remoteSnapshot,
-          thisMachineKey: webMode ? null : thisMachineKey,
-          machineNames: accountList.machineNames,
-          accountMachineKeys: webMode ? webAccountMachineKeys : undefined,
-        })
-      : groups;
-    return withAccount.filter((group) => !pendingForgetKeys.has(group.id));
-  }, [accountList.machineNames, accountProjects, pendingForgetKeys, recentProjects, remoteSnapshot, thisMachineKey, webAccountMachineKeys, webMode, webRecents]);
+    for (const row of built.accountRows) {
+      if (row.iconDataUrl) rememberedIcons.set(row.key, row.iconDataUrl);
+    }
+    if (pendingForgetKeys.size === 0) return built;
+    return {
+      ...built,
+      localGroups: built.localGroups
+        .map((group) => ({ ...group, rows: group.rows.filter((row) => !pendingForgetKeys.has(row.group.id)) }))
+        .filter((group) => group.rows.length > 0),
+    };
+  }, [accountProjects, hidden, pendingForgetKeys, recentProjects, remoteSnapshot, sources, thisMachineKey, thisMachineName, webComputers, webComputersByKey, webMode, webRecents]);
 
   // A project with no computer online opens as its repository tab, with no
   // machine (0M): the tab waits for a computer instead of failing.
@@ -103,10 +116,10 @@ export function useHomeAccountProjects(args: {
     showNoMachineTab({
       id: project?.id ?? `repo:${origin}`,
       displayName: project?.name ?? rp.displayName,
-      iconDataUrl: rp.remote?.iconDataUrl ?? null,
+      iconDataUrl: rp.remote?.iconDataUrl ?? (project ? rememberedIcons.get(project.id) ?? null : null),
     });
     return true;
   }, [accountProjects, showNoMachineTab]);
 
-  return { visibleProjectGroups, openNoMachineTab, accountProjectCount: accountProjects?.length ?? 0 };
+  return { list, openNoMachineTab };
 }

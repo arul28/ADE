@@ -17,7 +17,6 @@ import {
   ArrowRight,
   CircleNotch,
   Clock,
-  DesktopTower,
   Folder,
   FolderOpen,
   MagnifyingGlass,
@@ -41,7 +40,6 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
-import { formatMachineVersions } from "../../../shared/machineVersions";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
@@ -137,7 +135,7 @@ import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanes/lanePageModel";
 import { useCommandPaletteLanePr } from "./commandPaletteLanePr";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
-import { AddProjectChooser } from "../projects/AddProjectChooser";
+import { AddProjectMoreActions } from "../projects/AddProjectMoreActions";
 import { AddProjectForm, openProjectCopy } from "../projects/AddProjectForm";
 import type { CopyOpenTarget } from "../projects/projectCopies";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
@@ -241,6 +239,8 @@ type BrowseRow = {
 type ProjectLocation =
   | { kind: "local"; id: "local"; name: string }
   | { kind: "remote"; targetId: string; name: string };
+
+const LOCAL_PLACE_KEY = "local";
 
 const LOCAL_PROJECT_LOCATION: ProjectLocation = {
   kind: "local",
@@ -456,6 +456,18 @@ export function CommandPalette({
           }),
         ),
     [remoteSnapshot],
+  );
+
+  // Where "Open a folder" and "New empty project" act: this computer or a connected one.
+  const addProjectPlaces = useMemo(
+    () => [
+      { key: LOCAL_PLACE_KEY, name: LOCAL_PROJECT_LOCATION.name },
+      ...remoteLocations.map((location) => ({
+        key: location.kind === "remote" ? location.targetId : LOCAL_PLACE_KEY,
+        name: location.name,
+      })),
+    ],
+    [remoteLocations],
   );
 
   const activeProjectLocation =
@@ -2076,7 +2088,7 @@ export function CommandPalette({
     mode === "project-clone" ||
     mode === "project-remote" ||
     mode === "project-success";
-  const isWideAddFlow = mode === "project-clone" || mode === "project-remote";
+  const isWideAddFlow = mode === "project-add" || mode === "project-clone" || mode === "project-remote";
   // Percentages, not vh/vw: the hosted client scales the UI with `body { zoom }`
   // (`webclient/adapter/misc.ts`), and viewport units ignore that zoom while
   // everything they size gets painted `zoom`x larger. At 110% a `86vh` cap is
@@ -2195,9 +2207,7 @@ export function CommandPalette({
   let addFlowTitle = "";
   switch (mode) {
     case "project-add":
-      addFlowTitle = selectedProjectLocation
-        ? `Add a project on ${browseMachineName}`
-        : "Add a project";
+      addFlowTitle = "Add a project";
       break;
     case "project-create":
       addFlowTitle = `Create a new project${activeRemoteTargetId ? ` on ${browseMachineName}` : ""}`;
@@ -2213,7 +2223,6 @@ export function CommandPalette({
   }
 
   const showAddFlowBack =
-    (mode === "project-add" && selectedProjectLocation !== null) ||
     mode === "project-create" ||
     mode === "project-clone" ||
     mode === "project-remote" ||
@@ -2338,11 +2347,7 @@ export function CommandPalette({
                         type="button"
                         onClick={() => {
                           setActionOutcome(null);
-                          if (mode === "project-add") {
-                            setSelectedProjectLocation(null);
-                          } else {
-                            setMode("project-add");
-                          }
+                          setMode("project-add");
                         }}
                         className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:border-[var(--color-border)] hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
                         aria-label="Back to chooser"
@@ -2419,27 +2424,26 @@ export function CommandPalette({
                 {isAddFlow ? (
                   <div className="flex-1 overflow-auto p-6">
                     {mode === "project-add" ? (
-                      selectedProjectLocation === null &&
-                      remoteLocations.length > 0 ? (
-                        <ProjectLocationChooser
-                          remoteLocations={remoteLocations}
-                          onChoose={(location) => {
-                            setSelectedProjectLocation(location);
-                          }}
-                        />
-                      ) : (
-                        <AddProjectChooser
-                          onChoose={(choice) => {
-                            if (choice === "open") {
-                              startProjectBrowse();
-                            } else if (choice === "create") {
-                              startProjectCreate();
-                            } else {
-                              startProjectClone();
-                            }
-                          }}
-                        />
-                      )
+                      // The first screen is the form: a repository and the
+                      // computers to put a copy on. Opening a folder and a new
+                      // empty project are the other ways, under it.
+                      <AddProjectForm
+                        onCancel={() => onOpenChange(false)}
+                        onClose={() => onOpenChange(false)}
+                        onOpenProject={openProjectCopyHere}
+                        moreActions={isWebClientMode() ? null : (
+                          <AddProjectMoreActions
+                            places={addProjectPlaces}
+                            placeKey={activeRemoteTargetId ?? LOCAL_PLACE_KEY}
+                            onPlaceChange={(key) => {
+                              const remote = remoteLocations.find((location) => location.kind === "remote" && location.targetId === key);
+                              setSelectedProjectLocation(remote ?? null);
+                            }}
+                            onOpenFolder={startProjectBrowse}
+                            onCreate={startProjectCreate}
+                          />
+                        )}
+                      />
                     ) : mode === "project-create" ? (
                       <CreateProjectForm
                         machineName={
@@ -3082,76 +3086,6 @@ function PaletteFooterHints() {
         Esc
       </kbd>
       <span>Close</span>
-    </div>
-  );
-}
-
-function ProjectLocationChooser({
-  remoteLocations,
-  onChoose,
-}: {
-  remoteLocations: Array<
-    ProjectLocation & { status: RemoteRuntimeConnectionStatus }
-  >;
-  onChoose: (location: ProjectLocation) => void;
-}) {
-  const locations: Array<
-    ProjectLocation & { status?: RemoteRuntimeConnectionStatus }
-  > = [LOCAL_PROJECT_LOCATION, ...remoteLocations];
-  return (
-    <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
-      {locations.map((location) => {
-        const isRemote = location.kind === "remote";
-        const key = isRemote ? location.targetId : location.id;
-        const status = isRemote ? location.status : null;
-        return (
-          <button
-            key={key}
-            type="button"
-            className="group flex min-h-[118px] items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-card)_92%,transparent)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_6%,var(--color-card))]"
-            onClick={() => onChoose(location)}
-          >
-            <span
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border"
-              style={{
-                borderColor: isRemote
-                  ? "color-mix(in srgb, #F59E0B 45%, var(--color-border))"
-                  : "color-mix(in srgb, var(--color-accent) 45%, var(--color-border))",
-                background: isRemote
-                  ? "color-mix(in srgb, #F59E0B 12%, transparent)"
-                  : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
-                color: isRemote ? "#F59E0B" : "var(--color-accent)",
-              }}
-            >
-              {isRemote ? (
-                <DesktopTower size={22} weight="duotone" />
-              ) : (
-                <FolderOpen size={22} weight="duotone" />
-              )}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-[var(--color-fg)]">
-                {location.name}
-              </span>
-              <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
-                {isRemote
-                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${formatMachineVersions({ brainVersion: status.version, appVersion: status.appVersion })}` : ""}`
-                  : "Projects on this computer"}
-              </span>
-              {isRemote ? (
-                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-tone-[#FBBF24]">
-                  Connected
-                </span>
-              ) : null}
-            </span>
-            <ArrowRight
-              size={15}
-              weight="bold"
-              className="shrink-0 text-[var(--color-muted-fg)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--color-accent)]"
-            />
-          </button>
-        );
-      })}
     </div>
   );
 }

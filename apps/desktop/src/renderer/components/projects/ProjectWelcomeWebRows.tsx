@@ -15,6 +15,7 @@ import {
   type WebMachineStatus,
 } from "../../webclient/workspace/webWorkspaceModel";
 import { WorktreeBadge } from "./WorktreeBadge";
+import { computerCountLabel, type CopyComputers } from "../../../shared/repositoryTab";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 import { subscribeProjectIcon } from "../../lib/projectIconCache";
@@ -249,18 +250,22 @@ function ProjectMachineStack({
   primary,
   busy,
   web,
+  computers,
   onSelectMachine,
 }: {
   locations: readonly RecentProjectLocation[];
   primary: RecentProjectLocation;
   busy: boolean;
   web: WebRowChrome | null;
+  /** The shared count (`copyComputers`) of an account project; the chip shows it. */
+  computers?: CopyComputers | null;
   onSelectMachine?: (location: RecentProjectLocation) => void;
 }) {
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement | null>(null);
   if (locations.length === 0) return null;
   if (locations.length === 1 && (locations[0]!.summary.kind !== "remote" || isAccountNoCopyLocation(locations[0]!.summary))) return null;
+  if (computers && computers.count === 0) return null;
   const ordered = [
     ...locations.filter((location) => location.summary.kind !== "remote"),
     ...locations.filter((location) => location.summary.kind === "remote"),
@@ -272,6 +277,9 @@ function ProjectMachineStack({
   });
   const online = entries.filter((entry) => entry.dot === "online").length;
   const summary = entries.map((entry) => `${entry.name} · ${DOT_LABEL[entry.dot]}`).join("\n");
+  // One count rule on every surface: distinct computers, online or offline.
+  const count = computers?.count ?? entries.length;
+  const reachable = computers ? computers.reachable : online > 0;
   return (
     <div className="ade-welcome-machines" data-ade-project-machines="true">
       <button
@@ -280,15 +288,15 @@ function ProjectMachineStack({
         className="ade-welcome-machines-chip"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`On ${entries.length} machines, ${online} online`}
+        aria-label={`On ${computerCountLabel(count)}${reachable ? ", reachable now" : ", none reachable now"}`}
         title={summary}
         onClick={(event) => {
           event.stopPropagation();
           setOpen((value) => !value);
         }}
       >
-        <span className="kit-dot" data-state={online > 0 ? "ok" : undefined} aria-hidden />
-        {entries.length} {entries.length === 1 ? "machine" : "machines"}
+        <span className="kit-dot" data-state={reachable ? "ok" : undefined} aria-hidden />
+        {computerCountLabel(count)}
       </button>
       {/* Portalled so the recents list's scroll area cannot clip it; closes on
           an outside press or Escape. */}
@@ -354,6 +362,11 @@ export function RecentProjectRow({
   onSelectMachine,
   lastActiveAt,
   web = null,
+  removeLabel,
+  repository = null,
+  computers = null,
+  iconDataUrl = null,
+  local = true,
 }: {
   rp: RecentProjectSummary;
   connectionState: RemoteRuntimeConnectionState | null;
@@ -362,8 +375,19 @@ export function RecentProjectRow({
   /** Another row is being opened — this one waits its turn, silently. */
   busy?: boolean;
   onOpen: () => void;
-  onTogglePin: () => void;
+  /** Absent when this computer has no recent of the project to pin. */
+  onTogglePin?: () => void;
   onForget: () => void;
+  /** The X button's label; it names what the X does. */
+  removeLabel?: string;
+  /** `owner/name` of an account project: the subtitle. A local folder shows its path. */
+  repository?: string | null;
+  /** The shared computer count of an account project. */
+  computers?: CopyComputers | null;
+  /** The project's icon from any source; kept while its computer is offline. */
+  iconDataUrl?: string | null;
+  /** A folder that is no account project (recents behavior: Reconnect, path). */
+  local?: boolean;
   onMerge?: () => void;
   /** Opens the project's right-click menu. */
   onContextMenu?: (event: ReactMouseEvent) => void;
@@ -384,8 +408,12 @@ export function RecentProjectRow({
   // An account project with no copy is not offline: it opens its tab, where
   // a copy can be added.
   const noCopy = !web && isAccountNoCopyLocation(rp);
-  const offline = web ? web.status === "offline" : isRemote && !noCopy && connectionState !== "connected";
-  const projectIconDataUrl = locations
+  // An account project always opens (its tab waits for a computer when none
+  // is reachable), so it is never dimmed and never says "Reconnect".
+  const offline = !local
+    ? false
+    : web ? web.status === "offline" : isRemote && !noCopy && connectionState !== "connected";
+  const projectIconDataUrl = iconDataUrl ?? locations
     .map((location) => location.summary.remote?.iconDataUrl ?? null)
     .find((dataUrl): dataUrl is string => Boolean(dataUrl)) ?? null;
   const localIconRootPath = locations.find(
@@ -469,7 +497,9 @@ export function RecentProjectRow({
             </span>
           ) : (
             <span className="ade-welcome-row-sub">
-              {noCopy ? "No copy on any computer yet" : <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />}
+              {repository
+                ? <span className="ade-welcome-row-repo" title={noCopy ? "No copy on any computer yet" : repository}>{repository}</span>
+                : noCopy ? "No copy on any computer yet" : <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />}
             </span>
           )}
         </span>
@@ -481,6 +511,7 @@ export function RecentProjectRow({
           primary={primary}
           busy={busy}
           web={web}
+          computers={computers}
           onSelectMachine={onSelectMachine}
         />
         <div className="ade-welcome-row-top">
@@ -515,7 +546,7 @@ export function RecentProjectRow({
                   <GitMerge size={13} weight="bold" />
                 </button>
               ) : null}
-              <button
+              {onTogglePin ? <button
                 type="button"
                 className="ade-welcome-icon-button"
                 aria-label={
@@ -531,13 +562,13 @@ export function RecentProjectRow({
                 }}
               >
                 <PushPin size={13} weight={rp.pinned ? "fill" : "regular"} />
-              </button>
+              </button> : null}
               <button
                 type="button"
                 className="ade-welcome-icon-button"
                 data-danger="true"
-                aria-label={`Remove ${rp.displayName} from recents`}
-                title="Remove from recents"
+                aria-label={removeLabel ?? `Remove ${rp.displayName} from this list`}
+                title={removeLabel ?? "Remove from this list"}
                 disabled={isForgetting}
                 onClick={(event) => {
                   event.stopPropagation();

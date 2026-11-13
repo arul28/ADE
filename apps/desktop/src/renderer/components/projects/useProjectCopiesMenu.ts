@@ -11,6 +11,60 @@ import type { CopiesMenuRow } from "./ProjectCopiesMenu";
 import type { RemovalCopy, RemoveProjectTarget } from "./RemoveProjectDialog";
 import { copyMachines, existingCopiesForRepo, repoKeyForOriginIdentity, repoKeyForUrl, type CopyMachine } from "./projectCopies";
 import { startCopyJob } from "./projectCopyJobs";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import type { RepositoryCopy } from "../../../shared/repositoryTab";
+
+/**
+ * Lays the tab's shared copies (`useRepositoryCopies`, the source of the
+ * "on N computers" count) over the menu's machine rows, so the rows and the
+ * count name the same computers:
+ *
+ * - A machine row with no copy gets the shared copy of that machine.
+ * - A computer with a copy but no saved connection (another account
+ *   computer) gets an offline row; nothing can open it from here.
+ * - An offline machine's copy that only an old recent remembers, and the
+ *   account does not list, loses its folder: it is not counted either.
+ */
+export function rowsWithSharedCopies(
+  rows: readonly CopiesMenuRow[],
+  copies: readonly RepositoryCopy[] | null,
+): CopiesMenuRow[] {
+  if (!copies) return [...rows];
+  const shared = copies.filter((copy) => !copy.isAdeCloud);
+  const sharedFor = (machine: CopyMachine): RepositoryCopy | undefined =>
+    shared.find((copy) => machine.isLocal
+      ? copy.machineId === THIS_MACHINE_ID
+      : copy.machineId === machine.machineId
+        || (copy.address?.kind === "remote" && copy.address.targetId === machine.targetId));
+  const bindingKeyOf = (copy: RepositoryCopy): string =>
+    copy.address?.key ?? (copy.machineId === THIS_MACHINE_ID ? copy.rootPath : `${copy.machineId}:${copy.rootPath}`);
+  const next = rows.map((row): CopiesMenuRow => {
+    const match = sharedFor(row.machine);
+    if (!row.copy) {
+      if (!match) return row;
+      const binding = match.address?.kind === "remote" ? match.address : null;
+      return { ...row, copy: { rootPath: match.rootPath, bindingKey: bindingKeyOf(match), binding } };
+    }
+    if (!row.inUse && !row.machine.online && !match) return { ...row, copy: null };
+    return row;
+  });
+  const covered = new Set<string>();
+  for (const row of next) {
+    const match = sharedFor(row.machine);
+    if (match) covered.add(match.machineKey?.trim() || match.machineId);
+  }
+  for (const copy of shared) {
+    const key = copy.machineKey?.trim() || copy.machineId;
+    if (covered.has(key)) continue;
+    covered.add(key);
+    next.push({
+      machine: { machineId: copy.machineId, name: copy.machineName, targetId: null, isLocal: false, online: false },
+      copy: { rootPath: copy.rootPath, bindingKey: bindingKeyOf(copy) },
+      inUse: false,
+    });
+  }
+  return next;
+}
 
 /**
  * The copies menu of a project tab and the remove dialog it opens: one row
@@ -219,9 +273,15 @@ export function useProjectCopiesMenu(args: {
     });
   }, []);
 
-  const handleCopiesMenuSwitch = useCallback(
-    (row: CopiesMenuRow) => {
-      const group = copiesMenuModel?.group;
+  /** The remove dialog with a target the caller built (Home's row, from the account list). */
+  const openRemoveDialogWithTarget = useCallback(
+    (target: RemoveProjectTarget & { groupId: string; recordScope: string | null }) => setRemoveTarget(target),
+    [],
+  );
+
+  /** Moves a tab to one machine's copy: from the copies menu, or the tab's Copies submenu. */
+  const switchToCopy = useCallback(
+    (group: ProjectTabGroup | null | undefined, row: CopiesMenuRow) => {
       const own = group?.machines.find((entry) => entry.bindingKey === row.copy?.bindingKey);
       // The machine picked here is also the one "Start on" offers first for
       // new work in this repository, on this client.
@@ -232,11 +292,15 @@ export function useProjectCopiesMenu(args: {
       }
       const binding = own?.binding?.kind === "remote"
         ? own.binding
-        : knownRemoteProjectTabs.find((entry) => entry.key === row.copy?.bindingKey) ?? null;
+        : knownRemoteProjectTabs.find((entry) => entry.key === row.copy?.bindingKey) ?? row.copy?.binding ?? null;
       if (!binding) return;
       handleSwitchRemoteProject(binding);
     },
-    [copiesMenuModel?.group, handleSwitchProject, handleSwitchRemoteProject, knownRemoteProjectTabs],
+    [handleSwitchProject, handleSwitchRemoteProject, knownRemoteProjectTabs],
+  );
+  const handleCopiesMenuSwitch = useCallback(
+    (row: CopiesMenuRow) => switchToCopy(copiesMenuModel?.group, row),
+    [copiesMenuModel?.group, switchToCopy],
   );
 
   const openCopiesMenuFor = useCallback((event: MouseEvent<HTMLElement>, groupId: string) => {
@@ -253,11 +317,14 @@ export function useProjectCopiesMenu(args: {
     setCopiesMenu,
     closeCopiesMenu,
     copiesMenuModel,
+    copiesModelFor,
+    switchToCopy,
     startCopyForRepo,
     addLocalCopyFromTab,
     removeTarget,
     openRemoveDialog,
     openRemoveNoMachineDialog,
+    openRemoveDialogWithTarget,
     closeRemoveDialog,
     handleCopiesMenuSwitch,
     openCopiesMenuFor,

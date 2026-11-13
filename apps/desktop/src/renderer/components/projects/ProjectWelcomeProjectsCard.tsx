@@ -1,17 +1,17 @@
-import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject } from "react";
+import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject } from "react";
 import { FolderSimple } from "@phosphor-icons/react";
 import type { RecentProjectGroup } from "../app/projectTabGrouping";
+import { ACCOUNT_MACHINE_TARGET_PREFIX, recentProjectLocationKey } from "../app/projectTabGrouping";
 import type { AppState } from "../../state/appStore";
 import type { useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { FitList } from "../home/HomeFitList";
 import { LaneShareHomeFoot } from "../laneShare/guest/LaneShareHomeFoot";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
+import type { HomeLocalGroup, HomeProjectRow } from "./homeProjectRows";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
 
 type WebMachine = ReturnType<typeof useWebMachines>[number];
-
-export type ProjectsCardRow = { group: RecentProjectGroup; rp: RecentProjectSummary; key: string };
 
 type RowContext = {
   connectionByTarget: Map<string, RemoteRuntimeConnectionState>;
@@ -24,34 +24,49 @@ type RowContext = {
   projectBinding: AppState["projectBinding"];
   webMode: boolean;
   webMachineByKey: Map<string, WebMachine>;
+  /** Web: machines by account machine key (an account row names its computer that way). */
+  webMachineByAccountKey: Map<string, WebMachine>;
   onOpen: (rp: RecentProjectSummary) => void;
   onTogglePin: (group: RecentProjectGroup) => Promise<void> | void;
-  onForget: (group: RecentProjectGroup) => void;
+  /** The row's X: the remove window for an account project, forget with Undo for a local folder. */
+  onRemove: (row: HomeProjectRow) => void;
   onMerge: (rp: RecentProjectSummary) => void;
   onRowMenu: (menu: { x: number; y: number; key: string }) => void;
 };
 
-/** One recent project, with its live connection, open and busy state. */
-function ProjectsCardRowView({ row, ctx }: { row: ProjectsCardRow; ctx: RowContext }) {
+function webMachineFor(ctx: RowContext, targetId: string | undefined): WebMachine | null {
+  if (!ctx.webMode || !targetId) return null;
+  if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
+    return ctx.webMachineByAccountKey.get(targetId.slice(ACCOUNT_MACHINE_TARGET_PREFIX.length)) ?? null;
+  }
+  return ctx.webMachineByKey.get(targetId) ?? null;
+}
+
+/** One project, with its live connection, open and busy state. */
+function ProjectsCardRowView({ row, ctx }: { row: HomeProjectRow; ctx: RowContext }) {
   const { group, rp, key } = row;
+  // The page keys an open in flight by the location it opens.
+  const openKey = recentProjectLocationKey(rp);
   const isRemote = rp.kind === "remote" && Boolean(rp.remote);
   const targetId = rp.remote?.targetId;
   const baseState = isRemote && targetId ? (ctx.connectionByTarget.get(targetId) ?? "idle") : null;
-  const connectionState: RemoteRuntimeConnectionState | null = ctx.connectingKeys.has(key) ? "connecting" : baseState;
-  const isOpenLocal = !isRemote && ctx.openRootPath === rp.rootPath;
+  const connectionState: RemoteRuntimeConnectionState | null = ctx.connectingKeys.has(openKey) ? "connecting" : baseState;
   const binding = ctx.projectBinding;
-  const isOpenRemote =
-    isRemote
-    && binding?.kind === "remote"
-    && binding.targetId === rp.remote?.targetId
-    && binding.projectId === rp.remote?.projectId;
+  // Open when the copy in front is any of the row's copies.
+  const isOpen = group.locations.some((location) => {
+    const summary = location.summary;
+    if (summary.kind !== "remote" || !summary.remote) return ctx.openRootPath != null && ctx.openRootPath === summary.rootPath;
+    return binding?.kind === "remote"
+      && binding.targetId === summary.remote.targetId
+      && binding.projectId === summary.remote.projectId;
+  });
   const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
-  const machine = ctx.webMode && targetId ? ctx.webMachineByKey.get(targetId) ?? null : null;
+  const machine = webMachineFor(ctx, targetId);
   // The connect/open stages belong to the row that was clicked. Every other
   // row on the same machine sees the same machine-level "connecting", so it
   // has to be suppressed there explicitly — otherwise one click spins the
   // whole list.
-  const isOpeningRow = ctx.openingRowKey === key;
+  const isOpeningRow = ctx.openingRowKey === openKey;
   const web: WebRowChrome | null = machine
     ? {
         status: isOpeningRow
@@ -67,12 +82,13 @@ function ProjectsCardRowView({ row, ctx }: { row: ProjectsCardRow; ctx: RowConte
     <RecentProjectRow
       rp={rp}
       connectionState={connectionState}
-      isOpen={isOpenLocal || isOpenRemote}
+      isOpen={isOpen}
       isForgetting={ctx.pendingForgetKeys.has(group.id)}
       busy={ctx.openingRowKey != null && !isOpeningRow}
       onOpen={() => ctx.onOpen(rp)}
-      onTogglePin={() => void ctx.onTogglePin(group)}
-      onForget={() => ctx.onForget(group)}
+      onTogglePin={group.recentKeys.length > 0 ? () => void ctx.onTogglePin(group) : undefined}
+      onForget={() => ctx.onRemove(row)}
+      removeLabel={row.kind === "account" ? `Remove ${group.displayName}…` : `Remove ${rp.displayName} from this list`}
       onMerge={canMerge ? () => ctx.onMerge(rp) : undefined}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -80,6 +96,10 @@ function ProjectsCardRowView({ row, ctx }: { row: ProjectsCardRow; ctx: RowConte
       }}
       primary={group.primary}
       locations={group.locations}
+      repository={row.repository}
+      computers={row.computers}
+      iconDataUrl={row.iconDataUrl}
+      local={row.kind === "local"}
       onSelectMachine={(location) => {
         // The copy on the machine picked here opens, and the tab stays on it
         // (F6): a row of another machine never opens as this computer's folder.
@@ -92,29 +112,49 @@ function ProjectsCardRowView({ row, ctx }: { row: ProjectsCardRow; ctx: RowConte
 }
 
 /**
- * The home page's Projects widget: recent projects that fit, the rest behind
- * "more". A gallery preview (`preview`) shows the same rows without the
- * dialog and without taking the page list's ref.
+ * The home page's Projects widget: the account's projects that fit, then this
+ * computer's other folders ("Only on <computer>"), the rest behind "more". A
+ * gallery preview (`preview`) shows the same rows without the dialog and
+ * without taking the page list's ref.
  */
 export function ProjectsCard({
   preview,
   rows,
+  localGroups,
   count,
   listRef,
   onListKeyDown,
   ...ctx
 }: RowContext & {
   preview: boolean;
-  rows: readonly ProjectsCardRow[];
+  /** The account's projects. */
+  rows: readonly HomeProjectRow[];
+  /** Folders that are no account project, one group per computer. */
+  localGroups: readonly HomeLocalGroup[];
+  /** The header count: account projects only (local folders when there is no account list). */
   count: number;
   listRef: MutableRefObject<HTMLDivElement | null>;
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
-  const hasProjects = count > 0;
-  const renderRows = () => rows.map((row) => <ProjectsCardRowView key={row.group.id} row={row} ctx={ctx} />);
+  const hasProjects = rows.length > 0 || localGroups.some((group) => group.rows.length > 0);
+  const renderRows = () => (
+    <>
+      {rows.map((row) => <ProjectsCardRowView key={row.key} row={row} ctx={ctx} />)}
+      {localGroups.map((group) => (
+        <Fragment key={group.key}>
+          {group.label ? (
+            <div className="kit-eyebrow ade-home-pr-divider ade-welcome-local-head" data-fit-head title={group.label}>
+              {group.label}
+            </div>
+          ) : null}
+          {group.rows.map((row) => <ProjectsCardRowView key={row.key} row={row} ctx={ctx} />)}
+        </Fragment>
+      ))}
+    </>
+  );
   return (
-    <section className="kit-card ade-home-card ade-home-projects" aria-label="Recent projects">
-      <WelcomeCardHead icon={FolderSimple} title="Projects" count={hasProjects ? count : null} />
+    <section className="kit-card ade-home-card ade-home-projects" aria-label="Projects">
+      <WelcomeCardHead icon={FolderSimple} title="Projects" count={count > 0 ? count : null} />
       {hasProjects ? (
         <div
           id="ade-welcome-project-list"
@@ -131,7 +171,7 @@ export function ProjectsCard({
         <div className="ade-welcome-empty">
           <strong>No projects yet</strong>
           {ctx.webMode
-            ? "Projects you open on your machines show up here."
+            ? "Projects you add on your computers show up here."
             : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
         </div>
       )}

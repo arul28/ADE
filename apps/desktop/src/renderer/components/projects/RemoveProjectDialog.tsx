@@ -35,6 +35,12 @@ export type RemoveProjectTarget = {
   copies: readonly RemovalCopy[];
   /** The account project (`ap_…`) when the account lists it: then "From my account" shows. */
   accountProjectId: string | null;
+  /**
+   * Home's row: "From this list" shows first and is the default. It changes
+   * only this computer's Home list (the caller hides the row, with Undo);
+   * every copy, folder and the account keep the project.
+   */
+  onRemoveFromList?: (() => void) | null;
 };
 
 export type RemoveProjectResult = {
@@ -67,7 +73,7 @@ type RowResult =
   /** The request went out and the answer never came back. */
   | { kind: "unknown" };
 
-type Scope = "this" | "all" | "account";
+type Scope = "list" | "this" | "all" | "account";
 
 type AccountStep =
   | { kind: "idle" }
@@ -136,9 +142,9 @@ export function RemoveProjectDialog({
   onClose: () => void;
   onRemoved: (result: RemoveProjectResult) => void;
 }) {
-  const { projectName, repoKey, current, copies, accountProjectId } = target;
+  const { projectName, repoKey, current, copies, accountProjectId, onRemoveFromList } = target;
   const canLeaveAccount = accountProjectId != null && typeof window.ade?.project?.accountRemove === "function";
-  const [scope, setScope] = useState<Scope>(current ? "this" : "account");
+  const [scope, setScope] = useState<Scope>(onRemoveFromList ? "list" : current ? "this" : "account");
   const [accountStep, setAccountStep] = useState<AccountStep>({ kind: "idle" });
   const [deleteFolders, setDeleteFolders] = useState(false);
   const [reports, setReports] = useState<Record<string, ReportState>>({});
@@ -151,11 +157,11 @@ export function RemoveProjectDialog({
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
 
   const rows = useMemo<readonly RemovalCopy[]>(
-    () => (scope === "this" || !repoKey ? (current ? [current] : []) : copies),
+    () => (scope === "list" ? [] : scope === "this" || !repoKey ? (current ? [current] : []) : copies),
     [copies, current, repoKey, scope],
   );
   const cloningMachines = useMemo(
-    () => (scope !== "this"
+    () => (scope !== "this" && scope !== "list"
       ? jobs.filter((job) => job.status === "cloning" && !copies.some((copy) => copy.machine.machineId === job.machine.machineId))
       : []),
     [copies, jobs, scope],
@@ -196,6 +202,7 @@ export function RemoveProjectDialog({
 
   const confirmLabel = (() => {
     if (deleting.length > 0) return `Remove and delete ${plural(deleting.length, "folder", "folders")}`;
+    if (scope === "list") return "Remove from this list";
     if (scope === "account") return "Remove from my account";
     if (scope === "this" || actionable.length <= 1) {
       const machine = actionable[0]?.machine ?? current?.machine ?? null;
@@ -207,6 +214,12 @@ export function RemoveProjectDialog({
 
   // Runs once, from the confirm button; a plain function reads this render's choices.
   const run = async () => {
+    if (scope === "list") {
+      // Only this list changes; the caller offers Undo.
+      onRemoveFromList?.();
+      onClose();
+      return;
+    }
     setPhase("running");
     const outcomes = await Promise.all(actionable.map(async (copy) => {
       const key = copy.bindingKey;
@@ -269,9 +282,11 @@ export function RemoveProjectDialog({
 
   const busy = phase === "running";
   const machineName = current?.machine.name ?? null;
-  const keptLine = deleteFolders && deleting.length > 0
-    ? "Folders that are not ticked stay on disk."
-    : "ADE keeps the folders. Each copy stays on disk where it is.";
+  const keptLine = scope === "list"
+    ? "Only this list changes. Every computer keeps its copy, and your account keeps the project."
+    : deleteFolders && deleting.length > 0
+      ? "Folders that are not ticked stay on disk."
+      : "ADE keeps the folders. Each copy stays on disk where it is.";
   const accountOnly = scope === "account" && actionable.length === 0;
 
   return (
@@ -295,7 +310,9 @@ export function RemoveProjectDialog({
             variant: "solid",
             onClick: () => void run(),
             busy,
-            disabled: busy || (actionable.length === 0 && !(scope === "account" && canLeaveAccount)) || stillLoading,
+            disabled: busy
+              || (actionable.length === 0 && scope !== "list" && !(scope === "account" && canLeaveAccount))
+              || stillLoading,
           },
           { label: "Cancel", variant: "secondary", onClick: onClose, disabled: busy },
         ]}
@@ -306,6 +323,15 @@ export function RemoveProjectDialog({
             <legend style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
               Where to remove it from
             </legend>
+            {onRemoveFromList ? (
+              <ChoiceRow
+                type="radio"
+                checked={scope === "list"}
+                onChange={() => setScope("list")}
+                label="From this list"
+                hint="Home on this computer stops listing it. Open it again to list it again."
+              />
+            ) : null}
             {current ? (
               <ChoiceRow
                 type="radio"
@@ -345,7 +371,7 @@ export function RemoveProjectDialog({
           </fieldset>
         ) : null}
 
-        <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+        {scope === "list" ? null : <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
           {rows.length === 0 && !accountOnly ? (
             <div style={rowStyle(true, true)}>
               <span style={glyphStyle}><CloudSlash size={13} aria-hidden /></span>
@@ -381,7 +407,7 @@ export function RemoveProjectDialog({
               <span style={detailStyle}>Adding a copy now. It is not removed.</span>
             </div>
           ))}
-        </div>
+        </div>}
 
         {phase === "choose" && deleting.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, color: COLORS.textMuted }}>

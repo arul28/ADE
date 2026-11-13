@@ -15,6 +15,7 @@ import {
   CircleNotch,
   Stack as CopiesIcon,
   Desktop,
+  DownloadSimple,
   Folder,
   FolderOpen,
   GearSix,
@@ -36,11 +37,19 @@ import {
 import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
 import { ProjectCopiesMenu } from "../projects/ProjectCopiesMenu";
+import { buildRepositoryCopies, copyComputers, repositoryTabFromAccountProject, type RepositoryCopy } from "../../../shared/repositoryTab";
+import { useAccountProjectList, useRepositoryCopySources } from "../../state/useRepositoryCopies";
+import { useThisMachineKey } from "../projects/useHomeAccountProjects";
 import { RemoveProjectDialog, type RemoveProjectResult } from "../projects/RemoveProjectDialog";
-import { REQUEST_REMOVE_PROJECT_EVENT, notifyProjectCopiesChanged, type RemoveProjectRequest } from "../projects/removeProjectRequest";
+import {
+  REQUEST_COPIES_MENU_EVENT,
+  REQUEST_REMOVE_PROJECT_EVENT,
+  notifyProjectCopiesChanged,
+  type RemoveProjectRequest,
+} from "../projects/removeProjectRequest";
 import { repoCopyMayRemain } from "../projects/projectCopies";
 import { subscribeCopyJobReady } from "../projects/projectCopyJobs";
-import { useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
+import { rowsWithSharedCopies, useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "../projects/ProjectIconDialog";
 import {
   getProjectIconFromCache,
@@ -158,6 +167,8 @@ const WebConnectionsChip = React.lazy(() =>
 );
 
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
+/** ADE Web has no recents of its own. */
+const NO_RECENT_PROJECTS: readonly RecentProjectSummary[] = [];
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
 // While the indicator is hidden, a sample only decides whether to show it.
@@ -624,40 +635,6 @@ const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
   idle: "Disconnected",
   error: "Disconnected",
 };
-
-/**
- * The mark of a project tab whose repository is on more than one computer, or
- * whose copy in front is on another computer: it opens the copies menu. It
- * never names a machine: the tab is the repository (S4).
- */
-function RepositoryCopiesChip({
-  copyCount,
-  expanded,
-  onOpen,
-}: {
-  copyCount: number;
-  expanded: boolean;
-  onOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
-}) {
-  const label = copyCount > 1 ? `${copyCount} computers` : "Copies";
-  return (
-    <button
-      type="button"
-      className="ade-shell-control inline-flex shrink-0 items-center gap-0.5 rounded px-1 text-[10.5px] font-normal text-current opacity-70 hover:opacity-100 focus-visible:opacity-100"
-      data-variant="ghost"
-      aria-haspopup="menu"
-      aria-expanded={expanded}
-      aria-label={`${label}. Show copies`}
-      title={copyCount > 1 ? `On ${copyCount} computers. Show copies` : "Show copies"}
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={onOpen}
-      onKeyDown={(event) => event.stopPropagation()}
-    >
-      <Desktop size={11} weight="regular" aria-hidden className="shrink-0" />
-      {copyCount > 1 ? <span className="kit-num">{copyCount}</span> : null}
-    </button>
-  );
-}
 
 function ProjectTabIcon({
   rootPath,
@@ -1161,11 +1138,15 @@ export function TopBar({
 
   useEffect(() => {
     if (project || remoteBinding) return;
+    // ADE Web: the binding goes away when a computer is forgotten in this
+    // browser; its tabs move to another copy or wait with no machine
+    // (`moveWebTabsOffGoneTargets`). A tab the person closes leaves on its own.
+    if (webMode) return;
     // Same guard as above: only wipe remote tabs on a true close, not while a
     // transition is in flight or before the welcome screen is shown.
     if (projectTransition != null || showWelcome !== true) return;
     setOpenRemoteProjectTabs([]);
-  }, [project, remoteBinding, projectTransition, showWelcome]);
+  }, [project, remoteBinding, projectTransition, showWelcome, webMode]);
 
   const projectTabs = useMemo<RecentProjectSummary[]>(
     () =>
@@ -2023,6 +2004,91 @@ export function TopBar({
     ],
   );
 
+  /**
+   * ADE Web: a computer forgotten or removed in this browser leaves the
+   * connection list. The tab is the repository (as on the desktop, #2205):
+   * each of that computer's tabs moves to another reachable copy of its
+   * repository; a tab with none stays open with no machine; only a folder
+   * with no repository closes. Nothing asks: the person confirmed in the
+   * connections menu.
+   */
+  const lastRemoteBindingKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (remoteBinding) lastRemoteBindingKeyRef.current = remoteBinding.key;
+  }, [remoteBinding]);
+  const moveWebTabsOffGoneTargets = useCallback(async (gone: ReadonlySet<string>) => {
+    const latestRemoteTabs = openRemoteProjectTabsRef.current;
+    const affected = latestRemoteTabs.filter((entry) => gone.has(entry.targetId));
+    if (affected.length === 0) return;
+    const connectedTargetIds = new Set(
+      (remoteSnapshotRef.current?.connections ?? [])
+        .filter((connection) => connection.state === "connected" && !gone.has(connection.target.id))
+        .map((connection) => connection.target.id),
+    );
+    const openRemoteBindingKeys = latestRemoteTabs.map((entry) => entry.key);
+    const plans = affected.map((tab) => {
+      const fallback = resolveProjectTabFallback({
+        bindingKey: tab.key,
+        groups: tabGroupsRef.current,
+        openLocalRoots: openProjectTabRootsRef.current,
+        openRemoteBindingKeys,
+        connectedTargetIds,
+        excludeTargetId: tab.targetId,
+      });
+      // ADE Web has no this computer, so only a remote copy can take the tab,
+      // and a copy on another computer that also left is no copy.
+      const usable = fallback?.kind === "remote" && !gone.has(fallback.binding.targetId) ? fallback : null;
+      const group = tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === tab.key));
+      const noMachine = !usable && group?.origin
+        ? { id: group.id, displayName: recordNameForRef.current(group) ?? tab.displayName, iconDataUrl: tab.iconDataUrl ?? null }
+        : null;
+      return { tab, fallback: usable, noMachine };
+    });
+    const affectedKeys = new Set(affected.map((entry) => entry.key));
+    const renamed = new Map<string, string>();
+    const nextRemote = new Map<string, RemoteOpenProjectBinding>();
+    for (const entry of latestRemoteTabs) if (!affectedKeys.has(entry.key)) nextRemote.set(entry.key, entry);
+    for (const plan of plans) {
+      if (plan.fallback?.kind === "remote") {
+        nextRemote.set(plan.fallback.binding.key, plan.fallback.binding);
+        renamed.set(plan.tab.key, plan.fallback.binding.key);
+      }
+    }
+    const shownBeforeClose = {
+      groups: tabGroupsRef.current,
+      openLocal: new Set(openProjectTabRootsRef.current),
+      openRemote: new Set(openRemoteBindingKeys),
+    };
+    if (renamed.size > 0) setTabOrder((prev) => renameInTabOrder(prev, renamed, shownBeforeClose));
+    const nextRemoteTabs = [...nextRemote.values()];
+    openRemoteProjectTabsRef.current = nextRemoteTabs;
+    setOpenRemoteProjectTabs(nextRemoteTabs);
+    for (const binding of affected) useAppStore.getState().evictProjectDataCaches(binding.key);
+    // The tab that was in front stays in front: on its other copy, or with no machine.
+    const store = useAppStore.getState();
+    // The forget can drop the binding before this runs; then the last remote binding was in front.
+    const frontKey = store.projectBinding?.kind === "remote"
+      ? store.projectBinding.key
+      : store.projectBinding == null ? lastRemoteBindingKeyRef.current : null;
+    const frontWasAffected = frontKey != null && affectedKeys.has(frontKey);
+    for (const plan of plans) {
+      if (!plan.noMachine) continue;
+      store.showNoMachineTab(plan.noMachine, { activate: frontWasAffected && plan.tab.key === frontKey });
+    }
+    const frontPlan = frontWasAffected ? plans.find((plan) => plan.tab.key === frontKey) : undefined;
+    if (frontPlan?.fallback?.kind === "remote") {
+      await store.switchRemoteProject(frontPlan.fallback.binding.targetId, frontPlan.fallback.binding.projectId).catch(() => undefined);
+    }
+  }, [setOpenRemoteProjectTabs, setTabOrder]);
+  const webSeenTargetIdsRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!webMode || !remoteSnapshot) return;
+    const present = new Set(remoteSnapshot.connections.map((connection) => connection.target.id));
+    const gone = new Set([...webSeenTargetIdsRef.current].filter((targetId) => !present.has(targetId)));
+    webSeenTargetIdsRef.current = present;
+    if (gone.size > 0) void moveWebTabsOffGoneTargets(gone);
+  }, [moveWebTabsOffGoneTargets, remoteSnapshot, webMode]);
+
   const handleRemoteTargetDisconnectRequested = useCallback(
     (target: RemoteRuntimeTarget): Promise<boolean> =>
       confirmAndCloseRemoteTargetTabs(target, "disconnect"),
@@ -2085,11 +2151,14 @@ export function TopBar({
     setCopiesMenu,
     closeCopiesMenu,
     copiesMenuModel,
+    copiesModelFor,
+    switchToCopy,
     startCopyForRepo,
     addLocalCopyFromTab,
     removeTarget,
     openRemoveDialog,
     openRemoveNoMachineDialog,
+    openRemoveDialogWithTarget,
     closeRemoveDialog,
     handleCopiesMenuSwitch,
     openCopiesMenuFor,
@@ -2108,6 +2177,38 @@ export function TopBar({
     handleSwitchRemoteProject,
   });
 
+  // The copies menu and the tab's Copies submenu say how many computers have
+  // a copy, by the shared rule (`copyComputers`), and list the same ones. The
+  // sources are the snapshot and recents this bar already holds: no new read.
+  const accountProjectList = useAccountProjectList();
+  const thisMachineKey = useThisMachineKey(!webMode && accountProjectList.state === "ready");
+  const copySources = useRepositoryCopySources(true, {
+    snapshot: remoteSnapshot,
+    recents: webMode ? NO_RECENT_PROJECTS : recentProjects,
+    machineKey: thisMachineKey,
+  });
+  const sharedCopiesFor = useCallback((groupId: string): RepositoryCopy[] | null => {
+    if (accountProjectList.state !== "ready") return null;
+    const accountProject = accountProjectList.projects.find((entry) => entry.id === groupId);
+    if (!accountProject) return null;
+    return buildRepositoryCopies(repositoryTabFromAccountProject(accountProject), {
+      ...copySources,
+      accountCopies: accountProject.copies,
+    });
+  }, [accountProjectList, copySources]);
+  const copiesMenuCopies = useMemo(
+    () => (copiesMenuModel ? sharedCopiesFor(copiesMenuModel.group.id) : null),
+    [copiesMenuModel, sharedCopiesFor],
+  );
+  const copiesMenuComputers = useMemo(
+    () => (copiesMenuCopies ? copyComputers(copiesMenuCopies) : null),
+    [copiesMenuCopies],
+  );
+  const copiesMenuRows = useMemo(
+    () => rowsWithSharedCopies(copiesMenuModel?.rows ?? [], copiesMenuCopies),
+    [copiesMenuCopies, copiesMenuModel?.rows],
+  );
+
   // The Location page and a no-machine tab's page ask for the dialog here.
   useEffect(() => {
     const onRequest = (event: Event) => {
@@ -2115,6 +2216,10 @@ export function TopBar({
       if (!request) return;
       if (request.kind === "no-machine") {
         openRemoveNoMachineDialog({ id: request.id, displayName: request.displayName });
+        return;
+      }
+      if (request.kind === "target") {
+        openRemoveDialogWithTarget({ ...request.target, groupId: request.groupId, recordScope: request.recordScope });
         return;
       }
       const group = tabGroupsRef.current.find((entry) =>
@@ -2127,7 +2232,7 @@ export function TopBar({
     };
     window.addEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
     return () => window.removeEventListener(REQUEST_REMOVE_PROJECT_EVENT, onRequest);
-  }, [openRemoveDialog, openRemoveNoMachineDialog]);
+  }, [openRemoveDialog, openRemoveDialogWithTarget, openRemoveNoMachineDialog]);
 
   /**
    * After a removal: the tab moves to another copy of the repository when
@@ -2256,6 +2361,60 @@ export function TopBar({
     [recentProjects],
   );
 
+  /**
+   * "Copies" in a tab's right-click menu: a submenu that opens on hover, like
+   * every other submenu there. One row per machine with a copy (picking one
+   * moves the tab there), "Add a copy" for a connected machine without one
+   * (the full copies menu opens to show the clone's progress), and the full
+   * menu itself. Each switch and clone goes to that row's machine.
+   */
+  const copiesSubmenuFor = useCallback((group: ProjectTabGroup, anchor: { x: number; y: number }): ContextMenuEntry => {
+    const model = copiesModelFor(group.id);
+    const openFull = () => setCopiesMenu({ x: anchor.x, y: anchor.y, groupId: group.id });
+    const entries: ContextMenuEntry[] = [];
+    for (const row of rowsWithSharedCopies(model?.rows ?? [], sharedCopiesFor(group.id))) {
+      if (row.copy) {
+        entries.push({
+          kind: "item",
+          key: `copy:${row.machine.machineId}:${row.copy.bindingKey}`,
+          label: row.machine.isLocal ? "This computer" : row.machine.name,
+          icon: row.machine.isLocal ? Desktop : CopiesIcon,
+          hint: row.inUse ? "In use" : row.machine.online ? undefined : "Offline",
+          disabled: row.inUse || !row.machine.online || isProjectBusy,
+          onSelect: () => switchToCopy(group, row),
+        });
+      } else if (!webMode && row.machine.online && model?.repoKey?.startsWith("github.com/")) {
+        const repoKey = model.repoKey;
+        entries.push({
+          kind: "item",
+          key: `add:${row.machine.machineId}`,
+          label: `Add a copy on ${row.machine.isLocal ? "this computer" : row.machine.name}`,
+          icon: DownloadSimple,
+          onSelect: () => {
+            startCopyForRepo(repoKey, model.projectName, row.machine);
+            openFull();
+          },
+        });
+      }
+    }
+    if (entries.length > 0) entries.push({ kind: "separator", key: "sep-copies-all" });
+    entries.push({ kind: "item", key: "copies-all", label: "All copies…", icon: CopiesIcon, onSelect: openFull });
+    return { kind: "submenu", key: "copies", label: "Copies", icon: CopiesIcon, entries };
+  }, [copiesModelFor, isProjectBusy, setCopiesMenu, sharedCopiesFor, startCopyForRepo, switchToCopy, webMode]);
+
+  // The computers tag on the project page opens the copies menu of the tab in front.
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const anchor = (event as CustomEvent<{ x: number; y: number }>).detail;
+      const key = activeTabBindingKeyRef.current;
+      const group = key ? tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === key)) : undefined;
+      if (!group || !anchor) return;
+      setCopiesMenu((current) => (current?.groupId === group.id ? null : { x: anchor.x, y: anchor.y, groupId: group.id }));
+    };
+    window.addEventListener(REQUEST_COPIES_MENU_EVENT, onRequest);
+    return () => window.removeEventListener(REQUEST_COPIES_MENU_EVENT, onRequest);
+  }, [setCopiesMenu]);
+
   const tabMenuEntries = useMemo((): ContextMenuEntry[] => {
     if (!tabMenu) return [];
     const index = tabGroups.findIndex((group) => group.id === tabMenu.groupId);
@@ -2312,13 +2471,7 @@ export function TopBar({
         : null,
       ...sections.open,
       { kind: "separator", key: "sep-project" },
-      {
-        kind: "item",
-        key: "copies",
-        label: "Copies…",
-        icon: CopiesIcon,
-        onSelect: () => setCopiesMenu({ x: tabMenu.x, y: tabMenu.y, groupId: group.id }),
-      },
+      copiesSubmenuFor(group, { x: tabMenu.x, y: tabMenu.y }),
       ...sections.project,
       { kind: "separator", key: "sep-copy" },
       ...sections.copy,
@@ -2374,6 +2527,7 @@ export function TopBar({
     addLocalCopyFromTab,
     closeTabGroups,
     cloneTargetForGroup,
+    copiesSubmenuFor,
     openRemoveDialog,
     handleMoveTabToNewWindow,
     hostIconByKey,
@@ -2642,15 +2796,6 @@ export function TopBar({
                       <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                         {recordNameFor(group) ?? remoteTab.displayName}
                       </span>
-                      {/* The tab is the repository, not a machine (S4): its
-                          mark opens the copies of the project and names no
-                          machine. The machine of the copy shown is in the
-                          tooltip. */}
-                      <RepositoryCopiesChip
-                        copyCount={group.machines.length}
-                        expanded={copiesMenu?.groupId === group.id}
-                        onOpen={(event) => openCopiesMenuFor(event, group.id)}
-                      />
                       {remoteTabConnecting ? (
                         <CircleNotch
                           size={11}
@@ -2799,13 +2944,6 @@ export function TopBar({
                     >
                       {recordNameFor(group) ?? rp.displayName}
                     </span>
-                    {group.machines.length > 1 && !isMissing ? (
-                      <RepositoryCopiesChip
-                        copyCount={group.machines.length}
-                        expanded={copiesMenu?.groupId === group.id}
-                        onOpen={(event) => openCopiesMenuFor(event, group.id)}
-                      />
-                    ) : null}
                     {isMissing ? (
                       <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                         <button
@@ -3185,7 +3323,8 @@ export function TopBar({
         menu={copiesMenuModel && copiesMenu ? { x: copiesMenu.x, y: copiesMenu.y } : null}
         projectName={copiesMenuModel?.projectName ?? ""}
         repoKey={copiesMenuModel?.repoKey ?? null}
-        rows={copiesMenuModel?.rows ?? []}
+        rows={copiesMenuRows}
+        computers={copiesMenuComputers}
         onlyOneMachine={copiesMenuModel?.onlyOneMachine ?? null}
         // The clone call takes only GitHub repositories, on every machine.
         canAddCopies={!webMode && Boolean(copiesMenuModel?.repoKey?.startsWith("github.com/"))}
