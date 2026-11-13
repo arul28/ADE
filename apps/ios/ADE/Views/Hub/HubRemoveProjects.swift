@@ -23,8 +23,13 @@ final class HubPhoneHiddenList: ObservableObject {
   static let shared = HubPhoneHiddenList()
 
   @Published private(set) var keys: Set<String> = []
+  /// The keys one row stored together (a row with a folder on each of
+  /// several computers). Showing any of them shows the whole group, also
+  /// the keys of computers that are not connected now.
+  private var groups: [Set<String>] = []
   private var scope: String?
   private static let defaultsPrefix = "ade.hub.hiddenOnPhone.v1|"
+  private static let groupsPrefix = "ade.hub.hiddenOnPhone.groups.v1|"
 
   /// Loads the list of `scope` (an account user id, or a machine key).
   func use(scope: String?) {
@@ -32,19 +37,29 @@ final class HubPhoneHiddenList: ObservableObject {
     self.scope = scope
     let stored = scope.flatMap { UserDefaults.standard.stringArray(forKey: Self.defaultsPrefix + $0) } ?? []
     keys = Set(stored)
+    let storedGroups = scope.flatMap { UserDefaults.standard.stringArray(forKey: Self.groupsPrefix + $0) } ?? []
+    groups = storedGroups.map { Set($0.split(separator: "\n").map(String.init)) }.filter { $0.count > 1 }
   }
 
-  func hide(_ hidden: Set<String>) {
-    let next = keys.union(hidden)
-    guard next != keys else { return }
+  /// Hides rows, one set of keys per row.
+  func hide(_ rows: [Set<String>]) {
+    let next = rows.reduce(keys) { $0.union($1) }
+    var nextGroups = groups
+    for row in rows where row.count > 1 && !nextGroups.contains(row) { nextGroups.append(row) }
+    guard next != keys || nextGroups != groups else { return }
     keys = next
+    groups = nextGroups
     save()
   }
 
   func show(_ shown: Set<String>) {
-    let next = keys.subtracting(shown)
-    guard next != keys else { return }
+    var expanded = shown
+    for group in groups where !group.isDisjoint(with: shown) { expanded.formUnion(group) }
+    let next = keys.subtracting(expanded)
+    let nextGroups = groups.filter { $0.isDisjoint(with: expanded) }
+    guard next != keys || nextGroups != groups else { return }
     keys = next
+    groups = nextGroups
     save()
   }
 
@@ -55,6 +70,12 @@ final class HubPhoneHiddenList: ObservableObject {
       UserDefaults.standard.removeObject(forKey: key)
     } else {
       UserDefaults.standard.set(keys.sorted(), forKey: key)
+    }
+    let groupsKey = Self.groupsPrefix + scope
+    if groups.isEmpty {
+      UserDefaults.standard.removeObject(forKey: groupsKey)
+    } else {
+      UserDefaults.standard.set(groups.map { $0.sorted().joined(separator: "\n") }.sorted(), forKey: groupsKey)
     }
   }
 }

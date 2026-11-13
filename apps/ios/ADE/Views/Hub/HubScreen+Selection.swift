@@ -101,9 +101,10 @@ extension HubScreen {
   /// changes on a computer or the account. Undo or "N hidden" shows them.
   func hideOnPhone(_ presentations: [HubProjectPresentation]) {
     let items = presentations.map(removalItem)
-    let keys = items.reduce(into: Set<String>()) { $0.formUnion($1.hideKeys) }
+    let rows = items.map(\.hideKeys).filter { !$0.isEmpty }
+    let keys = rows.reduce(into: Set<String>()) { $0.formUnion($1) }
     guard !keys.isEmpty else { return }
-    hiddenList.hide(keys)
+    hiddenList.hide(rows)
     projectOpenFailureToast = ADEToastMessage(
       text: items.count == 1 ? "Hid \(items[0].name) on this iPhone" : "Hid \(items.count) projects on this iPhone",
       kind: .success,
@@ -294,7 +295,7 @@ extension HubScreen {
   /// The agent page's cards: the projects, the second folders of a project,
   /// and the local folders, so every working chat shows there.
   var hubOverviewPresentations: [HubProjectPresentation] {
-    hubProjectPresentations + duplicatePresentations + localSections.flatMap(\.presentations)
+    hubProjectPresentations + shownDuplicateFolders + localSections.flatMap(\.presentations)
   }
 
   /// Whose hidden list loads: the account, else the machine. The account

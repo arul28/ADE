@@ -6798,11 +6798,15 @@ final class SyncService: ObservableObject {
   }
 
   private func hiddenKeys(for project: MobileProjectSummary) -> Set<String> {
+    hiddenKeys(projectId: project.id, rootPath: project.rootPath)
+  }
+
+  private func hiddenKeys(projectId: String?, rootPath: String?) -> Set<String> {
     var keys = Set<String>()
-    if let id = normalizedProjectId(project.id) {
+    if let id = normalizedProjectId(projectId) {
       keys.insert("id:\(id)")
     }
-    if let root = normalizedProjectRoot(project.rootPath) {
+    if let root = normalizedProjectRoot(rootPath) {
       keys.insert("root:\(root)")
     }
     return keys
@@ -6845,7 +6849,10 @@ final class SyncService: ObservableObject {
   /// arrives after the phone moved to another machine is kept for the
   /// machine that removed it, not for the one in front.
   private func rememberRemovedFromHost(_ project: MobileProjectSummary, hostKey: String) {
-    let keys = hiddenKeys(for: project)
+    rememberRemovedFromHost(keys: hiddenKeys(for: project), hostKey: hostKey)
+  }
+
+  private func rememberRemovedFromHost(keys: Set<String>, hostKey: String) {
     guard !keys.isEmpty else { return }
     if hostKey == activeHostStorageKey() {
       guard !removedFromHostKeys.contains(where: { keys.isSubset(of: $0) }) else { return }
@@ -6863,6 +6870,11 @@ final class SyncService: ObservableObject {
   /// a new id): its cached rows may show again, under every key it had.
   private func forgetRemovedFromHost(listedIn catalog: [MobileProjectSummary]) {
     guard !removedFromHostKeys.isEmpty, let hostKey = activeHostStorageKey() else { return }
+    // During a switch the old machine's socket stays current for a moment
+    // after the new machine's profile is saved; its catalog must not clear
+    // the new machine's marks. A socket before its hello (nil) is the new
+    // machine's own: the hello carries its catalog.
+    if let socketMachine = focusedSocketMachineKey, socketMachine != focusedMachineKey { return }
     let listed = catalog.reduce(into: Set<String>()) { $0.formUnion(hiddenKeys(for: $1)) }
     let kept = removedFromHostKeys.filter { $0.isDisjoint(with: listed) }
     guard kept.count != removedFromHostKeys.count else { return }
@@ -27967,19 +27979,30 @@ extension SyncService {
   /// focused (`rosterCacheKey`), so a machine keeps one offline roster whether
   /// it is focused or a fleet member.
   func fleetRosterCacheKey(for profile: HostConnectionProfile) -> String? {
-    // The same order as `activeHostStorageKey`, from the saved profile alone.
-    let host: String
+    savedProfileHostStorageKey(profile).map { syncRosterCacheKey(host: $0) }
+  }
+
+  /// A computer that is not in front removed a folder (Remove… on the Hub):
+  /// its cached rows stay off the list when it is in front later, until it
+  /// lists the folder again.
+  func noteProjectRemovedFromMachine(projectId: String, rootPath: String?, profile: HostConnectionProfile) {
+    guard let hostKey = savedProfileHostStorageKey(profile) else { return }
+    rememberRemovedFromHost(keys: hiddenKeys(projectId: projectId, rootPath: rootPath), hostKey: hostKey)
+  }
+
+  /// `activeHostStorageKey` from the saved profile alone, in the same order.
+  private func savedProfileHostStorageKey(_ profile: HostConnectionProfile) -> String? {
     if let identity = normalizedHostStorageKey(profile.hostIdentity)
       ?? normalizedHostStorageKey(profile.lastHostDeviceId) {
-      host = identity
-    } else if let address = normalizedHostStorageKey(profile.lastSuccessfulAddress) {
-      host = "\(address):\(profile.port)"
-    } else if let name = normalizedHostStorageKey(profile.hostName) {
-      host = "\(name):\(profile.port)"
-    } else {
-      return nil
+      return identity
     }
-    return syncRosterCacheKey(host: host)
+    if let address = normalizedHostStorageKey(profile.lastSuccessfulAddress) {
+      return "\(address):\(profile.port)"
+    }
+    if let name = normalizedHostStorageKey(profile.hostName) {
+      return "\(name):\(profile.port)"
+    }
+    return nil
   }
 
   /// A fleet dial error that means the pairing itself was rejected by the

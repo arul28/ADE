@@ -692,6 +692,17 @@ final class MachineConnection {
         NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
       ])
     }
+    // Off this machine's roster and its offline cache now, so a link that
+    // drops before the next snapshot does not keep the row; the snapshot
+    // stays the authority.
+    let remaining = rosterProjects.filter { $0.projectId != projectId }
+    if remaining != rosterProjects {
+      rosterProjects = remaining
+      rosterRevision &+= 1
+      schedulePersistRoster()
+      onChange?()
+    }
+    syncService?.noteProjectRemovedFromMachine(projectId: projectId, rootPath: rootPath, profile: profile)
     requestRosterSnapshot()
   }
 

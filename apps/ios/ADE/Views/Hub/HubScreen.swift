@@ -859,7 +859,7 @@ struct HubScreen: View {
 
   /// The second folders whose project has a tile on the list; a hidden
   /// project's folders count nowhere.
-  private var shownDuplicateFolders: [HubProjectPresentation] {
+  var shownDuplicateFolders: [HubProjectPresentation] {
     let shown = Set(hubProjectPresentations.compactMap { accountJoin.accountIdByCardId[$0.project.id] })
     return duplicatePresentations.filter { accountJoin.duplicateCardIds[$0.project.id].map(shown.contains) ?? false }
   }

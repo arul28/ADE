@@ -16201,16 +16201,21 @@ final class ADETests: XCTestCase {
 
   // MARK: - Scheduled work partitioning + background lifecycle
 
+  @MainActor
   func testScheduledWorkExcludesBackgroundTaskFromScheduleAndTimelineCard() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","title":"Nightly","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"bg-1","kind":"background_task","status":"running","title":"npm run build","prompt":"cd /repo && npm run build","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-08T00:00:03.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"update-resume:chat-1","kind":"wakeup","status":"scheduled","reason":"Resume after ADE restart","turnId":"turn-1"}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
     let snapshots = buildWorkScheduledWorkSnapshots(from: transcript)
-    // Schedule section excludes background_task.
+    // Schedule section excludes background_task and the restart resume.
     XCTAssertEqual(workChatInfoScheduleItems(snapshots).map(\.kind), ["cron"])
+    // The restart transcript, saved and live: only the ordinary wake is listed.
+    XCTAssertEqual(workChatInfoScheduleItems(buildWorkScheduledWorkSnapshots(from: WorkRestartResumePreviewData.savedTranscript)).map(\.id), ["wake-ci"])
+    XCTAssertEqual(workChatInfoScheduleItems(buildWorkScheduledWorkSnapshots(from: WorkRestartResumePreviewData.liveTranscript)).map(\.id), ["wake-ci"])
     // Background section carries exactly the background_task.
     XCTAssertEqual(workChatInfoBackgroundItems(snapshots).map(\.id), ["bg-1"])
 

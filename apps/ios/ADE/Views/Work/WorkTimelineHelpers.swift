@@ -1528,8 +1528,12 @@ func workChatInfoScheduleItems(
   _ snapshots: [WorkScheduledWorkSnapshot]
 ) -> [WorkScheduledWorkSnapshot] {
   let scheduleKinds: Set<String> = ["wakeup", "cron", "loop", "remote_trigger"]
+  // A restart resume is no scheduled work the user set up: the desktop
+  // leaves it out of every schedule listing and the next-wake time, and the
+  // restart notice already says the agent continues.
   return snapshots.filter {
     scheduleKinds.contains($0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+      && !workIsRestartResumeScheduleId($0.id)
   }
 }
 
