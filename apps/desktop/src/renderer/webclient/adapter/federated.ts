@@ -14,16 +14,21 @@ import type { BrowserAccountClient } from "../account/client";
 import type { AdeSyncClient } from "../sync";
 import type { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
+import { createReconnectHold } from "./reconnectHold";
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
 /**
- * Reads whose answer is the same from every computer on the account: usage
- * totals with `scope: "account"` and the signed-in GitHub user's calendar.
+ * Members whose answer is the same from every computer on the account: usage
+ * totals with `scope: "account"`, the signed-in GitHub user's calendar, and
+ * the usage update that tells their readers to read again. The update goes
+ * with the reads: the adapter that serves the totals is the one that knows
+ * when they finished filling in.
  */
-const ACCOUNT_WIDE_READS: ReadonlySet<string> = new Set([
+const ACCOUNT_WIDE_MEMBERS: ReadonlySet<string> = new Set([
   "usage.getAdeStats",
   "usage.getGithubContributions",
+  "usage.onUpdate",
 ]);
 /** How long an account-wide read waits for the first computer to connect. */
 const ACCOUNT_WIDE_READ_WAIT_MS = 15_000;
@@ -247,6 +252,8 @@ export function createFederatedWebAdapter({
     path: PropertyKey[];
     args: unknown[];
     detach: (() => void) | null;
+    /** The adapter it is attached to now. */
+    adapter: AdeWebAdapter | null;
   };
   const durableSubscriptions = new Set<DurableSubscription>();
 
@@ -274,6 +281,21 @@ export function createFederatedWebAdapter({
       // A disposed adapter can throw on detach; the attachment dies with it.
     }
     entry.detach = null;
+    entry.adapter = null;
+  };
+
+  /**
+   * Move one recorded subscription to the adapter that serves it now: the
+   * displayed one, or for an account-wide member the computer that answers
+   * those reads. Detach first: overlapping attachments would deliver both
+   * adapters' events to the same listener.
+   */
+  const reattachDurableSubscription = (entry: DurableSubscription): void => {
+    const adapter = adapterForUnpinnedCall(entry.path);
+    if (entry.detach && entry.adapter === adapter) return;
+    detachDurableSubscription(entry);
+    entry.detach = attachDurableSubscription(adapter, entry);
+    entry.adapter = entry.detach ? adapter : null;
   };
 
   /** Record a subscription and hand the caller an unsubscribe that outlives swaps. */
@@ -295,12 +317,7 @@ export function createFederatedWebAdapter({
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
     if (currentAdapter === adapter) return;
     currentAdapter = adapter;
-    for (const entry of durableSubscriptions) {
-      // Detach first: overlapping attachments would deliver both projects'
-      // events to the same listener for the width of this loop.
-      detachDurableSubscription(entry);
-      entry.detach = attachDurableSubscription(adapter, entry);
-    }
+    for (const entry of durableSubscriptions) reattachDurableSubscription(entry);
     for (const listener of activeAdapterListeners) listener();
   };
 
@@ -357,7 +374,7 @@ export function createFederatedWebAdapter({
       entry.state === "connected" && manager.getClient(entry.target.id) != null)?.target.id ?? null;
   const needsAnotherComputer = (path: PropertyKey[]): boolean =>
     currentAdapter === fallbackAdapter
-    && ACCOUNT_WIDE_READS.has(path.map(String).join("."))
+    && ACCOUNT_WIDE_MEMBERS.has(path.map(String).join("."))
     && fallbackClient.getStatus().state !== "connected";
   const adapterForUnpinnedCall = (path: PropertyKey[]): AdeWebAdapter => {
     if (!needsAnotherComputer(path)) return currentAdapter;
@@ -788,7 +805,7 @@ export function createFederatedWebAdapter({
             return () => {};
           }
         }
-        if (!pinnedAdapter && accountWideReadWaitsForComputer(path)) {
+        if (!pinnedAdapter && !isSubscriptionMember(path) && accountWideReadWaitsForComputer(path)) {
           // Home reads these once as the page opens, which is before the
           // first computer has connected.
           return waitForConnectedComputer(ACCOUNT_WIDE_READ_WAIT_MS).then(() => {
@@ -796,7 +813,8 @@ export function createFederatedWebAdapter({
             return typeof value === "function" ? Reflect.apply(value, parent, args) : value;
           });
         }
-        const { parent, value } = readPath(pinnedAdapter ?? adapterForUnpinnedCall(path), path);
+        const servingAdapter = pinnedAdapter ?? adapterForUnpinnedCall(path);
+        const { parent, value } = readPath(servingAdapter, path);
         if (typeof value !== "function") return value;
         // Some adapter functions are themselves proxies so nested missing APIs
         // can keep resolving. Reflect.apply invokes the callable directly
@@ -812,6 +830,7 @@ export function createFederatedWebAdapter({
           path,
           args,
           detach: result as () => void,
+          adapter: servingAdapter,
         });
       };
       const dynamicFunction = new Proxy(callDynamic, {
@@ -881,6 +900,11 @@ export function createFederatedWebAdapter({
     // Covers both the reconnect that just replaced a client above and a later
     // snapshot in which a machine we were parked off of comes back.
     if (currentAdapter === fallbackAdapter) restoreCurrentAdapterForDisplayedSurface();
+    // An account-wide subscription follows the computer that answers its
+    // reads: the first one to connect, or a new client after a reconnect.
+    for (const entry of durableSubscriptions) {
+      if (ACCOUNT_WIDE_MEMBERS.has(entry.path.map(String).join("."))) reattachDurableSubscription(entry);
+    }
     const connectionSnapshot = getConnectionSnapshot();
     for (const listener of connectionListeners) listener(connectionSnapshot);
     if (workspace.activeSurface !== "project" || !activeBinding) return;
@@ -1003,121 +1027,6 @@ export function createFederatedWebAdapter({
       bindingListeners.clear();
       connectionListeners.clear();
       activeAdapterListeners.clear();
-    },
-  };
-}
-
-/**
- * How long a machine that dropped still counts as connected while it
- * reconnects, counted from when the page is in front. The sync client keeps
- * its cached state and holds commands until the connection is restored.
- */
-const RECONNECT_HOLD_MS = 30_000;
-
-/**
- * Keeps a machine that was connected reading as connected while its
- * connection comes back.
- *
- * A browser that suspends a background tab (Safari does, even for a window
- * that only lost focus) comes back with a dead socket: the client notices,
- * closes it and dials again. The connection reads "connecting" meanwhile, and
- * every page that asks whether the tab's machine is online
- * (`useTabCopyPin` and friends) took that as offline: Work dropped the open
- * chat and its whole list for "No computer connected", until the reconnect a
- * second later brought it back as a fresh page. Held, the pages keep their
- * state and re-sync quietly when the connection is back.
- *
- * Only a reconnect is held, never a first connect or a refusal, and only for
- * RECONNECT_HOLD_MS of time in front: a machine that stays unreachable still
- * turns offline, with its Connect action. Time in the background does not
- * count, since the client does not dial while the page is hidden.
- */
-/** Sync client states of a connection that dropped and is coming back on its own. */
-const RECONNECTING_CLIENT_STATES: ReadonlySet<string> = new Set([
-  // Closed; it dials again as soon as the page is in front.
-  "disconnected",
-  "connecting",
-  "reconnecting",
-  "restoring",
-]);
-
-function createReconnectHold(
-  clientState: (targetId: string) => string | null,
-  onExpire: () => void,
-): {
-  apply: (snapshot: RemoteRuntimeConnectionSnapshot) => RemoteRuntimeConnectionSnapshot;
-  dispose: () => void;
-} {
-  const wasConnected = new Set<string>();
-  const holdStartedAt = new Map<string, number>();
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
-  const onVisibility = () => {
-    if (hidden() || holdStartedAt.size === 0) return;
-    // The client dials only once the page is in front: the hold starts now.
-    const now = Date.now();
-    for (const targetId of holdStartedAt.keys()) holdStartedAt.set(targetId, now);
-    onExpire();
-  };
-  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
-  const schedule = (delayMs: number) => {
-    if (timer) clearTimeout(timer);
-    timer = Number.isFinite(delayMs)
-      ? setTimeout(() => {
-        timer = null;
-        onExpire();
-      }, Math.max(0, delayMs) + 50)
-      : null;
-  };
-  return {
-    apply(snapshot) {
-      const now = Date.now();
-      let nextExpiryMs = Number.POSITIVE_INFINITY;
-      let held = false;
-      const present = new Set<string>();
-      const connections = snapshot.connections.map((connection) => {
-        const targetId = connection.target.id;
-        present.add(targetId);
-        if (connection.state === "connected") {
-          wasConnected.add(targetId);
-          holdStartedAt.delete(targetId);
-          return connection;
-        }
-        const state = clientState(targetId);
-        if (connection.state === "parked" || !wasConnected.has(targetId) || !state || !RECONNECTING_CLIENT_STATES.has(state)) {
-          // Parked, failed (sign-in, refused) or never connected: nothing to hold.
-          wasConnected.delete(targetId);
-          holdStartedAt.delete(targetId);
-          return connection;
-        }
-        const startedAt = holdStartedAt.get(targetId) ?? now;
-        holdStartedAt.set(targetId, startedAt);
-        if (!hidden()) {
-          const leftMs = startedAt + RECONNECT_HOLD_MS - now;
-          if (leftMs <= 0) return connection;
-          nextExpiryMs = Math.min(nextExpiryMs, leftMs);
-        }
-        held = true;
-        return { ...connection, state: "connected" as const };
-      });
-      for (const targetId of [...wasConnected]) {
-        if (!present.has(targetId)) wasConnected.delete(targetId);
-      }
-      for (const targetId of [...holdStartedAt.keys()]) {
-        if (!present.has(targetId)) holdStartedAt.delete(targetId);
-      }
-      schedule(nextExpiryMs);
-      if (!held) return snapshot;
-      return {
-        ...snapshot,
-        connections,
-        connectedCount: connections.filter((entry) => entry.state === "connected").length,
-      };
-    },
-    dispose() {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
     },
   };
 }

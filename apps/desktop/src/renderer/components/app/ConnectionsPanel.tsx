@@ -51,7 +51,6 @@ import { rgbCss, useProfilePalette } from "../account/useProfilePalette";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import "../remoteTargets/connections.css";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { WEB_MACHINE_SESSION_LIMIT } from "../../webclient/workspace/WebMachineSessionManager";
 
 type ConnectionsPanelProps = {
   /**
@@ -295,29 +294,35 @@ const PANEL_FRAME_STYLE: CSSProperties = {
 
 /**
  * ADE Web holds a fixed number of machine connections per tab and parks the
- * least recently used one to open another. True while the tab holds that
- * many, so the panel can say why a machine went back to "ready to connect".
+ * least recently used one to open another. The limit while the tab holds that
+ * many, so the panel can say why a machine went back to "ready to connect";
+ * null otherwise. The session manager loads on demand, so the desktop bundle
+ * never takes in the web sync client.
  */
-function useWebSessionLimitReached(): boolean {
-  const [reached, setReached] = useState(false);
+function useWebSessionLimitReached(): number | null {
+  const [reachedLimit, setReachedLimit] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
-    const { getConnectionSnapshot, onConnectionSnapshotChanged } = window.ade.remoteRuntime;
-    const apply = (snapshot: RemoteRuntimeConnectionSnapshot | null) => {
-      if (cancelled || !snapshot) return;
-      const held = snapshot.connections.filter(
-        (connection) => connection.state === "connected" || connection.state === "connecting",
-      ).length;
-      setReached(held >= WEB_MACHINE_SESSION_LIMIT);
-    };
-    if (getConnectionSnapshot) void getConnectionSnapshot().then(apply).catch(() => {});
-    const unsubscribe = onConnectionSnapshotChanged?.(apply);
+    let unsubscribe: (() => void) | undefined;
+    void import("../../webclient/workspace/WebMachineSessionManager").then(({ WEB_MACHINE_SESSION_LIMIT }) => {
+      if (cancelled) return;
+      const remoteRuntime = window.ade.remoteRuntime;
+      const apply = (snapshot: RemoteRuntimeConnectionSnapshot | null) => {
+        if (cancelled || !snapshot) return;
+        const held = snapshot.connections.filter(
+          (connection) => connection.state === "connected" || connection.state === "connecting",
+        ).length;
+        setReachedLimit(held >= WEB_MACHINE_SESSION_LIMIT ? WEB_MACHINE_SESSION_LIMIT : null);
+      };
+      void remoteRuntime.getConnectionSnapshot?.().then(apply).catch(() => {});
+      unsubscribe = remoteRuntime.onConnectionSnapshotChanged?.(apply);
+    }).catch(() => {});
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
   }, []);
-  return reached;
+  return reachedLimit;
 }
 
 function HostedConnectionsPanel({
@@ -331,14 +336,14 @@ function HostedConnectionsPanel({
   const { accountMachines, reloadAccountMachines } = usePanelAccountMachines(true);
   useFocusAccountMachineRow(machineId, accountMachines != null);
   const { goToAccount, goToCloudSettings } = usePanelNavigation(onClose);
-  const sessionLimitReached = useWebSessionLimitReached();
+  const sessionLimit = useWebSessionLimitReached();
   return (
     <div style={PANEL_FRAME_STYLE}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
       <div style={{ overflowY: "auto", padding: 12 }} data-onboarding-anchor="connections-machines">
-        {sessionLimitReached ? (
+        {sessionLimit != null ? (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45, marginBottom: 10 }}>
-            This tab keeps {WEB_MACHINE_SESSION_LIMIT} machines connected at once. Others stay listed and connect when you
+            This tab keeps {sessionLimit} machines connected at once. Others stay listed and connect when you
             open them.
           </div>
         ) : null}

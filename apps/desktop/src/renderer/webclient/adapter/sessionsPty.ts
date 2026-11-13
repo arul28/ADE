@@ -233,38 +233,45 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   async function captureSnapshot(sessionId: string, maxBytes?: number | null): Promise<SyncTerminalSnapshotPayload | null> {
     if (!sessionId) return null;
-    if (!terminalSubscriptions.has(sessionId)) {
-      // The machine pages history only to a peer subscribed to the session, so
-      // an ended CLI session (nothing streams it) read back empty: a blank pane
-      // with only the row's last line. Its subscribe snapshot carries the tail.
-      const snapshot = await readSnapshotOnce(sessionId, maxBytes ?? 128 * 1024);
+    const byteLimit = maxBytes ?? 128 * 1024;
+    // The machine pages history only to a peer subscribed to the session, so
+    // an ended CLI session (nothing streams it) read back empty: a blank pane
+    // with only the row's last line. Its subscribe snapshot carries the tail,
+    // and the subscription stays until the history read below has its answer.
+    const temporary = terminalSubscriptions.has(sessionId) ? null : subscribeForSnapshot(sessionId, byteLimit);
+    try {
+      const snapshot = temporary ? await temporary.snapshot : null;
       if (snapshot) return snapshot;
+      const history = await client.requestTerminalHistory({
+        sessionId,
+        beforeOffset: Number.MAX_SAFE_INTEGER,
+        maxBytes: byteLimit,
+      });
+      terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
+      return historyToSnapshot(history);
+    } finally {
+      temporary?.release();
     }
-    const history = await client.requestTerminalHistory({
-      sessionId,
-      beforeOffset: Number.MAX_SAFE_INTEGER,
-      maxBytes: maxBytes ?? 128 * 1024,
-    });
-    terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
-    return historyToSnapshot(history);
   }
 
   /**
-   * Subscribe just long enough for the replacing snapshot, then let go. A live
-   * view that subscribes meanwhile takes the stream over: its handlers replace
-   * these, this wait ends on the timeout, and the stream is left running.
+   * Subscribe for the replacing snapshot; `release` lets go. A live view that
+   * subscribes meanwhile takes the stream over: its handlers replace these,
+   * the wait ends on the timeout, and release leaves the stream running.
    */
-  function readSnapshotOnce(sessionId: string, maxBytes: number): Promise<SyncTerminalSnapshotPayload | null> {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (snapshot: SyncTerminalSnapshotPayload | null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (!terminalSubscriptions.has(sessionId)) client.unsubscribeTerminal(sessionId);
-        resolve(snapshot);
+  function subscribeForSnapshot(
+    sessionId: string,
+    maxBytes: number,
+  ): { snapshot: Promise<SyncTerminalSnapshotPayload | null>; release: () => void } {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let released = false;
+    const snapshot = new Promise<SyncTerminalSnapshotPayload | null>((resolve) => {
+      const finish = (payload: SyncTerminalSnapshotPayload | null) => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        resolve(payload);
       };
-      const timer = setTimeout(() => finish(null), ONE_SHOT_TERMINAL_SNAPSHOT_TIMEOUT_MS);
+      timer = setTimeout(() => finish(null), ONE_SHOT_TERMINAL_SNAPSHOT_TIMEOUT_MS);
       try {
         client.subscribeTerminal(sessionId, { maxBytes }, {
           snapshot: (payload) => {
@@ -280,6 +287,14 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         finish(null);
       }
     });
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (!terminalSubscriptions.has(sessionId)) client.unsubscribeTerminal(sessionId);
+    };
+    return { snapshot, release };
   }
 
   function notifySessionsChanged(sessionIds: readonly string[]): void {
@@ -715,7 +730,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       // spaces left out. The rows are what the terminal showed.
       const cols = snapshot?.screen?.cols ?? 0;
       const visibleRows = snapshot?.transcript && cols > 0
-        ? await previewRowsFromTranscript(snapshot.transcript, cols, PREVIEW_MAX_ROWS)
+        ? await previewRowsFromTranscript(snapshot.transcript, { cols, rows: snapshot.screen?.rows }, PREVIEW_MAX_ROWS)
         : null;
       return {
         terminalId: sessionId,

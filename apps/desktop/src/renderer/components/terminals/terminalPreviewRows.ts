@@ -1,4 +1,4 @@
-import type { IBufferCell } from "@xterm/xterm";
+import type { IBufferCell, Terminal } from "@xterm/xterm";
 import type { TerminalSnapshotCell, TerminalSnapshotRow } from "../../../shared/types";
 
 /**
@@ -13,7 +13,10 @@ const ALTERNATE_SCREEN_SWITCH = /\x1b\[\?(?:1049|1047|47)[hl]/g;
 export function transcriptUsesAlternateScreen(transcript: string): boolean {
   return /\x1b\[\?(?:1049|1047|47)h/.test(transcript);
 }
-const PREVIEW_EMULATOR_ROWS = 40;
+/** The replay height when the original one is unknown. */
+const DEFAULT_PREVIEW_ROWS = 40;
+const MIN_PREVIEW_ROWS = 10;
+const MAX_PREVIEW_ROWS = 300;
 const PREVIEW_SCROLLBACK = 4_000;
 const MIN_PREVIEW_COLS = 20;
 const MAX_PREVIEW_COLS = 400;
@@ -48,20 +51,23 @@ function snapshotCell(cell: IBufferCell | undefined): TerminalSnapshotCell {
  */
 export async function previewRowsFromTranscript(
   transcript: string,
-  cols: number,
+  size: { cols: number; rows?: number | null },
   maxRows: number,
 ): Promise<TerminalSnapshotRow[] | null> {
   if (!transcript) return null;
-  let TerminalCtor: typeof import("@xterm/xterm").Terminal;
+  let TerminalCtor: typeof Terminal;
   try {
     ({ Terminal: TerminalCtor } = await import("@xterm/xterm"));
   } catch {
     return null;
   }
-  const width = Math.max(MIN_PREVIEW_COLS, Math.min(MAX_PREVIEW_COLS, Math.floor(cols) || 80));
+  // The terminal's own size: a CLI places text by row and column, and a
+  // smaller replay clamps its moves onto the last row and column.
+  const width = Math.max(MIN_PREVIEW_COLS, Math.min(MAX_PREVIEW_COLS, Math.floor(size.cols) || 80));
+  const height = Math.max(MIN_PREVIEW_ROWS, Math.min(MAX_PREVIEW_ROWS, Math.floor(size.rows ?? 0) || DEFAULT_PREVIEW_ROWS));
   const term = new TerminalCtor({
     cols: width,
-    rows: PREVIEW_EMULATOR_ROWS,
+    rows: height,
     scrollback: PREVIEW_SCROLLBACK,
     allowProposedApi: true,
   });

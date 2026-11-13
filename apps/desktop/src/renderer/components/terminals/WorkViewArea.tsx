@@ -271,6 +271,17 @@ function snapshotLooksLikeTui(rows: TerminalSnapshotRow[]): boolean {
 /** The most rows an ended session's replayed transcript shows, newest last. */
 const ENDED_PREVIEW_MAX_ROWS = 400;
 
+/**
+ * A full-screen CLI that exited left only the normal screen behind, and its
+ * raw transcript is cursor moves with the spaces left out: play it into an
+ * off-screen terminal to show the rows it drew.
+ */
+function previewNeedsReplay(preview: ChatTerminalPreviewResult | null): boolean {
+  return preview != null
+    && !previewShowsSnapshot(preview)
+    && transcriptUsesAlternateScreen(preview.transcript ?? "");
+}
+
 /** Whether the ended pane shows the machine's stored screen rows. */
 function previewShowsSnapshot(preview: ChatTerminalPreviewResult | null): boolean {
   const rows = preview?.snapshot?.visibleRows ?? [];
@@ -655,7 +666,8 @@ function ClosedCliSessionSurface({
   toolsPaneOpen?: boolean;
 }) {
   const [preview, setPreview] = useState<ChatTerminalPreviewResult | null>(null);
-  const [replayedRows, setReplayedRows] = useState<TerminalSnapshotRow[] | null>(null);
+  // undefined while the transcript replay runs; null when it gave no rows.
+  const [replayedRows, setReplayedRows] = useState<TerminalSnapshotRow[] | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
@@ -682,7 +694,7 @@ function ClosedCliSessionSurface({
   useEffect(() => {
     let cancelled = false;
     setPreview(null);
-    setReplayedRows(null);
+    setReplayedRows(undefined);
     setError(null);
     const args = { terminalId: session.id, maxBytes: 160_000 };
     void (runtimePin
@@ -691,12 +703,12 @@ function ClosedCliSessionSurface({
       .then(async (result) => {
         if (cancelled) return;
         setPreview(result);
-        // A full-screen CLI that exited left only the normal screen behind, and
-        // its raw transcript is cursor moves with the spaces left out. Play the
-        // transcript into an off-screen terminal to show the rows it drew.
-        const transcript = result.transcript ?? "";
-        if (previewShowsSnapshot(result) || !transcriptUsesAlternateScreen(transcript)) return;
-        const rows = await previewRowsFromTranscript(transcript, result.snapshot?.cols ?? 100, ENDED_PREVIEW_MAX_ROWS);
+        if (!previewNeedsReplay(result)) return;
+        const rows = await previewRowsFromTranscript(
+          result.transcript ?? "",
+          { cols: result.snapshot?.cols ?? 100, rows: result.snapshot?.rows },
+          ENDED_PREVIEW_MAX_ROWS,
+        );
         if (!cancelled) setReplayedRows(rows);
       })
       .catch((err) => {
@@ -708,7 +720,8 @@ function ClosedCliSessionSurface({
   }, [runtimePin, session.id, session.endedAt, session.status]);
 
   const useSnapshotPreview = previewShowsSnapshot(preview);
-  const previewRows = useSnapshotPreview ? preview?.snapshot?.visibleRows ?? [] : replayedRows;
+  const needsReplay = useMemo(() => previewNeedsReplay(preview), [preview]);
+  const previewRows = useSnapshotPreview ? preview?.snapshot?.visibleRows ?? [] : needsReplay ? replayedRows : null;
   const transcriptText = stripTerminalControls(preview?.transcript ?? "").trimEnd()
     || session.lastOutputPreview
     || session.summary
@@ -755,6 +768,9 @@ function ClosedCliSessionSurface({
         ) : null}
         {previewRows?.length ? (
           <TerminalSnapshotTranscript rows={previewRows} />
+        ) : needsReplay && previewRows === undefined ? (
+          // The rows are on their way: no flash of the raw transcript first.
+          <div className="flex-1" />
         ) : (
           <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-fg/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
             {transcriptText}
