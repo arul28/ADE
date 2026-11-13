@@ -2,11 +2,12 @@
  * What an ADE Cloud computer's brain tells ADE Cloud about itself at its idle
  * step (`ade serve`, wired in `runServe`): its lanes' work for the dashboard
  * (unpushed work, the pull request's state), its disk use, an update when it
- * is idle and behind its channel, and that it booted.
+ * is idle and behind its channel, that it booted, and hours near full CPU
+ * with no chat turn running.
  */
 
 import type { CloudBrainAccess } from "../../../../desktop/src/main/services/adeCloud/cloudBrainAccess";
-import type { CloudDiskUsageReport } from "../../../../desktop/src/shared/adeCloud";
+import type { CloudDiskUsageReport, CloudSustainedCpuReport } from "../../../../desktop/src/shared/adeCloud";
 import type { ProjectScopeRegistry } from "../projects/projectScope";
 import type { ProjectRegistry } from "../projects/projectRegistry";
 
@@ -66,6 +67,13 @@ export function createCloudComputerReports(deps: {
         updateRetryAt = Date.now() + UPDATE_RETRY_AFTER_MS;
         throw error;
       }
+    },
+    // Hours near full CPU with no chat turn or agent working (`cloudSustainedCpu.ts`): a line in the owner's daily report.
+    reportSustainedCpu: async (report: CloudSustainedCpuReport) => {
+      if (!instanceId) return;
+      const client = await (await getCloudBrainAccess()).client();
+      if (!client?.reportSustainedCpu) throw new Error("no ADE Cloud access");
+      await client.reportSustainedCpu(instanceId, report);
     },
     reportBooted: async () => {
       if (!instanceId) return { sleepWhenIdle: false };

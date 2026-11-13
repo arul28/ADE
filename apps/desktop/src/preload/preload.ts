@@ -13950,6 +13950,7 @@ const adeBridge = {
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
+    openFreeUnlock: (): Promise<{ opened: boolean; unlocked: boolean }> => ipcRenderer.invoke(IPC.cloudOpenFreeUnlock),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudCopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>

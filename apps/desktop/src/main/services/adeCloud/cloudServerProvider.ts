@@ -8,7 +8,7 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState } from "../../../shared/adeCloud";
+import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
@@ -280,6 +280,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       await request("POST", instancePath(id, "disk-usage"), { body: report });
     },
 
+    async reportSustainedCpu(id, report): Promise<void> {
+      await request("POST", instancePath(id, "cpu-report"), { body: report });
+    },
+
     async resizeInstance(id, resources, options): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "resize"), {
         body: {
@@ -365,6 +369,13 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       const body = record(await request("POST", "/cloud/billing/portal"));
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
+    },
+
+    async billingFreeUnlock(): Promise<CloudFreeUnlockResult> {
+      const body = record(await request("POST", CLOUD_PATHS.billingFreeUnlock, { body: {} }));
+      if (body?.unlocked === true) return { url: null, unlocked: true };
+      if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { url: body.url, unlocked: false };
     },
 
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {

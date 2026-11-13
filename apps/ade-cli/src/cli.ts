@@ -21361,7 +21361,12 @@ function formatCloudAccount(value: unknown): string {
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
-  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine;
+  // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
+  const github = freePlan.github;
+  const githubLine = github && github.state !== "ok" && github.sentence
+    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
+    : "";
+  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */
@@ -29816,6 +29821,13 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
+  // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
+  const cloudCpuWatch = cloudComputerReports
+    ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
+        report: cloudComputerReports.reportSustainedCpu,
+        logger: headlessProjectLogger,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -29845,6 +29857,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");

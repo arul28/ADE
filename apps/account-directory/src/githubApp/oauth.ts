@@ -156,7 +156,8 @@ export function refreshTokens(config: GithubOAuthConfig, refreshToken: string, n
   }, now);
 }
 
-export type GithubUser = { id: number; login: string };
+/** `createdAt`: when the GitHub account was made (ms), when GitHub's answer named it (`GET /user` does; the token check's user doesn't). */
+export type GithubUser = { id: number; login: string; createdAt?: number | null };
 export type GithubUserResult = { ok: true; user: GithubUser } | { ok: false; kind: "invalid_token" | "transient" };
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
@@ -168,7 +169,8 @@ function parseUser(value: unknown): GithubUser | null {
   const login = record.login;
   if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return null;
   if (typeof login !== "string" || !LOGIN.test(login)) return null;
-  return { id, login };
+  const createdAt = typeof record.created_at === "string" ? Date.parse(record.created_at) : NaN;
+  return { id, login, createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null };
 }
 
 /** `GET /user` with the user token: the GitHub id and login it belongs to. */

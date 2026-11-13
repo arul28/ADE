@@ -2,6 +2,7 @@ import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import { freePlanOf } from "./freePlan";
+import { freePlanGithubOf } from "./freePlanGithub";
 import { planCleanupState } from "./planCleanup";
 import { AWAKE_COMPUTER_CAP, CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
@@ -73,6 +74,10 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     reportCloudFailure("cloud.referral.summary_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "cloud-referrals");
     return null;
   }) : null;
+  const freeGithub = await freePlanGithubOf(env, account).catch((error: unknown) => {
+    reportCloudFailure("cloud.free_plan.github_view_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "cloud-free-plan");
+    return undefined;
+  });
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
   // The same total the wake rule and the limits use: a move's source stays out while the move runs.
@@ -106,7 +111,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       usedThisPeriodMilli: earnedDrawMilli(account, live),
       grantedMilli: account.earned_granted_milli,
     },
-    freePlan: freePlanOf(account, growth?.has_claim === 1),
+    freePlan: { ...freePlanOf(account, growth?.has_claim === 1), ...(freeGithub ? { github: freeGithub } : {}) },
     ...(referral ? { referral } : {}),
     ...(offers.extraDisk ? {
       extraDisk: {

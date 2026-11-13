@@ -8,7 +8,7 @@
  * `cloudAccess.ts`.
  */
 
-import type { CloudAccountState, CloudDiskUsageReport } from "../../../shared/adeCloud";
+import type { CloudAccountState, CloudDiskUsageReport, CloudFreeUnlockResult, CloudSustainedCpuReport } from "../../../shared/adeCloud";
 import type {
   CloudSavedChatDeleteArgs,
   CloudSavedChatList,
@@ -108,6 +108,8 @@ export type CloudProvider = {
   reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }>;
   /** The computer's own report at its idle step: its last work and, now and then, what uses its disk. */
   reportDiskUsage?(id: string, report: CloudDiskUsageReport): Promise<void>;
+  /** The computer's own report of hours near full CPU with no chat turn or agent working (the owner's daily report). */
+  reportSustainedCpu?(id: string, report: CloudSustainedCpuReport): Promise<void>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
   /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
   resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto" }): Promise<string>;
@@ -143,6 +145,12 @@ export type CloudProvider = {
   pickPlanCleanup(input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState>;
   /** Stripe's billing portal for changing the card or cancelling. */
   billingPortal(): Promise<{ url: string }>;
+  /**
+   * Save a card with no charge so a GitHub account younger than 30 days gets
+   * the free hours now: Stripe's page to open, or `unlocked` when a card on
+   * file already did it. Older servers answer 404.
+   */
+  billingFreeUnlock?(): Promise<CloudFreeUnlockResult>;
   /** Paid accounts only; extra hours are off by default. */
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
   /** Paid accounts only: extra disk on with a monthly limit in whole dollars, or off. */

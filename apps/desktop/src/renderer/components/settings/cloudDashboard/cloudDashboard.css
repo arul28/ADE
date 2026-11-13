@@ -456,6 +456,16 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-hours-notes b { font-weight: 500; color: var(--adec-lamp-text); }
 .adecd-hours-notes em { font-style: normal; opacity: 0.7; }
 .adecd-hours-notes li[data-tone="warn"] { color: var(--kit-warn); }
+.adecd-linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
 .adecd-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .adecd-mini { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .adecd-mini-num { display: flex; align-items: baseline; gap: 6px; }

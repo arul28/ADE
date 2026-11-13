@@ -207,8 +207,19 @@ export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, u
  * - `refused`: the computer already gave another account its free hours.
  * - `id_unreadable`: the computer couldn't read its OS id, so nothing was claimed.
  * - `unclaimed_use`: free hours used with no computer seen (phone or MCP only).
+ * The GitHub rules (`freePlanGithub.ts`):
+ * - `github_missing`: free hours held, no GitHub connected.
+ * - `github_too_new`: held, the GitHub account is younger than 30 days.
+ * - `github_used`: held, that GitHub account already gives another ADE account its free plan.
+ * - `github_check_failed`: held while GitHub couldn't be asked (tried again later).
+ * - `github_released`: a hold cleared, so the free hours came back.
+ * - `github_claimed`: this account's GitHub account now holds its free plan.
+ * - `card_unlock_started`: the person opened the card page (no charge) for a too-new GitHub account.
+ * - `card_unlocked`: a card saved with no charge unlocked a too-new GitHub account.
  */
-export type CloudFreePlanStep = "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use";
+export type CloudFreePlanStep =
+  | "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use"
+  | "github_missing" | "github_too_new" | "github_used" | "github_check_failed" | "github_released" | "github_claimed" | "card_unlock_started" | "card_unlocked";
 
 /** One `ade_cloud_free_plan` per account, step and day. The computer's id is never sent. */
 export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, step: CloudFreePlanStep, platform: string | null, now: number): void {

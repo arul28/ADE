@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
+  CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_PLAN_LABELS,
   cloudAccountBanner,
   cloudEarnedHoursOf,
@@ -27,6 +28,7 @@ import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
+import { cloudFreeGithubHeroLine } from "./CloudFreeGithubNotice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
@@ -227,7 +229,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   // disk share would only repeat it in two more banners.
   const accountBanner = cloudAccountBanner(account);
   const overPlan = account.planCleanup != null || accountBanner?.id === "cloud-over-plan-disk";
-  const banner = account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk" ? null : accountBanner;
+  // The free plan's GitHub hold: the hero's line and the plan card's notice say it, with what to do.
+  const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID ? null : accountBanner;
   const diskLimit = account.disk.limitGb ?? 0;
   const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
 
@@ -354,6 +357,8 @@ function CloudHero({
   // The free plan refused on this computer (another account used its free hours): one sentence from the server.
   const freePlan = cloudFreePlanOf(account);
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
+  // The free plan's GitHub rules hold its hours: one line here, the plan card says what to do.
+  const githubLine = account.rules === "free" && freePlan.github ? cloudFreeGithubHeroLine(freePlan.github) : null;
   const resets = account.billing.cancelAtPeriodEnd
     ? `plan ends ${formatCloudDate(account.billing.periodEnd)}`
     : `resets ${formatCloudDate(account.billing.periodEnd)}`;
@@ -382,6 +387,7 @@ function CloudHero({
             </div>
             <ul className="adecd-hours-notes">
               {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
+              {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
               {earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
               {account.extraHours.available ? (
                 <li>{account.extraHours.enabled

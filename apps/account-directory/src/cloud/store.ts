@@ -73,6 +73,12 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   DEVICE_PAGE_ORIGIN?: string;
   /** The server launcher's join codes are HMACs under this key (`launches.ts`). Unset: a server launch can't start (503). */
   CLOUD_LAUNCH_JOIN_KEY?: string;
+  /** The ADE GitHub App (`githubApp/grants.ts`): the free plan's GitHub rules read the account's grant and, once, its GitHub account's age. */
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
+  GITHUB_APP_TOKEN_KEY?: string;
+  GITHUB_WEB_BASE_URL?: string;
+  GITHUB_API_BASE_URL?: string;
 };
 
 /** The deployed production Worker, where a missing secret or an email that can't be sent is a failure, not a setup. */
@@ -188,6 +194,12 @@ export type AccountRow = {
    * Pro keep their old disk until the next period starts (`planDiskGbFor`).
    */
   old_plan_terms?: number | null;
+  /** Why the GitHub rules hold the free hours at 0 (`freePlanGithub.ts`, migration 0035); null while nothing is held. */
+  free_github_hold: string | null;
+  /** 1: used ADE Cloud before the GitHub rules shipped, so they don't apply. */
+  free_github_exempt: number;
+  /** When a card saved with no charge unlocked the free hours for a GitHub account younger than 30 days. */
+  free_card_unlocked_at: number | null;
   /** Unused since migration 0032 (the grace design's due time and warned list); always null. */
   plan_cleanup_due_at: number | null;
   plan_cleanup_warned_json: string | null;
@@ -814,7 +826,7 @@ async function startFreshPeriod(
   `).bind(account.user_id, account.period_start));
   const restored = account.warned_zero_at != null ? now : account.hours_restored_at;
   // A refusal written since `account` was read still holds: the free hours are read from the row.
-  const included = next.included === "free" ? `case when free_refused_at is not null then 0 else ${FREE_INCLUDED_MILLI} end` : "?";
+  const included = next.included === "free" ? `case when free_refused_at is not null or free_github_hold is not null then 0 else ${FREE_INCLUDED_MILLI} end` : "?";
   statements.push(env.DB.prepare(`
     update cloud_accounts set plan = ?, included_milli = ${included},
       used_milli = 0, period_start = ?, period_end = ?, old_plan_terms = 0,

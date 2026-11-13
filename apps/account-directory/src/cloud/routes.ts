@@ -1,10 +1,12 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, createCheckoutUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours } from "./billing";
+import { CloudBillingError, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours } from "./billing";
+import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
+import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, routeLaunches } from "./launches";
@@ -1069,6 +1071,13 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     await recordDiskUsage(env, computer, report);
     return json({ ok: true });
   },
+  // The computer's own report of hours near full CPU with no chat turn or agent working: a line in the owner's daily report.
+  "POST cpu-report": async (request, env, computer, _provider, { now }) => {
+    const report = parseSustainedCpuReport(await readJson(request), now);
+    if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+    await recordSustainedCpu(env, computer, report, now);
+    return json({ ok: true });
+  },
   "POST resize": handleResize,
   "POST fork": handleFork,
   "POST exec": handleExec,
@@ -1162,7 +1171,7 @@ async function refuseForeignWake(request: { text(): Promise<string> }, env: Clou
   return wakeUrl && normalized(wakeUrl) === normalized(body.url) ? null : badRequest("That isn't this computer's wake address.");
 }
 
-const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingPlanCleanup]);
+const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraDisk, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
 /** The most a person may set as extra disk's monthly limit, in dollars. */
 const EXTRA_DISK_LIMIT_MAX_USD = 1000;
 
@@ -1175,6 +1184,8 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   if (path === CLOUD_PATHS.billingExtraDisk && !offers.extraDisk) return notFound();
   try {
     if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, url.origin, now));
+    // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
+    if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, url.origin, { now, waitUntil }));
     const body = await readJson(request);
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     if (path === CLOUD_PATHS.billingCheckout) {
@@ -1220,6 +1231,16 @@ function freePlanMomentOf(method: string, path: string): "read" | "use" | null {
   if (path === CLOUD_PATHS.instances) return "use";
   const action = instanceRouteOf(path)?.action;
   return action === "start" || action === "fork" ? "use" : null;
+}
+
+/**
+ * A launch's start and an automation's Run now also make a computer. The
+ * computer's free-plan claim never moved on them (a server launch may carry no
+ * computer id), but the GitHub rules are the server's own, so they settle there too.
+ */
+function startsComputerElsewhere(method: string, path: string): boolean {
+  if (method !== "POST") return false;
+  return path === CLOUD_PATHS.launches || (path.startsWith(`${CLOUD_PATHS.automations}/`) && path.endsWith("/run"));
 }
 
 /** `/cloud/instances/<id>/<action>/<rest...>`, or null for any other path. */
@@ -1315,10 +1336,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   const provider = providerFor(env);
   const now = Date.now();
   const ctx: CloudRequestContext = { now, waitUntil };
-  // One free plan per computer (`freePlan.ts`): settled before the request's own hours check.
+  // One free plan per computer (`freePlan.ts`) and per GitHub account (`freePlanGithub.ts`): settled before the request's own hours check.
   const freePlanMoment = freePlanMomentOf(request.method, path);
-  if (freePlanMoment) {
-    await settleFreePlanComputer(env, await loadAccount(env, caller.userId, now), readComputerSignal(request), freePlanMoment, ctx);
+  if (freePlanMoment || startsComputerElsewhere(request.method, path)) {
+    const account = await loadAccount(env, caller.userId, now);
+    if (freePlanMoment) await settleFreePlanComputer(env, account, readComputerSignal(request), freePlanMoment, ctx);
+    await settleFreePlanGithub(env, account, ctx);
   }
   if (path === CLOUD_PATHS.account) {
     return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now)) : notFound();
