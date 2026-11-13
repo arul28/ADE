@@ -92,7 +92,16 @@ function ensureHost(): void {
 
 /** The identity of one failure: a new failure starts with no result. */
 export function reportKeyOf(context: DiagnosticReportRequestPayload): string {
-  return [context.surface, context.headline ?? "", context.code ?? "", context.technicalDetail ?? ""].join("\u0000");
+  return [
+    context.surface,
+    context.headline ?? "",
+    context.code ?? "",
+    context.technicalDetail ?? "",
+    // The same text in another project, or for another captured error, is
+    // another failure: it has its own note and its own sent state.
+    context.projectRoot ?? "",
+    context.sentryEventId ?? "",
+  ].join("\u0000");
 }
 
 /** Opens the dialog for this failure and starts building its report. Sends nothing. */

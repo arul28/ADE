@@ -640,7 +640,10 @@ export async function applyHandoffGitBundle(args: {
     }
     undo.length = 0;
   } catch (error) {
-    for (const step of undo.reverse()) await step();
+    // Another writer changed the lane during a wait for the index lock: no
+    // undo step runs. Deleting a new lane, its branch or the arriving files
+    // would delete that writer's work with them.
+    if (!laneChangedDuringWait) for (const step of undo.reverse()) await step();
     undo.length = 0;
     throw error;
   } finally {
