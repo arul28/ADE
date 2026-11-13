@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLaneShareGuestDirectory } from "../../../../shared/laneShareGuestDirectory";
 import type { LaneShareConnectTicket } from "../../../../shared/types/laneShare";
+import { laneSharePresetRights } from "../../../../shared/laneShareRights";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../../lib/account";
+import { createLaneShareGuestAgentChatApi } from "./laneShareGuestAgentChatApi";
 import {
   LaneShareGuestConnection,
   type LaneShareGuestSocket,
@@ -247,5 +249,62 @@ describe("the guest store across accounts", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("the guest chat adapter", () => {
+  // A guest's pane reads the owner's chat through the connection. After a
+  // reconnect the owner replays the tail with a run of streamed text folded
+  // into one row; the pane must get only what it did not show yet.
+  it("passes on only the new part of a replayed text run after a reconnect", async () => {
+    const { connection, socket } = await connectedGuest();
+    const api = createLaneShareGuestAgentChatApi(connection, () => null);
+    const shown: string[] = [];
+    api.onEvent((entry) => {
+      const event = entry.event as { type: string; text?: string };
+      shown.push(`${event.type}:${event.text ?? ""}`);
+    });
+    const history = api.getEventHistory({ sessionId: "chat-mine" } as never, null as never);
+    await socket.firstSent("chat_subscribe");
+    socket.deliver("chat_subscribe", {
+      sessionId: "chat-mine",
+      events: [{ sessionId: "chat-mine", timestamp: "2026-01-01T00:00:01.000Z", event: { type: "user_message", text: "hi" } }],
+    });
+    expect((await history).events).toHaveLength(1);
+    socket.deliver("chat_event", { sessionId: "chat-mine", timestamp: "2026-01-01T00:00:02.000Z", event: { type: "text", text: "Hel", turnId: "t1" } });
+    socket.deliver("chat_event", { sessionId: "chat-mine", timestamp: "2026-01-01T00:00:03.000Z", event: { type: "text", text: "lo", turnId: "t1" } });
+    // The replayed tail: the old message again, then the run folded and grown.
+    socket.deliver("chat_subscribe", {
+      sessionId: "chat-mine",
+      events: [
+        { sessionId: "chat-mine", timestamp: "2026-01-01T00:00:01.000Z", event: { type: "user_message", text: "hi" } },
+        { sessionId: "chat-mine", timestamp: "2026-01-01T00:00:04.000Z", event: { type: "text", text: "Hello world", turnId: "t1" } },
+      ],
+    });
+    await vi.waitFor(() => expect(shown).toHaveLength(3));
+    expect(shown).toEqual(["text:Hel", "text:lo", "text: world"]);
+    api.dispose();
+  });
+
+  it.each<[string, boolean, string, Record<string, unknown>]>([
+    ["keeps the dispatch mode of a steer", true, "chat.steer", { text: "now", dispatchMode: "interrupt" }],
+    ["turns a draft-only guest's steer into a draft", false, "chat.createDraft", { originSessionId: "chat-mine", text: "now" }],
+  ])("%s", async (_label, canSend, action, expected) => {
+    const { connection, socket } = await connectedGuest();
+    const rights = laneSharePresetRights("suggest");
+    rights.speak.send = canSend;
+    rights.speak.drafts = true;
+    const api = createLaneShareGuestAgentChatApi(connection, () => ({ rights } as never));
+    const before = socket.sentOfType("command").length;
+    expect(rights.run.models, "the preset keeps the chat's model").toEqual([]);
+    // The pane sends its copy of the model (a placeholder when names are hidden): a locked one stays out.
+    void api.steer({ sessionId: "chat-mine", text: "now", dispatchMode: "interrupt", modelId: "hidden-model" } as never, null as never).catch(() => undefined);
+    await vi.waitFor(() => expect(socket.sentOfType("command").length).toBe(before + 1));
+    const payload = socket.sentOfType("command").at(-1)!.payload as { action: string; args: Record<string, unknown> };
+    expect(payload.action).toBe(action);
+    expect(payload.args).toMatchObject(expected);
+    expect(payload.args.modelId).toBeUndefined();
+    if (action === "chat.createDraft") expect(socket.sentOfType("command").some((c) => (c.payload as { action: string }).action === "chat.steer")).toBe(false);
+    api.dispose();
   });
 });

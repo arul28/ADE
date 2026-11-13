@@ -65,12 +65,12 @@ export function ChatAttachmentPreviewModal({
 
   // A personal chat's files are in its own store, not in any project
   // workspace, and with no project open there is no file service to ask.
-  const personalChat = useChatPaneScope()?.kind === "personal";
+  const personalChat = useChatPaneScope() != null;
 
   useEffect(() => {
     let cancelled = false;
     if (personalChat) {
-      setState({ status: "error", message: "This attachment can't be previewed in a personal chat." });
+      setState({ status: "error", message: "This attachment can't be previewed in this chat." });
       return undefined;
     }
     setState({ status: "loading" });

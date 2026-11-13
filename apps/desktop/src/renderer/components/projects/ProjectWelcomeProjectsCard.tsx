@@ -4,10 +4,11 @@ import type { RecentProjectGroup } from "../app/projectTabGrouping";
 import type { AppState } from "../../state/appStore";
 import type { useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { FitList } from "../home/HomeFitList";
-import { LaneShareHomeFoot } from "../laneShare/guest/LaneShareHomeFoot";
+import { LaneShareHomeRows } from "../laneShare/guest/LaneShareHomeRows";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
+import type { LaneShareReceivedEntry } from "../../../shared/types/laneShare";
 
 type WebMachine = ReturnType<typeof useWebMachines>[number];
 
@@ -102,11 +103,14 @@ export function ProjectsCard({
   count,
   listRef,
   onListKeyDown,
+  sharedRows,
   ...ctx
 }: RowContext & {
   preview: boolean;
   rows: readonly ProjectsCardRow[];
   count: number;
+  /** Lanes shared with this account and open invites (`useLaneShareHomeRows`). */
+  sharedRows: readonly LaneShareReceivedEntry[];
   listRef: MutableRefObject<HTMLDivElement | null>;
   onListKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
 }) {
@@ -127,7 +131,7 @@ export function ProjectsCard({
             {renderRows()}
           </FitList>
         </div>
-      ) : (
+      ) : sharedRows.length > 0 && !preview ? null : (
         <div className="ade-welcome-empty">
           <strong>No projects yet</strong>
           {ctx.webMode
@@ -135,7 +139,7 @@ export function ProjectsCard({
             : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
         </div>
       )}
-      {preview ? null : <LaneShareHomeFoot />}
+      {preview ? null : <LaneShareHomeRows rows={sharedRows} />}
     </section>
   );
 }

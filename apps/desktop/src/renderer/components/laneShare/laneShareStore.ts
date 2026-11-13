@@ -7,6 +7,7 @@ import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { laneShareProblem, type LaneShareProblem } from "./laneShareModel";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { requirePin } from "../../lib/requirePin";
+import { useTabCopyPin } from "../../state/repositoryScope";
 
 /**
  * The owner's share list, read once per machine runtime and kept fresh from
@@ -177,15 +178,21 @@ function retainLaneShares(key: string, pin: OpenProjectBinding | null): () => vo
 /**
  * The share list of the lane's machine. `pin` is the lane's machine, or null
  * for the tab's own. The effect is keyed on the pin's key, never the object.
+ * The returned `pin` is the machine the list was read from: a null `pin`
+ * becomes the tab's copy, so the sheet and the actions it opens never send an
+ * unpinned call (calls need a pin; a null one fails as "no computer online").
  */
 export function useLaneShareList(
-  pin: OpenProjectBinding | null | undefined,
+  lanePin: OpenProjectBinding | null | undefined,
   options: { listKey?: string | null; enabled?: boolean } = {},
 ): {
   key: string | null;
   entry: LaneShareListEntry | null;
   reload: () => Promise<void>;
+  pin: OpenProjectBinding | null;
 } {
+  const tabPin = useTabCopyPin();
+  const pin = lanePin ?? tabPin;
   const boundKey = useAppStore((s) => s.projectBinding?.key ?? null);
   const activeKey = useRootAppStore((s) => s.projectBinding?.key ?? null);
   const key = options.listKey ?? laneShareListKey(pin, boundKey);
@@ -203,7 +210,7 @@ export function useLaneShareList(
     if (key && reachable) await loadLaneShares(key, pin ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, pinKey, reachable]);
-  return { key, entry, reload };
+  return { key, entry, reload, pin: pin ?? null };
 }
 
 /** Reload one list now (after this window changed a share). */

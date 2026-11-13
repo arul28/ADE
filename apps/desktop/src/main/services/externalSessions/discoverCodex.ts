@@ -16,7 +16,6 @@ import {
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
   openExternalSessionDb,
-  providerConfigHomeDirs,
   readFileSuffix,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -35,6 +34,7 @@ import {
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { providerConfigHomeDirs } from "./adeConfigHomes";
 import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexSandbox,
