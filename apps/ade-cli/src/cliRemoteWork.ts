@@ -294,6 +294,13 @@ function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Buffer {
 
 const gitText = (cwd: string, args: string[]): string => gitHere(cwd, args).toString("utf8").trim();
 
+/** Whether this person set up their own ssh for git (env or `core.sshCommand`). */
+function hasOwnSshSetup(top: string): boolean {
+  if (process.env.GIT_SSH_COMMAND?.trim() || process.env.GIT_SSH?.trim()) return true;
+  const configured = spawnSync("git", ["config", "--get", "core.sshCommand"], { cwd: top, windowsHide: true, timeout: 5_000 });
+  return configured.status === 0 && configured.stdout.toString("utf8").trim().length > 0;
+}
+
 function localCheckout(cwd: string): { top: string; head: string; branch: string | null } {
   const top = gitText(cwd, ["rev-parse", "--show-toplevel"]);
   const branch = gitText(top, ["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -333,8 +340,11 @@ function readLocalWorkSource(cwd: string): JsonObject {
         ...GIT_READ_ENV,
         ...GIT_HEADLESS_PROMPT_ENV,
         GCM_INTERACTIVE: "Never",
-        // A person's own ssh command (a key, a proxy) is kept as it is.
-        GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND?.trim() || "ssh -o BatchMode=yes",
+        // ssh may not ask either, unless the person set up their own ssh
+        // (GIT_SSH_COMMAND, GIT_SSH or core.sshCommand: a key, plink, an
+        // agent); theirs is kept, and stdin closed plus the time limit stop a
+        // prompt there.
+        ...(hasOwnSshSetup(top) ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" }),
       },
     });
     if (fetched.status === 0) remoteRefs = originRefsWithHead();

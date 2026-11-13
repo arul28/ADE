@@ -203,8 +203,10 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli
     if (isOlderBrainAnswer(reason) || /device choice is kept for ADE chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
       return parsed;
     }
+    // Not "devices use …@here": that would undo the person's choice for a
+    // brain that was only slow.
     throw new CliToolError(
-      `Could not read this chat's device choice (${firstSentence(reason)}). Pass --machine <name>, or run \`ade devices use ${kind}@here\`.`,
+      `Could not read this chat's device choice (${firstSentence(reason)}), so the command did not run. Run it again, or pass --machine <name> for this one command.`,
       { action: "chat.getDeviceSources" },
     );
   }
@@ -660,4 +662,3 @@ export async function runDevicesCommand(parsed: ParsedCli): Promise<{ output: st
   const value = await listDevices(options, only);
   return { output: print(value, formatDevicesList(value)), exitCode: 0 };
 }
-

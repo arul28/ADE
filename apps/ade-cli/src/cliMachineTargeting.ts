@@ -247,6 +247,17 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand))
     || (primary === "android" && ANDROID_BUILD_VERBS.has(subcommand))
     || (primary === "app-control" && APP_CONTROL_LAUNCH_VERBS.has(subcommand));
+  const typedFlags = flagNamesOutsideFreeText(parsed.command);
+  // The older spelling of a code flag the person typed, so an error names
+  // what they wrote (`--discard (now --code fresh)`), not only the new flag.
+  const typedOld = Object.keys(CODE_FLAG_ALIASES).find((flag) => typedFlags.has(flag)) ?? null;
+  const spelled = (flag: "--code" | "--no-code"): string => {
+    const now = typedOld ? CODE_FLAG_ALIASES[typedOld]! : null;
+    return now && now[0] === flag ? `${typedOld} (now ${now.join(" ")})` : flag;
+  };
+  if (primary === "shell" && !runsCode && typedOld) {
+    throw new CliUsageError(`${typedOld} is for a command that runs your code on another machine: ade shell start --machine <name>.`);
+  }
   const command = runsCode ? withCodeFlagAliases(parsed.command) : parsed.command;
   const commandFlags = flagNamesOutsideFreeText(command);
   const workCopyVerb = runsCode && commandFlags.has("--machine");
@@ -309,13 +320,13 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (!codeChosen && commandFlags.has("--code")) {
     throw new CliUsageError(
       machine
-        ? "--code is for a command that builds or runs your code on another machine: ade shell start, ade apple launch|install|test, "
+        ? `${spelled("--code")} is for a command that builds or runs your code on another machine: ade shell start, ade apple launch|install|test, `
           + "ade android install|launch|test|preview, ade app-control launch."
-        : "--code is for your code on another machine: add --machine <name>.",
+        : `${spelled("--code")} is for your code on another machine: add --machine <name>.`,
     );
   }
   if (!scratch && commandFlags.has("--no-code")) {
-    throw new CliUsageError("--no-code runs one command on another machine with no code: ade shell start --machine <name> --no-code [--wait] -- <command>.");
+    throw new CliUsageError(`${spelled("--no-code")} runs one command on another machine with no code: ade shell start --machine <name> --no-code [--wait] -- <command>.`);
   }
   if (scratch) {
     if (!usesWorkCopy) throw new CliUsageError("--no-code runs in an empty folder there, not a lane: leave out --lane.");
