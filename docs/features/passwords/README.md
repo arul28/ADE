@@ -51,6 +51,11 @@ Settings › Passwords follows one machine at a time (the machine picker in the
 title, like Providers). The two switches are the page's own: this computer's,
 and the account-wide ADE Cloud one.
 
+Saving, importing and **Reset** run on this computer when Passwords is on
+here, and the machine the page follows pulls the change at once. When it is
+off here, they go to that machine over the paired connection instead; Reset
+still asks for Touch ID or Windows Hello on this computer first.
+
 - **Logins** lists the saved logins and passkeys with their username and
   sites. A login's details show its password as dots with **Show** (for 30 s)
   and **Copy**, the live authenticator code, and when it last changed.
@@ -191,7 +196,8 @@ listed there.
 Settings › Passwords › **Import…** reads a CSV export from Apple Passwords,
 Chrome, Firefox, 1Password or Bitwarden (up to 5 MB). Rows without an https
 site or a password, and exact duplicates, are skipped. The file never leaves
-the computer except as sealed items; delete it afterwards.
+the computer except as sealed items (or, with Passwords off here, to the
+machine Settings follows, over the paired connection); delete it afterwards.
 
 ## In the browser, for the person
 

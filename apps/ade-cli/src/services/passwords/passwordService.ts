@@ -273,7 +273,13 @@ export function createPasswordService(args: {
    * stale, so it is dropped and fetched again, once. An item from an older
    * epoch is skipped (a reset wiped it), not an error.
    */
-  async function openAll(accountId: string, cache: CacheShape, retried = false): Promise<void> {
+  async function openAll(
+    accountId: string,
+    cache: CacheShape,
+    /** Unsent saves opened with the previous key, on the pass after a key change. */
+    carried: Map<string, PasswordItemSecret> | null = null,
+  ): Promise<void> {
+    const retried = carried !== null;
     const { key, epoch } = await vaultKey(accountId);
     const next = new Map<string, PasswordItemSecret>();
     let unopenable = 0;
@@ -290,8 +296,25 @@ export function createPasswordService(args: {
       }
       if (envelope.epoch > epoch && !retried) {
         logger.info("passwords.key_epoch_advanced", { from: epoch, to: envelope.epoch });
+        // Unsent saves sealed with the key being dropped exist only here:
+        // open them now, so the next sync can seal them again, not lose them.
+        const unsent = new Map<string, PasswordItemSecret>();
+        for (const write of cache.pending) {
+          const sealed = write.deleted || !write.envelope ? null : parsePasswordEnvelope(write.envelope);
+          if (!sealed || sealed.epoch !== epoch) continue;
+          try {
+            unsent.set(write.id, openPasswordItem<PasswordItemSecret>(key, { accountId, itemId: write.id, epoch }, sealed));
+          } catch {
+            logger.warn("passwords.unsent_unopenable", { itemId: write.id });
+          }
+        }
         await dropKey();
-        return await openAll(accountId, cache, true);
+        return await openAll(accountId, cache, unsent);
+      }
+      const carriedSecret = envelope.epoch !== epoch ? carried?.get(id) : undefined;
+      if (carriedSecret) {
+        next.set(id, carriedSecret);
+        continue;
       }
       try {
         next.set(id, openPasswordItem<PasswordItemSecret>(key, { accountId, itemId: id, epoch }, envelope));
@@ -327,12 +350,25 @@ export function createPasswordService(args: {
    * Passwords while this one held the old key): the relay refuses them, and
    * every other computer would skip them.
    */
-  function resealStale(accountId: string, cache: CacheShape, key: { key: Buffer; epoch: number }): void {
+  function resealStale(
+    accountId: string,
+    cache: CacheShape,
+    key: { key: Buffer; epoch: number },
+    /** The key these writes were sealed with: an unsent save may exist only here (nothing opened yet after a restart). */
+    oldKey: { key: Buffer; epoch: number } | null,
+  ): void {
     cache.pending = cache.pending.flatMap((write) => {
       if (write.deleted || !write.envelope) return [write];
       const envelope = parsePasswordEnvelope(write.envelope);
       if (envelope && envelope.epoch === key.epoch) return [write];
-      const secret = opened.get(write.id);
+      let secret = opened.get(write.id) ?? null;
+      if (!secret && envelope && oldKey && envelope.epoch === oldKey.epoch) {
+        try {
+          secret = openPasswordItem<PasswordItemSecret>(oldKey.key, { accountId, itemId: write.id, epoch: oldKey.epoch }, envelope);
+        } catch {
+          secret = null;
+        }
+      }
       if (!secret) {
         logger.warn("passwords.stale_write_dropped", { itemId: write.id });
         return [];
@@ -371,8 +407,11 @@ export function createPasswordService(args: {
       // Only a key this computer already holds: asking the relay would create a vault.
       const known = memoryKey ?? await cachedKeyEpoch(accountId);
       const keyIsStale = relayEpoch !== null && known !== null && relayEpoch > known.epoch;
+      let pulledOldKey: { key: Buffer; epoch: number } | null = null;
       if (keyIsStale) {
         logger.info("passwords.key_epoch_advanced", { from: known.epoch, to: relayEpoch });
+        // Kept to open unsent saves made under it (it is cached here: no network).
+        pulledOldKey = await vaultKey(accountId);
         await dropKey();
       }
       const toPush = await withCache(async () => {
@@ -381,7 +420,7 @@ export function createPasswordService(args: {
         for (const [id, row] of pulled) byId.set(id, row);
         cache.items = [...byId.values()];
         cache.cursor = cursor;
-        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId));
+        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId), pulledOldKey);
         await writeCache(cache);
         return cache.pending.map((write) => ({ ...write }));
       });
@@ -408,7 +447,11 @@ export function createPasswordService(args: {
           const sent = new Map(toPush.map((write) => [write.id, write]));
           // The relay has a newer key than the one these were sealed with.
           const staleKey = results.some((result) => result.status === "stale_key");
-          if (staleKey) await dropKey();
+          let refusedKey: { key: Buffer; epoch: number } | null = null;
+          if (staleKey) {
+            refusedKey = await vaultKey(accountId);
+            await dropKey();
+          }
           await withCache(async () => {
             const cache = await readCache(accountId);
             cache.pending = cache.pending.filter((write) => {
@@ -431,7 +474,7 @@ export function createPasswordService(args: {
               return false;
             });
             // Kept writes are sealed again under the current key; the next sync sends them.
-            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId));
+            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId), refusedKey);
             await writeCache(cache);
           });
         }

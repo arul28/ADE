@@ -2631,6 +2631,21 @@ async function callPasswords<T>(action: string, args: Record<string, unknown>, p
   if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
     return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
   }
+  const remotePin = pin && !isBoundCopyPin(pin) ? pin : null;
+  if (remotePin) {
+    // Passwords off on this computer but on where Settings is pointed: the
+    // write goes there (over the paired connection). A reset still asks the
+    // person here first.
+    const localOn = await local("status", {})
+      .then((status) => Boolean(status && typeof status === "object" && (status as { enabled?: unknown }).enabled === true))
+      .catch(() => false);
+    if (!localOn) {
+      if (action === "reset" && !(await ipcRenderer.invoke(IPC.passwordsCall, { action: "confirmReset", args: {} }))) {
+        throw new Error("Reset cancelled.");
+      }
+      return await callPinnedOrBoundRuntimeActionOr<T>(remotePin, "passwords", action, { args: { ...args } }, () => local(action, args));
+    }
+  }
   // An edit by id needs the item on this computer: pull first. A failure here
   // surfaces as the write's own error just below.
   if (typeof args.id === "string" && args.id) {
@@ -2638,8 +2653,8 @@ async function callPasswords<T>(action: string, args: Record<string, unknown>, p
   }
   const result = await local(action, args);
   // The page lists the pinned machine's copy: it pulls this write now.
-  if (pin && !isBoundCopyPin(pin)) {
-    await callPinnedOrBoundRuntimeActionOr<unknown>(pin, "passwords", "sync", { args: {} }, async () => undefined)
+  if (remotePin) {
+    await callPinnedOrBoundRuntimeActionOr<unknown>(remotePin, "passwords", "sync", { args: {} }, async () => undefined)
       .catch((error: unknown) => console.warn("[preload] the pinned machine could not pull Passwords yet", error));
   }
   return result;

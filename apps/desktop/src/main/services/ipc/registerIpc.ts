@@ -12873,6 +12873,11 @@ export function registerIpc({
   ]);
   handle(IPC.passwordsCall, async (_event, arg: unknown): Promise<unknown> => {
     const { action, args } = readActionRequest(arg);
+    // A reset Settings sends to another machine: the person proves it is them
+    // here, on the computer they sit at, first.
+    if (action === "confirmReset") {
+      return Boolean(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"));
+    }
     if (!PASSWORDS_CALL_ACTIONS.has(action)) {
       throw new Error(`passwords has no ${action || "?"} action.`);
     }

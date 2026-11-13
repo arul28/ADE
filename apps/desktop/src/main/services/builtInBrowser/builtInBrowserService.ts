@@ -7249,15 +7249,23 @@ function createBuiltInBrowserWindowService(args: {
         await insertTextForAction(tab, password, null);
         filled.push(index === 0 ? "password" : "confirm password");
       }
-      // Saved only once the form holds the whole password (a page script
-      // can trim or refuse characters): what Passwords keeps is what the
-      // site gets. Lengths only; the value never leaves the page.
+      // Saved only once the form holds exactly that password (a page script
+      // can trim, refuse or change characters): what Passwords keeps is what
+      // the site gets. Compared as SHA-256 in ADE's isolated world; neither
+      // the value nor its hash comes back, only whether each box matches.
+      const passwordHash = createHash("sha256").update(password, "utf8").digest("hex");
       const kept = await tab.webContents.executeJavaScriptInIsolatedWorld(BUILT_IN_BROWSER_LOGIN_WORLD_ID, [{
-        code: `Array.from(document.querySelectorAll('[data-ade-fill-target^="new-password-"]')).map((el) => el.value.length)`,
-      }]) as number[] | null;
-      if (!Array.isArray(kept) || kept.length !== fields.passwords || kept.some((length) => length !== password.length)) {
+        code: `(async () => {
+          const hex = (buffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          const boxes = Array.from(document.querySelectorAll('[data-ade-fill-target^="new-password-"]'));
+          const matches = [];
+          for (const box of boxes) matches.push(hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(box.value))) === ${JSON.stringify(passwordHash)});
+          return matches;
+        })()`,
+      }]) as boolean[] | null;
+      if (!Array.isArray(kept) || kept.length !== fields.passwords || kept.some((matches) => matches !== true)) {
         await clearFields();
-        throw new AdeExpectedError(`${site}'s form did not keep the whole new password, so nothing was saved and the boxes were cleared. Hand the tab to the person to choose one.`, "user");
+        throw new AdeExpectedError(`${site}'s form changed the new password, so nothing was saved and the boxes were cleared. Hand the tab to the person to choose one.`, "user");
       }
       let itemId: string;
       try {

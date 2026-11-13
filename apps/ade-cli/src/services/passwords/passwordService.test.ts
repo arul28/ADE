@@ -138,6 +138,33 @@ describe("password service", () => {
     expect(await laptop.resolveForFill({ itemId: late!.id, pageUrl: "https://late.example/" })).toMatchObject({ password: "late-pass-3" });
   });
 
+  it("keeps unsent saves across a restart and a reset made elsewhere", async () => {
+    const { relay, control, reset } = fakeRelay();
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-"));
+    const store = memoryStore();
+    const start = () => createPasswordService({ adeDir, relay, getAccountUserId: () => "user_a", getDeviceId: () => "mac", machineKind: "desktop", store });
+    const before = start();
+    await before.setEnabled(true);
+    control.online = false;
+    const offline = await before.saveLogin({ origins: ["https://offline.example"], username: "o", password: "offline-pass-1" });
+    await before.sync();
+
+    // Another computer resets and saves under the new key; this one restarts.
+    await reset();
+    control.online = true;
+    const laptop = await machine(relay, "laptop");
+    await laptop.purge();
+    await laptop.saveLogin({ origins: ["https://new.example"], username: "n", password: "new-pass-2" });
+    await laptop.sync();
+    const after = start();
+    await after.sync();
+    await after.sync();
+
+    await laptop.sync();
+    expect(await laptop.resolveForFill({ itemId: offline.id, pageUrl: "https://offline.example/" })).toMatchObject({ password: "offline-pass-1" });
+    expect((await after.listSummaries()).map((s) => s.title).sort()).toEqual(["new.example", "offline.example"]);
+  });
+
   it("keeps a login saved while a sync is pulling, on this machine and on the relay", async () => {
     const { relay, control } = fakeRelay();
     const mac = await machine(relay, "mac");
