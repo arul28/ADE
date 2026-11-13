@@ -923,24 +923,34 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       );
       const appShells = prepareOptions.replacingApp ? copyAppShells(owner) : new Set<string>();
       if (inUse(owner, appShells)) throw syncBusyError();
+      const syncingCopy = copy;
       // Files made here (a generated project, a pushed file) stay in place
       // through the sync instead of refusing it; `--discard` still removes them.
-      const keptFiles = mode === "discard" ? [] : await filesMadeHere(copy);
-      if (mode !== "discard") {
-        const reason = await unsyncedWork(copy, new Set(keptFiles));
-        if (reason) {
-          throw new RemoteWorkError(
-            "copy_has_unsynced_work",
-            `Your code there was not synced because ${reason}. Pass --code as-is to use the copy as it is `
-            + "(and commit and push that work from there: `ade shell start --machine <this machine> --code as-is -- git push origin HEAD:<branch>`), "
-            + "or --code fresh to throw it away.",
-          );
+      // Answers the files to keep, or refuses for work made there.
+      const checkWorkMadeHere = async (): Promise<string[]> => {
+        const made = mode === "discard" ? [] : await filesMadeHere(syncingCopy);
+        if (mode !== "discard") {
+          const reason = await unsyncedWork(syncingCopy, new Set(made));
+          if (reason) {
+            throw new RemoteWorkError(
+              "copy_has_unsynced_work",
+              `Your code there was not synced because ${reason}. Pass --code as-is to use the copy as it is `
+              + "(and commit and push that work from there: `ade shell start --machine <this machine> --code as-is -- git push origin HEAD:<branch>`), "
+              + "or --code fresh to throw it away.",
+            );
+          }
         }
-      }
-      // The commit first: a commit that is not on origin refuses here, and
-      // the running app must not have been stopped for a launch that refuses.
+        return made;
+      };
+      let keptFiles = await checkWorkMadeHere();
+      // The commit first: a commit that is not on origin refuses here, and the
+      // running app must not have been stopped for a launch that refuses.
       await ensureCommit(source);
-      if (appShells.size) await stopCopyApps(owner, syncBusyError);
+      if (appShells.size) {
+        await stopCopyApps(owner, syncBusyError);
+        // The app ran until now and may have saved files: check them again.
+        keptFiles = await checkWorkMadeHere();
+      }
       const syncedTree = await syncCopy(copy.path, source, patch, keptFiles);
       updateCopy(owner, (current) => (current ? {
         ...current,
