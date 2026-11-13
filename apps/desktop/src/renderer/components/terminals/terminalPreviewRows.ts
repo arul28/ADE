@@ -1,5 +1,6 @@
 import type { IBufferCell, Terminal } from "@xterm/xterm";
 import { captureError } from "../../../shared/sentry/capture";
+import { isChunkLoadFailure } from "../../lib/staleChunkReload";
 import type { TerminalSnapshotCell, TerminalSnapshotRow } from "../../../shared/types";
 
 /**
@@ -52,9 +53,11 @@ function snapshotCell(cell: IBufferCell | undefined): TerminalSnapshotCell {
  */
 /**
  * The caller shows the plain transcript instead, so the pane still reads; the
- * report says why. No transcript text goes with it.
+ * report says why. No transcript text goes with it. A chunk that a deploy
+ * removed is expected on ADE Web and is not reported.
  */
 function reportReplayFailure(error: unknown, stage: "load" | "replay"): void {
+  if (stage === "load" && isChunkLoadFailure(error)) return;
   captureError(error, {
     level: "warning",
     handled: true,
