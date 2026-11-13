@@ -2349,6 +2349,13 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
 
+The pricing page (`/pricing`, screen `pricing`) reuses the same events: each
+plan card's button records the CTA event with `choose_plan_free`,
+`choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
+`pricing_page` (it opens the install dialog, which records its own feature
+event), and every link to the page (site header, home page masthead and
+ADE Cloud teaser, footer) records the `view_pricing` feature.
+
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 
 ## Account settings
