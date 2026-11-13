@@ -800,7 +800,7 @@ export function buildSyncProjectCatalogMessages(args: {
  * `read*`, `search*`). Everything else — including verbs that only look
  * harmless, like `git.fetch` — is treated as a write.
  */
-const MAX_CONCURRENT_PEER_READS = 4;
+export const MAX_CONCURRENT_PEER_READS = 4;
 
 const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileRequest["action"]>([
   "listWorkspaces",
@@ -835,8 +835,16 @@ export function isConcurrentReadCommandAction(action: string): boolean {
  * lanes) and writes only the host's own lane-status cache; `prs.refresh`
  * asks GitHub (1-1.5 s a call) and writes only the host's PR cache. As
  * barriers they held a connecting phone's chat open behind them.
+ * `ai.cursorCloudFleet` is the older name of `ai.getCursorCloudFleet` (the
+ * same `getFleet` read, which writes only its own cache). It asks Cursor's
+ * API and took 49 s on a brain that had just started; as a barrier it held a
+ * browser's chat link behind it for all of that time.
  */
-const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set(["lanes.refreshSnapshots", "prs.refresh"]);
+const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set([
+  "lanes.refreshSnapshots",
+  "prs.refresh",
+  "ai.cursorCloudFleet",
+]);
 
 export function isConcurrentReadEnvelope(envelope: ParsedSyncEnvelope): boolean {
   // Opening a chat reads its transcript and records the subscription on this

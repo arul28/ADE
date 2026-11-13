@@ -130,7 +130,9 @@ import {
   buildSyncProjectCatalogMessages,
   createTerminalInputDedupeLedger,
   isRuntimeHostPairingRecord,
+  isConcurrentReadEnvelope,
   isSyncHostRecoveryPairingRecord,
+  MAX_CONCURRENT_PEER_READS,
   REQUIRED_SEND_MAX_BUFFERED_BYTES,
   type SyncForeignChatTranscriptResolver,
   type SyncProjectCatalogProvider,
@@ -270,11 +272,18 @@ type BrainPeerState = SyncRosterPeerState & {
   relayAuthorization: RelayAuthorizationLifecycle | null;
   messageQueue: Promise<void>;
   /**
-   * Routed project commands run here, in order, off the message queue — the
-   * project host's write-queue split: a slow command (one that boots its
-   * project) must not stall this socket's chat and roster reads.
+   * Routed project commands run here, off the message queue — the project
+   * host's write-queue split: a slow command (one that boots its project)
+   * must not stall this socket's chat and roster reads. Settles when every
+   * routed command sent so far has settled.
    */
   commandChain: Promise<void>;
+  /** The last routed write; later routed reads wait for it, not for each other. */
+  commandWriteBarrier: Promise<void>;
+  /** Routed reads running now, at most MAX_CONCURRENT_PEER_READS. */
+  routedReadCount: number;
+  /** Routed reads waiting for a slot, oldest first. */
+  routedReadWaiters: Array<() => void>;
   envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
   /** The sealed-adoption challenge this socket was issued, single use. */
   adoptChallenge: AdoptChallengeState | null;
@@ -289,6 +298,27 @@ type BrainPeerState = SyncRosterPeerState & {
 };
 
 const WS_OPEN = 1;
+
+function acquireRoutedReadSlot(peer: BrainPeerState): Promise<void> {
+  if (peer.routedReadCount < MAX_CONCURRENT_PEER_READS) {
+    peer.routedReadCount += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    peer.routedReadWaiters.push(resolve);
+  });
+}
+
+function releaseRoutedReadSlot(peer: BrainPeerState): void {
+  // The slot goes straight to the oldest waiting read, so queued reads keep
+  // their order (same as the project host's releasePeerReadSlot).
+  const next = peer.routedReadWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  peer.routedReadCount = Math.max(0, peer.routedReadCount - 1);
+}
 
 /**
  * `canManageSyncHost` authorizes two different peers: a desktop runtime-host
@@ -1293,19 +1323,42 @@ export function createBrainProjectActionsSyncHandler(
         if (routedCommands.wantsCommand(payload, envelopeProjectId)) {
           const routedPayload = payload ?? { commandId, action, args: commandArgs };
           const requestId = envelope.requestId;
-          peer.commandChain = peer.commandChain
-            .catch(() => {})
-            .then(async () => {
-              if (!isCurrent()) return;
-              await routedCommands.handle(peer, requestId, routedPayload, envelopeProjectId, isCurrent);
-            })
-            .catch((error) => {
-              args.logger.warn("sync_brain.routed_command_failed", {
-                action,
-                peerDeviceId: peer.metadata?.deviceId ?? null,
-                error: error instanceof Error ? error.message : String(error),
-              });
+          const runRouted = async (): Promise<void> => {
+            if (!isCurrent()) return;
+            await routedCommands.handle(peer, requestId, routedPayload, envelopeProjectId, isCurrent);
+          };
+          const logRoutedFailure = (error: unknown): void => {
+            args.logger.warn("sync_brain.routed_command_failed", {
+              action,
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+              error: error instanceof Error ? error.message : String(error),
             });
+          };
+          // The project host's peer-queue rule (`scheduleEnvelope`): reads
+          // overlap, a few at a time, behind the last write; a write waits for
+          // all earlier work. One serial chain made a client's chat history
+          // wait behind every startup read before it: one slow read (a Cursor
+          // repository list) held a browser's chat link for 14 s.
+          if (isConcurrentReadEnvelope(envelope)) {
+            const read = peer.commandWriteBarrier
+              .catch(() => {})
+              .then(async () => {
+                await acquireRoutedReadSlot(peer);
+                try {
+                  await runRouted();
+                } finally {
+                  releaseRoutedReadSlot(peer);
+                }
+              })
+              .catch(logRoutedFailure);
+            peer.commandChain = Promise.all([peer.commandChain, read]).then(() => {});
+          } else {
+            peer.commandChain = peer.commandChain
+              .catch(() => {})
+              .then(runRouted)
+              .catch(logRoutedFailure);
+            peer.commandWriteBarrier = peer.commandChain;
+          }
           break;
         }
         args.logger.warn("sync_brain.command_without_project_host", {
@@ -1381,6 +1434,9 @@ export function createBrainProjectActionsSyncHandler(
       relayAuthorization: null,
       messageQueue: Promise.resolve(),
       commandChain: Promise.resolve(),
+      commandWriteBarrier: Promise.resolve(),
+      routedReadCount: 0,
+      routedReadWaiters: [],
       envelopeChunks: createSyncEnvelopeChunkAssembler(),
       adoptChallenge: null,
       subscribedSessionIds: new Set(),
