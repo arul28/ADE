@@ -1,0 +1,87 @@
+/*
+ * The computer removal card. It is the connect card's family (`ade-icc-*` in
+ * integrationConnectCard.css). The frame stays a quiet slate: removal is the
+ * person's call, not an alarm. Red appears only on Remove, as an outline, and
+ * fills when Remove is armed for an online computer or this one.
+ */
+
+.ade-mrc {
+  --ig-accent: #8b93a7;
+  --mrc-danger: var(--color-error, #e5484d);
+}
+
+.ade-mrc-banner {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ig-accent) 14%, transparent), transparent 70%);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+
+.ade-mrc-tile {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: color-mix(in srgb, var(--color-fg) 82%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 60%),
+    color-mix(in srgb, var(--ig-accent) 22%, rgba(14, 15, 19, 0.9));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 0 1px color-mix(in srgb, var(--ig-accent) 35%, transparent);
+}
+
+.ade-mrc-presence { gap: 5px; }
+.ade-mrc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 40%, transparent);
+}
+.ade-mrc-presence[data-online="true"] .ade-mrc-dot {
+  background: var(--color-success, #3fb950);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success, #3fb950) 25%, transparent);
+}
+
+.ade-mrc-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+.ade-mrc-row { justify-content: flex-end; }
+.ade-mrc-spacer { flex: 1 1 auto; }
+
+.ade-mrc-warning {
+  flex: 1 1 220px;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--mrc-danger) 55%, var(--color-fg) 45%);
+}
+.ade-mrc-warning svg { flex: none; margin-top: 2px; color: var(--mrc-danger); }
+
+.ade-mrc-keep:disabled { opacity: 0.4; cursor: default; }
+
+/* Remove: a red outline until it is armed, then a solid red button. */
+.ade-mrc-remove:not(:disabled) {
+  background: color-mix(in srgb, var(--mrc-danger) 10%, transparent);
+  color: color-mix(in srgb, var(--mrc-danger) 60%, var(--color-fg) 40%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mrc-danger) 55%, transparent);
+}
+.ade-mrc-remove[data-armed="true"]:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 55%),
+    color-mix(in srgb, var(--mrc-danger) 82%, black 18%);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 6px 16px -8px var(--mrc-danger);
+}
+.ade-mrc-remove:focus-visible { outline: 2px solid var(--mrc-danger); outline-offset: 2px; }
+
+.ade-mrc-receipt-logo {
+  color: color-mix(in srgb, var(--color-fg) 80%, transparent);
+  background: color-mix(in srgb, #8b93a7 30%, rgba(14, 15, 19, 0.9));
+}
+.ade-mrc-receipt-logo svg { width: 11px; height: 11px; }

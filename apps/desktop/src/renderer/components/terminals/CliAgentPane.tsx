@@ -22,6 +22,7 @@ import {
 } from "../chat/ProjectSecretCard";
 import { IntegrationConnectComposer } from "../chat/IntegrationConnectCard";
 import { McpServerRequestComposer } from "../chat/McpServerCard";
+import { MachineRemovalComposer } from "../chat/MachineRemovalCard";
 import { useChatMachineSessions, useCliParentChildRows } from "../chat/chatSubagentRoster";
 import type { ChatSubagentSnapshot } from "../chat/chatExecutionSummary";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
@@ -507,6 +508,19 @@ function CliCard({
         chatProvider={provider}
         onAdd={(answers) => { void onAnswer(request, "accept", answers); }}
         onDecline={decline}
+      />
+    );
+  }
+  if (nativeCard?.kind === "machine-removal") {
+    return (
+      <MachineRemovalComposer
+        request={request}
+        card={nativeCard.card}
+        responding={responding}
+        error={null}
+        chatProvider={provider}
+        onRemove={(answers) => { void onAnswer(request, "accept", answers); }}
+        onKeep={(answers) => { void onAnswer(request, "accept", answers); }}
       />
     );
   }

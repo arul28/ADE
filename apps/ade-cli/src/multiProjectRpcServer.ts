@@ -114,6 +114,7 @@ import {
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { requestMachineRemovalFromUser } from "./services/account/machineRemovalRequest";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
 import {
@@ -2850,6 +2851,56 @@ export function createMultiProjectRpcRequestHandler(
       // stays open to any role, with identity fields removed below for non-CTO
       // callers.
       const role = callerRole();
+      // An agent in a chat may not remove a computer, but it may ask: the
+      // person answers a user-only card in that chat, and the brain removes
+      // the computer while it accepts their answer, with the same directory
+      // call as below. The agent's role is never raised; a person's terminal
+      // carries no chat and takes the path below.
+      const removalChatSessionId = action === "deleteMachine" ? callerChatSessionId() : null;
+      if (removalChatSessionId) {
+        const removalArgs = isRecord(params.args) ? params.args : {};
+        const located = await options.crossScopeChats?.locateChat(removalChatSessionId, { boot: false }).catch(() => null) ?? null;
+        const chatService = located?.runtime.agentChatService ?? null;
+        if (!chatService) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.policyDenied,
+            "account.deleteMachine is not available to agents, and this ADE does not hold your chat to ask the person in. Ask the person to remove the computer on the Account page.",
+          );
+        }
+        reconcileAccountOwnership(currentAccountOwnerUserId());
+        const removalDirectory = new AccountMachineDirectoryService(accountAuthService, {
+          appVersion: options.serverVersion,
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+          }),
+        });
+        try {
+          const result = await requestMachineRemovalFromUser({
+            requestChatInput: (input) => chatService.requestChatInput(input),
+            listMachines: () => removalDirectory.listMachines(),
+            deleteMachine: (machineKey) => removalDirectory.deleteMachine(machineKey),
+            localMachineKey: () => {
+              try {
+                return createSyncCloudRelayStore({
+                  filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+                }).getMachineIdentity().machineKey.trim() || null;
+              } catch {
+                return null;
+              }
+            },
+          }, {
+            chatSessionId: removalChatSessionId,
+            machine: typeof removalArgs.machine === "string" ? removalArgs.machine : "",
+            ...(typeof removalArgs.timeoutMs === "number" ? { timeoutMs: removalArgs.timeoutMs } : {}),
+          });
+          return { domain: "account", action, result, statusHints: {} };
+        } catch (error) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
       const ctoOnlyAccountAction = isCtoOnlyAdeAction("account", action)
         || action === "renameMachine"
         // Re-pairing this machine into the account is a machine-operator act,
