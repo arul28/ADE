@@ -37,11 +37,20 @@ export const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = 5_000;
  */
 export const BRAIN_LOOP_MACHINE_WAIT_CEILING_MS = 5 * 60_000;
 
-/** Major page faults across a freeze that mean memory is being read back from swap. */
-export const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS = 50;
+/**
+ * Page faults per 30 s of freeze that mean memory is coming back from swap
+ * (major) or being unpacked from compressed memory (minor). Rates, not counts,
+ * so a long freeze is not blamed on memory only because it lasted long.
+ */
+export const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S = 50;
+export const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S = 50_000;
 
-/** Minor page faults across a freeze that mean compressed memory is being unpacked. */
-export const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS = 50_000;
+/**
+ * Share of the freeze the process may spend on the CPU and still be waiting
+ * on memory. A loop that allocates as it spins also takes minor faults, but it
+ * runs the whole time; a process waiting for its pages mostly does not.
+ */
+export const BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE = 0.5;
 
 /** A synchronous file call open this long is a drive not answering. */
 export const BRAIN_LOOP_DRIVE_STALL_MS = 10_000;
@@ -51,21 +60,37 @@ export type BrainLoopFreezeCause = "self" | "memory" | "drive";
 /**
  * Who froze the brain: the brain itself, or the machine under it.
  *
- * Memory: the process is paging (`majorFaultsDelta`) or unpacking compressed
- * memory (`minorFaultsDelta`), as on 2026-11-13 when the Mac Studio had 12.6
- * of 13.3 GB of swap in use and the watchdog killed a brain that was only
- * waiting for its memory. Drive: the main thread sits inside one synchronous
- * file call. Anything else (a busy loop, a sync child wait, a deadlock) is the
- * brain's own, and a restart is still the cure.
+ * Memory: the process is reading pages back from swap, or unpacking
+ * compressed memory while mostly off the CPU, as on 2026-11-13 when the Mac
+ * Studio had 12.6 of 13.3 GB of swap in use and the watchdog killed a brain
+ * that was only waiting for its memory. Drive: the main thread sits inside one
+ * synchronous file call. Anything else (a busy loop, a sync child wait, a
+ * deadlock) is the brain's own, and a restart is still the cure.
+ *
+ * Fault counts are null where they mean nothing: libuv reports every Windows
+ * page fault, soft ones included, as major, so Windows never waits on memory.
  */
 export function brainLoopFreezeCause(args: {
-  majorFaultsDelta: number;
-  minorFaultsDelta: number;
+  /** Faults since the last heartbeat, or null where the platform's counts are not meaningful. */
+  majorFaults: number | null;
+  minorFaults: number | null;
+  /** CPU the process used since the last heartbeat. */
+  cpuMs: number;
+  /** How long since the last heartbeat. */
+  windowMs: number;
   syncFsCallBlockedMs: number | null;
 }): BrainLoopFreezeCause {
+  // No nested functions here: this body is stringified into the worker, and a
+  // bundler's name helper (`__name`) does not exist there.
+  const windowMs = Math.max(1, args.windowMs);
+  const per30s = 30_000 / windowMs;
+  if (args.majorFaults != null && args.majorFaults * per30s >= BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S) {
+    return "memory";
+  }
   if (
-    args.majorFaultsDelta >= BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS
-    || args.minorFaultsDelta >= BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS
+    args.minorFaults != null
+    && args.minorFaults * per30s >= BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S
+    && args.cpuMs <= windowMs * BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE
   ) return "memory";
   if (args.syncFsCallBlockedMs != null && args.syncFsCallBlockedMs >= BRAIN_LOOP_DRIVE_STALL_MS) return "drive";
   return "self";
@@ -119,19 +144,51 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = ${BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
     const BRAIN_LOOP_MACHINE_WAIT_CEILING_MS = ${BRAIN_LOOP_MACHINE_WAIT_CEILING_MS};
-    const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS = ${BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS};
-    const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS = ${BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS};
+    const BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S = ${BRAIN_LOOP_MEMORY_STARVED_MAJOR_FAULTS_PER_30S};
+    const BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S = ${BRAIN_LOOP_MEMORY_STARVED_MINOR_FAULTS_PER_30S};
+    const BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE = ${BRAIN_LOOP_MEMORY_STARVED_MAX_CPU_SHARE};
     const BRAIN_LOOP_DRIVE_STALL_MS = ${BRAIN_LOOP_DRIVE_STALL_MS};
     const brainLoopFreezeCause = ${brainLoopFreezeCause.toString()};
-    // Process-wide fault counts at the last heartbeat: what the freeze since
-    // then cost in paging. resourceUsage() in a worker reads the whole process.
-    const faultCounts = () => {
+    // Process-wide counters at the last heartbeat: what the freeze since then
+    // cost in paging and CPU. resourceUsage() in a worker reads the whole
+    // process, and this thread's own share of it is a timer tick a second.
+    const usageNow = () => {
       const usage = process.resourceUsage();
-      return { major: usage.majorPageFault, minor: usage.minorPageFault };
+      return {
+        major: usage.majorPageFault,
+        minor: usage.minorPageFault,
+        cpuMs: (usage.userCPUTime + usage.systemCPUTime) / 1000,
+      };
     };
-    let faultsAtHeartbeat = faultCounts();
-    // One line per freeze when the watchdog waits on the machine instead of killing.
-    let machineWaitReported = false;
+    let usageAtHeartbeat = usageNow();
+    // The freeze the watchdog is waiting out instead of killing, if any.
+    let machineWait = null;
+    // While it waits, it keeps the machine heartbeat fresh so the outside
+    // watchdog (brainWatchdogCheck.ts, which kills a brain whose beat is 90 s
+    // old) does not end the wait early. Only a file this process published is
+    // touched; the ceiling below still bounds the whole wait.
+    const heartbeatPath = path.join(workerData.runtimeDir, workerData.heartbeatFile);
+    let heartbeatRefreshedAtMs = 0;
+    const refreshHeartbeatDuringWait = (nowWallMs, cause) => {
+      if (nowWallMs - heartbeatRefreshedAtMs < workerData.heartbeatRefreshMs) return;
+      heartbeatRefreshedAtMs = nowWallMs;
+      let tempPath = null;
+      try {
+        const beat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
+        if (!beat || beat.pid !== process.pid) return;
+        beat.ts = nowWallMs;
+        beat.machineWait = cause;
+        tempPath = heartbeatPath + "." + process.pid + ".wait.tmp";
+        fs.writeFileSync(tempPath, JSON.stringify(beat), { encoding: "utf8", mode: 0o600 });
+        fs.renameSync(tempPath, heartbeatPath);
+      } catch {
+        // No heartbeat (a lane brain), or the disk is the thing stuck: the
+        // outside watchdog then decides as it did before.
+        if (tempPath) {
+          try { fs.unlinkSync(tempPath); } catch {}
+        }
+      }
+    };
     const readSyncFsCall = ${readSyncFsCall.toString()};
     // What the main thread is inside, when the brain installed the tracker.
     const currentSyncFsCall = () => {
@@ -171,7 +228,8 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     let projectOpenStallReported = false;
 
     let killStarted = false;
-    const writeBreadcrumbAndKill = (blockedMs) => {
+    /** Writes the wedge breadcrumb (and its log line); returns it. */
+    const writeBreadcrumb = (blockedMs, freezeCause) => {
       const breadcrumb = {
         lastCommand,
         blockedMs: Math.max(0, Math.floor(blockedMs)),
@@ -180,6 +238,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         diagnostics,
         diagnosticReportPath: workerData.reportEnabled ? workerData.reportPath : null,
       };
+      if (freezeCause) breadcrumb.freezeCause = freezeCause;
       // The projects that were opening: the next brain counts the kill against them.
       const openingProjects = openingProjectsNow();
       if (openingProjects.length > 0) breadcrumb.openingProjects = openingProjects;
@@ -219,7 +278,12 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
               "\n",
           );
         } catch {}
-      } finally {
+      }
+      return breadcrumb;
+    };
+    const writeBreadcrumbAndKill = (blockedMs) => {
+      const breadcrumb = writeBreadcrumb(blockedMs, machineWait ? machineWait.cause : null);
+      {
         try {
           fs.writeSync(2, "brain.event_loop_blocked " + JSON.stringify(breadcrumb) + "\n");
         } catch {}
@@ -296,8 +360,19 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       lastHeartbeatWallMs = Date.now();
       lastHeartbeatMonotonicMs = monotonicMs();
       projectOpenStallReported = false;
-      machineWaitReported = false;
-      faultsAtHeartbeat = faultCounts();
+      if (machineWait) {
+        // The machine let go: the wait was right, so no wedge is left to report.
+        try {
+          fs.writeSync(2, "[" + new Date().toISOString() + "] INFO brain.loop_watchdog_machine_wait_ended " + JSON.stringify({
+            pid: process.pid,
+            cause: machineWait.cause,
+            blockedMs: Math.max(0, Date.now() - machineWait.heartbeatWallMs),
+          }) + "\n");
+        } catch {}
+        try { fs.unlinkSync(path.join(workerData.runtimeDir, workerData.breadcrumbFile)); } catch {}
+        machineWait = null;
+      }
+      usageAtHeartbeat = usageNow();
       if (typeof message.lastCommand === "string" && message.lastCommand.length > 0) {
         lastCommand = message.lastCommand;
       }
@@ -394,28 +469,42 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       if (evaluation.blocked) {
         // A freeze the machine caused is waited out (see brainLoopFreezeCause);
         // only the brain's own freeze, or a wait past the ceiling, restarts it.
-        const faults = faultCounts();
+        // Judged again every tick: a freeze that outlasts the machine's trouble
+        // is the brain's own.
+        const usage = usageNow();
         const blockedFsCall = currentSyncFsCall();
+        const faultsMeaningful = process.platform !== "win32";
+        const majorFaults = faultsMeaningful ? Math.max(0, usage.major - usageAtHeartbeat.major) : null;
+        const minorFaults = faultsMeaningful ? Math.max(0, usage.minor - usageAtHeartbeat.minor) : null;
+        const cpuMs = Math.max(0, usage.cpuMs - usageAtHeartbeat.cpuMs);
         const cause = brainLoopFreezeCause({
-          majorFaultsDelta: Math.max(0, faults.major - faultsAtHeartbeat.major),
-          minorFaultsDelta: Math.max(0, faults.minor - faultsAtHeartbeat.minor),
+          majorFaults,
+          minorFaults,
+          cpuMs,
+          windowMs: evaluation.blockedMs,
           syncFsCallBlockedMs: blockedFsCall ? blockedFsCall.blockedMs : null,
         });
         if (cause !== "self" && evaluation.blockedMs < BRAIN_LOOP_MACHINE_WAIT_CEILING_MS) {
-          if (!machineWaitReported) {
-            machineWaitReported = true;
+          if (!machineWait) {
+            machineWait = { cause, heartbeatWallMs: lastHeartbeatWallMs };
             try {
               fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.loop_watchdog_waiting_on_machine " + JSON.stringify({
                 pid: process.pid,
                 lastCommand,
                 cause,
                 blockedMs: evaluation.blockedMs,
-                majorFaultsDelta: Math.max(0, faults.major - faultsAtHeartbeat.major),
-                minorFaultsDelta: Math.max(0, faults.minor - faultsAtHeartbeat.minor),
+                majorFaults,
+                minorFaults,
+                cpuMs: Math.round(cpuMs),
                 ceilingMs: BRAIN_LOOP_MACHINE_WAIT_CEILING_MS,
               }) + "\n");
             } catch {}
           }
+          machineWait.cause = cause;
+          // The evidence is on disk throughout, so a kill from outside still
+          // leaves the wedged command, the stuck file call and the cause.
+          writeBreadcrumb(evaluation.blockedMs, cause);
+          refreshHeartbeatDuringWait(nowWallMs, cause);
           return;
         }
         writeBreadcrumbAndKill(evaluation.blockedMs);

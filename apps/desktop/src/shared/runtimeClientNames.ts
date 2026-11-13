@@ -53,6 +53,24 @@ export function ctoCallerInitializeParams(version: string): Record<string, unkno
   };
 }
 
+/** The name the machine brain connects with when it asks a lane brain to hand a chat back. */
+export const CHAT_RUNTIME_RECLAIM_CLIENT_NAME = "ade-chat-reclaim";
+
+/**
+ * The `ade/initialize` params of that request: the same caller shape as the
+ * CTO's (role `cto`, no chat session, a process caller id), so the lane brain
+ * neither clamps it to `agent` nor lends it a chat identity from its own
+ * environment.
+ */
+export function chatRuntimeReclaimInitializeParams(version: string): Record<string, unknown> {
+  return {
+    protocolVersion: "2025-06-18",
+    clientName: CHAT_RUNTIME_RECLAIM_CLIENT_NAME,
+    clientInfo: { name: CHAT_RUNTIME_RECLAIM_CLIENT_NAME, version },
+    identity: { role: "cto", callerId: syntheticCallerId(CHAT_RUNTIME_RECLAIM_CLIENT_NAME) },
+  };
+}
+
 /**
  * The name a brain connects with when an ordinary agent on that machine runs
  * an `ade` command against another machine (`ade chat list --machine …`).

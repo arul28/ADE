@@ -322,6 +322,7 @@ import {
   resolveMachineEndpointNames,
   resolveReachableMachineDesktopBridgeSocketPath,
 } from "./services/projects/machineLayout";
+import { installedAdeHomes } from "./services/sync/devTestMachine";
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
@@ -1147,7 +1148,8 @@ export async function createAdeRuntime(args: {
     : paths.socketPath;
   const machineRuntimeLayout = resolveMachineAdeLayout();
   // On Windows a machine brain also answers on its endpoint's older pipe names.
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineEndpointNames().runtime);
+  const machineRuntimeEndpointNames = resolveMachineEndpointNames().runtime;
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeEndpointNames);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
@@ -3166,13 +3168,28 @@ export async function createAdeRuntime(args: {
             const beat = readBrainHeartbeat(machineRuntimeLayout.runtimeDir);
             return beat && Date.now() - beat.ts <= BRAIN_HEARTBEAT_STALE_MS ? beat.pid : null;
           },
-          isMachineBrainSocket: (socketPath: string) =>
-            servesMachineRuntimeEndpoint(socketPath, resolveMachineEndpointNames().runtime),
+          // The installed brains' sockets, this home's and every installed
+          // home's: a lane brain on a scratch ADE_HOME that opened the same
+          // project still leaves the installed brain's chats to it.
+          isMachineBrainSocket: (() => {
+            const names = new Set(machineRuntimeEndpointNames);
+            for (const home of installedAdeHomes()) {
+              for (const name of resolveMachineEndpointNames({ ...process.env, ADE_HOME: home }).runtime) names.add(name);
+            }
+            const known = [...names];
+            return (socketPath: string) => servesMachineRuntimeEndpoint(socketPath, known);
+          })(),
         } : {
           // The machine brain takes its chats back from a lane's test brain
-          // instead of refusing a person's send (see reclaimChatFromSiblingBrain).
-          requestChatRuntimeRelease: (request: { socketPath: string; sessionId: string }) =>
-            requestChatRuntimeReleaseFromBrain({ ...request, projectRoot }),
+          // instead of refusing a person's send (see takeChatRuntimeOrRefuse).
+          requestChatRuntimeRelease: async (request: { socketPath: string; sessionId: string }) => {
+            const { requestChatRuntimeReleaseFromBrain } = await import("./services/chat/chatRuntimeReleaseClient");
+            return await requestChatRuntimeReleaseFromBrain({
+              ...request,
+              projectRoot,
+              version: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+            });
+          },
         }),
         projectConfigService,
         db,
@@ -4666,73 +4683,3 @@ export async function createAdeRuntime(args: {
   }
 }
 
-
-/** How long the machine brain waits for a test brain to hand a chat back. */
-const CHAT_RUNTIME_RELEASE_TIMEOUT_MS = 10_000;
-
-/**
- * Ask the brain on `socketPath` to release one of this project's chats.
- * Throws when that brain does not answer in time; the caller then refuses the
- * send with the owner's socket, as before.
- */
-async function requestChatRuntimeReleaseFromBrain(args: {
-  socketPath: string;
-  sessionId: string;
-  projectRoot: string;
-}): Promise<{ released: boolean; reason?: "busy" | "not_held" }> {
-  const { JsonRpcClient } = await import("./lib/jsonRpcClient");
-  const client = await JsonRpcClient.connect(args.socketPath);
-  const timeout = { timeoutMs: CHAT_RUNTIME_RELEASE_TIMEOUT_MS };
-  try {
-    await client.request("ade/initialize", {
-      protocolVersion: "2025-06-18",
-      clientInfo: { name: "ade-machine-brain-reclaim", version: BUNDLED_ADE_VERSION || "0.0.0" },
-      identity: { callerId: `machine-brain-reclaim-${process.pid}`, role: "cto" },
-    }, timeout);
-    const registered = await client.request("projects.add", {
-      rootPath: args.projectRoot,
-      catalogVisibility: "system",
-      registrationSource: "runtime-auto",
-      withoutIcon: true,
-    }, timeout) as { projectId?: unknown } | null;
-    const projectId = typeof registered?.projectId === "string" ? registered.projectId : null;
-    if (!projectId) throw new Error("The other ADE did not open this project.");
-    const raw = await client.request("ade/actions/call", {
-      name: "run_ade_action",
-      arguments: { domain: "chat", action: "releaseChatRuntime", args: { sessionId: args.sessionId } },
-      projectId,
-    }, timeout);
-    return readChatRuntimeReleaseAnswer(raw);
-  } finally {
-    try { client.close(); } catch { /* already closed */ }
-  }
-}
-
-/** The release answer, out of the action envelope (`{ result }`, possibly in MCP tool content). */
-function readChatRuntimeReleaseAnswer(raw: unknown): { released: boolean; reason?: "busy" | "not_held" } {
-  const seen = new Set<unknown>();
-  const visit = (value: unknown): { released: boolean; reason?: "busy" | "not_held" } | null => {
-    if (!value || typeof value !== "object" || seen.has(value)) return null;
-    seen.add(value);
-    const record = value as Record<string, unknown>;
-    if (typeof record.released === "boolean") {
-      const reason = record.reason === "busy" || record.reason === "not_held" ? record.reason : undefined;
-      return { released: record.released, ...(reason ? { reason } : {}) };
-    }
-    if (typeof record.text === "string") {
-      try { return visit(JSON.parse(record.text)); } catch { return null; }
-    }
-    for (const key of ["structuredContent", "result", "content", "data"]) {
-      const nested = record[key];
-      const items = Array.isArray(nested) ? nested : [nested];
-      for (const item of items) {
-        const found = visit(item);
-        if (found) return found;
-      }
-    }
-    return null;
-  };
-  const answer = visit(raw);
-  if (!answer) throw new Error("The other ADE gave no release answer.");
-  return answer;
-}

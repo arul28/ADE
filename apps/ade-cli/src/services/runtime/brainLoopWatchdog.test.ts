@@ -35,14 +35,21 @@ describe("brainLoopWatchdog", () => {
   // A restart cannot give a paged-out brain its memory back or make a drive
   // answer, and it ends every terminal and agent session the brain holds.
   it.each([
-    { name: "a busy loop of its own", major: 3, minor: 900, fsMs: null, cause: "self" },
-    { name: "memory read back from swap", major: 400, minor: 2_000, fsMs: null, cause: "memory" },
-    { name: "compressed memory being unpacked", major: 0, minor: 120_000, fsMs: null, cause: "memory" },
-    { name: "a file call the drive never answers", major: 0, minor: 500, fsMs: 25_000, cause: "drive" },
-    { name: "a file call still inside a healthy disk's time", major: 0, minor: 500, fsMs: 2_000, cause: "self" },
-  ])("blames $name on the right party", ({ major, minor, fsMs, cause }) => {
-    expect(brainLoopFreezeCause({ majorFaultsDelta: major, minorFaultsDelta: minor, syncFsCallBlockedMs: fsMs }))
-      .toBe(cause);
+    { name: "a busy loop of its own", major: 3, minor: 900, cpuMs: 30_000, fsMs: null, cause: "self" },
+    { name: "a busy loop that allocates as it spins", major: 3, minor: 120_000, cpuMs: 29_000, fsMs: null, cause: "self" },
+    { name: "memory read back from swap", major: 400, minor: 2_000, cpuMs: 3_000, fsMs: null, cause: "memory" },
+    { name: "compressed memory being unpacked", major: 0, minor: 120_000, cpuMs: 8_000, fsMs: null, cause: "memory" },
+    { name: "Windows, where every fault reads as major", major: null, minor: null, cpuMs: 1_000, fsMs: null, cause: "self" },
+    { name: "a file call the drive never answers", major: 0, minor: 500, cpuMs: 100, fsMs: 25_000, cause: "drive" },
+    { name: "a file call still inside a healthy disk's time", major: 0, minor: 500, cpuMs: 100, fsMs: 2_000, cause: "self" },
+  ])("blames $name on the right party", ({ major, minor, cpuMs, fsMs, cause }) => {
+    expect(brainLoopFreezeCause({
+      majorFaults: major,
+      minorFaults: minor,
+      cpuMs,
+      windowMs: 30_000,
+      syncFsCallBlockedMs: fsMs,
+    })).toBe(cause);
   });
 
   it("detects a main-thread heartbeat gap while the worker check cadence stays healthy", () => {

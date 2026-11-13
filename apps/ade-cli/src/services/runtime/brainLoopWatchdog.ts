@@ -8,6 +8,7 @@ import {
   buildBrainLoopWatchdogWorkerSource,
 } from "./brainLoopWatchdogWorker";
 import { SYNC_FS_TRACKED_METHODS, syncFsCallBuffer } from "./syncFsCallTracker";
+import { BRAIN_HEARTBEAT_FILE, BRAIN_HEARTBEAT_INTERVAL_MS } from "./brainHeartbeat";
 
 export {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
@@ -738,6 +739,9 @@ export function startBrainLoopWatchdog(args: {
         thresholdMs,
         checkIntervalMs: BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
         breadcrumbFile: BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
+        // The machine heartbeat a wait on the machine keeps fresh (see the worker).
+        heartbeatFile: BRAIN_HEARTBEAT_FILE,
+        heartbeatRefreshMs: BRAIN_HEARTBEAT_INTERVAL_MS,
         reportEnabled,
         reportPath,
         reportSignal,

@@ -24,7 +24,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { writeJsonWithPrevious } from "../state/durableFile";
-import { describe, expect, it, test, vi } from "vitest";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
 import { ChatRuntimeOwnedElsewhereError, resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { createJiraCredentialService } from "../jira/jiraCredentialService";
@@ -1314,6 +1314,10 @@ describe("createAgentChatService", () => {
     // the machine brain asks it for the chat (over its socket, the boundary
     // faked here) and sends once it lets go.
     describe("taking it back from a lane's test brain", () => {
+      const live: Array<{ forceDisposeAll: () => void }> = [];
+      afterEach(() => {
+        for (const service of live.splice(0)) service.forceDisposeAll();
+      });
       const twoBrains = async (askTestBrain?: (sessionId: string) => Promise<unknown>) => {
         const testBrainRegistry = {
           pid: process.pid,
@@ -1331,23 +1335,22 @@ describe("createAgentChatService", () => {
           requestChatRuntimeRelease: ({ sessionId }: { sessionId: string }) =>
             askTestBrain ? askTestBrain(sessionId) : testBrain.service.releaseChatRuntime({ sessionId }),
         });
-        return { testBrain: testBrain.service, machineBrain: machineBrain.service, sessionId: session.id };
+        live.push(testBrain.service, machineBrain.service);
+        return { machineBrain: machineBrain.service, sessionId: session.id };
       };
 
       it("sends from the machine brain once the test brain hands the chat back", async () => {
-        const { testBrain, machineBrain, sessionId } = await twoBrains();
+        const { machineBrain, sessionId } = await twoBrains();
         const { send } = installClaudeResponseFixture({ sdkSessionId: "sdk-test-brain", responseText: "Continued here." });
 
         await machineBrain.runSessionTurn({ sessionId, text: "continue here", timeoutMs: 15_000 });
 
         expect(send).toHaveBeenCalledWith(expect.stringContaining("continue here"));
         expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/machine-brain.sock");
-        testBrain.forceDisposeAll();
-        machineBrain.forceDisposeAll();
       });
 
       it("refuses in plain words, starting nothing, while the test brain is still working", async () => {
-        const { testBrain, machineBrain, sessionId } = await twoBrains(async () => ({ released: false, reason: "busy" }));
+        const { machineBrain, sessionId } = await twoBrains(async () => ({ released: false, reason: "busy" }));
         const { send } = installClaudeResponseFixture({ sdkSessionId: "sdk-test-brain", responseText: "Must not run." });
 
         const error = await machineBrain.sendMessage({ sessionId, text: "continue here" }).then(() => null, (caught: unknown) => caught);
@@ -1356,8 +1359,6 @@ describe("createAgentChatService", () => {
         expect((error as Error).message).toContain("still working in another copy of ADE");
         expect(send).not.toHaveBeenCalled();
         expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/test-brain.sock");
-        testBrain.forceDisposeAll();
-        machineBrain.forceDisposeAll();
       });
     });
 

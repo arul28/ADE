@@ -168,6 +168,7 @@ import { noteClaudePassRateLimit } from "../claudePass/claudePassUse";
 import { claudePassKeyOfAccountId } from "../../../shared/types/providerLogins";
 import { noteClaudePassAuthFailure } from "../claudePass/claudePassEnd";
 import {
+  ChatRuntimeBusyElsewhereError,
   ChatRuntimeOwnedElsewhereError,
   type ChatRuntimeReleaseResult,
   decideChatRuntimeOwnership,
@@ -21191,6 +21192,23 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The owner stamp a persist writes. Holding a live runtime is the claim. A
+   * deliberate teardown (`runtimeInvalidated`) or a hand-back to the machine
+   * brain (`releaseChatRuntime`) writes no claim of ours, yet keeps the stamp
+   * of a live sibling that has since taken the chat. Otherwise the stamp on
+   * disk stands.
+   */
+  const persistedRuntimeOwner = (
+    managed: ManagedChatSession,
+    prevPersisted: PersistedChatState | null,
+  ): ChatRuntimeOwner | null => {
+    if (managed.runtime) return selfChatRuntimeOwner();
+    const released = managed.runtimeOwnerReleasedAtEpoch === runtimeTeardownEpoch(managed);
+    if (managed.runtimeInvalidated || released) return siblingBrainOwnerOnDisk(managed.session.id);
+    return prevPersisted?.runtimeOwner ?? null;
+  };
+
   const persistChatState = (
     managed: ManagedChatSession,
     options: { fsync?: boolean } = {},
@@ -21217,13 +21235,7 @@ export function createAgentChatService(args: {
     // sibling's claim: its teardown releases only its own or a dead brain's
     // stamp. Otherwise a persist on a brain that does not run the chat erased
     // the owner's stamp and left its live chat looking adoptable.
-    const runtimeOwner: ChatRuntimeOwner | null = managed.runtime
-      ? selfChatRuntimeOwner()
-      : managed.runtimeInvalidated
-        ? siblingBrainOwnerOnDisk(managed.session.id)
-        : managed.runtimeOwnerReleasedAtEpoch === runtimeTeardownEpoch(managed)
-          ? null
-          : prevPersisted?.runtimeOwner ?? null;
+    const runtimeOwner = persistedRuntimeOwner(managed, prevPersisted);
     // A thread no message has been sent on is not on disk yet, so it is not
     // saved (nor mirrored to the pointer table below): a runtime started after
     // this one would resume it and fail with "No conversation found".
@@ -22553,6 +22565,9 @@ export function createAgentChatService(args: {
     if (managed) {
       if (
         managed.session.status === "active"
+        // A send accepted here that has not started its turn yet: releasing
+        // now would let it start a second agent once the machine brain has one.
+        || Boolean(managed.turnAcceptedAt)
         || hasLivePendingInput(managed)
         || (managed.runtime && hasRuntimeActiveWorkload(managed.runtime))
       ) {
@@ -22564,7 +22579,7 @@ export function createAgentChatService(args: {
     } else {
       const persisted = readPersistedState(sessionId);
       if (persisted) {
-        writeJsonWithPrevious(metadataPathFor(sessionId), { ...persisted, runtimeOwner: null }, {
+        writeJsonWithPrevious(metadataPathFor(sessionId), { ...persisted, runtimeOwner: null, updatedAt: nowIso() }, {
           validate: isPersistedChatStateShape,
           fsync: true,
         });
@@ -22576,60 +22591,46 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Before a send from the machine brain: take a chat back from the lane test
-   * brain holding it. Without this a chat a test brain had picked up refused
-   * every send until someone found and stopped that brain by hand.
+   * Before a send on the machine brain: take a chat back from the lane test
+   * brain holding it, then refuse as before if it still belongs elsewhere.
+   * Without this a chat a test brain had picked up refused every send until
+   * someone found and stopped that brain by hand.
+   *
+   * Synchronous (returns nothing) when no other brain holds the chat, so a send
+   * to a chat this brain runs starts exactly when it did before. Callers run it
+   * after their cheap validations, so a refused request never stops the other
+   * brain's agent.
    */
-  const siblingBrainToReclaimFrom = (sessionId: string): (ChatRuntimeOwner & { socketPath: string }) | null => {
-    if (!requestChatRuntimeRelease) return null;
-    const owner = liveForeignChatRuntimeOwner(sessionId);
-    return owner?.socketPath ? { ...owner, socketPath: owner.socketPath } : null;
-  };
-
-  /**
-   * Synchronous when there is nothing to take back, so a send to a chat this
-   * brain already runs starts exactly when it did before.
-   */
-  const reclaimChatFromSiblingBrain = (sessionId: string): Promise<void> | null => {
-    const owner = siblingBrainToReclaimFrom(sessionId);
-    return owner ? reclaimChatFrom(sessionId, owner) : null;
-  };
-
-  const reclaimChatFrom = async (
-    sessionId: string,
-    owner: ChatRuntimeOwner & { socketPath: string },
-  ): Promise<void> => {
-    if (!requestChatRuntimeRelease) return;
-    let result: ChatRuntimeReleaseResult;
-    try {
-      result = await requestChatRuntimeRelease({ socketPath: owner.socketPath, sessionId });
-    } catch (error) {
-      logger.warn("agent_chat.runtime_reclaim_failed", {
-        sessionId,
-        ownerPid: owner.pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
+  const takeChatRuntimeOrRefuse = (sessionId: string, action: string): Promise<void> | void => {
+    const owner = requestChatRuntimeRelease ? liveForeignChatRuntimeOwner(sessionId) : null;
+    const socketPath = owner?.socketPath;
+    if (!owner || !socketPath || !requestChatRuntimeRelease) {
+      assertChatRuntimeOwnedHere(sessionId, action);
       return;
     }
-    logger.info("agent_chat.runtime_reclaim", {
-      sessionId,
-      ownerPid: owner.pid,
-      released: result.released,
-      reason: result.reason ?? null,
-    });
-    if (result.released) {
-      persistedStateFiles.forget(metadataPathFor(sessionId));
-      return;
-    }
-    if (result.reason === "busy") {
-      throw new ChatRuntimeOwnedElsewhereError({
-        sessionId,
-        owner,
-        self: selfChatRuntimeOwner(),
-        action: "send to",
-        ownerBusy: true,
-      });
-    }
+    return (async () => {
+      let result: ChatRuntimeReleaseResult | null = null;
+      try {
+        result = await requestChatRuntimeRelease({ socketPath, sessionId });
+      } catch (error) {
+        logger.warn("agent_chat.runtime_reclaim_failed", {
+          sessionId,
+          ownerPid: owner.pid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (result) {
+        logger.info("agent_chat.runtime_reclaim", {
+          sessionId,
+          ownerPid: owner.pid,
+          released: result.released,
+          ...(result.released ? {} : { reason: result.reason }),
+        });
+        if (!result.released) throw new ChatRuntimeBusyElsewhereError({ sessionId, owner });
+        persistedStateFiles.forget(metadataPathFor(sessionId));
+      }
+      assertChatRuntimeOwnedHere(sessionId, action);
+    })();
   };
 
   type ReconciledPointerCandidate = {
@@ -65532,11 +65533,10 @@ export function createAgentChatService(args: {
     args: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
-    const reclaimFromSibling = reclaimChatFromSiblingBrain(args.sessionId);
-    if (reclaimFromSibling) await reclaimFromSibling;
-    assertChatRuntimeOwnedHere(args.sessionId, "send to");
     assertChatNotMovedAway(args.sessionId, "send_message");
     assertPlainPromptText(args);
+    const takeRuntime = takeChatRuntimeOrRefuse(args.sessionId, "send to");
+    if (takeRuntime) await takeRuntime;
     // A send retried after a sleep (its first copy may have landed before the
     // machine froze): the client's id tells a retry from a second message.
     if (args.clientSendId && noteClientSendSeen(args.sessionId, args.clientSendId)) return;
@@ -65781,8 +65781,7 @@ export function createAgentChatService(args: {
     rawArgs: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
-    const reclaimFromSibling = reclaimChatFromSiblingBrain(rawArgs.sessionId);
-    if (reclaimFromSibling) await reclaimFromSibling;
+    // Its callers (`sendMessage`) already took the chat back.
     assertChatRuntimeOwnedHere(rawArgs.sessionId, "send to");
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer
@@ -67451,13 +67450,12 @@ export function createAgentChatService(args: {
     }: AgentChatMessageSessionArgs,
     options?: { trustedSpawnCompletion?: boolean },
   ): Promise<AgentChatMessageSessionResult> => {
-    const reclaimFromSibling = reclaimChatFromSiblingBrain(sessionId);
-    if (reclaimFromSibling) await reclaimFromSibling;
-    assertChatRuntimeOwnedHere(sessionId, "message");
     assertChatNotMovedAway(sessionId, movedAwayPathForMessage(metadata));
     // A guest's draft that the owner sends keeps its guest author: a plain
     // prompt on every route below, not only the ones that check it themselves.
     assertPlainPromptText({ text, metadata });
+    const takeRuntime = takeChatRuntimeOrRefuse(sessionId, "message");
+    if (takeRuntime) await takeRuntime;
     const managed = ensureManagedSession(sessionId);
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
@@ -79352,9 +79350,6 @@ export function createAgentChatService(args: {
   const rerunLastTurn = async (
     args: AgentChatRerunLastTurnArgs,
   ): Promise<AgentChatRerunLastTurnResult> => {
-    const reclaimFromSibling = reclaimChatFromSiblingBrain(args.sessionId);
-    if (reclaimFromSibling) await reclaimFromSibling;
-    assertChatRuntimeOwnedHere(args.sessionId, "rerun the last turn of");
     const managed = ensureManagedSession(args.sessionId);
     const provider = managed.session.provider;
     if (provider !== "claude" && provider !== "codex") {
@@ -79362,6 +79357,8 @@ export function createAgentChatService(args: {
         `Retry and edit are available for Claude and Codex chats. This chat runs on '${provider}'.`,
       );
     }
+    const takeRuntime = takeChatRuntimeOrRefuse(args.sessionId, "rerun the last turn of");
+    if (takeRuntime) await takeRuntime;
     if (
       managed.rerunToken
       || managed.session.status === "active"
@@ -79548,12 +79545,15 @@ export function createAgentChatService(args: {
     /** Called once the provider has the message and the chat reads as busy. */
     onDispatched?: () => void;
   }): Promise<AgentChatBackgroundTurnResult> => {
-    const reclaimFromSibling = reclaimChatFromSiblingBrain(sessionId);
-    if (reclaimFromSibling) await reclaimFromSibling;
-    assertChatRuntimeOwnedHere(sessionId, "run a turn in");
     assertChatNotMovedAway(sessionId, "run_session_turn");
     const managed = ensureManagedSession(sessionId);
     const trimmed = text.trim();
+    if (trimmed.length) {
+      const takeRuntime = takeChatRuntimeOrRefuse(sessionId, "run a turn in");
+      if (takeRuntime) await takeRuntime;
+    } else {
+      assertChatRuntimeOwnedHere(sessionId, "run a turn in");
+    }
     if (!trimmed.length) {
       return {
         sessionId,

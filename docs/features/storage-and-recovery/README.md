@@ -543,15 +543,24 @@ of reported as `idle`.
 The kill is only for a freeze the brain caused. Every terminal and agent
 session runs under the brain, so a restart ends all of them, and it cannot fix
 a freeze the machine caused. Before it kills, the worker asks
-`brainLoopFreezeCause` who froze the loop, from the process's page faults
-since the last heartbeat and the synchronous file call it is inside:
-`memory` (50+ major faults, or 50,000+ minor faults while compressed memory is
-unpacked), `drive` (one file call open 10 s or more), or `self`. For `memory`
-and `drive` it logs `brain.loop_watchdog_waiting_on_machine` once and keeps
-waiting, up to `BRAIN_LOOP_MACHINE_WAIT_CEILING_MS` (5 min), after which it
-kills as before. On 2026-11-13 a Mac Studio with 12.6 of 13.3 GB of swap in
-use froze the brain for 35 s while it paged, and the old rule killed it and
-every Claude Code session and subagent under it.
+`brainLoopFreezeCause` who froze the loop, from the process's page faults and
+CPU since the last heartbeat (as rates per 30 s) and the synchronous file call
+it is inside: `memory` (50+ major faults per 30 s, or 50,000+ minor faults per
+30 s while the process used at most half the time on the CPU, so a loop that
+allocates as it spins is still its own), `drive` (one file call open 10 s or
+more), or `self`. Windows never waits on memory: libuv counts every Windows
+fault as major. It judges again every tick, so a freeze that outlasts the
+machine's trouble becomes the brain's own. For `memory` and `drive` it logs
+`brain.loop_watchdog_waiting_on_machine` once, keeps the breadcrumb (with
+`freezeCause`) on disk, and keeps waiting up to
+`BRAIN_LOOP_MACHINE_WAIT_CEILING_MS` (5 min), after which it kills as before.
+While it waits it also refreshes the machine heartbeat it published (marked
+`machineWait`), so the outside watchdog (`brainWatchdogCheck.ts`, which kills
+a brain whose beat is 90 s old) does not end the wait early. When the freeze
+ends it logs `brain.loop_watchdog_machine_wait_ended` and removes the
+breadcrumb, so the next start reports no wedge. On 2026-11-13 a Mac Studio
+with 12.6 of 13.3 GB of swap in use froze the brain for 35 s while it paged,
+and the old rule killed it and every Claude Code session and subagent under it.
 
 The Node report is written by the main thread, which is the stuck one, so it
 only lands if the loop frees up inside the grace. On macOS the worker therefore
