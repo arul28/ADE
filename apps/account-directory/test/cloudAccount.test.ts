@@ -1333,6 +1333,10 @@ describe("ADE Cloud plan cleanup", () => {
       // Lands as the computer is read for the push: after the first check, before the delete.
       harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active' where user_id = ?", OWNER); } });
     }, false],
+    ["a move of it that began while it pushed: not freed, so the move keeps its files", () => {
+      answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+      harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { seedComputer(harness, { instance_id: "pending_move_target", moving_from: INSTANCE, status: "provisioning", created_at: NOW }); } });
+    }, false],
     ["a sleeping computer it woke for the push and then kept goes back to sleep", () => {
       harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
       harness.net.instances.get(INSTANCE)!.status = "sleeping";

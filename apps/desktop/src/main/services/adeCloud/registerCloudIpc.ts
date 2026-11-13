@@ -511,6 +511,11 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
     const plan = arg?.plan === "pro" || arg?.plan === "plus" ? arg.plan : undefined;
     const cleanup = readPick(arg?.cleanup);
+    // A pick that was sent but can't be read must not become "no pick": the plan would change and nothing the person chose would go.
+    if (arg?.cleanup != null && !cleanup) {
+      logger.warn("cloud.plan_cleanup_pick_unreadable", { plan: plan ?? null });
+      throw new Error("ADE couldn't read the computers you picked, so your plan didn't change. Try again.");
+    }
     const result = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout(plan, cleanup ?? undefined));
     if (result.url == null) {
       logger.info("cloud.plan_changed", { change: result.change, freeing: result.freeing?.length ?? 0 });

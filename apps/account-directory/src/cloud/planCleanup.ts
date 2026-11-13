@@ -12,7 +12,7 @@ import {
 import { sendCloudEmail } from "./email";
 import { cloudAccessAllows } from "./http";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
-import { CLOUD_PLANS, cloudSizeFor, extraDiskMonthFits, isMeteredStatus, tierOf } from "./plans";
+import { CLOUD_PLANS, cloudSizeFor, extraDiskMonthMaxGb, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   boughtPlanIdOf,
@@ -70,6 +70,8 @@ const DAY_MS = 24 * 60 * 60_000;
 const CLEANUPS_PER_TICK = 4;
 /** A claim older than this was lost mid-run (the Worker died): another tick may take the computer. */
 const CLAIM_STALE_MS = 20 * 60_000;
+/** How long a pick waits for its plan change to be saved before it counts as no longer wanted. */
+const PICK_SETTLE_MS = 15 * 60_000;
 /** A start answered; ADE on the computer answers a few seconds after it runs. */
 const WAKE_WAIT_MS = 3 * 60_000;
 const WAKE_POLL_MS = 5_000;
@@ -116,19 +118,20 @@ export function waitingPlanOf(account: Pick<AccountRow, "plan" | "stripe_status"
   return account.paid_plan_next ?? null;
 }
 
-type PlanRoom = { planId: CloudPlanId; computerLimit: number; diskCapGb: number; limitGb: number };
+type PlanRoom = { planId: CloudPlanId; computerLimit: number; diskCapGb: number };
 
 /**
- * What `planId` lets `computers` hold. On a paid plan, disk that extra disk
- * covers (on, set up, and a full month of the overage inside its limit) counts
- * as fitting.
+ * What `planId` lets an account hold. On a paid plan with extra disk on and
+ * set up, the cap grows by the most extra disk its monthly limit keeps for a
+ * full month. The cap is the same for any set of computers, so a pick is
+ * checked against what is left, not against the overage before it.
  */
-function roomOf(env: CloudEnv, account: Pick<AccountRow, "extra_disk_state" | "extra_disk_limit_cents">, computers: ComputerRow[], planId: CloudPlanId): PlanRoom {
+function roomOf(env: CloudEnv, account: Pick<AccountRow, "extra_disk_state" | "extra_disk_limit_cents">, planId: CloudPlanId): PlanRoom {
   const plan = CLOUD_PLANS[planId];
-  const overGb = countedDiskGb(computers) - plan.diskGb;
-  const extraDiskCovers = planId !== "free" && overGb > 0 && cloudOffers(env).extraDisk && account.extra_disk_state === "on"
-    && account.extra_disk_limit_cents != null && extraDiskMonthFits(overGb, account.extra_disk_limit_cents);
-  return { planId, computerLimit: plan.computerLimit, diskCapGb: extraDiskCovers ? Number.POSITIVE_INFINITY : plan.diskGb, limitGb: plan.diskGb };
+  const extraGb = planId !== "free" && cloudOffers(env).extraDisk && account.extra_disk_state === "on" && account.extra_disk_limit_cents != null
+    ? extraDiskMonthMaxGb(account.extra_disk_limit_cents)
+    : 0;
+  return { planId, computerLimit: plan.computerLimit, diskCapGb: plan.diskGb + extraGb };
 }
 
 const fitsRoom = (room: PlanRoom, computers: ComputerRow[]): boolean => computers.length <= room.computerLimit && countedDiskGb(computers) <= room.diskCapGb;
@@ -163,7 +166,7 @@ export function planCleanupFor(
   computers: ComputerRow[],
   planId: CloudPlanId,
 ): Omit<CloudPlanCleanup, "startsAt" | "freeing"> | null {
-  const room = roomOf(env, account, computers, planId);
+  const room = roomOf(env, account, planId);
   if (fitsRoom(room, computers)) return null;
   const choices = pickable(computers);
   const left = new Set(computers.map((computer) => computer.instance_id));
@@ -178,11 +181,17 @@ export function planCleanupFor(
   const facts = {
     planId,
     usedGb,
-    limitGb: Number.isFinite(room.diskCapGb) ? room.limitGb : usedGb,
+    // What fits, extra disk included: the dialog checks a pick against it.
+    limitGb: room.diskCapGb,
     computerCount: computers.length,
     computerLimit: room.computerLimit,
   };
   return { ...facts, computers: suggested, choices: choices.map(pickOf), sentence: planCleanupSentence(facts) };
+}
+
+/** The computers the account's running pick will free (none when no pick runs). */
+export function readPlanCleanupChoiceIds(account: Pick<AccountRow, "plan_cleanup_choice_json">): string[] {
+  return choiceOf(account)?.instanceIds ?? [];
 }
 
 /** The account's pick while ADE frees it, or null (none, or unreadable). */
@@ -252,13 +261,13 @@ export function planCleanupState(env: CloudEnv, account: AccountRow, computers: 
   }
   // A pick still running after the account already fits (it named more than it had to): say it runs.
   if (!planCleanup && choice && choiceApplies(account, choice)) {
-    const room = roomOf(env, account, computers, choice.planId);
+    const room = roomOf(env, account, choice.planId);
     planCleanup = {
       planId: choice.planId,
       computers: [],
       choices: [],
       usedGb: countedDiskGb(computers),
-      limitGb: room.limitGb,
+      limitGb: room.diskCapGb,
       computerCount: computers.length,
       computerLimit: room.computerLimit,
       startsAt: choice.planId === inForce ? null : account.period_end,
@@ -334,9 +343,9 @@ export function checkPlanCleanupPick(env: CloudEnv, account: AccountRow, compute
   }
   const picked = new Set(pick.instanceIds);
   const rest = computers.filter((computer) => !picked.has(computer.instance_id));
-  const room = roomOf(env, account, computers, planId);
+  const room = roomOf(env, account, planId);
   if (!fitsRoom(room, rest)) {
-    const still = planCleanupSentence({ planId, usedGb: countedDiskGb(rest), limitGb: room.limitGb, computerCount: rest.length, computerLimit: room.computerLimit });
+    const still = planCleanupSentence({ planId, usedGb: countedDiskGb(rest), limitGb: room.diskCapGb, computerCount: rest.length, computerLimit: room.computerLimit });
     return { ok: false, code: "cleanup_does_not_fit", message: `Without those, ${still.charAt(0).toLowerCase()}${still.slice(1)} Pick more computers.` };
   }
   return { ok: true, instanceIds: pick.instanceIds };
@@ -491,6 +500,9 @@ export async function runPlanCleanupPicks(env: CloudEnv, provider: CloudProvider
       // An account ADE Cloud no longer lets in is left as it is.
       if (!cloudAccessAllows(env, account.user_id)) continue;
       if (!choiceApplies(account, choice)) {
+        // A pick made with a downgrade can land before the plan change is saved
+        // (a failed save waits for Stripe's webhook): give it time to catch up.
+        if (now - choice.at < PICK_SETTLE_MS) continue;
         if (await clearChoice(env, account)) logCloud("cloud.plan_cleanup_pick_dropped", { userId: account.user_id, plan: choice.planId });
         continue;
       }
@@ -597,7 +609,13 @@ async function stillPicked(env: CloudEnv, userId: string, instanceId: string, ch
   if (!cloudAccessAllows(env, userId)) return false;
   const account = await env.DB.prepare("select * from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<AccountRow>();
   const current = account ? choiceOf(account) : null;
-  return account != null && current != null && current.at === choice.at && current.instanceIds.includes(instanceId) && choiceApplies(account, current);
+  if (!(account != null && current != null && current.at === choice.at && current.instanceIds.includes(instanceId) && choiceApplies(account, current))) return false;
+  // A move that began after the run's snapshot carries this computer's files: deleting it would cut the move short.
+  const moving = await env.DB.prepare(
+    "select 1 as busy from cloud_computers where deleted_at is null and (moving_from = ? or (instance_id = ? and moving_from is not null)) limit 1",
+  ).bind(instanceId, instanceId).first();
+  if (moving) logCloud("cloud.plan_cleanup_skip_moving", { userId, instanceId });
+  return moving == null;
 }
 
 /** Codes for a person's own unpushed work: normal, and not ADE's to fix. */
