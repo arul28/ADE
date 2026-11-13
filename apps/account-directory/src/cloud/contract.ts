@@ -22,6 +22,7 @@
  *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
  *   POST   /cloud/instances/:id/disk-usage     { ok: true }   (from the computer: CloudDiskUsageReport)
  *   POST   /cloud/instances/:id/cpu-report     { ok: true }   (from the computer: CloudSustainedCpuReport)
+ *   POST   /cloud/instances/:id/keep           { ok: true }   "Keep it": restarts the idle cleanup clock with no wake
  *   POST   /cloud/instances/:id/resize         { status }
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
@@ -209,10 +210,13 @@ export type CloudLaneWithoutComputer = {
   branchRef: string | null;
   /**
    * `freed`: the person kept the lane on a fresh computer. `inactive`: the
-   * 30-day rule removed its computer. `plan_limit`: the person had ADE free it
-   * to fit a cheaper plan (`planCleanup.ts`), its work pushed first unless they said not to.
+   * old 30-day rule removed its computer. `idle_cleanup`: the idle cleanup
+   * removed it after its work was committed and pushed to the lane's branch
+   * (`idleCleanup.ts`). `plan_limit`: the person had ADE free it to fit a
+   * cheaper plan (`planCleanup.ts`), its work pushed first unless they said
+   * not to. An older ADE shows an unknown reason as a removed computer.
    */
-  reason: "freed" | "inactive" | "plan_limit";
+  reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit";
   /** The size the old computer had. */
   type: "default" | "vm";
   cpu: number;
@@ -300,8 +304,49 @@ export type CloudDiskUsage = { measuredAt: number; totalGb: number; items: Cloud
  * when it last did work, and a new measure when it took one (at most every
  * few hours). Most `CLOUD_DISK_USAGE_MAX_ITEMS` items.
  */
-export type CloudDiskUsageReport = { lastActiveAt: number | null; usage: CloudDiskUsage | null; work?: CloudLaneWork | null };
+export type CloudDiskUsageReport = {
+  lastActiveAt: number | null;
+  usage: CloudDiskUsage | null;
+  work?: CloudLaneWork | null;
+  /** Files git ignores that a delete would lose; an older brain leaves it out. */
+  ignored?: CloudIgnoredFiles | null;
+};
 export const CLOUD_DISK_USAGE_MAX_ITEMS = 12;
+
+/**
+ * Files git ignores in the computer's lanes (`.env`, a local database): the
+ * idle cleanup's save never pushes them, so a delete loses them. The brain
+ * reads them at its idle step, while it is awake anyway. `paths` are the
+ * first `CLOUD_IGNORED_FILES_MAX_PATHS` (a folder ends in `/`), `more` counts
+ * the rest. Folders that come back with a build or an install
+ * (`node_modules`, `dist`) are left out and only counted in `rebuildable`.
+ */
+export type CloudIgnoredFiles = { checkedAt: number; paths: string[]; more: number; rebuildable: number };
+export const CLOUD_IGNORED_FILES_MAX_PATHS = 10;
+
+/**
+ * A computer the idle cleanup will delete (`idleCleanup.ts`): unused for 2
+ * days on the free plan (deleted at 3), 7 days on a paid one (deleted at 10).
+ * Before the delete ADE commits its work and pushes it to the lane's own
+ * branch. `held`: that save didn't go through, so ADE kept the computer and
+ * tries again at `deletesAt`. Older servers send only `instanceId`, `name`
+ * and `deletesAt`.
+ */
+export type CloudIdleCleanupEntry = {
+  instanceId: string;
+  name: string | null;
+  deletesAt: number;
+  laneName?: string | null;
+  /** The lane's branch the work goes to, when ADE knows it. */
+  branch?: string | null;
+  /** When the warning went out. */
+  warnedAt?: number | null;
+  /** The plan's rule: deleted after this many days unused. */
+  idleDays?: number;
+  /** Null before the computer first reported them. */
+  ignoredFiles?: CloudIgnoredFiles | null;
+  held?: { at: number; reason: string } | null;
+};
 
 /** The update channel a computer follows. A client's `alpha` counts as `beta`. */
 export type CloudUpdateChannel = "stable" | "beta";
@@ -454,8 +499,8 @@ export type CloudAccountState = {
    * "your hours last until" estimate. Older servers leave it out.
    */
   recentUse?: { days: number; usedMilli: number };
-  /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
-  dueForDeletion: Array<{ instanceId: string; name: string | null; deletesAt: number }>;
+  /** Computers the idle cleanup warned about, soonest first; each is deleted at `deletesAt` unless used or kept. */
+  dueForDeletion: CloudIdleCleanupEntry[];
   /** Computers deleted in the last 90 days that had any use, whose ADE rows may still be on the account. */
   deletedInstanceIds: string[];
   catalog: CloudCatalog;
@@ -750,6 +795,44 @@ export function timedWakesCancelledSentence(notice: Pick<CloudTimedWakesCancelle
 
 /** Each plan's name inside a sentence ("To fit the free plan", "Plus allows ..."): the server's emails and ADE say the same. */
 export const CLOUD_PLAN_SENTENCE_NAMES: Readonly<Record<CloudPlanId, string>> = { free: "the free plan", plus: "Plus", pro: "Pro", max: "Max" };
+
+/** ".env, data.db and 3 more": the ignored files a delete loses, or null when none were found. */
+export function ignoredFilesList(ignored: Pick<CloudIgnoredFiles, "paths" | "more">): string | null {
+  if (!ignored.paths.length) return ignored.more > 0 ? `${ignored.more} ${ignored.more === 1 ? "file" : "files"}` : null;
+  const shown = ignored.paths.join(", ");
+  return ignored.more > 0 ? `${shown} and ${ignored.more} more` : shown;
+}
+
+/**
+ * What the idle cleanup's warning says about files git ignores, the same in
+ * ADE and in the emails: which ones won't be kept, that there are none, or
+ * that the computer hasn't said yet.
+ */
+export function ignoredFilesSentence(ignored: CloudIgnoredFiles | null | undefined): string {
+  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept.";
+  const list = ignoredFilesList(ignored);
+  const builds = ignored.rebuildable > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : "";
+  if (!list) return `No files that git ignores were found on it.${builds}`;
+  return `Files git ignores are never pushed, so these won't be kept: ${list}.${builds}`;
+}
+
+/** "deleted in 1 day", "deleted in 3 days", "deleted in 5 hours": how far away a delete is. */
+export function idleCleanupWhen(deletesAt: number, now: number): string {
+  const left = Math.max(0, deletesAt - now);
+  const hours = Math.round(left / 3_600_000);
+  if (hours < 1) return "deleted within the hour";
+  if (hours < 20) return `deleted in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const days = Math.max(1, Math.round(left / 86_400_000));
+  return `deleted in ${days} ${days === 1 ? "day" : "days"}`;
+}
+
+/** What happens before the delete, in ADE and the emails. */
+export function idleCleanupSaveSentence(branch: string | null | undefined): string {
+  return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
+}
+
+/** What to do about a computer the idle cleanup kept because its work couldn't be saved. */
+export const IDLE_CLEANUP_HELD_NEXT = "Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again in a day.";
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
 export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {

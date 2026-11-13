@@ -41,10 +41,11 @@ export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: 
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
-async function pushLane(runtime: Pick<AdeRuntime, "gitService">, laneId: string, dirty: boolean): Promise<void> {
+async function pushLane(runtime: Pick<AdeRuntime, "gitService">, laneId: string, dirty: boolean, message: string): Promise<void> {
   if (dirty) {
+    // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
     await runtime.gitService.stageAll({ laneId, paths: [] });
-    await runtime.gitService.commit({ laneId, message: COMMIT_MESSAGE });
+    await runtime.gitService.commit({ laneId, message });
   }
   await runtime.gitService.push({ laneId });
 }
@@ -58,8 +59,11 @@ export async function pushCloudComputerWork(args: {
    * way: deleting or freeing the computer takes their work too.
    */
   check?: boolean;
+  /** The commit message for uncommitted work (the server's idle cleanup sends its own); ADE's default otherwise. */
+  message?: string | null;
   logger?: Logger;
 }): Promise<CloudPushWorkResult> {
+  const message = args.message?.trim() || COMMIT_MESSAGE;
   const tally: CloudPushWorkResult = { readsRemotes: true, pushed: 0, failed: 0, skipped: 0, lanes: [] };
   for (const load of args.projects) {
     try {
@@ -115,7 +119,7 @@ export async function pushCloudComputerWork(args: {
           continue;
         }
         try {
-          await pushLane(runtime, lane.id, dirty);
+          await pushLane(runtime, lane.id, dirty, message);
           entry.state = "pushed";
           tally.pushed += 1;
         } catch (error) {

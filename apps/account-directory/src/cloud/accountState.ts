@@ -3,23 +3,21 @@ import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import { freePlanOf } from "./freePlan";
 import { freePlanGithubOf } from "./freePlanGithub";
+import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
 import { AWAKE_COMPUTER_CAP, CENT_MICROS, cloudCatalog, isMeteredStatus } from "./plans";
 import { readSummaryRow, referralSummary } from "./referrals";
 import {
-  DELETION_WARNING_LATE_MS,
   accountRules,
   boughtPlanIdOf,
   cloudOffers,
   countedDiskGb,
-  deletionDueAt,
   earnedDrawMilli,
   earnedLeftMilli,
   extraActive,
   extraDiskMicrosThisPeriod,
   extraUsedMilli,
   hoursState,
-  isPendingId,
   listComputers,
   liveUsedMilli,
   loadAccount,
@@ -28,7 +26,6 @@ import {
   reportCloudFailure,
   type AccountRow,
   type CloudEnv,
-  type ComputerRow,
 } from "./store";
 
 /**
@@ -84,12 +81,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   const diskUsed = countedDiskGb(computers);
   const offers = cloudOffers(env);
   const extraDiskMicros = offers.extraDisk && rules === "paid" && account.extra_disk_state === "on" ? await extraDiskMicrosThisPeriod(env, account) : 0;
-  const due = computers
-    .filter((computer) => !isPendingId(computer.instance_id))
-    .map((computer) => ({ computer, deletesAt: deletionDueAt(computer, account, live) }))
-    .filter((entry): entry is { computer: ComputerRow; deletesAt: number } => entry.deletesAt != null && entry.deletesAt - now <= DELETION_WARNING_LATE_MS)
-    .sort((a, b) => a.deletesAt - b.deletesAt)
-    .map(({ computer, deletesAt }) => ({ instanceId: computer.instance_id, name: computer.name, deletesAt }));
+  // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
+  const due = idleCleanupEntries(account, computers, live, now);
   return {
     plan: account.plan,
     rules,

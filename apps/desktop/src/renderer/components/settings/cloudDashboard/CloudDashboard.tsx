@@ -36,6 +36,7 @@ import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
+import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
@@ -248,6 +249,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
       <PlanNotices account={account} onChanged={refresh} />
+      <CloudIdleCleanupNotices account={account} now={now} onChanged={refresh} />
       {!overPlan && diskShare >= CLOUD_DISK_WARN_SHARE ? (
         <Banner
           layout="inline"
@@ -456,7 +458,7 @@ function EmptyPlot() {
 
 function laneAria(lane: DashLane, now: number): string {
   if (lane.state === "none") return `${lane.name}, no computer now`;
-  return [lane.name, lane.noLane ? "no lane" : null, lane.tier?.label, formatCloudGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
+  return [lane.name, lane.idle ? idleRowTag(lane.idle, now).label.toLowerCase() : null, lane.noLane ? "no lane" : null, lane.tier?.label, formatCloudGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
     .filter(Boolean)
     .join(", ");
 }
@@ -466,6 +468,7 @@ function laneDetail(lane: DashLane, now: number): string[] {
   return [
     [lane.tier?.label, lane.rateLabel, formatCloudGb(lane.diskGb)].filter(Boolean).join(", "),
     `${STATE_LABEL[lane.state]}, ${lastRunText(lane, now).toLowerCase()}`,
+    ...(lane.idle ? [idleRowTag(lane.idle, now).title] : []),
     ...(lane.noLane ? ["No lane on this computer"] : []),
     ...(lane.old ? ["Not used for a long time"] : []),
   ];
@@ -546,8 +549,9 @@ function LaneTable({
               <span className="adecd-name">
                 {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <span className="adecd-name-text">{lane.name}</span>
-                {/* One mark at most, so the name keeps its room: no lane, then unused, then safe to delete. */}
-                {lane.noLane ? <span className="kit-tag">No lane</span>
+                {/* One mark at most, so the name keeps its room: the idle cleanup's warning, no lane, then unused, then safe to delete. */}
+                {lane.idle ? <IdleTag lane={lane} now={now} />
+                  : lane.noLane ? <span className="kit-tag">No lane</span>
                   : lane.old ? <span className="kit-tag" data-tone="warn" title={lane.safe ? "Not used for a long time. Its pull request is merged and nothing is unpushed." : "Not used for a long time"}>Unused</span>
                   : lane.safe ? <span className="kit-tag" data-tone="ok" title="Its pull request is merged and nothing is unpushed">Safe to delete</span>
                   : null}
@@ -623,6 +627,13 @@ function laneMenuActions(lane: DashLane, args: {
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/** The idle cleanup's mark on a lane row: when it is deleted, or that ADE kept it after a failed save. */
+function IdleTag({ lane, now }: { lane: DashLane; now: number }) {
+  if (!lane.idle) return null;
+  const tag = idleRowTag(lane.idle, now);
+  return <span className="kit-tag" data-tone="warn" title={tag.title}>{tag.label}</span>;
+}
 
 /** What a row's State cell says while its lane changes size or is deleted. */
 type RowStatus = { state: "starting" | "failed" | "awake"; label: string; title: string | null };

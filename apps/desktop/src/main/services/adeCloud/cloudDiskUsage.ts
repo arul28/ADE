@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CLOUD_DISK_USAGE_MAX_ITEMS } from "../../../../../account-directory/src/cloud/contract";
-import type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageReport, CloudLaneWork } from "../../../shared/adeCloud";
+import type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageReport, CloudIgnoredFiles, CloudLaneWork } from "../../../shared/adeCloud";
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { resolveToolsRootLayout } from "../../../../../ade-cli/src/services/tools/paths";
 
@@ -253,8 +253,8 @@ export async function clearCloudDiskCaches(input: { home?: string; run?: Run } =
 }
 
 /**
- * The idle step's report: the last work always, a new measure when the last
- * is older than `CLOUD_DISK_MEASURE_EVERY_MS`. The time of the last measure
+ * The idle step's report: the last work and the files git ignores always, a
+ * new measure when the last is older than `CLOUD_DISK_MEASURE_EVERY_MS`. The time of the last measure
  * is kept in `stateFile`, so a restart doesn't measure again at once.
  */
 export function createCloudDiskUsageReporter(deps: {
@@ -266,6 +266,8 @@ export function createCloudDiskUsageReporter(deps: {
   send: (report: CloudDiskUsageReport) => Promise<void>;
   /** Its lanes' work now (git status and the pull request, no network); null when it can't say. */
   readWork?: () => Promise<CloudLaneWork | null>;
+  /** The files git ignores that a delete would lose (the idle cleanup lists them); null when it can't say. */
+  readIgnored?: () => Promise<CloudIgnoredFiles | null>;
   measure?: typeof measureCloudDisk;
   now?: () => number;
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
@@ -303,7 +305,11 @@ export function createCloudDiskUsageReporter(deps: {
         deps.logger?.warn("cloud.lane_work_read_failed", { error: error instanceof Error ? error.message : String(error) });
         return null;
       }) ?? null;
-      await deps.send({ lastActiveAt, usage, work });
+      const ignored = await deps.readIgnored?.().catch((error: unknown) => {
+        deps.logger?.warn("cloud.ignored_files_read_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }) ?? null;
+      await deps.send({ lastActiveAt, usage, work, ...(ignored ? { ignored } : {}) });
       if (usage) {
         forceNext = false;
         try {

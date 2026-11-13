@@ -1,13 +1,15 @@
 /**
  * What an ADE Cloud computer's brain tells ADE Cloud about itself at its idle
  * step (`ade serve`, wired in `runServe`): its lanes' work for the dashboard
- * (unpushed work, the pull request's state), its disk use, an update when it
- * is idle and behind its channel, that it booted, and hours near full CPU
- * with no chat turn running.
+ * (unpushed work, the pull request's state), its disk use, the files git
+ * ignores that a delete would lose (the idle cleanup's warning lists them),
+ * an update when it is idle and behind its channel, that it booted, and hours
+ * near full CPU with no chat turn running.
  */
 
 import type { CloudBrainAccess } from "../../../../desktop/src/main/services/adeCloud/cloudBrainAccess";
-import type { CloudDiskUsageReport, CloudSustainedCpuReport } from "../../../../desktop/src/shared/adeCloud";
+import type { CloudDiskUsageReport, CloudIgnoredFiles, CloudSustainedCpuReport } from "../../../../desktop/src/shared/adeCloud";
+import { readCloudIgnoredFiles } from "./cloudIgnoredFiles";
 import type { ProjectScopeRegistry } from "../projects/projectScope";
 import type { ProjectRegistry } from "../projects/projectRegistry";
 
@@ -26,16 +28,20 @@ export function createCloudComputerReports(deps: {
   scopeRegistry: () => Pick<ProjectScopeRegistry, "getIfBooted">;
   getCloudBrainAccess: () => Promise<CloudBrainAccess>;
   version: string;
+  logger?: { warn(event: string, data?: unknown): void };
 }) {
   const { instanceId, projectRegistry, getCloudBrainAccess } = deps;
   let updateRetryAt = 0;
+  // Only projects already open: the idle step never boots one to look.
+  const bootedRuntimes = async () => {
+    const scopeRegistry = deps.scopeRegistry();
+    return (await Promise.all(projectRegistry.list().map(async (record) =>
+      (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null)))
+      .filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+  };
   return {
-    // Only projects already open: the idle step never boots one to look.
     readWork: async () => {
-      const scopeRegistry = deps.scopeRegistry();
-      const runtimes = (await Promise.all(projectRegistry.list().map(async (record) =>
-        (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null)))
-        .filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+      const runtimes = await bootedRuntimes();
       if (!runtimes.length) return null;
       let unpushed = false;
       let prState: "draft" | "open" | "merged" | "closed" | null = null;
@@ -46,6 +52,16 @@ export function createCloudComputerReports(deps: {
         }
       }
       return { checkedAt: Date.now(), unpushed, prState };
+    },
+    /** Every open lane's files git ignores, summed up; null when no lane could be read. */
+    readIgnored: async (): Promise<CloudIgnoredFiles | null> => {
+      const lanes = [];
+      for (const runtime of await bootedRuntimes()) {
+        for (const lane of await runtime.laneService.list({ includeArchived: false, includeStatus: false })) {
+          if (lane.worktreePath) lanes.push({ laneName: lane.name, worktreePath: lane.worktreePath });
+        }
+      }
+      return lanes.length ? await readCloudIgnoredFiles(lanes, { logger: deps.logger }) : null;
     },
     send: async (report: CloudDiskUsageReport) => {
       const client = await (await getCloudBrainAccess()).client();

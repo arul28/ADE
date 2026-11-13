@@ -1202,6 +1202,7 @@ export const IPC = {
   cloudOpenFreeUnlock: "ade.cloud.openFreeUnlock",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
+  cloudKeepIdleComputer: "ade.cloud.keepIdleComputer",
   /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
   cloudLaneLifeCall: "ade.cloud.laneLife.call",
   /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */

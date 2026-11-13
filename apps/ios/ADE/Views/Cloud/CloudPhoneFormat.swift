@@ -114,6 +114,45 @@ func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String
   return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
 }
 
+/// "deleted in 1 day", "deleted in 5 hours" (`idleCleanupWhen`).
+func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
+  let left = max(0, deletesAt - now)
+  let hours = Int((left / 3_600_000).rounded())
+  if hours < 1 { return "deleted within the hour" }
+  if hours < 20 { return "deleted in \(hours) \(hours == 1 ? "hour" : "hours")" }
+  let days = max(1, Int((left / 86_400_000).rounded()))
+  return "deleted in \(days) \(days == 1 ? "day" : "days")"
+}
+
+/// What the warning says about files git ignores (`ignoredFilesSentence`).
+func cloudIgnoredFilesSentence(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
+  guard let ignored else {
+    return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept."
+  }
+  let builds = (ignored.rebuildable ?? 0) > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : ""
+  let list: String?
+  if ignored.paths.isEmpty {
+    list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
+  } else {
+    let shown = ignored.paths.joined(separator: ", ")
+    list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
+  }
+  guard let list else { return "No files that git ignores were found on it.\(builds)" }
+  return "Files git ignores are never pushed, so these won't be kept: \(list).\(builds)"
+}
+
+/// One idle cleanup notice on the phone, in the desktop's words, with how to
+/// keep it from here (send a message in the lane) since "Keep it" is on the desktop.
+func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
+  let name = entry.displayName
+  if let held = entry.held {
+    return "ADE didn't delete \(name): its work couldn't be saved. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again in a day."
+  }
+  let branch = entry.branch.map { "the lane's branch, \($0)," } ?? "the lane's branch"
+  let days = entry.idleDays.map { " after \($0) days unused" } ?? " because it isn't used"
+  return "\(name) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)) (\(cloudDate(entry.deletesAt)))\(days). Before that, ADE commits its work and pushes it to \(branch) on GitHub; the lane and its chats stay. \(cloudIgnoredFilesSentence(entry.ignoredFiles)) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
+}
+
 /// Why timed wake-ups were cancelled and how they come back
 /// (`timedWakesCancelledSentence`), in the phone's own words: what the person
 /// can do that isn't a purchase (App Store 3.1.1). `resetsAt` is when the

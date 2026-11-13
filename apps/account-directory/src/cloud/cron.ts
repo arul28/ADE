@@ -1,8 +1,8 @@
-import { captureCloudAction, captureCloudDay, type CloudWaitUntil } from "./analytics";
+import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { sendCloudEmail } from "./email";
-import { laneFactsOf, laneFactsOfRow, laneFactsStatement, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
+import { laneFactsStatement } from "./lanesWithoutComputer";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { AWAKE_COMPUTER_CAP, cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
@@ -11,12 +11,10 @@ import { runPlanLimitChecks } from "./planCleanup";
 import { computersJoiningLaunches } from "./launches";
 import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
-  DELETION_WARNING_LATE_MS,
   PENDING_TIMEOUT_MS,
   adoptionStatements,
   countedDiskGb,
   deleteComputer,
-  deletionDueAt,
   diskDayStatement,
   freePlanOverDisk,
   goneFromProviderStatements,
@@ -62,7 +60,6 @@ const GONE_CHECKS_PER_TICK = 5;
 /** Daily work waits for the provider's compute meter to land. */
 const DAILY_AFTER_HOUR_UTC = 2;
 const RECONCILE_DAYS_BEHIND = 3;
-const DELETION_BATCH = 25;
 /** Most accounts one tick starts a new period for; the rest wait for the next minute. */
 const PERIOD_ROLLS_PER_TICK = 200;
 /** How long a daily run holds its claim, so overlapping ticks don't both run it. */
@@ -485,7 +482,7 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     await sendCloudEmail(env, { owner: true, subject: "ADE Cloud minutes the power log can't explain", text: lines.join("\n") });
   }
   const yesterday = utcDay(Date.parse(`${today}T00:00:00Z`) - 86_400_000);
-  // Each step stands alone: one failing must not cost the 30-day sweep or the day's mark.
+  // Each step stands alone: one failing must not cost the others or the day's mark.
   const step = async (name: string, run: () => Promise<void>) => {
     try {
       await run();
@@ -500,7 +497,6 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
   });
   await step("cost_report", () => runDailyCostReport(env, yesterday, overLimit));
   await step("analytics", () => captureDailyAnalytics(env, waitUntil, computers, yesterday));
-  await sweepInactive(env, provider, computers, now, waitUntil);
   await writeSetting(env, "last_daily_day", today, now);
 }
 
@@ -626,93 +622,4 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
     if (statements.length) await env.DB.batch(statements);
   }
   return unexplained;
-}
-
-/** The 30-day rule: warned at 7 days and 1 day, then deleted, reading its history first. */
-async function sweepInactive(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, waitUntil: CloudWaitUntil): Promise<void> {
-  const byUser = groupByUser(computers);
-  if (byUser.size === 0) return;
-  const accounts = await accountsOf(env, byUser);
-  let deletions = 0;
-  for (const account of accounts) {
-    if (account.deleted_at != null) continue;
-    const owned = byUser.get(account.user_id) ?? [];
-    const used = liveUsedMilli(account, owned, now);
-    if (isOutOfHours(account, used)) continue;
-    for (const computer of owned) {
-      const due = deletionDueAt(computer, account, used);
-      if (due == null) continue;
-      const remaining = due - now;
-      const warnedLate = computer.delete_warned_7d_at != null;
-      if (remaining <= DELETION_WARNING_LATE_MS && !warnedLate) {
-        await warnDeletion(env, computer, "delete_warned_7d_at", 7, now);
-        computer.delete_warned_7d_at = now;
-        continue;
-      }
-      const dayMs = 24 * 60 * 60_000;
-      if (remaining <= dayMs && computer.delete_warned_1d_at == null) {
-        await warnDeletion(env, computer, "delete_warned_1d_at", 1, now);
-        computer.delete_warned_1d_at = now;
-        continue;
-      }
-      if (remaining > 0) continue;
-      // Both warnings must have had time to reach the person, even if the cron stalled.
-      if (computer.delete_warned_1d_at == null || now - computer.delete_warned_1d_at < 23 * 60 * 60_000) continue;
-      if (deletions >= DELETION_BATCH) continue;
-      deletions += 1;
-      if (await deleteInactive(env, provider, computer, now)) {
-        const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
-        captureCloudAction(env, waitUntil, account.user_id, { action: "delete", plan: planIdOf(account), origin: "system", tier: tierOf(size) }, computer.instance_id, now);
-      }
-    }
-  }
-}
-
-async function warnDeletion(env: CloudEnv, computer: TickComputer, column: "delete_warned_7d_at" | "delete_warned_1d_at", days: number, now: number): Promise<void> {
-  await env.DB.prepare(`update cloud_computers set ${column} = ? where instance_id = ?`).bind(now, computer.instance_id).run();
-  const label = computer.name ?? "A computer";
-  await sendCloudEmail(env, {
-    userId: computer.user_id,
-    subject: `${label} will be deleted in ${days === 1 ? "1 day" : `${days} days`}`,
-    text: `${label} hasn't been used in a while, so ADE Cloud will delete it. Open ADE and choose "Push all work to GitHub" to save its work first. Its lane stays, and its next message makes a new computer from what is on GitHub. Using it keeps it.`,
-  });
-}
-
-/**
- * True when the computer was deleted. A lane's computer goes, its lane stays:
- * the next send makes a new computer on its branch. The lane's facts come from
- * the row first and the live metadata second, and the row is marked before the
- * delete so its close writes the lane's row in the same batch. A read that
- * fails (not a 404) can't tell whether it holds a lane: it waits for a later
- * day. A 404 with no lane on the row deletes as before.
- */
-async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<boolean> {
-  // The list and row are from the start of the tick: someone may have opened it since.
-  let metadata: Record<string, string> | null = null;
-  try {
-    const current = await provider.getInstance(computer.instance_id);
-    if (!isRestingStatus(current.status)) return false;
-    metadata = current.metadata;
-  } catch (error) {
-    if (!(error instanceof CloudProviderError && error.status === 404)) {
-      reportCloudFailure("cloud.delete_inactive_check_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-      return false;
-    }
-  }
-  const fresh = await env.DB.prepare("select awake_since, last_awake_at, deleted_at from cloud_computers where instance_id = ?")
-    .bind(computer.instance_id).first<Pick<ComputerRow, "awake_since" | "last_awake_at" | "deleted_at">>();
-  if (!fresh || fresh.deleted_at != null || fresh.awake_since != null || fresh.last_awake_at !== computer.last_awake_at) return false;
-  const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
-  const keepsLane = namesLane(lane);
-  if (keepsLane) await markKeepLaneStatement(env, computer, lane, "inactive").run();
-  try {
-    await deleteComputer(env, provider, computer, { who: "system", reason: "inactive_30_days" }, now);
-  } catch (error) {
-    if (keepsLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
-    if (!(error instanceof CloudProviderError)) throw error;
-    reportCloudFailure("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
-    return false;
-  }
-  logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id, keptLane: keepsLane });
-  return true;
 }

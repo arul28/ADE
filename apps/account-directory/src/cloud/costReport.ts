@@ -2,6 +2,7 @@ import { pruneSignupIps, signupBurstAlarms, sustainedCpuAlarms } from "./abuseSi
 import type { ExtraDiskOverLimit } from "./billing";
 import { formatCloudCents, type CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
+import { idleCleanupReportLine } from "./idleCleanup";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
@@ -312,6 +313,11 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     reportCloudFailure("cloud.signup_ip_prune_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
   if (owner.limitUsd == null) logCloud("cloud.owner_limit_unset", { costMtdMicros: owner.costMtdMicros });
+  // A line that can't be read never costs the report.
+  const idleLine = await idleCleanupReportLine(env, day).catch((error: unknown) => {
+    reportCloudFailure("cloud.idle_cleanup_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });
   if (rows.length === 0 && alarms.length === 0) return;
 
@@ -323,6 +329,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     owner.limitUsd == null
       ? `Cost limit: not set, so nothing is refused. Estimated cost this month: ${usd(owner.costMtdMicros)}.`
       : `Cost limit: $${owner.limitUsd}. Estimated cost this month: ${usd(owner.costMtdMicros)}${owner.reached ? " (reached: new computers and disk growth are refused)" : ""}.`,
+    ...(idleLine ? [idleLine] : []),
     "",
     alarms.length ? "Alarms:" : "No alarms.",
     ...alarms,
