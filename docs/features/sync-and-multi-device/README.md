@@ -4634,9 +4634,9 @@ listener also moves back to the preferred port (normally 8787) once it frees;
 a scope's sync service does that itself every 15 s. The move back validates its
 candidate without touching the live port's status, so it cannot flap the route.
 A project host never refuses to start over a shadow
-(`sync_host.loopback_shadowed_hosting_degraded`), and a loopback-only startup
-bind where every candidate is shadowed serves degraded on the first one
-(`sync_listener.serving_degraded`) rather than not at all.
+(`sync_host.loopback_shadowed_hosting_degraded`). A loopback-only bind
+(`ADE_SYNC_BIND_HOST=127.0.0.1`) has nothing else to serve, so one whose every
+candidate is shadowed fails to bind and the startup loop retries.
 
 - **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
   even when device-registry `lastPort` is 8788. Zombie reap may terminate a

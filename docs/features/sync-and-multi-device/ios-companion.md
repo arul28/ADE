@@ -2838,10 +2838,13 @@ the install on its own line ("ADE Beta", or the home path for a dev install),
 so several installs on one Mac read apart. After a failed connect the row's
 status line turns into a one-line "Couldn't connect" and its button into Retry;
 the full explanation lives on the machine's page, which shows one status and
-one primary action. When the relay closes with 4501, 4507 or 4509, the phone
-reached the computer's relay connection but ADE on it did not answer, and the
-copy says exactly that (`syncRelayHostDidNotAnswerMessage`); the close code is
-carried on the connect error for that purpose and recovery is unchanged.
+one primary action. When the relay closes with 4507 (the computer's bridge
+refused the tunnel), the phone reached the computer's relay connection but ADE
+on it did not answer, and the copy says exactly that
+(`syncRelayHostDidNotAnswerMessage`); the close code is carried on the connect
+error for that purpose and recovery is unchanged. 4501 (no host connection at
+the relay: asleep or offline) and 4509 (which the relay can also send) keep
+the route-neutral copy.
 
 A Bonjour advertisement belongs to a saved machine by **device id first**
 (`matchesDiscoveredHost`, the PIN sheet's `latestDiscoveredHost`): every ADE

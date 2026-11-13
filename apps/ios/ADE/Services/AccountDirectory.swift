@@ -219,28 +219,28 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// Rename fields and name matching keep using `displayName`.
   var rowLabel: String {
     guard let installLabel else { return displayName }
-    let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let custom, !custom.isEmpty { return "\(custom) · \(installLabel)" }
-    let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let suffix = channel?.nameSuffix ?? ""
-    let base = !suffix.isEmpty && reported.hasSuffix(suffix)
-      ? String(reported.dropLast(suffix.count))
-      : reported
+    let base = baseComputerName
     return base.isEmpty ? installLabel : "\(base) · \(installLabel)"
   }
 
   /// The computer half of `rowLabel` ("MacBook Pro"), for rows that show the
   /// install on its own line so several installs on one computer stay apart.
-  /// Same suffix rule as `rowLabel`; falls back to `displayName`.
+  /// Falls back to `displayName`.
   var rowComputerName: String {
     guard installLabel != nil else { return displayName }
+    let base = baseComputerName
+    return base.isEmpty ? displayName : base
+  }
+
+  /// The computer's own name: the custom name, else the reported one without
+  /// its channel suffix (" (Beta)"). Empty when neither is known.
+  private var baseComputerName: String {
     if let custom = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty { return custom }
     let reported = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let suffix = channel?.nameSuffix ?? ""
-    let base = !suffix.isEmpty && reported.hasSuffix(suffix)
+    return !suffix.isEmpty && reported.hasSuffix(suffix)
       ? String(reported.dropLast(suffix.count))
       : reported
-    return base.isEmpty ? displayName : base
   }
 
   /// The endpoint we'd prefer to connect through: a direct LAN route first, then

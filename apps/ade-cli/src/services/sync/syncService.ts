@@ -1209,24 +1209,14 @@ export function createSyncService(args: SyncServiceArgs) {
     const currentPort = listener.getPort();
     if (currentPort == null || currentPort === DEFAULT_SYNC_HOST_PORT) return;
     try {
+      // A successful move announces itself through the listener's
+      // onPortChanged, which updates everything that advertises the port.
       const migrated = await listener.tryMigrateToPort(DEFAULT_SYNC_HOST_PORT);
       // Migration awaits a bind + close; dispose can land during that window.
       if (disposed) return;
       if (migrated !== DEFAULT_SYNC_HOST_PORT) {
         scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
-        return;
       }
-      hostSingletonLease?.updatePort(migrated);
-      deviceRegistryService.touchLocalDevice({
-        lastSeenAt: nowIso(),
-        lastPort: migrated,
-      });
-      args.logger.warn("sync_listener.port_drifted", {
-        from: currentPort,
-        to: migrated,
-      });
-      hostService?.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
-      void args.requestAccountMachinePublish?.();
     } catch (error) {
       args.logger.debug("sync_listener.canonical_port_migrate_failed", {
         error: error instanceof Error ? error.message : String(error),

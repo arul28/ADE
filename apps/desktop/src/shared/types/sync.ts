@@ -828,10 +828,17 @@ export type SyncRouteHealth = {
     reason: string | null;
     lastSuccessAt: string | null;
     /**
-     * Program name of another process holding 127.0.0.1:<port> when the last
-     * loopback check failed (e.g. "workerd"); never a path or arguments.
+     * Program name of another process holding 127.0.0.1:<port> (e.g.
+     * "workerd"); never a path or arguments. Also set while a side door
+     * answers in its place.
      */
     shadowedBy?: string | null;
+    /**
+     * Where 127.0.0.1 reaches ADE: `port` itself, or the local side door ADE
+     * opened while another program holds 127.0.0.1:<port>. With a side door,
+     * `loopbackAdeValidated` means "some local route answers as ADE".
+     */
+    loopbackPort?: number | null;
   };
   tailscale: {
     enabled: boolean;

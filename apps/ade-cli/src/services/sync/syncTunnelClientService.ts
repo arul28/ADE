@@ -611,6 +611,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   } | null = null;
   let selfProbeSocket: WebSocket | null = null;
   const tunnels = new Set<Tunnel>();
+  // A handed-over relay pipe belongs to the sync host, which detaches every
+  // close/error listener from a peer socket when it hands peers to the next
+  // project host; the tunnel's own close handler can go with them. Count and
+  // keep only pipes that are still open, whatever their listeners.
+  const pruneClosedTunnels = (): number => {
+    for (const tunnel of tunnels) {
+      if (tunnel.local == null && tunnel.ready && tunnel.pipe.readyState === WebSocket.CLOSED) {
+        tunnels.delete(tunnel);
+      }
+    }
+    return tunnels.size;
+  };
   const pendingBridgeOpens = new Set<PendingBridgeOpen>();
   const controlSocketStates = new WeakMap<WebSocket, ControlSocketState>();
   const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
@@ -1549,6 +1561,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     failedTunnel?: Tunnel,
     source: BridgeOpenFailureSource = "bridge-open",
   ): void => {
+    pruneClosedTunnels();
     const hasReadyBridge = source === "bridge-open" && [...tunnels].some(
       (tunnel) => tunnel !== failedTunnel && tunnel.ready && tunnel.bridgeKey === bridgeKey,
     );
@@ -1897,137 +1910,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   /**
-   * Open a relay pipe and hand it to the sync host in process. The pipe IS the
-   * peer's socket: the host reads and writes it directly, so there is no
-   * loopback hop for another program on this machine to intercept, no proof
-   * header to carry, and nothing to break when the sync port moves.
+   * Open one relay pipe and bridge it to its local leg: either the pipe IS the
+   * peer's socket, handed to the sync host in process, or it is bridged
+   * byte-for-byte to a loopback socket on the sync port. Both legs get the same
+   * ready gate, open deadlines, forwarding failure handling and close/error
+   * tails, so the two bridges cannot drift apart again.
    */
-  const openInProcessTunnel = (
-    id: MachineIdentity,
-    message: ControlOpenMessage,
-    controlSocket: WebSocket,
-    listener: TunnelHostListener,
-    open: {
-      rejectOpen: (code: number, reason: string) => void;
-      acceptOpen: () => void;
-      isSettled: () => boolean;
-    },
-  ): void => {
-    const { id: connectionId, epoch } = message;
-    const validatedKey = validatedBridgeKey;
-    if (validatedKey == null || bridgeValidationIdentity().key !== validatedKey) {
-      clearBridgeValidation();
-      recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
-      open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
-      return;
-    }
-    let pipe: WebSocket;
-    try {
-      // The host's own size limit applies to the peer exactly as it does on
-      // a direct socket.
-      pipe = createWebSocket(relayPipeUrl(id, connectionId, epoch), { maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES });
-    } catch (error) {
-      recordBridgeOpenFailure(error instanceof Error ? error.message : String(error), validatedKey);
-      open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
-      return;
-    }
-    const tunnel: Tunnel = {
-      pipe,
-      local: null,
-      connectionId,
-      controlSocket,
-      bridgeKey: validatedKey,
-      ready: false,
-    };
-    tunnels.add(tunnel);
-    let bridgeFailureReported = false;
-    const reportBridgeFailure = (reason: string): void => {
-      if (tunnel.ready || bridgeFailureReported) return;
-      bridgeFailureReported = true;
-      recordBridgeOpenFailure(reason, validatedKey, tunnel);
-    };
-    const closePipe = (code: number, reason: string): void => {
-      if (!tunnels.delete(tunnel)) return;
-      safeCloseWebSocket(pipe, applicationCloseCode(code), sanitizedCloseReason(reason, "partner closed"));
-      log.debug?.("sync_tunnel.closed", { connectionId, code });
-    };
-    const handOff = (): void => {
-      if (open.isSettled() || tunnel.ready) return;
-      if (control !== controlSocket || !accountSignedIn()) {
-        open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
-        closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
-        return;
-      }
-      if (validatedBridgeKey !== validatedKey || bridgeValidationIdentity().key !== validatedKey) {
-        clearBridgeValidation();
-        recordFailure("Relay bridge refused because the ADE sync listener changed before readiness.");
-        open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
-        closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
-        return;
-      }
-      // The host owns the socket before the relay is told it is ready, and
-      // in the same tick as `open`, so no frame can arrive unowned.
-      let accepted = false;
-      try {
-        accepted = listener.acceptRelayPipe?.(pipe, { path: relayPipeLocalPath(message) || null }) === true;
-      } catch (error) {
-        log.warn?.("sync_tunnel.in_process_handoff_failed", {
-          connectionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      if (!accepted) {
-        reportBridgeFailure("host sync listener unavailable");
-        open.rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
-        closePipe(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
-        return;
-      }
-      if (epoch) {
-        const sent = sendControlReady(controlSocket, connectionId, epoch, () => {
-          open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
-          closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
-        });
-        if (!sent) {
-          open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
-          closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
-          return;
-        }
-      }
-      tunnel.ready = true;
-      clearBridgeOpenFailure(validatedKey, "bridge-open");
-      open.acceptOpen();
-      log.debug?.("sync_tunnel.ready", {
-        connectionId,
-        epoch: epoch ?? null,
-        transportMode: epoch ? "epoch" : "legacy",
-        inProcess: true,
-      });
-    };
-
-    armOpenDeadline(pipe, () => {
-      reportBridgeFailure("relay pipe connect timed out");
-      open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
-    });
-    pipe.on("open", handOff);
-    pipe.on("close", (code: number) => {
-      if (!tunnel.ready) {
-        open.rejectOpen(applicationCloseCode(code, RELAY_CLOSE_BRIDGE_REJECTED), "relay pipe unavailable");
-      }
-      tunnels.delete(tunnel);
-    });
-    pipe.on("error", (error: Error) => {
-      if (!tunnel.ready) {
-        reportBridgeFailure(error.message);
-        open.rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
-      } else {
-        lastFailureAt = new Date().toISOString();
-        log.warn?.("sync_tunnel.pipe_error", { connectionId, error: error.message });
-      }
-      closePipe(RELAY_CLOSE_PARTNER_CLOSED, "relay pipe error");
-    });
-    log.debug?.("sync_tunnel.open", { connectionId, inProcess: true });
-  };
-
   const openTunnel = async (
     id: MachineIdentity,
     message: ControlOpenMessage,
@@ -2070,60 +1958,88 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       return;
     }
 
-    const inProcessHost = inProcessListener();
-    if (inProcessHost) {
-      openInProcessTunnel(id, message, controlSocket, inProcessHost, {
-        rejectOpen,
-        acceptOpen,
-        isSettled: () => settled,
-      });
-      return;
-    }
-
-    const port = validatedPort;
     const validatedKey = validatedBridgeKey;
-    if (
-      port == null
-      || validatedKey == null
-      || bridgeValidationIdentity().key !== validatedKey
-    ) {
+    const inProcessHost = inProcessListener();
+    if (validatedKey == null || bridgeValidationIdentity().key !== validatedKey) {
       clearBridgeValidation();
       recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
       rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
       return;
     }
-    const relayBridgeProof = relayBridgeProofValue();
-    if (!relayBridgeProof) {
-      clearBridgeValidation();
-      recordFailure("Relay bridge refused because the local bridge credential is unavailable.");
-      log.warn?.("sync_tunnel.no_bridge_credential", { connectionId, port });
-      rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge credential unavailable");
-      return;
-    }
-    const pipeUrl = relayPipeUrl(id, connectionId, epoch);
 
-    if (control !== controlSocket || bridgeValidationIdentity().key !== validatedKey) {
-      rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "control or listener superseded");
-      return;
-    }
-    let pipe: WebSocket | null = null;
-    let local: WebSocket | null = null;
-    try {
-      pipe = createWebSocket(pipeUrl);
-      local = createWebSocket(`ws://127.0.0.1:${String(port)}${relayPipeLocalPath(message)}`, {
-        headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof },
-      });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      recordBridgeOpenFailure(reason, validatedKey);
-      if (pipe) safeCloseWebSocket(pipe, RELAY_CLOSE_BRIDGE_REJECTED, "bridge setup failed");
-      rejectOpen(
-        pipe ? RELAY_CLOSE_HOST_UNAVAILABLE : RELAY_CLOSE_BRIDGE_REJECTED,
-        pipe ? "host sync listener unavailable" : "relay pipe unavailable",
-      );
-      return;
-    }
+    /**
+     * Dial the relay pipe both legs start from. Null means the open was
+     * rejected here.
+     */
+    const dialPipe = (options?: { maxPayload: number }): WebSocket | null => {
+      try {
+        return createWebSocket(relayPipeUrl(id, connectionId, epoch), options);
+      } catch (error) {
+        recordBridgeOpenFailure(
+          error instanceof Error ? error.message : String(error),
+          validatedKey,
+        );
+        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
+        return null;
+      }
+    };
 
+    /**
+     * In-process leg: the host reads the relay pipe itself, under its own size
+     * limit, so there is no loopback hop to intercept and no proof header.
+     */
+    const dialInProcessTunnel = (): { pipe: WebSocket; local: null } | null => {
+      const pipe = dialPipe({ maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES });
+      return pipe ? { pipe, local: null } : null;
+    };
+
+    /**
+     * Socket leg: dial the relay pipe and the loopback sync socket it is
+     * bridged to, authenticated with the bridge proof.
+     */
+    const dialLoopbackTunnel = (): { pipe: WebSocket; local: WebSocket } | null => {
+      const port = validatedPort;
+      if (port == null) {
+        clearBridgeValidation();
+        recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
+        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
+        return null;
+      }
+      const relayBridgeProof = relayBridgeProofValue();
+      if (!relayBridgeProof) {
+        clearBridgeValidation();
+        recordFailure("Relay bridge refused because the local bridge credential is unavailable.");
+        log.warn?.("sync_tunnel.no_bridge_credential", { connectionId, port });
+        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge credential unavailable");
+        return null;
+      }
+      if (control !== controlSocket || bridgeValidationIdentity().key !== validatedKey) {
+        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "control or listener superseded");
+        return null;
+      }
+      const pipe = dialPipe();
+      if (!pipe) return null;
+      try {
+        return {
+          pipe,
+          local: createWebSocket(`ws://127.0.0.1:${String(port)}${relayPipeLocalPath(message)}`, {
+            headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof },
+          }),
+        };
+      } catch (error) {
+        recordBridgeOpenFailure(
+          error instanceof Error ? error.message : String(error),
+          validatedKey,
+        );
+        safeCloseWebSocket(pipe, RELAY_CLOSE_BRIDGE_REJECTED, "bridge setup failed");
+        rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+        return null;
+      }
+    };
+
+    const dialed = inProcessHost ? dialInProcessTunnel() : dialLoopbackTunnel();
+    if (!dialed) return;
+    const { pipe, local } = dialed;
     const tunnel: Tunnel = {
       pipe,
       local,
@@ -2132,17 +2048,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       bridgeKey: validatedKey,
       ready: false,
     };
+    pruneClosedTunnels();
     tunnels.add(tunnel);
+
     let pipeOpen = false;
     let localOpen = false;
     let bridgeFailureReported = false;
-    const bridgeReady = (): boolean => pipeOpen && localOpen;
     const reportBridgeFailure = (reason: string): void => {
       if (tunnel.ready || bridgeFailureReported) return;
       bridgeFailureReported = true;
       recordBridgeOpenFailure(reason, validatedKey, tunnel);
     };
-    const closeBoth = (sourceCode: number, sourceReason: unknown): void => {
+    const closePipe = (sourceCode: number, sourceReason: unknown): void => {
       if (!tunnels.delete(tunnel)) return;
       const code = applicationCloseCode(sourceCode);
       const reason = sanitizedCloseReason(sourceReason, "partner closed");
@@ -2150,11 +2067,39 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       safeCloseWebSocket(local, code, reason);
       log.debug?.("sync_tunnel.closed", { connectionId, code });
     };
+    /**
+     * In-process leg's open: the host owns the socket before the relay is told
+     * it is ready, and in the same tick as `open`, so no frame can arrive
+     * unowned.
+     */
+    const acceptInProcessPipe = (): boolean => {
+      let accepted = false;
+      try {
+        accepted = inProcessHost?.acceptRelayPipe?.(pipe, { path: relayPipeLocalPath(message) || null }) === true;
+      } catch (error) {
+        log.warn?.("sync_tunnel.in_process_handoff_failed", {
+          connectionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (!accepted) {
+        reportBridgeFailure("host sync listener unavailable");
+        rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+        closePipe(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+      }
+      return accepted;
+    };
+    // The in-process leg is ready as soon as the pipe is; the socket leg also
+    // waits for its loopback socket. Only the in-process leg has to do anything
+    // when the pipe opens.
+    const leg: TunnelLeg = inProcessHost
+      ? { isOpen: () => true, open: acceptInProcessPipe }
+      : { isOpen: () => localOpen, open: () => true };
     const markReady = (): void => {
-      if (!bridgeReady() || settled || tunnel.ready) return;
+      if (!pipeOpen || !leg.isOpen() || settled || tunnel.ready) return;
       if (control !== controlSocket || !accountSignedIn()) {
         rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
-        closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
+        closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
         return;
       }
       if (
@@ -2164,17 +2109,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         clearBridgeValidation();
         recordFailure("Relay bridge refused because the ADE sync listener changed before readiness.");
         rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
-        closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
+        closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
         return;
       }
+      if (!leg.open()) return;
       if (epoch) {
         const sent = sendControlReady(controlSocket, connectionId, epoch, () => {
           rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
-          closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
+          closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
         });
         if (!sent) {
           rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
-          closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
+          closePipe(RELAY_CLOSE_BRIDGE_REJECTED, "relay readiness unavailable");
           return;
         }
       }
@@ -2185,6 +2131,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         connectionId,
         epoch: epoch ?? null,
         transportMode: epoch ? "epoch" : "legacy",
+        ...(local ? {} : { inProcess: true }),
       });
     };
 
@@ -2192,42 +2139,21 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       reportBridgeFailure("relay pipe connect timed out");
       rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
     });
-    armOpenDeadline(local, () => {
-      reportBridgeFailure("local sync socket connect timed out");
-      rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
-    });
-
     pipe.on("open", () => {
       pipeOpen = true;
       markReady();
     });
-    local.on("open", () => {
-      localOpen = true;
-      markReady();
-    });
-
-    // Byte-for-byte forwarding in both directions; the `isBinary` flag preserves
-    // text-vs-binary framing so the sync protocol rides through unmodified.
-    // Legacy Workers may flush an early hello before the local socket opens;
-    // keep one bounded aggregate queue. Ready-v2 Workers wait for markReady.
-    const forwardOrBuffer = makeBufferedForwarder((reason) => {
-      if (!tunnel.ready) {
-        reportBridgeFailure(reason);
-        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, reason);
-      }
-      closeBoth(RELAY_CLOSE_FORWARD_FAILED, reason);
-    });
-    pipe.on("message", (data: RawData, isBinary: boolean) => forwardOrBuffer(local, data, isBinary));
-    local.on("message", (data: RawData, isBinary: boolean) => forwardOrBuffer(pipe, data, isBinary));
     pipe.on("close", (code: number, reason: Buffer) => {
       if (!tunnel.ready) {
         rejectOpen(applicationCloseCode(code, RELAY_CLOSE_BRIDGE_REJECTED), "relay pipe unavailable");
       }
-      closeBoth(code, reason);
-    });
-    local.on("close", (code: number, reason: Buffer) => {
-      if (!tunnel.ready) rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
-      closeBoth(code, reason);
+      // The socket leg closes its loopback socket with the pipe; an in-process
+      // handoff has nothing left to close and only has to forget the tunnel.
+      if (local) {
+        closePipe(code, reason);
+      } else {
+        tunnels.delete(tunnel);
+      }
     });
     pipe.on("error", (error: Error) => {
       if (!tunnel.ready) {
@@ -2237,20 +2163,51 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         lastFailureAt = new Date().toISOString();
         log.warn?.("sync_tunnel.pipe_error", { connectionId, error: error.message });
       }
-      closeBoth(RELAY_CLOSE_PARTNER_CLOSED, "relay pipe error");
-    });
-    local.on("error", (error: Error) => {
-      if (!tunnel.ready) {
-        reportBridgeFailure(error.message);
-        rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
-      } else {
-        lastFailureAt = new Date().toISOString();
-        log.warn?.("sync_tunnel.local_error", { connectionId, error: error.message });
-      }
-      closeBoth(RELAY_CLOSE_PARTNER_CLOSED, "host sync listener error");
+      closePipe(RELAY_CLOSE_PARTNER_CLOSED, "relay pipe error");
     });
 
-    log.debug?.("sync_tunnel.open", { connectionId });
+    if (local) {
+      armOpenDeadline(local, () => {
+        reportBridgeFailure("local sync socket connect timed out");
+        rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+      });
+      local.on("open", () => {
+        localOpen = true;
+        markReady();
+      });
+      // Byte-for-byte forwarding in both directions; the `isBinary` flag preserves
+      // text-vs-binary framing so the sync protocol rides through unmodified.
+      // Legacy Workers may flush an early hello before the local socket opens;
+      // keep one bounded aggregate queue. Ready-v2 Workers wait for markReady.
+      const forwardOrBuffer = makeBufferedForwarder((reason) => {
+        if (!tunnel.ready) {
+          reportBridgeFailure(reason);
+          rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, reason);
+        }
+        closePipe(RELAY_CLOSE_FORWARD_FAILED, reason);
+      });
+      pipe.on("message", (data: RawData, isBinary: boolean) => forwardOrBuffer(local, data, isBinary));
+      local.on("message", (data: RawData, isBinary: boolean) => forwardOrBuffer(pipe, data, isBinary));
+      local.on("close", (code: number, reason: Buffer) => {
+        if (!tunnel.ready) rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+        closePipe(code, reason);
+      });
+      local.on("error", (error: Error) => {
+        if (!tunnel.ready) {
+          reportBridgeFailure(error.message);
+          rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+        } else {
+          lastFailureAt = new Date().toISOString();
+          log.warn?.("sync_tunnel.local_error", { connectionId, error: error.message });
+        }
+        closePipe(RELAY_CLOSE_PARTNER_CLOSED, "host sync listener error");
+      });
+    }
+
+    log.debug?.("sync_tunnel.open", {
+      connectionId,
+      ...(local ? {} : { inProcess: true }),
+    });
   };
 
   const closeRelayConnections = (controlReason: string): void => {
@@ -2453,7 +2410,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       // ensureListening, and validating there only records a "listener is not
       // bound" failure that doctor and Settings surface until the subscription
       // above clears it.
-      if (!stopped && listener.getPort() != null) {
+      // An in-process listener needs no port to accept relay pipes.
+      if (!stopped && (listener.getPort() != null || listener.canAcceptRelayPipes?.() === true)) {
         void validateCurrentBridge().catch(() => {});
       }
     },
@@ -2535,7 +2493,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         mcpEndpointKey: mcpEndpointKeyFor(currentIdentity),
         accountLeaseValid: eligible,
         connected: eligible && connected,
-        activeTunnels: eligible ? tunnels.size : 0,
+        activeTunnels: eligible ? pruneClosedTunnels() : 0,
         lastError: eligible ? lastError : ineligibleMessage(),
         relayTurnedOff: relayTurnedOff(),
         bridgeOpenFailure: eligible ? currentBridgeOpenFailure : null,
@@ -2583,6 +2541,23 @@ type Tunnel = {
   controlSocket: WebSocket;
   bridgeKey: string;
   ready: boolean;
+};
+
+/**
+ * The local leg of one relay pipe. Either the pipe IS the peer's socket — the
+ * in-process handoff to the sync host — or it is bridged to a loopback socket
+ * on the sync port. A leg answers only the two questions the pipe state
+ * machine asks; the deadlines, forwarding and close/error tails are shared.
+ */
+type TunnelLeg = {
+  /** True once the leg can carry traffic. */
+  isOpen(): boolean;
+  /**
+   * Take the open pipe, in the same tick as its `open` and before the relay is
+   * told ready. False means the leg refused it and has already reported the
+   * failure and rejected the open.
+   */
+  open(): boolean;
 };
 
 function captureUnexpectedResponseBody(

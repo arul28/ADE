@@ -106,16 +106,17 @@ export type SyncLoopbackValidationStatus = {
   reason: string | null;
   lastSuccessAt: string | null;
   /**
-   * Program name (never a path or arguments) of the other process found
-   * holding 127.0.0.1:<port> when the last check failed, e.g. "workerd".
-   * Null when the check passed or no holder could be named.
+   * Program name (never a path or arguments) of another process holding
+   * 127.0.0.1:<port>, e.g. "workerd". Set whenever one was found, including
+   * while a side door answers in its place (`loopbackAdeValidated` true).
    */
   shadowedBy?: string | null;
   /**
-   * Where `127.0.0.1` reaches this listener: the listener's own port, or the
-   * local-only side door it opened because another program holds
-   * `127.0.0.1:<port>`. Tailscale Serve forwards here. Null when no local
-   * route is known to answer as ADE.
+   * Where 127.0.0.1 reaches this listener: its own port, or the local-only
+   * side door it opened because another program holds `127.0.0.1:<port>`.
+   * Tailscale Serve forwards here. Null when no local route answers as ADE.
+   * With it, `loopbackAdeValidated` means "some local route answers as this
+   * listener", not only "127.0.0.1:<port> itself does".
    */
   loopbackPort?: number | null;
 };

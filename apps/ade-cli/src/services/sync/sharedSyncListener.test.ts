@@ -414,7 +414,8 @@ describe("shared sync listener upgrade policy", () => {
 
   it("names the program holding a shadowed port while it cannot move", async () => {
     const listener = createSharedSyncListener({
-      bindHost: "127.0.0.1",
+      bindHost: "0.0.0.0",
+      localAddresses: () => [],
       logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
       inspectPort: (port) => ({
         port,
@@ -435,7 +436,8 @@ describe("shared sync listener upgrade policy", () => {
       }),
     });
     try {
-      // Every candidate is shadowed: it still serves (degraded) rather than not at all.
+      // Every port is shadowed on loopback: the wildcard bind still serves
+      // LAN and relay on its port rather than not at all.
       const port = await listener.ensureListening([0]);
       await listener.healNow();
       expect(listener.getPort()).toBe(port);

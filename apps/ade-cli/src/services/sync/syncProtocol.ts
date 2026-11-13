@@ -27,6 +27,13 @@ export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
 export const SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE = 4406;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const SYNC_HOST_MAX_PORT = 8999;
+/**
+ * How many ports above a taken one the shared listener tries for a move or a
+ * local side door, before an OS-assigned (ephemeral) port.
+ */
+export const SYNC_PORT_SCAN_ABOVE = 24;
+/** Lowest port an OS hands out as ephemeral on Linux; macOS and Windows start higher. */
+export const SYNC_EPHEMERAL_PORT_FLOOR = 32_768;
 
 /**
  * Bind order for the shared sync listener.

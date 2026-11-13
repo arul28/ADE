@@ -287,14 +287,15 @@ struct SettingsPinSheet: View {
   }
 
   private func latestDiscoveredHost(matching host: DiscoveredSyncHost) -> DiscoveredSyncHost {
-    syncService.discoveredHosts.first { candidate in
-      // Device id decides when both rows carry one. Every ADE install on a
-      // computer shares its name, so a name match picked whichever install
-      // was listed first and sent the PIN to its port.
-      if let identity = syncPinTrimmedNonEmpty(host.hostIdentity),
-         let candidateIdentity = syncPinTrimmedNonEmpty(candidate.hostIdentity) {
-        return identity == candidateIdentity
-      }
+    // Device id first, across the whole list. Every ADE install on a computer
+    // shares its name, so a name match (even on a row with no id, listed
+    // earlier) picked whichever install came first and sent the PIN to its port.
+    if let identity = syncPinTrimmedNonEmpty(host.hostIdentity) {
+      return syncService.discoveredHosts.first { candidate in
+        syncPinTrimmedNonEmpty(candidate.hostIdentity) == identity
+      } ?? host
+    }
+    return syncService.discoveredHosts.first { candidate in
       if candidate.id == host.id || candidate.serviceName == host.serviceName {
         return true
       }

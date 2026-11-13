@@ -242,15 +242,21 @@ func settingsMachines(
 }
 
 /// Connected first (primary, then the rest by name), then available (online
-/// first, then by name).
+/// first, then by name). "By name" is what the row shows: the computer, then
+/// the install line under it, so installs on one computer sit together.
 func settingsMachineSections(_ machines: [SettingsMachine]) -> (connected: [SettingsMachine], available: [SettingsMachine]) {
+  func byVisibleName(_ lhs: SettingsMachine, _ rhs: SettingsMachine) -> Bool {
+    let titleOrder = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+    if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
+    return (lhs.install ?? "").localizedCaseInsensitiveCompare(rhs.install ?? "") == .orderedAscending
+  }
   let connected = machines.filter(\.isConnectedSet).sorted { lhs, rhs in
     if lhs.isPrimary != rhs.isPrimary { return lhs.isPrimary }
-    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    return byVisibleName(lhs, rhs)
   }
   let available = machines.filter { !$0.isConnectedSet }.sorted { lhs, rhs in
     if lhs.online != rhs.online { return lhs.online }
-    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    return byVisibleName(lhs, rhs)
   }
   return (connected, available)
 }

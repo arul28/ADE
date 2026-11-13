@@ -310,7 +310,7 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { adeLoopbackForwardPort, createTailnetHttpsServe, enqueueTailscaleServe } from "./tailnetHttpsServe";
 import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
@@ -576,11 +576,33 @@ export function staleAdeTailnetServePorts(
     if (!Number.isInteger(port)) continue;
     if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
     if (port === currentPort) continue;
-    const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
-    if (forward !== `127.0.0.1:${port}`) continue;
+    // ADE forwards a sync port to itself, or to the side door the listener
+    // opened while another program held 127.0.0.1:<port>.
+    if (adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward) == null) continue;
     stale.push(port);
   }
   return stale.sort((left, right) => left - right);
+}
+
+/** Sync port → the loopback port its `tailscale serve --tcp` entry forwards to. */
+export function adeTailnetServeTargets(serveStatusJson: string): Map<number, number> {
+  const targets = new Map<number, number>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return targets;
+  }
+  const tcp = (parsed as { TCP?: unknown } | null)?.TCP;
+  if (!tcp || typeof tcp !== "object") return targets;
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    const target = Number.isInteger(port)
+      ? adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward)
+      : null;
+    if (Number.isInteger(port) && target != null) targets.set(port, target);
+  }
+  return targets;
 }
 
 export function isRuntimeHostPairingRecord(
@@ -4618,7 +4640,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" })
+    void enqueueTailscaleServe(() => execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" }))
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4713,12 +4735,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const reclaimStaleTailnetServes = async (currentPort: number): Promise<void> => {
     const cli = resolveTailscaleCliPath();
     let stale: number[];
+    let serveStatusJson: string;
     try {
       const { stdout } = await execFileAsync(
         cli,
         ["serve", "status", "--json"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
+      serveStatusJson = stdout;
       stale = staleAdeTailnetServePorts(stdout, currentPort);
       // The same read answers for ADE's stale HTTPS entries.
       void tailnetHttps.reclaimStale(stdout);
@@ -4728,6 +4752,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (stale.length === 0) return;
+    // Where each entry forwards: the sync port itself, or a side door.
+    const staleTargets = adeTailnetServeTargets(serveStatusJson);
     let reclaimed = 0;
     for (const port of stale) {
       // The snapshot is stale the moment reclaiming starts: turning off a low
@@ -4746,12 +4772,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // into nothing. Probe immediately before each teardown, so the window
       // between the snapshot and this `off` is closed too.
       if (await isLocalPortServing(port)) continue;
+      const target = staleTargets.get(port);
+      if (target != null && target !== port && await isLocalPortServing(target)) continue;
       try {
-        await execFileAsync(
+        await enqueueTailscaleServe(() => execFileAsync(
           cli,
           ["serve", `--tcp=${port}`, "off"],
           { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-        );
+        ));
         reclaimed += 1;
       } catch {
         // A single stubborn entry must not stop the rest.
@@ -4817,11 +4845,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCliPath();
     try {
       // Plain per-node teardown matching the `serve --bg --tcp=<port>` form.
-      await execFileAsync(
+      await enqueueTailscaleServe(() => execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-      );
+      ));
       updateTailnetDiscoveryStatus({
         state: "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4920,9 +4948,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // 127.0.0.1:<port>, so only that route waits for loopback to answer as
     // this listener (the shared listener moves off a shadowed port by itself).
     publishLanDiscovery(port, { force: options?.forceLan });
-    if (loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated) {
+    // Read the shared listener's live verdict, not a copy: a check that
+    // finished for an older port must not unpublish the current one.
+    const localRouteReady = sharedListener
+      ? sharedListener.getPort() === port && sharedListener.getLoopbackPort() != null
+      : loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated;
+    if (localRouteReady) {
       publishTailnetDiscovery(port, { force: options?.forceTailnet });
-    } else if (tailnetServePort != null) {
+    } else if (tailnetServePort != null && (!sharedListener || sharedListener.getPort() === port)) {
       await unpublishTailnetDiscovery();
     }
   };
@@ -9586,7 +9619,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
-      return { ...loopbackValidationStatus };
+      // The shared listener owns the verdict; read it live, not a copy.
+      return sharedListener?.getLoopbackValidationStatus() ?? { ...loopbackValidationStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {

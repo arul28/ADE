@@ -402,7 +402,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       (4003, "ADE Relay account proof expired", "This saved connection needs attention. Open Settings and reconnect."),
       (4004, "pairing cooldown", "Connection attempts are paused briefly. Try again shortly."),
       (4008, "inbound connection stale", interrupted),
-      (4501, "host offline", hostDidNotAnswer),
+      (4501, "host offline", interrupted),
       (4502, "relay idle", interrupted),
       (4503, "relay capacity", "This computer is handling too many connections. Try again shortly."),
       (4505, "replaced by newer host", interrupted),

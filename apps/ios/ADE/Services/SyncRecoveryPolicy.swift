@@ -327,11 +327,12 @@ func syncSocketCompletionAction(
 }
 
 /// Relay close codes that mean the phone got through to the computer's relay
-/// connection, but ADE on that computer did not answer: its sync listener is
-/// down (4501), its bridge refused the tunnel (4507), or forwarding to it
-/// failed (4509). Copy only: these codes recover exactly like every other
-/// close.
-let syncRelayHostDidNotAnswerCloseCodes: Set<Int> = [4501, 4507, 4509]
+/// connection, but ADE on that computer did not answer: its bridge refused
+/// the tunnel (4507). Only a code the computer itself sends belongs here:
+/// 4501 (no host connection at the relay) also means the computer is asleep or
+/// offline, and 4509 can come from the relay side. Copy only: these codes
+/// recover exactly like every other close.
+let syncRelayHostDidNotAnswerCloseCodes: Set<Int> = [4507]
 
 /// What the phone says when the relay reached the computer but ADE on it did
 /// not answer. With a machine name it names the route; without one (the
@@ -366,7 +367,7 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
     message = "This computer is handling too many connections. Try again shortly."
   case _ where syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue):
     message = syncRelayHostDidNotAnswerMessage()
-  case 4000, 4001, 4002, 4008, 4502, 4505, 4506:
+  case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506:
     message = "Can’t reach this computer right now. Reconnecting now."
   default:
     message = "Can’t reach this computer right now. Reconnecting now."

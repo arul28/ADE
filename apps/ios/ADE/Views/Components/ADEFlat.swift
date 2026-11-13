@@ -78,18 +78,17 @@ extension ADEFlatSectionHeader where Trailing == EmptyView {
 }
 
 /// A screen-level problem as one slim row: icon, message, optional Retry.
-/// With `technicalDetail`, a small toggle folds the raw text (and Copy) open
-/// under the row; collapsed, the row stays one or two lines.
+/// With `technicalDetail`, the design system's technical-details fold (raw
+/// text and Copy) sits under the row, folded by default.
 struct ADEFlatInlineNotice: View {
   let message: String
   var tint: Color = ADEColor.warning
   var technicalDetail: String? = nil
   var retry: (() -> Void)?
-  @State private var showsDetail = false
 
   var body: some View {
     let detail = technicalDetail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 8) {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 11, weight: .semibold))
@@ -107,59 +106,15 @@ struct ADEFlatInlineNotice: View {
             .buttonStyle(.plain)
             .fixedSize()
         }
-        if !detail.isEmpty {
-          Button {
-            withAnimation(.snappy) { showsDetail.toggle() }
-          } label: {
-            Image(systemName: "chevron.down")
-              .font(.system(size: 11, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .rotationEffect(.degrees(showsDetail ? 180 : 0))
-              .adeTapTarget(visual: 20)
-          }
-          .buttonStyle(.plain)
-          .accessibilityLabel(showsDetail ? "Hide technical details" : "Show technical details")
-        }
       }
-      if showsDetail, !detail.isEmpty {
-        ADEFlatInlineNoticeDetail(text: detail)
+      if !detail.isEmpty {
+        ADETechnicalDetailsFold(text: detail)
           .padding(.leading, 19)
       }
     }
     .frame(minHeight: 32)
-    // A detail toggle beside Retry needs its own element.
+    // The fold's own controls sit beside Retry, so they need their own elements.
     .accessibilityElement(children: detail.isEmpty ? .combine : .contain)
-  }
-}
-
-/// The raw text under an expanded `ADEFlatInlineNotice`, with Copy.
-private struct ADEFlatInlineNoticeDetail: View {
-  let text: String
-  @State private var copied = false
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(text)
-        .font(.system(.caption2, design: .monospaced))
-        .foregroundStyle(ADEColor.textMuted)
-        .textSelection(.enabled)
-        .lineLimit(6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      Button(copied ? "Copied" : "Copy") {
-        UIPasteboard.general.string = text
-        copied = true
-      }
-      .buttonStyle(.plain)
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(ADEColor.accent)
-      .fixedSize()
-      .accessibilityLabel("Copy technical details")
-    }
-    .task(id: copied) {
-      guard copied else { return }
-      try? await Task.sleep(nanoseconds: 2_000_000_000)
-      copied = false
-    }
   }
 }
 
