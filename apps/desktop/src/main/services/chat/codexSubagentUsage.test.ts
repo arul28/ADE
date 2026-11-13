@@ -92,6 +92,16 @@ describe("Codex subagent usage", () => {
       expect(findCodexThreadRolloutPath(codexHome, "child-thread-1")).toBeNull();
     });
 
+    it("finds a rollout Codex has compacted to .jsonl.zst", () => {
+      // Codex rewrites older rollouts with the same name plus `.zst`; a caller
+      // that only looks for `.jsonl` decides the thread is not in the home.
+      const plain = writeRollout([]);
+      fs.rmSync(plain);
+      const compressed = plain.replace(/\.jsonl$/, ".jsonl.zst");
+      fs.writeFileSync(compressed, "compressed", "utf8");
+      expect(findCodexThreadRolloutPath(codexHome, THREAD_ID)).toBe(compressed);
+    });
+
     it("sums the thread's token_usage_record lines and skips another thread's", async () => {
       const filePath = writeRollout([
         JSON.stringify({ type: "session_meta", payload: { id: THREAD_ID, source: { subagent: { thread_spawn: { parent_thread_id: PARENT_ID } } } } }),

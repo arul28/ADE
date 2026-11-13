@@ -72,7 +72,9 @@ describe("moveProviderThread", () => {
       toConfigHome: toHome,
     });
 
-    expect(result.ok).toBe(true);
+    // The stale copy was replaced, so a caller that only wanted a scratch
+    // copy must not delete it afterwards.
+    expect(result).toMatchObject({ ok: true, targetExisted: true });
     expect(fs.readFileSync(targetPath, "utf8")).toBe("the newer source\n");
   });
 

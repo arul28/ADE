@@ -48,6 +48,7 @@ import { ImportProviderFilter, ImportSessionList, type SessionGroup } from "./Im
 import { ImportSessionPreview } from "./ImportSessionPreview";
 import { ImportTopBar } from "./ImportTopBar";
 import { pinnedProviderInstances } from "../../settings/providers/accounts/useProviderInstances";
+import { captureProblem } from "../../../../shared/sentry/capture";
 import "./importSessions.css";
 import { sessionDateGroup } from "./sessionPresentation";
 import { isImeComposing } from "../../../lib/imeComposition";
@@ -457,6 +458,11 @@ export function ImportSessionBrowser({
         // The picker is an optional convenience; without accounts the import
         // still runs on the account that owns the transcript.
         console.warn("import_session.account_list_failed", error);
+        captureProblem("Import session account list could not load", {
+          fingerprint: ["import_session", "account_list_failed", accountProvider],
+          tags: { "import_session.provider": accountProvider },
+          handled: true,
+        });
         if (alive) setAccountsState(null);
       }
     })();
