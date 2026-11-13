@@ -749,11 +749,11 @@ client version and for work nobody watches
 
 - **`ade_cloud_action`**: one per decided action. `action` is `create`,
   `move`, `copy`, `tier_change`, `grow`, `delete`, `plan_change` or
-  `refused`; `plan` is `free`, `plus` or `pro`; `origin` is `person`,
+  `refused`; `plan` is `free`, `plus`, `pro` or `max`; `origin` is `person`,
   `agent` (the computer was made by an agent's chat, or an agent deleted it)
   or `system` (the computer's own disk grower, the 30-day delete); `tier` is
   `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
-  (`out_of_hours`, `computer_limit`, `plan_disk`, `needs_approval`,
+  (`out_of_hours`, `awake_cap`, `plan_disk`, `needs_approval`,
   `extra_off`, `monthly_limit`, `tier_limit`, `owner_limit`, `over_plan_disk`) and
   `refused_action` (`create`, `move`, `copy`, `tier_change`, `grow`, `wake`).
   The uuid comes from the account, the action, a key (the instance id, hashed

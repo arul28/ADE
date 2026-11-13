@@ -47,7 +47,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | The sentence says | Next step |
 |---|---|
 | out of ADE Cloud hours | Tell the person. Hours come back on `hours.resetsAt`. |
-| using all N (or your one) ADE Cloud computers | Propose a cleanup (section 5). |
+| too many of your computers are awake at once | Put a computer you aren't using to sleep (`ade cloud sleep`), then try again. No plan limits how many computers there are. |
 | ADE Cloud disk space is full | Propose a cleanup (section 5). |
 | Sign in to ADE to use ADE Cloud | The person signs in to ADE in the app. |
 | isn't available on this account | Tell the person. Never ask for a key. |

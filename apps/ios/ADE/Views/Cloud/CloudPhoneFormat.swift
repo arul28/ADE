@@ -36,6 +36,7 @@ func cloudPlanSentenceName(_ id: String) -> String {
   switch id {
   case "free": return "the free plan"
   case "pro": return "Pro"
+  case "max": return "Max"
   default: return "Plus"
   }
 }
@@ -75,7 +76,7 @@ func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String
   }
   guard let sentence = cloudPhoneWords(cleanup.sentence) else { return nil }
   let when = cleanup.startsAt.map { "You move to \(cloudPlanSentenceName(cleanup.planId ?? "plus")) on \(cloudDate($0))." }
-    ?? "ADE can't make a new computer until they fit."
+    ?? "ADE can't make a new computer until their disk fits."
   return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
 }
 
@@ -274,6 +275,7 @@ func cloudPlanLabel(_ id: String) -> String {
   switch id {
   case "free": return "Free"
   case "pro": return "Pro"
+  case "max": return "Max"
   default: return "Plus"
   }
 }

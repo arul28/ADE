@@ -270,7 +270,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           <Desktop size={14} />
           Lanes and computers
           <span className="kit-card-head-count">{lanes.length}</span>
-          <span className="adecd-head-note">{account.computers.total} of {account.computers.limit} computers · {account.computers.awake} awake</span>
+          <span className="adecd-head-note">{account.computers.total} {account.computers.total === 1 ? "computer" : "computers"} · {account.computers.awake} awake</span>
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
           {inside ? (
@@ -393,13 +393,8 @@ function CloudHero({
           </div>
           <div className="adecd-minis">
             <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
-            <MiniMeter
-              label="Computers"
-              value={String(account.computers.total)}
-              of={`of ${account.computers.limit}`}
-              pct={percentOf(account.computers.total, account.computers.limit)}
-              note={`${account.computers.awake} awake now`}
-            />
+            {/* No plan limits how many computers an account has: a count, with no meter. */}
+            <MiniMeter label="Computers" value={String(account.computers.total)} of={null} pct={null} note={`${account.computers.awake} awake now`} />
           </div>
         </div>
         <div className="adecd-hero-city">
@@ -429,12 +424,15 @@ function CloudHero({
   );
 }
 
-function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number; note: string }) {
+/** `pct` null: a count with nothing to fill toward; the meter's row stays, empty, so the minis line up. */
+function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number | null; note: string }) {
   return (
     <div className="adecd-mini">
       <span className="adecd-label">{label}</span>
       <div className="adecd-mini-num"><b className="kit-num" data-face="ui">{value}</b>{of ? <span>{of}</span> : null}</div>
-      <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>
+      {pct == null
+        ? <div className="kit-meter adecd-meter" aria-hidden="true" style={{ visibility: "hidden" }} />
+        : <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>}
       <span className="adecd-mini-note">{note}</span>
     </div>
   );
@@ -744,10 +742,10 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
           model={{
             id: "cloud-plan-cleanup",
             tone: "warning",
-            title: `Your computers don't fit ${plan}`,
+            title: `Your computers hold more disk than ${plan} has`,
             detail: `${cleanup.sentence} ${cleanup.startsAt != null
               ? `You move to ${plan} on ${formatCloudDate(cleanup.startsAt)}. ADE deletes nothing on its own.`
-              : `ADE can't make a new computer${cloudAccountBanner(account)?.id === "cloud-over-plan-disk" ? " or wake one" : ""} until they fit. It deletes nothing on its own.`}`,
+              : `ADE can't make a new computer${cloudAccountBanner(account)?.id === "cloud-over-plan-disk" ? " or wake one" : ""} until their disk fits. It deletes nothing on its own.`}`,
             actions: [{ label: "Choose what goes", variant: "primary", onClick: () => setAsking(true) }],
             report: false,
           }}

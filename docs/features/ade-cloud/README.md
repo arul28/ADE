@@ -164,16 +164,42 @@ The server's `plans.ts` holds them, and `GET /cloud/account` sends them in
 `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 `shared/adeCloud.ts` fills gaps from an older server).
 
-| Plan | Price | Hours a month | Disk at one time | Computers at one time |
-|---|---|---|---|---|
-| Free | $0 | 50 | 12 GB shared | 3 |
-| Plus | $5 | 500 | 40 GB | 10 |
-| Pro | $20 | 1,500 | 120 GB | 30 |
+| Plan | Price | Hours a month | Disk at one time | Phone minutes | Extra hours |
+|---|---|---|---|---|---|
+| Free | $0 | 100 | 12 GB | 20 | none: work stops |
+| Plus | $5 | 300 | 30 GB | 30 | 2¢ an hour |
+| Pro | $20 | 1,600 | 80 GB | 160 | 1.5¢ an hour |
+| Max | $50 | 5,000 | 175 GB | 500 | 1.2¢ an hour |
 
-Hours are Small-computer hours. Disk and computers are what the account has
-at one time, never a monthly amount. The account says `plan: "free" | "paid"`
-for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
-`past_due` account follows the free rules but keeps what it has.
+Hours are Small-computer hours. Disk is what the account's computers hold at
+one time, never a monthly amount. No plan limits how many computers an
+account has (Cloud 7). The account says `plan: "free" | "paid"` for older
+builds and `planId: "free" | "plus" | "pro" | "max"` for new ones; a
+`past_due` account follows the free rules but keeps what it has. Phone
+minutes are shown on the plan table only; nothing meters them yet.
+
+- **Cloud 7 terms, from each account's next period** (migration 0033,
+  `old_plan_terms`): accounts that existed before keep Plus's 40 GB and Pro's
+  120 GB until their next period starts, so nobody is cut mid-period. Hours
+  are stored per period (`included_milli`), so the new hours (Free 100,
+  Plus 300, Pro 1,600) also start with the next period.
+- **Extra hours** are one flat price per plan (2¢, 1.5¢, 1.2¢), each its own
+  Stripe metered price on the one extra-hours meter
+  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`). Checkout uses the plan's
+  price. An upgrade moves the subscription's hours item to the new plan's
+  price at once; a downgrade or a subscription still on the old graduated
+  price (1¢, then 0.85¢) and the old $1 disk price moves at its next renewal
+  (`moveMeteredItems`, `cloud.metered_price_moved`).
+- **Awake cap (hidden):** about 25 computers awake at once per account
+  (`AWAKE_COMPUTER_CAP`). It is never shown as a plan limit. A wake waits up
+  to 12 seconds for room (another computer going to sleep), then answers 429
+  `too_many_awake` with a plain sentence; a create, copy, resize wake or
+  sign-in wake past it is refused at once. Each refusal reports
+  `cloud.awake_cap_reached`; the 10-minute owner check reports
+  `cloud.awake_cap_passed` (traffic wakes the server can't stop) and adds an
+  owner alert line. Older builds still read `computers.limit`: the server
+  sends `max(25, computers + 1)` there, so their "computers full" check never
+  blocks.
 
 - **Sizes:** the main list is Small (standard 2/4, 1x, disk up to 12 GB),
   Medium (standard 4/8, 2x, 20 GB), Large (full 4/8, 5x, 50 GB) and X-Large
@@ -181,16 +207,17 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
 - **Changing plans:** Plus to Pro applies now, charges the difference for the
   rest of the period, and keeps the hours used. Pro to Plus applies at the
-  period end (`billing.nextPlanId`). A downgrade is never refused: over
-  Plus's computers or disk, the answer carries `cleanup`, what Plus's limits
-  will free (see **A cheaper plan's limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
+  period end (`billing.nextPlanId`); the same for Max to Pro or Plus. A
+  downgrade is never refused: over the cheaper plan's disk, the answer
+  carries `cleanup`, what that plan's disk will free (see **A cheaper plan's
+  limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
   subscription itself: Stripe's portal can't switch a subscription with more
   than one item.
 - **Not set up yet:** Pro and extra disk are offered only once their Stripe
   prices are set. Until then `catalog.plans.plus`/`pro`,
   `catalog.extraDiskCentsPer10GbMonth` and `account.extraDisk` are absent, a
   checkout for Pro is a 400 and the extra-disk route is a 404.
-- **Extra disk** (Plus and Pro): disk past the plan's, $1 for each 10 GB a
+- **Extra disk** (Plus, Pro and Max): disk past the plan's, $2 for each 10 GB a
   month, counted by the day on the day's peak (`cloud_disk_days`, its own
   Stripe meter). It starts undecided; the first grow past the plan is refused
   with reason `needs_approval` and ADE asks once. On, a grow passes only
@@ -215,9 +242,10 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   the owner's rules of 2026-11-13): ADE never removes a computer on its own,
   and there is no grace period. Disk that extra disk covers counts as
   fitting; a `past_due` account is never cleaned.
-  - **In ADE (Pro to Plus):** a move that fits asks nothing special. A move
-    that would leave more computers or disk than Plus allows
-    (`downgradePreviews.plus`) opens a question first
+  - **In ADE (a move to a cheaper paid plan):** only disk counts. A move
+    that fits asks nothing special. A move that would leave more disk than
+    the cheaper plan allows (`downgradePreviews.plus` / `.pro`) opens a
+    question first
     (`CloudPlanLimitsDialog.tsx`): "I'll clean up myself" (nothing changes;
     it lists the oldest computers whose delete would be enough) or "Let ADE
     handle it" (a "Push all work to GitHub first" switch, on by default, and
