@@ -91,6 +91,16 @@ export const commandWith = (...lines: string[]) => [
 ].join("\n");
 const PREPARE_COMMAND = commandWith("ade cloud prepare-stop --timeout 40 --json");
 const PUSH_COMMAND = commandWith("ade cloud push-work --json");
+/**
+ * The push with its own commit message for uncommitted work. Only fixed
+ * messages without a single quote reach the shell; an older ADE ignores the
+ * flag and uses its own message.
+ */
+const pushCommandWith = (message: string | undefined): string => {
+  if (!message) return PUSH_COMMAND;
+  if (!/^[A-Za-z0-9 .,:()-]{1,120}$/.test(message)) throw new Error("push-work message must be plain text");
+  return commandWith(`ade cloud push-work --json --message '${message}'`);
+};
 const CHECK_COMMAND = commandWith("ade cloud work-state --json");
 
 type CleanupComputerRow = ComputerRow & { plan_cleanup_claimed_at?: number | null; plan_cleanup_failed_at?: number | null };
@@ -718,12 +728,21 @@ export type PushAllOutcome =
  * notes a wake, so a caller that keeps the computer puts it back to rest
  * (`putBackToRest`). Provider errors are thrown.
  */
-export async function pushAllWork(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord, reason: string): Promise<PushAllOutcome> {
+export async function pushAllWork(
+  env: CloudEnv,
+  provider: CloudProvider,
+  computer: ComputerRow,
+  now: number,
+  wake: WakeRecord,
+  reason: string,
+  options: { commitMessage?: string } = {},
+): Promise<PushAllOutcome> {
+  const pushCommand = pushCommandWith(options.commitMessage);
   const metadata = await wakeForPush(env, provider, computer, now, wake, reason);
   // Agents stopped and chats saved first: anything still writing could land after the check.
   const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
   if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return { ok: false, reason: "ADE on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
-  const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
+  const pushed = readTally((await provider.exec(computer.instance_id, pushCommand, PUSH_TIMEOUT_MS)).stdout);
   if (!pushed) return { ok: false, reason: "ADE on the computer didn't answer the push.", code: "push_unreadable" };
   const left = leftLanes(pushed);
   if (left) return { ok: false, reason: left, code: "push_left_work" };
@@ -771,16 +790,16 @@ async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: Com
  * isn't charged). Best effort: a failure is reported, and the tick's
  * no-check-in sleep is the backstop.
  */
-export async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId: string, from: string): Promise<void> {
+export async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId: string, from: string, reason = "plan_cleanup"): Promise<void> {
   try {
     const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(instanceId).first<ComputerRow>();
     if (!row) return;
     const status = from === "stopped" ? await provider.stopInstance(instanceId) : await provider.sleepInstance(instanceId);
-    const statements = statusChangeStatements(env, row, status, Date.now(), "plan_cleanup");
+    const statements = statusChangeStatements(env, row, status, Date.now(), reason);
     if (statements.length) await env.DB.batch(statements);
-    logCloud("cloud.plan_cleanup_put_back", { instanceId, status });
+    logCloud(`cloud.${reason}_put_back`, { instanceId, status });
   } catch (error) {
-    reportCloudFailure("cloud.plan_cleanup_put_back_failed", { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    reportCloudFailure(`cloud.${reason}_put_back_failed`, { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
   }
 }
 

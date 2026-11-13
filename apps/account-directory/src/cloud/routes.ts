@@ -26,6 +26,7 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
+import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles } from "./idleCleanup";
 import { CLOUD_PATHS, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
@@ -1005,9 +1006,19 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   // The computer's own measure of its disk and its last work, sent at its idle step.
   "POST disk-usage": async (request, env, computer, _provider, { now }) => {
-    const report = parseDiskUsageReport(await readJson(request), now);
+    const body = await readJson(request);
+    const report = parseDiskUsageReport(body, now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     await recordDiskUsage(env, computer, report);
+    // The ignored files a delete would lose (idle cleanup). Unreadable is left out, never a failed report.
+    const ignored = body?.ignored == null ? null : parseIgnoredFiles(body.ignored, now);
+    if (body?.ignored != null && !ignored) logCloud("cloud.ignored_files_unreadable", { instanceId: computer.instance_id });
+    if (ignored) await ignoredFilesStatement(env, computer.instance_id, ignored).run();
+    return json({ ok: true });
+  },
+  // "Keep it" on an idle cleanup warning: the idle clock restarts with no wake and no hours.
+  "POST keep": async (_request, env, computer, _provider, { now, waitUntil }) => {
+    await keepIdleComputer(env, waitUntil, await loadAccount(env, computer.user_id, now), computer, now);
     return json({ ok: true });
   },
   "POST resize": handleResize,

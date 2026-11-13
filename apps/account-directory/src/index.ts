@@ -6,6 +6,7 @@ import { runCloudMinuteCron } from "./cloud/cron";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";
 import { runPlanCleanupPicks } from "./cloud/planCleanup";
+import { runIdleCleanup } from "./cloud/idleCleanup";
 import { createCloudProvider } from "./cloud/provider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
@@ -234,6 +235,13 @@ export default Sentry.withSentry(sentryOptions, {
         settle("cloud_plan_cleanups", async () => {
           const key = env.AGENT37_API_KEY?.trim();
           if (key) await runPlanCleanupPicks(env, createCloudProvider(key));
+        }),
+        // Idle cleanup: warnings and follow-up emails for unused computers,
+        // then each one's work saved and the computer deleted, its lane kept,
+        // a few a tick. Two indexed reads when no computer is idle.
+        settle("cloud_idle_cleanup", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runIdleCleanup(env, createCloudProvider(key), Date.now(), (promise) => ctx.waitUntil(promise));
         }),
       ]);
     } catch (error) {

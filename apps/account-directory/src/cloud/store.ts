@@ -120,7 +120,7 @@ export type ComputerRow = {
   lane_name?: string | null;
   lane_project_origin?: string | null;
   lane_branch?: string | null;
-  /** `freed`, `inactive` or `plan_limit` while a delete that keeps the lane runs: closing the row writes the lane's row. */
+  /** `freed`, `inactive`, `idle_cleanup` or `plan_limit` while a delete that keeps the lane runs: closing the row writes the lane's row. */
   lane_keep_reason?: string | null;
   /** Use facts (migration 0022, `diskUsage.ts`): the last disk measure, as JSON, and when it was taken. */
   disk_usage_json?: string | null;
@@ -129,6 +129,19 @@ export type ComputerRow = {
   last_active_at?: number | null;
   /** Its lane's work (`CloudLaneWork`), as JSON. */
   lane_work_json?: string | null;
+  /** Idle cleanup (migration 0034, `idleCleanup.ts`): the warning, the delete time it announced, the last email. */
+  idle_warned_at?: number | null;
+  idle_deletes_at?: number | null;
+  idle_emailed_at?: number | null;
+  /** The person pressed "Keep it": the idle clock restarts here. */
+  idle_kept_at?: number | null;
+  /** A save-and-delete run in flight. */
+  idle_claimed_at?: number | null;
+  /** The save didn't go through, so the computer was kept: when, and why. */
+  idle_held_at?: number | null;
+  idle_held_reason?: string | null;
+  /** Files git ignores that a delete would lose (`CloudIgnoredFiles` as JSON). */
+  ignored_files_json?: string | null;
 };
 
 export type AccountRow = {
@@ -980,17 +993,3 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   return after;
 }
 
-export const DELETION_AFTER_INACTIVE_MS = 30 * 24 * 60 * 60_000;
-export const DELETION_WARNING_LATE_MS = 7 * 24 * 60 * 60_000;
-
-/**
- * When an inactive computer is deleted: 30 days after it was last awake or
- * after hours came back, or null while it's awake or on its way there, or the
- * account is out of hours, because nobody loses a computer just for running out.
- */
-export function deletionDueAt(computer: ComputerRow, account: AccountRow, liveUsed: number): number | null {
-  if (computer.awake_since != null || !isRestingStatus(computer.status) || isOutOfHours(account, liveUsed)) return null;
-  const lastAwake = computer.last_awake_at ?? computer.created_at;
-  const since = Math.max(lastAwake, account.hours_restored_at ?? 0);
-  return since + DELETION_AFTER_INACTIVE_MS;
-}

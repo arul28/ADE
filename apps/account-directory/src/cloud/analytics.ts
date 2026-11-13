@@ -228,3 +228,46 @@ export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, u
     });
   })());
 }
+
+/* ---- Idle cleanup (`idleCleanup.ts`) ---- */
+
+/**
+ * - `warned`: the first warning went out (email and in-app).
+ * - `emailed`: a follow-up email (free: about 6 hours before; paid: one a day).
+ * - `saved`: the computer committed and pushed its work before the delete.
+ * - `push_refused`: the save didn't go through, so the computer was kept.
+ * - `deleted`: the computer was deleted; its lane stays.
+ * - `kept`: the person kept it after a warning (`how`: `button`, `used`, `hours_back`).
+ */
+export type CloudIdleCleanupStep = "warned" | "emailed" | "saved" | "push_refused" | "deleted" | "kept";
+
+export type CloudIdleCleanupEvent = {
+  step: CloudIdleCleanupStep;
+  plan: CloudPlanId;
+  /** `push_refused`: the closed code (`push_left_work`, `prepare_stop_failed`, `wake_timeout` ...). */
+  reason?: string;
+  /** `kept`: how. */
+  how?: "button" | "used" | "hours_back";
+};
+
+/** One `ade_cloud_idle_cleanup` per account, step, computer (hashed into the uuid, never sent) and hour. */
+export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, event: CloudIdleCleanupEvent, key: string, now: number): void {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
+  hold(waitUntil, (async () => {
+    await send(env, {
+      event: "ade_cloud_idle_cleanup",
+      distinct_id: await accountDistinctId(userId),
+      uuid: await uuidFromSeed(`ade-cloud-idle-cleanup-v1:${userId}:${event.step}:${key}:${bucket}`),
+      timestamp: new Date(now).toISOString(),
+      properties: {
+        client: "account",
+        step: event.step,
+        plan: event.plan,
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.how ? { how: event.how } : {}),
+        $geoip_disable: true,
+      },
+    });
+  })());
+}
