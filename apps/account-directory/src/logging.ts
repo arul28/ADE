@@ -394,10 +394,9 @@ export function logGithubApp(args: {
     || event === "github_app.refresh_unpersisted"
     || event === "github_app.refresh_unpersisted_dropped";
   (failed ? console.error : console.log)(JSON.stringify(line));
-  // Worker logs keep one request in ten, so a failed sign-in often left no
-  // record of GitHub's reason (2026-11-12: two failures after a Disconnect,
-  // neither in the logs). Sentry keeps every one. Kind and GitHub's short
-  // code only, never a token, code, state or verifier.
+  // Worker logs keep one request in ten, so a failed sign-in can leave no
+  // record of GitHub's reason. Sentry keeps every one. Kind and GitHub's
+  // short code only, never a token, code, state or verifier.
   if (event === "github_app.sign_in_failed") {
     const kind = typeof fields.kind === "string" ? fields.kind.slice(0, 64) : "unknown";
     const oauthError = typeof fields.oauthError === "string" ? fields.oauthError.slice(0, 64) : null;
