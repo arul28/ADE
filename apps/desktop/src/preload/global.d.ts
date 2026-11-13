@@ -4826,6 +4826,8 @@ declare global {
           owner?: string;
           name?: string;
           forceRefresh?: boolean;
+          /** A person pressed Refresh: implies `forceRefresh`. */
+          userRequested?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<GitHubAppInstallationStatus>;
         createRepoAutolink: (args: {
           owner?: string;

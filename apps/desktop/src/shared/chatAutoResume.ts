@@ -13,7 +13,12 @@
  */
 
 import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
-import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
+import {
+  backgroundCommandLabel,
+  deriveBackgroundItems,
+  isRestartResumeScheduleId,
+  UPDATE_RESUME_ID_PREFIX,
+} from "./chatScheduledWork";
 import { subagentSnapshotsFromEvents } from "./chatSubagents";
 import { ORPHAN_BACKGROUND_SUMMARY, ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "./chatOrphanRunReconcile";
 import {
@@ -259,8 +264,6 @@ export const UPDATE_RESUME_PROMPT =
 
 export const UPDATE_RESUME_REASON = "Resume after ADE restart";
 
-const UPDATE_RESUME_ID_PREFIX = "update-resume:";
-
 /**
  * Deterministic per-chat id. A repeat arm for the same chat upserts this row
  * instead of stacking a second resume.
@@ -268,6 +271,8 @@ const UPDATE_RESUME_ID_PREFIX = "update-resume:";
 export function updateResumeScheduleId(sessionId: string): string {
   return `${UPDATE_RESUME_ID_PREFIX}${sessionId}`;
 }
+
+export { isRestartResumeScheduleId };
 
 /**
  * Recognises an update-resume row by its tag. Unlike the usage-limit pair there
@@ -369,6 +374,13 @@ export function restartResumeHold(args: {
   if (!args.recent) return "stale";
   if (args.capped) return "capped";
   return null;
+}
+
+const RESTART_INTERRUPTED_NOTICE_PREFIX = "ADE restarted while ";
+
+/** A notice `restartInterruptedNotice` wrote. The transcript adds its time. */
+export function isRestartInterruptedNotice(message: string | null | undefined): boolean {
+  return typeof message === "string" && message.startsWith(RESTART_INTERRUPTED_NOTICE_PREFIX);
 }
 
 /** The notice for a turn a restart cut short, by what happens next. */

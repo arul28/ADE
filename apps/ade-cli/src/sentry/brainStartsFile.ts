@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic } from "../services/runtime/atomicJson";
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
+import { markBrainRunStoppedBy } from "../../../desktop/src/main/services/runtime/brainUnplannedRestart";
 
 export const BRAIN_STARTS_FILE = "brain-starts.json";
 
@@ -52,6 +53,8 @@ export function markBrainStoppedBy(
   runtimeDir: string = path.dirname(lastFailurePathForMachine()),
 ): void {
   if (!Number.isInteger(pid) || pid <= 0) return;
+  // The run record behind the restart banner, which is kept with or without Sentry.
+  markBrainRunStoppedBy(pid, by, runtimeDir);
   const startsPath = path.join(runtimeDir, BRAIN_STARTS_FILE);
   if (!fs.existsSync(startsPath)) return;
   const state = readStartsFile(startsPath);

@@ -1,3 +1,4 @@
+import { isRestartResumeScheduleId } from "../../../shared/chatAutoResume";
 import {
   collapseActivityPhaseRows,
   mergeReasoningFragment,
@@ -3135,6 +3136,9 @@ export function appendCollapsedChatTranscriptEvent(
   // `api_retry` is a live provider-health signal, not durable transcript
   // content. Its compact replacement is emitted on the activity stream.
   if (event.type === "api_retry") return;
+  // A restart resume's "Woke at" line: the restart notice already says the
+  // agent continues.
+  if (event.type === "scheduled_work_update" && isRestartResumeScheduleId(event.id)) return;
 
   if (event.type === "user_message") {
     const steerId = event.steerId?.trim();
@@ -3183,6 +3187,7 @@ export function appendCollapsedChatTranscriptEvent(
     if (
       wake
       && typeof wake.scheduleId === "string"
+      && !isRestartResumeScheduleId(wake.scheduleId)
       && (wake.kind === "wakeup" || wake.kind === "cron" || wake.kind === "loop")
       && typeof wake.firedAt === "string"
     ) {

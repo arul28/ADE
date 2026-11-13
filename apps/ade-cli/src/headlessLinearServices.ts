@@ -2557,6 +2557,7 @@ export function createHeadlessGitHubService(
         logger,
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh,
+        userRequested: args.userRequested,
         getAccountAccessToken: options.getAccountAccessToken,
       });
     },
@@ -2635,6 +2636,9 @@ export function createHeadlessGitHubService(
     },
     async getAppUserTokenForRelay() {
       return await accountApp.relayAppUserAuth.getValidTokenForRelay();
+    },
+    async reportAppUserTokenRejected(token: string): Promise<void> {
+      await accountApp.relayAppUserAuth.onTokenRejected(token);
     },
     parseGitHubRepoFromRemoteUrl: githubRepoRefFromRemoteUrl,
     parseNextLink: parseNextGitHubLink,

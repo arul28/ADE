@@ -709,7 +709,20 @@ import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
-import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import {
+  brainUnplannedRestart,
+  markBrainRunStoppedCleanly,
+  recordBrainRunStart,
+} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import {
+  closeLiveTurnProjectsRecord,
+  dropLiveTurnProjectsAfterCrash,
+  enableLiveTurnProjectsRecord,
+  noteLiveTurnProjectOpening,
+  settleLiveTurnProjectAfterCrash,
+  takeLiveTurnProjectsFromStoppedBrains,
+} from "../../desktop/src/main/services/runtime/liveTurnProjects";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -30712,7 +30725,11 @@ async function runServe(
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
-    if (!stoppingOnFailure) markBrainStoppedCleanly();
+    if (!stoppingOnFailure) {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     resolveDone?.();
   };
 
@@ -31240,6 +31257,7 @@ async function runServe(
             lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+          lastUnplannedRestart: brainUnplannedRestart(),
         };
       },
       disposeScopesOnDispose: false,
@@ -31446,7 +31464,11 @@ async function runServe(
   startSyncHostOnDemand = () => startSyncHost();
   // Stops the account project sync of the brain (set where that sync is built).
   let stopAccountProjectSync: (() => void) | null = null;
+  // Set first thing in shutdown: the projects-after-crash opens stop, so no
+  // project opens after `disposeAll` took its list of open scopes.
+  let serveShutdownStarted = false;
   const disposeServeResources = async () => {
+    serveShutdownStarted = true;
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
@@ -31836,6 +31858,32 @@ async function runServe(
     } catch {}
   }
 
+  /**
+   * Whether this brain came back after an unplanned stop (the window's
+   * restart banner), and the record of projects with a running turn that the
+   * next brain opens after a crash. Only now, with the endpoint bound: a brain
+   * that loses the race for the socket must not replace the record of the
+   * brain that crashed.
+   *
+   * Every brain reads and takes what the brain before it left, including a
+   * brain an app started because the service brain was gone. Only a brain no
+   * other process owns (the service on any platform, a hand-run `ade serve`)
+   * writes its own record: an app can end the brain it started with a kill
+   * when the app quits, which is not a crash.
+   */
+  const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (!embedded) {
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    recordBrainRunStart({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+      writeOwnRecord: writesBrainRun,
+    });
+    if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
+  }
+
   let tcpUrl: string | null = null;
   if (port != null) {
     const tcpState = createHeadlessRpcServer(createHandler);
@@ -32206,6 +32254,57 @@ async function runServe(
     platform: process.platform,
     arch: process.arch,
   });
+  if (!embedded) {
+    /**
+     * Open, one at a time, the projects in which the brain before this one
+     * had a chat or CLI turn running when it stopped unplanned. Opening a
+     * project is what runs its CLI reopen and chat restart recovery, so they
+     * continue within seconds instead of when a window or phone next opens
+     * the project. Only those projects: no other project database is opened.
+     * Nothing opens in a restart loop or with "Continue chats after restarts"
+     * off; the files are claimed either way.
+     */
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const roots = takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath: serveSocketPath });
+    if (roots.length > 0) {
+      const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
+      if (hold) {
+        headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
+        dropLiveTurnProjectsAfterCrash();
+      } else {
+        void (async () => {
+          const startedMs = Date.now();
+          let opened = 0;
+          for (const root of roots) {
+            if (serveShutdownStarted) break;
+            const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
+            if (!record) {
+              settleLiveTurnProjectAfterCrash(root);
+              continue;
+            }
+            noteLiveTurnProjectOpening(root);
+            try {
+              await scopeRegistry.get(record.projectId);
+              opened += 1;
+              settleLiveTurnProjectAfterCrash(root);
+            } catch (error) {
+              // Kept on disk: if this brain crashes too, the next one tries it again.
+              noteLiveTurnProjectOpening(null);
+              headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
+                projectId: record.projectId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          headlessProjectLogger.info("brain.projects_opened_after_crash", {
+            projects: roots.length,
+            opened,
+            durationMs: Date.now() - startedMs,
+          });
+        })();
+      }
+    }
+  }
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
   scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
@@ -32549,7 +32648,11 @@ async function runServe(
             : "unknown";
     // A live brain already holds the endpoint (an update's handover, a second
     // start): this one leaving is not a crash for the restart-loop report.
-    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
+    if (code === "socket_owned_by_other") {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
