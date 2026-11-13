@@ -396,6 +396,9 @@ final class AccountProjectStore: ObservableObject {
   @Published private(set) var revision = 0
 
   private var userId: String?
+  /// The account whose list the store holds, also while the phone waits for
+  /// Clerk to restore the session (`activate(userId:beforeSession:)`).
+  var activeUserId: String? { userId }
   private var state = AccountProjectListState()
   /// Every row the phone holds, removed and merged rows included.
   var listState: AccountProjectListState { state }

@@ -14,12 +14,11 @@ struct HubAccountHomeTarget: Identifiable, Equatable {
 
 extension View {
   /// The account project pages the Hub opens: a project's home (an
-  /// account-only card), its Location page, and Remove from ADE. `onNotice`
-  /// shows the line a page ends with.
+  /// account-only card) and its Location page. `onNotice` shows the line a
+  /// page ends with.
   func hubAccountProjectSheets(
     home: Binding<HubAccountHomeTarget?>,
     location: Binding<HubAccountHomeTarget?>,
-    remove: Binding<AccountProject?>,
     onConnectComputer: @escaping () -> Void,
     onNotice: @escaping (String) -> Void
   ) -> some View {
@@ -29,10 +28,6 @@ extension View {
     }
     .sheet(item: location) { target in
       ProjectLocationScreen(projectId: target.id)
-    }
-    .sheet(item: remove) { project in
-      DeleteProjectSheet(project: project, onRemoved: onNotice)
-        .hubAccountPageDetents()
     }
   }
 
@@ -146,16 +141,14 @@ struct HubAccountCardPass {
   /// The icon each joined card shows now, kept for when no machine is
   /// reachable (`AccountProjectStore.recordDisplay`).
   var icons: [String: AccountProjectDisplay]
-  /// Live account projects the user hid on this phone.
-  var hiddenOnPhoneCount: Int
 }
 
 /// Pure: match each card to its account project, hide cards of removed
 /// projects, add a card for every project no machine shows, and name each
 /// joined card by the account. The account has no icon, so a joined card
 /// keeps the icon its machine sends (the shared project icon), then the
-/// saved one. The account list is the one source of the main list: its
-/// count is the account's count, less the projects hidden on this phone.
+/// saved one. The account list is the one source of the main list; a
+/// project hidden on this phone (`hiddenOnPhone`) gets no card.
 func hubAccountCardPass(
   presentations: [HubProjectPresentation],
   cards: [HubAccountJoinCard],
@@ -205,15 +198,13 @@ func hubAccountCardPass(
       note: hubAccountProjectNote(project, machines: machines)
     ))
   }
-  let hiddenCount = live.filter { hiddenOnPhone.contains(hubHiddenAccountKey($0.id)) }.count
   return HubAccountCardPass(
     presentations: main,
     localPresentations: local,
     duplicatePresentations: duplicates,
     join: join,
     accountOnly: accountOnly,
-    icons: icons,
-    hiddenOnPhoneCount: hiddenCount
+    icons: icons
   )
 }
 

@@ -1101,8 +1101,9 @@ enum HubProjectGridMetrics {
 /// the machines it is on (a chip, when the user has more than one machine),
 /// its name (two lines at most), how its agents stand (the coloured per-state
 /// counts), its lane count, and the open chevron. Tapping the tile opens the
-/// project, the only way to its lanes and chats. Long-press for Open, Change
-/// icon…, Move to top, Copy path, and Remove from list.
+/// project, the only way to its lanes and chats. Long-press for Open, the
+/// project's other folders, Change icon…, Move to top, Copy path, Location,
+/// Hide on this iPhone, and Remove….
 struct HubProjectTile: View, Equatable {
   let presentation: HubProjectPresentation
   /// "Arul’s Mac Studio" or "2 machines": spoken, and the long-press menu's
@@ -1130,7 +1131,12 @@ struct HubProjectTile: View, Equatable {
   /// The card's account project. The menu actions name it, so a card whose
   /// project changes (a merge) must redraw them.
   var accountProjectId: String? = nil
+  /// The project's other folders the phone knows (a second folder on a
+  /// computer, or a copy on another one). The long-press menu opens each.
+  var otherFolders: [HubTileFolder] = []
   let onOpenProject: () -> Void
+  /// Opens one of `otherFolders`, by its id.
+  var onOpenFolder: (String) -> Void = { _ in }
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
@@ -1270,6 +1276,15 @@ struct HubProjectTile: View, Equatable {
       Button(action: onOpenProject) {
         Label("Open", systemImage: "arrow.up.forward.app")
       }
+      if !otherFolders.isEmpty {
+        Section("Other folders") {
+          ForEach(otherFolders) { folder in
+            Button { onOpenFolder(folder.id) } label: {
+              Label(folder.label, systemImage: "folder")
+            }
+          }
+        }
+      }
       if canChangeIcon {
         Button { iconPickerShown = true } label: {
           Label("Change icon…", systemImage: "photo")
@@ -1351,7 +1366,23 @@ struct HubProjectTile: View, Equatable {
       && lhs.subtitle == rhs.subtitle
       && lhs.selection == rhs.selection
       && lhs.accountProjectId == rhs.accountProjectId
+      && lhs.otherFolders == rhs.otherFolders
   }
+}
+
+/// One more folder of a Hub tile's project, for its long-press menu.
+struct HubTileFolder: Equatable, Identifiable {
+  /// The folder's Hub card id.
+  let id: String
+  /// "ade-2 on MacBook Pro".
+  let label: String
+}
+
+/// The last part of a folder path, with `/` or `\` separators (a Windows
+/// computer sends the second). Nil for an empty path.
+func hubFolderName(_ rootPath: String?) -> String? {
+  let parts = (rootPath ?? "").split(whereSeparator: { $0 == "/" || $0 == "\\" })
+  return parts.last.map(String.init)
 }
 
 /// How many machines a project is on, as a quiet chip: a computer glyph and

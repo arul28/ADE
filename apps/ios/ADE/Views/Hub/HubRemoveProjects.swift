@@ -158,10 +158,12 @@ struct HubCardComputer: Equatable {
   let project: MobileProjectSummary
 }
 
-/// "Only on <computer>": the folders of one reachable computer that are not
-/// account projects.
+/// "Only on <computer>": the folders that are not account projects, of one
+/// reachable computer or of the same few computers.
 struct HubLocalSectionModel: Identifiable, Equatable {
+  /// The computers' keys, joined with "+".
   let computerKey: String
+  /// "Mac Studio", or "Mac Studio and MacBook Air".
   let computerName: String
   let presentations: [HubProjectPresentation]
   var id: String { computerKey }
@@ -584,8 +586,9 @@ struct HubRemoveProjectsSheet: View {
         try await hubRemoveCopy(target.copy, sync: sync, fleet: fleet)
         results[target.id] = .removed
         removed += 1
-      } catch let error as NSError where error.domain == "ADE" && error.code == 23 {
-        // The request went out; the computer may have finished.
+      } catch let error as NSError where error.domain == "ADE" && error.code == 23 || !isReachable(target.copy.phoneKey) {
+        // The request went out and no answer came (a timeout, or the link
+        // dropped): the computer may have finished.
         results[target.id] = .unknown
         problems += 1
       } catch {
@@ -611,12 +614,25 @@ struct HubRemoveProjectsSheet: View {
     }
     phase = .done
     let text: String
-    if scope == .account {
+    if accountRemoved > 0 {
       text = accountRemoved == 1 && single ? "Removed \(items[0].name) from your account" : "Removed \(accountRemoved) from your account"
-    } else {
+    } else if removed > 0 {
       text = removed == 1 ? "Removed 1 folder from a computer" : "Removed \(removed) folders from computers"
+    } else {
+      onFinished("Nothing was removed")
+      return
     }
     onFinished(problems > 0 ? "\(text). Some were kept." : text)
+  }
+}
+
+extension MobileProjectSummary {
+  /// The folder's own GitHub `owner/name`, when its computer sent both.
+  var hubRepositorySlug: String? {
+    guard let owner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines), !owner.isEmpty,
+          let name = repoName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+    else { return nil }
+    return "\(owner)/\(name)"
   }
 }
 
@@ -765,8 +781,9 @@ struct HubSelectionMark: View {
 struct HubLocalFolderSection: View {
   let computerName: String
   let presentations: [HubProjectPresentation]
-  /// Card id -> the line under its name (`hubLocalFolderSubtitle`).
-  let subtitles: [String: String]
+  /// Card id -> its GitHub `owner/name`, for the line under its name
+  /// (`hubLocalFolderSubtitle`).
+  let gitHubIdentities: [String: String]
   /// Nil while the list is not selecting.
   let selectedIds: Set<String>?
   let onOpen: (HubProjectPresentation) -> Void
@@ -810,7 +827,7 @@ struct HubLocalFolderSection: View {
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
-          Text(subtitles[project.id] ?? hubLocalFolderSubtitle(gitHubIdentity: nil))
+          Text(hubLocalFolderSubtitle(gitHubIdentity: gitHubIdentities[project.id]))
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
