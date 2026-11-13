@@ -648,7 +648,9 @@ export type AgentChatHostContinuationMetadata = {
     /** A subagent is blocked on a question; ADE relays it to the parent agent. */
     | "subagent_question"
     /** A subagent waits on a card only the user can answer; ADE tells the parent agent. */
-    | "subagent_awaiting_user";
+    | "subagent_awaiting_user"
+    /** The status check the stall card's Nudge sends, in ADE's words. */
+    | "stall_nudge";
 };
 
 export type AgentChatContinuityRecovery = {
@@ -5776,10 +5778,12 @@ export type AgentChatSendArgs = {
    */
   includeGuestComments?: ChatThreadCommentSelection[];
   /**
-   * Set once per send attempt by a client talking to another machine. A brain
-   * that froze or restarted mid-send may have already taken this message, so
-   * the client's retry after it wakes carries the same id and is dropped here
-   * rather than run twice.
+   * One id per user send, made by the client (desktop composer, phone, web,
+   * CLI) or by the host for a launch's queued message. Every retry of that
+   * send carries the same id. Once the first copy wrote the message into the
+   * transcript, a retry is a no-op that answers with the first copy's result,
+   * so a timeout after the provider took the message never sends it twice.
+   * Absent (older clients): every call sends.
    */
   clientSendId?: string;
 };
@@ -6076,6 +6080,8 @@ export type AgentChatMessageSessionArgs = {
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   metadata?: AgentChatEventMetadata | null | undefined;
+  /** Same contract as `AgentChatSendArgs.clientSendId`: a retry of a message already written is a no-op. */
+  clientSendId?: string;
 };
 
 export type AgentChatMessageSessionResult = {

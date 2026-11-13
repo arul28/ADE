@@ -463,6 +463,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
               text: next.text,
               ...(next.displayText ? { displayText: next.displayText } : {}),
               ...(attachments?.length ? { attachments } : {}),
+              // A retried hand-off (the reply was lost) is queued and sent once.
+              clientSendId: next.id,
             },
           }) as ChatLaunchSnapshot;
           record.pendingMessageIds = record.pendingMessageIds.filter((id) => id !== next.id);

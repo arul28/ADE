@@ -150,6 +150,7 @@ import {
 } from "./claudeThinkingTranscriptRepair";
 import { piForkCutBeforePrompt } from "./piForkCut";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
+import { createClientSendLedger } from "./chatClientSendLedger";
 import { readClaudeWorkflowAgentMessages } from "./claudeWorkflowTranscript";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import { sessionApprovalGrantKey } from "./sessionApprovalGrants";
@@ -2570,11 +2571,6 @@ type PersistedChatState = {
   runtimeMode?: AgentChatRuntimeMode;
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
   codexTerminalTurnIds?: string[];
-  /**
-   * True once ADE consumes the automatic recovery attempt for the current
-   * user-request chain (or the user explicitly chooses to keep waiting).
-   */
-  codexAutomaticRecoveryAttempted?: boolean;
   /**
    * Fsynced terminal receipts for accepted-but-unprocessed message recovery.
    * These close the crash window between provider dispatch and the async
@@ -5877,7 +5873,6 @@ type ManagedChatSession = {
    * Codex client may have switched it).
    */
   codexPendingCollaborationMode?: "default" | "plan" | null;
-  codexAutomaticRecoveryAttempted: boolean;
   unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   /**
@@ -6323,6 +6318,11 @@ const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 const OPENCODE_SESSION_ID_PATTERN = /^ses_[A-Za-z0-9]+$/;
 
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
+/** "2 minutes" for the restart card: whole minutes, never under one. */
+function formatCodexSilenceMinutes(elapsedMs: number): string {
+  const minutes = Math.max(1, Math.round(Math.max(elapsedMs, CODEX_NO_FIRST_EVENT_WATCHDOG_MS) / 60_000));
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+}
 const CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS = 10 * 60_000;
 /** Codex turn items that are work a turn waits on in silence while in progress. */
 const CODEX_OPEN_WORK_ITEM_TYPES: ReadonlySet<string> = new Set([
@@ -14503,6 +14503,11 @@ export function createAgentChatService(args: {
   };
   const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
+  /** Retried user sends, recognized by their client id (`chatClientSendLedger.ts`). */
+  const clientSends = createClientSendLedger({
+    ttlMs: CLIENT_SEND_DEDUPE_MS,
+    onDuplicate: ({ sessionId }) => logger.info("agent_chat.client_send_duplicate_dropped", { sessionId }),
+  });
   const continuityRecoveryInFlight = new Set<string>();
   const unprocessedMessageResolutionInFlight = new Map<
     string,
@@ -21607,9 +21612,6 @@ export function createAgentChatService(args: {
               })),
           }
         : {}),
-      ...(managed.codexAutomaticRecoveryAttempted
-        ? { codexAutomaticRecoveryAttempted: true }
-        : {}),
       ...(managed.unprocessedMessageResolutionReceipts.size
         ? {
             unprocessedMessageResolutionReceipts: [
@@ -22225,9 +22227,6 @@ export function createAgentChatService(args: {
         ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
         ...(record.codexPendingCollaborationMode === "default" || record.codexPendingCollaborationMode === "plan"
           ? { codexPendingCollaborationMode: record.codexPendingCollaborationMode }
-          : {}),
-        ...(record.codexAutomaticRecoveryAttempted === true
-          ? { codexAutomaticRecoveryAttempted: true }
           : {}),
         ...(unprocessedMessageResolutionReceipts.length
           ? { unprocessedMessageResolutionReceipts }
@@ -25679,6 +25678,9 @@ export function createAgentChatService(args: {
         spawnNames.delete(event.taskId);
       }
     }
+    // The send running for this chat (if it carries a client id) has now
+    // written its message, so a retry of it must not write it again.
+    if (event.type === "user_message") clientSends.noteMessageWritten(managed.session.id);
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
     }
@@ -30505,7 +30507,6 @@ export function createAgentChatService(args: {
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       answeredPlanApprovalItemIds: new Set<string>(persisted?.answeredPlanApprovalItemIds ?? []),
       codexPendingCollaborationMode: persisted?.codexPendingCollaborationMode ?? null,
-      codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
       unprocessedMessageResolutionReceipts: new Map(
         normalizeUnprocessedMessageResolutionReceipts(
           persisted?.unprocessedMessageResolutionReceipts,
@@ -43707,11 +43708,22 @@ export function createAgentChatService(args: {
     return listed.queuedSubmissions ?? [];
   };
 
+  /**
+   * Chats whose Codex queue must not start right now: a stall-card Retry or
+   * Restart is between its interrupt and the resumed turn. ADE never starts
+   * the queue on its own initiative; it runs at the boundary of a turn the
+   * user asked for.
+   */
+  const codexQueueStartHolds = new Set<string>();
   const startCodexQueuedFollowUp = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
   ): Promise<void> => {
     if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return;
+    if (codexQueueStartHolds.has(managed.session.id)) {
+      logger.info("codex.queue.start_held", { sessionId: managed.session.id, reason: "turn_recovery" });
+      return;
+    }
     if (isCodexCompactionActive(runtime) || isCodexReviewTurnActive(runtime)) return;
     if (runtime.activeTurnId) return;
     const threadId = managed.session.threadId;
@@ -45095,26 +45107,12 @@ export function createAgentChatService(args: {
     return flags.filter((flag): flag is string => typeof flag === "string");
   }
 
-  function persistCodexAutomaticRecoveryAttempt(
-    managed: ManagedChatSession,
-  ): boolean {
-    if (managed.codexAutomaticRecoveryAttempted) return true;
-    managed.codexAutomaticRecoveryAttempted = true;
-    if (persistChatState(managed, { fsync: true })) return true;
-    managed.codexAutomaticRecoveryAttempted = false;
-    return false;
-  }
-
-  function clearCodexAutomaticRecoveryAttempt(
-    managed: ManagedChatSession,
-  ): boolean {
-    if (!managed.codexAutomaticRecoveryAttempted) return true;
-    managed.codexAutomaticRecoveryAttempted = false;
-    if (persistChatState(managed, { fsync: true })) return true;
-    managed.codexAutomaticRecoveryAttempted = true;
-    return false;
-  }
-
+  /**
+   * Post the turn's stall card. ADE never restarts Codex or sends anything on
+   * its own here: the card's actions are the only way out, and each one is
+   * the user's. `restartOnly` is the "hasn't answered yet" card (Restart Codex /
+   * Keep waiting); a turn that went quiet mid-work also offers Nudge and Retry.
+   */
   function emitCodexTurnStalled(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -45124,20 +45122,22 @@ export function createAgentChatService(args: {
       message: string;
       turnStartedAt?: number;
       lastProgressAt?: number;
+      restartOnly?: boolean;
     },
   ): void {
     if (runtime.stalledTurnIds.has(args.turnId)) return;
     rememberBoundedId(runtime.stalledTurnIds, args.turnId);
-    const recoveryOptions: Extract<AgentChatEvent, { type: "codex_turn_stalled" }>["recoveryOptions"] = [
-      "wait",
-      "steer",
-      "interrupt_retry_same_thread",
-      "restart_resume_thread",
-    ];
+    const recoveryOptions: Extract<AgentChatEvent, { type: "codex_turn_stalled" }>["recoveryOptions"] = args.restartOnly
+      ? ["wait", "restart_resume_thread"]
+      : ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"];
+    const supportedActions: Extract<AgentChatEvent, { type: "turn_health" }>["supportedActions"] = args.restartOnly
+      ? ["wait", "restart_resume"]
+      : ["wait", "nudge", "retry_same_runtime", "restart_resume"];
     const detectedAt = nowIso();
     const turnStartedAt = new Date(args.turnStartedAt ?? Date.now()).toISOString();
     const lastProgressAt = new Date(args.lastProgressAt ?? args.turnStartedAt ?? Date.now()).toISOString();
-    const automaticRecoveryAttempted = managed.codexAutomaticRecoveryAttempted;
+    // Kept on the wire for older clients; ADE no longer restarts on its own.
+    const automaticRecoveryAttempted = false;
     const providerNeutralReason = args.reason === "app_server_state_unknown"
       ? "runtime_state_unknown"
       : args.reason;
@@ -45161,8 +45161,8 @@ export function createAgentChatService(args: {
       turnStartedAt,
       lastProgressAt,
       detectedAt,
-      recoveryCount: automaticRecoveryAttempted ? 1 : 0,
-      supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+      recoveryCount: 0,
+      supportedActions,
       automaticRecoveryAttempted,
       sourceSessionId: managed.session.id,
     });
@@ -45195,8 +45195,8 @@ export function createAgentChatService(args: {
             turnStartedAt,
             lastProgressAt,
             detectedAt,
-            recoveryCount: automaticRecoveryAttempted ? 1 : 0,
-            supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+            recoveryCount: 0,
+            supportedActions,
             automaticRecoveryAttempted,
             sourceSessionId: managed.session.id,
           });
@@ -45544,51 +45544,19 @@ export function createAgentChatService(args: {
         return;
       }
 
-      if (
-        stallReason === "no_output"
-        && !managed.codexAutomaticRecoveryAttempted
-      ) {
-        if (getCrossMachineMoveLock(managed.session.id, "turn_recovery")) return;
-        if (persistCodexAutomaticRecoveryAttempt(managed)) {
-          emitCodexTurnRecovery(managed, {
-            turnId,
-            action: "restart_resume_thread",
-            state: "recovering",
-            message: "No Codex output arrived. ADE is restarting the app-server and resuming this thread once.",
-            automatic: true,
-          });
-          try {
-            await recoverCodexTurn({
-              sessionId: managed.session.id,
-              turnId,
-              action: "restart_resume_thread",
-            }, { automatic: true });
-            return;
-          } catch (error) {
-            logger.warn("agent_chat.codex_automatic_recovery_failed", {
-              sessionId: managed.session.id,
-              turnId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        } else {
-          logger.warn("agent_chat.codex_automatic_recovery_marker_persist_failed", {
-            sessionId: managed.session.id,
-            turnId,
-          });
-        }
-      }
-
+      // The user decides what happens next. ADE used to restart the app-server
+      // here and send its own "Resume the interrupted work" message, which a
+      // slow Codex (an ADE Cloud computer starting its MCP servers) read as a
+      // second request and which ran Codex's queue with nobody asking.
       emitCodexTurnStalled(managed, runtime, {
         turnId,
         reason: threadId && !stateProbeFailed ? stallReason : "app_server_state_unknown",
         message: stallReason === "no_progress"
           ? "Codex has not produced model or tool activity for 10 minutes. ADE left the turn running so long work is not destroyed."
-          : managed.codexAutomaticRecoveryAttempted
-            ? "Codex still has not produced output after ADE's one automatic restart. Restart and resume again, or keep waiting."
-            : "Codex has not produced output. ADE could not safely record an automatic recovery attempt, so it left the turn running.",
+          : `Codex hasn't answered in ${formatCodexSilenceMinutes(Date.now() - turnStartedAt)}. Restart Codex, or keep waiting.`,
         turnStartedAt,
         lastProgressAt,
+        restartOnly: stallReason === "no_output",
       });
     } finally {
       runtime.stallReconcileInFlight.delete(turnId);
@@ -50322,7 +50290,6 @@ export function createAgentChatService(args: {
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
       answeredPlanApprovalItemIds: new Set<string>(),
-      codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -52835,7 +52802,6 @@ export function createAgentChatService(args: {
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
       answeredPlanApprovalItemIds: new Set<string>(),
-      codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -65537,7 +65503,6 @@ export function createAgentChatService(args: {
     awaitBackendDispatch?: boolean;
     onBackendDispatched?: () => void;
     preparedMessage?: PreparedSendMessage;
-    automaticRecovery?: boolean;
     routeActiveToSteer?: boolean;
     pastedPromptAlreadyMaterialized?: boolean;
     rerunToken?: symbol;
@@ -65627,18 +65592,6 @@ export function createAgentChatService(args: {
     }
   };
 
-  /** Recent client send ids, per chat. True when this one was already seen. */
-  const seenClientSends = new Map<string, number>();
-  const noteClientSendSeen = (sessionId: string, clientSendId: string): boolean => {
-    const key = `${sessionId}:${clientSendId}`;
-    const now = Date.now();
-    for (const [seen, at] of seenClientSends) {
-      if (now - at > CLIENT_SEND_DEDUPE_MS) seenClientSends.delete(seen);
-    }
-    if (seenClientSends.has(key)) return true;
-    seenClientSends.set(key, now);
-    return false;
-  };
 
   async function sendMessage(
     args: AgentChatSendArgs,
@@ -65648,7 +65601,6 @@ export function createAgentChatService(args: {
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
       preparedMessage?: PreparedSendMessage;
-      automaticRecovery?: boolean;
       routeActiveToSteer: true;
       pastedPromptAlreadyMaterialized?: boolean;
       rerunToken?: symbol;
@@ -65662,7 +65614,6 @@ export function createAgentChatService(args: {
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
       preparedMessage?: PreparedSendMessage;
-      automaticRecovery?: boolean;
       routeActiveToSteer?: false;
       pastedPromptAlreadyMaterialized?: boolean;
       /** `rerunLastTurn`'s token: lets its own resend past its lock. */
@@ -65677,9 +65628,22 @@ export function createAgentChatService(args: {
     assertPlainPromptText(args);
     const takeRuntime = takeChatRuntimeOrRefuse(args.sessionId, "send to");
     if (takeRuntime) await takeRuntime;
-    // A send retried after a sleep (its first copy may have landed before the
-    // machine froze): the client's id tells a retry from a second message.
-    if (args.clientSendId && noteClientSendSeen(args.sessionId, args.clientSendId)) return;
+    // A retried send (after a sleep, a launch's backoff, a phone's offline
+    // queue) carries the id of its first copy: once that copy wrote the
+    // message, the retry answers with its result instead of sending again.
+    const { clientSendId, ...sendArgs } = args;
+    return clientSends.run(
+      args.sessionId,
+      clientSendId,
+      () => sendMessageOnce(sendArgs, options),
+      () => undefined,
+    );
+  }
+
+  async function sendMessageOnce(
+    args: AgentChatSendArgs,
+    options?: SendMessageOptions,
+  ): Promise<void | AgentChatSteerResult> {
     const managed = ensureManagedSession(args.sessionId);
     // `/side <question>` from any client (the desktop and iOS composers catch
     // it first; `ade chat send` and SDK hosts reach here) opens the
@@ -66040,13 +66004,6 @@ export function createAgentChatService(args: {
     const prepared = options?.preparedMessage
       ?? prepareSendMessage({ ...args, ...(options?.rerunToken ? { rerunToken: options.rerunToken } : {}) });
     if (!prepared) return;
-    if (
-      prepared.managed.session.provider === "codex"
-      && !options?.automaticRecovery
-      && !clearCodexAutomaticRecoveryAttempt(prepared.managed)
-    ) {
-      throw new Error("ADE could not save the new Codex turn state. Retry before closing this chat.");
-    }
     clearUserTurnMarkers();
     prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
@@ -67579,7 +67536,29 @@ export function createAgentChatService(args: {
     return "message_session";
   };
 
+  /**
+   * `messageSession` (the CLI's `ade chat send`, MCP, drafts). A retry that
+   * carries the client id of a message already written answers with the first
+   * delivery's result (`chatClientSendLedger.ts`).
+   */
   const messageSession = async (
+    { clientSendId, ...args }: AgentChatMessageSessionArgs,
+    options?: { trustedSpawnCompletion?: boolean },
+  ): Promise<AgentChatMessageSessionResult> => clientSends.run(
+    args.sessionId,
+    clientSendId,
+    () => messageSessionOnce(args, options),
+    () => ({
+      sessionId: args.sessionId,
+      kind: normalizeMessageSessionKind(args.kind),
+      routedAction: "sendMessage",
+      statusBefore: managedSessions.get(args.sessionId)?.session.status ?? "idle",
+      awaitingInputBefore: false,
+      delivery: "sent",
+    }),
+  );
+
+  const messageSessionOnce = async (
     {
       sessionId,
       text,
@@ -70122,13 +70101,17 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * One stall-card action, always the user's (the watchdog only posts the
+   * card). Retry and Restart hold Codex's queue while they run: the follow-ups
+   * the user queued wait for the resumed turn to end, as they would have for
+   * the stuck one, instead of starting the moment ADE interrupts.
+   */
   const recoverCodexTurn = async ({
     sessionId,
     turnId,
     action,
-  }: AgentChatRecoverCodexTurnArgs, internal?: {
-    automatic?: boolean;
-  }): Promise<AgentChatRecoverCodexTurnResult> => {
+  }: AgentChatRecoverCodexTurnArgs): Promise<AgentChatRecoverCodexTurnResult> => {
     assertChatNotMovedAway(sessionId, "codex_recovery");
     const normalizedTurnId = turnId.trim();
     if (!normalizedTurnId) throw new Error("Codex recovery requires a turn id.");
@@ -70150,11 +70133,7 @@ export function createAgentChatService(args: {
 
     try {
       if (action === "wait") {
-        // The user explicitly chose to keep this exact turn alive. Do not
-        // surprise them with ADE's automatic restart on the next watch cycle.
-        if (!persistCodexAutomaticRecoveryAttempt(managed)) {
-          throw new Error("ADE could not save the recovery choice. Retry before closing this chat.");
-        }
+        // Watch again: if Codex is still silent, the card comes back.
         scheduleCodexNoFirstEventWatchdog(managed, runtime, normalizedTurnId);
         emitChatEvent(managed, {
           type: "system_notice",
@@ -70169,6 +70148,8 @@ export function createAgentChatService(args: {
         await steer({
           sessionId,
           text: "Status check: briefly report your current progress or what is blocking this turn, then continue the task.",
+          // ADE wrote these words (on the user's click): an ADE row, not their bubble.
+          metadata: { hostContinuation: { reason: "stall_nudge" } },
         });
         scheduleCodexNoFirstEventWatchdog(managed, runtime, runtime.activeTurnId ?? normalizedTurnId);
         return { action, turnId: normalizedTurnId, status: "nudged" };
@@ -70178,6 +70159,7 @@ export function createAgentChatService(args: {
         throw new Error(`Unsupported Codex recovery action: ${String(action)}`);
       }
 
+      codexQueueStartHolds.add(sessionId);
       await interrupt({ sessionId }, { keepProviderQueue: true });
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
       if (managed.runtime === runtime && interruptedTurnId) {
@@ -70204,16 +70186,14 @@ export function createAgentChatService(args: {
         // Resumes the user's own last request; it assigns no new work, so a
         // spawned child stays owned by whoever owned it before the interrupt.
         metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
-      }, { awaitDispatch: true, automaticRecovery: internal?.automatic === true });
+      }, { awaitDispatch: true });
       if (action === "restart_resume_thread") {
         emitCodexTurnRecovery(managed, {
           turnId: normalizedTurnId,
           action,
           state: "recovered",
-          message: internal?.automatic
-            ? "ADE restarted the Codex app-server and resumed the thread."
-            : "Codex restarted and the thread resumed.",
-          automatic: internal?.automatic === true,
+          message: "Codex restarted and the thread resumed.",
+          automatic: false,
         });
         persistChatState(managed);
       }
@@ -70229,12 +70209,13 @@ export function createAgentChatService(args: {
           action,
           state: "failed",
           message: error instanceof Error ? error.message : String(error),
-          automatic: internal?.automatic === true,
+          automatic: false,
         });
         persistChatState(managed);
       }
       throw error;
     } finally {
+      codexQueueStartHolds.delete(sessionId);
       codexRecoveryInFlight.delete(recoveryKey);
     }
   };

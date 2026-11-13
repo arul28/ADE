@@ -32,12 +32,35 @@ type UserMessageBody =
   /** Leading context chips (iOS) and/or quote cards, then the rest as plain text. */
   | { kind: "chips"; chips: string[]; rest: string; segments: ChatOutputContextSegment[] | null }
   /**
-   * A message another agent, an automation, or a scheduled wake sent. Not the
-   * reader speaking, and often long and repeated, so it folds to one line.
+   * A message another agent, an automation, a scheduled wake, or ADE itself
+   * sent. Not the reader speaking, and often long and repeated, so it folds to
+   * one line.
    */
   | { kind: "folded"; fold: FoldedMessage };
 
-export type FoldedMessageSource = "agent" | "automation" | "schedule";
+export type FoldedMessageSource = "agent" | "automation" | "schedule" | "ade";
+
+type HostContinuationReason = NonNullable<NonNullable<UserMessageEvent["metadata"]>["hostContinuation"]>["reason"];
+
+/**
+ * Why ADE wrote a message into the chat (`metadata.hostContinuation`), as the
+ * ADE row's one line. iOS keeps the same list (`workAdeMessageReasonLabel`);
+ * keep the two the same.
+ */
+export const ADE_MESSAGE_REASON_LABEL: Record<HostContinuationReason, string> = {
+  interrupted_turn_recovery: "Resuming your last request after a restart",
+  stall_nudge: "Asked for a status check",
+  continuity_recovery: "Rebuilt this chat's thread from ADE history",
+  plan_followup: "Sent your plan decision",
+  background_work_ended: "A background job it was waiting on finished",
+  background_work_lost: "Background work it was waiting on was lost",
+  chat_wait: "A chat it was waiting on is ready",
+  subagent_question: "A subagent has a question",
+  subagent_awaiting_user: "A subagent is waiting on you",
+  provider_schedule_cleanup: "Cleaning up old provider schedules",
+  cto_intro: "Started the CTO's introduction",
+  cto_handoff_note: "Asked for a hand-off note",
+};
 
 export type FoldedMessage = {
   source: FoldedMessageSource;
@@ -105,6 +128,14 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
     // The "Woke on schedule" divider above already names the reason, so the
     // row previews the prompt itself.
     return make("schedule", SCHEDULE_SENDER[wake.kind] ?? "Scheduled wake-up", null);
+  }
+  // ADE wrote it (a recovery resume, a status check, a wake): never the
+  // reader's bubble. The row says why; the words the agent read open below.
+  const continuation = metadata.hostContinuation;
+  if (continuation && typeof continuation.reason === "string") {
+    const reason = ADE_MESSAGE_REASON_LABEL[continuation.reason as HostContinuationReason];
+    const fold = make("ade", "ADE", null);
+    return reason ? { ...fold, preview: reason } : fold;
   }
   return null;
 }

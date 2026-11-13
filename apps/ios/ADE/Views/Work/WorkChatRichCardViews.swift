@@ -1892,7 +1892,9 @@ struct WorkCodexRecoveryCardView: View {
           .font(.caption2.monospaced().weight(.bold))
           .tracking(1.2)
           .foregroundStyle(ADEColor.warning.opacity(0.8))
-        Text("\(recoveryProviderName) stopped responding")
+        Text(card.recoveryContext?.reason == "no_output"
+          ? "\(recoveryProviderName) is slow to answer"
+          : "\(recoveryProviderName) stopped responding")
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -1911,6 +1913,7 @@ struct WorkCodexRecoveryCardView: View {
           .foregroundStyle(ADEColor.textMuted)
       }
 
+      // Only on cards from older hosts, which restarted once on their own.
       if card.recoveryContext?.automaticRecoveryAttempted == true {
         Label("Automatic restart was already attempted once.", systemImage: "arrow.clockwise")
           .font(.caption2)
@@ -2031,7 +2034,7 @@ func workCodexRecoveryActionLabel(for action: String) -> String? {
   case "wait": return "Keep waiting"
   case "steer": return "Send nudge"
   case "interrupt_retry_same_thread": return "Retry same server"
-  case "restart_resume_thread": return "Restart & resume"
+  case "restart_resume_thread": return "Restart Codex"
   default: return nil
   }
 }

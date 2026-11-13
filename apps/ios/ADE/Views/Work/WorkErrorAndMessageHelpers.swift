@@ -213,6 +213,7 @@ struct WorkChatMessageFold {
           processed: processed,
           writtenByAde: envelope.userMessageWrittenByAde,
           fromSideChat: envelope.userMessageFromSideChat,
+          adeReason: envelope.userMessageAdeReason,
           guestAuthorName: envelope.userMessageGuestAuthorName,
           attachments: attachments
         ))
@@ -1116,6 +1117,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   )
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
+  envelope.userMessageAdeReason = entry.userMessageAdeReason
   envelope.userMessageGuestAuthorName = entry.userMessageGuestAuthorName
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
   envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
