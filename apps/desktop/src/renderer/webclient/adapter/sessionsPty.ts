@@ -25,7 +25,7 @@ import {
 } from "./sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
-import { previewRowsFromTranscript } from "./terminalPreviewRows";
+import { previewRowsFromTranscript } from "../../components/terminals/terminalPreviewRows";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.

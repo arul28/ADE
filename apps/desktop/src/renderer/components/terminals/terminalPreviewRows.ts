@@ -8,6 +8,11 @@ import type { TerminalSnapshotCell, TerminalSnapshotRow } from "../../../shared/
  * conversation it printed stays in the scrollback.
  */
 const ALTERNATE_SCREEN_SWITCH = /\x1b\[\?(?:1049|1047|47)[hl]/g;
+
+/** True when the transcript switched to the alternate screen at least once. */
+export function transcriptUsesAlternateScreen(transcript: string): boolean {
+  return /\x1b\[\?(?:1049|1047|47)h/.test(transcript);
+}
 const PREVIEW_EMULATOR_ROWS = 40;
 const PREVIEW_SCROLLBACK = 4_000;
 const MIN_PREVIEW_COLS = 20;
@@ -36,8 +41,9 @@ function snapshotCell(cell: IBufferCell | undefined): TerminalSnapshotCell {
 
 /**
  * The last `maxRows` non-blank-ended rows of a raw terminal transcript, as the
- * machine's own preview gives them: the web client has no stored snapshot, so
- * it plays the tail into an xterm that is never put on screen. Null when the
+ * machine's own preview gives them, played into an xterm that is never put on
+ * screen. The web client has no stored snapshot, and the desktop's stored one
+ * of a full-screen CLI that exited is the empty normal screen. Null when the
  * emulator does not load.
  */
 export async function previewRowsFromTranscript(
