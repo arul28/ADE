@@ -26152,7 +26152,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // is the confirmation, so --confirm is not needed there.
     const fromChat = Boolean(process.env.ADE_CHAT_SESSION_ID?.trim());
     if (!machine?.trim()) {
-      throw new CliUsageError(`machines ${sub} requires a machine key${fromChat ? ", device id or name" : ""}.`);
+      throw new CliUsageError(`machines ${sub} requires ${fromChat ? "a machine key, device id or name" : "a stable machine key"}.`);
     }
     if (!fromChat && confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(

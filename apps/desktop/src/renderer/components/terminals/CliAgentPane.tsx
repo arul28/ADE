@@ -519,8 +519,7 @@ function CliCard({
         responding={responding}
         error={null}
         chatProvider={provider}
-        onRemove={(answers) => { void onAnswer(request, "accept", answers); }}
-        onKeep={(answers) => { void onAnswer(request, "accept", answers); }}
+        onAnswer={(answers) => { void onAnswer(request, "accept", answers); }}
       />
     );
   }

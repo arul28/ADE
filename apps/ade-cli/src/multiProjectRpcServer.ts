@@ -1702,6 +1702,24 @@ export function createMultiProjectRpcRequestHandler(
     const status = accountAuthService.getStatus();
     return status.signedIn ? status.userId?.trim() || null : null;
   };
+  /** The account's machine directory, as this brain reaches it. */
+  const accountMachineDirectory = (): AccountMachineDirectoryService =>
+    new AccountMachineDirectoryService(accountAuthService, {
+      appVersion: options.serverVersion,
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+        projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+      }),
+    });
+  /** This computer's account machine key, or null when it has none or it cannot be read. */
+  const localAccountMachineKey = (): string | null => {
+    try {
+      return createSyncCloudRelayStore({
+        filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+      }).getMachineIdentity().machineKey.trim() || null;
+    } catch {
+      return null;
+    }
+  };
   const accountOwnerUserIdFromStatus = (value: unknown): string | null => {
     if (!isRecord(value) || value.signedIn !== true) return null;
     return typeof value.userId === "string" ? value.userId.trim() || null : null;
@@ -2868,26 +2886,13 @@ export function createMultiProjectRpcRequestHandler(
           );
         }
         reconcileAccountOwnership(currentAccountOwnerUserId());
-        const removalDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const removalDirectory = accountMachineDirectory();
         try {
           const result = await requestMachineRemovalFromUser({
             requestChatInput: (input) => chatService.requestChatInput(input),
             listMachines: () => removalDirectory.listMachines(),
             deleteMachine: (machineKey) => removalDirectory.deleteMachine(machineKey),
-            localMachineKey: () => {
-              try {
-                return createSyncCloudRelayStore({
-                  filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
-                }).getMachineIdentity().machineKey.trim() || null;
-              } catch {
-                return null;
-              }
-            },
+            localMachineKey: localAccountMachineKey,
           }, {
             chatSessionId: removalChatSessionId,
             machine: typeof removalArgs.machine === "string" ? removalArgs.machine : "",
@@ -2948,12 +2953,7 @@ export function createMultiProjectRpcRequestHandler(
             "account.showMachine requires a machine name, machine key, or device id.",
           );
         }
-        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const machineDirectory = accountMachineDirectory();
         const listed = await machineDirectory.listMachines();
         if (listed.state !== "ok") {
           return {
@@ -2982,15 +2982,7 @@ export function createMultiProjectRpcRequestHandler(
         } catch {
           activityItems = null;
         }
-        let localMachineKey: string | null = null;
-        try {
-          localMachineKey = createSyncCloudRelayStore({
-            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
-          }).getMachineIdentity().machineKey;
-        } catch {
-          localMachineKey = null;
-        }
-        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey });
+        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey: localAccountMachineKey() });
         return {
           domain: "account",
           action,
@@ -3041,12 +3033,7 @@ export function createMultiProjectRpcRequestHandler(
         || action === "deleteMachine"
       ) {
         reconcileAccountOwnership(currentAccountOwnerUserId());
-        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const machineDirectory = accountMachineDirectory();
         const actionArgs = isRecord(params.args) ? params.args : {};
         if (action === "listMachines") {
           const result = await machineDirectory.listMachines();
@@ -3135,12 +3122,7 @@ export function createMultiProjectRpcRequestHandler(
             filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
           }).getMachineIdentity().machineKey.trim();
           if (ownMachineKey) {
-            await new AccountMachineDirectoryService(accountAuthService, {
-              appVersion: options.serverVersion,
-              directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-                projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-              }),
-            }).deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
+            await accountMachineDirectory().deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
           }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);

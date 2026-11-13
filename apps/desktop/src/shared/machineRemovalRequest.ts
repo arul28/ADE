@@ -60,8 +60,6 @@ export type MachineRemovalRequestResult = {
   status: "removed" | "kept" | "pending_approval" | "timed_out";
   removed: boolean;
   machine: { machineKey: string; name: string };
-  /** `pending_approval`: when the card stops waiting. */
-  expiresAt?: string;
   /** One sentence for the agent: what happened, and what to do next. */
   next: string;
 };

@@ -9624,8 +9624,7 @@ function AgentChatComposerImpl({
               responding={approvalResponding ?? false}
               error={pendingInputError ?? null}
               chatProvider={sessionProvider}
-              onRemove={(answers) => { void onApproval("accept", null, answers); }}
-              onKeep={(answers) => { void onApproval("accept", null, answers); }}
+              onAnswer={(answers) => { void onApproval("accept", null, answers); }}
             />
           );
         }

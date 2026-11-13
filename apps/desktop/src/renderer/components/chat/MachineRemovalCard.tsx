@@ -2,15 +2,12 @@ import { useState } from "react";
 import { AppleLogo, Desktop, LinuxLogo, SpinnerGap, Trash, Warning, WindowsLogo } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
 import {
-  MACHINE_REMOVAL_DECISION_QUESTION_ID,
   MACHINE_REMOVAL_EFFECT,
-  MACHINE_REMOVAL_REMOVE_VALUE,
   machineRemovalAnswersApprove,
   machineRemovalKeepAnswers,
   machineRemovalRemoveAnswers,
   type MachineRemovalRequestCard,
 } from "../../../shared/machineRemovalRequest";
-import { ownQuestionValue } from "../../../shared/pendingInputAnswers";
 import { cardAskerFamily, providerDisplayName } from "../../../shared/pendingInputLabels";
 import { relativeWhen } from "../../lib/format";
 import { CardError, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
@@ -57,8 +54,7 @@ export function MachineRemovalComposer({
   card,
   responding,
   error,
-  onRemove,
-  onKeep,
+  onAnswer,
   chatProvider,
 }: {
   request: PendingInputRequest;
@@ -66,15 +62,15 @@ export function MachineRemovalComposer({
   responding: boolean;
   /** Why the last Remove did not go through, from the host. */
   error: string | null;
-  onRemove: (answers: Record<string, string[]>) => void;
-  onKeep: (answers: Record<string, string[]>) => void;
+  /** Sends the person's answer: Keep, or Remove (with the second yes when asked). */
+  onAnswer: (answers: Record<string, string[]>) => void;
   chatProvider?: string | null;
 }) {
   const [armed, setArmed] = useState(false);
   const askerFamily = cardAskerFamily(request.source, chatProvider);
   const asker = providerDisplayName(askerFamily);
   const keep = () => {
-    if (!responding) onKeep(machineRemovalKeepAnswers());
+    if (!responding) onAnswer(machineRemovalKeepAnswers());
   };
   const remove = () => {
     if (responding) return;
@@ -82,7 +78,7 @@ export function MachineRemovalComposer({
       setArmed(true);
       return;
     }
-    onRemove(machineRemovalRemoveAnswers(card));
+    onAnswer(machineRemovalRemoveAnswers(card));
   };
   const onKeyDown = cardEscapeHandler({
     responding,
@@ -182,15 +178,10 @@ export function MachineRemovalReceipt({
   if (resolution === null) {
     return <CardReceipt testId="machine-removal-receipt-open" logo={logo} state="open" before="Remove computer " name={card.name} />;
   }
-  const pick = (id: string) => {
-    const raw = ownQuestionValue(answers, id);
-    return Array.isArray(raw) ? raw[0] : raw;
-  };
-  const decision = pick(MACHINE_REMOVAL_DECISION_QUESTION_ID);
   const answerMap: Record<string, string[]> = {};
   for (const [id, value] of Object.entries(answers ?? {})) answerMap[id] = Array.isArray(value) ? value : [value];
   // The brain removed it only for an explicit Remove (with the second yes when asked).
-  const removed = resolution === "accepted" && decision === MACHINE_REMOVAL_REMOVE_VALUE && machineRemovalAnswersApprove(card, answerMap);
+  const removed = resolution === "accepted" && machineRemovalAnswersApprove(card, answerMap);
   const text = removed
     ? "removed from your ADE account"
     : resolution === "cancelled" ? "· closed before it was answered" : "· kept";

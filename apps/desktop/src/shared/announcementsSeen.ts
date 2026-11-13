@@ -33,15 +33,25 @@ export function normalizeSeenAnnouncements(value: unknown): SeenAnnouncementsMap
   return out;
 }
 
-/** Every id in either copy, at the earlier of its two times. */
+/**
+ * Every id in either copy, at the earlier of its two times. The cap holds
+ * here too, and `left`'s ids come first: a merge never pushes out a page the
+ * copy already holds (a later read would otherwise drop one past the cap).
+ */
 export function mergeSeenAnnouncements(
   left: SeenAnnouncementsMap,
   right: SeenAnnouncementsMap,
 ): SeenAnnouncementsMap {
   const merged: SeenAnnouncementsMap = { ...left };
+  let count = Object.keys(merged).length;
   for (const [id, seenAt] of Object.entries(right)) {
     const current = merged[id];
-    merged[id] = current === undefined ? seenAt : Math.min(current, seenAt);
+    if (current !== undefined) {
+      merged[id] = Math.min(current, seenAt);
+    } else if (count < MAX_SEEN_IDS) {
+      merged[id] = seenAt;
+      count += 1;
+    }
   }
   return merged;
 }

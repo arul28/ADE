@@ -19,7 +19,6 @@ import {
 import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../../desktop/src/shared/types/account";
 import {
   cardTimeoutMs,
-  cardWasDeclined,
   type CardRequestChatInput,
 } from "../../../../desktop/src/main/services/chat/chatCardRequest";
 
@@ -154,15 +153,19 @@ async function askToRemove(
     lastSeenLine(card.lastSeenAt, Date.now()),
     card.isThisComputer ? "this is the computer this chat runs on" : null,
   ].filter(Boolean).join(" · ");
-  let removed = false;
+  // The removal the person's Remove started, if any. A card can close while it
+  // runs (the turn stops, the chat closes), so the outcome is read from it, not
+  // from how the card closed: the agent is never told "kept" for a computer
+  // that is gone.
+  const removal: { pending: Promise<unknown> | null } = { pending: null };
   const beforeAccept = async (answers: Record<string, string[]>): Promise<void> => {
     if (answers[MACHINE_REMOVAL_DECISION_QUESTION_ID]?.[0] !== MACHINE_REMOVAL_REMOVE_VALUE) return;
     if (!machineRemovalAnswersApprove(card, answers)) {
       // Remove without the second yes: keep the card open and say why.
       throw new Error(`${card.name} is ${card.isThisComputer ? "the computer this chat runs on" : "online"}. Confirm "Remove anyway" to remove it, or choose Keep.`);
     }
-    await deps.deleteMachine(card.machineKey);
-    removed = true;
+    removal.pending = deps.deleteMachine(card.machineKey);
+    await removal.pending;
   };
   const response = await deps.requestChatInput({
     chatSessionId,
@@ -201,6 +204,7 @@ async function askToRemove(
     ],
   });
 
+  const removed = removal.pending ? await removal.pending.then(() => true, () => false) : false;
   if (removed) {
     return {
       status: "removed",
@@ -217,15 +221,12 @@ async function askToRemove(
       next: `Nobody answered in time, so ${card.name} was kept. Ask again when the person is around.`,
     };
   }
-  if (cardWasDeclined(response) || response.decision === "accept") {
-    return {
-      status: "kept",
-      removed: false,
-      machine: summary,
-      next: response.decision === "cancel"
-        ? `The card closed before the person answered (the turn stopped or the chat closed), so ${card.name} was kept.`
-        : `The person chose Keep. ${card.name} stays on the account; do not ask again unless they bring it up.`,
-    };
-  }
-  return { status: "kept", removed: false, machine: summary, next: `${card.name} was kept.` };
+  return {
+    status: "kept",
+    removed: false,
+    machine: summary,
+    next: response.decision === "cancel"
+      ? `The card closed before the person answered (the turn stopped or the chat closed), so ${card.name} was kept.`
+      : `The person chose Keep. ${card.name} stays on the account; do not ask again unless they bring it up.`,
+  };
 }
