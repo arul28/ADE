@@ -308,8 +308,14 @@ export function createGithubAccountAppCredential(deps: {
      * no other.
      */
     onTokenRejected: async (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => {
+      // Marked before the lookup: a replacement fires `onChanged`, which can
+      // start a relay poll at once, and that poll must not send this token
+      // again. With no replacement the own token stays the fallback.
+      const ownToken = token === deps.appUserAuth.getStoredTokenForHealth();
+      const previous = refusedOwnToken;
+      if (ownToken) refusedOwnToken = token;
       const replacement = await onRejected(token, opts);
-      if (replacement && token === deps.appUserAuth.getStoredTokenForHealth()) refusedOwnToken = token;
+      if (ownToken && !replacement && refusedOwnToken === token) refusedOwnToken = previous;
       return replacement;
     },
   };
