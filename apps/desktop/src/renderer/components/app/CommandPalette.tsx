@@ -436,10 +436,6 @@ export function CommandPalette({
   // re-running on every browseInput keystroke.
   const browseLocationKeyRef = useRef<string | null>(null);
   const dragCounterRef = useRef(0);
-  const openIntentRef = useRef<{
-    open: boolean;
-    intent: CommandPaletteIntent;
-  } | null>(null);
 
   const remoteLocations = useMemo(
     () =>
@@ -581,13 +577,23 @@ export function CommandPalette({
     setActionOutcome(null);
   }, []);
 
-  useEffect(() => {
-    const previous = openIntentRef.current;
-    const changed =
-      previous == null || previous.open !== open || previous.intent !== intent;
-    openIntentRef.current = { open, intent };
-    if (!changed) return;
-
+  // The mode follows a new open or intent in the same render, not in an
+  // effect. An effect lets the window commit once in the default mode, which
+  // builds the whole command list (about 290 rows) only for the next commit
+  // to remove it, and the open's forced style passes then cover those rows.
+  const [seenOpenIntent, setSeenOpenIntent] = useState<{
+    open: boolean;
+    intent: CommandPaletteIntent;
+  } | null>(null);
+  if (
+    seenOpenIntent == null
+    || seenOpenIntent.open !== open
+    || seenOpenIntent.intent !== intent
+  ) {
+    setSeenOpenIntent({ open, intent });
+    applyOpenIntent();
+  }
+  function applyOpenIntent() {
     if (!open) {
       setMode("default");
       setQ("");
@@ -632,15 +638,7 @@ export function CommandPalette({
     setFilterMenuKey(null);
     setSelectedIdx(0);
     setBrowseError(null);
-  }, [
-    intent,
-    open,
-    startProjectAdd,
-    startProjectBrowse,
-    startProjectClone,
-    startProjectCreate,
-    startProjectRemote,
-  ]);
+  }
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
