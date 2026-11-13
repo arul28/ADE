@@ -3246,3 +3246,30 @@ poll while a chat's browser is on another machine, and a frame read every
 250 ms, one in flight, only while someone watches a remote tab) need two
 machines. Sleeping tabs (30 min) and the 320 MB disk-cache cap lower memory and
 disk use over hours; a 15-minute window cannot show them.
+
+### Home lists the account's projects (account list as the one source, 2026-11-12)
+
+Not the dev app: the dev desktop's first-run home was in use by another
+agent's app, so these numbers come from the Vite renderer preview (`vite
+--port 5191`, the browser mock, a synthetic account list of 7 projects and
+the mock's 11 recents) in headless Chrome on the Mac Studio, load average
+about 21. Before is the base `e35917691` renderer checked out over the same
+tree in the same server and browser. They are not comparable with the dev-app
+rows above.
+
+| Row | Before (`e35917691`) | After | Ceiling |
+| --- | --- | --- | --- |
+| Home: "+" to the first Projects row, 8 runs, median | 60 ms | 52 ms (first run 93 ms, cold) | — |
+| Home "Add project" to its first screen painted, 7 runs, median | 125 ms (the location chooser) | 121 ms (the form itself) | — |
+
+The add window costs one long frame of about 125 ms in both: the Radix
+presence style read, the input focus and a motion scroll measure each force
+a style and layout pass of about 30 ms over the Home page behind the window.
+The form's own work is under 1 ms, and its reads (recents, default folders)
+are async after the first paint. The form is now the first screen, so adding
+a repository takes one window instead of two.
+
+No timer, poll or subscription is added. Home and the top bar's copies menu
+build their copies from the snapshot and recents they already hold. The new
+computers tag on the project page reads the copies sources once on mount and
+on window focus (one `listRecent`).
