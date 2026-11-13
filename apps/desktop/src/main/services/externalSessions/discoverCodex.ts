@@ -974,13 +974,10 @@ export async function discoverCodexSessions(
     const seeds = codexSeedsFromStateDb(args, configHome.dir, limit, lookupId, ctx)
       ?? codexSeedsFromFiles(path.join(configHome.dir, "sessions"), limit, lookupId, args.scopeRoots, ctx);
     for (const seed of seeds) {
-      // Same activity calculation as `codexRecordFromSeed`, so the copy kept is
-      // the one the row would have shown as newest.
-      const stamp = Math.max(
-        seed.updatedAt ?? 0,
-        seed.mtimeMs ?? 0,
-        index.get(seed.id)?.updatedAt ?? 0,
-      );
+      // Transcript activity only. `session_index.jsonl` also moves when a thread
+      // is renamed, so letting it pick the copy could keep an older transcript
+      // whose name changed after another account added turns.
+      const stamp = Math.max(seed.updatedAt ?? 0, seed.mtimeMs ?? 0);
       const existing = byId.get(seed.id);
       // One id can sit in two homes (an account move leaves the source copy):
       // the more recently written copy is the one to list.

@@ -57590,7 +57590,8 @@ export function createAgentChatService(args: {
    * rollout and removes it afterwards, and the second would read a file that
    * just went away. They share this promise and get the same envelopes.
    */
-  const codexReplayReadsInFlight = new Map<string, Promise<AgentChatEventEnvelope[]>>();
+  type CodexReplayTurns = Parameters<typeof codexTurnsToChatEvents>[0];
+  const codexReplayReadsInFlight = new Map<string, Promise<CodexReplayTurns>>();
 
   const fileIsNewer = async (candidate: string | null, than: string | null): Promise<boolean> => {
     if (!candidate || !than) return false;
@@ -57616,8 +57617,8 @@ export function createAgentChatService(args: {
     laneId: string;
     instanceId: string | null;
     sourceHome: string;
-    importedAt: number;
-  }): Promise<AgentChatEventEnvelope[]> => {
+    /** Raw turns only: each caller builds its own events for its own lane. */
+  }): Promise<CodexReplayTurns> => {
     let readerSessionId: string | null = null;
     // A rollout copied in for the reader is scratch: a replay creates a fresh
     // chat with no thread pointer, so the copy is removed afterwards.
@@ -57678,13 +57679,7 @@ export function createAgentChatService(args: {
           `External Codex thread '${opts.externalSessionId}' was not found by thread/read.`,
         );
       }
-      return codexTurnsToChatEvents(sourceThread.turns, {
-        sessionId: "import-preview",
-        provider: "codex",
-        externalSessionId: opts.externalSessionId,
-        importedAt: opts.importedAt,
-        laneId: opts.laneId,
-      });
+      return sourceThread.turns;
     } finally {
       if (readerSessionId) {
         await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
@@ -57757,7 +57752,6 @@ export function createAgentChatService(args: {
               || process.env.CODEX_HOME?.trim()
               || path.join(os.homedir(), ".codex"),
           ),
-          importedAt: options.importedAt,
         });
         codexReplayReadsInFlight.set(replayKey, read);
         const clear = (): void => {
@@ -57765,7 +57759,13 @@ export function createAgentChatService(args: {
         };
         read.then(clear, clear);
       }
-      envelopes = await read;
+      envelopes = codexTurnsToChatEvents(await read, {
+        sessionId: "import-preview",
+        provider: "codex",
+        externalSessionId,
+        importedAt: options.importedAt,
+        laneId: args.laneId,
+      });
     } else {
       envelopes = await loadExternalImportEvents(args, options.importedAt, reopen);
     }
