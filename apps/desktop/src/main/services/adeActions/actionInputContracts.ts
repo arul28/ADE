@@ -898,10 +898,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     reportCliTurnSignal: {
       description:
-        "Internal: a tracked agent CLI's own hook reports its turn (Claude's UserPromptSubmit, Stop, PermissionRequest, "
-        + "Notification). Run by `ade __ade-cli-turn-hook` from the hook ADE adds to the launch; agents do not call it. "
-        + "The runtime reads it as working, done or needs you. Unknown sessions answer ok: false.",
-      input: "object { sessionId: string, provider: \"claude\", payload: { hook_event_name: string, prompt_id?: string, notification_type?: string, tool_name?: string, message?: string } }",
+        "Internal: a tracked agent CLI's own hook reports its turn (Claude's UserPromptSubmit, Stop, StopFailure, "
+        + "PermissionRequest, Notification, Elicitation) and the agents beside it (SubagentStart, SubagentStop, SessionEnd). "
+        + "Run by `ade __ade-cli-turn-hook` from the hook ADE adds to the launch; agents do not call it. "
+        + "The runtime reads it as working, done, background work or needs you. Unknown sessions answer ok: false.",
+      input: "object { sessionId: string, provider: \"claude\", payload: { hook_event_name: string, prompt_id?: string, notification_type?: string, tool_name?: string, agent_id?: string, agent_type?: string, message?: string } }",
       example: "ade actions run session.reportCliTurnSignal --input-json '{\"sessionId\":\"term-123\",\"provider\":\"claude\",\"payload\":{\"hook_event_name\":\"Stop\"}}'",
     },
     moveOnBoard: {

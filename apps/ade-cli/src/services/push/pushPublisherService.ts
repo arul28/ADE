@@ -905,6 +905,20 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   /**
+   * Makes the run's background set match `liveIds` (a CLI reports its whole
+   * set each time). True when the run's phase changed.
+   */
+  const reconcileBackgroundTasks = (run: AgentRunState, liveIds: readonly string[]): boolean => {
+    const live = new Set(liveIds);
+    const before = run.phase;
+    for (const taskId of [...run.backgroundTaskIds]) {
+      if (!live.has(taskId)) applyBackgroundTaskUpdate(run, taskId, "completed");
+    }
+    for (const taskId of live) applyBackgroundTaskUpdate(run, taskId, "running");
+    return run.phase !== before;
+  };
+
+  /**
    * A run that keeps emitting transcript events is working, even if a provider
    * bookend already declared it done — a frozen `completed` row is precisely
    * how a live session reads as "is done" everywhere in Activity. The grace
@@ -2345,19 +2359,24 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
     // Exit/kill phases are owned by onPtyExit (which knows the exit code).
     if (signal.runtimeState === "exited" || signal.runtimeState === "killed") return;
+    // A new turn is working: the last turn's parked "completed" no longer
+    // applies, so agents that drain mid-turn must not end this one.
+    if (
+      existing?.kind === "cli"
+      && signal.exactTurnState
+      && signal.runtimeState === "running"
+      && existing.phase === "running"
+    ) {
+      existing.deferredTerminalPhase = null;
+    }
     // The CLI's live agents are this run's background work, as a chat's are:
     // a clean turn end then waits for them before the run reads completed.
-    if (existing?.kind === "cli" && signal.backgroundAgentIds) {
-      const live = new Set(signal.backgroundAgentIds);
-      const before = existing.phase;
-      for (const taskId of [...existing.backgroundTaskIds]) {
-        if (!live.has(taskId)) applyBackgroundTaskUpdate(existing, taskId, "completed");
-      }
-      for (const taskId of live) applyBackgroundTaskUpdate(existing, taskId, "running");
-      if (existing.phase !== before) {
-        markRunUpdated(existing);
-        scheduleFlush(false);
-      }
+    if (existing?.kind === "cli" && signal.backgroundAgentIds && reconcileBackgroundTasks(existing, signal.backgroundAgentIds)) {
+      markRunUpdated(existing);
+      if (isTerminalPhase(existing.phase)) recentRuns.set(signal.sessionId, snapshotRun(existing));
+      scheduleFlush(false);
+      // The agents drained and the parked turn end settled: nothing below applies.
+      if (existing.phase === "completed") return;
     }
     // Explicit/provider-structured attention owns this phase until the
     // lifecycle event that resolves it. PTY heartbeats are observational and
@@ -2368,6 +2387,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (existing?.kind === "chat") return;
       if (existing?.phase === "completed") return;
       if (!existing) return; // a turn nobody saw start leaves nothing to finish
+      // The turn already ended and waits on its background agents: an idle
+      // heartbeat changes nothing, so it must not rewrite the Live Activity.
+      if (existing.phase === "running" && existing.deferredTerminalPhase === "completed") return;
       markRunUpdated(existing);
       settleRun(existing, "completed");
       if (isTerminalPhase(existing.phase)) recentRuns.set(signal.sessionId, snapshotRun(existing));

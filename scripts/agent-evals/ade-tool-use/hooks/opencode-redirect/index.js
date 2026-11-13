@@ -7,7 +7,7 @@
 // stalls the tool call. Keep this one synchronous and small.
 // Env: ADE_EVAL_RULES (rules.json), ADE_EVAL_HOOK_STATE, ADE_EVAL_HOOK_LOG.
 import fs from "node:fs";
-import { compileRules, firstRuleHit } from "../../match.mjs";
+import { compileRules, decideRule } from "../../match.mjs";
 
 export default {
   id: "ade-eval-redirect",
@@ -22,21 +22,16 @@ export default {
     await ctx.permission.hook("evaluate", (input) => {
       if (input.action !== "shell") return;
       const command = (input.resources ?? []).join(" && ");
-      const hit = firstRuleHit(rules, command);
-      if (!hit) return;
-      const seen = denied.has(hit.id);
-      const log = (decision) => {
-        if (logPath) fs.appendFileSync(logPath, `${JSON.stringify({ at: Date.now(), agent: input.agent ?? null, rule: hit.id, decision, command })}\n`);
-      };
-      if (hit.decision === "deny" || !seen) {
+      const decided = decideRule(rules, command, denied);
+      if (!decided) return;
+      const { hit, decision } = decided;
+      if (decision === "deny") {
         denied.add(hit.id);
         if (statePath) fs.writeFileSync(statePath, JSON.stringify({ denied: [...denied] }));
         input.effect = "deny";
         input.message = hit.reason;
-        log("deny");
-        return;
       }
-      log("allow-retry");
+      if (logPath) fs.appendFileSync(logPath, `${JSON.stringify({ at: Date.now(), agent: input.agent ?? null, rule: hit.id, decision, command })}\n`);
     });
   },
 };

@@ -14,11 +14,21 @@
 // that points screen tools at the stand-ins. Hooks fail open, so run.mjs
 // refuses those providers unless --allow-hook-guard names them.
 //
-// hooks: how arm C installs the redirect rules, or null when it cannot.
-import { spawnSync } from "node:child_process";
+// armC: true when arm C can install the redirect rules (a pre-tool hook or
+// a plugin); run.mjs skips arm C for the others.
+//
+// runtimeKind: the ADE runtime whose prompt arm A renders for this provider
+// (render-prompt.ts), or null for the generic text.
+//
+// prepare({ bin, outDir, runGuarded }): optional one-time setup before the
+// first case; returns a skip reason or null.
+// beforeRun({ arm, bin, built, sandbox, guarded }): optional per-case setup
+// after build(); returns a skip reason for this case or null.
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 
 const home = os.homedir();
 const toolsDir = path.join(home, ".ade/tools");
@@ -62,6 +72,8 @@ const probeEnv = () => ({ HOME: home, USER: process.env.USER ?? "", PATH: "/usr/
 /** An empty folder for a probe run, so the probe sees no project files. */
 const probeDir = () => fs.mkdtempSync(path.join(fs.existsSync("/Volumes/Dev/scratch") ? "/Volumes/Dev/scratch" : os.tmpdir(), "ade-eval-probe-"));
 const emptyUsage = (note) => ({ firstInput: null, firstCacheWrite: null, totalInput: null, costUsd: null, note });
+/** One tool call as a `calls` entry: the shell tool's command, or `tool:<name> <input JSON>`. */
+const callText = (name, shellName, input) => (name === shellName ? String(input?.command ?? "") : `tool:${name} ${JSON.stringify(input)}`);
 
 // ------------------------------------------------------------------ Claude
 
@@ -69,7 +81,8 @@ const claude = {
   label: "Claude (Agent SDK CLI)",
   defaultModel: "claude-haiku-5-5",
   guard: "seatbelt",
-  hooks: "settings",
+  armC: true,
+  runtimeKind: "claude-agent-sdk-query",
   bin: () => process.env.ADE_EVAL_CLAUDE_BIN ?? newest(path.join(toolsDir, "@anthropic-ai/claude-agent-sdk-darwin-arm64"), "claude"),
   detect(bin) {
     return bin ? { ok: true } : { ok: false, reason: "Claude SDK binary not found under ~/.ade/tools (set ADE_EVAL_CLAUDE_BIN)" };
@@ -105,7 +118,7 @@ const claude = {
         }
         for (const block of event.message?.content ?? []) {
           if (block.type !== "tool_use") continue;
-          calls.push(block.name === "Bash" ? String(block.input?.command ?? "") : `tool:${block.name} ${JSON.stringify(block.input)}`);
+          calls.push(callText(block.name, "Bash", block.input));
         }
       }
       if (event.type === "result") {
@@ -123,11 +136,59 @@ const claude = {
 
 // ------------------------------------------------------------------ Codex
 
+/**
+ * Codex skips a user-layer hook until its hash is trusted, with no message.
+ * Read the hash the way the app does (`hooks/list` on the app server, no
+ * model call) and record it in this case's CODEX_HOME. `guarded(cmd, argv)`
+ * wraps the command in guard.sb, as run.mjs does for the case itself.
+ */
+async function trustCodexHooks(guarded, bin, codexHome, sandbox) {
+  const [cmd, argv] = guarded(bin, ["app-server"]);
+  const child = spawn(cmd, argv, { cwd: sandbox.repo, env: { ...sandbox.env, CODEX_HOME: codexHome }, stdio: ["pipe", "pipe", "ignore"] });
+  const lines = readline.createInterface({ input: child.stdout });
+  const replies = new Map();
+  lines.on("line", (line) => {
+    try {
+      const msg = JSON.parse(line);
+      if (msg.id != null) replies.get(msg.id)?.(msg);
+    } catch { /* not JSON */ }
+  });
+  // A reply, or a rejection once the server exits, fails to start, or times out.
+  let ended = null;
+  const failAll = (reason) => {
+    ended ??= reason;
+    for (const settle of replies.values()) settle(null);
+    replies.clear();
+  };
+  child.on("error", (error) => failAll(`codex app-server did not start: ${error.message}`));
+  child.on("close", (code, signal) => failAll(`codex app-server exited (${signal ?? code}) before it replied`));
+  const request = (id, method, params) => new Promise((resolve, reject) => {
+    if (ended) { reject(new Error(ended)); return; }
+    replies.set(id, (msg) => (msg ? resolve(msg) : reject(new Error(ended ?? "codex app-server stopped"))));
+    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+  });
+  const timer = setTimeout(() => { failAll("codex app-server timed out after 30 s"); child.kill("SIGKILL"); }, 30_000);
+  try {
+    await request(1, "initialize", { clientInfo: { name: "ade_tool_eval", title: "ADE tool eval", version: "0" }, capabilities: { experimentalApi: true } });
+    child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
+    const listed = await request(2, "hooks/list", { cwds: [sandbox.repo] });
+    const hooks = (listed.result?.data ?? []).flatMap((entry) => entry.hooks ?? []);
+    const trust = hooks.filter((hook) => hook.trustStatus !== "trusted" && hook.trustStatus !== "managed")
+      .map((hook) => `\n[hooks.state.${JSON.stringify(hook.key)}]\ntrusted_hash = ${JSON.stringify(hook.currentHash)}\n`);
+    if (!hooks.length) throw new Error("Codex listed no hooks");
+    fs.appendFileSync(path.join(codexHome, "config.toml"), trust.join(""));
+  } finally {
+    clearTimeout(timer);
+    child.kill();
+  }
+}
+
 const codex = {
   label: "Codex (exec)",
   defaultModel: "gpt-6-luna",
   guard: "seatbelt",
-  hooks: "codex-config",
+  armC: true,
+  runtimeKind: "codex-app-server",
   bin: () => process.env.ADE_EVAL_CODEX_BIN
     ?? newest(path.join(toolsDir, "@openai/codex-darwin-arm64"), "vendor/aarch64-apple-darwin/bin/codex"),
   detect(bin) {
@@ -143,7 +204,7 @@ const codex = {
     const lines = [`developer_instructions = ${JSON.stringify(fs.readFileSync(sandbox.promptFile, "utf8"))}`];
     if (sandbox.hookCommand) {
       // A user-layer hook is "untrusted" and Codex skips it without a word;
-      // run.mjs records its trusted_hash after a `hooks/list` (see trustCodexHooks).
+      // beforeRun records its trusted_hash after a `hooks/list` (see trustCodexHooks).
       lines.push("", "[[hooks.PreToolUse]]", 'matcher = "Bash"', "[[hooks.PreToolUse.hooks]]", 'type = "command"',
         `command = ${JSON.stringify(sandbox.hookCommand)}`, "timeout = 10");
     }
@@ -159,6 +220,15 @@ const codex = {
       env: { CODEX_HOME: codexHome },
       codexHome,
     };
+  },
+  async beforeRun({ arm, bin, built, sandbox, guarded }) {
+    if (arm !== "C") return null;
+    try {
+      await trustCodexHooks(guarded, bin, built.codexHome, sandbox);
+      return null;
+    } catch (error) {
+      return `arm C: could not trust the Codex hook (${error.message})`;
+    }
   },
   parse(stdout, sandbox) {
     const calls = [];
@@ -200,7 +270,8 @@ const cursor = {
   label: "Cursor (cursor-agent -p)",
   defaultModel: "auto",
   guard: "seatbelt",
-  hooks: null,
+  armC: false,
+  runtimeKind: "cursor-sdk",
   bin: () => process.env.ADE_EVAL_CURSOR_BIN ?? newest(path.join(toolsDir, "cursor-agent-darwin-arm64"), "cursor-agent") ?? onPath("cursor-agent"),
   detect(bin) {
     if (!bin) return { ok: false, reason: "cursor-agent not found" };
@@ -237,7 +308,8 @@ const droid = {
   label: "Droid (droid exec)",
   defaultModel: "gpt-6-luna",
   guard: "hook",
-  hooks: "settings",
+  armC: true,
+  runtimeKind: "droid-sdk",
   bin: () => process.env.ADE_EVAL_DROID_BIN ?? newest(path.join(toolsDir, "@factory/cli-darwin-arm64"), "bin/droid") ?? onPath("droid"),
   detect(bin, model) {
     if (!bin) return { ok: false, reason: "droid not found" };
@@ -262,7 +334,7 @@ const droid = {
     let reply = "";
     const usage = emptyUsage(null);
     for (const event of jsonLines(stdout)) {
-      if (event.type === "tool_call") calls.push(event.toolName === "Execute" ? String(event.parameters?.command ?? "") : `tool:${event.toolName} ${JSON.stringify(event.parameters)}`);
+      if (event.type === "tool_call") calls.push(callText(event.toolName, "Execute", event.parameters));
       if (event.type === "completion") {
         reply = String(event.finalText ?? "");
         usage.totalInput = event.usage?.input_tokens ?? null;
@@ -279,7 +351,8 @@ const copilot = {
   // Only the plan's Auto model is allowed on the account this was written on.
   defaultModel: null,
   guard: "seatbelt",
-  hooks: null,
+  armC: false,
+  runtimeKind: "copilot-sdk",
   bin: () => process.env.ADE_EVAL_COPILOT_BIN ?? newest(path.join(toolsDir, "@github/copilot-darwin-arm64"), "copilot") ?? onPath("copilot"),
   detect(bin) {
     if (!bin) return { ok: false, reason: "copilot not found" };
@@ -317,7 +390,7 @@ const copilot = {
     const usage = emptyUsage(null);
     for (const event of jsonLines(stdout)) {
       const data = event.data ?? {};
-      if (event.type === "tool.execution_start") calls.push(data.toolName === "bash" ? String(data.arguments?.command ?? "") : `tool:${data.toolName} ${JSON.stringify(data.arguments)}`);
+      if (event.type === "tool.execution_start") calls.push(callText(data.toolName, "bash", data.arguments));
       if (event.type === "assistant.message" && data.content) reply = String(data.content);
       if (event.type === "session.usage_checkpoint") usage.premiumRequests = data.totalPremiumRequests ?? null;
       if (event.type === "result") usage.premiumRequests = event.usage?.premiumRequests ?? usage.premiumRequests;
@@ -335,7 +408,8 @@ const opencode = {
   // The free models answer "Model unavailable" to parallel requests.
   maxConcurrency: 1,
   guard: "seatbelt",
-  hooks: "opencode-plugin",
+  armC: true,
+  runtimeKind: "opencode",
   bin: () => process.env.ADE_EVAL_OPENCODE_BIN ?? newest(path.join(toolsDir, "@opencode/cli-darwin-arm64"), "bin/opencode") ?? onPath("opencode"),
   detect(bin) {
     return bin ? { ok: true } : { ok: false, reason: "opencode not found" };
@@ -390,7 +464,7 @@ const opencode = {
     let error = null;
     for (const event of jsonLines(stdout)) {
       const part = event.part ?? {};
-      if (event.type === "tool_use") calls.push(part.tool === "shell" ? String(part.state?.input?.command ?? "") : `tool:${part.tool} ${JSON.stringify(part.state?.input ?? {})}`);
+      if (event.type === "tool_use") calls.push(callText(part.tool, "shell", part.state?.input ?? {}));
       if (event.type === "text" && part.text) reply = String(part.text);
       if (event.type === "error") error = String(event.error?.message ?? event.error?.type ?? "error");
       if (event.type === "step_finish") {
@@ -416,7 +490,8 @@ const pi = {
   label: "Pi (pi -p)",
   defaultModel: "openai-codex/gpt-6-luna",
   guard: "seatbelt",
-  hooks: null,
+  armC: false,
+  runtimeKind: "pi-sdk",
   bin: () => process.env.ADE_EVAL_PI_BIN ?? onPath("pi"),
   detect(bin, model) {
     if (!bin) return { ok: false, reason: "pi not found" };
@@ -442,7 +517,7 @@ const pi = {
     let total = 0;
     let cost = 0;
     for (const event of jsonLines(stdout)) {
-      if (event.type === "tool_execution_start") calls.push(event.toolName === "bash" ? String(event.args?.command ?? "") : `tool:${event.toolName} ${JSON.stringify(event.args)}`);
+      if (event.type === "tool_execution_start") calls.push(callText(event.toolName, "bash", event.args));
       if (event.type === "message_end" && event.message?.role === "assistant") {
         const u = event.message.usage ?? {};
         const input = (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
@@ -483,7 +558,10 @@ const qwen = {
   label: "Qwen Code (qwen -y)",
   defaultModel: null,
   guard: "seatbelt",
-  hooks: null,
+  armC: false,
+  // Qwen runs over ACP and has no runtime kind of its own; it gets the generic
+  // text (in ADE it gets the bootstrap in its first user turn).
+  runtimeKind: null,
   bin: () => process.env.ADE_EVAL_QWEN_BIN ?? newest(path.join(toolsDir, "qwen-code-darwin-arm64"), "bin/qwen") ?? onPath("qwen"),
   detect(bin) {
     if (!bin) return { ok: false, reason: "qwen not found" };

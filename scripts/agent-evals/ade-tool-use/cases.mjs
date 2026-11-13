@@ -129,7 +129,7 @@ export const CASES = [
     git: "feature",
     prompt: "Pull request #42 is open for this lane. Replace its description with: 'Fixes the login timeout by raising the session TTL.'",
     expect: [/^ade prs body\b/],
-    forbidRun: [/^gh\s+(?:\S+\s+)*pr\s+edit\b.*--body/],
+    forbidRun: [/^gh\s+(?:\S+\s+)*pr\s+edit\b.*\s(?:--body|-b|-F)(?=[\s=]|$)/],
     forbid: [/\bgh\s+api\b[^\n]*\/pulls\//],
   },
   {

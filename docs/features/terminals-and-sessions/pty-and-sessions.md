@@ -466,16 +466,27 @@ the roster all read that phase.
   `needs-input` and returns the turn to working. Arrow keys do not.
 - **Background agents.** Claude sends `Stop` as soon as it starts a background
   agent, so the turn ends while the agent still works. `SubagentStart` and
-  `SubagentStop` keep the agent ids in `PtyEntry.cliLiveSubagents`;
-  `SessionEnd` (`/clear`, exit) empties it. Claude also sends `SubagentStop`
-  for its own helper agents with no `SubagentStart`; a stop for an id that
-  never started is ignored. An interrupt (Esc / Ctrl-C) drops the agents its
+  `SubagentStop` keep the agent ids in `PtyEntry.cliSubagents` (the pure
+  tracker in `cliTurnSignals.ts`); `SessionEnd` (`/clear`, exit) empties it.
+  Each hook runs as its own async process, so a short agent's stop can arrive
+  before its start: the tracker remembers the last 64 stopped ids and drops a
+  late start. Claude also sends `SubagentStop` for its own helper agents with
+  no `SubagentStart`; those only fill that capped memory. An interrupt (Esc / Ctrl-C) drops the agents its
   turn started, because Claude cancels them without a `SubagentStop`. While the
   set is not empty, `enrichSessions` gives the row `activeBackgroundTaskCount`,
   `backgroundWork` and `backgroundWorkSince`, the same fields a chat gets, so
   the row reads background work instead of done on desktop, web and iOS. The
-  runtime signal carries the ids too (`backgroundAgentIds`), and the push
-  publisher keeps the run `running` until they drain, as it does for a chat.
+  runtime signal carries the ids too (`backgroundAgentIds`, also after the
+  turn source fell back to output timing), and the push publisher keeps the
+  run `running` until they drain, as it does for a chat. Idle heartbeats do
+  not rewrite that parked run, and a new turn clears the parked "completed".
+  The sync roster (phone Hub, Activity, web) reads the same count through
+  `getTrackedCliTurn().backgroundAgentCount` and reports the row `running`.
+  A lost `SubagentStop` (a failed hook report, Claude killed inside a wrapping
+  shell) has no timer of its own on purpose, because a real agent can run for
+  hours: the row still turns Stale after `SESSION_STALE_AFTER_MS`, and the
+  parked push run, which heartbeats no longer refresh, retires at its running
+  TTL.
   Other CLIs have no such signal yet: Codex's OSC 7501 is unchecked for
   background agents, and the heuristic CLIs show done once their output stops.
 - **Exact signals win.** Once a session reports through a hook or OSC 7501,

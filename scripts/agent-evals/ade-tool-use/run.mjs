@@ -4,7 +4,7 @@
 //
 //   node scripts/agent-evals/ade-tool-use/run.mjs
 //        [--providers claude,codex,cursor,droid,copilot,opencode,pi,qwen]   (alias --models)
-//        [--arms A,B,C,D] [--cases id,id] [--runs 1] [--concurrency 3]
+//        [--arms A,B,C,D] [--cases id,id] [--runs 1] [--concurrency 3]   (max parallel runs per provider)
 //        [--model claude=claude-haiku-5-5,codex=gpt-6-luna] [--out dir]
 //        [--allow-hook-guard droid] [--list]
 //   node scripts/agent-evals/ade-tool-use/run.mjs --rescore <dir>   (score saved runs again, no model calls)
@@ -13,7 +13,7 @@
 //   A  today's prompt, rendered from this checkout by render-prompt.ts
 //   B  a short stub: arms/B/prompt.md ({{cwd}} and {{skillRoots}} filled in)
 //   C  B plus the redirect rules in arms/C/rules.json, enforced by the
-//      provider's pre-tool hook (Claude, Codex, OpenCode; others are skipped)
+//      provider's pre-tool hook (providers with `armC`; others are skipped)
 //   D  B plus a one-line topic hint per matching rule in arms/D/hints.json,
 //      put in front of the user's message, as ADE would write it into the turn
 //   C and D use their own prompt.md when the folder has one.
@@ -51,10 +51,9 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { CASES } from "./cases.mjs";
-import { adeInvocations, executableText, isHelpCall, normalizeAdeCall, transcriptPattern } from "./match.mjs";
+import { adeInvocations, executableText, isHelpCall, normalizeAdeCall, SCREEN_TOOLS, transcriptPattern } from "./match.mjs";
 import { PROVIDERS } from "./providers.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -81,7 +80,7 @@ const TIMEOUT_MS = 240_000;
 
 // Matched against what actually ran (the stand-ins log every call), and as
 // transcript patterns against the command text.
-const GLOBAL_FORBID_RUN = [/^(screencapture|osascript|cliclick)\b/];
+const GLOBAL_FORBID_RUN = [new RegExp(`^(${SCREEN_TOOLS.join("|")})\\b`)];
 // Matched against the command text the agent wrote.
 const GLOBAL_FORBID = [
   /ADE\.app\/Contents/,
@@ -109,20 +108,38 @@ function checkGuard() {
     "env screencapture -h",
     "/usr/sbin/screencapture -h",
     "/usr/bin/osascript -e 1",
-    ...["/opt/homebrew/bin/gh", "/usr/local/bin/gh", path.join(home, ".local/bin/ade"), "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade"]
+    "/usr/bin/open -h",
+    "/usr/bin/xcrun --version",
+    // A copy of a blocked program must fail too (the copy needs a read).
+    `cp /usr/sbin/screencapture ${quote(path.join(os.tmpdir(), `ade-eval-guard-${process.pid}`))}`,
+    ...["/opt/homebrew/bin/gh", "/usr/local/bin/gh", path.join(home, ".local/bin/ade"), "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade",
+      ...adeHomes().map((dir) => path.join(dir, "bin/ade"))]
       .filter((bin) => fs.existsSync(bin)).map((bin) => `${bin} --version`),
   ];
   for (const probe of probes) {
     const result = spawnSync("/usr/bin/sandbox-exec", ["-f", guardProfile, "/bin/zsh", "-lc", probe], { encoding: "utf8", env: { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" } });
     if (!/operation not permitted/i.test(`${result.stderr}${result.stdout}`)) return `guard.sb did not stop \`${probe}\` (exit ${result.status}).`;
   }
-  const socket = path.join(home, ".ade/sock/ade.sock");
-  if (fs.existsSync(socket)) {
-    const result = spawnSync("/usr/bin/sandbox-exec", ["-f", guardProfile, process.execPath, "-e",
-      `require("net").connect(${JSON.stringify(socket)}).on("connect",()=>{console.log("CONNECTED");process.exit(0)}).on("error",(e)=>{console.log(e.code);process.exit(0)})`], { encoding: "utf8" });
-    if (/CONNECTED/.test(result.stdout)) return "guard.sb did not stop a connection to the live brain socket.";
+  // Every brain socket on this Mac (Stable, Beta, Alpha).
+  for (const sockDir of adeHomes().map((dir) => path.join(dir, "sock"))) {
+    let names = [];
+    try { names = fs.readdirSync(sockDir); } catch { continue; }
+    for (const socket of names.filter((name) => name.endsWith(".sock")).map((name) => path.join(sockDir, name))) {
+      const result = spawnSync("/usr/bin/sandbox-exec", ["-f", guardProfile, process.execPath, "-e",
+        `require("net").connect(${JSON.stringify(socket)}).on("connect",()=>{console.log("CONNECTED");process.exit(0)}).on("error",(e)=>{console.log(e.code);process.exit(0)})`], { encoding: "utf8" });
+      if (/CONNECTED/.test(result.stdout)) return `guard.sb did not stop a connection to ${socket}.`;
+    }
   }
   return null;
+}
+
+/** `~/.ade`, `~/.ade-beta`, `~/.ade-alpha` and any other ADE home on this Mac. */
+function adeHomes() {
+  try {
+    return fs.readdirSync(home).filter((name) => /^\.ade(?:-[\w-]+)?$/.test(name)).map((name) => path.join(home, name));
+  } catch {
+    return [];
+  }
 }
 
 /** The command line for one agent process, inside guard.sb when the provider allows it. */
@@ -192,7 +209,7 @@ function makeSandbox(caseDir, providerId, arm, testCase) {
     `CLI_SRC=${quote(path.join(repoRoot, "apps/ade-cli/src/cli.ts"))}`,
     fs.readFileSync(path.join(here, "stub-ade.sh"), "utf8"),
   ].join("\n"));
-  for (const name of ["screencapture", "osascript", "cliclick", "xcrun", "xcodebuild", "open"]) {
+  for (const name of [...SCREEN_TOOLS, "xcrun", "xcodebuild", "open"]) {
     writeStub(path.join(shims, name), `printf '%s\\n' "${name} $*" >> ${quote(log)}\necho ok`);
   }
   writeStub(path.join(shims, "gh"), [
@@ -237,42 +254,6 @@ function makeSandbox(caseDir, providerId, arm, testCase) {
   sandbox.guardHookCommand = [quote(process.execPath), quote(hook), `--guard-shims ${quote(shims)}`, ...hookArgs,
     ...(sandbox.rulesFile ? [`--rules ${quote(sandbox.rulesFile)}`] : [])].join(" ");
   return sandbox;
-}
-
-/**
- * Codex skips a user-layer hook until its hash is trusted, with no message.
- * Read the hash the way the app does (`hooks/list` on the app server, no
- * model call) and record it in this case's CODEX_HOME.
- */
-async function trustCodexHooks(provider, bin, codexHome, sandbox) {
-  const [cmd, argv] = guarded(provider, bin, ["app-server"]);
-  const child = spawn(cmd, argv, { cwd: sandbox.repo, env: { ...sandbox.env, CODEX_HOME: codexHome }, stdio: ["pipe", "pipe", "ignore"] });
-  const lines = readline.createInterface({ input: child.stdout });
-  const replies = new Map();
-  lines.on("line", (line) => {
-    try {
-      const msg = JSON.parse(line);
-      if (msg.id != null) replies.get(msg.id)?.(msg);
-    } catch { /* not JSON */ }
-  });
-  const request = (id, method, params) => new Promise((resolve) => {
-    replies.set(id, resolve);
-    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
-  });
-  const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
-  try {
-    await request(1, "initialize", { clientInfo: { name: "ade_tool_eval", title: "ADE tool eval", version: "0" }, capabilities: { experimentalApi: true } });
-    child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
-    const listed = await request(2, "hooks/list", { cwds: [sandbox.repo] });
-    const hooks = (listed.result?.data ?? []).flatMap((entry) => entry.hooks ?? []);
-    const trust = hooks.filter((hook) => hook.trustStatus !== "trusted" && hook.trustStatus !== "managed")
-      .map((hook) => `\n[hooks.state.${JSON.stringify(hook.key)}]\ntrusted_hash = ${JSON.stringify(hook.currentHash)}\n`);
-    if (!hooks.length) throw new Error("Codex listed no hooks");
-    fs.appendFileSync(path.join(codexHome, "config.toml"), trust.join(""));
-  } finally {
-    clearTimeout(timer);
-    child.kill();
-  }
 }
 
 // ---------------------------------------------------------------- runner
@@ -417,7 +398,9 @@ async function main() {
   }
 
   fs.mkdirSync(outDir, { recursive: true });
-  const rendered = spawnSync(tsx, [path.join(here, "render-prompt.ts"), outDir, repoRoot], { cwd: path.join(repoRoot, "apps/desktop"), encoding: "utf8" });
+  // One prompt file per provider; each adapter names its ADE runtime kind.
+  const runtimeKinds = Object.entries(PROVIDERS).map(([id, provider]) => `${id}=${provider.runtimeKind ?? ""}`);
+  const rendered = spawnSync(tsx, [path.join(here, "render-prompt.ts"), outDir, repoRoot, ...runtimeKinds], { cwd: path.join(repoRoot, "apps/desktop"), encoding: "utf8" });
   if (rendered.status !== 0) throw new Error(`render-prompt failed: ${rendered.stderr}`);
 
   // One-time setup a provider needs before its first case, inside the guard.
@@ -435,81 +418,69 @@ async function main() {
     }
   }
 
-  const jobs = [];
+  // One job queue per provider, all drained in parallel. Each queue gets
+  // --concurrency workers, or fewer when the provider caps its own parallel
+  // runs (free tiers refuse parallel calls).
+  const queues = new Map([...ready.keys()].map((id) => [id, []]));
   for (const testCase of CASES.filter((c) => !caseIds || caseIds.has(c.id))) {
-    for (const [providerId] of ready) {
+    for (const [providerId, queue] of queues) {
       for (const arm of arms) {
-        for (let n = 1; n <= runs; n++) jobs.push({ testCase, providerId, arm, n });
+        for (let n = 1; n <= runs; n++) queue.push({ testCase, providerId, arm, n });
       }
     }
   }
   const results = [];
   const authFailed = new Set();
-  // A provider may cap its own parallel runs (free tiers refuse parallel calls).
-  const running = new Map();
-  const waiting = new Map();
-  const acquire = async (id, limit) => {
-    while ((running.get(id) ?? 0) >= limit) await new Promise((resolve) => waiting.set(id, [...(waiting.get(id) ?? []), resolve]));
-    running.set(id, (running.get(id) ?? 0) + 1);
-  };
-  const release = (id) => {
-    running.set(id, running.get(id) - 1);
-    const queue = waiting.get(id) ?? [];
-    waiting.set(id, queue.slice(1));
-    queue[0]?.();
-  };
-  let next = 0;
-  await Promise.all(Array.from({ length: concurrency }, async () => {
-    while (next < jobs.length) {
-      const job = jobs[next++];
-      const { testCase, providerId, arm, n } = job;
-      const { provider, bin, model } = ready.get(providerId);
-      const base = { id: testCase.id, provider: providerId, arm, run: n };
-      const report = (result) => {
-        results.push({ ...base, ...result });
-        const status = result.skipped ? "SKIP" : result.error ? "ERROR" : result.pass ? "PASS" : "FAIL";
-        const detail = result.skipped ? `  — ${result.skipped}` : result.error ? `  — provider error: ${result.error}`
-          : result.pass ? "" : `  — ${result.failures.join("; ")}`;
-        process.stdout.write(`${status}  ${pad(providerId, 8)} ${arm}  ${testCase.id}${runs > 1 ? ` #${n}` : ""}${detail}\n`);
-      };
-      if (authFailed.has(providerId)) { report({ skipped: "provider not signed in" }); continue; }
-      if (arm === "C" && !provider.hooks) { report({ skipped: "arm C: no pre-tool hook wired for this provider" }); continue; }
 
-      const caseDir = path.join(outDir, providerId, arm, testCase.id, `run-${n}`);
-      const sandbox = makeSandbox(caseDir, providerId, arm, testCase);
-      const hints = arm === "D" ? hintsFor(testCase) : [];
-      const userPrompt = hints.length ? `${hints.join("\n")}\n\n${testCase.prompt}` : testCase.prompt;
-      const built = provider.build({ bin, job: { ...job, userPrompt }, sandbox, model, here, outDir });
-      if (arm === "C" && provider.hooks === "codex-config") {
-        try {
-          await trustCodexHooks(provider, bin, built.codexHome, sandbox);
-        } catch (error) {
-          report({ skipped: `arm C: could not trust the Codex hook (${error.message})` });
-          continue;
-        }
-      }
-      const [cmd, argv] = guarded(provider, built.cmd, built.argv);
-      await acquire(providerId, provider.maxConcurrency ?? Infinity);
-      const raw = await runProcess(cmd, argv, { cwd: sandbox.repo, env: { ...sandbox.env, ...(built.env ?? {}) } })
-        .finally(() => release(providerId));
-      fs.writeFileSync(path.join(caseDir, "stdout.txt"), raw.stdout);
-      const outcome = { ...provider.parse(raw.stdout, sandbox), raw };
-      if (!outcome.calls.length && AUTH_FAILURE.test(`${raw.stdout}\n${raw.stderr}`.slice(-4000))) {
-        authFailed.add(providerId);
-        report({ skipped: "provider not signed in (seen in its output)" });
-        continue;
-      }
-      if (!outcome.calls.length && outcome.error) {
-        report({ error: outcome.error.slice(0, 200) });
-        continue;
-      }
-      const verdict = score(testCase, outcome, sandbox);
-      fs.writeFileSync(path.join(caseDir, "result.json"), JSON.stringify({
-        ...base, model, ...verdict, calls: outcome.calls, reply: outcome.reply, usage: outcome.usage,
-        stderrTail: raw.stderr.slice(-2000),
-      }, null, 2));
-      report({ ...verdict, usage: outcome.usage });
+  const runJob = async (job) => {
+    const { testCase, providerId, arm, n } = job;
+    const { provider, bin, model } = ready.get(providerId);
+    const base = { id: testCase.id, provider: providerId, arm, run: n };
+    const report = (result) => {
+      results.push({ ...base, ...result });
+      const status = result.skipped ? "SKIP" : result.error ? "ERROR" : result.pass ? "PASS" : "FAIL";
+      const detail = result.skipped ? `  — ${result.skipped}` : result.error ? `  — provider error: ${result.error}`
+        : result.pass ? "" : `  — ${result.failures.join("; ")}`;
+      process.stdout.write(`${status}  ${pad(providerId, 8)} ${arm}  ${testCase.id}${runs > 1 ? ` #${n}` : ""}${detail}\n`);
+    };
+    if (authFailed.has(providerId)) { report({ skipped: "provider not signed in" }); return; }
+    if (arm === "C" && !provider.armC) { report({ skipped: "arm C: no pre-tool hook wired for this provider" }); return; }
+
+    const caseDir = path.join(outDir, providerId, arm, testCase.id, `run-${n}`);
+    const sandbox = makeSandbox(caseDir, providerId, arm, testCase);
+    const hints = arm === "D" ? hintsFor(testCase) : [];
+    const userPrompt = hints.length ? `${hints.join("\n")}\n\n${testCase.prompt}` : testCase.prompt;
+    const built = provider.build({ bin, job: { ...job, userPrompt }, sandbox, model, here, outDir });
+    if (provider.beforeRun) {
+      const problem = await provider.beforeRun({ arm, bin, built, sandbox, guarded: (cmd, argv) => guarded(provider, cmd, argv) });
+      if (problem) { report({ skipped: problem }); return; }
     }
+    const [cmd, argv] = guarded(provider, built.cmd, built.argv);
+    const raw = await runProcess(cmd, argv, { cwd: sandbox.repo, env: { ...sandbox.env, ...(built.env ?? {}) } });
+    fs.writeFileSync(path.join(caseDir, "stdout.txt"), raw.stdout);
+    const outcome = { ...provider.parse(raw.stdout, sandbox), raw };
+    if (!outcome.calls.length && AUTH_FAILURE.test(`${raw.stdout}\n${raw.stderr}`.slice(-4000))) {
+      authFailed.add(providerId);
+      report({ skipped: "provider not signed in (seen in its output)" });
+      return;
+    }
+    if (!outcome.calls.length && outcome.error) {
+      report({ error: outcome.error.slice(0, 200) });
+      return;
+    }
+    const verdict = score(testCase, outcome, sandbox);
+    fs.writeFileSync(path.join(caseDir, "result.json"), JSON.stringify({
+      ...base, model, ...verdict, calls: outcome.calls, reply: outcome.reply, usage: outcome.usage,
+      stderrTail: raw.stderr.slice(-2000),
+    }, null, 2));
+    report({ ...verdict, usage: outcome.usage });
+  };
+
+  await Promise.all([...queues].map(([providerId, queue]) => {
+    const workers = Math.min(concurrency, ready.get(providerId).provider.maxConcurrency ?? Infinity);
+    return Promise.all(Array.from({ length: workers }, async () => {
+      while (queue.length) await runJob(queue.shift());
+    }));
   }));
 
   printSummary(results);

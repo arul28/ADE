@@ -2295,8 +2295,8 @@ due, a pager.
   with no dialog, setup screen or tour up, and only once onboarding finished
   or was skipped before this launch, so a new user meets them on a later
   visit. It also waits for 8 s with no key press or click, and never opens
-  while a focused text field (a prompt box) holds text, so it cannot take the
-  keyboard in the middle of a sentence. A page counts as seen once it is on
+  while a focused text field (a prompt box) holds text or a terminal has
+  focus, so it cannot take the keyboard in the middle of a sentence. A page counts as seen once it is on
   screen.
 - **After an update** this computer installed: on the first launch of the new
   version, after the boot splash. Up to three unseen pages, then the release

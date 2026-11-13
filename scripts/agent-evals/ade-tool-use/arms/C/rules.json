@@ -16,7 +16,7 @@
     {
       "id": "gh-pr-edit-body",
       "command": "gh",
-      "args": "pr\\s+edit\\b.*--body",
+      "args": "pr\\s+edit\\b.*\\s(?:--body|-b|-F)(?=[\\s=]|$)",
       "decision": "deny-once",
       "reason": "Use `ade prs body <pr> --body-file <file>`. If the user asked for gh by name, run the same command again and it will go through."
     }

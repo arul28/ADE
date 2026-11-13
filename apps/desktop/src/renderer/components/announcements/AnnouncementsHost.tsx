@@ -9,7 +9,7 @@ import type { UpdateInterruptedChat } from "../../../shared/types";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
-import { floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
+import { editingTextNow, floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
 import type { AnnouncementPageDef } from "./announcementPages";
 import {
   allAnnouncements,
@@ -62,13 +62,6 @@ const SETTLE_MS = 4_000;
 const CHECK_INTERVAL_MS = 3_000;
 /** The person must not have typed or clicked for this long before the modal may open over their work. */
 const INPUT_QUIET_MS = 8_000;
-
-/** A focused text field that holds text: opening a modal now would take the keyboard mid-sentence. */
-function editingTextNow(): boolean {
-  const active = document.activeElement;
-  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return active.value.trim().length > 0;
-  return active instanceof HTMLElement && active.isContentEditable && (active.textContent ?? "").trim().length > 0;
-}
 
 export type AfterUpdateDetail = {
   version: string;

@@ -1100,22 +1100,34 @@ const WORK_AREA_MODE_VARIANTS = {
 };
 
 /**
- * Marks the mode layer it sits in `inert` while that layer animates out. The
+ * One mode layer of the Work area. It is `inert` while it animates out: the
  * leaving layer stays in the page for the exit animation, ahead of the layer
  * that replaces it, so without this a keystroke or a focus helper looking for
  * the first prompt box (`focusWorkInputSoon` after ⌘⇧N) could land in the chat
- * the person just left. Renders a hidden span, so it adds nothing to layout.
+ * the person just left. React 18 has no `inert` prop, so it is set directly.
  */
-function InertWhileExiting() {
+function WorkAreaModeLayer({ dock, children }: { dock: boolean; children: React.ReactNode }) {
   const isPresent = useIsPresent();
-  const ref = useRef<HTMLSpanElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const layer = ref.current?.parentElement;
+    const layer = ref.current;
     if (!layer) return;
     if (isPresent) layer.removeAttribute("inert");
     else layer.setAttribute("inert", "");
   }, [isPresent]);
-  return <span ref={ref} hidden />;
+  return (
+    <motion.div
+      ref={ref}
+      className="absolute inset-0"
+      custom={dock}
+      variants={WORK_AREA_MODE_VARIANTS}
+      initial="enter"
+      animate="visible"
+      exit="exit"
+    >
+      {children}
+    </motion.div>
+  );
 }
 
 const MODE_OPTIONS: Array<{
@@ -1441,18 +1453,9 @@ export function WorkViewArea({
   const tabBody = (
     <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
       <AnimatePresence initial={false} custom={composerDockTransition}>
-        <motion.div
-          key={workAreaMode}
-          className="absolute inset-0"
-          custom={composerDockTransition}
-          variants={WORK_AREA_MODE_VARIANTS}
-          initial="enter"
-          animate="visible"
-          exit="exit"
-        >
-          <InertWhileExiting />
+        <WorkAreaModeLayer key={workAreaMode} dock={composerDockTransition}>
           {workAreaContent}
-        </motion.div>
+        </WorkAreaModeLayer>
       </AnimatePresence>
     </div>
   );

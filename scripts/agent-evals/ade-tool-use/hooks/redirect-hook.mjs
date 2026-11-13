@@ -15,7 +15,13 @@
 // run), so this hook is the thing under test, never the safety net. guard.sb
 // is the safety net wherever the provider allows it.
 import fs from "node:fs";
-import { compileRules, firstRuleHit } from "../match.mjs";
+import { compileRules, decideRule, SCREEN_TOOLS } from "../match.mjs";
+
+// Any screen tool word, with or without a path, after a space, a separator, a
+// quote or `=`. Wider than match.mjs's command positions on purpose: this is
+// a safety rewrite (`find -exec screencapture` too), so it errs toward a
+// rewrite. A rewritten argument only points at a stand-in.
+const SCREEN_TOOL_WORD = new RegExp(String.raw`(^|[\s;&|('"\x60=])(?:\/[\w./-]*\/)?(${SCREEN_TOOLS.join("|")})(?=$|[\s;&|)'"\x60])`, "g");
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, arg, i, all) => {
   if (arg.startsWith("--")) acc.push([arg.slice(2), all[i + 1]]);
@@ -35,26 +41,22 @@ process.stdin.on("end", () => {
 
   if (args.rules) {
     const rules = compileRules(JSON.parse(fs.readFileSync(args.rules, "utf8")).rules ?? []);
-    const hit = firstRuleHit(rules, command);
-    if (hit) {
-      const state = readState();
-      const seen = state.denied.includes(hit.id);
-      if (hit.decision === "deny" || (hit.decision === "deny-once" && !seen)) {
-        if (!seen) writeState({ denied: [...state.denied, hit.id] });
-        log({ rule: hit.id, decision: "deny", command });
+    const state = readState();
+    const decided = decideRule(rules, command, state.denied);
+    if (decided) {
+      const { hit, decision } = decided;
+      log({ rule: hit.id, decision, command });
+      if (decision === "deny") {
+        if (!state.denied.includes(hit.id)) writeState({ denied: [...state.denied, hit.id] });
         deny(hit.reason);
         return;
       }
-      log({ rule: hit.id, decision: "allow-retry", command });
     }
   }
 
   if (args["guard-shims"]) {
     const shims = args["guard-shims"];
-    const rewritten = command.replace(
-      /(^|[\s;&|('"`=])(?:\/[\w./-]*\/)?(screencapture|osascript|cliclick)(?=$|[\s;&|)'"`])/g,
-      (_m, pre, name) => `${pre}${shims}/${name}`,
-    );
+    const rewritten = command.replace(SCREEN_TOOL_WORD, (_m, pre, name) => `${pre}${shims}/${name}`);
     if (rewritten !== command) {
       log({ rule: "guard-rewrite", decision: "rewrite", command });
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...event.tool_input, command: rewritten } } }));
