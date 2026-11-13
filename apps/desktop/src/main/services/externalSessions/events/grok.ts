@@ -1,6 +1,15 @@
 import { EnvelopeSink, isRecord, maybeParseJson, str, textOf, type JsonlConverter } from "./common";
 
 /**
+ * Grok opens every conversation with a `<user_info>` workspace-context block
+ * written as an ordinary user row. It is not something the user typed; the
+ * real prompt follows with a `prompt_index` and a `<user_query>` wrapper.
+ */
+export function isGrokContextBlock(text: string): boolean {
+  return /^\s*<user_info>/u.test(text) && !/<user_query>/u.test(text);
+}
+
+/**
  * Grok Build chat history
  * (`~/.grok/sessions/<url-encoded cwd>/<id>/chat_history.jsonl`). Rows:
  * `user` (content blocks; `synthetic_reason` marks injected context),
@@ -16,10 +25,13 @@ export const grokRecordsToEvents: JsonlConverter = (records, ctx) => {
     const key = `grok:${ctx.lineKeys[index] ?? index}`;
     const timestamp = new Date(ctx.fallbackMs(index)).toISOString();
     switch (str(record.type)) {
-      case "user":
+      case "user": {
         if (record.synthetic_reason != null) return;
-        sink.user(textOf(record.content), timestamp, key);
+        const text = textOf(record.content);
+        if (isGrokContextBlock(text)) return;
+        sink.user(text, timestamp, key);
         return;
+      }
       case "assistant": {
         sink.text(textOf(record.content), timestamp, `${key}:text`);
         const calls = Array.isArray(record.tool_calls) ? record.tool_calls : [];

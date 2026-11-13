@@ -45,6 +45,25 @@ describe("Pi external session discovery", () => {
     });
     expect(exact?.id).toBe(id);
     expect(piResumeCommandForSession(id)).toBe(`pi --session ${id}`);
+
+    // An ADE chat's session (owner "sdk") stays out, also after the chat is
+    // gone; a CLI session from an ADE terminal (owner "cli") still lists.
+    const owned = [
+      ["019fd86d-f40d-76c6-a194-d5ba030cbad5", "sdk"],
+      ["019fd86d-f40d-76c6-a194-d5ba030cbad6", "cli"],
+    ] as const;
+    for (const [ownedId, owner] of owned) {
+      const file = path.join(root, `2026-04-02T00-00-00-000Z_${ownedId}.jsonl`);
+      fs.writeFileSync(file, [
+        JSON.stringify({ type: "session", id: ownedId, cwd, timestamp: "2026-04-02T00:00:00.000Z" }),
+        JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-04-02T00:00:01.000Z", message: { role: "user", content: [{ type: "text", text: "Fix the build" }] } }),
+      ].join("\n") + "\n");
+      fs.writeFileSync(`${file}.ade-owner`, `${JSON.stringify({ owner, ownerSessionId: `ade-${owner}` })}\n`);
+    }
+    const listed = await discoverPiSessions({ env: { PI_CODING_AGENT_SESSION_DIR: root }, scopeRoots: [root], limit: 10 });
+    expect(listed.map((row) => row.id).sort()).toEqual([id, owned[1][0]].sort());
+    const withAdeOwned = await discoverPiSessions({ env: { PI_CODING_AGENT_SESSION_DIR: root }, scopeRoots: [root], limit: 10, includeAdeOwned: true });
+    expect(withAdeOwned.map((row) => row.id)).toContain(owned[0][0]);
   });
 
   it("uses header ids for exact lookup even when the session is older than the recent budget", async () => {
