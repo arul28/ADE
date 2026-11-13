@@ -40675,6 +40675,14 @@ const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
  * it arrives (text mode), then answer with its exit code. Works the same for a
  * shell on another machine, because every call goes over `connection`.
  */
+/** Text without terminal control sequences: OSC (titles, links), CSI (colour, cursor, modes) and the short escapes. */
+function withoutTerminalControls(text: string): string {
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[()][0-9A-Za-z]|\u001b[=>78MDEc]/g, "");
+}
+
 async function followShellToExit(
   connection: CliConnection,
   started: unknown,
@@ -40693,7 +40701,10 @@ async function followShellToExit(
     if (!isRecord(read)) return null;
     const data = typeof read.data === "string" ? read.data : "";
     if (data) {
-      if (options.text) process.stdout.write(data);
+      // To a pipe (an agent reading it), without the screen codes a terminal
+      // adds (Windows' console sends a title, clear screen and mode switches
+      // around the first line of output).
+      if (options.text) process.stdout.write(process.stdout.isTTY ? data : withoutTerminalControls(data));
       output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     }
     if (typeof read.nextSince === "number") since = read.nextSince;

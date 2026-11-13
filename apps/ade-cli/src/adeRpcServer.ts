@@ -3241,7 +3241,13 @@ function remoteWorkSurfaceScope(
       { kind: "lane_bound", method, callerLaneId: remote.laneId, requestedLaneId },
     );
   }
-  const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
+  // `platform` names the screen (Mac, Windows or Linux Desktop) on the
+  // caller's machine, whose own platform is another one.
+  const answer = (value: unknown): unknown => {
+    if (value == null) return { workCopy: { laneId: remote.laneId }, ...(domain === "mac_desktop" ? { platform: process.platform } : {}) };
+    const withCopy = remote.withWorkCopy(value);
+    return domain === "mac_desktop" && isRecord(withCopy) && !("platform" in withCopy) ? { ...withCopy, platform: process.platform } : withCopy;
+  };
   const copyExists = remote.copyExists();
   if (rules.laneFree.has(action)) {
     return { args: remote.rest, laneId: copyExists ? remote.laneId : null, prepare: null, answer: copyExists ? answer : null };

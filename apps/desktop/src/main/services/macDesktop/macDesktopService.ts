@@ -157,6 +157,9 @@ import {
 /** KV key for the lane display size. Read on every `start`. */
 export const MAC_DESKTOP_RESOLUTION_SETTING_KEY = "macDesktop.resolution";
 
+/** A work copy's screen with apps still open stops after this long unused and unwatched. */
+const REMOTE_WORK_DISPLAY_IDLE_MS = 60 * 60_000;
+
 /** How often the idle sweep runs. Cheap: it reads maps, never the driver. */
 const IDLE_SWEEP_INTERVAL_MS = 30_000;
 
@@ -1386,11 +1389,17 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
   /** True when the lane's display has sat unwatched and unused past the idle window. */
   const isIdle = (laneId: string, atMs: number): boolean => {
     const display = ownership.getDisplay(laneId);
-    if (!display || display.windowCount > 0) return false;
+    if (!display) return false;
+    // A screen a chat on another machine opened (its work copy's lane) has no
+    // person here to close what it left open, so open windows only lengthen
+    // its idle window. Stopping it quits only the apps that chat opened.
+    const workCopy = isRemoteWorkLaneId(laneId);
+    if (display.windowCount > 0 && !workCopy) return false;
     if (streamServer.clientCount(laneId) > 0) return false;
     if (recordings.get(laneId)?.running) return false;
+    const idleMs = workCopy && display.windowCount > 0 ? REMOTE_WORK_DISPLAY_IDLE_MS : MAC_DESKTOP_IDLE_RELEASE_MS;
     const lastActivityMs = Date.parse(display.lastActivityAt);
-    return !(Number.isFinite(lastActivityMs) && atMs - lastActivityMs < MAC_DESKTOP_IDLE_RELEASE_MS);
+    return !(Number.isFinite(lastActivityMs) && atMs - lastActivityMs < idleMs);
   };
 
   const sweep = (): void => {
