@@ -7,11 +7,17 @@ export type RuntimeEventWindowSubscription = {
   /** Owned by the registry: attached only via `attachRuntimeEventSubscriptionCleanup`. */
   readonly cleanup: (() => void) | null;
   lastRequestedAtMs: number;
+  /**
+   * The runtime's event epoch, from the subscribe answer and then from each
+   * pushed event. Pumps that share this subscription read it on every poll,
+   * so each one sees a restarted runtime, not only the one that subscribed.
+   */
+  eventEpoch: string | null;
 };
 
 type RuntimeEventWindowSubscriptionInput = Omit<
   RuntimeEventWindowSubscription,
-  "lastRequestedAtMs"
+  "lastRequestedAtMs" | "eventEpoch"
 >;
 
 // A renderer runs several independent event pumps at once (the active binding
@@ -140,6 +146,7 @@ export function createRuntimeEventSubscriptionRegistry() {
     const subscription: RuntimeEventWindowSubscription = {
       ...input,
       lastRequestedAtMs: Date.now(),
+      eventEpoch: null,
     };
     const bySender = subscriptions.get(input.sender.id) ??
       new Map<string, RuntimeEventWindowSubscription>();

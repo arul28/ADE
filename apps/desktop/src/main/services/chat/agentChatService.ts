@@ -1224,6 +1224,7 @@ import {
   isAutoResumeScheduledWork,
   isPendingAutoResumeScheduledWork,
   isPendingUpdateResumeScheduledWork,
+  isUpdateResumeScheduledWork,
   isUsageLimitChatError,
   resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
@@ -70429,13 +70430,16 @@ export function createAgentChatService(args: {
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
     try {
       scheduledWorkPaused = scope.projectConfig().effective.ai?.chat?.scheduledWorkPaused === true;
-      const next = scheduledWorkScheduler?.nextWakeAt(row.id, scheduledWorkPaused) ?? null;
+      // ADE's own resume after a restart is not a wake the user scheduled: the
+      // Work row shows no wake time and the drawer no Schedule row for it.
+      const next = scheduledWorkScheduler?.nextWakeAt(row.id, scheduledWorkPaused, isUpdateResumeScheduledWork) ?? null;
       nextWakeAt = next == null ? null : new Date(next).toISOString();
       scheduledWorkPaused =
         scheduledWorkScheduler?.isSessionPaused(row.id) === true
         || scheduledWorkPaused;
       scheduledWork = (scheduledWorkScheduler?.list(row.id) ?? [])
         .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
+        .filter((schedule) => !isUpdateResumeScheduledWork(schedule))
         .map(toScheduledWorkItem);
     } catch (error) {
       logger.warn("agent_chat.scheduled_work_summary_failed", {
@@ -71760,7 +71764,8 @@ export function createAgentChatService(args: {
       throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
     }
     await scheduledWorkReady;
-    const nextWakeAt = scheduledWorkScheduler?.nextWakeAt(normalizedSessionId) ?? null;
+    // The same view as the session summary: ADE's restart resume is not listed.
+    const nextWakeAt = scheduledWorkScheduler?.nextWakeAt(normalizedSessionId, undefined, isUpdateResumeScheduledWork) ?? null;
     return {
       sessionId: normalizedSessionId,
       paused:
@@ -71769,6 +71774,7 @@ export function createAgentChatService(args: {
       nextWakeAt: nextWakeAt == null ? null : new Date(nextWakeAt).toISOString(),
       items: (scheduledWorkScheduler?.list(normalizedSessionId) ?? [])
         .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
+        .filter((schedule) => !isUpdateResumeScheduledWork(schedule))
         .map(toScheduledWorkItem),
     };
   };
@@ -71986,7 +71992,7 @@ export function createAgentChatService(args: {
     // resurrect the schedule behind this decision.
     if (paused) autoResume.noteSessionPaused(normalizedSessionId);
     await scheduledWorkScheduler.setSessionPaused(normalizedSessionId, paused);
-    const nextWakeAt = scheduledWorkScheduler.nextWakeAt(normalizedSessionId);
+    const nextWakeAt = scheduledWorkScheduler.nextWakeAt(normalizedSessionId, undefined, isUpdateResumeScheduledWork);
     const effectivelyPaused = scheduledWorkScheduler.isSessionPaused(normalizedSessionId)
       || projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true;
     return {

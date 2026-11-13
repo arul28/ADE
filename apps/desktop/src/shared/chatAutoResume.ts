@@ -13,7 +13,12 @@
  */
 
 import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
-import { backgroundCommandLabel, deriveBackgroundItems } from "./chatScheduledWork";
+import {
+  backgroundCommandLabel,
+  deriveBackgroundItems,
+  isRestartResumeScheduleId,
+  UPDATE_RESUME_ID_PREFIX,
+} from "./chatScheduledWork";
 import { subagentSnapshotsFromEvents } from "./chatSubagents";
 import { ORPHAN_BACKGROUND_SUMMARY, ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "./chatOrphanRunReconcile";
 import {
@@ -259,8 +264,6 @@ export const UPDATE_RESUME_PROMPT =
 
 export const UPDATE_RESUME_REASON = "Resume after ADE restart";
 
-const UPDATE_RESUME_ID_PREFIX = "update-resume:";
-
 /**
  * Deterministic per-chat id. A repeat arm for the same chat upserts this row
  * instead of stacking a second resume.
@@ -269,15 +272,7 @@ export function updateResumeScheduleId(sessionId: string): string {
   return `${UPDATE_RESUME_ID_PREFIX}${sessionId}`;
 }
 
-/**
- * The resume ADE arms after any restart (an update, a crash) uses the fixed
- * id, so a transcript event names it by its schedule id, old transcripts too.
- * Its wake line, wake divider and wake message are not drawn: the restart
- * notice already says the agent continues (`isRestartInterruptedNotice`).
- */
-export function isRestartResumeScheduleId(scheduleId: string | null | undefined): boolean {
-  return typeof scheduleId === "string" && scheduleId.startsWith(UPDATE_RESUME_ID_PREFIX);
-}
+export { isRestartResumeScheduleId };
 
 /**
  * Recognises an update-resume row by its tag. Unlike the usage-limit pair there
