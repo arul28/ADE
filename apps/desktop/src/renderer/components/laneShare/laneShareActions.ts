@@ -6,6 +6,16 @@ import { laneShareProblem } from "./laneShareModel";
 import { markLaneShareRevokePending, reloadLaneShares } from "./laneShareStore";
 import { requirePin } from "../../lib/requirePin";
 
+/** The one toast for revokes that failed (each line names the guest and why). */
+function showRevokeFailures(failed: readonly string[], total: number): void {
+  showToast({
+    tone: "error",
+    title: failed.length === total ? "Couldn't stop sharing" : "Some shares did not stop",
+    message: failed.join("\n"),
+    report: false,
+  });
+}
+
 /**
  * Stops shares on the lane's machine (`pin`), one revoke each. The host
  * closes the guest at once, then tells the directory; a failed directory
@@ -38,12 +48,7 @@ export async function revokeLaneShares(
   }
   await reloadLaneShares(listKey, pin);
   if (failed.length > 0) {
-    showToast({
-      tone: "error",
-      title: failed.length === entries.length ? "Couldn't stop sharing" : "Some shares did not stop",
-      message: failed.join("\n"),
-      report: false,
-    });
+    showRevokeFailures(failed, entries.length);
   } else if (pendingDirectory > 0) {
     showToast({
       tone: "warning",
@@ -84,12 +89,7 @@ export async function revokeGivenShares(
     }
   }
   if (failed.length > 0) {
-    showToast({
-      tone: "error",
-      title: failed.length === entries.length ? "Couldn't stop sharing" : "Some shares did not stop",
-      message: failed.join("\n"),
-      report: false,
-    });
+    showRevokeFailures(failed, entries.length);
   } else if (revoked > 0) {
     showToast({ tone: "success", title: revoked === 1 ? "Share stopped" : `${revoked} shares stopped` });
   }

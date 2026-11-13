@@ -17,7 +17,7 @@ import {
   type LaneShareRights,
   type LaneShareToolDomain,
 } from "../../../shared/laneShareRights";
-import { AGENT_CHAT_PERMISSION_MODE_VALUES, type AgentChatPermissionMode } from "../../../shared/types/chat";
+import { AGENT_CHAT_PERMISSION_MODE_VALUES } from "../../../shared/types/chat";
 import { SettingsToggle } from "../settings/primitives/SettingsControls";
 import { ModernRow, ModernRows } from "../settings/primitives/SettingsModern";
 import {
@@ -27,6 +27,7 @@ import {
   laneShareQuickEnds,
   sameLaneShareRights,
 } from "./laneShareModel";
+import { LANE_SHARE_MODE_TITLES, LANE_SHARE_REASONING_TITLES } from "./laneShareUi";
 import "./laneShare.css";
 
 /**
@@ -55,27 +56,8 @@ const CLI_TYPING_UNAVAILABLE_HINTS: Record<LaneShareCliTypingUnavailableReason, 
   windows_host: "Not on a Windows computer: ADE cannot tell a CLI from the shell behind it there.",
 };
 
-const MODE_TITLES: Record<AgentChatPermissionMode, string> = {
-  default: "Ask first",
-  plan: "Plan",
-  auto: "Auto",
-  edit: "Edit",
-  "full-auto": "Full auto",
-  "config-toml": "Provider config",
-};
-
 /** The reasoning levels ADE's providers name. A saved level outside this list still shows. */
-const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
-const REASONING_TITLES: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
-
-/** The preset a rights object matches, or "custom". Privacy and the end date are the owner's own choices on top of any preset. */
-export function laneShareRightsPreset(rights: LaneShareRights): LaneSharePresetName | "custom" {
-  const label = laneSharePresetLabel(rights);
-  const preset = laneSharePresetRights(label);
-  return sameLaneShareRights(rights, { ...preset, privacy: rights.privacy, limits: { ...preset.limits, endsAt: rights.limits.endsAt } })
-    ? label
-    : "custom";
-}
+const REASONING_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 
 /**
  * Watch / Comment / Suggest / Collaborate as one segmented control. A rights
@@ -131,8 +113,15 @@ export function LaneShareRiskSummary({ rights }: { rights: LaneShareRights }) {
   );
 }
 
-function Toggle({ title, checked, disabled, onChange }: { title: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
-  return <SettingsToggle label={title} checked={checked} onChange={onChange} disabled={disabled} />;
+/** A settings row whose control is one switch named by the row's title. */
+function ToggleRow({ title, hint, checked, disabled, onChange }: {
+  title: string;
+  hint?: React.ReactNode;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return <ModernRow title={title} hint={hint} control={<SettingsToggle label={title} checked={checked} onChange={onChange} disabled={disabled} />} />;
 }
 
 /** A multi-pick row of choices: each button toggles one value. */
@@ -146,12 +135,12 @@ function MultiPick<T extends string>({
 }: {
   label: string;
   options: readonly T[];
-  values: readonly string[];
+  values: readonly T[];
   titles: Record<string, string>;
   disabled?: boolean;
-  onChange: (next: string[]) => void;
+  onChange: (next: T[]) => void;
 }) {
-  const extra = values.filter((value) => !(options as readonly string[]).includes(value));
+  const extra = values.filter((value) => !options.includes(value));
   return (
     <div className="kit-seg ade-ls-multipick" data-case="sentence" role="group" aria-label={label}>
       {[...options, ...extra].map((option) => {
@@ -297,16 +286,12 @@ export function LaneShareRightsPanel({
             )}
           />
         ) : null}
-        <ModernRow
+        <ToggleRow
           title="Hide my machines"
-          hint="They see no machine name or kind."
-          control={<Toggle title="Hide my machines" checked={rights.privacy.hideMachines} disabled={disabled} onChange={(hideMachines) => set("privacy", { hideMachines })} />}
-        />
-        <ModernRow
+          hint="They see no machine name or kind." checked={rights.privacy.hideMachines} disabled={disabled} onChange={(hideMachines) => set("privacy", { hideMachines })} />
+        <ToggleRow
           title="Hide my models"
-          hint="They see only the models you allow."
-          control={<Toggle title="Hide my models" checked={rights.privacy.hideModels} disabled={disabled} onChange={(hideModels) => set("privacy", { hideModels })} />}
-        />
+          hint="They see only the models you allow." checked={rights.privacy.hideModels} disabled={disabled} onChange={(hideModels) => set("privacy", { hideModels })} />
       </ModernRows>
 
       <button
@@ -323,47 +308,33 @@ export function LaneShareRightsPanel({
       {detailsOpen ? (
         <div className="ade-ls-groups">
           <Group id="see" title="What they see">
-            <ModernRow title="Chats" control={<Toggle title="Chats" checked={rights.see.chats} disabled={disabled} onChange={(chats) => set("see", { chats })} />} />
-            <ModernRow title="Subagent chats" control={<Toggle title="Subagent chats" checked={rights.see.subagentChats} disabled={disabled} onChange={(subagentChats) => set("see", { subagentChats })} />} />
-            <ModernRow title="CLI sessions" control={<Toggle title="CLI sessions" checked={rights.see.cliSessions} disabled={disabled} onChange={(cliSessions) => set("see", { cliSessions })} />} />
-            <ModernRow
-              title="Shells"
-              hint="Always read only. A guest never types into or starts a shell."
-              control={<Toggle title="Shells" checked={rights.see.shells} disabled={disabled} onChange={(shells) => set("see", { shells })} />}
-            />
-            <ModernRow
-              title="History before the share"
-              hint="Off: only what happens from now on."
-              control={<Toggle title="History before the share" checked={rights.see.historyBeforeShare} disabled={disabled} onChange={(historyBeforeShare) => set("see", { historyBeforeShare })} />}
-            />
+            <ToggleRow title="Chats" checked={rights.see.chats} disabled={disabled} onChange={(chats) => set("see", { chats })} />
+            <ToggleRow title="Subagent chats" checked={rights.see.subagentChats} disabled={disabled} onChange={(subagentChats) => set("see", { subagentChats })} />
+            <ToggleRow title="CLI sessions" checked={rights.see.cliSessions} disabled={disabled} onChange={(cliSessions) => set("see", { cliSessions })} />
+            <ToggleRow title="Shells"
+              hint="Always read only. A guest never types into or starts a shell." checked={rights.see.shells} disabled={disabled} onChange={(shells) => set("see", { shells })} />
+            <ToggleRow title="History before the share"
+              hint="Off: only what happens from now on." checked={rights.see.historyBeforeShare} disabled={disabled} onChange={(historyBeforeShare) => set("see", { historyBeforeShare })} />
           </Group>
 
           <Group id="speak" title="What they can say">
-            <ModernRow title="Comment on replies" control={<Toggle title="Comment on replies" checked={rights.speak.comment} disabled={disabled} onChange={(comment) => set("speak", { comment })} />} />
-            <ModernRow title="Write drafts" hint="Only you send a draft." control={<Toggle title="Write drafts" checked={rights.speak.drafts} disabled={disabled} onChange={(drafts) => set("speak", { drafts })} />} />
-            <ModernRow title="Send messages" control={<Toggle title="Send messages" checked={rights.speak.send} disabled={disabled} onChange={(send) => set("speak", { send })} />} />
-            <ModernRow title="Steer their own turns" control={<Toggle title="Steer their own turns" checked={rights.speak.steer} disabled={disabled} onChange={(steer) => set("speak", { steer })} />} />
-            <ModernRow
-              title="Stop or steer any turn"
-              hint="Yours and other guests' too."
-              control={<Toggle title="Stop or steer any turn" checked={rights.speak.interruptAnyTurn} disabled={disabled} onChange={(interruptAnyTurn) => set("speak", { interruptAnyTurn })} />}
-            />
+            <ToggleRow title="Comment on replies" checked={rights.speak.comment} disabled={disabled} onChange={(comment) => set("speak", { comment })} />
+            <ToggleRow title="Write drafts" hint="Only you send a draft." checked={rights.speak.drafts} disabled={disabled} onChange={(drafts) => set("speak", { drafts })} />
+            <ToggleRow title="Send messages" checked={rights.speak.send} disabled={disabled} onChange={(send) => set("speak", { send })} />
+            <ToggleRow title="Steer their own turns" checked={rights.speak.steer} disabled={disabled} onChange={(steer) => set("speak", { steer })} />
+            <ToggleRow title="Stop or steer any turn"
+              hint="Yours and other guests' too." checked={rights.speak.interruptAnyTurn} disabled={disabled} onChange={(interruptAnyTurn) => set("speak", { interruptAnyTurn })} />
           </Group>
 
           <Group id="run" title="What they can start">
-            <ModernRow title="Start chats" control={<Toggle title="Start chats" checked={rights.run.startChats} disabled={disabled} onChange={(startChats) => set("run", { startChats })} />} />
-            <ModernRow title="Start CLI sessions" control={<Toggle title="Start CLI sessions" checked={rights.run.startCliSessions} disabled={disabled} onChange={(startCliSessions) => set("run", { startCliSessions })} />} />
-            <ModernRow
+            <ToggleRow title="Start chats" checked={rights.run.startChats} disabled={disabled} onChange={(startChats) => set("run", { startChats })} />
+            <ToggleRow title="Start CLI sessions" checked={rights.run.startCliSessions} disabled={disabled} onChange={(startCliSessions) => set("run", { startCliSessions })} />
+            <ToggleRow
               title="Type into CLI sessions"
               hint={cliTypingOff ?? "The same reach as a shell."}
-              control={(
-                <Toggle
-                  title="Type into CLI sessions"
-                  checked={cliTypingOff ? false : rights.run.typeInCliSessions}
-                  disabled={disabled || cliTypingOff != null}
-                  onChange={(typeInCliSessions) => set("run", { typeInCliSessions })}
-                />
-              )}
+              checked={cliTypingOff ? false : rights.run.typeInCliSessions}
+              disabled={disabled || cliTypingOff != null}
+              onChange={(typeInCliSessions) => set("run", { typeInCliSessions })}
             />
             {canRun ? (
               <>
@@ -380,7 +351,7 @@ export function LaneShareRightsPanel({
                     label="Reasoning levels a guest may pick"
                     options={REASONING_LEVELS}
                     values={rights.run.reasoningLevels}
-                    titles={REASONING_TITLES}
+                    titles={LANE_SHARE_REASONING_TITLES}
                     disabled={disabled}
                     onChange={(reasoningLevels) => set("run", { reasoningLevels })}
                   />
@@ -390,9 +361,9 @@ export function LaneShareRightsPanel({
                     label="Permission modes a guest may use"
                     options={AGENT_CHAT_PERMISSION_MODE_VALUES}
                     values={rights.run.permissionModes}
-                    titles={MODE_TITLES}
+                    titles={LANE_SHARE_MODE_TITLES}
                     disabled={disabled}
-                    onChange={(permissionModes) => set("run", { permissionModes: permissionModes as AgentChatPermissionMode[] })}
+                    onChange={(permissionModes) => set("run", { permissionModes })}
                   />
                 </ModernRow>
               </>
@@ -400,27 +371,22 @@ export function LaneShareRightsPanel({
           </Group>
 
           <Group id="decide" title="What they can answer">
-            <ModernRow title="Approve the agent's actions" control={<Toggle title="Approve the agent's actions" checked={rights.decide.approvals} disabled={disabled} onChange={(approvals) => set("decide", { approvals })} />} />
-            <ModernRow title="Answer the agent's questions" control={<Toggle title="Answer the agent's questions" checked={rights.decide.questions} disabled={disabled} onChange={(questions) => set("decide", { questions })} />} />
+            <ToggleRow title="Approve the agent's actions" checked={rights.decide.approvals} disabled={disabled} onChange={(approvals) => set("decide", { approvals })} />
+            <ToggleRow title="Answer the agent's questions" checked={rights.decide.questions} disabled={disabled} onChange={(questions) => set("decide", { questions })} />
           </Group>
 
           <Group id="tools" title="What they can read">
             {LANE_SHARE_TOOL_DOMAINS.filter((domain) => LANE_SHARE_TOOL_READS[domain].length > 0 || rights.tools[domain]).map((domain) => {
               const reads = LANE_SHARE_TOOL_READS[domain];
               return (
-                <ModernRow
+                <ToggleRow
                   key={domain}
                   title={TOOL_TITLES[domain]}
                   hint={reads.length === 0 ? "Gives nothing yet. Turn it off to tidy up." : reads[0]}
-                  control={(
-                    <Toggle
-                      title={TOOL_TITLES[domain]}
-                      checked={rights.tools[domain]}
-                      // A switch with no reads gives nothing: it shows only while on, so it can be turned off.
-                      disabled={disabled || (reads.length === 0 && !rights.tools[domain])}
-                      onChange={(value) => onChange({ ...rights, tools: { ...rights.tools, [domain]: value } })}
-                    />
-                  )}
+                  checked={rights.tools[domain]}
+                  // A switch with no reads gives nothing: it shows only while on, so it can be turned off.
+                  disabled={disabled || (reads.length === 0 && !rights.tools[domain])}
+                  onChange={(value) => onChange({ ...rights, tools: { ...rights.tools, [domain]: value } })}
                 />
               );
             })}

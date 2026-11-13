@@ -1,5 +1,5 @@
 import { parseCodedErrorMessage, isUnsupportedAdeActionError } from "../../../shared/codedError";
-import type { LaneShareRights, LaneShareRiskLevel } from "../../../shared/laneShareRights";
+import { laneSharePresetLabel, laneSharePresetRights, type LaneSharePresetName, type LaneShareRights, type LaneShareRiskLevel } from "../../../shared/laneShareRights";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../shared/laneShareDirectory";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -243,4 +243,23 @@ export function laneShareEmailNote(directory: { emailSent?: boolean; emailNotSen
     default:
       return "The invite email could not be sent. Copy the link and send it yourself.";
   }
+}
+
+/** A preset's rights on top of `rights`: a preset changes what the person may do; privacy and the end date stay. */
+export function withLaneSharePreset(rights: LaneShareRights, preset: LaneSharePresetName): LaneShareRights {
+  const next = laneSharePresetRights(preset);
+  return { ...next, privacy: rights.privacy, limits: { ...next.limits, endsAt: rights.limits.endsAt } };
+}
+
+/** The preset a rights object matches, or "custom" (privacy and the end date are the owner's own on top of any preset). */
+export function laneShareRightsPreset(rights: LaneShareRights): LaneSharePresetName | "custom" {
+  const label = laneSharePresetLabel(rights);
+  return sameLaneShareRights(rights, withLaneSharePreset(rights, label)) ? label : "custom";
+}
+
+/** A share's access level as every row names it: from its rights when this computer has them (Custom included), else the directory's label. */
+export function laneShareAccessText(entry: Pick<LaneShareGivenEntry, "rights" | "preset">): string {
+  if (!entry.rights) return laneSharePresetText(entry.preset);
+  const preset = laneShareRightsPreset(entry.rights);
+  return preset === "custom" ? "Custom" : LANE_SHARE_PRESET_LABELS[preset] ?? "Custom";
 }

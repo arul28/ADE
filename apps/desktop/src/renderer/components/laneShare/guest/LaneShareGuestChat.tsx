@@ -14,7 +14,7 @@ import { parseCodedErrorMessage } from "../../../../shared/codedError";
 import { ChatMarkdown } from "../../chat/chatMarkdown";
 import { Banner } from "../../ui/notice";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
-import { LaneShareMeta, laneShareModeTitle } from "../laneShareUi";
+import { LaneShareMeta, laneShareModeTitle, laneShareReasoningTitle } from "../laneShareUi";
 import type { LaneShareGuestConnection } from "./laneShareGuestConnection";
 import { refreshLaneShareGuestState } from "./laneShareGuestStore";
 import { buildLaneShareGuestTranscript, LANE_SHARE_GUEST_MAX_ROWS, type LaneShareGuestRow } from "./laneShareGuestTranscript";
@@ -539,7 +539,7 @@ export function LaneShareGuestChat({
                   label="Reasoning"
                   values={rights.run.reasoningLevels}
                   current={null}
-                  title={(level) => level.charAt(0).toUpperCase() + level.slice(1)}
+                  title={laneShareReasoningTitle}
                   onPick={(reasoningEffort) => { void run("chat.updateSession", { sessionId, reasoningEffort }); }}
                 />
               ) : null}

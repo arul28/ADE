@@ -357,6 +357,7 @@ import {
   type SyncPeerCursorResolution,
 } from "./syncPeerCursorResolution";
 import {
+  detachSocketForHandoff,
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
@@ -2942,8 +2943,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     lifecycle.initialize(initial);
     peer.relayAuthorization = lifecycle;
   };
-  // Lane sharing: guests. `laneShareGuestHost.ts` owns the guest hello, the
-  // grants and rights of connected guests, and the grant refresh;
+  // The listener that routes a guest on to another project (none for a host without one).
+  const routingListener = args.sharedListener ?? null;
+  // Lane sharing: guests. `laneShareGuestHost.ts` owns the grants and rights
+  // of connected guests and the grant refresh; `laneShareGuestHello.ts` the
+  // guest hello and hand-off;
   // `laneShareGuestGates.ts` owns the gates, all default refuse:
   //   - inbound: `admitLaneShareGuestEnvelope` (queued) and
   //     `admitLaneShareGuestImmediateEnvelope` (top of
@@ -2975,8 +2979,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     normalizeTerminalInputId,
     buildSyncHostHelloOkPayload,
     releasePeerForHandoff: (peer) => releasePeerForHandoff(peer as PeerState),
-    ...(args.sharedListener
-      ? { routeLaneShareGuest: (handoff: LaneShareGuestHandoff) => args.sharedListener!.routeLaneShareGuest(handoff) }
+    ...(routingListener
+      ? { routeLaneShareGuest: (handoff: LaneShareGuestHandoff) => routingListener.routeLaneShareGuest(handoff) }
       : {}),
   });
   const {
@@ -3345,6 +3349,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const sharedListener = args.sharedListener ?? null;
+  // A guests-only host (`syncService.adoptLaneShareGuest`) serves only lane
+  // share guests handed to it. It changes five things, all gated here:
+  // no poll pump wake, no brain status timer, no shared-listener attach, no
+  // tailnet route, and dispose closes its guests ("Sync host changed projects").
   const guestsOnly = args.laneShareGuestsOnly === true;
   const expectedLoopbackNonce = sharedListener?.getExpectedLoopbackNonce()
     ?? generateLoopbackNonce();
@@ -3808,11 +3816,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.relayAuthorization?.dispose();
     peer.relayAuthorization = null;
     peer.envelopeChunks.reset();
-    peer.ws.removeAllListeners("message");
-    peer.ws.removeAllListeners("close");
-    peer.ws.removeAllListeners("error");
-    // Until the next host attaches its own: a transport error in between must not crash the brain.
-    peer.ws.on("error", () => {});
+    detachSocketForHandoff(peer.ws);
     peers.delete(peer);
     laneShareGuestSocketClosed(peer);
   }

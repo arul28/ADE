@@ -14,7 +14,7 @@ import { Dialog, confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
-import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary, laneShareRightsPreset } from "./LaneShareRightsPanel";
+import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary } from "./LaneShareRightsPanel";
 import { confirmHighRiskShare, useLaneShareDefaults } from "./laneShareDefaults";
 import { revokeLaneShares } from "./laneShareActions";
 import { LANE_SHARE_MAX_GUESTS } from "../../../shared/laneShareDirectory";
@@ -24,13 +24,16 @@ import {
   laneShareEmailNote,
   laneSharePresetText,
   laneShareProblem,
+  laneShareRightsPreset,
   laneSharesForLane,
   laneShareStateLabel,
   laneShareUsageText,
   sameLaneShareRights,
+  withLaneSharePreset,
 } from "./laneShareModel";
 import { reloadLaneShares, useLaneShareList, useLaneShareStore, type LaneShareSheetRequest } from "./laneShareStore";
 import { requirePin } from "../../state/repositoryScope";
+import { LaneShareMeta, LaneShareState, type LaneShareTone } from "./laneShareUi";
 
 /**
  * The share sheet: people on the left (invite form, one row per guest with
@@ -44,17 +47,14 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type Draft = { rights: LaneShareRights; endsAt: number | null };
 
-function presetOf(rights: LaneShareRights): LaneSharePresetName | "custom" {
-  return laneShareRightsPreset(rights);
-}
-
-function withPreset(rights: LaneShareRights, preset: LaneSharePresetName): LaneShareRights {
-  const next = laneSharePresetRights(preset);
-  // A preset changes what the person may do; privacy and the end date stay.
-  return { ...next, privacy: rights.privacy, limits: { ...next.limits, endsAt: rights.limits.endsAt } };
-}
-
 /** One person with access: their address, then state, access level and who made it, on one quiet line. */
+/** A person's state: "Removed here" while a revoke waits on the directory, else the share's own state. */
+function personState(entry: LaneShareGivenEntry, revokePending: boolean, now?: number): { label: string; tone: LaneShareTone } {
+  if (revokePending) return { label: "Removed here", tone: "warn" };
+  const state = laneShareStateLabel(entry, now);
+  return { label: state.label, tone: state.tone ?? (entry.connectedDevices > 0 ? "ok" : null) };
+}
+
 function PersonRow({
   entry,
   selected,
@@ -68,7 +68,7 @@ function PersonRow({
   revokePending: boolean;
   onSelect: () => void;
 }) {
-  const state = revokePending ? { label: "Removed here", tone: "warn" as const } : laneShareStateLabel(entry);
+  const state = personState(entry, revokePending);
   // Rights known here name the level the picker shows (Custom included); the
   // directory's label is the fallback for a share with no rights on this computer.
   const access = presetValue !== "custom"
@@ -93,18 +93,13 @@ function PersonRow({
       <UserCircle size={18} className="ade-ls-person-glyph" aria-hidden />
       <div className="ade-ls-person-text">
         <div className="ade-ls-person-name" title={entry.receiverEmail ?? undefined}>{entry.receiverEmail ?? "Guest"}</div>
-        <div className="ade-ls-person-meta">
-          {entry.connectedDevices > 0 ? <span className="kit-dot" data-state="ok" aria-hidden /> : null}
-          <span data-tone={state.tone ?? undefined}>{state.label}</span>
-          <span aria-hidden>·</span>
-          <span>{access}</span>
-          {entry.createdBy === "agent" ? (
-            <>
-              <span aria-hidden>·</span>
-              <span data-testid="lane-share-made-by-agent">Made by an agent</span>
-            </>
-          ) : null}
-        </div>
+        <LaneShareMeta
+          parts={[
+            <LaneShareState key="state" label={state.label} tone={state.tone} />,
+            access,
+            entry.createdBy === "agent" ? <span key="agent" data-testid="lane-share-made-by-agent">Made by an agent</span> : null,
+          ]}
+        />
       </div>
     </div>
   );
@@ -112,20 +107,18 @@ function PersonRow({
 
 /** One plain line about the selected share's state, when it needs saying. */
 function SelectedNote({ entry, editable, laneGone, revokePending }: { entry: LaneShareGivenEntry; editable: boolean; laneGone: boolean; revokePending: boolean }) {
-  const line = revokePending
-    ? null
-    : laneGone
-      ? "The lane was deleted, so the share ended."
-      : !entry.local
-        ? "This share was made on another computer. Change it there."
-        : entry.needsRights
-          ? "This computer holds no rights for this share, so they get nothing. Save rights here, or remove the share."
-          : entry.laneState === "archived"
-            ? "The lane is archived, so the share is paused. Unarchive the lane to resume it."
-            : entry.connectedDevices > 0 && editable
-              ? "Connected now. A change applies to their next action."
-              : null;
+  const line = selectedNoteText(entry, editable, laneGone, revokePending);
   return line ? <div className="ade-ls-line">{line}</div> : null;
+}
+
+function selectedNoteText(entry: LaneShareGivenEntry, editable: boolean, laneGone: boolean, revokePending: boolean): string | null {
+  if (revokePending) return null;
+  if (laneGone) return "The lane was deleted, so the share ended.";
+  if (!entry.local) return "This share was made on another computer. Change it there.";
+  if (entry.needsRights) return "This computer holds no rights for this share, so they get nothing. Save rights here, or remove the share.";
+  if (entry.laneState === "archived") return "The lane is archived, so the share is paused. Unarchive the lane to resume it.";
+  if (entry.connectedDevices > 0 && editable) return "Connected now. A change applies to their next action.";
+  return null;
 }
 
 export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRequest; onClose: () => void }) {
@@ -175,14 +168,14 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
   const savedDraft: Draft | null = selectedEntry
     ? { rights: selectedEntry.rights ?? defaults.rights, endsAt: selectedEntry.endsAt }
     : null;
-  const shownDraft: Draft = selectedEntry ? edits[selectedEntry.grantId] ?? savedDraft! : newDraft;
+  const selectedEdit = selectedEntry ? edits[selectedEntry.grantId] : undefined;
+  // A selected person shows their edit, else their saved rights; nobody selected shows the new person's draft.
+  const shownDraft: Draft = selectedEdit ?? savedDraft ?? newDraft;
   const draft: Draft = { ...shownDraft, rights: forHost(shownDraft.rights) };
-  const dirty = selectedEntry
-    ? Boolean(edits[selectedEntry.grantId]) && (
-      !sameLaneShareRights(edits[selectedEntry.grantId]!.rights, selectedEntry.rights)
-      || edits[selectedEntry.grantId]!.endsAt !== selectedEntry.endsAt
-      || selectedEntry.needsRights)
-    : false;
+  const dirty = selectedEntry != null && selectedEdit != null && (
+    !sameLaneShareRights(selectedEdit.rights, selectedEntry.rights)
+    || selectedEdit.endsAt !== selectedEntry.endsAt
+    || selectedEntry.needsRights);
   const formDisabled = blocked || loading || busy != null;
   const rightsDisabled = formDisabled || (selectedEntry ? !selectedEditable : false);
   const who = selectedEntry?.receiverEmail ?? (email.trim() || "this person");
@@ -363,7 +356,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
         { label: "Send invite", onClick: () => { void sendInvite(false); }, variant: "solid" as const, disabled: formDisabled || atLimit || !email.trim(), busy: busy === "invite" },
       ];
 
-  const selectedState = selectedEntry ? laneShareStateLabel(selectedEntry, now) : null;
+  const selectedState = selectedEntry ? personState(selectedEntry, selectedRevokePending, now) : null;
   const usage = selectedEntry ? laneShareUsageText(selectedEntry) : null;
 
   return (
@@ -426,7 +419,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
             ) : null}
 
             <div role="listbox" aria-label="People with access" className="ade-ls-person-list">
-                          {loading ? (
+              {loading ? (
                 <div className="ade-ls-empty">Loading…</div>
               ) : shares.length === 0 ? (
                 <div className="ade-ls-empty">Nobody has access yet.</div>
@@ -437,7 +430,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                     key={share.grantId}
                     entry={share}
                     selected={selected === share.grantId}
-                    presetValue={shareDraft ? presetOf(forHost(shareDraft)) : "custom"}
+                    presetValue={shareDraft ? laneShareRightsPreset(forHost(shareDraft)) : "custom"}
                     revokePending={revokePending[share.grantId] === true}
                     onSelect={() => {
                       setFormError(null);
@@ -457,11 +450,12 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                   {selectedEntry ? selectedEntry.receiverEmail ?? "Guest" : email.trim() || "New person"}
                 </span>
                 {selectedEntry && selectedState ? (
-                  <span className="ade-ls-state">
-                    <span className="kit-dot" data-state={selectedState.tone === "crit" ? "crit" : selectedState.tone === "warn" ? "warn" : selectedEntry.connectedDevices > 0 ? "ok" : undefined} aria-hidden />
-                    {selectedRevokePending ? "Removed here" : selectedState.label}
-                    {usage ? <span className="kit-num"> · {usage}</span> : null}
-                  </span>
+                  <LaneShareMeta
+                    parts={[
+                      <LaneShareState key="state" label={selectedState.label} tone={selectedState.tone} />,
+                      usage ? <span key="usage" className="kit-num">{usage}</span> : null,
+                    ]}
+                  />
                 ) : null}
                 {selectedEntry ? (
                   <div className="ade-ls-access-actions">
@@ -498,10 +492,10 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
             </div>
 
             <LaneSharePresetPicker
-              value={presetOf(draft.rights)}
+              value={laneShareRightsPreset(draft.rights)}
               disabled={rightsDisabled || (!selectedEntry && atLimit)}
               label={`Access for ${who}`}
-              onChange={(preset) => updateDraft({ ...draft, rights: withPreset(draft.rights, preset) })}
+              onChange={(preset) => updateDraft({ ...draft, rights: withLaneSharePreset(draft.rights, preset) })}
             />
             <LaneShareRiskSummary rights={draft.rights} />
             {formError ? (

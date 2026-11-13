@@ -41,7 +41,8 @@ export function LaneShareRiskWord({ level }: { level: "low" | "medium" | "high" 
   return <span className="ade-ls-risk-level" data-tone={level === "high" ? "crit" : "warn"}>{level === "high" ? "High risk" : "Medium risk"}</span>;
 }
 
-const MODE_TITLES: Record<string, string> = {
+/** Permission modes in plain words, for every sharing surface. */
+export const LANE_SHARE_MODE_TITLES: Record<string, string> = {
   default: "Ask first",
   plan: "Plan mode",
   auto: "Auto",
@@ -52,5 +53,13 @@ const MODE_TITLES: Record<string, string> = {
 
 /** A permission mode in plain words. */
 export function laneShareModeTitle(mode: string): string {
-  return MODE_TITLES[mode] ?? mode;
+  return LANE_SHARE_MODE_TITLES[mode] ?? mode;
+}
+
+/** Reasoning levels in plain words, for every sharing surface. */
+export const LANE_SHARE_REASONING_TITLES: Record<string, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+
+/** A reasoning level in plain words. */
+export function laneShareReasoningTitle(level: string): string {
+  return LANE_SHARE_REASONING_TITLES[level] ?? level.charAt(0).toUpperCase() + level.slice(1);
 }

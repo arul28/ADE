@@ -49,18 +49,23 @@ export function HoverButton({
   onClick,
   dataTour,
   disabled = false,
+  title,
 }: {
   style: React.CSSProperties;
   children: React.ReactNode;
   onClick: () => void;
   dataTour?: string;
   disabled?: boolean;
+  /** The full reason a disabled row cannot be used, on hover. */
+  title?: string;
 }) {
   return (
     <button
       role="menuitem"
       data-tour={dataTour}
       disabled={disabled}
+      aria-disabled={disabled || undefined}
+      title={title}
       style={{
         ...style,
         ...(disabled ? { cursor: "not-allowed", opacity: 0.4 } : {}),
@@ -106,9 +111,12 @@ function LaneMenuEntryView({
           style={menuItemStyle}
           dataTour={entry.dataTour}
           onClick={entry.onSelect}
+          disabled={entry.disabledReason != null}
+          title={entry.disabledReason?.detail}
         >
           {entry.icon ? <LaneMenuGlyph icon={entry.icon} /> : null}
           {entry.label}
+          {entry.disabledReason ? <span style={{ marginLeft: "auto", paddingLeft: 12, fontSize: 11 }}>{entry.disabledReason.short}</span> : null}
         </HoverButton>
       );
     default: {

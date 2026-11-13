@@ -42,26 +42,6 @@ import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
 import { requirePin } from "../../state/repositoryScope";
 
-/** A menu row that cannot be used here: dimmed, a short reason on the right, the full one on hover. */
-function LaneMenuDisabledRow({ icon, label, reason, detail }: { icon: Icon; label: string; reason: string; detail: string }) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      disabled
-      aria-disabled="true"
-      title={detail}
-      aria-description={detail}
-      className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] text-fg opacity-50"
-      style={{ fontFamily: SANS_FONT }}
-    >
-      <LaneMenuGlyph icon={icon} />
-      <span className="flex-1">{label}</span>
-      <span className="text-[11px] text-muted-fg">{reason}</span>
-    </button>
-  );
-}
-
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
     <span
@@ -93,6 +73,8 @@ export type LaneMenuAction = {
   onSelect: () => void;
   dataTour?: string;
   icon?: Icon;
+  /** Shown dimmed and inert: a short reason on the right, the full one on hover. */
+  disabledReason?: { short: string; detail: string };
 };
 
 /** A group entry that is not a row — today only the colour swatch grid. */
@@ -512,9 +494,14 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   const share = args.share;
   if (share && lane) {
     const shareEntries: LaneMenuEntry[] = [
-      share.disabledReason
-        ? { kind: "custom", key: "share-lane", node: <LaneMenuDisabledRow icon={ShareNetwork} label="Share lane…" reason={share.disabledReason.short} detail={share.disabledReason.detail} /> }
-        : { kind: "action", key: "share-lane", label: "Share lane…", icon: ShareNetwork, onSelect: () => { onClose(); share.onShare(); } },
+      {
+        kind: "action",
+        key: "share-lane",
+        label: "Share lane…",
+        icon: ShareNetwork,
+        ...(share.disabledReason ? { disabledReason: share.disabledReason } : {}),
+        onSelect: () => { onClose(); share.onShare(); },
+      },
     ];
     if (share.liveCount > 0) {
       shareEntries.push(

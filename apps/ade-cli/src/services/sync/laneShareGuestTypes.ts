@@ -191,3 +191,11 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
     pipelinedHelloAccepted?: number | null;
   }): PairedRuntimeHelloOkPayload;
 };
+
+/** A handed-off guest whose ticket a host already redeemed. */
+export type LaneShareRedeemedGuest = NonNullable<LaneShareGuestHandoff["redeemed"]>;
+
+/** Guest hello refusals, shared by every host and the brain's ingress. */
+export const LANE_SHARE_UNAVAILABLE = "This computer could not check its shared lanes right now. Try again in a moment.";
+export const LANE_SHARE_NO_GRANT = "This lane is not shared with your ADE account, or the share has ended. Open it again from ADE.";
+export const LANE_SHARE_PROJECT_NOT_OPEN = "The owner's computer can't open this lane's project right now. ADE tries again in a minute.";

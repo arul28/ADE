@@ -784,26 +784,20 @@ function trimGuestSessionRecord(
   return out;
 }
 
-/** Session rows and summaries a guest's command returns, trimmed (`trimGuestSessionRecord`). */
+/** One session record a guest's command returns, trimmed (`trimGuestSessionRecord`). Lists are trimmed per row by the filter. */
 function trimLaneShareGuestResult(
   action: string,
   result: unknown,
   role: LaneShareGuestRole,
   resolveSession: LaneShareSessionResolver,
 ): unknown {
-  const row = (value: unknown) => trimGuestSessionRecord(value, GUEST_SESSION_ROW_FIELDS, role, resolveSession);
   switch (action) {
-    case "work.listSessions":
-    case "chat.listSessions": {
-      if (Array.isArray(result)) return result.map(row);
-      const record = result as { sessions: unknown[] };
-      return { ...record, sessions: record.sessions.map(row) };
-    }
     case "work.getSession":
     case "work.startCliSession":
-      return row(result);
+      return trimGuestSessionRecord(result, GUEST_SESSION_ROW_FIELDS, role, resolveSession);
     case "chat.getSummary":
     case "chat.create":
+    case "chat.updateSession":
       return trimGuestSessionRecord(result, GUEST_CHAT_SUMMARY_FIELDS, role, resolveSession);
     default:
       return result;
@@ -823,8 +817,7 @@ export function filterLaneShareGuestCommandResult(
   role: LaneShareGuestRole,
   resolveSession: LaneShareSessionResolver,
 ): unknown {
-  const rule = LANE_SHARE_GUEST_COMMANDS[action];
-  if (rule?.scope !== "lane" || !(action === "work.listSessions" || action === "chat.listSessions")) {
+  if (action !== "work.listSessions" && action !== "chat.listSessions") {
     return trimLaneShareGuestResult(action, result, role, resolveSession);
   }
   const visible = (row: unknown) => {
@@ -841,11 +834,11 @@ export function filterLaneShareGuestCommandResult(
     const id = rowField(row, "sessionId") ?? rowField(row, "id");
     return typeof id !== "string" || laneShareGuestSessionInfo(role, id, resolveSession)?.child !== true;
   };
-  const keep = (rows: unknown[]) => rows.filter(visible);
-  if (Array.isArray(result)) return trimLaneShareGuestResult(action, keep(result), role, resolveSession);
+  const keep = (rows: unknown[]) => rows.filter(visible).map((row) => trimGuestSessionRecord(row, GUEST_SESSION_ROW_FIELDS, role, resolveSession));
+  if (Array.isArray(result)) return keep(result);
   if (result && typeof result === "object" && Array.isArray((result as { sessions?: unknown }).sessions)) {
     const record = result as { sessions: unknown[] };
-    return trimLaneShareGuestResult(action, { ...record, sessions: keep(record.sessions) }, role, resolveSession);
+    return { ...record, sessions: keep(record.sessions) };
   }
   // A shape this filter does not know is not sent at all.
   return [];

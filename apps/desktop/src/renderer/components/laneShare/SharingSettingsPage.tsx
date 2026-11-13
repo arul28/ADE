@@ -2,7 +2,6 @@ import React from "react";
 import { ArrowSquareOut, ArrowsClockwise, DotsThree, PencilSimple, SignOut, UserMinus } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
-  laneSharePresetLabel,
   laneSharePresetRights,
   type LaneSharePresetName,
 } from "../../../shared/laneShareRights";
@@ -16,18 +15,20 @@ import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui
 import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
-import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary, laneShareRightsPreset } from "./LaneShareRightsPanel";
+import { logRendererDebugEvent } from "../../lib/debugLog";
+import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary } from "./LaneShareRightsPanel";
 import { LaneShareMeta, LaneShareRiskWord, LaneShareState } from "./laneShareUi";
 import { revokeGivenShares, revokeLaneShares } from "./laneShareActions";
 import { useLaneShareDefaults, writeLaneShareDefaults, type LaneShareDefaults } from "./laneShareDefaults";
 import {
-  LANE_SHARE_PRESET_LABELS,
   formatLaneShareEnd,
+  laneShareAccessText,
   isLiveLaneShare,
   laneSharePresetText,
   laneShareGrantStateLabel,
   laneShareInviteExpired,
   laneShareProblem,
+  laneShareRightsPreset,
   laneShareStateLabel,
   laneShareUsageText,
   sameLaneShareRights,
@@ -107,6 +108,10 @@ function SharedByMe() {
     if (account.status === "rejected" && (runtime.status === "rejected" || runtime.value == null)) {
       setState((current) => ({ status: "error", data: current.data, problem: laneShareProblem(account.reason) }));
       return;
+    }
+    if (runtime.status === "rejected") {
+      // The rows still show from the account, without rights, usage or connections.
+      logRendererDebugEvent("lane_share.by_me_runtime_list_failed", { error: runtime.reason instanceof Error ? runtime.reason.message : String(runtime.reason) });
     }
     const enriched = runtime.status === "fulfilled" && runtime.value ? runtime.value.shares ?? [] : [];
     const byId = new Map<string, LaneShareGivenEntry>();
@@ -246,7 +251,7 @@ function SharedByMe() {
               {group.rows.map((entry) => {
                 const pendingRevoke = revokePending[entry.grantId] === true;
                 const state = pendingRevoke ? { label: "Removed here, the directory will follow", tone: "warn" as const } : laneShareStateLabel(entry);
-                const preset = entry.rights ? LANE_SHARE_PRESET_LABELS[laneSharePresetLabel(entry.rights)] : laneSharePresetText(entry.preset);
+                const preset = laneShareAccessText(entry);
                 const risk = entry.risk?.level ?? entry.directoryRisk;
                 const usage = laneShareUsageText(entry);
                 return (
@@ -373,8 +378,12 @@ function SharedWithMe() {
           <span className="min-w-0 truncate text-[12.5px] font-medium text-fg/85" title={group.title}>{group.title}</span>
           <ModernRows>
             {group.rows.map((entry) => {
-              const stateLabel = laneShareGrantStateLabel(entry);
               const connection = connections[entry.grantId];
+              const offline = connection?.kind === "host_offline";
+              const paused = connection?.kind === "stopped" && connection.reason === "paused";
+              const stateLabel = offline ? { label: "Owner offline", tone: "warn" as const }
+                : paused ? { label: "Paused", tone: "warn" as const }
+                  : laneShareGrantStateLabel(entry);
               const expired = laneShareInviteExpired(entry);
               return (
                 <ModernRow
@@ -392,10 +401,7 @@ function SharedWithMe() {
                   }
                   control={
                     <span className="flex items-center gap-1.5">
-                      <LaneShareState
-                        label={connection?.kind === "host_offline" ? "Owner offline" : connection?.kind === "stopped" && connection.reason === "paused" ? "Paused" : stateLabel.label}
-                        tone={connection?.kind === "host_offline" || (connection?.kind === "stopped" && connection.reason === "paused") ? "warn" : stateLabel.tone ?? null}
-                      />
+                      <LaneShareState label={stateLabel.label} tone={stateLabel.tone ?? null} />
                       {entry.state === "pending" && !expired ? (
                         <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={busy === entry.grantId} onClick={() => { void accept(entry); }}>
                           Accept

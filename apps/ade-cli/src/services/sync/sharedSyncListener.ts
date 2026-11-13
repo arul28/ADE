@@ -189,6 +189,19 @@ export type SyncPeerHandoffSnapshot = {
   bufferedMessages?: Array<{ data: RawData; isBinary: boolean }>;
 };
 
+/**
+ * Lets go of a socket that moves to another host (a lane share guest): every
+ * listener this side put on it goes, and a no-op error listener stays until
+ * the next host attaches its own, so a transport error in between cannot
+ * crash the brain. The caller drops its own peer state.
+ */
+export function detachSocketForHandoff(ws: WebSocket): void {
+  ws.removeAllListeners("message");
+  ws.removeAllListeners("close");
+  ws.removeAllListeners("error");
+  ws.on("error", () => {});
+}
+
 /** Gives a lane share guest's socket to the host of its lane's project. */
 export type LaneShareGuestRouter = (handoff: LaneShareGuestHandoff) => Promise<boolean>;
 

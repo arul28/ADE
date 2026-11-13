@@ -85,6 +85,9 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
   };
 };
 
+/** How often a guest's counted messages refresh the owner's usage line at most. */
+const LANE_SHARE_USAGE_NOTICE_MS = 5_000;
+
 export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
   const {
     args,
@@ -110,6 +113,20 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     endLaneShareGuest,
     earliestLaneShareEnd,
   } = deps.host;
+
+  /** Usage notices to the owner: one per grant at most every few seconds, so a busy guest costs few list reads. */
+  const pendingUsageNotices = new Map<string, ReturnType<typeof setTimeout>>();
+  function noteLaneShareUsageChanged(role: LaneShareGuestRole): void {
+    if (!args.onLaneShareEvent || pendingUsageNotices.has(role.grantId)) return;
+    const grantId = role.grantId;
+    const laneId = role.grants[0]?.laneId ?? null;
+    const timer = setTimeout(() => {
+      pendingUsageNotices.delete(grantId);
+      args.onLaneShareEvent?.({ type: "lane_share_changed", grantId, laneId });
+    }, LANE_SHARE_USAGE_NOTICE_MS);
+    timer.unref?.();
+    pendingUsageNotices.set(grantId, timer);
+  }
 
   /**
    * Default refuse for everything that leaves this host toward a guest.
@@ -317,8 +334,18 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     } satisfies SyncCommandAckPayload, requestId, { action });
     // A send can answer only when its turn ends: the turn is recorded first,
     // so a revoke during it finds it and tells the owner it keeps running.
+    // A failed send removes a record it added; a failed write only loses the notice.
     const turnSessionId = (action === "chat.send" || action === "chat.steer") ? toOptionalString(prepared.args.sessionId) : null;
-    if (turnSessionId) laneShareRights?.addItem(role.grantId, "turn", turnSessionId, turnSessionId);
+    let turnRecorded = false;
+    if (turnSessionId && laneShareRights) {
+      try {
+        turnRecorded = !laneShareRights.hasItem(role.grantId, "turn", turnSessionId);
+        laneShareRights.addItem(role.grantId, "turn", turnSessionId, turnSessionId);
+      } catch (error) {
+        turnRecorded = false;
+        args.logger.warn("sync_host.lane_share_record_failed", { action, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     try {
       const created = await run(action, prepared.args);
       if (prepared.hold) {
@@ -327,7 +354,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       }
       recordLaneShareGuestResult(action, prepared.args, role, created);
       // A counted message moved the usage the owner's share window shows.
-      if (prepared.claim) args.onLaneShareEvent?.({ type: "lane_share_changed", grantId: role.grantId, laneId: role.grants[0]?.laneId ?? null });
+      if (prepared.claim) noteLaneShareUsageChanged(role);
       const cutoff = laneShareHistoryCutoffFor(role);
       sendRequired(peer, "command_result", {
         commandId,
@@ -343,6 +370,13 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       } satisfies SyncCommandResultPayload, requestId, { action });
     } catch (error) {
       undoPrepared();
+      if (turnRecorded && turnSessionId) {
+        try {
+          laneShareRights?.removeItem(role.grantId, "turn", turnSessionId);
+        } catch (removeError) {
+          args.logger.warn("sync_host.lane_share_record_failed", { action, error: removeError instanceof Error ? removeError.message : String(removeError) });
+        }
+      }
       sendRequired(peer, "command_result", commandErrorResult(commandId, error), requestId, { action });
     }
   }

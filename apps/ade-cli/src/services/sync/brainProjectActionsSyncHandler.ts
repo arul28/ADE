@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import type { LaneShareGuestHandoff } from "./laneShareGuestTypes";
+import { LANE_SHARE_PROJECT_NOT_OPEN, type LaneShareGuestHandoff } from "./laneShareGuestTypes";
 import type { RawData, WebSocket } from "ws";
 import type {
   CloneProjectInput,
@@ -43,7 +43,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
-import { SYNC_HOST_BIND_LOOPBACK_ONLY, syncUpgradeHelloEnvelope } from "./sharedSyncListener";
+import { detachSocketForHandoff, SYNC_HOST_BIND_LOOPBACK_ONLY, syncUpgradeHelloEnvelope } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
 import { resolveBrainMachineSyncStores } from "./brainMachineSyncStores";
@@ -1700,15 +1700,20 @@ export function createBrainProjectActionsSyncHandler(
           // Only what can be checked here before anything is routed: a guest
           // comes over ADE Relay, with the device id of its own hello. The
           // router then gives it only to a project that is already open.
-          if (hello.auth?.kind === "guest" && (transportOrigin !== "relay-bridge" || hello.auth.deviceId !== hello.peer.deviceId)) {
-            send(ws, "hello_error", transportOrigin !== "relay-bridge"
-              ? { code: "lane_share_refused", message: "A shared lane is reachable only through ADE Relay." }
-              : { code: "invalid_hello", message: "Invalid hello payload." }, envelope.requestId);
+          const refuseGuest = (code: "lane_share_refused" | "lane_share_unavailable" | "invalid_hello", message: string): void => {
+            send(ws, "hello_error", { code, message }, envelope.requestId);
             try {
               ws.close(4003, "Authentication failed");
             } catch {
               // ignore close failures
             }
+          };
+          if (hello.auth?.kind === "guest" && transportOrigin !== "relay-bridge") {
+            refuseGuest("lane_share_refused", "A shared lane is reachable only through ADE Relay.");
+            return;
+          }
+          if (hello.auth?.kind === "guest" && hello.auth.deviceId !== hello.peer.deviceId) {
+            refuseGuest("invalid_hello", "Invalid hello payload.");
             return;
           }
           if (hello.auth?.kind === "guest" && args.routeLaneShareGuest) {
@@ -1718,10 +1723,7 @@ export function createBrainProjectActionsSyncHandler(
             peer.relayAuthorization?.dispose();
             peer.relayAuthorization = null;
             peer.envelopeChunks.reset();
-            ws.removeAllListeners("message");
-            ws.removeAllListeners("close");
-            ws.removeAllListeners("error");
-            ws.on("error", () => {});
+            detachSocketForHandoff(ws);
             clearInterval(chatSubscriptionPump);
             brainPeerCompressionBySocket.delete(ws);
             brainPeerChunkedSockets.delete(ws);
@@ -1739,17 +1741,7 @@ export function createBrainProjectActionsSyncHandler(
               args.logger.warn("sync_ingress.lane_share_guest_route_failed", { error: error instanceof Error ? error.message : String(error) });
               return false;
             });
-            if (!routed) {
-              send(ws, "hello_error", {
-                code: "lane_share_unavailable",
-                message: "The owner's computer can't open this lane's project right now. ADE tries again in a minute.",
-              }, envelope.requestId);
-              try {
-                ws.close(4003, "Authentication failed");
-              } catch {
-                // ignore close failures
-              }
-            }
+            if (!routed) refuseGuest("lane_share_unavailable", LANE_SHARE_PROJECT_NOT_OPEN);
             return;
           }
           // A sealed hello carries the account credentials encrypted to the

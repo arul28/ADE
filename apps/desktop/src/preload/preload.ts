@@ -20,6 +20,7 @@ import type {
   LaneShareReceivedResult,
   LaneShareResendResult,
   LaneShareRevokeResult,
+  LaneShareRevokeGivenResult,
   LaneShareUpdateRightsArgs,
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
@@ -15377,7 +15378,7 @@ const adeBridge = {
   laneShareGuest: {
     listReceived: (): Promise<LaneShareReceivedResult> => ipcRenderer.invoke(IPC.laneShareGuestListReceived),
     listGiven: (): Promise<LaneShareGivenEntry[]> => ipcRenderer.invoke(IPC.laneShareGuestListGiven),
-    revokeGiven: (args: { grantId: string }): Promise<{ grantId: string; state: string }> =>
+    revokeGiven: (args: { grantId: string }): Promise<LaneShareRevokeGivenResult> =>
       ipcRenderer.invoke(IPC.laneShareGuestRevokeGiven, { grantId: args.grantId }),
     open: (args: { grantId: string }): Promise<LaneShareOpenResult> =>
       ipcRenderer.invoke(IPC.laneShareGuestOpen, { grantId: args.grantId }),

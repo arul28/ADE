@@ -18,6 +18,7 @@ import type {
   LaneShareOpenResult,
   LaneShareReceivedEntry,
   LaneShareReceivedResult,
+  LaneShareRevokeGivenResult,
 } from "./types/laneShare";
 
 /**
@@ -172,7 +173,7 @@ export function createLaneShareGuestDirectory(options: {
       return parseLaneShareGivenResponse(await request("GET", "/lane-shares/given"));
     },
 
-    async revokeGiven(args): Promise<{ grantId: string; state: string }> {
+    async revokeGiven(args): Promise<LaneShareRevokeGivenResult> {
       const grantId = cleanGrantId(args.grantId);
       const grant = grantOf(await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/revoke`));
       return { grantId, state: str(grant?.state) ?? "revoked" };

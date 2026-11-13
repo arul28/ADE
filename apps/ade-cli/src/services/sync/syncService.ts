@@ -282,6 +282,8 @@ type SyncServiceArgs = {
   loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
 };
 
+/** How often an idle guests-only host checks for sockets; it stops after two empty checks. */
+const LANE_SHARE_GUEST_HOST_IDLE_CHECK_MS = 60_000;
 const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
 const PIN_FILE = "sync-pin.json";
@@ -815,6 +817,33 @@ export function createSyncService(args: SyncServiceArgs) {
   let laneShareGuestHostIdleTimer: ReturnType<typeof setInterval> | null = null;
   /** The host that serves this project's guests now: the served project's, else the guests-only one. */
   const laneShareServingHost = (): SyncHostService | null => hostService ?? laneShareGuestHost;
+  /** A guests-only host for this project, stopped after two idle checks in a row. */
+  const startLaneShareGuestHost = (listener: SharedSyncListener): SyncHostService => {
+    const guestHost = createSyncHostService({
+      ...buildHostServiceArgs(listener.getPort() ?? DEFAULT_SYNC_HOST_PORT),
+      sharedListener: listener,
+      laneShareGuestsOnly: true,
+      discoveryEnabled: false,
+      // Guests change no machine role.
+      onStateChanged: () => {},
+    });
+    laneShareGuestHost = guestHost;
+    args.logger.info("sync.lane_share_guest_host_started", {});
+    let idleChecks = 0;
+    laneShareGuestHostIdleTimer = setInterval(() => {
+      if (laneShareGuestHost?.laneShareGuestsBusy()) {
+        idleChecks = 0;
+        return;
+      }
+      idleChecks += 1;
+      if (idleChecks >= 2) {
+        args.logger.info("sync.lane_share_guest_host_stopped", { reason: "idle" });
+        void stopLaneShareGuestHost();
+      }
+    }, LANE_SHARE_GUEST_HOST_IDLE_CHECK_MS);
+    laneShareGuestHostIdleTimer.unref?.();
+    return guestHost;
+  };
   const stopLaneShareGuestHost = async (): Promise<void> => {
     if (laneShareGuestHostIdleTimer) clearInterval(laneShareGuestHostIdleTimer);
     laneShareGuestHostIdleTimer = null;
@@ -2497,31 +2526,8 @@ export function createSyncService(args: SyncServiceArgs) {
     adoptLaneShareGuest(handoff: LaneShareGuestHandoff): boolean {
       if (disposed || !args.sharedSyncListener) return false;
       if (hostService) return hostService.adoptLaneShareGuest(handoff);
-      if (!laneShareGuestHost) {
-        laneShareGuestHost = createSyncHostService({
-          ...buildHostServiceArgs(args.sharedSyncListener.getPort() ?? DEFAULT_SYNC_HOST_PORT),
-          sharedListener: args.sharedSyncListener,
-          laneShareGuestsOnly: true,
-          discoveryEnabled: false,
-          // Guests change no machine role.
-          onStateChanged: () => {},
-        });
-        args.logger.info("sync.lane_share_guest_host_started", {});
-        let idleChecks = 0;
-        laneShareGuestHostIdleTimer = setInterval(() => {
-          if (laneShareGuestHost?.laneShareGuestsBusy()) {
-            idleChecks = 0;
-            return;
-          }
-          idleChecks += 1;
-          if (idleChecks >= 2) {
-            args.logger.info("sync.lane_share_guest_host_stopped", { reason: "idle" });
-            void stopLaneShareGuestHost();
-          }
-        }, LANE_SHARE_GUEST_HOST_IDLE_CHECK_MS);
-        laneShareGuestHostIdleTimer.unref?.();
-      }
-      return laneShareGuestHost.adoptLaneShareGuest(handoff);
+      const guestHost = laneShareGuestHost ?? startLaneShareGuestHost(args.sharedSyncListener);
+      return guestHost.adoptLaneShareGuest(handoff);
     },
 
     /** Whether this project has the lane (a router picks between two checkouts of one repository). */
@@ -2558,6 +2564,3 @@ export function createSyncService(args: SyncServiceArgs) {
 }
 
 export type SyncService = ReturnType<typeof createSyncService>;
-
-/** How often an idle guests-only host checks for sockets; it stops after two empty checks. */
-const LANE_SHARE_GUEST_HOST_IDLE_CHECK_MS = 60_000;

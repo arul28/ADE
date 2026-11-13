@@ -55,19 +55,14 @@ export function createLaneShareGuestRouter(deps: {
 }): LaneShareGuestRouter {
   const readOrigin = deps.readOrigin ?? ((rootPath: string) => readGitOriginUrl(rootPath));
   const keyOfOrigin = (origin: string | null | undefined): string | null => accountRepoScopeKey(origin ?? null);
-  /** Repository keys read from each checkout's own origin, for a miss on the registry's copy. */
-  const liveKeys = new Map<string, string | null>();
+  /** A checkout's repository key from its own origin, for a miss on the registry's copy (`readGitOriginUrl` caches by the config's change time). */
   const liveKeyOf = (project: LaneShareRouterProject): string | null => {
-    if (!liveKeys.has(project.rootPath)) {
-      let origin: string | null = null;
-      try {
-        origin = readOrigin(project.rootPath);
-      } catch {
-        origin = null;
-      }
-      liveKeys.set(project.rootPath, keyOfOrigin(origin));
+    try {
+      return keyOfOrigin(readOrigin(project.rootPath));
+    } catch (error) {
+      deps.logger.warn("lane_share.router_origin_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
     }
-    return liveKeys.get(project.rootPath) ?? null;
   };
 
   const syncOf = async (projectId: string, open: boolean): Promise<LaneShareRouterSync | null> => {

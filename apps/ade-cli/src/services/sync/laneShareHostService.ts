@@ -436,7 +436,13 @@ export function createLaneShareHostService(options: {
       if (options.isCloudComputer?.()) {
         throw new LaneShareHostError("invalid_args", "Lanes on ADE Cloud can't be shared yet.");
       }
-      if (options.store.laneInfo(laneId)?.type === "primary") {
+      // An active lane whose row cannot be read is refused: the main-checkout check must not pass by default.
+      const laneInfo = options.store.laneInfo(laneId);
+      if (!laneInfo) {
+        options.logger?.warn("lane_share.host_lane_unreadable", { laneId });
+        throw new LaneShareHostError("unavailable", "ADE couldn't read this lane right now. Try again.");
+      }
+      if (laneInfo.type === "primary") {
         throw new LaneShareHostError("invalid_args", "The main checkout can't be shared. Share a lane instead.");
       }
       const receiverEmail = cleanEmail(args.receiverEmail);

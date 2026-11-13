@@ -12,6 +12,7 @@ import {
   laneShareGuestProblem,
   leaveLaneShare,
   loadLaneShareReceived,
+  useLaneShareGuestLaneName,
   useLaneShareGuestStore,
   type LaneShareGuestProblem,
 } from "./laneShareGuestStore";
@@ -113,16 +114,6 @@ export function LaneShareGuestPage() {
   const received = useLaneShareGuestStore((state) => state.received);
   const receivedStatus = useLaneShareGuestStore((state) => state.receivedStatus);
   const receivedProblem = useLaneShareGuestStore((state) => state.receivedProblem);
-  const guestStates = useLaneShareGuestStore((state) => state.guestStates);
-  // The host's current lane name once a connection read it: a rename follows.
-  const liveLaneNames = React.useMemo(() => {
-    const names: Record<string, string> = {};
-    for (const [grantId, guestState] of Object.entries(guestStates)) {
-      const name = guestState?.lane?.name;
-      if (name) names[grantId] = name;
-    }
-    return names;
-  }, [guestStates]);
   const [link, setLink] = React.useState<LinkState | null>(null);
   const [retries, setRetries] = React.useState(0);
 
@@ -273,26 +264,33 @@ export function LaneShareGuestPage() {
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
           {rows.map((entry) => (
-            <button
-              key={entry.grantId}
-              type="button"
-              className={cn(
-                "flex w-full min-w-0 flex-col rounded-md px-2 py-1.5 text-left hover:bg-fg/[0.05]",
-                entry.grantId === grantId && "bg-fg/[0.07]",
-              )}
-              onClick={() => select(entry.grantId)}
-            >
-              <span className="min-w-0 truncate text-[12.5px] text-fg/85" title={liveLaneNames[entry.grantId] ?? entry.laneLabel ?? undefined}>
-                {liveLaneNames[entry.grantId] ?? entry.laneLabel ?? "Shared lane"}
-              </span>
-              <span className="min-w-0 truncate text-[11px] text-fg/50">
-                From {entry.giverLabel ?? "another account"} · {laneShareGrantStateLabel(entry).label}
-              </span>
-            </button>
+            <SharedLaneRow key={entry.grantId} entry={entry} selected={entry.grantId === grantId} onSelect={() => select(entry.grantId)} />
           ))}
         </div>
       </aside>
       <main className="min-h-0 min-w-0 flex-1">{main}</main>
     </div>
+  );
+}
+
+/** One shared lane in the list: the host's current lane name once a connection read it, so a rename follows. */
+function SharedLaneRow({ entry, selected, onSelect }: { entry: LaneShareReceivedEntry; selected: boolean; onSelect: () => void }) {
+  const laneName = useLaneShareGuestLaneName(entry);
+  return (
+    <button
+      type="button"
+      className={cn(
+        "flex w-full min-w-0 flex-col rounded-md px-2 py-1.5 text-left hover:bg-fg/[0.05]",
+        selected && "bg-fg/[0.07]",
+      )}
+      onClick={onSelect}
+    >
+      <span className="min-w-0 truncate text-[12.5px] text-fg/85" title={laneName ?? undefined}>
+        {laneName ?? "Shared lane"}
+      </span>
+      <span className="min-w-0 truncate text-[11px] text-fg/50">
+        From {entry.giverLabel ?? "another account"} · {laneShareGrantStateLabel(entry).label}
+      </span>
+    </button>
   );
 }
