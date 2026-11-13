@@ -129,6 +129,7 @@ import {
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
 import { rememberMentionSuggestionLabels } from "./mentionChipLabels";
+import { searchComposerPullRequests } from "./composerPrSearch";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
@@ -11282,29 +11283,7 @@ export function AgentChatPane({
   const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
     if (isPersonalPane) return [];
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
-    if (!pin) return [];
-    try {
-      const all = await window.ade.prs.listAll?.(pin);
-      if (!all?.length) return [];
-      const trimmed = query.trim().toLowerCase();
-      const digits = /^\d+$/.test(trimmed);
-      const matches = all.filter((pr) => {
-        if (pr.detached) return false;
-        if (!trimmed) return true;
-        if (digits) return String(pr.githubPrNumber).startsWith(trimmed);
-        return (pr.title ?? "").toLowerCase().includes(trimmed)
-          || String(pr.githubPrNumber).startsWith(trimmed);
-      });
-      return matches.slice(0, 20).map((pr) => ({
-        number: pr.githubPrNumber,
-        title: pr.title ?? "",
-        state: pr.state,
-        url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
-        repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
-      }));
-    } catch {
-      return [];
-    }
+    return pin ? await searchComposerPullRequests(pin, query) : [];
   }, [isPersonalPane, selectedSessionId]);
 
   // Entity @-mention suggestions (chats / lanes / terminals) for the active

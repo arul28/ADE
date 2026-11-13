@@ -112,7 +112,7 @@ import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "..
 import { composerDomPointAtSerializedOffset, serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   composerModelInfo,
-  composerModelSuggestion,
+  composerModelSuggestionsFor,
   createModelChipNode,
   initialModelMention,
   modelChipOptions,
@@ -3263,16 +3263,7 @@ function AgentChatComposerImpl({
   const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
-    const ids = mentionModelIds ?? availableModelIds ?? [];
-    const out = [];
-    const seen = new Set<string>();
-    for (const id of ids) {
-      const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, modelCatalogScopeKey) ?? getModelById(id);
-      if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
-      seen.add(descriptor.id);
-      out.push(composerModelSuggestion(descriptor));
-    }
-    return out;
+    return composerModelSuggestionsFor(mentionModelIds ?? availableModelIds ?? [], modelCatalogScopeKey);
     // runtimeCatalogTick is not read here: it changes when the runtime catalog
     // loads, which the descriptor lookups above read from module state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
