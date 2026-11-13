@@ -2456,21 +2456,19 @@ export function TopBar({
           deferInitialRead={Boolean(remoteBinding)}
         />
       ) : null}
-      {webMode ? renderWebConnectionsControl() : (
-        <ShellConnectionChip
-          layout="menu-row"
-          label="Connections"
-          connected={anyConnectionActive}
-          title="Machines, mobile, and web clients"
-          ariaExpanded={connectionsOpen}
-          onClick={() => {
-            openConnections("machines");
-            onActivate();
-          }}
-          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
-          trailing={<HeaderAccountAvatar />}
-        />
-      )}
+      <ShellConnectionChip
+        layout="menu-row"
+        label="Connections"
+        connected={anyConnectionActive}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => {
+          openConnections("machines");
+          onActivate();
+        }}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
     </div>
   );
 
