@@ -751,7 +751,7 @@ client version and for work nobody watches
   `move`, `copy`, `tier_change`, `grow`, `delete`, `plan_change` or
   `refused`; `plan` is `free`, `plus` or `pro`; `origin` is `person`,
   `agent` (the computer was made by an agent's chat, or an agent deleted it)
-  or `system` (the computer's own disk grower, the 30-day delete); `tier` is
+  or `system` (the computer's own disk grower, the idle cleanup); `tier` is
   `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
   (`out_of_hours`, `computer_limit`, `plan_disk`, `needs_approval`,
   `extra_off`, `monthly_limit`, `tier_limit`, `owner_limit`, `over_plan_disk`) and
@@ -771,6 +771,16 @@ client version and for work nobody watches
   and `referrer_rewarded`), `reward_refused` (with `reason` `same_computer` or
   `friend_computer_used`) or `cap_reached` (the referrer's 10th reward). One
   per account, step, reason and hour.
+- **`ade_cloud_idle_cleanup`** (`idleCleanup.ts`): `step` is `warned`,
+  `emailed` (a follow-up), `saved`, `push_refused` (with `reason`, a closed
+  code such as `push_left_work`, `check_left_work`, `prepare_stop_failed`,
+  `wake_failed`), `deleted` or `kept` (with `how`: `button`, `used`,
+  `hours_back`); `plan` is the account's plan. One per account, step,
+  computer (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.idle_cleanup_warned`, `_kept`, `_came_back`, `_held`, `_deleted`;
+  Sentry: `cloud.idle_cleanup_push_refused`, `_save_failed`, `_delete_failed`,
+  `_email_failed`, `_run_failed`, `_account_failed`, `_log_failed`,
+  `_unclaim_failed`, `_report_failed`, `cloud.idle_cleanup_put_back_failed`.
 - **`ade_cloud_free_plan`** (`freePlan.ts`): `step` is `claimed`, `restored`
   (a refused account claimed a computer of its own), `refused` (the computer
   already gave another account its free hours), `id_unreadable` or

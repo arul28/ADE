@@ -207,6 +207,9 @@ struct CloudNotices: View {
         if let wakes = account.timedWakesCancelled {
           ADESettingsNotice(message: cloudTimedWakesCancelledSentence(wakes, resetsAt: account.billing?.periodEnd), tone: .warn)
         }
+        ForEach(account.dueForDeletion, id: \.instanceId) { entry in
+          ADESettingsNotice(message: cloudIdleCleanupMessage(entry, now: store.now.timeIntervalSince1970 * 1000), tone: .warn)
+        }
       }
       if let error = store.actionError {
         ADESettingsNotice(message: error, tone: .crit, dismiss: { store.actionError = nil })

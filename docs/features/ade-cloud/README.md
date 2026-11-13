@@ -86,7 +86,8 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
-| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
+| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
 | CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
 | The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
@@ -207,9 +208,9 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   cancelled plan rolls to it; `past_due` does not count) with more than 12 GB
   keeps its computers but they stay stopped: a wake, a command, an update and
   a new timed wake are refused with 402 `over_plan_disk`, except the short
-  "Push all work to GitHub" wake, which does not restart the 30-day delete
+  "Push all work to GitHub" wake, which does not restart the idle cleanup's
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
-  and the 30-day delete of unused computers still runs. The owner report
+  and the idle cleanup of unused computers still runs. The owner report
   lists these accounts. A cheaper plan's limits apply too (below).
 - **A cheaper plan's limits** (`planCleanup.ts`, migrations 0027 and 0032;
   the owner's rules of 2026-11-13): ADE never removes a computer on its own,
@@ -251,6 +252,54 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
     computer. After the pick, an email names each computer and the branch its
     work went to, and the account carries `planCleanupDone` for 14 days. The
     phone shows the notices and sends the person to the desktop to pick.
+- **Idle cleanup** (`idleCleanup.ts`, migration 0034; the owner's rules for
+  Cloud 7, replacing the 30-day delete). Idle means not awake since the later
+  of `last_awake_at` (or creation), `hours_restored_at` and `idle_kept_at`.
+  Free: warned at 2 days idle (email and in ADE, "deleted in 1 day"), one
+  more email about 6 hours before, deleted at 3 days. Paid (Plus, Pro, and a
+  `past_due` paid account): warned at 7 days ("deleted in 3 days"), one email
+  a day, deleted at 10 days. The minute cron runs it.
+  - **Never sooner than promised.** The warning stores the delete time it
+    announced (`idle_deletes_at`); the delete waits for it and for the last
+    email plus a gap (5 hours free, 20 hours paid). A late first warning still
+    gives the full lead. A plan change re-times it: the delete is the later
+    of the announced time and the new plan's rule, so an upgrade moves it
+    later (and warns again at the new plan's warning time) and a downgrade
+    never moves it earlier.
+  - **Never for** an account out of hours or without access, a computer that
+    is awake, pending, moving or updating. Using it (`last_awake_at`), its
+    hours coming back, or "Keep it" (`POST /cloud/instances/:id/keep`, no
+    wake, no hours) void the warning and restart the clock.
+  - **Save first.** In a free wake (as an update's), the computer's own ADE
+    stops its agents, saves its chats, commits with "saved by ADE before
+    cleanup" (`ade cloud push-work --message`) and does a normal push to each
+    lane's own branch (never force, no extra branch; `git add -A` leaves out
+    what git ignores), then a `work-state` read must find nothing left
+    (`pushAllWork`). If it doesn't go through, the computer is kept
+    (`idle_held_at`/`idle_held_reason`): one email and an in-app notice say
+    why and what to do, Sentry gets `cloud.idle_cleanup_push_refused` or
+    `cloud.idle_cleanup_save_failed`, and ADE tries again a day later. Used
+    while the save ran, it goes back to sleep and stays.
+  - **The lane stays** as a lane without a computer, reason `idle_cleanup`;
+    its chats stay and the next message makes a new computer from the branch.
+    The delete is `system` with reason `idle_cleanup`.
+  - **Ignored files.** At its idle step the computer reports, with its disk
+    report, a summary of what git ignores in its lanes (`ignored` on `POST
+    /cloud/instances/:id/disk-usage`: up to 10 paths, the likely precious
+    such as `.env` and local databases first, a count of the rest, build and
+    install folders only counted; `cloudIgnoredFiles.ts`). The server keeps
+    it (`ignored_files_json`) and the warning lists it, or says it isn't
+    known yet.
+  - **Where it shows:** `account.dueForDeletion` (`CloudIdleCleanupEntry`:
+    when, the lane and branch, the idle days, the ignored files, `held`).
+    The dashboard shows a notice per computer with "Keep it" and a mark on
+    the lane row (`CloudIdleCleanupNotice.tsx`); the lane's chat header cloud
+    button gets a dot and a "Keep it" entry; the phone shows the notice and
+    says to send a message in the lane or keep it from the desktop.
+  - **Once per step:** every warning and email is claimed with a conditional
+    update before it is sent, and the save-and-delete with `idle_claimed_at`,
+    so overlapping cron ticks do it once. Each step writes a row to
+    `cloud_idle_cleanup_log`, which the owner report counts.
 - **Timed wake-ups cancelled:** when a blocked account's timed wakes are
   deleted (0 hours, or the free plan over its disk), the person gets one
   email a period, and the account carries `timedWakesCancelled` while that
@@ -829,7 +878,7 @@ Each call is account level: it names a computer of the account, never a pin.
   work-state` lists the lanes with uncommitted or unpushed work, the same check
   as `ade cloud push-work --check`, and pushes nothing. Then the server deletes the
   computer with `keepLane` and keeps a lane without a computer
-  (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
+  (`cloud_lanes_without_computer`, migration 0021). The idle cleanup keeps the
   lane the same way. A new computer made for the same lane id ends the row.
 - **Tier change.** In place when the kind stays (resize), else a move to the
   other kind. The provider refuses a resize of a sleeping computer, so the
@@ -944,7 +993,7 @@ channel's image, only when nothing runs on them. The server's rules are in
   daily reconcile already leave out. The boot report closes the window, so
   hours count from then on; a computer the cron woke only for the update
   sleeps at its first idle check. Asleep, the update does not reset the
-  30-day delete clock. A person's update is metered as before.
+  idle cleanup's clock. A person's update is metered as before.
 - **What people see.** Where another machine has an Update button (Settings
   "Update other machines", the General page rows, the Machines list), a cloud
   computer shows one line: "Updates itself when idle", "Updating…", or

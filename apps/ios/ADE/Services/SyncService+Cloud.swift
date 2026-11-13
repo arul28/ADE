@@ -231,6 +231,51 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let reason: String
   }
 
+  /// A computer the idle cleanup warned about, or kept because its work
+  /// couldn't be saved (`CloudIdleCleanupEntry`). The phone shows the warning
+  /// and how to keep it; "Keep it" is on the desktop.
+  struct IdleCleanup: Decodable, Equatable {
+    struct IgnoredFiles: Decodable, Equatable {
+      let paths: [String]
+      let more: Int
+      let rebuildable: Int?
+    }
+    struct Held: Decodable, Equatable {
+      let at: Double
+      let reason: String
+    }
+    let instanceId: String
+    let name: String?
+    let deletesAt: Double
+    let laneName: String?
+    let branch: String?
+    let idleDays: Int?
+    let ignoredFiles: IgnoredFiles?
+    let held: Held?
+
+    private enum CodingKeys: String, CodingKey {
+      case instanceId, name, deletesAt, laneName, branch, idleDays, ignoredFiles, held
+    }
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      instanceId = try c.decode(String.self, forKey: .instanceId)
+      deletesAt = try c.decode(Double.self, forKey: .deletesAt)
+      name = c.lenient(String.self, forKey: .name)
+      laneName = c.lenient(String.self, forKey: .laneName)
+      branch = c.lenient(String.self, forKey: .branch)
+      idleDays = c.lenient(Int.self, forKey: .idleDays)
+      ignoredFiles = c.lenient(IgnoredFiles.self, forKey: .ignoredFiles)
+      held = c.lenient(Held.self, forKey: .held)
+    }
+
+    var displayName: String {
+      if let laneName, !laneName.isEmpty { return laneName }
+      if let name, !name.isEmpty { return name }
+      return "Computer \(instanceId.prefix(6))"
+    }
+  }
+
   /// What one plan includes. The price is in the payload but the phone never
   /// shows it (App Store rule: the iPhone app does not sell plans).
   struct PlanFacts: Decodable, Equatable {
@@ -273,11 +318,14 @@ struct CloudPhoneAccount: Decodable, Equatable {
   let planCleanup: PlanCleanup?
   let planCleanupDone: PlanCleanupDone?
   let timedWakesCancelled: TimedWakesCancelled?
+  /// The idle cleanup's warnings; an older server sends the 30-day list's
+  /// entries, which decode with only an id and a date.
+  let dueForDeletion: [IdleCleanup]
   let referral: CloudPhoneReferral?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, referral
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral
   }
 
   init(from decoder: Decoder) throws {
@@ -296,6 +344,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     planCleanup = c.lenient(PlanCleanup.self, forKey: .planCleanup)
     planCleanupDone = c.lenient(PlanCleanupDone.self, forKey: .planCleanupDone)
     timedWakesCancelled = c.lenient(TimedWakesCancelled.self, forKey: .timedWakesCancelled)
+    dueForDeletion = c.lenient([IdleCleanup].self, forKey: .dueForDeletion) ?? []
     referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
   }
 

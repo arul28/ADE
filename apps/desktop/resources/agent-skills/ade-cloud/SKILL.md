@@ -64,6 +64,13 @@ Propose a cleanup to the person first: which lanes, and why each is safe (its
 pull request is merged, nothing is unpushed, unused for long, `deletesAt`).
 Delete nothing without their yes. Deleting a lane deletes its computer.
 
+ADE Cloud deletes unused computers on its own: on Free after 3 days unused
+(warned at 2), on a paid plan after 10 (warned at 7). It commits and pushes
+each lane's work to the lane's branch first and keeps the lane; a push that
+doesn't go through keeps the computer. Files git ignores (`.env`, a local
+database) are never pushed. `dueForDeletion` in the account lists the
+warnings; using the computer, or "Keep it" in Settings › ADE Cloud, keeps it.
+
 ## Never
 
 - Delete a computer you didn't make, or any computer over ADE MCP.
