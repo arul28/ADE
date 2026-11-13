@@ -497,3 +497,17 @@
 @media (prefers-reduced-motion: reduce) {
   .ade-cx-cloud-wake, .ade-cx-cloud-shape { transition: none; }
 }
+/* A phone-width window (ADE Web on a phone): long machine names, cloud ids
+   and the account line wrap instead of losing their ends to an ellipsis. The
+   row styles are inline, so this one rule needs !important. */
+@media (max-width: 480px) {
+  .ade-cx-machine-name {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+  }
+  .ade-cx-head-name,
+  .ade-cx-head-email {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}

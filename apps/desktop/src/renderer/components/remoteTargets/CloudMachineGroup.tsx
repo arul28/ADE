@@ -277,7 +277,7 @@ export function CloudBoxOnlyRow({
           <CloudMark size={18} bold />
         </span>
         <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
-          <span style={nameStyle}>{name}</span>
+          <span className="ade-cx-machine-name" style={nameStyle}>{name}</span>
           <span style={subTextStyle}>{line}</span>
         </div>
         <MachineActionsMenu label={`Actions for ${name}`} actions={actions} />
