@@ -233,7 +233,9 @@ function periodBounds(now: number): { start: number; end: number } {
 
 function account(fix: Fixture, machines: CloudLaneMachine[], now: number): CloudAccountState {
   const plan = CATALOG.plans[fix.planId]!;
-  const includedMilli = fix.blocked ? 0 : plan.includedMilli;
+  // `?cloudGithub=none|new|used|checking`: the free plan's GitHub rules holding its hours.
+  const github = fix.planId === "free" && !fix.blocked ? mockGithub(param("cloudGithub"), now) : null;
+  const includedMilli = fix.blocked || github ? 0 : plan.includedMilli;
   const used = Math.min(fix.usedMilli, includedMilli);
   const left = Math.max(0, includedMilli - used);
   const percent = includedMilli > 0 ? Math.round((used / includedMilli) * 100) : 100;
@@ -244,8 +246,6 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   extra.freePlan = fix.blocked
     ? { state: "refused", sentence: cloudFreePlanRefusedSentence(CATALOG.plans.plus!.includedMilli) }
     : { state: fix.planId === "free" ? "claimed" : "unclaimed", sentence: null };
-  // `?cloudGithub=none|new|used|checking`: the free plan's GitHub rules holding its hours.
-  const github = fix.planId === "free" ? mockGithub(param("cloudGithub"), now) : null;
   if (github) (extra.freePlan as Record<string, unknown>).github = github;
   const friends = fix.earnedMilli ? Math.round(fix.earnedMilli / 20_000) : 0;
   extra.referral = {

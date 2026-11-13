@@ -967,6 +967,9 @@ export function formatCloudDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
+/** The account banner while the free plan's GitHub rules hold its hours (the dashboard's plan card says it there). */
+export const CLOUD_FREE_GITHUB_BANNER_ID = "cloud-free-github";
+
 /** "You're out of hours", "You've used 95%", a failed payment: one banner, the most urgent. */
 export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
   const resetDate = formatCloudDate(account.billing.periodEnd);
@@ -983,6 +986,11 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
   const overPlanDisk = cloudOverPlanDiskMessage(account);
   if (overPlanDisk) {
     return { id: "cloud-over-plan-disk", tone: "warning", title: "Your computers can't wake", detail: overPlanDisk };
+  }
+  // The free plan's GitHub rules hold its hours: they don't come back at the reset, so say why instead.
+  const github = account.rules === "free" ? cloudFreePlanOf(account).github : undefined;
+  if (account.hours.state === "zero" && github && github.state !== "ok" && github.sentence) {
+    return { id: CLOUD_FREE_GITHUB_BANNER_ID, tone: "warning", title: "Free hours wait on GitHub", detail: github.sentence };
   }
   if (account.hours.state === "zero") {
     return {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
+  CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_PLAN_LABELS,
   cloudAccountBanner,
   cloudEarnedHoursOf,
@@ -228,7 +229,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   // disk share would only repeat it in two more banners.
   const accountBanner = cloudAccountBanner(account);
   const overPlan = account.planCleanup != null || accountBanner?.id === "cloud-over-plan-disk";
-  const banner = account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk" ? null : accountBanner;
+  // The free plan's GitHub hold: the hero's line and the plan card's notice say it, with what to do.
+  const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID ? null : accountBanner;
   const diskLimit = account.disk.limitGb ?? 0;
   const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
 
