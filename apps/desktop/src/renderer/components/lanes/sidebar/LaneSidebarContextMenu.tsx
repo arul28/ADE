@@ -49,7 +49,7 @@ export function LaneSidebarContextMenu({
   const lane = lanesById.get(menu.laneId) ?? null;
   const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: runtimePin ?? projectBinding });
   // Sharing is asked of the lane's own machine (the pin), like every write here.
-  const share = useLaneShareMenu({ laneId: lane?.id ?? null, laneName: lane?.name ?? null, pin: runtimePin });
+  const share = useLaneShareMenu({ laneId: lane?.id ?? null, laneName: lane?.name ?? null, laneType: lane?.laneType ?? null, pin: runtimePin });
   const args: LaneMenuArgs = {
     laneId: menu.laneId,
     lane,

@@ -199,8 +199,16 @@ case a share made by an agent cannot change anything on the host.
   project; "Shared with me" with Accept, Open and Leave; and **My default
   rights** (`laneShareDefaults.tsx`, account settings key
   `laneShare.defaultRights`, scope `all`), the start value of the sheet for a
-  new person. A share on another computer can be stopped from here. That
-  computer drops the guest at its next grant read.
+  new person. "Shared by me" is read from the account directory
+  (`laneShareGuest.listGiven`, `GET /lane-shares/given`), so it lists every
+  share with no project open and no computer online; an online copy of the
+  open project adds its own rows' rights, usage and connections. Revoke goes
+  to the lane's computer for a share of that copy (the guest drops at once)
+  and to the directory otherwise (`laneShareGuest.revokeGiven`); the lane's
+  computer then drops a connected guest at its next grant read (30 s) and
+  refuses every new connection. Rights and the end date change only through
+  the lane's computer: it holds them, and a lane whose computer is off has
+  no guest to apply them to.
 
 ### Host records
 
@@ -252,6 +260,32 @@ messages (removed on revoke) and the chats it sent turns into.
    `lane_share_unavailable` (the host could not check its grant list; retry
    later) or `lane_share_paused` (the lane is archived, or this computer has
    no rights set for the share).
+
+### Any project of the machine
+
+A brain serves one project on its shared sync listener at a time (the one
+opened last), but a lane may be shared from any of its projects. So a guest
+reaches its lane whatever project is served:
+
+- A guest that lands on another project's host is redeemed there. When the
+  grant's repository is not that project's, the host lets go of the socket
+  (no close, no listener left: `releasePeerForHandoff`) and gives it, with
+  the redeemed grant, to the brain's router (`laneShareGuestRouter.ts`, set
+  on the shared listener). The router picks the project with that repository
+  key (two checkouts of one repository: the one that has the lane), and that
+  project's host runs the checks after the redeem
+  (`acceptHandedOffLaneShareGuest`).
+- With no project served, the brain's own ingress hands the guest, not
+  redeemed, to any open project, which redeems it and routes it on.
+- A project that is not the served one serves its guests from a guests-only
+  host (`laneShareGuestsOnly` in `syncHostService.ts`): no listener of its
+  own, no discovery, no Tailscale route, no changeset pump, no brain status.
+  It starts with the first guest and stops after two idle minute checks. When
+  the project becomes the served one, it closes and its guests reconnect to
+  the served host. A share's revoke, pause, rights edit and move reach
+  whichever of the two serves the project (`laneShareServingHost`).
+- `lane_share_unavailable` now means no project of the machine could take the
+  guest (a project the brain refuses to open, a missing checkout).
 
 While a guest is connected, the host reads its grant list again on a timer
 (`LANE_SHARE_GRANT_REFRESH_MS`). A grant that is not in the list gives no
@@ -438,6 +472,8 @@ still refuses each typed line and each first line with
 | `apps/ade-cli/src/services/sync/laneShareHostService.ts` | The `lane_share` owner actions on the host. |
 | `apps/ade-cli/src/services/sync/laneShareGrantService.ts` | The host's grant list and ticket redemption. Fail closed. |
 | `apps/ade-cli/src/services/sync/laneShareGuestHost.ts`, `laneShareGuestGates.ts`, `laneShareGuestTypes.ts` | Guest peers, roles and per-envelope gates. |
+| `apps/ade-cli/src/services/sync/laneShareGuestHello.ts` | The guest hello: refusals, the ticket redeem, the hand-off to the lane's project, and admission. |
+| `apps/ade-cli/src/services/sync/laneShareGuestRouter.ts` | Picks the project host for a handed-off guest (registry origin, then live origin; open projects only for an unredeemed socket). |
 | `apps/ade-cli/src/services/sync/laneShareGuestPolicy.ts` | Default-refuse lists of envelopes and commands, locks, file reads, rate limit. |
 | `apps/ade-cli/src/services/sync/laneShareGuestCommandPrep.ts` | Checks that need host services; sets the author. |
 | `apps/ade-cli/src/services/sync/laneShareGuestScrub.ts` | What the host removes from a guest's payload. |

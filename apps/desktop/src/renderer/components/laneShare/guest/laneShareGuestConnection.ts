@@ -56,6 +56,8 @@ export type LaneShareGuestSession = {
   kind: LaneShareGuestSessionKind;
   title: string;
   status: string;
+  /** A chat's turn is running now (or a CLI session reads as running). */
+  active: boolean;
   toolType: string | null;
   parentSessionId: string | null;
   startedAt: string | null;
@@ -172,6 +174,8 @@ const GUEST_ACTIONS: Readonly<Record<string, "lane" | "session" | "none">> = Obj
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 const HOST_OFFLINE_RETRY_MS = 60_000;
+/** A paused (archived) lane is checked again this often while its view is open. */
+const PAUSED_RETRY_MS = 60_000;
 const OPEN_TIMEOUT_MS = 15_000;
 const HELLO_TIMEOUT_MS = 20_000;
 const RELAY_READY_WINDOW_MS = 4_000;
@@ -242,9 +246,11 @@ function guestSessionFromRow(row: unknown, laneId: string): LaneShareGuestSessio
   if (!sessionId || stringField(row, "laneId") !== laneId) return null;
   const toolType = stringField(row, "toolType");
   const parentSessionId = stringField(row, "orchestrationParentSessionId");
+  // The host hides the parent's id when that chat is not shared; `spawnKind` still marks a child.
+  const spawnKind = stringField(row, "spawnKind");
   const launch = (row as { resumeMetadata?: { launch?: unknown } | null }).resumeMetadata?.launch;
   const kind: LaneShareGuestSessionKind = isChatToolType(toolType)
-    ? (parentSessionId ? "subagent" : "chat")
+    ? (parentSessionId || spawnKind === "subagent" || spawnKind === "peer" ? "subagent" : "chat")
     : isTrackedAgentCliToolType((toolType ?? null) as TerminalToolType | null)
       ? "cli"
       : "shell";
@@ -254,12 +260,20 @@ function guestSessionFromRow(row: unknown, laneId: string): LaneShareGuestSessio
     kind,
     title: (stringField(row, "title") ?? "Untitled").slice(0, 300),
     status: stringField(row, "status") ?? "unknown",
+    active: Boolean(stringField(row, "currentTurnStartedAt")) || stringField(row, "runtimeState") === "running",
     toolType,
     parentSessionId,
     startedAt: stringField(row, "startedAt"),
     modelId: stringField(launch, "model")?.slice(0, 200) ?? null,
     permissionMode: stringField(launch, "permissionMode")?.slice(0, 80) ?? null,
   };
+}
+
+/** A session's state in plain words for the guest list (the host's raw status is an internal word). */
+export function laneShareGuestStatusLabel(session: Pick<LaneShareGuestSession, "kind" | "status" | "active">): string {
+  if (session.status === "failed") return "Failed";
+  if (session.kind === "chat" || session.kind === "subagent") return session.active ? "Working" : "Idle";
+  return session.status === "running" || session.status === "detached" ? "Running" : "Ended";
 }
 
 function rowsOf(result: unknown): unknown[] {
@@ -612,6 +626,17 @@ export class LaneShareGuestConnection {
       : "The owner's computer refused the connection.";
     const stop = STOP_CODES[code];
     if (stop === "old_host") return this.stopWith("old_host", OLD_HOST_MESSAGE);
+    if (stop === "paused") {
+      // The owner archived the lane. It reads as paused, and ADE checks again
+      // now and then, so an unarchive brings the guest back on its own.
+      this.closeSocket(1000, "Lane paused");
+      // The close that led here was the pause, not a change of rights.
+      this.accessChangedRetry = false;
+      this.attempt = 0;
+      this.setState({ kind: "stopped", reason: "paused", message });
+      this.scheduleRetry(PAUSED_RETRY_MS);
+      return;
+    }
     if (stop) return this.stopWith(stop, message);
     if (code === "lane_share_unavailable") {
       this.setState({ kind: "host_offline", retryAt: this.now() + HOST_OFFLINE_RETRY_MS, message });

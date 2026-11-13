@@ -49,23 +49,29 @@ export function HoverButton({
   onClick,
   dataTour,
   disabled = false,
+  title,
 }: {
   style: React.CSSProperties;
   children: React.ReactNode;
   onClick: () => void;
   dataTour?: string;
   disabled?: boolean;
+  /** The full reason a disabled row cannot be used, on hover. */
+  title?: string;
 }) {
   return (
     <button
       role="menuitem"
       data-tour={dataTour}
       disabled={disabled}
+      aria-disabled={disabled || undefined}
+      title={title}
+      aria-description={title}
       style={{
         ...style,
         ...(disabled ? { cursor: "not-allowed", opacity: 0.4 } : {}),
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       onClick={onClick}
     >
@@ -106,9 +112,12 @@ function LaneMenuEntryView({
           style={menuItemStyle}
           dataTour={entry.dataTour}
           onClick={entry.onSelect}
+          disabled={entry.disabledReason != null}
+          title={entry.disabledReason?.detail}
         >
           {entry.icon ? <LaneMenuGlyph icon={entry.icon} /> : null}
           {entry.label}
+          {entry.disabledReason ? <span style={{ marginLeft: "auto", paddingLeft: 12, fontSize: 11 }}>{entry.disabledReason.short}</span> : null}
         </HoverButton>
       );
     default: {
@@ -226,7 +235,7 @@ export function LaneContextMenu({
 
   const openInTarget = lanePin ? resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: lanePin }) : null;
   const openIn = openInTarget ? { ...openInTarget, pin: lanePin } : null;
-  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: lanePin });
+  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, laneType: ctxLane?.laneType ?? null, pin: lanePin });
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,

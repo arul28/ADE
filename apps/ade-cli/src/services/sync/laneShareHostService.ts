@@ -170,6 +170,7 @@ type HostControls = {
   applyLaneShareRights(grantId: string): number;
   closeLaneShareGrant(grantId: string, reason: string): Promise<LaneShareCloseResult>;
   closeLaneShareLane(laneId: string, reason: string): number;
+  notifyLaneShareLaneChanged(laneId: string | null, urgent: boolean): void;
   laneShareConnectedDevices(grantId: string): number;
 };
 
@@ -255,6 +256,8 @@ export function createLaneShareHostService(options: {
   getRepoKey: () => string | null;
   getProjectLabel: () => string | null;
   getLaneLabel: (laneId: string) => string | null;
+  /** True on an ADE Cloud computer: its lanes cannot be shared yet (a guest would wake it on the owner's hours). */
+  isCloudComputer?: () => boolean;
   /** A fresh grant read, so a new or changed share reaches the host gates now. */
   refreshGrants?: () => Promise<unknown>;
   /** A share of this machine changed; the owner's lists read it again. */
@@ -423,8 +426,24 @@ export function createLaneShareHostService(options: {
       const createdBy = caller === "person" ? "person" : "agent";
       const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
       if (!laneId) throw new LaneShareHostError("invalid_args", "Choose a lane to share.");
-      if (options.store.laneState(laneId) !== "active") {
-        throw new LaneShareHostError("invalid_args", "Only an open lane on this computer can be shared.");
+      const laneState = options.store.laneState(laneId);
+      if (laneState === "archived") {
+        throw new LaneShareHostError("invalid_args", "This lane is archived. Unarchive it to share it.");
+      }
+      if (laneState !== "active") {
+        throw new LaneShareHostError("invalid_args", "No lane with that id on this computer. Use the lane id from `ade lanes list`.");
+      }
+      if (options.isCloudComputer?.()) {
+        throw new LaneShareHostError("invalid_args", "Lanes on ADE Cloud can't be shared yet.");
+      }
+      // An active lane whose row cannot be read is refused: the main-checkout check must not pass by default.
+      const laneInfo = options.store.laneInfo(laneId);
+      if (!laneInfo) {
+        options.logger?.warn("lane_share.host_lane_unreadable", { laneId });
+        throw new LaneShareHostError("unavailable", "ADE couldn't read this lane right now. Try again.");
+      }
+      if (laneInfo.type === "primary") {
+        throw new LaneShareHostError("invalid_args", "The main checkout can't be shared. Share a lane instead.");
       }
       const receiverEmail = cleanEmail(args.receiverEmail);
       if (!receiverEmail) throw new LaneShareHostError("invalid_args", "That email address isn't valid.");
@@ -713,6 +732,15 @@ export function createLaneShareHostService(options: {
         return { role: "receiver", userId: grant.giverUserId, email: null };
       }
       throw new LaneShareHostError("not_found", "This lane share is not active.");
+    },
+
+    /**
+     * A session of a lane, or the lane's name or branch, changed: connected
+     * guests of that lane read their state and sessions again. `urgent`: a
+     * new or removed session, a rename or a branch change.
+     */
+    noteLaneChanged(laneId: string | null, urgent: boolean): void {
+      options.getHost()?.notifyLaneShareLaneChanged(laneId, urgent);
     },
 
     /** Lane archived: every share of it pauses (connections close; a hello is refused until unarchived). */

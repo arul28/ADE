@@ -73,6 +73,8 @@ export type LaneMenuAction = {
   onSelect: () => void;
   dataTour?: string;
   icon?: Icon;
+  /** Shown dimmed and inert: a short reason on the right, the full one on hover. */
+  disabledReason?: { short: string; detail: string };
 };
 
 /** A group entry that is not a row — today only the colour swatch grid. */
@@ -492,7 +494,14 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   const share = args.share;
   if (share && lane) {
     const shareEntries: LaneMenuEntry[] = [
-      { kind: "action", key: "share-lane", label: "Share lane…", icon: ShareNetwork, onSelect: () => { onClose(); share.onShare(); } },
+      {
+        kind: "action",
+        key: "share-lane",
+        label: "Share lane…",
+        icon: ShareNetwork,
+        ...(share.disabledReason ? { disabledReason: share.disabledReason } : {}),
+        onSelect: () => { onClose(); share.onShare(); },
+      },
     ];
     if (share.liveCount > 0) {
       shareEntries.push(

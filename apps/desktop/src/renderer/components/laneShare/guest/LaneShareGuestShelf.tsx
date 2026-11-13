@@ -9,6 +9,7 @@ import {
   retainLaneShareGuestConnection,
   selectLaneShareInWork,
   useLaneShareGuestStore,
+  useLaneShareGuestLaneName,
 } from "./laneShareGuestStore";
 import { laneShareConnectionLabel, laneShareGuestSessionIcon } from "./LaneShareGuestView";
 
@@ -39,6 +40,7 @@ function ShelfLane({ entry, selected }: { entry: LaneShareReceivedEntry; selecte
   React.useEffect(() => (expanded ? retainLaneShareGuestConnection(entry) : undefined), [expanded, entry.grantId, entry.laneId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sessions = useLaneShareGuestStore((state) => state.sessions[entry.grantId] ?? EMPTY_SESSIONS);
   const connectionState = useLaneShareGuestStore((state) => state.connections[entry.grantId]);
+  const laneName = useLaneShareGuestLaneName(entry);
   const label = laneShareConnectionLabel(connectionState);
   const laneSelected = selected?.grantId === entry.grantId && selected.sessionId == null;
   const roots = sessions.filter((session) => session.kind !== "subagent");
@@ -78,7 +80,7 @@ function ShelfLane({ entry, selected }: { entry: LaneShareReceivedEntry; selecte
           className="flex min-w-0 flex-1 flex-col py-1 text-left"
           onClick={() => selectLaneShareInWork(entry.grantId, null)}
         >
-          <span className="min-w-0 truncate text-[12px] text-fg/85" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Shared lane"}</span>
+          <span className="min-w-0 truncate text-[12px] text-fg/85" title={laneName ?? undefined}>{laneName ?? "Shared lane"}</span>
           <span className="min-w-0 truncate text-[10.5px] text-fg/45" title={entry.giverLabel ?? undefined}>
             {entry.giverLabel ?? "Another account"}
             {connectionState ? ` · ${label.text}` : ""}

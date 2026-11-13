@@ -88,7 +88,7 @@ export function LaneActionsSubmenu({
     startChatMachineId && startChatMachineId !== boundMachineId,
   );
   // The lane's machine: the session row's binding (null for the tab's own).
-  const share = useLaneShareMenu({ laneId: lane?.id ?? null, laneName: lane?.name ?? null, pin: binding ?? null });
+  const share = useLaneShareMenu({ laneId: lane?.id ?? null, laneName: lane?.name ?? null, laneType: lane?.laneType ?? null, pin: binding ?? null });
   const actions = useLaneMenuActions({
     close: onClose,
     onManageLane: (id) => onManageLane(id, {

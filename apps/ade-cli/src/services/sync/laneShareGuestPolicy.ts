@@ -690,10 +690,127 @@ export function laneShareGuestSubagentBelongs(subagents: unknown, args: Record<s
 }
 
 /**
- * List results keep only rows of the granted lane whose kind the rights see,
+ * Fields of a session row a guest may read. Everything else on the host's row
+ * stays here: absolute paths on the owner's disk (`transcriptPath`), process
+ * ids, provider resume ids, settle and cache internals.
+ */
+const GUEST_SESSION_ROW_FIELDS = [
+  "id",
+  "sessionId",
+  "chatSessionId",
+  "laneId",
+  "laneName",
+  "toolType",
+  "title",
+  "goal",
+  "status",
+  "runtimeState",
+  "statusNote",
+  "summary",
+  "lastOutputPreview",
+  "startedAt",
+  "endedAt",
+  "archivedAt",
+  "lastActivityAt",
+  "currentTurnStartedAt",
+  "spawnKind",
+  "orchestrationParentSessionId",
+] as const;
+
+/** Fields of a chat summary a guest may read: what the guest view shows, no provider or host internals. */
+const GUEST_CHAT_SUMMARY_FIELDS = [
+  "sessionId",
+  "laneId",
+  "provider",
+  "model",
+  "modelId",
+  "title",
+  "goal",
+  "reasoningEffort",
+  "permissionMode",
+  "interactionMode",
+  "status",
+  "currentTurnStartedAt",
+  "idleSinceAt",
+  "startedAt",
+  "endedAt",
+  "archivedAt",
+  "lastActivityAt",
+  "lastOutputPreview",
+  "summary",
+  "spawnKind",
+  "orchestrationParentSessionId",
+] as const;
+
+function pickFields(row: unknown, fields: readonly string[]): unknown {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+  const source = row as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of fields) if (key in source) out[key] = source[key];
+  return out;
+}
+
+/**
+ * A session row or chat summary as a guest gets it: only the listed fields;
+ * a CLI session's launch model and mode (the guest's run locks read them);
+ * and the parent chat's id only when the guest can see that chat, so the id
+ * of a chat in another lane never leaves this host.
+ */
+function trimGuestSessionRecord(
+  row: unknown,
+  fields: readonly string[],
+  role: LaneShareGuestRole,
+  resolveSession: LaneShareSessionResolver,
+): unknown {
+  const picked = pickFields(row, fields);
+  if (!picked || typeof picked !== "object" || Array.isArray(picked)) return picked;
+  const out = picked as Record<string, unknown>;
+  const parent = out.orchestrationParentSessionId;
+  if (typeof parent === "string" && parent.trim()) {
+    // Only a parent the guest may see itself (its lane, a kind its rights see).
+    if (!laneShareGuestMaySeeSession(role, parent, resolveSession)) {
+      out.orchestrationParentSessionId = null;
+      // The row stays a child for the guest's kind and rights checks.
+      if (out.spawnKind == null) out.spawnKind = "subagent";
+    }
+  }
+  const launch = (row as { resumeMetadata?: { launch?: unknown } | null }).resumeMetadata?.launch;
+  if (launch && typeof launch === "object" && !Array.isArray(launch)) {
+    const source = launch as Record<string, unknown>;
+    const kept: Record<string, unknown> = {};
+    if (typeof source.model === "string") kept.model = source.model;
+    if (typeof source.permissionMode === "string") kept.permissionMode = source.permissionMode;
+    out.resumeMetadata = { launch: kept };
+  }
+  return out;
+}
+
+/** One session record a guest's command returns, trimmed (`trimGuestSessionRecord`). Lists are trimmed per row by the filter. */
+function trimLaneShareGuestResult(
+  action: string,
+  result: unknown,
+  role: LaneShareGuestRole,
+  resolveSession: LaneShareSessionResolver,
+): unknown {
+  switch (action) {
+    case "work.getSession":
+    case "work.startCliSession":
+      return trimGuestSessionRecord(result, GUEST_SESSION_ROW_FIELDS, role, resolveSession);
+    case "chat.getSummary":
+    case "chat.create":
+    case "chat.updateSession":
+      return trimGuestSessionRecord(result, GUEST_CHAT_SUMMARY_FIELDS, role, resolveSession);
+    default:
+      return result;
+  }
+}
+
+/**
+ * Session lists keep only rows of the granted lane whose kind the rights see,
  * even though the gate already pinned `laneId`: a service that ignores the
- * filter must not leak. Model names are hidden later, on the way out
- * (`laneShareHideModels`).
+ * filter must not leak. Session rows and chat summaries keep only the fields
+ * a guest may read (`trimLaneShareGuestResult`). Model names are hidden later,
+ * on the way out (`laneShareHideModels`).
  */
 export function filterLaneShareGuestCommandResult(
   action: string,
@@ -701,8 +818,9 @@ export function filterLaneShareGuestCommandResult(
   role: LaneShareGuestRole,
   resolveSession: LaneShareSessionResolver,
 ): unknown {
-  const rule = LANE_SHARE_GUEST_COMMANDS[action];
-  if (rule?.scope !== "lane" || !(action === "work.listSessions" || action === "chat.listSessions")) return result;
+  if (action !== "work.listSessions" && action !== "chat.listSessions") {
+    return trimLaneShareGuestResult(action, result, role, resolveSession);
+  }
   const visible = (row: unknown) => {
     const laneId = rowField(row, "laneId");
     if (!laneShareGuestHasLane(role, typeof laneId === "string" ? laneId : null)) return false;
@@ -717,7 +835,7 @@ export function filterLaneShareGuestCommandResult(
     const id = rowField(row, "sessionId") ?? rowField(row, "id");
     return typeof id !== "string" || laneShareGuestSessionInfo(role, id, resolveSession)?.child !== true;
   };
-  const keep = (rows: unknown[]) => rows.filter(visible);
+  const keep = (rows: unknown[]) => rows.filter(visible).map((row) => trimGuestSessionRecord(row, GUEST_SESSION_ROW_FIELDS, role, resolveSession));
   if (Array.isArray(result)) return keep(result);
   if (result && typeof result === "object" && Array.isArray((result as { sessions?: unknown }).sessions)) {
     const record = result as { sessions: unknown[] };

@@ -26,8 +26,8 @@ function makeStore() {
     all: (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(...(params as never[])),
   } as never;
   ensureLaneShareRightsSchema(db);
-  sqlite.exec("create table lanes (id text primary key, archived_at text)");
-  sqlite.prepare("insert into lanes (id, archived_at) values (?, null)").run(laneId as never);
+  sqlite.exec("create table lanes (id text primary key, name text, branch_ref text, lane_type text, archived_at text)");
+  sqlite.prepare("insert into lanes (id, name, branch_ref, lane_type, archived_at) values (?, 'shared lane', 'refs/heads/ade/shared', 'worktree', null)").run(laneId as never);
   return createLaneShareRightsStore({ db });
 }
 

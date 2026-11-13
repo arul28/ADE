@@ -158,7 +158,11 @@ function retainLaneShares(key: string, pin: OpenProjectBinding | null): () => vo
       unsubscribe = null;
     }
     retained.set(key, { count: 1, release: () => unsubscribe?.() });
-    if (!useLaneShareStore.getState().lists[key]) void loadLaneShares(key, pin);
+    // Read again on every first holder: the feed can miss a change made while
+    // nothing listened or while the lane's computer restarted (a share
+    // revoked at the account with that computer off). The cached rows show
+    // until the read answers.
+    void loadLaneShares(key, pin);
   }
   return () => {
     const holder = retained.get(key);

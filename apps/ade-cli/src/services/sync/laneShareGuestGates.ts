@@ -10,6 +10,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { LaneShareMessageClaim, LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
+import type { LaneShareEvent } from "../../../../desktop/src/shared/types/laneShare";
 import {
   laneShareCliTypingFor,
   laneShareRightsEnded,
@@ -64,6 +65,8 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     projectId?: string | null;
     agentChatService?: ReturnType<typeof createAgentChatService>;
     laneShareMoves?: LaneShareMoveService | null;
+    /** The owner's share events (a counted guest message moves the usage). */
+    onLaneShareEvent?: (event: LaneShareEvent) => void;
     /** This machine's `process.platform` (the default): a Windows host takes no guest CLI typing. */
     platform?: NodeJS.Platform;
   };
@@ -81,6 +84,9 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     earliestLaneShareEnd(a: number | null, b: number | null): number | null;
   };
 };
+
+/** How often a guest's counted messages refresh the owner's usage line at most. */
+const LANE_SHARE_USAGE_NOTICE_MS = 5_000;
 
 export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
   const {
@@ -107,6 +113,22 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     endLaneShareGuest,
     earliestLaneShareEnd,
   } = deps.host;
+
+  /** Usage notices to the owner: one per grant at most every few seconds, so a busy guest costs few list reads. */
+  const pendingUsageNotices = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Guest sends running per grant and chat: a failed send keeps a turn record another send still needs. */
+  const turnSendsInFlight = new Map<string, number>();
+  function noteLaneShareUsageChanged(role: LaneShareGuestRole): void {
+    if (!args.onLaneShareEvent || pendingUsageNotices.has(role.grantId)) return;
+    const grantId = role.grantId;
+    const laneId = role.grants[0]?.laneId ?? null;
+    const timer = setTimeout(() => {
+      pendingUsageNotices.delete(grantId);
+      args.onLaneShareEvent?.({ type: "lane_share_changed", grantId, laneId });
+    }, LANE_SHARE_USAGE_NOTICE_MS);
+    timer.unref?.();
+    pendingUsageNotices.set(grantId, timer);
+  }
 
   /**
    * Default refuse for everything that leaves this host toward a guest.
@@ -312,6 +334,25 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       status: "accepted",
       message: `Executing ${action}.`,
     } satisfies SyncCommandAckPayload, requestId, { action });
+    // A send can answer only when its turn ends: the turn is recorded first,
+    // so a revoke during it finds it and tells the owner it keeps running.
+    // A failed send removes a record it added; a failed write only loses the notice.
+    const turnSessionId = (action === "chat.send" || action === "chat.steer") ? toOptionalString(prepared.args.sessionId) : null;
+    // A counted message moved the usage the owner's share window shows; a
+    // send answers only when its turn ends, so the owner hears now.
+    if (prepared.claim) noteLaneShareUsageChanged(role);
+    let turnRecorded = false;
+    if (turnSessionId && laneShareRights) {
+      try {
+        turnRecorded = !laneShareRights.hasItem(role.grantId, "turn", turnSessionId);
+        laneShareRights.addItem(role.grantId, "turn", turnSessionId, turnSessionId);
+      } catch (error) {
+        turnRecorded = false;
+        args.logger.warn("sync_host.lane_share_record_failed", { action, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const turnKey = turnSessionId ? `${role.grantId}\u0000${turnSessionId}` : null;
+    if (turnKey) turnSendsInFlight.set(turnKey, (turnSendsInFlight.get(turnKey) ?? 0) + 1);
     try {
       const created = await run(action, prepared.args);
       if (prepared.hold) {
@@ -334,7 +375,22 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       } satisfies SyncCommandResultPayload, requestId, { action });
     } catch (error) {
       undoPrepared();
+      // The refund moved the usage back.
+      if (prepared.claim) noteLaneShareUsageChanged(role);
+      if (turnRecorded && turnSessionId && (turnKey ? turnSendsInFlight.get(turnKey) ?? 0 : 0) <= 1) {
+        try {
+          laneShareRights?.removeItem(role.grantId, "turn", turnSessionId);
+        } catch (removeError) {
+          args.logger.warn("sync_host.lane_share_record_failed", { action, error: removeError instanceof Error ? removeError.message : String(removeError) });
+        }
+      }
       sendRequired(peer, "command_result", commandErrorResult(commandId, error), requestId, { action });
+    } finally {
+      if (turnKey) {
+        const left = (turnSendsInFlight.get(turnKey) ?? 1) - 1;
+        if (left > 0) turnSendsInFlight.set(turnKey, left);
+        else turnSendsInFlight.delete(turnKey);
+      }
     }
   }
 
@@ -406,6 +462,11 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     laneShareGuestTypingRefusal,
   } = laneShareGuestCommandPrep;
 
+  /** The lane's name and branch as a guest sees them (nothing else of the host's row). */
+  function guestLaneView(info: { name: string; branch: string } | null): { name: string; branch: string } | null {
+    return info ? { name: info.name, branch: info.branch } : null;
+  }
+
   /** What the guest may know of its own share: rights, limits, locks, presence, pause. */
   function laneShareGuestState(role: LaneShareGuestRole): LaneShareGuestState {
     const grant = role.grants[0];
@@ -424,6 +485,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       grantId: role.grantId,
       laneId,
       state: laneShareLaneState(laneId) === "archived" ? "paused" : "active",
+      lane: guestLaneView(laneId ? laneShareRights?.laneInfo(laneId) ?? null : null),
       endsAt: earliestLaneShareEnd(grant?.endsAtMs ?? null, role.rights.limits.endsAt),
       // As this host enforces them: CLI typing off where it is not available.
       rights: laneShareRightsForHost(role.rights, cliTyping),
@@ -526,11 +588,18 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     return null;
   }
 
+  /** The host stopped: pending usage notices go with it. */
+  function disposeLaneShareGates(): void {
+    for (const timer of pendingUsageNotices.values()) clearTimeout(timer);
+    pendingUsageNotices.clear();
+  }
+
   return {
     laneShareGuestOutboundPayload,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
     laneShareGuestTypedLineStillAllowed,
     handleLaneShareGuestCommand,
+    disposeLaneShareGates,
   };
 }

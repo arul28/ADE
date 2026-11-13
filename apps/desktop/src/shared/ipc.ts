@@ -1149,6 +1149,8 @@ export const IPC = {
   accountSignOut: "ade.account.signOut",
   accountListMachines: "ade.account.listMachines",
   laneShareGuestListReceived: "ade.laneShareGuest.listReceived",
+  laneShareGuestListGiven: "ade.laneShareGuest.listGiven",
+  laneShareGuestRevokeGiven: "ade.laneShareGuest.revokeGiven",
   laneShareGuestOpen: "ade.laneShareGuest.open",
   laneShareGuestAccept: "ade.laneShareGuest.accept",
   laneShareGuestLeave: "ade.laneShareGuest.leave",

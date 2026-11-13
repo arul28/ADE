@@ -114,7 +114,7 @@ function DestinationPicker({
     <label className="flex items-center gap-1.5 text-[11.5px] text-fg/60">
       <span>Computer</span>
       <select
-        className="max-w-[240px] rounded-md border border-fg/10 bg-transparent px-1.5 py-0.5 text-[11.5px] text-fg/85"
+        className="kit-input max-w-[240px]" data-size="sm"
         value={value}
         aria-label="Computer"
         disabled={disabled}
@@ -290,6 +290,7 @@ export function LaneShareGuestMoveCard({
                     onEndsAtChange={setEndsAt}
                     now={Date.now()}
                     cliTyping={destinations.find((entry) => entry.machineId === machineId)?.cliTyping ?? null}
+                    runtimePin={destinations.find((entry) => entry.machineId === machineId)?.pin ?? null}
                   />
                 ) : null}
               </div>
@@ -398,7 +399,7 @@ export function LaneShareGuestMoveOut({
               <label className="flex items-center gap-1.5 text-[11.5px] text-fg/60">
                 <span>Chat</span>
                 <select
-                  className="max-w-[260px] rounded-md border border-fg/10 bg-transparent px-1.5 py-0.5 text-[11.5px] text-fg/85"
+                  className="kit-input max-w-[260px]" data-size="sm"
                   value={sessionId}
                   aria-label="Chat"
                   disabled={Boolean(running) || !chats?.length}
