@@ -332,6 +332,41 @@ logged dev constant without it) and keeps only that.
 - Account deletion keeps the claim (re-making an account must not give the
   computer's free hours again) and deletes the computers seen and the invite code.
 
+**One free plan per GitHub account.** Migration `0035`, `freePlanGithub.ts`.
+On a free plan, free hours need a connected GitHub account at least 30 days
+old (`CLOUD_FREE_GITHUB_MIN_AGE_MS`). GitHub's `created_at` is read once from
+`GET /user` (at connect, adopt, or on the first settle) into
+`github_account_ages`; a failed read is retried with a backoff (5 minutes,
+doubling to 6 hours), never refused or granted for good. `cloud_free_github_claims`
+is unique on both the GitHub user id and the ADE account, like the computer
+claim, so a GitHub account switch never feeds two free plans and a lost race
+is refused. The settle runs with the computer claim (account read, creates,
+launches) and only while the GitHub App is configured. A hold
+(`free_github_hold`: `no_github`, `github_too_new`, `github_used`,
+`github_checking`) keeps `included_milli` at 0; paid plans, earned and extra
+hours are untouched. Accounts that used ADE Cloud before the rules are
+`free_github_exempt` (they still claim their GitHub account). A too-new
+GitHub account can start now with a card saved at no charge:
+`POST /cloud/billing/free-unlock` opens a Stripe Checkout in setup mode (or
+unlocks at once when a card is already on file, a past subscription counts);
+the webhook checks the SetupIntent succeeded and sets
+`free_card_unlocked_at`, kept if the card is removed later. The account read
+carries `freePlan.github` (`state`, `oldEnoughAt`, `canUnlockWithCard`,
+`githubLogin`, `sentence`); desktop (plan card and hero), CLI, the lane-start
+refusal and the `ade-cloud` skill show it; the phone states it without the
+card. PostHog `ade_cloud_free_plan` steps `github_*`, `card_unlock_started`,
+`card_unlocked`.
+
+**Abuse lines in the daily report.** `abuseSignals.ts`. A computer's brain
+samples CPU once a minute in its keep-awake check (`cloudSustainedCpu.ts`)
+and, after two hours at 85% or more with no chat turn or agent working, sends
+`POST /cloud/instances/:id/cpu-report` (again every six hours). It reports on
+itself, and a long build in a terminal looks the same, so the line is for a
+person to look at. Sign-up bursts: the Clerk `user.created` client IP is
+stored only as a Worker-keyed HMAC (`cloud_signup_ips`, kept 7 days), and 5
+or more sign-ups from one address in any hour make a line
+(`SIGNUP_BURST_PER_IP_HOUR`).
+
 **Referrals.** One invite code per account (`cloud_invite_codes`, 8 characters
 without 0/O/1/I/L), link `https://ade-app.dev/invite/<CODE>`, made at the
 first summary. `POST /cloud/referrals/redeem { code }` takes the link, the

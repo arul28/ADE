@@ -13,6 +13,8 @@ import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { applyCloudPlanChange, type CloudEnv } from "../src/cloud/store";
+import { runDailyCostReport } from "../src/cloud/costReport";
+import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
 
 /**
@@ -1194,7 +1196,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
 
     expect(harness.rows("select user_id from cloud_free_plan_claims")).toEqual([{ user_id: OTHER }]);
     const refused = await stateOf(OWNER);
-    expect(refused.freePlan).toEqual({ state: "refused", sentence: "This computer already used another account's free hours. Plus gives you 500 hours a month." });
+    expect(refused.freePlan).toMatchObject({ state: "refused", sentence: "This computer already used another account's free hours. Plus gives you 500 hours a month." });
     expect([refused.hours.includedMilli, refused.hours.state]).toEqual([0, "zero"]);
     expect((await stateOf(OTHER)).freePlan?.state).toBe("claimed");
   });
@@ -1290,6 +1292,202 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
 
     expect(harness.row("select state, reason from cloud_referrals where friend_user_id = ?", OTHER)).toEqual({ state: "refused", reason });
     expect(harness.rows("select 1 from cloud_earned_hours")).toEqual([]);
+  });
+
+  /* ---- The free plan's GitHub rules (`freePlanGithub.ts`) ---- */
+
+  const GH_API = "https://github-api.test";
+  const GH_TOKEN_KEY = Buffer.alloc(32, 7).toString("base64");
+  const createBody = { type: "default", resources: { cpu: 2, memory: 4 } };
+  /** What GitHub's `GET /user` answers next, per call; the default names user 77, 40 days old. */
+  let githubUser: Array<() => Response> = [];
+  let githubCalls = 0;
+
+  function withGithub(): void {
+    Object.assign(harness.env, { GITHUB_APP_CLIENT_ID: "Iv23test", GITHUB_APP_CLIENT_SECRET: "secret", GITHUB_APP_TOKEN_KEY: GH_TOKEN_KEY, GITHUB_API_BASE_URL: GH_API });
+    githubUser = [];
+    githubCalls = 0;
+    const inner = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith(GH_API)) return inner(input, init);
+      githubCalls += 1;
+      const next = githubUser.shift();
+      return next ? next() : new Response(JSON.stringify({ id: 77, login: "octo", created_at: new Date(clock - 40 * DAY).toISOString() }), { status: 200 });
+    });
+  }
+
+  /** A connected GitHub account: the grant (a live token) and, when known, its age. */
+  async function connectGithub(user: string, githubUserId: number, ageDays: number | null): Promise<void> {
+    const key = await tokenKey(GH_TOKEN_KEY);
+    harness.insert("github_app_grants", {
+      user_id: user, github_user_id: githubUserId, github_login: `gh${githubUserId}`,
+      access_token_sealed: await seal(key!, `token-${user}`, grantAad(user, "access")), access_token_sha256: "0".repeat(64),
+      access_expires_at: clock + 8 * HOUR, origin: "web_flow", state: "active", generation: 1, created_at: clock, updated_at: clock,
+    });
+    if (ageDays != null) harness.exec("insert or replace into github_account_ages (github_user_id, github_created_at, checked_at, failures) values (?, ?, ?, 0)", githubUserId, clock - ageDays * DAY, clock);
+  }
+
+  const included = (user = OWNER) => harness.row("select included_milli from cloud_accounts where user_id = ?", user).included_milli;
+  const githubClaims = () => harness.rows("select github_user_id, user_id from cloud_free_github_claims order by github_user_id");
+
+  it.each<[string, () => Promise<void>, { state: string; included: number; claims: Row[]; create: number }]>([
+    ["no GitHub connected: no free hours, and a create is refused",
+      async () => {}, { state: "no_github", included: 0, claims: [], create: 402 }],
+    ["a GitHub account younger than 30 days waits, with the card option",
+      () => connectGithub(OWNER, 77, 10), { state: "too_new", included: 0, claims: [], create: 402 }],
+    ["a GitHub account another ADE account claimed is refused; the first keeps it",
+      async () => { await connectGithub(OWNER, 77, 40); harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OTHER, claimed_at: NOW - DAY }); },
+      { state: "used", included: 0, claims: [{ github_user_id: 77, user_id: OTHER }], create: 402 }],
+    ["a GitHub account 30 days old claims the free plan",
+      () => connectGithub(OWNER, 77, 40), { state: "ok", included: 50_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
+    ["a former paid customer's card counts for a new GitHub account",
+      async () => { await connectGithub(OWNER, 77, 10); harness.exec("update cloud_accounts set stripe_subscription_id = 'sub_old' where user_id = ?", OWNER); },
+      { state: "ok", included: 50_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
+    ["an account that used ADE Cloud before the rules keeps its hours with no GitHub",
+      async () => { harness.exec("update cloud_accounts set free_github_exempt = 1 where user_id = ?", OWNER); },
+      { state: "ok", included: 50_000, claims: [], create: 201 }],
+  ])("free plan per GitHub account: %s", async (_label, arrange, expected) => {
+    withGithub();
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    await arrange();
+
+    const state = await stateOf();
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    const create = await harness.send(OWNER, "POST", "/cloud/instances", createBody);
+
+    expect({ state: state.freePlan?.github?.state, included: included(), claims: githubClaims(), create: create.status }).toEqual(expected);
+    if (expected.state === "too_new") {
+      expect(state.freePlan?.github).toMatchObject({ canUnlockWithCard: true, oldEnoughAt: clock + 20 * DAY });
+    }
+  });
+
+  it("two ADE accounts claiming one GitHub account at once: one gets the free plan, the other is refused", async () => {
+    withGithub();
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    await connectGithub(OWNER, 77, 40);
+    await connectGithub(OTHER, 77, 40);
+
+    // OTHER claims after OWNER found the GitHub account unclaimed and before OWNER's claim lands.
+    landBefore(/insert into cloud_free_github_claims/, () => stateOf(OTHER));
+    const owner = await stateOf(OWNER);
+
+    expect(githubClaims()).toEqual([{ github_user_id: 77, user_id: OTHER }]);
+    expect([owner.freePlan?.github?.state, included(OWNER)]).toEqual(["used", 0]);
+    expect([(await stateOf(OTHER)).freePlan?.github?.state, included(OTHER)]).toEqual(["ok", 50_000]);
+  });
+
+  it("switching GitHub accounts never lets one GitHub account feed two free plans", async () => {
+    withGithub();
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    await connectGithub(OWNER, 77, 40);
+    await stateOf(OWNER);
+    // OWNER connects another GitHub account; OTHER connects OWNER's first one.
+    harness.exec("update github_app_grants set github_user_id = 88 where user_id = ?", OWNER);
+    harness.exec("insert into github_account_ages (github_user_id, github_created_at, failures) values (88, ?, 0)", clock - 40 * DAY);
+    await connectGithub(OTHER, 77, 40);
+
+    expect((await stateOf(OWNER)).freePlan?.github?.state).toBe("ok");
+    expect([(await stateOf(OTHER)).freePlan?.github?.state, included(OTHER)]).toEqual(["used", 0]);
+    expect(githubClaims()).toEqual([{ github_user_id: 77, user_id: OWNER }]);
+  });
+
+  it("GitHub down holds the hours and asks again after a wait; a revoked GitHub account means connect again", async () => {
+    withGithub();
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    await connectGithub(OWNER, 77, null);
+    githubUser.push(() => new Response("busy", { status: 502 }));
+
+    expect((await stateOf()).freePlan?.github?.state).toBe("checking");
+    expect(included()).toBe(0);
+    // Inside the wait, no second call to GitHub; after it, GitHub answers and the hours come back.
+    clock += 60_000;
+    expect((await stateOf()).freePlan?.github?.state).toBe("checking");
+    expect(githubCalls).toBe(1);
+    clock += 5 * 60_000;
+    expect((await stateOf()).freePlan?.github?.state).toBe("ok");
+    expect([githubCalls, included()]).toEqual([2, 50_000]);
+
+    // A GitHub account deleted (or the App revoked) before its age was read: connect GitHub again.
+    await connectGithub(OTHER, 99, null);
+    githubUser.push(() => new Response("{}", { status: 401 }));
+    expect((await stateOf(OTHER)).freePlan?.github?.state).toBe("no_github");
+  });
+
+  /** Stripe's signed webhook, as the billing tests send it. */
+  async function stripeWebhook(event: Row): Promise<Response> {
+    const body = JSON.stringify(event);
+    const timestamp = Math.floor(clock / 1000);
+    const signature = createHmac("sha256", WEBHOOK_SECRET).update(`${timestamp}.${body}`).digest("hex");
+    return handleCloudBillingPublicRequest(new Request("https://directory.test/webhooks/stripe", {
+      method: "POST", headers: { "stripe-signature": `t=${timestamp},v1=${signature}` }, body,
+    }), harness.env);
+  }
+
+  it("a card saved with no charge unlocks a new GitHub account's free hours; a card that didn't save unlocks nothing", async () => {
+    withGithub();
+    seedAccount(harness, OWNER, { stripe_customer_id: "cus_1" });
+    await connectGithub(OWNER, 77, 10);
+    expect((await stateOf()).freePlan?.github?.state).toBe("too_new");
+    harness.net.once.push(
+      { match: /GET .*\/customers\/cus_1\/payment_methods/, reply: harness.net.reply({ data: [] }) },
+      { match: /POST .*\/checkout\/sessions$/, reply: harness.net.reply({ id: "cs_1", url: "https://checkout.stripe.test/setup" }) },
+    );
+
+    const opened = await harness.send(OWNER, "POST", "/cloud/billing/free-unlock", {});
+    expect(await opened.json()).toEqual({ url: "https://checkout.stripe.test/setup", unlocked: false });
+    expect(providerCalls(harness, /POST .*\/checkout\/sessions$/).at(-1)?.body).toMatchObject({ mode: "setup", "metadata[ade_purpose]": "free_unlock" });
+    expect(included()).toBe(0);
+
+    const session = { id: "cs_1", object: "checkout.session", mode: "setup", status: "complete", setup_intent: "seti_1", client_reference_id: OWNER, metadata: { ade_user_id: OWNER, ade_purpose: "free_unlock" } };
+    harness.net.once.push({ match: /GET .*\/setup_intents\/seti_1$/, reply: harness.net.reply({ id: "seti_1", status: "requires_payment_method" }) });
+    expect((await stripeWebhook({ id: "evt_unlock_failed", type: "checkout.session.completed", data: { object: session } })).status).toBe(200);
+    expect([harness.row("select free_card_unlocked_at from cloud_accounts where user_id = ?", OWNER).free_card_unlocked_at, included()]).toEqual([null, 0]);
+
+    harness.net.once.push({ match: /GET .*\/setup_intents\/seti_1$/, reply: harness.net.reply({ id: "seti_1", status: "succeeded" }) });
+    expect((await stripeWebhook({ id: "evt_unlock", type: "checkout.session.completed", data: { object: session } })).status).toBe(200);
+
+    expect(harness.row("select free_card_unlocked_at, free_github_hold from cloud_accounts where user_id = ?", OWNER)).toEqual({ free_card_unlocked_at: clock, free_github_hold: null });
+    expect([included(), githubClaims()]).toEqual([50_000, [{ github_user_id: 77, user_id: OWNER }]]);
+    // A card already unlocked: the route says so and opens nothing.
+    expect(await (await harness.send(OWNER, "POST", "/cloud/billing/free-unlock", {})).json()).toEqual({ url: null, unlocked: true });
+  });
+
+  it.each<[string, number, string[]]>([
+    ["five sign-ups from one address within an hour raise the alarm", 5, ["5 sign-ups from one IP address within an hour from 10:00 UTC"]],
+    ["four do not", 4, []],
+  ])("the daily report's abuse lines: %s; a computer at full CPU for hours with no chat turn is listed", async (_label, signups, burstLines) => {
+    Object.assign(harness.env, { RESEND_API_KEY: "resend-key", CLOUD_ALERT_EMAIL: "owner@example.test", CLOUD_CHAT_MASTER_KEY: Buffer.alloc(32, 3).toString("base64") });
+    const day = new Date(NOW - DAY).toISOString().slice(0, 10);
+    const dayStart = Date.parse(`${day}T00:00:00Z`);
+    seedAccount(harness, OWNER);
+    seedComputer(harness);
+    provide(harness);
+    const secret = Buffer.from("clerk-webhook-secret-for-this-test");
+    for (let index = 0; index < signups; index += 1) {
+      const body = JSON.stringify({ type: "user.created", data: { id: `user_burst_${index}`, created_at: dayStart + 10 * HOUR + index * 10 * 60_000 }, event_attributes: { http_request: { client_ip: "203.0.113.9", user_agent: "x" } } });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = createHmac("sha256", secret).update(`msg_${index}.${timestamp}.${body}`).digest("base64");
+      await handleSignupAnalyticsRequest(new Request("https://directory.test/webhooks/clerk", {
+        method: "POST", headers: { "svix-id": `msg_${index}`, "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` }, body,
+      }), { DB: harness.DB, CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`, CLOUD_CHAT_MASTER_KEY: harness.env.CLOUD_CHAT_MASTER_KEY } as never);
+    }
+    // The raw address is never stored.
+    expect(JSON.stringify(harness.rows("select * from cloud_signup_ips"))).not.toContain("203.0.113.9");
+    clock = dayStart + 20 * HOUR;
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/cpu-report`, { since: dayStart + 15 * HOUR, minutes: 300, cpuPercent: 97 })).status).toBe(200);
+    clock = NOW;
+
+    await runDailyCostReport(harness.env, day);
+
+    const report = String(providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/).at(-1)?.body?.text ?? "");
+    expect(report).toContain(`Computer ${INSTANCE} of account ${OWNER} (free) ran at 97% CPU or more for 5 hours from 15:00 UTC with no chat turn or agent working.`);
+    for (const line of burstLines) expect(report).toContain(line);
+    if (!burstLines.length) expect(report).not.toContain("sign-ups from one IP address");
   });
 });
 
