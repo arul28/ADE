@@ -64,6 +64,9 @@ describe("moveProviderThread", () => {
     const targetPath = path.join(toHome, "projects", "-Users-me-repo", `${threadId}.jsonl`);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, "a stale copy\n", "utf8");
+    // Really stale: the copy predates the source, so the source may replace it.
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(targetPath, past, past);
 
     const result = await moveProviderThread({
       provider: "claude",
@@ -231,3 +234,25 @@ describe("findInstanceHoldingThread", () => {
     expect(await findInstanceHoldingNewestClaudeThread("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", accounts)).toBeNull();
   });
 });
+
+  it("leaves a newer copy in the target home alone", async () => {
+    const threadId = "claude-thread-newer-target";
+    writeClaudeThread(threadId, "the older source\n");
+    const targetPath = path.join(toHome, "projects", "-Users-me-repo", `${threadId}.jsonl`);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, "a newer target copy\n", "utf8");
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(targetPath, future, future);
+
+    const result = await moveProviderThread({
+      provider: "claude",
+      threadId,
+      fromConfigHome: fromHome,
+      toConfigHome: toHome,
+    });
+
+    // The target account continued the thread; replacing it with the older
+    // source would lose turns the source never had.
+    expect(result).toMatchObject({ ok: true, targetExisted: true, skipped: "destination_newer" });
+    expect(fs.readFileSync(targetPath, "utf8")).toBe("a newer target copy\n");
+  });

@@ -2197,11 +2197,14 @@ describe("account-aware import", () => {
     name: "Cloud 6",
     branchRef: "refs/heads/ade/cloud-6",
     color: null,
-    laneType: "worktree",
+    laneType: "worktree" as const,
     worktreePath: laneCwd,
   });
 
-  function makeAccountService(create: ReturnType<typeof vi.fn>, laneCwd: string) {
+  function makeAccountService(
+    create: (args: PtyCreateArgs) => Promise<{ sessionId: string; ptyId: string; pid: number }>,
+    laneCwd: string,
+  ) {
     const homeDir = path.join(root, "home");
     const adeHome = path.join(root, "ade-home");
     const acctA = path.join(adeHome, "provider-homes", "claude", "acct-a");

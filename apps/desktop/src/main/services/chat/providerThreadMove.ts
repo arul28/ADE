@@ -41,9 +41,25 @@ export type ProviderThreadMoveResult =
   /** `targetExisted` lets a caller that only needed a scratch copy remove the
    * copy it created without ever deleting a rollout/transcript that was
    * already there (Codex compacts to `.jsonl.zst`, so a name-based guess can
-   * miss an existing copy). */
-  | { ok: true; targetPath: string; targetExisted: boolean }
+   * miss an existing copy). `skipped` means the destination already held a
+   * NEWER copy of the same thread and was deliberately left alone. */
+  | { ok: true; targetPath: string; targetExisted: boolean; skipped?: "destination_newer" }
   | { ok: false; reason: "same_home" | "thread_not_found" | "copy_failed"; message: string };
+
+/**
+ * Refuse to replace a destination copy that is newer than the source.
+ *
+ * A caller's source is the transcript it captured (often at discovery time);
+ * the destination account may have continued the same thread since. Replacing
+ * that newer copy would lose turns ADE cannot recover from the source.
+ */
+async function destinationIsNewer(sourcePath: string, targetPath: string): Promise<boolean> {
+  const [source, target] = await Promise.all([
+    fs.promises.stat(sourcePath).catch(() => null),
+    fs.promises.stat(targetPath).catch(() => null),
+  ]);
+  return Boolean(source && target && target.mtimeMs > source.mtimeMs);
+}
 
 async function copyFileReplacing(sourcePath: string, targetPath: string): Promise<void> {
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
@@ -163,6 +179,9 @@ async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderT
   }
   const relative = path.relative(args.fromConfigHome, sourcePath);
   const targetPath = path.join(args.toConfigHome, relative);
+  if (await destinationIsNewer(sourcePath, targetPath)) {
+    return { ok: true, targetPath, targetExisted: true, skipped: "destination_newer" };
+  }
   const targetExisted = fs.existsSync(targetPath);
   await copyFileReplacing(sourcePath, targetPath);
   const sidecarSource = path.join(path.dirname(sourcePath), args.threadId);
@@ -190,6 +209,9 @@ async function moveCodexThread(args: ProviderThreadMoveArgs): Promise<ProviderTh
     };
   }
   const targetPath = path.join(args.toConfigHome, path.relative(args.fromConfigHome, sourcePath));
+  if (await destinationIsNewer(sourcePath, targetPath)) {
+    return { ok: true, targetPath, targetExisted: true, skipped: "destination_newer" };
+  }
   const targetExisted = fs.existsSync(targetPath);
   await copyFileReplacing(sourcePath, targetPath);
   return { ok: true, targetPath, targetExisted };

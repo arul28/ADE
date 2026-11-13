@@ -31,7 +31,7 @@ import {
   placeClaudeForkFromTransport,
   transplantClaudeSession as staticTransplantClaudeSession,
 } from "../externalSessions/claudeSessionTransplant";
-import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
+import { findCodexRolloutPathBySessionId, findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";
 import { loadExternalSessionEvents } from "../externalSessions/events";
 import { loadExternalSessionDetail } from "../externalSessions/externalSessionDetail";
 import {
@@ -966,7 +966,6 @@ import {
   findInstanceHoldingNewestClaudeThread,
   findInstanceHoldingThread,
   moveProviderThread,
-  providerThreadIsInHome,
 } from "./providerThreadMove";
 import type {
   AdeMessageAuthor,
@@ -57585,6 +57584,129 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * One in-flight Codex replay read per reader account + thread. Two imports
+   * that share a reader home must not interleave: the first places a scratch
+   * rollout and removes it afterwards, and the second would read a file that
+   * just went away. They share this promise and get the same envelopes.
+   */
+  const codexReplayReadsInFlight = new Map<string, Promise<AgentChatEventEnvelope[]>>();
+
+  const fileIsNewer = async (candidate: string | null, than: string | null): Promise<boolean> => {
+    if (!candidate || !than) return false;
+    const [left, right] = await Promise.all([
+      fs.promises.stat(candidate).catch(() => null),
+      fs.promises.stat(than).catch(() => null),
+    ]);
+    return Boolean(left && right && left.mtimeMs > right.mtimeMs);
+  };
+
+  /**
+   * Read one external Codex thread's turns for a replay import.
+   *
+   * The reader's app-server only sees threads in its own config home. When the
+   * source lives elsewhere this places a scratch copy there — unless the home
+   * already holds the thread, which belongs to an ADE chat resuming from it and
+   * is never overwritten. That existing copy is read only when it is at least
+   * as new as the selected source; otherwise the import is refused rather than
+   * seeded from stale turns.
+   */
+  const readCodexThreadForReplay = async (opts: {
+    externalSessionId: string;
+    laneId: string;
+    instanceId: string | null;
+    sourceHome: string;
+    importedAt: number;
+  }): Promise<AgentChatEventEnvelope[]> => {
+    let readerSessionId: string | null = null;
+    // A rollout copied in for the reader is scratch: a replay creates a fresh
+    // chat with no thread pointer, so the copy is removed afterwards.
+    let placedRolloutPath: string | null = null;
+    try {
+      const reader = await createSession({
+        laneId: opts.laneId,
+        provider: "codex",
+        model: defaultCodexModel(),
+        // The source rollout is in its own account's home; the reader must
+        // run there to see the thread it is asked to read.
+        ...(opts.instanceId ? { instanceId: opts.instanceId } : {}),
+      });
+      readerSessionId = reader.id;
+      const readerManaged = ensureManagedSession(reader.id);
+      const readerHome = sessionConfigHome(readerManaged);
+      if (readerHome && !pathsEqual(readerHome, opts.sourceHome)) {
+        const readerCopy = await findCodexRolloutPathBySessionIdAsync(opts.externalSessionId, {
+          env: { CODEX_HOME: readerHome },
+        });
+        if (readerCopy) {
+          // The reader home already holds this thread. Never replace it (it is
+          // what another ADE chat resumes from), and never import older turns.
+          const sourceCopy = await findCodexRolloutPathBySessionIdAsync(opts.externalSessionId, {
+            env: { CODEX_HOME: opts.sourceHome },
+          });
+          if (await fileIsNewer(sourceCopy, readerCopy)) {
+            throw externalChatImportError(
+              "EXTERNAL_CHAT_SESSION_READ_FAILED",
+              `This Codex thread has newer activity in ${opts.sourceHome} than the copy ${readerHome} holds; open it from the account that owns the newer copy.`,
+            );
+          }
+        } else {
+          const placement = await moveProviderThread({
+            provider: "codex",
+            threadId: opts.externalSessionId,
+            fromConfigHome: opts.sourceHome,
+            toConfigHome: readerHome,
+          });
+          if (!placement.ok) {
+            throw externalChatImportError(
+              "EXTERNAL_CHAT_SESSION_READ_FAILED",
+              `Could not read the external Codex thread from ${opts.sourceHome}: ${placement.message}`,
+            );
+          }
+          placedRolloutPath = placement.targetExisted || placement.skipped ? null : placement.targetPath;
+        }
+      }
+      const runtime = await ensureCodexSessionRuntime(readerManaged);
+      const readResponse = await runtime.request<unknown>("thread/read", {
+        threadId: opts.externalSessionId,
+        includeTurns: true,
+      });
+      const sourceThread = extractCodexThreadTurns(readResponse, opts.externalSessionId);
+      if (!sourceThread.foundThread) {
+        throw externalChatImportError(
+          "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+          `External Codex thread '${opts.externalSessionId}' was not found by thread/read.`,
+        );
+      }
+      return codexTurnsToChatEvents(sourceThread.turns, {
+        sessionId: "import-preview",
+        provider: "codex",
+        externalSessionId: opts.externalSessionId,
+        importedAt: opts.importedAt,
+        laneId: opts.laneId,
+      });
+    } finally {
+      if (readerSessionId) {
+        await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
+            sessionId: readerSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      if (placedRolloutPath) {
+        // Leave the reader's home exactly as it was: the default-home copy
+        // would otherwise outrank the real transcript by mtime on the next
+        // list, re-attributing the session to the wrong account.
+        await fs.promises.rm(placedRolloutPath, { force: true }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_codex_replay_copy_cleanup_failed", {
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+    }
+  };
+
   const importExternalChatSessionViaReplay = async (
     args: AgentChatImportExternalSessionArgs,
     options: {
@@ -57619,91 +57741,31 @@ export function createAgentChatService(args: {
         transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
       });
     } else if (args.provider === "codex") {
-      let readerSessionId: string | null = null;
-      // A rollout copied in for the reader is scratch: this replay creates a
-      // fresh chat with no thread pointer, so the copy is removed afterwards.
-      let placedRolloutPath: string | null = null;
-      try {
-        const reader = await createSession({
-          laneId: args.laneId,
-          provider: "codex",
-          model: defaultCodexModel(),
-          // The source rollout is in its own account's home; the reader must
-          // run there to see the thread it is asked to read.
-          ...(args.instanceId?.trim() ? { instanceId: args.instanceId.trim() } : {}),
-        });
-        readerSessionId = reader.id;
-        const readerManaged = ensureManagedSession(reader.id);
-        // A source in a preset or credential home has no account id to name, so
-        // the reader would run on the default home and never find the rollout.
-        // Place a copy in the reader's home just for this read.
-        const readerHome = sessionConfigHome(readerManaged);
-        const sourceHome = path.resolve(
-          reopen?.configHome?.trim()
-            || args.configHome?.trim()
-            || process.env.CODEX_HOME?.trim()
-            || path.join(os.homedir(), ".codex"),
-        );
-        if (
-          readerHome
-          && !pathsEqual(readerHome, sourceHome)
-          && !providerThreadIsInHome("codex", externalSessionId, readerHome)
-        ) {
-          const placement = await moveProviderThread({
-            provider: "codex",
-            threadId: externalSessionId,
-            fromConfigHome: sourceHome,
-            toConfigHome: readerHome,
-          });
-          if (!placement.ok) {
-            throw externalChatImportError(
-              "EXTERNAL_CHAT_SESSION_READ_FAILED",
-              `Could not read the external Codex thread from ${sourceHome}: ${placement.message}`,
-            );
-          }
-          // Remove it afterwards only when this read created it: an existing
-          // copy belongs to an ADE chat that resumes from the reader's home.
-          placedRolloutPath = placement.targetExisted ? null : placement.targetPath;
-        }
-        const runtime = await ensureCodexSessionRuntime(readerManaged);
-        const readResponse = await runtime.request<unknown>("thread/read", {
-          threadId: externalSessionId,
-          includeTurns: true,
-        });
-        const sourceThread = extractCodexThreadTurns(readResponse, externalSessionId);
-        if (!sourceThread.foundThread) {
-          throw externalChatImportError(
-            "EXTERNAL_CHAT_SESSION_NOT_FOUND",
-            `External Codex thread '${externalSessionId}' was not found by thread/read.`,
-          );
-        }
-        envelopes = codexTurnsToChatEvents(sourceThread.turns, {
-          sessionId: "import-preview",
-          provider: "codex",
+      // Two imports of one thread into the same reader account share a single
+      // read: the first places a scratch rollout and removes it afterwards, so
+      // an interleaved second read could run against a file that just vanished.
+      const replayKey = `${args.instanceId?.trim() || "default"}\u0000${externalSessionId}`;
+      let read = codexReplayReadsInFlight.get(replayKey);
+      if (!read) {
+        read = readCodexThreadForReplay({
           externalSessionId,
-          importedAt: options.importedAt,
           laneId: args.laneId,
+          instanceId: args.instanceId?.trim() || null,
+          sourceHome: path.resolve(
+            reopen?.configHome?.trim()
+              || args.configHome?.trim()
+              || process.env.CODEX_HOME?.trim()
+              || path.join(os.homedir(), ".codex"),
+          ),
+          importedAt: options.importedAt,
         });
-      } finally {
-        if (readerSessionId) {
-          await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
-            logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
-              sessionId: readerSessionId,
-              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-            });
-          });
-        }
-        if (placedRolloutPath) {
-          // Leave the reader's home exactly as it was: the default-home copy
-          // would otherwise outrank the real transcript by mtime on the next
-          // list, re-attributing the session to the wrong account.
-          await fs.promises.rm(placedRolloutPath, { force: true }).catch((cleanupError) => {
-            logger.warn("agent_chat.external_import_codex_replay_copy_cleanup_failed", {
-              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-            });
-          });
-        }
+        codexReplayReadsInFlight.set(replayKey, read);
+        const clear = (): void => {
+          if (codexReplayReadsInFlight.get(replayKey) === read) codexReplayReadsInFlight.delete(replayKey);
+        };
+        read.then(clear, clear);
       }
+      envelopes = await read;
     } else {
       envelopes = await loadExternalImportEvents(args, options.importedAt, reopen);
     }
