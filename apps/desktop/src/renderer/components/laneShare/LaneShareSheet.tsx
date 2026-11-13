@@ -2,7 +2,6 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { ShareNetwork, UserCircle } from "@phosphor-icons/react";
 import {
-  laneSharePresetRights,
   laneShareRightsForHost,
   laneShareRiskLevel,
   type LaneSharePresetName,
@@ -47,7 +46,6 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type Draft = { rights: LaneShareRights; endsAt: number | null };
 
-/** One person with access: their address, then state, access level and who made it, on one quiet line. */
 /** A person's state: "Removed here" while a revoke waits on the directory, else the share's own state. */
 function personState(entry: LaneShareGivenEntry, revokePending: boolean, now?: number): { label: string; tone: LaneShareTone } {
   if (revokePending) return { label: "Removed here", tone: "warn" };
@@ -55,6 +53,7 @@ function personState(entry: LaneShareGivenEntry, revokePending: boolean, now?: n
   return { label: state.label, tone: state.tone ?? (entry.connectedDevices > 0 ? "ok" : null) };
 }
 
+/** One person with access: their address, then state, access level and who made it, on one quiet line. */
 function PersonRow({
   entry,
   selected,
@@ -75,18 +74,11 @@ function PersonRow({
     ? LANE_SHARE_PRESET_LABELS[presetValue]
     : entry.rights ? "Custom" : laneSharePresetText(entry.preset);
   return (
-    <div
-      role="option"
-      aria-selected={selected}
-      tabIndex={0}
+    <button
+      type="button"
+      aria-pressed={selected}
       className="ade-ls-person"
       onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
       data-testid="lane-share-guest-row"
       data-state={entry.state}
     >
@@ -101,7 +93,7 @@ function PersonRow({
           ]}
         />
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -418,7 +410,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
               <div className="ade-ls-line">A lane can have {LANE_SHARE_MAX_GUESTS} people, invites included. Remove one to invite another.</div>
             ) : null}
 
-            <div role="listbox" aria-label="People with access" className="ade-ls-person-list">
+            <div role="group" aria-label="People with access" className="ade-ls-person-list">
               {loading ? (
                 <div className="ade-ls-empty">Loading…</div>
               ) : shares.length === 0 ? (

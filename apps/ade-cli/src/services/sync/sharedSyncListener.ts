@@ -196,11 +196,25 @@ export type SyncPeerHandoffSnapshot = {
  * crash the brain. The caller drops its own peer state.
  */
 export function detachSocketForHandoff(ws: WebSocket): void {
-  ws.removeAllListeners("message");
-  ws.removeAllListeners("close");
-  ws.removeAllListeners("error");
+  const baseline = serverSocketListeners.get(ws);
+  for (const event of HANDOFF_SOCKET_EVENTS) {
+    if (!baseline) {
+      ws.removeAllListeners(event);
+      continue;
+    }
+    // The server's own listeners stay: `ws` drops a closed socket from
+    // `WebSocketServer.clients` through its own close listener.
+    const keep = new Set(baseline[event]);
+    for (const listener of ws.listeners(event)) {
+      if (!keep.has(listener)) ws.removeListener(event, listener as (...args: unknown[]) => void);
+    }
+  }
   ws.on("error", () => {});
 }
+
+const HANDOFF_SOCKET_EVENTS = ["message", "close", "error"] as const;
+/** The listeners `ws` put on each accepted socket before any host saw it. */
+const serverSocketListeners = new WeakMap<WebSocket, Record<(typeof HANDOFF_SOCKET_EVENTS)[number], Function[]>>();
 
 /** Gives a lane share guest's socket to the host of its lane's project. */
 export type LaneShareGuestRouter = (handoff: LaneShareGuestHandoff) => Promise<boolean>;
@@ -705,6 +719,11 @@ export function createSharedSyncListener(options: {
         // lot sees it: it is a binary pipe, not a sync peer, and parking one
         // would hand a video socket to the next project's host on a switch.
         if (tryRouteAppleStreamSocket(ws, request)) return;
+        serverSocketListeners.set(ws, {
+          message: [...ws.listeners("message")],
+          close: [...ws.listeners("close")],
+          error: [...ws.listeners("error")],
+        });
         const transportOrigin = hasValidRelayBridgeProof(request, relayBridgeProofBytes)
           ? "relay-bridge"
           : "direct";

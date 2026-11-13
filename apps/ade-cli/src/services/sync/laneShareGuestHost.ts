@@ -25,7 +25,7 @@ import { createSyncDpopNonceCache } from "./syncDpop";
 import { createLaneShareGuestGates } from "./laneShareGuestGates";
 import { createLaneShareGuestHello } from "./laneShareGuestHello";
 import { createLaneShareGuestQueue } from "./laneShareGuestQueue";
-import type { LaneShareCloseResult, LaneShareGuestHandoff, LaneShareGuestHostDeps, LaneShareGuestPeer, LaneShareTurnOwner } from "./laneShareGuestTypes";
+import type { LaneShareCloseResult, LaneShareGuestHostDeps, LaneShareGuestPeer, LaneShareTurnOwner } from "./laneShareGuestTypes";
 
 export type { LaneShareCloseResult, LaneShareGuestHandoff, LaneShareGuestHostDeps, LaneShareGuestPeer } from "./laneShareGuestTypes";
 
@@ -653,7 +653,6 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       laneShareGuestDpopNonceCache,
       claimLaneShareRedeem,
       emitLaneSharePresence,
-      enforceLaneShareGrantAge,
       laneShareConnectedDevices,
       laneShareLaneState,
       laneShareOpaqueHostId,
@@ -689,6 +688,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
   }
 
   function dispose(): void {
+    gates.disposeLaneShareGates();
     unsubscribeLaneShareGrants?.();
     removeQueuedGuestSteerGate?.();
     if (laneShareRefreshTimer) clearInterval(laneShareRefreshTimer);

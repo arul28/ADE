@@ -110,10 +110,12 @@ export function createLaneShareGuestRouter(deps: {
     if (handoff.redeemed) {
       const { repoKey, laneId } = handoff.redeemed.redemption;
       if (repoKey) {
-        let matching = projects.filter((project) => keyOfOrigin(project.gitOriginUrl) === repoKey);
-        // The registry's origin can be old: read each checkout's own.
-        if (matching.length === 0) matching = projects.filter((project) => liveKeyOf(project) === repoKey);
-        if (await offer(ordered(matching), handoff, { open: true, laneId, checkLane: matching.length > 1 })) return true;
+        // The registry's origin can be old (kept on re-add and relocate): its
+        // matches go first, then every other checkout whose own origin matches.
+        const registered = projects.filter((project) => keyOfOrigin(project.gitOriginUrl) === repoKey);
+        const live = projects.filter((project) => !registered.includes(project) && liveKeyOf(project) === repoKey);
+        const matching = [...ordered(registered), ...ordered(live)];
+        if (await offer(matching, handoff, { open: true, laneId, checkLane: matching.length > 1 })) return true;
         deps.logger.info("lane_share.router_no_project", { redeemed: true, candidates: matching.length });
         return false;
       }

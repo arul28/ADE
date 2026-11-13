@@ -150,12 +150,17 @@ function bridge() {
  */
 const hostEndedGrants = new Set<string>();
 
-function withHostEnded(shares: LaneShareReceivedEntry[]): LaneShareReceivedEntry[] {
+/**
+ * `fromDirectory`: a fresh directory read, whose closed state confirms the
+ * host and retires its override. A local pass over the shown list (where an
+ * earlier override already wrote "ended") confirms nothing.
+ */
+function withHostEnded(shares: LaneShareReceivedEntry[], fromDirectory: boolean): LaneShareReceivedEntry[] {
   if (hostEndedGrants.size === 0) return shares;
   return shares.map((row) => {
     if (!hostEndedGrants.has(row.grantId)) return row;
     if (row.state !== "active") {
-      hostEndedGrants.delete(row.grantId);
+      if (fromDirectory) hostEndedGrants.delete(row.grantId);
       return row;
     }
     return { ...row, state: "ended" };
@@ -193,7 +198,7 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
       receivedFailures = 0;
       useLaneShareGuestStore.setState({
         receivedFor: readFor(),
-        received: withHostEnded(result.shares),
+        received: withHostEnded(result.shares, true),
         pendingInvitesUnavailable: result.pendingInvitesUnavailable,
         receivedStatus: "ready",
         receivedProblem: null,
@@ -272,7 +277,7 @@ export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntr
       if (connectionState.kind === "connected") void refreshLaneShareGuestState(entry.grantId);
       if (connectionState.kind === "stopped" && connectionState.reason === "ended") {
         hostEndedGrants.add(entry.grantId);
-        useLaneShareGuestStore.setState((state) => ({ received: state.received ? withHostEnded(state.received) : state.received }));
+        useLaneShareGuestStore.setState((state) => ({ received: state.received ? withHostEnded(state.received, false) : state.received }));
       }
       if (connectionState.kind === "stopped" && connectionState.reason !== "paused") {
         // Ended, left or refused: the received list changed on the directory.

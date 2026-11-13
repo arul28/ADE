@@ -99,12 +99,16 @@ function SharedByMe() {
   // it shows with every computer off. A copy of the open project that is
   // online adds what only the lane's computer knows (rights, usage,
   // connections) to its own rows.
+  // Each read takes a number; an answer that a newer read (or an unmount) replaced is dropped.
+  const loadSeq = React.useRef(0);
   const load = React.useCallback(async () => {
+    const seq = ++loadSeq.current;
     const listPin = active ? pinRef.current : null;
     const [account, runtime] = await Promise.allSettled([
       window.ade.laneShareGuest.listGiven(),
       listPin ? window.ade.laneShare.list({ scope: "account" }, listPin) : Promise.resolve(null),
     ]);
+    if (seq !== loadSeq.current) return;
     if (account.status === "rejected" && (runtime.status === "rejected" || runtime.value == null)) {
       setState((current) => ({ status: "error", data: current.data, problem: laneShareProblem(account.reason) }));
       return;
@@ -125,7 +129,8 @@ function SharedByMe() {
   React.useEffect(() => {
     void load();
     const subscribedPin = active ? pinRef.current : null;
-    if (!subscribedPin) return;
+    // A read still out when this effect ends is not this effect's answer.
+    if (!subscribedPin) return () => { loadSeq.current += 1; };
     let timer: ReturnType<typeof setTimeout> | null = null;
     const off = window.ade.laneShare.onEvent((event) => {
       if (event.type === "lane_share_guest_turn_running") return;
@@ -136,6 +141,7 @@ function SharedByMe() {
       }, 400);
     }, subscribedPin);
     return () => {
+      loadSeq.current += 1;
       off();
       if (timer) clearTimeout(timer);
     };

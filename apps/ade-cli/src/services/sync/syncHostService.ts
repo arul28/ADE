@@ -4163,9 +4163,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // The previous owner (host service or listener parking) must leave no
       // listeners behind — this host attaches its own message/close/error
       // handlers via registerPeer.
-      ws.removeAllListeners("message");
-      ws.removeAllListeners("close");
-      ws.removeAllListeners("error");
+      detachSocketForHandoff(ws);
       const peer = registerPeer(
         ws,
         sanitizeRemoteAddress(snapshot.remoteAddress),
@@ -9748,9 +9746,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.relayAuthorization?.dispose();
           peer.relayAuthorization = null;
           peer.envelopeChunks.reset();
-          peer.ws.removeAllListeners("message");
-          peer.ws.removeAllListeners("close");
-          peer.ws.removeAllListeners("error");
+          detachSocketForHandoff(peer.ws);
           // No new terminal input can enter after listener detachment. Drain
           // the dedicated synchronous-input queue before exporting receipts so
           // a write and its dedupe record move to the next host atomically.

@@ -290,6 +290,7 @@ export function LaneShareGuestMoveCard({
                     onEndsAtChange={setEndsAt}
                     now={Date.now()}
                     cliTyping={destinations.find((entry) => entry.machineId === machineId)?.cliTyping ?? null}
+                    runtimePin={destinations.find((entry) => entry.machineId === machineId)?.pin ?? null}
                   />
                 ) : null}
               </div>

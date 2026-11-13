@@ -2419,13 +2419,14 @@ export function createSyncService(args: SyncServiceArgs) {
     handlePtyData(
       event: Parameters<SyncHostService["handlePtyData"]>[0],
     ): void {
-      hostService?.handlePtyData(event);
+      // A guests-only host serves its guests' terminals too.
+      laneShareServingHost()?.handlePtyData(event);
     },
 
     handlePtyExit(
       event: Parameters<SyncHostService["handlePtyExit"]>[0],
     ): void {
-      hostService?.handlePtyExit(event);
+      laneShareServingHost()?.handlePtyExit(event);
     },
 
     notifyPrsUpdated(): void {

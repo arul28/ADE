@@ -66,11 +66,12 @@ export function HoverButton({
       disabled={disabled}
       aria-disabled={disabled || undefined}
       title={title}
+      aria-description={title}
       style={{
         ...style,
         ...(disabled ? { cursor: "not-allowed", opacity: 0.4 } : {}),
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = COLORS.hoverBg; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       onClick={onClick}
     >

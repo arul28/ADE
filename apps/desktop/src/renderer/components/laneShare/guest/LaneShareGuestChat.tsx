@@ -236,6 +236,14 @@ function GuestRow({
 
 /** A picker of the values the owner allows. Nothing else is listed. */
 /** One choice the owner allows more than one value for, as a segmented control. The current value is pressed. */
+/**
+ * A picker shows when there is a choice, or when the chat is not on the one
+ * allowed value (the host refuses a turn outside the lock until it is moved).
+ */
+function pickerNeeded(values: readonly string[], current: string | null): boolean {
+  return values.length > 1 || (values.length === 1 && current != null && current !== values[0]);
+}
+
 function GuestPicker({
   label,
   values,
@@ -288,15 +296,19 @@ export function LaneShareGuestChat({
   const [sending, setSending] = React.useState(false);
   const [refusal, setRefusal] = React.useState<{ code: string | null; message: string } | null>(null);
   const [comments, setComments] = React.useState<ChatThreadComment[]>([]);
-  const [current, setCurrent] = React.useState<{ modelId: string | null; permissionMode: string | null }>({ modelId: null, permissionMode: null });
+  const [current, setCurrent] = React.useState<{ modelId: string | null; reasoningEffort: string | null; permissionMode: string | null }>({ modelId: null, reasoningEffort: null, permissionMode: null });
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const grantId = connection.grantId;
 
   const readCurrent = React.useCallback(async () => {
     try {
-      const summary = await connection.call<{ modelId?: unknown; model?: unknown; permissionMode?: unknown } | null>("chat.getSummary", { sessionId });
+      const summary = await connection.call<{ modelId?: unknown; model?: unknown; reasoningEffort?: unknown; permissionMode?: unknown } | null>("chat.getSummary", { sessionId });
       const modelId = typeof summary?.modelId === "string" ? summary.modelId : typeof summary?.model === "string" ? summary.model : null;
-      setCurrent({ modelId, permissionMode: typeof summary?.permissionMode === "string" ? summary.permissionMode : null });
+      setCurrent({
+        modelId,
+        reasoningEffort: typeof summary?.reasoningEffort === "string" ? summary.reasoningEffort : null,
+        permissionMode: typeof summary?.permissionMode === "string" ? summary.permissionMode : null,
+      });
     } catch {
       // The status line shows nothing it cannot read.
     }
@@ -525,7 +537,7 @@ export function LaneShareGuestChat({
           {commandChar && mode !== "none" ? <div className="text-[11.5px] text-[var(--color-warning)]">{LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE}</div> : null}
           {rights && mode === "send" && !paused && (guestState?.models.length || rights.run.permissionModes.length || rights.run.reasoningLevels.length) ? (
             <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-              {guestState && guestState.models.length > 1 ? (
+              {guestState && pickerNeeded(guestState.models, current.modelId) ? (
                 <GuestPicker
                   label="Model"
                   values={guestState.models}
@@ -534,16 +546,16 @@ export function LaneShareGuestChat({
                   onPick={(modelId) => { void run("chat.updateSession", { sessionId, modelId }); }}
                 />
               ) : null}
-              {rights.run.reasoningLevels.length > 1 ? (
+              {pickerNeeded(rights.run.reasoningLevels, current.reasoningEffort) ? (
                 <GuestPicker
                   label="Reasoning"
                   values={rights.run.reasoningLevels}
-                  current={null}
+                  current={current.reasoningEffort}
                   title={laneShareReasoningTitle}
                   onPick={(reasoningEffort) => { void run("chat.updateSession", { sessionId, reasoningEffort }); }}
                 />
               ) : null}
-              {rights.run.permissionModes.length > 1 ? (
+              {pickerNeeded(rights.run.permissionModes, current.permissionMode) ? (
                 <GuestPicker
                   label="Mode"
                   values={rights.run.permissionModes}

@@ -75,13 +75,12 @@ export function LaneSharePresetPicker({
   label?: string;
 }) {
   return (
-    <div className="kit-seg ade-ls-preset" data-case="sentence" role="radiogroup" aria-label={label} data-testid="lane-share-preset">
+    <div className="kit-seg ade-ls-preset" data-case="sentence" role="group" aria-label={label} data-testid="lane-share-preset">
       {LANE_SHARE_PRESET_NAMES.map((name) => (
         <button
           key={name}
           type="button"
-          role="radio"
-          aria-checked={value === name}
+          aria-pressed={value === name}
           disabled={disabled}
           onClick={() => onChange(name)}
         >
@@ -89,7 +88,7 @@ export function LaneSharePresetPicker({
         </button>
       ))}
       {value === "custom" ? (
-        <button type="button" role="radio" aria-checked disabled>
+        <button type="button" aria-pressed disabled>
           Custom
         </button>
       ) : null}
@@ -258,6 +257,7 @@ export function LaneShareRightsPanel({
   const setLimits = (patch: Partial<LaneShareRights["limits"]>) => onChange({ ...rights, limits: { ...rights.limits, ...patch } });
   const [detailsOpen, setDetailsOpen] = React.useState(detailsOpenInitial);
   const quickEnds = laneShareQuickEnds(now);
+  const [pickedEnd, setPickedEnd] = React.useState<string | null>(null);
   const cliTypingOff = cliTyping?.available === false ? CLI_TYPING_UNAVAILABLE_HINTS[cliTyping.reason] : null;
   const canRun = rights.speak.send || rights.run.startChats || rights.run.startCliSessions;
 
@@ -269,15 +269,18 @@ export function LaneShareRightsPanel({
             title="Ends"
             hint={formatLaneShareEnd(endsAt)}
             control={(
-              <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Share end">
+              <div className="kit-seg" data-case="sentence" role="group" aria-label="Share end">
                 {quickEnds.map((option) => (
                   <button
                     key={option.key}
                     type="button"
-                    role="radio"
                     disabled={disabled}
-                    aria-checked={option.at == null ? endsAt == null : false}
-                    onClick={() => onEndsAtChange(option.at)}
+                    // A quick end is relative to the click, so the picked one is remembered here.
+                    aria-pressed={option.at == null ? endsAt == null : endsAt != null && pickedEnd === option.key}
+                    onClick={() => {
+                      setPickedEnd(option.key);
+                      onEndsAtChange(option.at);
+                    }}
                   >
                     {option.label}
                   </button>
@@ -338,7 +341,7 @@ export function LaneShareRightsPanel({
             />
             {canRun ? (
               <>
-                <ModernRow title="Models" hint={rights.run.models.length === 0 ? "None picked: the chat's current model only." : undefined}>
+                <ModernRow title="Models" hint={rights.run.models.length === 0 ? "None picked: the chat's current model only, and no new chat or CLI session can start." : undefined}>
                   <ModelAllowList
                     models={rights.run.models}
                     disabled={disabled}
@@ -346,7 +349,7 @@ export function LaneShareRightsPanel({
                     onChange={(models) => set("run", { models })}
                   />
                 </ModernRow>
-                <ModernRow title="Reasoning levels" hint="None picked: the chat's current level only.">
+                <ModernRow title="Reasoning levels" hint={rights.run.reasoningLevels.length === 0 ? "None picked: the chat's current level only." : undefined}>
                   <MultiPick
                     label="Reasoning levels a guest may pick"
                     options={REASONING_LEVELS}
@@ -356,7 +359,7 @@ export function LaneShareRightsPanel({
                     onChange={(reasoningLevels) => set("run", { reasoningLevels })}
                   />
                 </ModernRow>
-                <ModernRow title="Permission modes" hint="None picked: the chat's current mode only.">
+                <ModernRow title="Permission modes" hint={rights.run.permissionModes.length === 0 ? "None picked: the chat's current mode only." : undefined}>
                   <MultiPick
                     label="Permission modes a guest may use"
                     options={AGENT_CHAT_PERMISSION_MODE_VALUES}

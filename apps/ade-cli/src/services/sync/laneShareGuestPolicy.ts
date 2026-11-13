@@ -767,7 +767,8 @@ function trimGuestSessionRecord(
   const out = picked as Record<string, unknown>;
   const parent = out.orchestrationParentSessionId;
   if (typeof parent === "string" && parent.trim()) {
-    if (!laneShareGuestSessionInfo(role, parent, resolveSession)) {
+    // Only a parent the guest may see itself (its lane, a kind its rights see).
+    if (!laneShareGuestMaySeeSession(role, parent, resolveSession)) {
       out.orchestrationParentSessionId = null;
       // The row stays a child for the guest's kind and rights checks.
       if (out.spawnKind == null) out.spawnKind = "subagent";

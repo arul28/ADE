@@ -48,7 +48,6 @@ export type LaneShareGuestHelloDeps = LaneShareGuestHostDeps & {
     laneShareGuestDpopNonceCache: ReturnType<typeof createSyncDpopNonceCache>;
     claimLaneShareRedeem(ticket: string): "ok" | "seen" | "busy";
     emitLaneSharePresence(role: LaneShareGuestRole): void;
-    enforceLaneShareGrantAge(): void;
     laneShareConnectedDevices(grantId: string): number;
     laneShareLaneState(laneId: string | null | undefined): "active" | "archived" | "missing";
     laneShareOpaqueHostId(deviceId: string, grantId: string): string;
@@ -84,7 +83,6 @@ export function createLaneShareGuestHello(deps: LaneShareGuestHelloDeps) {
     laneShareGuestDpopNonceCache,
     claimLaneShareRedeem,
     emitLaneSharePresence,
-    enforceLaneShareGrantAge,
     laneShareConnectedDevices,
     laneShareLaneState,
     laneShareOpaqueHostId,

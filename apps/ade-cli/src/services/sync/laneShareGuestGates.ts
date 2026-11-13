@@ -116,6 +116,8 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
 
   /** Usage notices to the owner: one per grant at most every few seconds, so a busy guest costs few list reads. */
   const pendingUsageNotices = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Guest sends running per grant and chat: a failed send keeps a turn record another send still needs. */
+  const turnSendsInFlight = new Map<string, number>();
   function noteLaneShareUsageChanged(role: LaneShareGuestRole): void {
     if (!args.onLaneShareEvent || pendingUsageNotices.has(role.grantId)) return;
     const grantId = role.grantId;
@@ -336,6 +338,9 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     // so a revoke during it finds it and tells the owner it keeps running.
     // A failed send removes a record it added; a failed write only loses the notice.
     const turnSessionId = (action === "chat.send" || action === "chat.steer") ? toOptionalString(prepared.args.sessionId) : null;
+    // A counted message moved the usage the owner's share window shows; a
+    // send answers only when its turn ends, so the owner hears now.
+    if (prepared.claim) noteLaneShareUsageChanged(role);
     let turnRecorded = false;
     if (turnSessionId && laneShareRights) {
       try {
@@ -346,6 +351,8 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
         args.logger.warn("sync_host.lane_share_record_failed", { action, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    const turnKey = turnSessionId ? `${role.grantId}\u0000${turnSessionId}` : null;
+    if (turnKey) turnSendsInFlight.set(turnKey, (turnSendsInFlight.get(turnKey) ?? 0) + 1);
     try {
       const created = await run(action, prepared.args);
       if (prepared.hold) {
@@ -353,8 +360,6 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
         laneShareRights?.settleItem(role.grantId, prepared.hold.kind, prepared.hold.holdId, id ?? null);
       }
       recordLaneShareGuestResult(action, prepared.args, role, created);
-      // A counted message moved the usage the owner's share window shows.
-      if (prepared.claim) noteLaneShareUsageChanged(role);
       const cutoff = laneShareHistoryCutoffFor(role);
       sendRequired(peer, "command_result", {
         commandId,
@@ -370,7 +375,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       } satisfies SyncCommandResultPayload, requestId, { action });
     } catch (error) {
       undoPrepared();
-      if (turnRecorded && turnSessionId) {
+      if (turnRecorded && turnSessionId && (turnKey ? turnSendsInFlight.get(turnKey) ?? 0 : 0) <= 1) {
         try {
           laneShareRights?.removeItem(role.grantId, "turn", turnSessionId);
         } catch (removeError) {
@@ -378,6 +383,12 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
         }
       }
       sendRequired(peer, "command_result", commandErrorResult(commandId, error), requestId, { action });
+    } finally {
+      if (turnKey) {
+        const left = (turnSendsInFlight.get(turnKey) ?? 1) - 1;
+        if (left > 0) turnSendsInFlight.set(turnKey, left);
+        else turnSendsInFlight.delete(turnKey);
+      }
     }
   }
 
@@ -575,11 +586,18 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     return null;
   }
 
+  /** The host stopped: pending usage notices go with it. */
+  function disposeLaneShareGates(): void {
+    for (const timer of pendingUsageNotices.values()) clearTimeout(timer);
+    pendingUsageNotices.clear();
+  }
+
   return {
     laneShareGuestOutboundPayload,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
     laneShareGuestTypedLineStillAllowed,
     handleLaneShareGuestCommand,
+    disposeLaneShareGates,
   };
 }
