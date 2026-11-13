@@ -45,6 +45,19 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
     return projects.find((entry) => pathsEqual(entry.rootPath, rootPath)) ?? null;
   };
 
+  /**
+   * Forgets the recent once the folder is gone (trashed, or already missing).
+   * The folder move is the result: a failed Home catalog write must not undo
+   * the brain cleanup after it or report the removal as failed.
+   */
+  const forgetRemovedFolder = async (rootPath: string): Promise<void> => {
+    try {
+      await deps.forgetRecentProject(rootPath);
+    } catch (error) {
+      deps.logger.warn("project.remove_copy_forget_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   /** Why this computer never deletes the folder, or null when it may. */
   const folderRefusal = async (rootPath: string, pool: RemovalPool | null): Promise<string | null> => {
     const brainRoots = pool
@@ -128,7 +141,7 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
       );
       if (answer.status === "removed") {
         // Its folder was already gone, or another window removed it first.
-        await deps.forgetRecentProject(rootPath);
+        await forgetRemovedFolder(rootPath);
         return answer;
       }
       if (answer.status !== "cleared") return answer;
@@ -137,7 +150,7 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
     } else {
       const recheck = await recheckCopy(rootPath, { chats: 0, terminals: 0 }, request);
       if (recheck.kind === "missing") {
-        await deps.forgetRecentProject(rootPath);
+        await forgetRemovedFolder(rootPath);
         return { status: "removed", folder: "missing", outsideLaneFolders: [] };
       }
       if (recheck.kind === "refused") return { status: "refused", code: recheck.code, reason: recheck.reason };
@@ -163,7 +176,7 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
         };
       }
     }
-    await deps.forgetRecentProject(rootPath);
+    await forgetRemovedFolder(rootPath);
     if (record) {
       try {
         await pool.removeProject(rootPath, record.projectId);
