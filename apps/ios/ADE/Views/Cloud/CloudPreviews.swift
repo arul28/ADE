@@ -13,7 +13,7 @@ import SwiftUI
 /// - `duo-provider-signin`: the sign-in sheet at its approve step.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-plans", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -70,6 +70,17 @@ enum CloudPreviews {
             }
           }
           .padding(16)
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle("ADE Cloud")
+        .navigationBarTitleDisplayMode(.inline)
+      })
+    case "duo-cloud-sizes":
+      return AnyView(NavigationStack {
+        ScrollView {
+          if let account = store.account {
+            CloudSizesCard(account: account, tiers: store.tiers).padding(16)
+          }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
         .navigationTitle("ADE Cloud")

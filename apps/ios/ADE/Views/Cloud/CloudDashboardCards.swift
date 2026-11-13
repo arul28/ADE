@@ -638,8 +638,10 @@ struct CloudPlansCard: View {
 
 // MARK: Sizes
 
-/// The four sizes (`cloudTierFacts`): CPU, memory, how far the disk can grow,
-/// what each runs, how fast it uses hours, and how long the hours left last.
+/// The four sizes (`CloudSizeCards.tsx`), one row each, read at a glance: how
+/// fast it uses hours (big), CPU · memory · disk, "Full computer" where it is
+/// one, and the hours left at that size. The desktop screen every size has is
+/// said once in the hint (one line: the kit hint does not wrap); what a size runs and its rate in words are read out.
 struct CloudSizesCard: View {
   let account: CloudPhoneAccount
   let tiers: [CloudPhoneTier]
@@ -648,7 +650,7 @@ struct CloudSizesCard: View {
 
   var body: some View {
     if !tiers.isEmpty {
-      ADEKitCard(title: "Sizes", symbol: "cpu", hint: "Each lane picks its size when it starts.", flush: true) {
+      ADEKitCard(title: "Sizes", symbol: "cpu", hint: "Every size has a screen the agent can use.", flush: true) {
         VStack(spacing: 0) {
           ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
             if index > 0 { ADESettingsHairline() }
@@ -659,40 +661,48 @@ struct CloudSizesCard: View {
     }
   }
 
+  private func facts(_ tier: CloudPhoneTier) -> String {
+    (["\(tier.cpu) CPU", "\(cloudGbText(tier.memoryGb)) GB memory"] + (tier.diskMaxGb.map { ["\(cloudGbText($0)) GB disk"] } ?? []))
+      .joined(separator: " · ")
+  }
+
   private func row(_ tier: CloudPhoneTier) -> some View {
-    HStack(alignment: .top, spacing: 12) {
+    HStack(alignment: .center, spacing: 12) {
       Image(systemName: tier.symbol)
         .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(ADEColor.textSecondary)
+        .foregroundStyle(CloudBrandColor.mark)
         .frame(width: 28, height: 28)
-        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 6) {
           Text(tier.label)
-            .font(.system(size: 15, weight: .medium))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           if tier.full { ADEKitTag(text: "Full computer") }
-          Spacer(minLength: 4)
-          Text("\(tier.rate.formatted(.number.precision(.fractionLength(0...1))))×")
-            .font(.system(size: 14, weight: .medium, design: .monospaced))
-            .foregroundStyle(ADEColor.textPrimary)
         }
-        Text(tier.specs.joined(separator: " · "))
+        Text(facts(tier))
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(tier.runs)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-        Text("\(tier.rateLine). Your hours last \(tier.hoursLeftLabel(leftMilli)) here.")
+        (Text(tier.hoursLeftLabel(leftMilli)).fontWeight(.semibold).foregroundColor(ADEColor.textPrimary)
+          + Text(" left at this size").foregroundColor(ADEColor.textMuted))
           .font(.system(size: 12))
+      }
+      Spacer(minLength: 8)
+      VStack(alignment: .trailing, spacing: 0) {
+        Text("\(tier.rate.formatted(.number.precision(.fractionLength(0...1))))×")
+          .font(.system(size: 26, weight: .semibold))
+          .monospacedDigit()
+          .foregroundStyle(CloudBrandColor.mark)
+        Text("hours")
+          .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
-          .fixedSize(horizontal: false, vertical: true)
       }
     }
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
+    .accessibilityHint("\(tier.runs). \(tier.rateLine).")
   }
 }
 
