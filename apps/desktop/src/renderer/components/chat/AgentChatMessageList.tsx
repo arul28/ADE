@@ -251,6 +251,7 @@ import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts
 import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
 import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
 import { McpServerRequestReceipt } from "./McpServerCard";
+import { MachineRemovalReceipt } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
@@ -4414,6 +4415,17 @@ function renderEvent(
       // The MCP server card's record: the definition and the approval only.
       return (
         <McpServerRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    if (nativeCard?.kind === "machine-removal") {
+      // The computer removal card's record: which computer, and the answer.
+      return (
+        <MachineRemovalReceipt
           card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}

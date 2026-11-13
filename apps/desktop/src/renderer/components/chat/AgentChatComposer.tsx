@@ -112,7 +112,7 @@ import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "..
 import { composerDomPointAtSerializedOffset, serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   composerModelInfo,
-  composerModelSuggestion,
+  composerModelSuggestionsFor,
   createModelChipNode,
   initialModelMention,
   modelChipOptions,
@@ -225,6 +225,7 @@ import {
 } from "../../../shared/projectSecretRequest";
 import { IntegrationConnectComposer } from "./IntegrationConnectCard";
 import { McpServerRequestComposer } from "./McpServerCard";
+import { MachineRemovalComposer } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import {
   isAskQuestionRequest,
@@ -3263,16 +3264,7 @@ function AgentChatComposerImpl({
   const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
-    const ids = mentionModelIds ?? availableModelIds ?? [];
-    const out = [];
-    const seen = new Set<string>();
-    for (const id of ids) {
-      const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, modelCatalogScopeKey) ?? getModelById(id);
-      if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
-      seen.add(descriptor.id);
-      out.push(composerModelSuggestion(descriptor));
-    }
-    return out;
+    return composerModelSuggestionsFor(mentionModelIds ?? availableModelIds ?? [], modelCatalogScopeKey);
     // runtimeCatalogTick is not read here: it changes when the runtime catalog
     // loads, which the descriptor lookups above read from module state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9607,6 +9599,23 @@ function AgentChatComposerImpl({
               chatProvider={sessionProvider}
               onAdd={(answers) => { void onApproval("accept", null, answers); }}
               onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "machine-removal") {
+          // The computer removal card. The brain on the chat's machine removes
+          // the computer while it accepts Remove; a failure comes back as
+          // `pendingInputError` and keeps the card open.
+          return (
+            <MachineRemovalComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onAnswer={(answers) => { void onApproval("accept", null, answers); }}
             />
           );
         }

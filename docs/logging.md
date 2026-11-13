@@ -836,6 +836,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
 | `chat` | `provider_sign_in` | `completed`, `cancelled`, `failed` | coarse provider family (`other` for the CLIs outside it); never the account, link, code, machine, or chat |
 | `chat` | `mcp_server_remove_requested` | `completed` (removed), `cancelled` (kept), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, or the chat |
+| `chat` | `machine_removal_requested` | `completed` (removed), `cancelled` (kept, or the card closed), `failed` (unanswered in time or the request failed) | omitted; never the computer's key, name or platform, the account, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
@@ -892,7 +893,11 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 at the brain action that owns it. The connect card and the MCP server card do
 the same: `chat/connect_requested` at `integration_connect.request`,
 `chat/mcp_server_requested` at `mcp_registry.request`, and
-`chat/mcp_server_remove_requested` at `mcp_registry.remove`. When an MCP server name
+`chat/mcp_server_remove_requested` at `mcp_registry.remove`. The computer
+removal card (`ade machines remove` from a chat) records
+`chat/machine_removal_requested` once, in the brain's `account.deleteMachine`
+route that raised it; a second chat told that a card is already open
+(`pending_approval`) asked nothing and records nothing. When an MCP server name
 is a built-in integration, the connect card runs instead and records only
 `connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day
@@ -2118,7 +2123,8 @@ event at the expansion owner boundary (`chatMentionService` via the
 `onChatMentionsExpanded` hook, produced by
 `captureChatMentionsExpandedAnalytics`) with `feature: "chat"`,
 `action: "mention_expanded"`, `outcome: "completed"`, and `source: "runtime"`.
-It fires only when a send's text actually gained `<ade-mention>` pointer
+It fires for chat sends and for text a CLI's input box sends
+(`typeIntoAgentCliNow`), only when the text actually gained `<ade-mention>` pointer
 blocks — never per keystroke, per suggestion query, or on the idempotent
 second expansion pass — and carries no mention targets, titles, previews, or
 counts. An installation-wide `chat_mention_expanded` deduplication key with a

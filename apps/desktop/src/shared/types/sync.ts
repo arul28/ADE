@@ -2940,6 +2940,8 @@ export const PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS: readonly ProviderAccountRe
 
 export type SyncRemoteCommandAction =
   | "analytics.capture"
+  | "announcements.getSeen"
+  | "announcements.markSeen"
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"

@@ -739,8 +739,15 @@ The box:
 - Enter sends, Shift+Enter starts a new line. A multi-line message goes through
   the host's CLI typing path (`writeAgentCliInput`: clear the line, paste,
   submit), the same path scheduled work and wakes use.
-- `@` searches the lane's files (`files.quickOpen` on the CLI's machine) and
-  inserts `@path` as text the CLI reads; `/` lists the provider's commands.
+- `@` opens the chat composer's menu (`ChatCommandMenu`). A file inserts
+  `@path` as text the CLI reads. Models, chats, lanes, terminals, PRs,
+  machines and MCP servers insert the chat's token (`@model:…`, `@chat:…`,
+  a PR's link). On the host, `typeIntoAgentCliNow` runs the chat's
+  `expandChatMentionsForSend`, so the CLI receives the same `<ade-mention>`
+  facts block a chat send appends (exact ids, flags, the command to start a
+  model). Unlike a chat, the block shows in the CLI's scrollback. The model
+  list is read from the CLI's machine (`ai.getStatus`) the first time an `@`
+  menu opens. `/` lists the provider's commands.
 - Up arrow on the first line recalls earlier sends (per session, last 50);
   down arrow walks back to the draft.
 - The draft is kept per session (`ade.work.cliInputDraft.<id>`), saved 400 ms
