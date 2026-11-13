@@ -1433,6 +1433,9 @@ export function CommandPalette({
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
+    // A picked computer that disconnected keeps its last listing; the read
+    // runs again for the same path once it connects again.
+    if (placeDisconnected) return;
     const requestId = ++browseRequestRef.current;
     setBrowseLoading(true);
     setBrowseError(null);
@@ -1478,6 +1481,7 @@ export function CommandPalette({
     browseInput,
     mode,
     open,
+    placeDisconnected,
   ]);
 
   useEffect(() => {

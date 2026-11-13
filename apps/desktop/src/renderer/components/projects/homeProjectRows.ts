@@ -294,16 +294,33 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
   for (const project of projects) {
     for (const origin of originsOf(project)) if (!projectByOrigin.has(origin)) projectByOrigin.set(origin, project);
   }
+  // This computer's folders that the account lists as its copies, by path: a
+  // folder whose origin is not known yet still joins its project's row.
+  const thisMachineKey = input.sources.thisMachine?.machineKey ?? null;
+  const projectByThisPath = new Map<string, AccountProjectView>();
+  if (thisMachineKey) {
+    for (const project of projects) {
+      for (const copy of project.copies) {
+        if (copy.machineKey === thisMachineKey && !projectByThisPath.has(copy.rootPath)) projectByThisPath.set(copy.rootPath, project);
+      }
+    }
+  }
   const factsById = new Map<string, RecentFacts>();
   const localCandidates: RecentProjectSummary[] = [];
   for (const recent of usable) {
     const origin = originOfRecent(recent);
-    const project = origin && !recent.worktreeOf ? projectByOrigin.get(origin) : undefined;
+    const project = recent.worktreeOf
+      ? undefined
+      : (origin ? projectByOrigin.get(origin) : undefined)
+        ?? (recent.kind !== "remote" ? projectByThisPath.get(recent.rootPath) : undefined);
     if (!project) {
       // On the web only a connected computer's folders show.
       if (webMode) {
         const computer = recent.remote ? input.webComputersByKey?.get(recent.remote.targetId) : undefined;
         if (!computer?.live) continue;
+        // Removed from this list here, and not opened since.
+        const hiddenAt = input.hidden.get(recentProjectLocationKey(recent));
+        if (hiddenAt != null && ms(recent.lastOpenedAt) <= hiddenAt) continue;
       }
       localCandidates.push(recent);
       continue;

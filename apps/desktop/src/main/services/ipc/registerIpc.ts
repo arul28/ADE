@@ -4965,9 +4965,16 @@ export function registerIpc({
     // recent, see `projectListThisComputer`) leaves that catalog the same way.
     // That is the whole forget, so a failed call throws: Home says why the row
     // stays. With no background service there is no catalog row to leave.
+    // The folder can still be open here (its recent fell off the 24-entry
+    // list while it stayed open), so it closes as a recent one does.
     if (!removed && path.isAbsolute(targetKey)) {
       const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
       await catalogPool?.setProjectCatalogVisibility(targetKey, "system", "desktop");
+      try {
+        await closeProjectByPath(targetKey);
+      } catch {
+        // Best effort, as for a recent local project below.
+      }
     }
     if (removed && !removed.remote) {
       // Removing a project is the person's way to start over with it: adding

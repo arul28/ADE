@@ -154,7 +154,9 @@ export function useWebTabsFollowComputers({
     // The tab that was in front stays in front: on its other copy, or with no machine.
     const store = useAppStore.getState();
     const frontKey = frontRemoteTabKey(store, lastRemoteBindingKeyRef.current);
-    const frontWasAffected = frontKey != null && affectedKeys.has(frontKey);
+    // A project open still on its way owns the front: the person's choice
+    // replaces this tab, so the moved or waiting tab stays behind it.
+    const frontWasAffected = frontKey != null && affectedKeys.has(frontKey) && store.projectTransition == null;
     for (const plan of plans) {
       if (!plan.noMachine) continue;
       // Kept before the switch below: a computer back during it finds the tab.
