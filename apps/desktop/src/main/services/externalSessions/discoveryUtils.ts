@@ -10,7 +10,8 @@ import type {
 } from "../../../shared/types/externalSessions";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
-import { isPathInside as sharedIsPathInside, stripExtendedLengthPrefix } from "../shared/pathCompare";
+import { isPathInside as sharedIsPathInside, pathKey, stripExtendedLengthPrefix } from "../shared/pathCompare";
+import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../shared/harnessCredentialProviders";
 import {
   commandArrayToLine as sharedCommandArrayToLine,
   resolveCanonicalCommandLineLaunch,
@@ -147,8 +148,91 @@ export function resolveHomeDir(args?: Pick<ExternalSessionDiscoveryArgs, "homeDi
  * where `resolveMachineAdeDir` would look too.
  */
 export function providerAdeHome(args?: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env">): string {
-  const configured = typeof args?.env?.ADE_HOME === "string" ? args.env.ADE_HOME.trim() : "";
+  // Same fallback as every sibling helper: the brain is constructed without an
+  // `env` seam, so `process.env` is where its ADE_HOME (a channel home on
+  // Alpha/Beta) actually lives.
+  const env = args?.env ?? (args?.homeDir ? undefined : process.env);
+  const configured = typeof env?.ADE_HOME === "string" ? env.ADE_HOME.trim() : "";
   return path.resolve(configured || path.join(resolveHomeDir(args), ".ade"));
+}
+
+function childDirectories(dir: string): string[] {
+  return safeReadDir(dir)
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(dir, entry.name));
+}
+
+/**
+ * Whether a preset or credential home belongs to this provider's CLI, judged by
+ * the files that CLI itself writes there.
+ *
+ * The namespace name decides account homes (`provider-homes/claude/<id>` is
+ * Claude by definition), but a preset or API-key home is a shared namespace. A
+ * Claude home has `.claude.json` plus `projects/`; a Codex home has its auth or
+ * thread store, or rollout day folders under `sessions/`. Claude also keeps a
+ * `sessions/` registry, so a bare `sessions/` must never classify a home as
+ * Codex.
+ */
+function configHomeBelongsTo(provider: "claude" | "codex", dir: string): boolean {
+  const exists = (name: string): boolean => fs.existsSync(path.join(dir, name));
+  if (provider === "claude") return exists(".claude.json") || exists("projects");
+  // Codex-specific evidence only: another harness's preset home can hold a
+  // `config.toml` and a `sessions/` folder too (Grok, Kimi), so neither alone
+  // names Codex. A real Codex home has its auth/store files or rollout days.
+  if (exists("auth.json") || exists("session_index.jsonl")) return true;
+  if (safeReadDir(dir).some((entry) => entry.isFile() && /^state_\d+\.sqlite$/u.test(entry.name))) {
+    return true;
+  }
+  return safeReadDir(path.join(dir, "sessions"))
+    .some((entry) => entry.isDirectory() && /^\d{4}$/u.test(entry.name));
+}
+
+/**
+ * Every config directory ADE can be holding this provider's transcripts in,
+ * with the launch identity that writes to each.
+ *
+ * The default home is not the only one: an account gets
+ * `<adeHome>/provider-homes/<provider>/<instance>`, a harness preset
+ * `provider-homes/preset/<id>`, and a stored API key
+ * `provider-homes/credential/<store-provider>/<id>` (Claude keys are filed
+ * under `anthropic`, Codex under `openai`). A session started in an ADE
+ * terminal lives in one of those homes, so an import has to launch the resume
+ * under the same one.
+ *
+ * `route` homes are deliberately absent: an ad-hoc harness route is a chat
+ * transport, never a terminal CLI, so it holds no CLI session to import.
+ */
+export function providerConfigHomeDirs(
+  provider: "claude" | "codex",
+  defaultDir: string,
+  args: ExternalSessionDiscoveryArgs = {},
+): ExternalSessionConfigHome[] {
+  const homes: ExternalSessionConfigHome[] = [{
+    dir: path.resolve(defaultDir),
+    instanceId: null,
+    presetId: null,
+    credentialId: null,
+  }];
+  const providerHomes = path.join(providerAdeHome(args), "provider-homes");
+  for (const dir of childDirectories(path.join(providerHomes, provider))) {
+    homes.push({ dir, instanceId: path.basename(dir), presetId: null, credentialId: null });
+  }
+  for (const dir of childDirectories(path.join(providerHomes, "preset"))) {
+    if (!configHomeBelongsTo(provider, dir)) continue;
+    homes.push({ dir, instanceId: null, presetId: path.basename(dir), credentialId: null });
+  }
+  const credentialNamespace = HARNESS_CREDENTIAL_STORE_PROVIDER[provider];
+  for (const dir of childDirectories(path.join(providerHomes, "credential", credentialNamespace))) {
+    if (!configHomeBelongsTo(provider, dir)) continue;
+    homes.push({ dir, instanceId: null, presetId: null, credentialId: path.basename(dir) });
+  }
+  const seen = new Set<string>();
+  return homes.filter((home) => {
+    const key = pathKey(home.dir);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function safeStat(filePath: string): fs.Stats | null {

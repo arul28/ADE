@@ -9,7 +9,7 @@ import {
   isUuidLike,
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
-  providerAdeHome,
+  providerConfigHomeDirs,
   readFileWindow,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -30,7 +30,6 @@ import {
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
-import { pathComparisonKey } from "../shared/pathCompare";
 
 /** Window read when looking for the first or last record uuid, and when probing. */
 const CLAUDE_CHAIN_WINDOW_BYTES = JSONL_SCAN_BYTE_LIMIT;
@@ -76,53 +75,20 @@ export function claudeConfigDir(args: ExternalSessionDiscoveryArgs = {}): string
   const configured = typeof env?.CLAUDE_CONFIG_DIR === "string"
     ? env.CLAUDE_CONFIG_DIR.trim()
     : "";
-  return configured || path.join(resolveHomeDir(args), ".claude");
-}
-
-function childDirectories(dir: string): string[] {
-  return safeReadDir(dir)
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(dir, entry.name));
+  // Resolved: a relative env value would otherwise yield relative roots that
+  // never match the absolute paths lsof and the providers report.
+  return path.resolve(configured || path.join(resolveHomeDir(args), ".claude"));
 }
 
 /**
  * Every Claude config directory ADE can be holding transcripts in, with the
- * launch identity that writes to each.
- *
- * The default home is not the only one. ADE runs its own claude under a
- * per-account config home (`CLAUDE_CONFIG_DIR` pointing at
- * `<adeHome>/provider-homes/claude/<instance>`), and a harness preset or a
- * stored API key gets its own home too. A session started in an ADE terminal
- * lives there, not under `~/.claude` — so scanning only the default folder
- * made those sessions impossible to import or resume from a fresh shell.
+ * launch identity that writes to each. See `providerConfigHomeDirs`.
  *
  * `route` homes are deliberately absent: an ad-hoc harness route is a chat
  * transport, never a terminal CLI, so it holds no CLI session to import.
  */
 export function claudeConfigHomeDirs(args: ExternalSessionDiscoveryArgs = {}): ExternalSessionConfigHome[] {
-  const homes: ExternalSessionConfigHome[] = [{
-    dir: claudeConfigDir(args),
-    instanceId: null,
-    presetId: null,
-    credentialId: null,
-  }];
-  const providerHomes = path.join(providerAdeHome(args), "provider-homes");
-  for (const dir of childDirectories(path.join(providerHomes, "claude"))) {
-    homes.push({ dir, instanceId: path.basename(dir), presetId: null, credentialId: null });
-  }
-  for (const dir of childDirectories(path.join(providerHomes, "preset"))) {
-    homes.push({ dir, instanceId: null, presetId: path.basename(dir), credentialId: null });
-  }
-  for (const dir of childDirectories(path.join(providerHomes, "credential", "claude"))) {
-    homes.push({ dir, instanceId: null, presetId: null, credentialId: path.basename(dir) });
-  }
-  const seen = new Set<string>();
-  return homes.filter((home) => {
-    const key = pathComparisonKey(path.resolve(home.dir));
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return providerConfigHomeDirs("claude", claudeConfigDir(args), args);
 }
 
 /**

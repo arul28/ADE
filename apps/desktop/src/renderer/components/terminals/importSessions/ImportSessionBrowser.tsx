@@ -47,6 +47,7 @@ import { ImportActionBar } from "./ImportActionBar";
 import { ImportProviderFilter, ImportSessionList, type SessionGroup } from "./ImportSessionList";
 import { ImportSessionPreview } from "./ImportSessionPreview";
 import { ImportTopBar } from "./ImportTopBar";
+import { pinnedProviderInstances } from "../../settings/providers/accounts/useProviderInstances";
 import "./importSessions.css";
 import { sessionDateGroup } from "./sessionPresentation";
 import { isImeComposing } from "../../../lib/imeComposition";
@@ -130,7 +131,10 @@ export function ImportSessionBrowser({
   const [surfacePrefs, setSurfacePrefs] = useState<Partial<Record<ExternalSessionProvider, ImportSurface>>>({});
   const [modelChoice, setModelChoice] = useState<{ key: string; model: string } | null>(null);
   /** Accounts of the selected session's provider on the source machine. */
-  const [accounts, setAccounts] = useState<ProviderInstance[]>([]);
+  const [accountsState, setAccountsState] = useState<{
+    provider: "claude" | "codex";
+    list: ProviderInstance[];
+  } | null>(null);
   const [accountChoice, setAccountChoice] = useState<{ key: string; accountId: string | null } | null>(null);
   // One action at a time waits on a second press, keyed to the row, surface and
   // lane it was armed for. `confirm`: continuing a live session. `copy`: a chat
@@ -194,6 +198,7 @@ export function ImportSessionBrowser({
     setTargetChoice(null);
     setModelChoice(null);
     setAccountChoice(null);
+    setAccountsState(null);
     setArmed(null);
     setSelectionTouched(false);
     setImportError(null);
@@ -434,30 +439,50 @@ export function ImportSessionBrowser({
   runtimePinRef.current = runtimePin;
   useEffect(() => {
     if (!open || !accountProvider) {
-      setAccounts((prev) => (prev.length ? [] : prev));
+      setAccountsState(null);
       return;
     }
-    const api = window.ade?.providerInstances;
-    if (!api?.list) {
-      setAccounts((prev) => (prev.length ? [] : prev));
+    const api = pinnedProviderInstances(runtimePinRef.current ?? null);
+    if (!api) {
+      setAccountsState(null);
       return;
     }
+    const provider = accountProvider;
     let alive = true;
     void (async () => {
       try {
-        const list = await api.list({ provider: accountProvider }, runtimePinRef.current ?? null);
-        if (alive) setAccounts(list ?? []);
-      } catch {
-        if (alive) setAccounts([]);
+        const list = await api.list({ provider });
+        if (alive) setAccountsState({ provider, list: list ?? [] });
+      } catch (error) {
+        // The picker is an optional convenience; without accounts the import
+        // still runs on the account that owns the transcript.
+        console.warn("import_session.account_list_failed", error);
+        if (alive) setAccountsState(null);
       }
     })();
     return () => {
       alive = false;
     };
   }, [accountProvider, open, sourcePinKey]);
-  const accountForActive = active && accountProvider
-    ? (accountChoice?.key === activeKey ? accountChoice.accountId : active.accountId ?? null)
+  // A list fetched for another provider (the user just moved between a Claude
+  // and a Codex row) must never be offered for this session's provider.
+  const accounts = accountsState && accountsState.provider === accountProvider
+    ? accountsState.list
+    : [];
+  const sessionAccountId = active?.accountId ?? null;
+  // A session whose account this machine no longer lists (a removed account's
+  // home still holds its transcript) falls back to "Session's account", so the
+  // import can run in that home instead of being refused for an unknown id.
+  const defaultAccountId = sessionAccountId && accounts.some((account) => account.id === sessionAccountId)
+    ? sessionAccountId
     : null;
+  const accountForActive = active && accountProvider
+    ? (accountChoice?.key === activeKey ? accountChoice.accountId : defaultAccountId)
+    : null;
+  const showAccountPicker = Boolean(accountProvider) && (
+    accounts.length > 1
+    || (accounts.length > 0 && sessionAccountId != null && defaultAccountId == null)
+  );
   const importedRef = active?.alreadyImported ? readImportedSessionRef(active) : null;
   const needsLiveConfirm = plan?.primary?.confirmBeforeRun === true;
   const currentArmToken = active && plan ? `${activeKey}|${plan.surface}|${plan.targetLaneId}` : null;
@@ -713,10 +738,12 @@ export function ImportSessionBrowser({
                     lanes={availableLanes}
                     homeLane={activePlace.kind === "lane" ? { name: activePlace.name, color: activePlace.color } : null}
                     onTargetLaneChange={handleTargetLaneChange}
-                    accounts={accounts}
-                    accountId={accountForActive}
-                    sessionAccountId={active.accountId ?? null}
-                    onAccountChange={handleAccountChange}
+                    accountPicker={showAccountPicker ? {
+                      accounts,
+                      value: accountForActive,
+                      sessionAccountId,
+                      onChange: handleAccountChange,
+                    } : null}
                     model={model}
                     onModelChange={handleModelChange}
                     running={importing?.key === activeKey ? importing.mode : null}

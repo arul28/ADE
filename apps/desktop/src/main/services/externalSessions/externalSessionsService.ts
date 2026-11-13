@@ -5,10 +5,12 @@ import path from "node:path";
 import {
   buildTrackedCliResumeCommand,
   buildTrackedCliResumeLaunchCommand,
+  harnessPresetLaunchEnv,
   withCodexNoAltScreen,
   type TrackedCliUserMcp,
 } from "../../../shared/cliLaunch";
 import type {
+  AgentChatImportExternalSessionArgs,
   AgentChatImportExternalSessionResult,
   ExternalSessionCapabilities,
   ExternalSessionDetail,
@@ -43,6 +45,7 @@ import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
 import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { moveProviderThread } from "../chat/providerThreadMove";
+import { resolveTrackedCliPreset } from "../chat/harnessPresetLaunch";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
 import {
@@ -78,24 +81,15 @@ import {
 } from "./providerSessionHandles";
 
 export interface ExternalChatImporter {
-  importExternalChatSession(args: {
-    /**
-     * Any importer provider. A continue keeps the provider session; a fork is
-     * a native fork (same family) or a full-transcript replay into `model`.
-     */
-    provider: ExternalSessionProvider;
-    externalSessionId: string;
-    laneId: string;
-    cwd: string | null;
-    fork: boolean;
-    title?: string;
-    /** Target model; a model outside the source provider's family runs a full-replay fork. */
-    model?: string;
-    /** The model the source session recorded; the default for a copy with no `model`. */
-    sourceModel?: string | null;
-    /** The thinking level the source session recorded. */
-    sourceReasoningEffort?: string | null;
-  }): Promise<AgentChatImportExternalSessionResult>;
+  /**
+   * Any importer provider. A continue keeps the provider session; a fork is
+   * a native fork (same family) or a full-transcript replay into `model`.
+   * `instanceId`/`configHome` name the account the source transcript lives on
+   * and the account the new chat should run on.
+   */
+  importExternalChatSession(
+    args: AgentChatImportExternalSessionArgs,
+  ): Promise<AgentChatImportExternalSessionResult>;
 }
 
 export type { ImportedChatSessionRef } from "./liveChatProviderRefs";
@@ -929,7 +923,6 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     configHome?: ExternalSessionConfigHome | null;
     sourcePath?: string | null;
   };
-
   const findExternalSummary = async (
     provider: ExternalSessionProvider,
     sessionId: string,
@@ -991,10 +984,104 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       capabilities: capabilitiesFor(provider, session),
       home: homeOf(session.cwd),
       sizeBytes: session.sizeBytes ?? null,
-      accountId: session.configHome?.instanceId ?? null,
       configHome: session.configHome ?? null,
       sourcePath: session.sourcePath ?? null,
     };
+  };
+
+  /**
+   * Where an account-aware import reads from, runs in, and (when the user
+   * picked another account) copies to. Pure: every refusal check here happens
+   * before anything is written.
+   */
+  type ImportAccountPlan = {
+    accountProvider: "claude" | "codex" | null;
+    requestedAccount: { id: string; configHome: string } | null;
+    sourceConfigHome: ExternalSessionConfigHome | null;
+    /** The home the CLI must run with, when it is not the provider's default. */
+    launchConfigHome: string | null;
+    /** Where a fork transcript goes, and where a launch reads its session from. */
+    targetConfigHome: string | null;
+    /** Set only when the transcript must be copied into another account's home. */
+    copyFromHomeDir: string | null;
+    copyToHomeDir: string | null;
+  };
+
+  const resolveImportAccountPlan = (
+    provider: ExternalSessionProvider,
+    rawAccountId: string | null | undefined,
+    summary: ImportSourceSummary,
+  ): ImportAccountPlan => {
+    const accountProvider = provider === "claude" || provider === "codex" ? provider : null;
+    const requestedAccountId = rawAccountId?.trim() || null;
+    if (requestedAccountId && !accountProvider) {
+      throw new Error(`${provider} sessions have no accounts to choose; leave the account out of this import.`);
+    }
+    const requestedAccount = accountProvider && requestedAccountId
+      ? resolveProviderInstanceForLaunch(accountProvider, requestedAccountId)
+      : null;
+    // A removed account id resolves to the provider's default, which is the
+    // right fallback for resuming a stored terminal but the wrong answer here:
+    // the user asked for an account, and silently moving the session onto the
+    // default one would be a different import than the picker promised.
+    if (requestedAccountId && accountProvider && requestedAccount?.id !== requestedAccountId) {
+      throw new Error(`The ${accountProvider} account '${requestedAccountId}' is no longer on this machine.`);
+    }
+    const sourceConfigHome = accountProvider ? summary.configHome ?? null : null;
+    const defaultConfigHome = accountProvider === "claude"
+      ? claudeConfigDir({ env: args.env, homeDir: args.homeDir })
+      : accountProvider === "codex"
+        ? codexHomeDir({ env: args.env, homeDir: args.homeDir })
+        : null;
+    const sourceHomeDir = sourceConfigHome?.dir ?? defaultConfigHome;
+    const targetConfigHome = requestedAccount
+      ? path.resolve(requestedAccount.configHome)
+      : sourceHomeDir
+        ? path.resolve(sourceHomeDir)
+        : null;
+    // Only a home that is not the provider's default has to be named to the CLI.
+    const launchConfigHome = targetConfigHome && defaultConfigHome && !pathsEqual(targetConfigHome, defaultConfigHome)
+      ? targetConfigHome
+      : null;
+    const copyToHomeDir = targetConfigHome && sourceHomeDir && !pathsEqual(targetConfigHome, sourceHomeDir)
+      ? targetConfigHome
+      : null;
+    return {
+      accountProvider,
+      requestedAccount: requestedAccount
+        ? { id: requestedAccount.id, configHome: path.resolve(requestedAccount.configHome) }
+        : null,
+      sourceConfigHome,
+      launchConfigHome,
+      targetConfigHome,
+      copyFromHomeDir: copyToHomeDir && sourceHomeDir ? path.resolve(sourceHomeDir) : null,
+      copyToHomeDir,
+    };
+  };
+
+  /**
+   * The CLI finds a session by id only inside the home it runs with, so using
+   * another account means placing the transcript there first (`moveProviderThread`
+   * copies; the source account keeps its copy). Call it only after every
+   * refusal check, so a rejected import mutates nothing.
+   */
+  const placeTranscriptInAccount = async (
+    provider: "claude" | "codex",
+    sessionId: string,
+    summary: ImportSourceSummary,
+    plan: ImportAccountPlan,
+  ): Promise<void> => {
+    if (!plan.copyFromHomeDir || !plan.copyToHomeDir) return;
+    const moved = await moveProviderThread({
+      provider,
+      threadId: sessionId,
+      fromConfigHome: plan.copyFromHomeDir,
+      toConfigHome: plan.copyToHomeDir,
+      ...(provider === "claude" && summary.sourcePath ? { sourcePath: summary.sourcePath } : {}),
+    });
+    if (!moved.ok) {
+      throw new Error(`Could not copy this session into the chosen ${provider} account: ${moved.message}`);
+    }
   };
 
   // An import creates ADE sessions and receipts that the next list must see,
@@ -1052,57 +1139,8 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // the home that holds it, so the import carries the account into the launch
     // and into the stored resume metadata, and can move the transcript when the
     // user picks a different account.
-    const accountProvider = provider === "claude" || provider === "codex" ? provider : null;
-    const requestedAccountId = importArgs.accountId?.trim() || null;
-    if (requestedAccountId && !accountProvider) {
-      throw new Error(`${provider} sessions have no accounts to choose; leave the account out of this import.`);
-    }
-    const requestedAccount = accountProvider && requestedAccountId
-      ? resolveProviderInstanceForLaunch(accountProvider, requestedAccountId)
-      : null;
-    // A removed account id resolves to the provider's default, which is the
-    // right fallback for resuming a stored terminal but the wrong answer here:
-    // the user asked for an account, and silently moving the session onto the
-    // default one would be a different import than the picker promised.
-    if (requestedAccountId && accountProvider && requestedAccount?.id !== requestedAccountId) {
-      throw new Error(`The ${accountProvider} account '${requestedAccountId}' is no longer on this machine.`);
-    }
-    const sourceConfigHome = accountProvider ? summary.configHome ?? null : null;
-    const defaultConfigHome = accountProvider === "claude"
-      ? claudeConfigDir({ env: args.env, homeDir: args.homeDir })
-      : accountProvider === "codex"
-        ? codexHomeDir({ env: args.env, homeDir: args.homeDir })
-        : null;
-    const sourceHomeDir = sourceConfigHome?.dir ?? defaultConfigHome;
-    const targetConfigHome = requestedAccount
-      ? path.resolve(requestedAccount.configHome)
-      : sourceHomeDir && accountProvider
-        ? path.resolve(sourceHomeDir)
-        : null;
-    // Only a home that is not the provider's default has to be named to the CLI.
-    const launchConfigHome = targetConfigHome && defaultConfigHome && !pathsEqual(targetConfigHome, defaultConfigHome)
-      ? targetConfigHome
-      : null;
-    // The CLI finds a session by id only inside the home it runs with, so
-    // choosing another account means placing the transcript there first. The
-    // source stays put; the original account can still resume its copy.
-    if (
-      accountProvider
-      && sourceHomeDir
-      && targetConfigHome
-      && !pathsEqual(targetConfigHome, sourceHomeDir)
-    ) {
-      const moved = await moveProviderThread({
-        provider: accountProvider,
-        threadId: sessionId,
-        fromConfigHome: path.resolve(sourceHomeDir),
-        toConfigHome: targetConfigHome,
-        ...(accountProvider === "claude" && summary.sourcePath ? { sourcePath: summary.sourcePath } : {}),
-      });
-      if (!moved.ok) {
-        throw new Error(`Could not copy this session into the chosen ${accountProvider} account: ${moved.message}`);
-      }
-    }
+    const accountPlan = resolveImportAccountPlan(provider, importArgs.accountId, summary);
+    const { accountProvider, requestedAccount, sourceConfigHome } = accountPlan;
     const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
     if (enforceLaneScopeCwd) {
       const scopeRoot = realishPath(enforceLaneScopeCwd);
@@ -1127,16 +1165,22 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       laneId,
     });
     if (rejection) throw new Error(rejection);
+    if (
+      chatImport
+      && provider === "claude"
+      && importArgs.mode === "resume"
+      && cwdMatches(sourceCwd, laneCwd) !== true
+    ) {
+      throw new Error("Claude sessions from another folder must be copied into the target lane; continuing the original across folders is not supported.");
+    }
+    // Everything that can refuse the import has run; only now touch another
+    // account's home.
+    if (accountProvider) {
+      await placeTranscriptInAccount(accountProvider, sessionId, summary, accountPlan);
+    }
 
     if (chatImport) {
       const { importer } = chatImport;
-      if (
-        provider === "claude"
-        && importArgs.mode === "resume"
-        && cwdMatches(sourceCwd, laneCwd) !== true
-      ) {
-        throw new Error("Claude sessions from another folder must be copied into the target lane; continuing the original across folders is not supported.");
-      }
       const result = await importer.importExternalChatSession({
         provider: chatImport.provider,
         externalSessionId: sessionId,
@@ -1243,7 +1287,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
             sourceCwd,
             targetCwd: laneCwd,
             fork: true,
-            configDir: targetConfigHome ?? claudeConfigDir({ env: args.env, homeDir: args.homeDir }),
+            configDir: accountPlan.targetConfigHome ?? claudeConfigDir({ env: args.env, homeDir: args.homeDir }),
           });
           launchTargetId = transplant.newSessionId;
           metadataTargetId = transplant.newSessionId;
@@ -1302,10 +1346,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       originalTargetId: sessionId,
       mode: importArgs.mode,
       overrides,
-      ...(launchConfigHome
+      ...(accountPlan.launchConfigHome
         ? {
             launchIdentity: requestedAccount
-              ? { dir: launchConfigHome, instanceId: requestedAccount.id }
+              ? { dir: accountPlan.launchConfigHome, instanceId: requestedAccount.id }
               : sourceConfigHome,
           }
         : {}),
@@ -1349,13 +1393,40 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           ...(structuredResumeLaunch.env ? { env: structuredResumeLaunch.env } : {}),
         }
       : directShellLaunchForCommandLine(startupCommand);
+    // A preset or API-key home is only usable with the environment that goes
+    // with it (a stored key or proxy is passed in env, never written to the
+    // home). When the launch stays in that source home, re-resolve it here;
+    // an account home needs no preset env of its own.
+    const sourcePreset = accountProvider
+      && sourceConfigHome
+      && accountPlan.targetConfigHome
+      && pathsEqual(accountPlan.targetConfigHome, sourceConfigHome.dir)
+      && (sourceConfigHome.presetId || sourceConfigHome.credentialId)
+      ? (() => {
+          // Best-effort, like the resume path: a deleted preset or key must not
+          // make the import fail — the CLI comes back on its own sign-in.
+          try {
+            return resolveTrackedCliPreset(accountProvider, {
+              presetId: sourceConfigHome.presetId ?? null,
+              credentialId: sourceConfigHome.credentialId ?? null,
+            })?.preset ?? null;
+          } catch (error) {
+            args.logger.warn("external_sessions.import_preset_unresolved", {
+              provider: accountProvider,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          }
+        })()
+      : null;
     // The account's home outranks any inherited env: this terminal exists to
     // resume a transcript that lives there.
     const launchEnv: Record<string, string> = {
-      ...("env" in launchFields ? launchFields.env ?? {} : {}),
-      ...(launchConfigHome && accountProvider
-        ? { [PROVIDER_INSTANCE_ENV_KEY[accountProvider]]: launchConfigHome }
+      ...(launchFields.env ?? {}),
+      ...(accountPlan.launchConfigHome && accountProvider
+        ? { [PROVIDER_INSTANCE_ENV_KEY[accountProvider]]: accountPlan.launchConfigHome }
         : {}),
+      ...harnessPresetLaunchEnv(sourcePreset),
     };
 
     const ptyArgs: PtyCreateArgs = {

@@ -966,6 +966,7 @@ import {
   findInstanceHoldingNewestClaudeThread,
   findInstanceHoldingThread,
   moveProviderThread,
+  providerThreadIsInHome,
 } from "./providerThreadMove";
 import type {
   AdeMessageAuthor,
@@ -57619,6 +57620,9 @@ export function createAgentChatService(args: {
       });
     } else if (args.provider === "codex") {
       let readerSessionId: string | null = null;
+      // A rollout copied in for the reader is scratch: this replay creates a
+      // fresh chat with no thread pointer, so the copy is removed afterwards.
+      let placedRolloutPath: string | null = null;
       try {
         const reader = await createSession({
           laneId: args.laneId,
@@ -57630,6 +57634,37 @@ export function createAgentChatService(args: {
         });
         readerSessionId = reader.id;
         const readerManaged = ensureManagedSession(reader.id);
+        // A source in a preset or credential home has no account id to name, so
+        // the reader would run on the default home and never find the rollout.
+        // Place a copy in the reader's home just for this read.
+        const readerHome = sessionConfigHome(readerManaged);
+        const sourceHome = path.resolve(
+          reopen?.configHome?.trim()
+            || args.configHome?.trim()
+            || process.env.CODEX_HOME?.trim()
+            || path.join(os.homedir(), ".codex"),
+        );
+        if (
+          readerHome
+          && !pathsEqual(readerHome, sourceHome)
+          && !providerThreadIsInHome("codex", externalSessionId, readerHome)
+        ) {
+          const placement = await moveProviderThread({
+            provider: "codex",
+            threadId: externalSessionId,
+            fromConfigHome: sourceHome,
+            toConfigHome: readerHome,
+          });
+          if (!placement.ok) {
+            throw externalChatImportError(
+              "EXTERNAL_CHAT_SESSION_READ_FAILED",
+              `Could not read the external Codex thread from ${sourceHome}: ${placement.message}`,
+            );
+          }
+          // Remove it afterwards only when this read created it: an existing
+          // copy belongs to an ADE chat that resumes from the reader's home.
+          placedRolloutPath = placement.targetExisted ? null : placement.targetPath;
+        }
         const runtime = await ensureCodexSessionRuntime(readerManaged);
         const readResponse = await runtime.request<unknown>("thread/read", {
           threadId: externalSessionId,
@@ -57654,6 +57689,16 @@ export function createAgentChatService(args: {
           await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
             logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
               sessionId: readerSessionId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          });
+        }
+        if (placedRolloutPath) {
+          // Leave the reader's home exactly as it was: the default-home copy
+          // would otherwise outrank the real transcript by mtime on the next
+          // list, re-attributing the session to the wrong account.
+          await fs.promises.rm(placedRolloutPath, { force: true }).catch((cleanupError) => {
+            logger.warn("agent_chat.external_import_codex_replay_copy_cleanup_failed", {
               error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
             });
           });
@@ -57685,6 +57730,11 @@ export function createAgentChatService(args: {
         model: targetModel,
         modelId: options.targetDescriptor.id,
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        // The account choice belongs to the source provider; a replay into
+        // another provider's model must not inherit it.
+        ...(args.instanceId?.trim() && options.targetProvider === args.provider
+          ? { instanceId: args.instanceId.trim() }
+          : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);

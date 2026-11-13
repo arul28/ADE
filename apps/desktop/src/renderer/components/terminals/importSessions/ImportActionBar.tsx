@@ -20,13 +20,18 @@ export type ImportActionBarProps = {
   /** The session's home lane, shown on the locked pill when the lane list lacks it. */
   homeLane: { name: string; color: string | null } | null;
   onTargetLaneChange: (laneId: string) => void;
-  /** Accounts of the provider's own multi-account homes; empty means no choice to offer. */
-  accounts: ProviderInstance[];
-  /** The account chosen for this import; null keeps the session's own account. */
-  accountId: string | null;
-  /** The account that owns the transcript, when the host named it. */
-  sessionAccountId: string | null;
-  onAccountChange: (accountId: string | null) => void;
+  /**
+   * The account choice, when this provider and machine have one to offer.
+   * Null renders no picker; the browser owns that decision.
+   */
+  accountPicker: {
+    accounts: ProviderInstance[];
+    /** The chosen account; null keeps the account that owns the transcript. */
+    value: string | null;
+    /** The account whose home holds the transcript, when the host named it. */
+    sessionAccountId: string | null;
+    onChange: (accountId: string | null) => void;
+  } | null;
   /** Shown only for a chat copy. */
   model: string | null;
   onModelChange: (model: string) => void;
@@ -127,8 +132,9 @@ function LockedLanePill({ name, color, reason }: { name: string; color: string |
 }
 
 /**
- * Pinned to the bottom of the preview. Renders the plan from `planImport` and
- * nothing else: which surfaces, which lane, which buttons, which note.
+ * Pinned to the bottom of the preview. Renders the plan from `planImport` plus
+ * the account choice the browser hands it: which surfaces, which lane, which
+ * account, which buttons, which note.
  */
 export function ImportActionBar({
   plan,
@@ -136,10 +142,7 @@ export function ImportActionBar({
   lanes,
   homeLane,
   onTargetLaneChange,
-  accounts,
-  accountId,
-  sessionAccountId,
-  onAccountChange,
+  accountPicker,
   model,
   onModelChange,
   running,
@@ -196,17 +199,15 @@ export function ImportActionBar({
               aria-label="Import into lane"
             />
           )}
-          {/* Only providers with per-account config homes get a choice, and only
-              when this machine actually has more than one account to pick. */}
-          {accounts.length > 1 ? (
+          {accountPicker ? (
             <>
               <span className="import-actions-label">on</span>
               <ImportAccountPicker
-                accounts={accounts}
-                value={accountId}
-                sessionAccountId={sessionAccountId}
+                accounts={accountPicker.accounts}
+                value={accountPicker.value}
+                sessionAccountId={accountPicker.sessionAccountId}
                 disabled={busy}
-                onChange={onAccountChange}
+                onChange={accountPicker.onChange}
               />
             </>
           ) : null}

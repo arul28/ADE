@@ -16,7 +16,7 @@ import {
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
   openExternalSessionDb,
-  providerAdeHome,
+  providerConfigHomeDirs,
   readFileSuffix,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -41,7 +41,6 @@ import type {
   AgentChatPermissionMode,
   TerminalResumeLaunchConfig,
 } from "../../../shared/types";
-import { pathComparisonKey } from "../shared/pathCompare";
 
 const CODEX_LAUNCH_BACKWARD_SCAN_CHUNK_BYTES = 256 * 1024;
 const CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES = 64 * 1024 * 1024;
@@ -275,15 +274,9 @@ export function codexHomeDir(args: Pick<ExternalSessionDiscoveryArgs, "homeDir" 
   return configured ? path.resolve(configured) : path.join(resolveHomeDir(args), ".codex");
 }
 
-function childDirectories(dir: string): string[] {
-  return safeReadDir(dir)
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(dir, entry.name));
-}
-
 /**
  * Every Codex config directory ADE can be holding rollouts in, with the launch
- * identity that writes to each.
+ * identity that writes to each. See `providerConfigHomeDirs`.
  *
  * Same reasoning as Claude: ADE runs its own codex under a per-account home
  * (`CODEX_HOME` pointing at `<adeHome>/provider-homes/codex/<instance>`), and a
@@ -291,40 +284,20 @@ function childDirectories(dir: string): string[] {
  * terminal lives there, not under `~/.codex`.
  */
 export function codexConfigHomeDirs(args: ExternalSessionDiscoveryArgs = {}): ExternalSessionConfigHome[] {
-  const homes: ExternalSessionConfigHome[] = [{
-    dir: codexHomeDir(args),
-    instanceId: null,
-    presetId: null,
-    credentialId: null,
-  }];
-  const providerHomes = path.join(providerAdeHome(args), "provider-homes");
-  for (const dir of childDirectories(path.join(providerHomes, "codex"))) {
-    homes.push({ dir, instanceId: path.basename(dir), presetId: null, credentialId: null });
-  }
-  for (const dir of childDirectories(path.join(providerHomes, "preset"))) {
-    homes.push({ dir, instanceId: null, presetId: path.basename(dir), credentialId: null });
-  }
-  for (const dir of childDirectories(path.join(providerHomes, "credential", "codex"))) {
-    homes.push({ dir, instanceId: null, presetId: null, credentialId: path.basename(dir) });
-  }
-  const seen = new Set<string>();
-  return homes.filter((home) => {
-    const key = pathComparisonKey(path.resolve(home.dir));
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return providerConfigHomeDirs("codex", codexHomeDir(args), args);
 }
 
 /**
- * The homes worth scanning for rollouts. A home with neither `sessions/` nor
- * `archived_sessions/` never wrote one (this keeps a Claude preset home, which
- * has `projects/` instead, out of the scan).
+ * The homes worth scanning for rollouts. A home with neither a rollout tree nor
+ * its own thread store never wrote one (this keeps a Claude preset home, which
+ * has `projects/` instead, out of the scan). The store alone counts: its rows
+ * can be listed from DB text when the rollout file is gone.
  */
 function codexTranscriptHomes(args: ExternalSessionDiscoveryArgs): ExternalSessionConfigHome[] {
   return codexConfigHomeDirs(args).filter((home) => (
     safeReadDir(path.join(home.dir, "sessions")).length > 0
     || safeReadDir(path.join(home.dir, "archived_sessions")).length > 0
+    || fs.existsSync(path.join(home.dir, CODEX_STATE_DB_BASENAME))
   ));
 }
 

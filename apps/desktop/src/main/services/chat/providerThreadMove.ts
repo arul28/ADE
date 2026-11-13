@@ -38,7 +38,11 @@ export type ProviderThreadMoveArgs = {
 };
 
 export type ProviderThreadMoveResult =
-  | { ok: true; targetPath: string }
+  /** `targetExisted` lets a caller that only needed a scratch copy remove the
+   * copy it created without ever deleting a rollout/transcript that was
+   * already there (Codex compacts to `.jsonl.zst`, so a name-based guess can
+   * miss an existing copy). */
+  | { ok: true; targetPath: string; targetExisted: boolean }
   | { ok: false; reason: "same_home" | "thread_not_found" | "copy_failed"; message: string };
 
 async function copyFileReplacing(sourcePath: string, targetPath: string): Promise<void> {
@@ -159,6 +163,7 @@ async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderT
   }
   const relative = path.relative(args.fromConfigHome, sourcePath);
   const targetPath = path.join(args.toConfigHome, relative);
+  const targetExisted = fs.existsSync(targetPath);
   await copyFileReplacing(sourcePath, targetPath);
   const sidecarSource = path.join(path.dirname(sourcePath), args.threadId);
   try {
@@ -170,7 +175,7 @@ async function moveClaudeThread(args: ProviderThreadMoveArgs): Promise<ProviderT
     // Most threads have no sidecar folder.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  return { ok: true, targetPath };
+  return { ok: true, targetPath, targetExisted };
 }
 
 async function moveCodexThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {
@@ -185,8 +190,9 @@ async function moveCodexThread(args: ProviderThreadMoveArgs): Promise<ProviderTh
     };
   }
   const targetPath = path.join(args.toConfigHome, path.relative(args.fromConfigHome, sourcePath));
+  const targetExisted = fs.existsSync(targetPath);
   await copyFileReplacing(sourcePath, targetPath);
-  return { ok: true, targetPath };
+  return { ok: true, targetPath, targetExisted };
 }
 
 export async function moveProviderThread(args: ProviderThreadMoveArgs): Promise<ProviderThreadMoveResult> {

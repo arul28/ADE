@@ -50,7 +50,7 @@ describe("moveProviderThread", () => {
     });
 
     const targetPath = path.join(toHome, "projects", "-Users-me-repo", `${threadId}.jsonl`);
-    expect(result).toEqual({ ok: true, targetPath });
+    expect(result).toEqual({ ok: true, targetPath, targetExisted: false });
     expect(fs.readFileSync(targetPath, "utf8")).toBe('{"type":"user"}\n');
     expect(fs.readFileSync(path.join(toHome, "projects", "-Users-me-repo", threadId, "subagent.json"), "utf8"))
       .toBe("sidecar");
@@ -104,7 +104,7 @@ describe("moveProviderThread", () => {
     });
 
     const targetPath = path.join(toHome, "sessions", "2026", "10", "01", rolloutName);
-    expect(result).toEqual({ ok: true, targetPath });
+    expect(result).toEqual({ ok: true, targetPath, targetExisted: false });
     expect(fs.readFileSync(targetPath, "utf8")).toBe("codex rollout\n");
   });
 

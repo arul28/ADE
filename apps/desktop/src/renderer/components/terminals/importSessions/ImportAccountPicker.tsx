@@ -1,4 +1,4 @@
-import type { ProviderInstance } from "../../../../shared/types/providerInstances";
+import { providerAccountName, type ProviderInstance } from "../../../../shared/types/providerInstances";
 
 export type ImportAccountPickerProps = {
   /** Every account this machine has for the session's provider. */
@@ -12,7 +12,7 @@ export type ImportAccountPickerProps = {
 };
 
 function accountLabel(instance: ProviderInstance): string {
-  const name = instance.label?.trim() || instance.account?.email?.trim() || instance.id;
+  const name = instance.label?.trim() || providerAccountName(instance);
   return instance.isDefault ? `${name} (default)` : name;
 }
 
@@ -22,7 +22,8 @@ function accountLabel(instance: ProviderInstance): string {
  * The session's transcript lives in one account's config home, and a CLI only
  * finds a session id inside the home it runs with. ADE copies the transcript
  * into the chosen account's home when they differ, so this is a "run it on this
- * account" choice, not a re-import.
+ * account" choice, not a re-import. "Session's account" is always first: a home
+ * whose account was removed from the registry still holds a resumable session.
  */
 export function ImportAccountPicker({
   accounts,
@@ -31,15 +32,7 @@ export function ImportAccountPicker({
   disabled,
   onChange,
 }: ImportAccountPickerProps) {
-  const known = new Set(accounts.map((account) => account.id));
   const selected = value ?? "";
-  // The session's own account is the default; it is named on its own row when
-  // the machine lists it, and as a standalone row when it does not.
-  const knownSessionAccount = sessionAccountId && known.has(sessionAccountId) ? sessionAccountId : null;
-  const orphanedSessionAccount = sessionAccountId && !known.has(sessionAccountId)
-    ? sessionAccountId
-    : null;
-
   return (
     <select
       data-testid="import-account"
@@ -50,17 +43,14 @@ export function ImportAccountPicker({
       onChange={(event) => onChange(event.target.value || null)}
       className="import-account-select"
     >
-      {knownSessionAccount ? null : <option value="">Session's account</option>}
+      <option value="">Session's account</option>
       {accounts.map((account) => (
         <option key={account.id} value={account.id}>
-          {account.id === knownSessionAccount
+          {account.id === sessionAccountId
             ? `${accountLabel(account)} — this session`
             : accountLabel(account)}
         </option>
       ))}
-      {orphanedSessionAccount ? (
-        <option value={orphanedSessionAccount}>Session's account (not on this machine)</option>
-      ) : null}
     </select>
   );
 }
