@@ -9,6 +9,7 @@ import {
   DEVICE_KINDS,
   DEVICE_KIND_COMMAND,
   DEVICE_KIND_NOUN,
+  deviceIdMachineSource,
   deviceKindRunsOnPlatform,
   devicesSubcommand,
   formatDeviceId,
@@ -212,7 +213,7 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<ParsedCli
   }
   const choice = sources[kind];
   if (!choice) return parsed;
-  process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: choice.machineName } })} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
+  process.stderr.write(`· ${formatDeviceId({ kind, source: { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } })} (this chat's device; ade devices use ${kind}@here for this machine)\n`);
   const end = parsed.command.indexOf("--");
   const command = end >= 0
     ? [...parsed.command.slice(0, end), "--machine", choice.machineKey, ...parsed.command.slice(end)]
@@ -458,7 +459,7 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
   // matches a name against all of it.
   const nameCount = new Map<string, number>();
   for (const machine of roster.machines) nameCount.set(machine.name.toLowerCase(), (nameCount.get(machine.name.toLowerCase()) ?? 0) + 1);
-  const idSourceOf = (machine: RosterMachine) => (nameCount.get(machine.name.toLowerCase()) ?? 0) > 1 ? machine.key : machine.name;
+  const idSourceOf = (machine: RosterMachine) => (nameCount.get(machine.name.toLowerCase()) ?? 0) > 1 ? machine.key : deviceIdMachineSource(machine);
   const localIdentity = (() => {
     try {
       return gitRemoteIdentity(getGitRemote(resolveRoots(options).projectRoot));
@@ -611,7 +612,7 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
     ? `This chat's ${noun} is on ${target.name} from now on: ade ${command} … goes there with no other flag.`
       + `${target.online ? "" : ` ${target.name} is offline right now.`} ade devices use ${kind}@here brings it back.`
     : `This chat's ${noun} is on this machine.`;
-  const id = formatDeviceId({ kind, source: target ? { kind: "machine", machine: target.name } : { kind: "here" } });
+  const id = formatDeviceId({ kind, source: target ? { kind: "machine", machine: deviceIdMachineSource(target) } : { kind: "here" } });
   return { value: { ok: true, id, sources }, text };
 }
 
@@ -628,7 +629,7 @@ async function currentDevices(options: GlobalOptions): Promise<{ value: JsonObje
     ["kind", "device", "since"],
     DEVICE_KINDS.map((kind) => {
       const choice = sources[kind];
-      const id = formatDeviceId({ kind, source: choice ? { kind: "machine", machine: choice.machineName } : { kind: "here" } });
+      const id = formatDeviceId({ kind, source: choice ? { kind: "machine", machine: deviceIdMachineSource({ name: choice.machineName, key: choice.machineKey }) } : { kind: "here" } });
       return [kind, id, choice ? new Date(choice.chosenAt).toLocaleString() : ""];
     }),
     "This chat's devices",

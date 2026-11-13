@@ -231,8 +231,9 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
       unsubscribe?.();
     };
     // Keyed by the component's key (pin key + lane); the pin object is stable for it.
+    // A renewed use (same lane, new start) reads again: its report must not reuse the old reading.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, kind]);
+  }, [laneId, kind, use.lastStartedAt]);
   const hasDevice = state === "device" ? true : state === "none" ? false : null;
   useEffect(() => {
     if (hasDevice !== null) onDeviceState?.(use, hasDevice);

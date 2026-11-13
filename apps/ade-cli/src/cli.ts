@@ -41904,21 +41904,24 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
  * names another project with `--project-root` must not pick that lane or
  * worktree up as its default: the lane is not in the named project, and a
  * worktree there would route the call back to the shell's project. For this
- * run only, the shell's lane and worktree are dropped (an explicit
- * `--workspace-root` still wins).
+ * run only, the shell's lane and worktree are dropped. An explicit
+ * `--workspace-root` wins, and stands in for the shell's `ADE_WORKSPACE_ROOT`
+ * for the run: plan builders (`proof`'s `callerRoot`) read only the env.
  */
 function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Promise<T> {
+  const workspaceRoot = options.workspaceRoot;
+  const run = workspaceRoot ? () => withShellEnv({ ADE_WORKSPACE_ROOT: path.resolve(workspaceRoot) }, fn) : fn;
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return fn();
-  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(options.workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return run();
+  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
   if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
       `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
-  return withoutShellEnv(names, fn);
+  return withoutShellEnv(names, run);
 }
 
 /**
@@ -41926,8 +41929,21 @@ function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Pro
  * and puts them back when it ends (when its promise settles, for an async one).
  */
 function withoutShellEnv<T>(names: readonly string[], fn: () => T): T {
+  return withShellEnv(Object.fromEntries(names.map((name) => [name, undefined])), fn);
+}
+
+/**
+ * Runs `fn` with these variables set (undefined: removed) in the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withShellEnv<T>(values: Readonly<Record<string, string | undefined>>, fn: () => T): T {
+  const names = Object.keys(values);
   const saved = names.map((name) => [name, process.env[name]] as const);
-  for (const name of names) delete process.env[name];
+  for (const name of names) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   const restore = () => {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];

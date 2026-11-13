@@ -2076,13 +2076,23 @@ export function createAppControlLaneController(context: AppControlLaneController
    * one row; in turn, the second simply replaces the first.
    */
   let launchQueue: Promise<unknown> = Promise.resolve();
-  const launch = (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
+  /**
+   * Set by `dispose`, never by the `stop` a replacement runs: a launch still
+   * waiting (on the lane screen, the old app's stop, a free port) when the
+   * controller goes away must not open a terminal for it afterwards.
+   */
+  let disposed = false;
+  const throwIfDisposed = (): void => {
+    if (disposed) throw new AdeExpectedError("App Control on this lane was closed before the app started.", "user");
+  };
+  const launch =(launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
     const run = launchQueue.then(() => launchNow(launchArgs));
     launchQueue = run.catch(() => {});
     return run;
   };
 
   const launchNow = async (launchArgs: AppControlLaunchArgs): Promise<AppControlSession> => {
+    throwIfDisposed();
     requireSupportedDriver(launchArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
@@ -2098,6 +2108,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     // never opened. Only a launch's own env can name a display (the resolved
     // command adds env on Windows only).
     const screenEnv = await laneScreenEnv(explicitLaunchEnv(launchArgs));
+    throwIfDisposed();
     const previousShellId = activeSession?.terminalSessionId ?? null;
     const reuseCandidate = relaunchShellCandidate(launchArgs);
     // The hold keeps the dead-shell sweep from deleting the shell before the
@@ -2112,6 +2123,7 @@ export function createAppControlLaneController(context: AppControlLaneController
       const reuseShellId = reuseCandidate
         ? await claimShellForRelaunch(ptyService, reuseCandidate, cleanClaimId(launchArgs.chatSessionId))
         : null;
+      throwIfDisposed();
       return await launchInShell(ptyService, launchArgs, reuseShellId, screenEnv);
     } finally {
       releaseShell();
@@ -2230,6 +2242,7 @@ export function createAppControlLaneController(context: AppControlLaneController
   ): Promise<AppControlSession> => {
     cdpAttachmentEpoch += 1;
     const debugPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort) ?? await findFreePort();
+    throwIfDisposed();
     const resolved = resolveLaunch(launchArgs, debugPort);
     const launchEnv = explicitLaunchEnv(launchArgs);
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
@@ -3285,6 +3298,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     windows,
     switchWindow,
     dispose: (): void => {
+      disposed = true;
       unsubscribePtyExit?.();
       flushDiagnostics();
       stopCdpPoller();

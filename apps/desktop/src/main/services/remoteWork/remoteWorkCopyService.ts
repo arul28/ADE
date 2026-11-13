@@ -81,6 +81,9 @@ export type RemoteWorkCopy = {
  */
 export type RemoteWorkPrepareWithinResult = { prepared: RemoteWorkPrepareResult } | { preparing: true };
 
+/** `replacingApp`: a forced App Control relaunch, which stops the copy's running app before the sync. */
+export type RemoteWorkPrepareOptions = { replacingApp?: boolean };
+
 export type RemoteWorkPrepareResult = {
   path: string;
   created: boolean;
@@ -269,9 +272,20 @@ type ProjectState = {
    * failed, and kept for FAILED_MAKE_RETENTION_MS.
    */
   making: Map<string, BackgroundMake>;
-  shellRunsIn: ((owner: string) => boolean) | null;
+  shellRunsIn: ((owner: string, ignoring: ReadonlySet<string>) => boolean) | null;
   deviceInUse: Set<(laneId: string) => boolean>;
   released: Set<(laneId: string) => void>;
+  copyApps: Set<RemoteWorkCopyApp>;
+};
+
+/**
+ * An app a service runs from a copy in a terminal of its own (App Control):
+ * the terminal ids it runs in for the copy's lane id (`remote-work-…`), and
+ * how to stop it, resolving once those terminals have ended.
+ */
+export type RemoteWorkCopyApp = {
+  shells: (laneId: string) => readonly string[];
+  stop: (laneId: string) => Promise<void>;
 };
 const projectStates = new Map<string, ProjectState>();
 
@@ -283,7 +297,7 @@ function projectStateFor(projectRoot: string): ProjectState {
   const key = pathComparisonKey(path.resolve(projectRoot));
   let state = projectStates.get(key);
   if (!state) {
-    state = { locks: new Map(), starting: new Map(), making: new Map(), shellRunsIn: null, deviceInUse: new Set(), released: new Set() };
+    state = { locks: new Map(), starting: new Map(), making: new Map(), shellRunsIn: null, deviceInUse: new Set(), released: new Set(), copyApps: new Set() };
     projectStates.set(key, state);
   }
   return state;
@@ -420,8 +434,38 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     }
   };
 
-  const inUse = (owner: string): boolean => isRemoteWorkCopyInUse(projectRoot, owner);
+  const inUse = (owner: string, ignoring?: ReadonlySet<string>): boolean => isRemoteWorkCopyInUse(projectRoot, owner, ignoring);
   const drivesDevice = (owner: string): boolean => remoteWorkCopyDrivesDevice(projectRoot, owner);
+
+  /** The terminals the copy's own apps (App Control) run in. An answer that cannot be read names none, so the copy stays busy. */
+  const copyAppShells = (owner: string): Set<string> => {
+    const laneId = remoteWorkLaneIdFor(owner);
+    const shells = new Set<string>();
+    for (const app of state.copyApps) {
+      try {
+        for (const id of app.shells(laneId)) shells.add(id);
+      } catch (error) {
+        logger?.warn("remote_work.copy_app_read_failed", { owner, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return shells;
+  };
+
+  /**
+   * Stops the copy's own apps so the copy can be removed or synced, then
+   * checks again: a shell still running (the app would not end, or another
+   * command started) refuses as before.
+   */
+  const stopCopyApps = async (owner: string, busy: () => RemoteWorkError): Promise<void> => {
+    const laneId = remoteWorkLaneIdFor(owner);
+    for (const app of state.copyApps) {
+      await app.stop(laneId).catch((error: unknown) => {
+        logger?.warn("remote_work.copy_app_stop_failed", { owner, error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+    logger?.info("remote_work.stopped_copy_app", { owner });
+    if (inUse(owner)) throw busy();
+  };
 
   const markStarting = (owner: string): (() => void) => {
     state.starting.set(owner, (state.starting.get(owner) ?? 0) + 1);
@@ -444,7 +488,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       const detail = (result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ");
       throw new RemoteWorkError("git_failed", `${failure}${detail ? `: ${detail}` : ""}`);
     }
-    return result.stdout.trim();
+    // `-z` lists print names verbatim: trimming would drop a leading space from the first one.
+    return args.includes("-z") ? result.stdout : result.stdout.trim();
   };
 
   const hasCommit = async (sha: string): Promise<boolean> =>
@@ -715,14 +760,17 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * (the idle and low-disk cleanups), so is a copy whose simulator or
    * emulator is booted, streaming or claimed: a chat can drive a device for
    * days without a shell. A person's delete, or the chat being gone, still
-   * releases the copy and with it the device.
+   * releases the copy and with it the device. Those removals also stop the
+   * copy's own app (App Control) first, rather than refusing for its
+   * terminal; any other running shell still refuses.
    */
   const release = async (
     owner: string,
     releaseOptions: { keepUnsynced?: boolean; keepDeviceInUse?: boolean; onlyIfUnusedBefore?: number } = {},
   ): Promise<boolean> =>
     await withLock(owner, async () => {
-      if (inUse(owner)) throw busyError();
+      const appShells = releaseOptions.keepDeviceInUse ? new Set<string>() : copyAppShells(owner);
+      if (inUse(owner, appShells)) throw busyError();
       if (releaseOptions.keepDeviceInUse && drivesDevice(owner)) {
         logger?.info("remote_work.kept_device_in_use", { owner });
         return false;
@@ -743,6 +791,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           return false;
         }
       }
+      if (appShells.size) await stopCopyApps(owner, busyError);
       const existed = Boolean(copy) || fs.existsSync(copyPath);
       if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
       updateCopy(owner, () => null);
@@ -829,9 +878,16 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   /**
    * Make the copy for `owner` ready for one command: create it on first
    * use, then sync it to `source` unless `mode` says otherwise. The copy is
-   * busy until the result's `done` is called.
+   * busy until the result's `done` is called. `replacingApp` (a forced App
+   * Control relaunch) stops the copy's running app before the sync instead of
+   * refusing for its terminal; the launch replaces it anyway.
    */
-  const prepare = async (owner: string, source: RemoteWorkSource, mode: RemoteWorkSyncMode = "sync"): Promise<RemoteWorkPrepareResult> => {
+  const prepare = async (
+    owner: string,
+    source: RemoteWorkSource,
+    mode: RemoteWorkSyncMode = "sync",
+    prepareOptions: RemoteWorkPrepareOptions = {},
+  ): Promise<RemoteWorkPrepareResult> => {
     if (!SHA.test(source.head)) throw new RemoteWorkError("invalid_source", "The chat's commit id is not valid.");
     const patch = source.patchBase64 ? Buffer.from(source.patchBase64, "base64") : null;
     if ((patch?.length ?? 0) > REMOTE_WORK_MAX_PATCH_BYTES) {
@@ -860,13 +916,13 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         }
         return { path: copy.path, created: false, synced: false, keptFiles: [], done: markStarting(owner) };
       }
-      if (inUse(owner)) {
-        throw new RemoteWorkError(
-          "copy_busy",
-          "A command still runs in your code there, so it was not synced. Wait for it to end, or stop it "
-          + "(`ade terminal list --machine <this machine>` shows it). To use the copy as it is, pass --code as-is.",
-        );
-      }
+      const syncBusyError = (): RemoteWorkError => new RemoteWorkError(
+        "copy_busy",
+        "A command still runs in your code there, so it was not synced. Wait for it to end, or stop it "
+        + "(`ade terminal list --machine <this machine>` shows it). To use the copy as it is, pass --code as-is.",
+      );
+      const appShells = prepareOptions.replacingApp ? copyAppShells(owner) : new Set<string>();
+      if (inUse(owner, appShells)) throw syncBusyError();
       // Files made here (a generated project, a pushed file) stay in place
       // through the sync instead of refusing it; `--discard` still removes them.
       const keptFiles = mode === "discard" ? [] : await filesMadeHere(copy);
@@ -881,6 +937,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           );
         }
       }
+      if (appShells.size) await stopCopyApps(owner, syncBusyError);
       await ensureCommit(source);
       const syncedTree = await syncCopy(copy.path, source, patch, keptFiles);
       updateCopy(owner, (current) => (current ? {
@@ -924,6 +981,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     owner: string,
     source: RemoteWorkSource,
     mode: RemoteWorkSyncMode = "sync",
+    prepareOptions: RemoteWorkPrepareOptions = {},
   ): Promise<RemoteWorkPrepareWithinResult> => {
     const waitMs = REMOTE_WORK_FIRST_COPY_WAIT_MS;
     const making = state.making.get(owner);
@@ -933,10 +991,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       if (making.failure && making.head.toLowerCase() === source.head.toLowerCase()) throw making.failure;
     }
     const existing = get(owner);
-    if (existing && fs.existsSync(existing.path)) return { prepared: await prepare(owner, source, mode) };
+    if (existing && fs.existsSync(existing.path)) return { prepared: await prepare(owner, source, mode, prepareOptions) };
 
     // No copy yet: make it, and answer in time either way.
-    const work = prepare(owner, source, mode);
+    const work = prepare(owner, source, mode, prepareOptions);
     const answered = await waitAtMost(work, waitMs);
     if (answered) return { prepared: answered.value };
     const job: BackgroundMake = { done: Promise.resolve(), head: source.head, failure: null };
@@ -974,7 +1032,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     /**
      * Delete copies unused for a week (unless they hold unpushed work),
      * and copies whose chat was deleted or archived on its own machine.
-     * `ownerGone` answers the second; it is never asked about a copy in use,
+     * `ownerGone` answers the second; it is never asked about a copy a
+     * command or shell uses (its own App Control app aside),
      * and silence (null) keeps the copy.
      */
     async sweep(sweepOptions: {
@@ -983,7 +1042,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       const cutoff = now() - REMOTE_WORK_IDLE_MS;
       let released = 0;
       for (const copy of readRegistry().copies) {
-        if (inUse(copy.owner)) continue;
+        // Its own app (App Control) alone does not make it busy here: the idle
+        // cleanup keeps it as a device in use, and a gone chat's removal stops it.
+        if (inUse(copy.owner, copyAppShells(copy.owner))) continue;
         // An idle copy kept (its device is in use, or it holds unpushed work)
         // still goes to the gone check: a deleted or archived chat gives its
         // copy, and with it the device, back.
@@ -1040,9 +1101,13 @@ export function withRemoteWorkLaneResolvers(
  * How a project's runtime tells whether a shell still runs in a copy (its
  * terminals). Registered once when the runtime starts; the returned function
  * removes it when the runtime is disposed. A project with no runtime has no
- * running shells.
+ * running shells. `ignoring` holds terminal ids not to count (the copy's own
+ * App Control app, which the removal stops itself).
  */
-export function registerRemoteWorkShellCheck(projectRoot: string, shellRunsIn: (owner: string) => boolean): () => void {
+export function registerRemoteWorkShellCheck(
+  projectRoot: string,
+  shellRunsIn: (owner: string, ignoring: ReadonlySet<string>) => boolean,
+): () => void {
   const state = projectStateFor(projectRoot);
   state.shellRunsIn = shellRunsIn;
   return () => {
@@ -1061,6 +1126,20 @@ export function registerRemoteWorkDeviceCheck(projectRoot: string, deviceInUse: 
   state.deviceInUse.add(deviceInUse);
   return () => {
     state.deviceInUse.delete(deviceInUse);
+  };
+}
+
+/**
+ * How App Control names the terminal a copy's app runs in and stops it, so
+ * removing the copy (or a forced relaunch's sync) stops that app instead of
+ * refusing for it. Registered by the service when it starts; the returned
+ * function removes it.
+ */
+export function registerRemoteWorkCopyApp(projectRoot: string, app: RemoteWorkCopyApp): () => void {
+  const state = projectStateFor(projectRoot);
+  state.copyApps.add(app);
+  return () => {
+    state.copyApps.delete(app);
   };
 }
 
@@ -1090,12 +1169,14 @@ function notifyCopyReleased(projectRoot: string, owner: string, logger?: RemoteW
   }
 }
 
-/** A command was readied for this copy and has not started, or a shell still runs in it. */
-export function isRemoteWorkCopyInUse(projectRoot: string, owner: string): boolean {
+const NO_TERMINALS: ReadonlySet<string> = new Set();
+
+/** A command was readied for this copy and has not started, or a shell (other than `ignoring`) still runs in it. */
+export function isRemoteWorkCopyInUse(projectRoot: string, owner: string, ignoring: ReadonlySet<string> = NO_TERMINALS): boolean {
   const state = projectStateFor(projectRoot);
   if ((state.starting.get(owner) ?? 0) > 0) return true;
   try {
-    return state.shellRunsIn?.(owner) === true;
+    return state.shellRunsIn?.(owner, ignoring) === true;
   } catch (error) {
     // The runtime's terminals could not be read: count the copy as in use, so nothing is deleted on a guess.
     console.warn(`[remote_work] could not tell whether a shell runs in ${owner}'s work copy`, error);

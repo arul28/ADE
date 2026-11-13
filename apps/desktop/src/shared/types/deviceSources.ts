@@ -86,6 +86,16 @@ export function parseDeviceId(text: string): DeviceIdParse {
   return { ok: true, id: { kind, source: { kind: "machine", machine: source } } };
 }
 
+/**
+ * How a device id names a machine: its name, or its key when the name is a
+ * source word (`here`, `cloud`), which {@link parseDeviceId} would read as
+ * this machine or ADE Cloud.
+ */
+export function deviceIdMachineSource(machine: { name: string; key: string }): string {
+  const word = machine.name.trim().toLowerCase();
+  return word === DEVICE_SOURCE_HERE || word === DEVICE_SOURCE_CLOUD ? machine.key : machine.name;
+}
+
 export function formatDeviceId(id: DeviceId): string {
   const source = id.source.kind === "machine" ? id.source.machine : id.source.kind === "here" ? DEVICE_SOURCE_HERE : DEVICE_SOURCE_CLOUD;
   return `${id.kind}@${source}`;

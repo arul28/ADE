@@ -50,6 +50,7 @@ import { createAppControlWindowRecorder } from "./appControlWindowRecorder";
 import {
   isRemoteWorkLaneId,
   onRemoteWorkCopyReleased,
+  registerRemoteWorkCopyApp,
   registerRemoteWorkDeviceCheck,
   remoteWorkLaneSummary,
   withRemoteWorkLaneResolvers,
@@ -72,13 +73,17 @@ import {
 
 export type AppControlService = ReturnType<typeof createAppControlService>;
 
+/** How long removing a work copy waits for its App Control app's terminal to end after the stop. */
+const REMOTE_WORK_APP_STOP_WAIT_MS = 5_000;
+
 /**
  * A chat on another machine stands in for a lane with its work copy here
  * (`remote-work-…`, `ade app-control … --machine`): the copy is the lane's
  * folder, named for that chat's machine. Its app runs in a terminal of the
  * primary lane, in the copy, as `ade shell start --machine` runs a command,
  * and that terminal is owned by the caller's chat, so the copy counts as
- * busy while the app runs. Like those shells it is archived from the start,
+ * busy while the app runs (removing the copy, or a forced relaunch's sync,
+ * stops the app first: `registerRemoteWorkCopyApp`). Like those shells it is archived from the start,
  * so it does not fill this machine's Work tab; it still runs and its chat
  * still reads and stops it.
  */
@@ -454,6 +459,39 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
   const offRemoteWorkReleased = onRemoteWorkCopyReleased(args.projectRoot, (laneId) => {
     if (controllers.has(laneId)) void stopForLane(laneId);
   });
+  // The app's terminal makes the copy busy, so removing the copy (and a forced
+  // relaunch's sync) would refuse for it: they stop it here first instead,
+  // and wait for its terminal to end.
+  const liveAppShell = (laneId: string): string | null => {
+    const shellId = controllers.get(laneId)?.getSession()?.terminalSessionId ?? null;
+    return shellId && args.ptyService?.hasLivePty(shellId) ? shellId : null;
+  };
+  const offRemoteWorkCopyApp = registerRemoteWorkCopyApp(args.projectRoot, {
+    shells: (laneId) => {
+      if (!isRemoteWorkLaneId(laneId)) return [];
+      const shellId = liveAppShell(laneId);
+      return shellId ? [shellId] : [];
+    },
+    stop: async (laneId) => {
+      const shellId = isRemoteWorkLaneId(laneId) ? liveAppShell(laneId) : null;
+      const ptyService = args.ptyService;
+      if (!shellId || !ptyService) return;
+      await controllers.get(laneId)?.stop({ force: true });
+      if (!ptyService.hasLivePty(shellId)) return;
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve();
+        };
+        const unsubscribe = ptyService.onExit((event) => {
+          if (event.sessionId === shellId) finish();
+        });
+        const timer = setTimeout(finish, REMOTE_WORK_APP_STOP_WAIT_MS);
+        timer.unref?.();
+      });
+    },
+  });
 
   const onLane = <T,>(action: string, run: (controller: AppControlLaneController) => Promise<T> | T) =>
     async (ref: AppControlLaneRef = {}): Promise<T> => await run(await sessionController(ref, action));
@@ -599,6 +637,7 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
     dispose: () => {
       offRemoteWorkDeviceCheck();
       offRemoteWorkReleased();
+      offRemoteWorkCopyApp();
       for (const controller of controllers.values()) controller.dispose();
       controllers.clear();
       recording.dispose();

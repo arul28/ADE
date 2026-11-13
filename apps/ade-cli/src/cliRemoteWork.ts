@@ -348,7 +348,8 @@ export function readLocalHead(cwd: string): JsonObject {
  */
 function readLocalWorkSource(cwd: string): JsonObject {
   const { top, head, branch } = localCheckout(cwd);
-  const originRefsWithHead = (): string[] => gitText(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
+  // `head` read once, not `HEAD` again: the patch and its declared base stay one commit.
+  const originRefsWithHead = (): string[] => gitText(top, ["branch", "-r", "--contains", head, "--format=%(refname:short)"])
     .split("\n").map((line) => line.trim()).filter((line) => line.startsWith("origin/") && line !== "origin/HEAD");
   let remoteRefs = originRefsWithHead();
   if (!remoteRefs.length) {
@@ -395,7 +396,7 @@ function readLocalWorkSource(cwd: string): JsonObject {
     gitHere(top, ["add", "-A"], env);
     patch = gitHere(top, [
       "diff", "--cached", "--binary", "--no-ext-diff", "--no-color", "--no-textconv",
-      "--src-prefix=a/", "--dst-prefix=b/", "HEAD",
+      "--src-prefix=a/", "--dst-prefix=b/", head,
     ], env);
   } finally {
     fs.rmSync(tempIndex, { force: true });

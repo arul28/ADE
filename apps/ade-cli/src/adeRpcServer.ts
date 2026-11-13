@@ -36,6 +36,7 @@ import {
   findRemoteWorkCopyForLane,
   remoteWorkLaneIdFor,
   RemoteWorkError,
+  type RemoteWorkPrepareOptions,
   type RemoteWorkPrepareResult,
   type RemoteWorkPrepareWithinResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
@@ -3134,6 +3135,7 @@ async function prepareCallerWorkCopy(
   runtime: AdeRuntime,
   session: SessionState,
   remoteWork: Record<string, unknown>,
+  prepareOptions: RemoteWorkPrepareOptions = {},
 ): Promise<{ owner: string; laneId: string; prepared: RemoteWorkPrepareResult }> {
   const owner = workCopyOwner(session);
   const laneId = remoteWorkLaneIdFor(owner);
@@ -3146,7 +3148,7 @@ async function prepareCallerWorkCopy(
       patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
       branch: asOptionalTrimmedString(remoteWork.branch),
       machineName,
-    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
+    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync", prepareOptions);
   } catch (error) {
     if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
     throw error;
@@ -3164,13 +3166,14 @@ const REMOTE_WORK_KEPT_FILES_SHOWN = 20;
  * the args without the caller's `remoteWork`, `laneId` and `projectRoot`, the
  * copy's lane id, a check for the copy, the step that readies it (resolving to
  * its `done`), and the answer with `workCopy.laneId` added. `sync` overrides
- * the caller's sync mode.
+ * the caller's sync mode; `prepareOptions` go to the copy's prepare.
  */
 function remoteWorkDeviceScope(
   runtime: AdeRuntime,
   session: SessionState,
   deviceArgs: Record<string, unknown>,
   sync?: "none",
+  prepareOptions: RemoteWorkPrepareOptions = {},
 ) {
   const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = deviceArgs;
   const laneId = remoteWorkLaneIdFor(workCopyOwner(session));
@@ -3182,7 +3185,7 @@ function remoteWorkDeviceScope(
     laneId,
     copyExists: (): boolean => findRemoteWorkCopyForLane(runtime.projectRoot, laneId) !== null,
     prepare: async (): Promise<() => void> => {
-      const { prepared } = await prepareCallerWorkCopy(runtime, session, request);
+      const { prepared } = await prepareCallerWorkCopy(runtime, session, request, prepareOptions);
       keptFiles = prepared.keptFiles;
       return prepared.done;
     },
@@ -3249,6 +3252,8 @@ function remoteWorkSurfaceScope(
     codeSync: ReadonlySet<string>;
     /** Added to every answer that does not carry the key already. */
     extraAnswer?: Record<string, unknown>;
+    /** A forced App Control relaunch: the copy's running app is stopped before the sync, not refused for. */
+    replacingApp?: boolean;
   },
 ): {
   args: Record<string, unknown>;
@@ -3257,7 +3262,13 @@ function remoteWorkSurfaceScope(
   answer: ((value: unknown) => unknown) | null;
 } {
   const method = `run_ade_action:${domain}.${action}`;
-  const remote = remoteWorkDeviceScope(runtime, session, surfaceArgs, rules.codeSync.has(action) ? undefined : "none");
+  const remote = remoteWorkDeviceScope(
+    runtime,
+    session,
+    surfaceArgs,
+    rules.codeSync.has(action) ? undefined : "none",
+    { replacingApp: rules.replacingApp === true },
+  );
   const requestedLaneId = asOptionalTrimmedString(surfaceArgs.laneId);
   if (requestedLaneId && requestedLaneId !== remote.laneId) {
     throw new JsonRpcError(
@@ -7411,6 +7422,8 @@ async function runTool(args: {
           laneFree: APP_CONTROL_LANE_FREE,
           copyMaking: APP_CONTROL_WORK_COPY_MAKING_ACTIONS,
           codeSync: APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS,
+          // `launch --force` replaces the running app, whose terminal would otherwise refuse the sync.
+          replacingApp: APP_CONTROL_WORK_COPY_CODE_SYNC_ACTIONS.has(action) && appControlArgs.force === true,
         });
         const { cwd: callerCwd, ...withoutCwd } = remote.args;
         // The caller's `--cwd` is the same folder in the copy, which exists
