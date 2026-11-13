@@ -88,16 +88,19 @@ export function LaneShareGuestChatPane({
   const modeLock = rights && rights.run.permissionModes.length === 0
     ? `${ownerLabel} keeps the mode of this chat.`
     : null;
+  const reasoningLocked = Boolean(rights && rights.run.reasoningLevels.length === 0);
   const sendBlockedReason = laneShareGuestSendBlockedReason({ state: guestState, connected, ownerLabel });
   const scope = React.useMemo<LaneShareGuestChatPaneScope>(() => ({
     kind: "lane_share_guest",
     agentChat,
     modelCatalogScopeKey: DEFAULT_RUNTIME_CATALOG_SCOPE,
-    machineName,
+    // The chat runs on the owner's computer; with hidden machine names it is still not "This computer".
+    machineName: machineName ?? `${ownerLabel}'s computer`,
     grantId: connection.grantId,
     permissionModeLockReason: modeLock,
     sendBlockedReason,
-  }), [agentChat, connection.grantId, machineName, modeLock, sendBlockedReason]);
+    reasoningLocked,
+  }), [agentChat, connection.grantId, machineName, modeLock, ownerLabel, reasoningLocked, sendBlockedReason]);
   const models = guestState?.models ?? [];
   const draftsOnly = Boolean(rights && !rights.speak.send && rights.speak.drafts);
 

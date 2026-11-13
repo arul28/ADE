@@ -206,7 +206,10 @@ export function createLaneShareGuestAgentChatApi(
         await call("chat.createDraft", { originSessionId: args.sessionId, text: args.text });
         return;
       }
-      await call("chat.send", guestSendArgs(args));
+      const sendArgs = guestSendArgs(args);
+      // The owner's computer drops a repeated send by this id (a retry after a lost answer).
+      if (typeof sendArgs.clientSendId !== "string") sendArgs.clientSendId = `lsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      await call("chat.send", sendArgs);
     },
     steer: (args: Record<string, unknown>) => call("chat.steer", guestSendArgs(args)),
     cancelSteer: (args: Record<string, unknown>) => call<void>("chat.cancelSteer", args),
@@ -217,8 +220,11 @@ export function createLaneShareGuestAgentChatApi(
     listPendingInputs: (args: Record<string, unknown>) => call("chat.listPendingInputs", args),
     getTurnFileDiff: (args: Record<string, unknown>) => call("chat.getTurnFileDiff", args),
     updateSession: async (args: Record<string, unknown>) => {
-      await call("chat.updateSession", args);
       const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
+      // The pane syncs its settings before a send; an update that changes
+      // nothing is not sent (it would count against the guest's rate limit).
+      const changes = Object.entries(args).filter(([key, value]) => key !== "sessionId" && value !== undefined);
+      if (changes.length > 0) await call("chat.updateSession", args);
       const summary = await summaryOf(sessionId);
       if (!summary) throw new Error("The owner's computer did not answer.");
       return sessionFromSummary(summary);

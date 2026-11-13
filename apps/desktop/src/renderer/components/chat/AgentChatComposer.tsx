@@ -8069,7 +8069,10 @@ function AgentChatComposerImpl({
               "[&_button]:h-6 [&_button]:max-h-6 [&_button]:min-h-6 [&_button]:shrink-0 [&_button]:py-0",
               "[&_label]:flex [&_label]:h-6 [&_label]:max-h-6 [&_label]:min-h-6 [&_label]:items-center [&_label]:py-0",
               "[&_select]:h-6 [&_select]:max-h-6 [&_select]:min-h-6",
+              permissionModeLocked && permissionModeLockReason && "[&_button]:pointer-events-none",
             )}
+            // A locked mode with a reason: the reason is the tooltip (the
+            // picker's own tooltip would hide it).
             title={permissionModeLocked && permissionModeLockReason ? permissionModeLockReason : undefined}
           >
             {nativeControlPanel}

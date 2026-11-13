@@ -19720,7 +19720,7 @@ export function AgentChatPane({
             executionModeOptions={launchModeEditable ? executionModeOptions : EMPTY_EXECUTION_MODE_OPTIONS}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
             // Effort can change mid-turn: the service applies it when the turn ends.
-            effortSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || projectTransitionBlocksChat || Boolean(subagentView)}
+            effortSelectionLocked={modelSelectionLocked || Boolean(guestScope?.reasoningLocked) || sessionMutationKind === "model" || projectTransitionBlocksChat || Boolean(subagentView)}
             permissionModeLocked={permissionModeLocked || Boolean(guestScope?.permissionModeLockReason) || identitySessionSettingsBusy || projectTransitionBlocksChat}
             permissionModeLockReason={guestScope?.permissionModeLockReason ?? null}
             hideNativeControls={hideNativeControls}

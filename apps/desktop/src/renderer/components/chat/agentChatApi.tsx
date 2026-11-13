@@ -62,6 +62,8 @@ export type LaneShareGuestChatPaneScope = {
   permissionModeLockReason: string | null;
   /** Why the guest cannot send now, or null when it can. */
   sendBlockedReason: string | null;
+  /** The owner allows no reasoning level change. */
+  reasoningLocked: boolean;
 };
 
 const AgentChatApiContext = createContext<AgentChatApi | null>(null);

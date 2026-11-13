@@ -25,7 +25,7 @@ import {
   useLaneShareGuestStore,
   useLaneShareGuestLaneName,
 } from "./laneShareGuestStore";
-import { LaneShareGuestChatPane, laneShareGuestModelLabel } from "./LaneShareGuestChatPane";
+import { LaneShareGuestChatPane, laneShareGuestModelLabel, laneShareMessagesLeftText } from "./LaneShareGuestChatPane";
 import { LaneShareGuestMoveCard, LaneShareGuestMoveOut } from "./LaneShareGuestMove";
 
 /**
@@ -419,6 +419,7 @@ export function LaneShareGuestView({
               entry.projectLabel,
               machineName ? `on ${machineName}` : null,
               entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null,
+              guestState ? laneShareMessagesLeftText(guestState) : null,
             ]}
           />
         </div>
