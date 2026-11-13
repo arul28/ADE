@@ -31419,7 +31419,11 @@ async function runServe(
   startSyncHostOnDemand = () => startSyncHost();
   // Stops the account project sync of the brain (set where that sync is built).
   let stopAccountProjectSync: (() => void) | null = null;
+  // Set first thing in shutdown: the projects-after-crash opens stop, so no
+  // project opens after `disposeAll` took its list of open scopes.
+  let serveShutdownStarted = false;
   const disposeServeResources = async () => {
+    serveShutdownStarted = true;
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
@@ -32227,6 +32231,7 @@ async function runServe(
           const startedMs = Date.now();
           let opened = 0;
           for (const root of roots) {
+            if (serveShutdownStarted) break;
             const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
             if (!record) {
               settleLiveTurnProjectAfterCrash(root);

@@ -42,7 +42,16 @@ type Holder = {
    * whose open crashes the brain cannot crash every brain after it (the
    * restart-loop guard does not run where crash reports are off).
    */
-  pending: { filePath: string; roots: string[]; opening: string | null } | null;
+  pending: {
+    filePath: string;
+    roots: string[];
+    opening: string | null;
+    /**
+     * The crashed brains' claimed files, kept while the pending file could
+     * not be written: until then they are the only record of these projects.
+     */
+    claimed: string[];
+  } | null;
 };
 
 const HOLDER_KEY = Symbol.for("ade.liveTurnProjects");
@@ -117,13 +126,16 @@ export function enableLiveTurnProjectsRecord(args: { runtimeDir: string; socketP
 export function closeLiveTurnProjectsRecord(): void {
   const state = holder();
   const filePath = state.filePath;
-  const pendingPath = state.pending?.filePath ?? null;
+  const pending = state.pending;
   state.filePath = null;
   state.pending = null;
   state.turns.clear();
   // A file left behind only opens those projects early at the next start.
   if (filePath) removeQuietly(filePath);
-  if (pendingPath) removeQuietly(pendingPath);
+  if (pending) {
+    removeQuietly(pending.filePath);
+    for (const claimed of pending.claimed) removeQuietly(claimed);
+  }
 }
 
 /**
@@ -172,6 +184,10 @@ function removeQuietly(filePath: string): void {
  */
 const RECORD_NAME = /^(\d+)(?:\.pending)?\.json(?:(\.tmp)|\.claimed-(\d+))?$/;
 
+/**
+ * Saves the pending file, or removes it when nothing is left. On success the
+ * claimed files it replaces go; on a failure they stay as the record.
+ */
 function writePending(state: Holder): void {
   const pending = state.pending;
   if (!pending) return;
@@ -179,17 +195,18 @@ function writePending(state: Holder): void {
     if (pending.roots.length === 0) {
       state.pending = null;
       fs.rmSync(pending.filePath, { force: true });
-      return;
+    } else {
+      const file: RecordFile = {
+        version: 1,
+        pid: process.pid,
+        projects: pending.roots,
+        ...(pending.opening ? { opening: pending.opening } : {}),
+      };
+      const tmpPath = `${pending.filePath}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(file));
+      fs.renameSync(tmpPath, pending.filePath);
     }
-    const file: RecordFile = {
-      version: 1,
-      pid: process.pid,
-      projects: pending.roots,
-      ...(pending.opening ? { opening: pending.opening } : {}),
-    };
-    const tmpPath = `${pending.filePath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(file));
-    fs.renameSync(tmpPath, pending.filePath);
+    for (const claimed of pending.claimed.splice(0)) removeQuietly(claimed);
   } catch (error) {
     if (!writeFailureReported) {
       writeFailureReported = true;
@@ -257,16 +274,19 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: { runtimeDir: string
     }
   }
   const taken = [...roots].slice(0, MAX_PROJECTS);
-  if (taken.length > 0) {
-    state.pending = {
-      filePath: path.join(dir, `${prefix}${process.pid}.pending.json`),
-      roots: taken,
-      opening: null,
-    };
-    writePending(state);
+  if (taken.length === 0) {
+    for (const claimed of claimedPaths) removeQuietly(claimed);
+    return taken;
   }
-  // Only now: until the pending file exists, the claimed files are the record.
-  for (const claimed of claimedPaths) removeQuietly(claimed);
+  // The claimed files go only once the pending file is saved: until then
+  // they are the record (a later write, or the next brain, takes over).
+  state.pending = {
+    filePath: path.join(dir, `${prefix}${process.pid}.pending.json`),
+    roots: taken,
+    opening: null,
+    claimed: claimedPaths,
+  };
+  writePending(state);
   return taken;
 }
 

@@ -278,17 +278,27 @@ export function createGithubAccountAppCredential(deps: {
    * account's. The legacy error stays the answer when neither works, so the
    * relay copy keeps naming the real problem.
    */
+  /**
+   * This machine's own token that the relay refused, while the account had
+   * another. Its record still looks valid until it expires, so without this
+   * the next relay call would send it again and leave the account's unused.
+   */
+  let refusedOwnToken: string | null = null;
   const relayAppUserAuth = {
     auditLog: deps.appUserAuth.auditLog,
     /** `userRequested`: a person pressed Refresh, so a standing negative answer is asked again. */
     getValidTokenForRelay: async (opts: { userRequested?: boolean } = {}): Promise<string> => {
+      let own: string;
       try {
-        return await deps.appUserAuth.getValidTokenForRelay();
+        own = await deps.appUserAuth.getValidTokenForRelay();
       } catch (legacyError) {
         const token = await readToken({ force: opts.userRequested === true });
         if (token) return token;
         throw legacyError;
       }
+      if (own !== refusedOwnToken) return own;
+      // A refreshed own token is a new one, and is tried again.
+      return (await readToken({ force: opts.userRequested === true })) ?? own;
     },
     /**
      * GitHub answered 401 to a relay token: this computer's own sign-in, or
@@ -297,7 +307,11 @@ export function createGithubAccountAppCredential(deps: {
      * directory once for the current token (`onRejected`); null when there is
      * no other.
      */
-    onTokenRejected: (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => onRejected(token, opts),
+    onTokenRejected: async (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => {
+      const replacement = await onRejected(token, opts);
+      if (replacement && token === deps.appUserAuth.getStoredTokenForHealth()) refusedOwnToken = token;
+      return replacement;
+    },
   };
 
   return {

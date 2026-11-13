@@ -14,9 +14,12 @@ export function formatRestartMessage(restart: UnplannedRestart): string {
   const head = `ADE's background service restarted at ${formatRecoveryTime(restart.ts)}.`;
   const chats = restart.chats > 0;
   const sessions = restart.cliSessions > 0;
-  if (chats && sessions) return `${head} Your chats and sessions continued.`;
-  if (chats) return `${head} Your ${restart.chats === 1 ? "chat" : "chats"} continued.`;
-  if (sessions) return `${head} Your ${restart.cliSessions === 1 ? "session" : "sessions"} reopened.`;
+  const chatWord = restart.chats === 1 ? "chat" : "chats";
+  const sessionWord = restart.cliSessions === 1 ? "session" : "sessions";
+  // A reopened CLI session is told to continue only when it was mid-turn.
+  if (chats && sessions) return `${head} Your ${chatWord} continued and your ${sessionWord} reopened.`;
+  if (chats) return `${head} Your ${chatWord} continued.`;
+  if (sessions) return `${head} Your ${sessionWord} reopened.`;
   return head;
 }
 

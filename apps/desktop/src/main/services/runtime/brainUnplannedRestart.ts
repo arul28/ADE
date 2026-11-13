@@ -107,14 +107,18 @@ function writeRecord(filePath: string, record: BrainRunRecord): void {
   }
 }
 
-/** `kill(pid, 0)` sends nothing; the same on macOS, Linux and Windows. EPERM: it runs as another user. */
+/**
+ * `kill(pid, 0)` sends nothing; the same on macOS, Linux and Windows. Only
+ * ESRCH proves the process is gone: EPERM means it runs as another user, and
+ * any other error is no proof, so its files stay with it.
+ */
 export function pidRuns(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
