@@ -136,14 +136,17 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     }
     return parsed;
   }
-  // `ade chat handoff <session> --machine X` moves a chat FROM here TO X: the
-  // flag names the destination, so the command runs on this machine and is
-  // never forwarded. The other handoff forms act on this machine's own move,
-  // so --machine with them is a mistake, not a target.
-  if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
+  // `ade chat handoff <session> --machine X` and `ade chat move <session…>
+  // --machine X` move chats FROM here TO X: the flag names the destination, so
+  // the command runs on this machine and is never forwarded. The other forms
+  // act on this machine's own move, so --machine with them is a mistake, not
+  // a target.
+  const chatSub = primary === "chat" ? parsed.command[1]?.toLowerCase() : undefined;
+  if (chatSub === "handoff" || chatSub === "move") {
     const flags = flagNamesOutsideFreeText(parsed.command);
-    if (flags.has("--machine") && ["--cancel", "--retry", "--options"].some((flag) => flags.has(flag))) {
-      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
+    const ownMoveFlags = chatSub === "handoff" ? ["--cancel", "--retry", "--options"] : ["--status", "--retry"];
+    if (flags.has("--machine") && ownMoveFlags.some((flag) => flags.has(flag))) {
+      throw new CliUsageError(`--machine names the destination of a move; drop it for ${ownMoveFlags.join("/")}.`);
     }
     return parsed;
   }

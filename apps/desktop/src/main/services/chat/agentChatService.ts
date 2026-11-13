@@ -50889,13 +50889,22 @@ export function createAgentChatService(args: {
       throw new AdeExpectedError("This CLI session is archived.", "user");
     }
     if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
+    // `@model:` / `@chat:` / `@lane:` … tokens from the input box get the same
+    // facts block a chat send appends, so the CLI agent reads exact ids and
+    // flags instead of guessing. A failed lookup sends the text as typed.
+    let typedText = text;
+    try {
+      typedText = await chatMentionService.expandChatMentionsForSend(text);
+    } catch (error) {
+      logger.warn("agent_cli.mention_expansion_failed", { sessionId, error: getErrorMessage(error) });
+    }
     // Queued texts go first: a later send must not jump the line.
     if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
-      const outcome = await deliverWakeToSession({ sessionId, text, kind: "auto" });
+      const outcome = await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" });
       if (outcome === "delivered") return { outcome };
     }
     if (args.holdUntilFree === true) {
-      await armQueuedAgentCliSend({ sessionId, text });
+      await armQueuedAgentCliSend({ sessionId, text: typedText });
       return { outcome: "held" };
     }
     return { outcome: "deferred" };

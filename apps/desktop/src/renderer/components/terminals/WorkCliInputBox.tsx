@@ -24,7 +24,22 @@ import {
   replaceComposerTriggerSpan,
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
-import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
+import {
+  ChatCommandMenu,
+  handleCommandMenuKeyDown,
+  type ChatCommandMenuHandle,
+  type ChatCommandMenuItem,
+  type ComposerPrSuggestion,
+} from "../chat/ChatCommandMenu";
+import { composerModelSuggestion, initialModelMention } from "../chat/composerModelChip";
+import { rememberMentionSuggestionLabels } from "../chat/mentionChipLabels";
+import { formatChatMentionToken } from "../../../shared/chatMentions";
+import { formatModelMentionToken, type ComposerModelSuggestion } from "../../../shared/modelMentions";
+import { getModelById } from "../../../shared/modelRegistry";
+import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { useAppStore } from "../../state/appStore";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
@@ -54,6 +69,7 @@ import {
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
 
 const DRAFT_SAVE_DELAY_MS = 400;
+const NO_MODELS: ComposerModelSuggestion[] = [];
 const MAX_BOX_HEIGHT_PX = 180;
 
 function menuAnchor(element: HTMLElement | null): CommandMenuAnchor | null {
@@ -100,7 +116,7 @@ export const CliInputModeToggle = memo(function CliInputModeToggle({ sessionId }
   const boxOn = mode === "box";
   const label = boxOn ? "Type in the terminal" : "Use the input box";
   return (
-    <SmartTooltip content={{ label, description: boxOn ? "Hide the input box and type straight into the CLI." : "Write in an ADE box with history, @files and a queue; the terminal stays usable." }}>
+    <SmartTooltip content={{ label, description: boxOn ? "Hide the input box and type straight into the CLI." : "Write in an ADE box with history, @ mentions (files, models, chats, PRs) and a queue; the terminal stays usable." }}>
       <button
         type="button"
         aria-label={label}
@@ -322,6 +338,86 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
     return hits.map((hit) => ({ path: hit.path, ...(hit.isDirectory ? { isDirectory: true as const } : {}) }));
   }, [laneId]);
 
+  // The chat's other @ kinds (chats, lanes, terminals, PRs, machines, MCP):
+  // a token here, expanded into a facts block when the CLI is sent the text.
+  const searchMentions = useCallback(async (query: string): Promise<ChatMentionSuggestion[]> => {
+    const currentPin = pinRef.current;
+    if (!currentPin) return [];
+    try {
+      const result = await window.ade.agentChat.listMentionSuggestions?.(
+        { query: query.trim(), excludeSessionId: sessionId },
+        currentPin,
+      );
+      const suggestions = result?.suggestions ?? [];
+      rememberMentionSuggestionLabels(suggestions);
+      return suggestions;
+    } catch {
+      return [];
+    }
+  }, [sessionId]);
+
+  const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
+    const currentPin = pinRef.current;
+    if (!currentPin) return [];
+    try {
+      const all = await window.ade.prs.listAll?.(currentPin);
+      if (!all?.length) return [];
+      const trimmed = query.trim().toLowerCase();
+      const digits = /^\d+$/.test(trimmed);
+      return all
+        .filter((pr) => {
+          if (pr.detached) return false;
+          if (!trimmed) return true;
+          if (digits) return String(pr.githubPrNumber).startsWith(trimmed);
+          return (pr.title ?? "").toLowerCase().includes(trimmed) || String(pr.githubPrNumber).startsWith(trimmed);
+        })
+        .slice(0, 20)
+        .map((pr) => ({
+          number: pr.githubPrNumber,
+          title: pr.title ?? "",
+          state: pr.state,
+          url: pr.githubUrl || `https://github.com/${pr.repoOwner}/${pr.repoName}/pull/${pr.githubPrNumber}`,
+          repo: pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined,
+        }));
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Models the CLI's machine can start, read once when an @ menu first opens.
+  const [modelOptions, setModelOptions] = useState<ComposerModelSuggestion[] | null>(null);
+  const modelsRequestedForRef = useRef<string | null>(null);
+  const atMenuOpen = commandMenuTrigger?.type === "at";
+  useEffect(() => {
+    const currentPin = pinRef.current;
+    if (!atMenuOpen || !currentPin || modelsRequestedForRef.current === currentPin.key) return;
+    modelsRequestedForRef.current = currentPin.key;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await window.ade.ai.getStatus({}, currentPin);
+        if (cancelled) return;
+        const out: ComposerModelSuggestion[] = [];
+        const seen = new Set<string>();
+        for (const id of deriveConfiguredModelIds(status ?? null)) {
+          const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, currentPin.key) ?? getModelById(id);
+          if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
+          seen.add(descriptor.id);
+          out.push(composerModelSuggestion(descriptor));
+        }
+        setModelOptions(out);
+      } catch {
+        if (!cancelled) modelsRequestedForRef.current = null;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [atMenuOpen, pinKey]);
+  useEffect(() => {
+    modelsRequestedForRef.current = null;
+    setModelOptions(null);
+  }, [pinKey]);
+  const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents({ hydrate: false });
+
   // Auto-grow from one line, capped so the terminal keeps the room.
   useEffect(() => {
     const el = textareaRef.current;
@@ -367,13 +463,20 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
       insertion = `/${item.name}${argumentHint} `;
     } else if (item.type === "file") {
       insertion = pathMention(item.path);
+    } else if (item.type === "mention") {
+      insertion = `${formatChatMentionToken(item.mention.kind, item.mention.id)} `;
+    } else if (item.type === "pr") {
+      insertion = `${item.pr.url} `;
+    } else if (item.type === "model") {
+      recordModelRecent(item.model.modelId);
+      insertion = `${formatModelMentionToken(initialModelMention(item.model))} `;
     }
     if (insertion == null) return;
     const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, insertion);
     setDraft(next.text);
     setCommandMenuTrigger(null);
     placeCaret(next.caret);
-  }, [commandMenuTrigger, draft, placeCaret, slashCommands]);
+  }, [commandMenuTrigger, draft, placeCaret, recordModelRecent, slashCommands]);
 
   const send = useCallback(() => {
     const text = draft.trim();
@@ -498,6 +601,10 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
             source: command.source,
           }))}
           onFileSearch={laneId ? searchFiles : undefined}
+          onMentionSearch={searchMentions}
+          onPrSearch={searchPullRequests}
+          modelOptions={modelOptions ?? NO_MODELS}
+          recentModelIds={modelRecents}
           anchor={commandMenuAnchor}
           onSelect={handleMenuSelect}
           onClose={() => setCommandMenuTrigger(null)}
