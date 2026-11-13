@@ -194,8 +194,15 @@ export function createFederatedWebAdapter({
     return result;
   };
 
+  const reconnectHold = createReconnectHold(
+    (targetId) => manager.getClient(targetId)?.getStatus().state ?? null,
+    () => {
+      const connectionSnapshot = getConnectionSnapshot();
+      for (const listener of connectionListeners) listener(connectionSnapshot);
+    },
+  );
   const getConnectionSnapshot = () =>
-    manager.getConnectionSnapshot(extraProjectsByTarget());
+    reconnectHold.apply(manager.getConnectionSnapshot(extraProjectsByTarget()));
 
   let managerDispose = () => {};
 
@@ -894,6 +901,7 @@ export function createFederatedWebAdapter({
     dispose() {
       invalidationDispose();
       managerDispose();
+      reconnectHold.dispose();
       manager.setProtectedTargetId(null);
       for (const entry of durableSubscriptions) detachDurableSubscription(entry);
       durableSubscriptions.clear();
@@ -902,6 +910,121 @@ export function createFederatedWebAdapter({
       bindingListeners.clear();
       connectionListeners.clear();
       activeAdapterListeners.clear();
+    },
+  };
+}
+
+/**
+ * How long a machine that dropped still counts as connected while it
+ * reconnects, counted from when the page is in front. The sync client keeps
+ * its cached state and holds commands until the connection is restored.
+ */
+const RECONNECT_HOLD_MS = 30_000;
+
+/**
+ * Keeps a machine that was connected reading as connected while its
+ * connection comes back.
+ *
+ * A browser that suspends a background tab (Safari does, even for a window
+ * that only lost focus) comes back with a dead socket: the client notices,
+ * closes it and dials again. The connection reads "connecting" meanwhile, and
+ * every page that asks whether the tab's machine is online
+ * (`useTabCopyPin` and friends) took that as offline: Work dropped the open
+ * chat and its whole list for "No computer connected", until the reconnect a
+ * second later brought it back as a fresh page. Held, the pages keep their
+ * state and re-sync quietly when the connection is back.
+ *
+ * Only a reconnect is held, never a first connect or a refusal, and only for
+ * RECONNECT_HOLD_MS of time in front: a machine that stays unreachable still
+ * turns offline, with its Connect action. Time in the background does not
+ * count, since the client does not dial while the page is hidden.
+ */
+/** Sync client states of a connection that dropped and is coming back on its own. */
+const RECONNECTING_CLIENT_STATES: ReadonlySet<string> = new Set([
+  // Closed; it dials again as soon as the page is in front.
+  "disconnected",
+  "connecting",
+  "reconnecting",
+  "restoring",
+]);
+
+function createReconnectHold(
+  clientState: (targetId: string) => string | null,
+  onExpire: () => void,
+): {
+  apply: (snapshot: RemoteRuntimeConnectionSnapshot) => RemoteRuntimeConnectionSnapshot;
+  dispose: () => void;
+} {
+  const wasConnected = new Set<string>();
+  const holdStartedAt = new Map<string, number>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+  const onVisibility = () => {
+    if (hidden() || holdStartedAt.size === 0) return;
+    // The client dials only once the page is in front: the hold starts now.
+    const now = Date.now();
+    for (const targetId of holdStartedAt.keys()) holdStartedAt.set(targetId, now);
+    onExpire();
+  };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+  const schedule = (delayMs: number) => {
+    if (timer) clearTimeout(timer);
+    timer = Number.isFinite(delayMs)
+      ? setTimeout(() => {
+        timer = null;
+        onExpire();
+      }, Math.max(0, delayMs) + 50)
+      : null;
+  };
+  return {
+    apply(snapshot) {
+      const now = Date.now();
+      let nextExpiryMs = Number.POSITIVE_INFINITY;
+      let held = false;
+      const present = new Set<string>();
+      const connections = snapshot.connections.map((connection) => {
+        const targetId = connection.target.id;
+        present.add(targetId);
+        if (connection.state === "connected") {
+          wasConnected.add(targetId);
+          holdStartedAt.delete(targetId);
+          return connection;
+        }
+        const state = clientState(targetId);
+        if (connection.state === "parked" || !wasConnected.has(targetId) || !state || !RECONNECTING_CLIENT_STATES.has(state)) {
+          // Parked, failed (sign-in, refused) or never connected: nothing to hold.
+          wasConnected.delete(targetId);
+          holdStartedAt.delete(targetId);
+          return connection;
+        }
+        const startedAt = holdStartedAt.get(targetId) ?? now;
+        holdStartedAt.set(targetId, startedAt);
+        if (!hidden()) {
+          const leftMs = startedAt + RECONNECT_HOLD_MS - now;
+          if (leftMs <= 0) return connection;
+          nextExpiryMs = Math.min(nextExpiryMs, leftMs);
+        }
+        held = true;
+        return { ...connection, state: "connected" as const };
+      });
+      for (const targetId of [...wasConnected]) {
+        if (!present.has(targetId)) wasConnected.delete(targetId);
+      }
+      for (const targetId of [...holdStartedAt.keys()]) {
+        if (!present.has(targetId)) holdStartedAt.delete(targetId);
+      }
+      schedule(nextExpiryMs);
+      if (!held) return snapshot;
+      return {
+        ...snapshot,
+        connections,
+        connectedCount: connections.filter((entry) => entry.state === "connected").length,
+      };
+    },
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
     },
   };
 }
