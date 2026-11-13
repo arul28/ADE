@@ -4301,6 +4301,8 @@ function scopeBuiltInBrowserAdeActionArgs(
     action === "getProfileDiagnostics"
     || action === "listPermissions"
     || action === "clearPermissions"
+    // Messages is the \`messages\` domain: its send goes through the approval card.
+    || action.startsWith("messages")
   ) {
     builtInBrowserAccessDenied(method);
   }
@@ -6759,6 +6761,15 @@ async function runTool(args: {
       const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, ...execArgs } = rawObjectArgs;
       const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
       scopedObjectArgs = { ...execArgs, ...(boundChat ? { chatSessionId: boundChat } : {}) };
+    }
+    if (domain === "messages" && action === "send") {
+      // The approval card goes to the caller's own chat, never one it names.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "messages.send requires object arguments.");
+      }
+      const { chatSessionId: _ignoredChat, sessionId: _ignoredSession, ...sendArgs } = rawObjectArgs;
+      const boundChat = asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId);
+      scopedObjectArgs = { ...sendArgs, ...(boundChat ? { chatSessionId: boundChat } : {}) };
     }
     if (domain === "passwords" && action === "signin") {
       // `ade browser signin` may raise the secure sign-in card, and only in

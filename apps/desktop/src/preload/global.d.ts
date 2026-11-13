@@ -4084,6 +4084,9 @@ declare global {
         ) => Promise<BuiltInBrowserStatus>;
         /** Passwords for the person (the key button, "Save to Passwords?"). Optional for older preloads. Never a value. */
         savedLoginsForTab?: (args: { tabId: string }) => Promise<Array<{ id: string; username: string | null; sites: string[] }>>;
+        /** The Messages integration on this Mac. Optional for older preloads. */
+        messagesIntegrationStatus?: () => Promise<import("../shared/types/messagesIntegration").MessagesIntegrationStatus>;
+        messagesIntegrationSet?: (next: Partial<import("../shared/types/messagesIntegration").MessagesIntegrationSettings>) => Promise<import("../shared/types/messagesIntegration").MessagesIntegrationStatus>;
         fillSavedLogin?: (args: { tabId: string; itemId: string }) => Promise<{ filled: string[] }>;
         loginOfferForTab?: (args: { tabId: string }) => Promise<import("../shared/types/builtInBrowserLoginCapture").BuiltInBrowserSaveLoginOffer | null>;
         acceptLoginOffer?: (args: { offerId: string }) => Promise<{ saved: boolean }>;
@@ -4374,6 +4377,7 @@ declare global {
         list: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary[]>;
         activity: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
         code?: (args: { itemId: string }, pin?: OpenProjectBinding | null) => Promise<{ code: string; secondsLeft: number } | null>;
+        reveal?: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }) => Promise<{ value?: string; copied?: true }>;
         saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
         saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
         remove: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;

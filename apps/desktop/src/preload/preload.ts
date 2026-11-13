@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../shared/types/messagesIntegration";
 import type { BuiltInBrowserSaveLoginOffer } from "../shared/types/builtInBrowserLoginCapture";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
@@ -11528,6 +11529,11 @@ const adeBridge = {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
       ),
+    // The Messages integration on this Mac (never another machine's).
+    messagesIntegrationStatus: (): Promise<MessagesIntegrationStatus> =>
+      ipcRenderer.invoke(IPC.messagesIntegrationStatus, {}),
+    messagesIntegrationSet: (next: Partial<MessagesIntegrationSettings>): Promise<MessagesIntegrationStatus> =>
+      ipcRenderer.invoke(IPC.messagesIntegrationSet, next),
     // Passwords for the person: the tab is always on this computer.
     savedLoginsForTab: (args: { tabId: string }): Promise<Array<{ id: string; username: string | null; sites: string[] }>> =>
       ipcRenderer.invoke(IPC.builtInBrowserSavedLogins, args),
@@ -12165,6 +12171,12 @@ const adeBridge = {
     /** The machine's recorded uses (site, who, chat, when), newest first. Never a value. */
     activity: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordUseRecord[]> =>
       callPasswords<PasswordUseRecord[]>("activity", args, pin),
+    /**
+     * Show or copy one saved value, after Touch ID / Windows Hello on this
+     * computer. A copy goes to the clipboard in main and returns no value.
+     */
+    reveal: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }): Promise<{ value?: string; copied?: true }> =>
+      ipcRenderer.invoke(IPC.passwordsReveal, args),
     /** A login's current authenticator code (never its key), and its seconds left. */
     code: (args: { itemId: string }, pin?: OpenProjectBinding | null): Promise<{ code: string; secondsLeft: number } | null> =>
       callPasswords<{ code: string; secondsLeft: number } | null>("code", args, pin),

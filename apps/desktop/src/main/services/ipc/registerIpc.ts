@@ -1,4 +1,5 @@
 import type { NewLaneDefaults } from "../../../shared/laneStart";
+import { checkPerson } from "../passwords/personCheck";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import {
   resolveContinueAfterRestart,
@@ -11316,6 +11317,20 @@ export function registerIpc({
     if (typeof offerId !== "string" || !offerId.trim()) throw new Error(`${channel} needs an offerId.`);
     return offerId.trim();
   };
+  // Messages is this Mac's (its database, its Messages app): no pin, no other machine.
+  handle(IPC.messagesIntegrationStatus, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.messagesIntegrationStatus, { windowMs: 10_000, max: 30 });
+    return ensureBuiltInBrowser().messagesStatus();
+  });
+  handle(IPC.messagesIntegrationSet, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.messagesIntegrationSet, { windowMs: 10_000, max: 30 });
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const next: Record<string, boolean> = {};
+    for (const key of ["connected", "readTexts", "sendTexts", "sendWithoutAsking"]) {
+      if (typeof record[key] === "boolean") next[key] = record[key] as boolean;
+    }
+    return ensureBuiltInBrowser().messagesSetSettings(next);
+  });
   handle(IPC.builtInBrowserSavedLogins, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSavedLogins, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().savedLoginsForTab({ tabId: readTabId(arg, IPC.builtInBrowserSavedLogins) }, win);
@@ -12851,6 +12866,11 @@ export function registerIpc({
     if (!PASSWORDS_CALL_ACTIONS.has(action)) {
       throw new Error(`passwords has no ${action || "?"} action.`);
     }
+    // Starting over deletes every saved item on every computer: the person
+    // proves it is them first (Touch ID / Windows Hello, else a confirm).
+    if (action === "reset" && !(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"))) {
+      throw new AdeExpectedError("Reset cancelled.", "user");
+    }
     const pool = localRuntimeConnectionPool;
     if (!pool) {
       throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
@@ -12867,6 +12887,40 @@ export function registerIpc({
       if (!(error instanceof Error)) throw error;
       throw carryExpected(error, new Error(stripElectronErrorWrapper(error.message)));
     }
+  });
+
+  // Settings › Passwords › Reveal / Copy. The person proves it is them first;
+  // a copy goes to the clipboard here in main (the value never reaches the
+  // renderer) and is cleared after 90 s if it is still there. This computer's
+  // own brain answers, whatever machine the page follows: values are the account's.
+  let clearCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+  handle(IPC.passwordsReveal, async (_event, arg: unknown): Promise<{ value?: string; copied?: true }> => {
+    const request = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const itemId = typeof request.itemId === "string" ? request.itemId : "";
+    const field = request.field === "username" || request.field === "value" || request.field === "notes" ? request.field : "password";
+    const copy = request.copy === true;
+    const label = typeof request.label === "string" ? request.label.slice(0, 80) : "this item";
+    if (!itemId) throw new Error("passwords.reveal needs an itemId.");
+    const pool = localRuntimeConnectionPool;
+    if (!pool) throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
+    // A username is not a secret: no prompt for it.
+    if (field !== "username" && !(await checkPerson(`${copy ? "copy" : "show"} the saved ${field === "value" ? "secret" : field} for ${label}`, copy ? "Copy" : "Show"))) {
+      throw new AdeExpectedError("Cancelled.", "user");
+    }
+    const response = await pool.callSync<{ result?: unknown }>("passwords.call", { action: "revealValue", args: { itemId, field } });
+    const value = typeof response?.result === "string" ? response.result : null;
+    if (value === null) throw new AdeExpectedError("That saved item isn't available on this computer.", "user");
+    if (!copy) return { value };
+    clipboard.writeText(value);
+    if (clearCopiedTimer) clearTimeout(clearCopiedTimer);
+    clearCopiedTimer = setTimeout(() => {
+      clearCopiedTimer = null;
+      void Promise.resolve(clipboard.readText()).then((current) => {
+        if (current === value) clipboard.writeText("");
+      });
+    }, 90_000);
+    clearCopiedTimer.unref?.();
+    return { copied: true };
   });
 
   // Contract C2: any machine of the account by its key (machineConnector.ts).

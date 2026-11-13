@@ -313,6 +313,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { requestPasswordLoginFromUser } from "../passwords/passwordLoginRequest";
 import { runWithSecrets } from "../secrets/secretExec";
+import { buildMessagesDomain, type MessagesBridge } from "../messagesIntegration/messagesDomain";
 import { signInWithPasswords, type BrowserSignin } from "../passwords/passwordSignin";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
@@ -4274,6 +4275,11 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
   return {
     status: () => passwords.status(),
     activity: () => passwords.activity(),
+    revealValue: (args?: unknown) => {
+      const input = objectArg(args);
+      const field = input.field === "username" || input.field === "value" || input.field === "notes" ? input.field : "password";
+      return passwords.revealValue({ itemId: text(input.itemId), field });
+    },
     // An authenticator code (never the key): agents may read it, it lasts seconds.
     code: (args?: unknown) => {
       const input = objectArg(args);
@@ -4893,6 +4899,15 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
     passwords: toService(buildPasswordsDomainService(runtime)),
+    messages: runtime.builtInBrowserService
+      ? toService(buildMessagesDomain({
+          bridge: runtime.builtInBrowserService as unknown as MessagesBridge,
+          requestChatInput: runtime.agentChatService ? (input) => runtime.agentChatService!.requestChatInput(input) : null,
+          authenticatorCode: runtime.passwordService
+            ? async (site) => await runtime.passwordService!.currentCode({ site }).catch(() => null)
+            : undefined,
+        }))
+      : null,
     integration_connect: buildIntegrationConnectDomainService(runtime),
     cloud: buildCloudDomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),

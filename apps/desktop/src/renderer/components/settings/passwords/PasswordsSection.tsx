@@ -539,7 +539,7 @@ export function PasswordsSection() {
                           <div className="ade-pw-facts">
                             <Fact label="Sites:">{selectedLogin.sites.join(", ") || "None"}</Fact>
                             <Fact label="Username:">{selectedLogin.username || "No username"}</Fact>
-                            <Fact label="Password:">saved</Fact>
+                            <Fact label="Password:"><RevealValue itemId={selectedLogin.id} field="password" label={selectedLogin.title} /></Fact>
                             {selectedLogin.hasTotp ? <Fact label="Authenticator code:"><LiveCode itemId={selectedLogin.id} pin={pin} /></Fact> : null}
                             <Fact label="Updated:">{formatUpdatedAt(selectedLogin.updatedAt)}</Fact>
                           </div>
@@ -578,7 +578,7 @@ export function PasswordsSection() {
                         <div className="ade-pw-facts">
                           <Fact label="Name:">{selectedSecret.title}</Fact>
                           <Fact label="Project:">{selectedSecret.projectScope ?? "All projects"}</Fact>
-                          <Fact label="Value:">saved</Fact>
+                          <Fact label="Value:"><RevealValue itemId={selectedSecret.id} field="value" label={selectedSecret.title} /></Fact>
                           <Fact label="Updated:">{formatUpdatedAt(selectedSecret.updatedAt)}</Fact>
                         </div>
                         <div className="ade-pw-detail-actions">
@@ -729,6 +729,55 @@ function LiveCode({ itemId, pin }: { itemId: string; pin: OpenProjectBinding | n
     <span className="ade-pw-code" data-testid="passwords-live-code">
       <span className="ade-pw-code-digits">{state.code.replace(/^(\d{3})(\d+)$/, "$1 $2")}</span>
       <span className="ade-pw-code-left">{left}s</span>
+    </span>
+  );
+}
+
+/**
+ * A saved value, hidden until the person asks: Show (for 30 s) or Copy, each
+ * after Touch ID / Windows Hello in desktop main. A copy never passes through
+ * this page; the clipboard is cleared after 90 s.
+ */
+function RevealValue({ itemId, field, label }: { itemId: string; field: "password" | "value"; label: string }) {
+  const [shown, setShown] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setShown(null);
+    setNote(null);
+  }, [itemId]);
+  useEffect(() => {
+    if (shown === null) return;
+    const timer = setTimeout(() => setShown(null), 30_000);
+    return () => clearTimeout(timer);
+  }, [shown]);
+  const reveal = window.ade.passwords.reveal;
+  if (!reveal) return <span>saved</span>;
+  const run = async (copy: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const result = await reveal({ itemId, field, copy, label });
+      if (copy) setNote("Copied. The clipboard clears in 90 s.");
+      else setShown(result.value ?? null);
+    } catch (err) {
+      const message = errorText(err, "");
+      setNote(/cancel/i.test(message) ? null : message || "ADE couldn't read this value.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="ade-pw-reveal" data-testid={`passwords-reveal-${field}`}>
+      <span className={shown === null ? "ade-pw-reveal-dots" : "ade-pw-reveal-value"}>{shown ?? "••••••••••"}</span>
+      {shown === null ? (
+        <button type="button" className="ade-pw-reveal-btn" disabled={busy} onClick={() => void run(false)}>Show</button>
+      ) : (
+        <button type="button" className="ade-pw-reveal-btn" onClick={() => setShown(null)}>Hide</button>
+      )}
+      <button type="button" className="ade-pw-reveal-btn" disabled={busy} onClick={() => void run(true)}>Copy</button>
+      {note ? <span className="ade-pw-reveal-note" role="status">{note}</span> : null}
     </span>
   );
 }

@@ -33,6 +33,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "project_config",
   "project_secret",
   "passwords",
+  "messages",
   "integration_connect",
   "cloud",
   "mcp_registry",

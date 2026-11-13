@@ -1670,6 +1670,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -4899,11 +4900,32 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
     $ ade code --site github.com --text                The current authenticator code
     $ ade code --site github.com --account me@x.com --text
+    $ ade code wait --site github.com --text           The authenticator, else the next texted code
+    $ ade code wait --from messages --timeout 3m --text
+
+  \`code wait\` returns the site's saved authenticator code at once when it has
+  one; otherwise it waits for the newest code texted to the person's Mac
+  (Messages must be connected there) after you ask, up to --timeout (2m).
 
   The code comes from the authenticator saved with the site's login in
   Passwords; you get the code (it lasts seconds), never the key. \`ade browser
   signin\` also fills it by itself on a page that asks for one. A code sent by
   email: open the mail in the ADE browser (already signed in) and read it.
+`,
+  messages: `${ADE_BANNER}
+  ADE Messages (the person's texts, on their Mac)
+
+    $ ade messages status --text
+    $ ade messages recent --limit 10 --text          Newest texts (yours and theirs)
+    $ ade messages recent --from +15551234567 --since 1h --text
+    $ ade messages chats --text                      Recent conversations
+    $ ade messages send --to +15551234567 --text "On my way"
+
+  Off until the person connects Messages in Settings › Integrations ›
+  Messages on a Mac (ADE needs Full Disk Access there to read). Reading
+  follows its Read Texts switch. Every text you send is shown to the person
+  on a card in your chat first, unless they turned on Send Without Asking.
+  From a cloud lane, these reach the Mac the person is using.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -21668,6 +21690,27 @@ function buildCodePlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.code ?? topLevelHelpText() };
   const site = readValue(args, ["--site"])?.trim() || null;
   const account = readValue(args, ["--account"])?.trim() || null;
+  if (firstPositional(args) === "wait") {
+    const fromValue = readValue(args, ["--from"])?.trim() || "any";
+    if (!["any", "messages", "authenticator"].includes(fromValue)) {
+      throw new CliUsageError("--from is messages, authenticator or any.");
+    }
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 2 * 60_000;
+    return {
+      kind: "execute",
+      label: "code wait",
+      formatter: "passwords-code",
+      steps: [actionStep("result", "messages", "codeWait", {
+        ...(site ? { site } : {}),
+        from: fromValue,
+        timeoutMs,
+        sinceMs: Date.now(),
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Waiting for a sign-in code${site ? ` for ${site}` : ""}…`,
+    };
+  }
   if (!site) throw new CliUsageError("ade code needs --site <host>, e.g. ade code --site github.com");
   return {
     kind: "execute",
@@ -21675,6 +21718,48 @@ function buildCodePlan(args: string[]): CliPlan {
     formatter: "passwords-code",
     steps: [actionStep("result", "passwords", "code", { site, ...(account ? { username: account } : {}) })],
   };
+}
+
+/** `ade messages …`: the person's texts on their Mac (Settings › Integrations › Messages). */
+function buildMessagesPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) return { kind: "help", text: HELP_BY_COMMAND.messages ?? topLevelHelpText() };
+  const sub = firstPositional(args) ?? "recent";
+  if (sub === "status") {
+    return { kind: "execute", label: "messages status", steps: [actionStep("result", "messages", "status", {})] };
+  }
+  if (sub === "chats") {
+    const limit = Number(readValue(args, ["--limit"]) ?? 20);
+    return { kind: "execute", label: "messages chats", steps: [actionStep("result", "messages", "chats", { limit })] };
+  }
+  if (sub === "recent" || sub === "read" || sub === "list") {
+    const from = readValue(args, ["--from"])?.trim() || null;
+    const chat = readValue(args, ["--chat"])?.trim() || null;
+    const sinceValue = readValue(args, ["--since"]);
+    const limit = Number(readValue(args, ["--limit"]) ?? 20);
+    return {
+      kind: "execute",
+      label: "messages recent",
+      steps: [actionStep("result", "messages", "recent", {
+        limit,
+        ...(from ? { handle: from } : {}),
+        ...(chat ? { chatGuid: chat } : {}),
+        ...(sinceValue ? { sinceMs: Date.now() - parseSnoozeDurationMs(sinceValue) } : {}),
+      })],
+    };
+  }
+  if (sub === "send") {
+    const to = readValue(args, ["--to"])?.trim() || null;
+    const text = readValue(args, ["--text", "--message"]);
+    if (!to || !text) throw new CliUsageError("messages send needs --to <phone or email> and --text \"…\".");
+    return {
+      kind: "execute",
+      label: "messages send",
+      steps: [actionStep("result", "messages", "send", { to, text })],
+      minTimeoutMs: 31 * 60_000,
+      progressNotice: `Asked the person to approve a text to ${to}…`,
+    };
+  }
+  throw new CliUsageError(`Unknown messages command "${sub}". Use status, recent, chats or send.`);
 }
 
 function buildPasswordsPlan(args: string[]): CliPlan {
@@ -24539,6 +24624,8 @@ function buildCliPlan(
     return buildPasswordsPlan(args);
   if (primary === "code" || primary === "codes")
     return buildCodePlan(args);
+  if (primary === "messages" || primary === "texts" || primary === "imessage")
+    return buildMessagesPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -39401,6 +39488,12 @@ function formatTextOutput(
       return formatSecretsExec(value);
     case "passwords-code": {
       const result = unwrapActionEnvelope(value);
+      if (isRecord(result) && result.source === "messages") {
+        return `${asString(result.code) ?? ""}  (texted${asString(result.from) ? ` by ${asString(result.from)}` : ""}${asString(result.receivedAt) ? ` at ${asString(result.receivedAt)}` : ""})`;
+      }
+      if (isRecord(result) && result.source === "authenticator") {
+        return `${asString(result.code) ?? ""}  (authenticator; valid ${String(result.secondsLeft ?? "?")} s more)`;
+      }
       if (!isRecord(result)) return "No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords, or the code comes by text or email (open the mail in the ADE browser).";
       return `${asString(result.code) ?? ""}  (${asString(result.site) ?? ""}${asString(result.username) ? ` as ${asString(result.username)}` : ""}; valid ${String(result.secondsLeft ?? "?")} s more)`;
     }

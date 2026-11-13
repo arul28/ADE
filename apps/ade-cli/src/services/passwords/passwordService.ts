@@ -559,6 +559,26 @@ export function createPasswordService(args: {
       return out;
     },
 
+    /**
+     * One saved value for the person's own eyes (Settings' Reveal / Copy, after
+     * Touch ID in desktop main). Person-only and this-desktop-only in the
+     * action layer. Null when the item or field is not there.
+     */
+    async revealValue(input: { itemId: string; field: "password" | "username" | "value" | "notes" }): Promise<string | null> {
+      await ensureOpened();
+      const secret = opened.get(input.itemId);
+      if (!secret) return null;
+      if (secret.kind === "login") {
+        if (input.field === "password") return secret.password;
+        if (input.field === "username") return secret.username;
+        if (input.field === "notes") return secret.notes;
+        return null;
+      }
+      if (input.field === "value") return secret.value;
+      if (input.field === "notes") return secret.notes;
+      return null;
+    },
+
     /** A secret's value by name, for injecting into a process ADE starts. Never returned to an agent. */
     async resolveSecretValue(input: { name: string; projectScope: string | null }): Promise<string | null> {
       await ensureOpened();

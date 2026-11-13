@@ -798,3 +798,25 @@
   background: rgba(10, 12, 22, 0.40);
   border: 1px solid rgba(255, 255, 255, 0.14);
 }
+
+/* Settings › Integrations › Messages (Mac only). */
+.ade-ig-msg { border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent); border-radius: 12px; padding: 14px 16px; margin-top: 18px; }
+.ade-ig-msg-head { display: flex; align-items: center; gap: 12px; }
+.ade-ig-msg-logo { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 9px; background: #34c759; color: #fff; flex: none; }
+.ade-ig-msg-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ade-ig-msg-title { font-size: 13px; font-weight: 600; color: var(--color-fg); }
+.ade-ig-msg-hint { font-size: 12px; color: var(--color-muted-fg); }
+.ade-ig-msg-connect, .ade-ig-msg-disconnect, .ade-ig-msg-warn button, .ade-ig-msg-foot button {
+  font-size: 12px; border-radius: 7px; padding: 5px 11px; border: 1px solid color-mix(in srgb, var(--color-fg) 14%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent); color: var(--color-fg); cursor: pointer;
+}
+.ade-ig-msg-connect { background: var(--color-accent); border-color: transparent; color: var(--color-accent-fg, #fff); }
+.ade-ig-msg-rows { display: flex; flex-direction: column; margin-top: 12px; border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
+.ade-ig-msg-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-ig-msg-switch { position: relative; width: 34px; height: 20px; border-radius: 999px; border: none; background: color-mix(in srgb, var(--color-fg) 18%, transparent); cursor: pointer; flex: none; transition: background 120ms ease; }
+.ade-ig-msg-switch[data-on="true"] { background: var(--color-accent); }
+.ade-ig-msg-switch:disabled { opacity: 0.45; cursor: default; }
+.ade-ig-msg-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform 120ms ease; }
+.ade-ig-msg-switch[data-on="true"] .ade-ig-msg-knob { transform: translateX(14px); }
+.ade-ig-msg-warn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--color-warning, #f5a524); padding: 10px 0; }
+.ade-ig-msg-foot { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--color-muted-fg); padding-top: 10px; }

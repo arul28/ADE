@@ -68,6 +68,13 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "scroll",
   "fill",
   "signin",
+  // The Messages integration on the Mac the person sits at. Reached only
+  // through the brain's \`messages\` domain (the RPC server refuses them on
+  // \`built_in_browser\`), which raises the send approval card first.
+  "messagesStatus",
+  "messagesRecent",
+  "messagesChats",
+  "messagesSend",
   "clear",
   "wait",
   "startInspect",
@@ -160,6 +167,10 @@ export const BUILT_IN_BROWSER_METHOD_ROUTES = {
   scroll: "user-desktop",
   fill: "user-desktop",
   signin: "user-desktop",
+  messagesStatus: "user-desktop",
+  messagesRecent: "user-desktop",
+  messagesChats: "user-desktop",
+  messagesSend: "user-desktop",
   clear: "user-desktop",
   wait: "user-desktop",
   startInspect: "user-desktop",

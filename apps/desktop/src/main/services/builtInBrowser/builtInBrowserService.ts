@@ -5,6 +5,8 @@ import { Menu, WebContentsView, app, clipboard, nativeImage, screen, session } f
 import type { BrowserWindow, WebContents } from "electron";
 import type { BuiltInBrowserLoginSubmission } from "../../../shared/types/builtInBrowserLoginCapture";
 import { createBuiltInBrowserLoginOffers, loginOfferTarget } from "./builtInBrowserLoginOffers";
+import type { MessagesIntegrationService } from "../messagesIntegration/messagesIntegrationService";
+import type { MessagesIntegrationSettings } from "../../../shared/types/messagesIntegration";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -947,6 +949,8 @@ export function createBuiltInBrowserService(args: {
    * null when Passwords is not available on this computer.
    */
   passwords?: BuiltInBrowserPasswordsAccess | null;
+  /** The Messages integration on this Mac (null elsewhere). */
+  messages?: MessagesIntegrationService | null;
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   /**
@@ -2161,6 +2165,27 @@ export function createBuiltInBrowserService(args: {
     },
     signin(input: BuiltInBrowserSigninArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserAgentActionResult> {
       return serviceForInput(input, sourceWindow).signin(input);
+    },
+    // The Messages integration on this Mac, for the brain's `messages` domain.
+    messagesStatus() {
+      if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+      return args.messages.status();
+    },
+    messagesSetSettings(next: Partial<MessagesIntegrationSettings>) {
+      if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+      return args.messages.setSettings(next);
+    },
+    messagesRecent(input: Record<string, unknown> = {}) {
+      if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+      return args.messages.recent(input);
+    },
+    messagesChats(input: { limit?: number } = {}) {
+      if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+      return args.messages.chats(input);
+    },
+    messagesSend(input: { to: string; text: string }) {
+      if (!args.messages) throw new AdeExpectedError("Messages isn't available on this computer.", "user");
+      return args.messages.send(input);
     },
     /** A login form the person sent in a tab (the tab preload's message); the tab's own window handles it. */
     handleLoginSubmission(wc: WebContents, mainFrame: boolean, submission: BuiltInBrowserLoginSubmission): void {

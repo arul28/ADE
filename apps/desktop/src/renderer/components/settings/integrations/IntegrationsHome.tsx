@@ -32,6 +32,7 @@ import { McpServerDialog } from "../mcp/McpServerDialog";
 import { showToast } from "../../app/toast/toastStore";
 import "../providers/providerPage.css";
 import "./integrationPage.css";
+import { MessagesIntegrationCard } from "./MessagesIntegrationCard";
 import { requirePin } from "../../../state/repositoryScope";
 
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
@@ -451,6 +452,9 @@ export function IntegrationsHome({
           onAdded={() => setAdding(null)}
         />
       ) : null}
+
+      {/* This Mac's own Messages; a page following another machine leaves it out. */}
+      {pin === null || pin.kind !== "remote" ? <MessagesIntegrationCard /> : null}
     </div>
   );
 }

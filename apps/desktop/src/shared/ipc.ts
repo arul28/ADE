@@ -777,6 +777,11 @@ export const IPC = {
   builtInBrowserKeepTab: "ade.builtInBrowser.keepTab",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
+  // The Messages integration on this Mac (Settings › Integrations › Messages).
+  messagesIntegrationStatus: "ade.messagesIntegration.status",
+  // Settings › Passwords: Reveal / Copy after Touch ID or Windows Hello, on this computer.
+  passwordsReveal: "ade.passwords.reveal",
+  messagesIntegrationSet: "ade.messagesIntegration.set",
   // Passwords for the person in the browser: the key button and "Save to Passwords?".
   builtInBrowserSavedLogins: "ade.builtInBrowser.savedLogins",
   builtInBrowserFillSavedLogin: "ade.builtInBrowser.fillSavedLogin",
