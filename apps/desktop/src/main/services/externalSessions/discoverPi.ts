@@ -24,6 +24,7 @@ import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 import { commandArrayToLine } from "../../../shared/shell";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
+import { readPiSessionOwner } from "../chat/piSessionOwnership";
 import { startsWithAdeGuidance } from "./discoverAcpShared";
 
 /**
@@ -117,11 +118,15 @@ export async function discoverPiSessions(
     if (!id || (lookupId && id !== lookupId) || seen.has(id)) continue;
     const cwd = normalizeProviderCwd(asString(header.cwd));
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
+    // ADE marks each Pi session its chats write (`.ade-owner`, owner "sdk"),
+    // and that marker outlives the chat. A CLI session in an ADE terminal is
+    // owner "cli" and stays listed.
+    if (!args.includeAdeOwned && readPiSessionOwner(candidate.filePath)?.owner === "sdk") continue;
     const normalizedRecords = jsonl.map(asRecord).filter((record): record is Record<string, unknown> => record !== null);
     const preview = firstUserTextFromRecords(normalizedRecords);
-    // ADE's own Pi chats open with its guidance block, as for Kimi, Qwen and
-    // Grok. A chat that is still open is also hidden by its chat ref; this
-    // keeps an archived or removed-lane chat (or one in a route home) out.
+    // ADE's Pi chats from before the owner marker open with its guidance
+    // block, as for Kimi, Qwen and Grok. A chat that is still open is also
+    // hidden by its chat ref.
     if (!args.includeAdeOwned && startsWithAdeGuidance(preview)) continue;
     const messages = normalizedRecords
       .map(externalSessionMessageFromRecord)
