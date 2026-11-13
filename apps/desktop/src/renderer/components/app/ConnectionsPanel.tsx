@@ -52,6 +52,12 @@ import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import "../remoteTargets/connections.css";
 
 type ConnectionsPanelProps = {
+  /**
+   * "web": ADE Web. It has no This computer, no pairing code and no phone or
+   * browser devices of its own, so only the account header and the machines
+   * list show, and nothing polls the local sync status.
+   */
+  variant?: "desktop" | "web";
   initialTab?: ConnectionsPanelTab;
   machineId?: string | null;
   onClose: () => void;
@@ -195,30 +201,35 @@ const confirmRevoke: RevokeConfirm = ({ name, connected }) =>
     destructive: true,
   });
 
-export function ConnectionsPanel({
-  initialTab = "machines",
-  machineId = null,
-  onClose,
-  onDisconnectRequested,
-  onRemoveRequested,
-}: ConnectionsPanelProps) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { status: accountStatus } = useAccountStatus();
-  const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
+export function ConnectionsPanel(props: ConnectionsPanelProps) {
+  return props.variant === "web" ? <HostedConnectionsPanel {...props} /> : <DesktopConnectionsPanel {...props} />;
+}
+
+/** The account machines, read when the panel opens and again on request. */
+function usePanelAccountMachines(enabled: boolean) {
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
-  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
-  const [connectionSnapshot, setConnectionSnapshot] =
-    useState<RemoteRuntimeConnectionSnapshot | null>(null);
-  const sync = useSyncConnections();
-  // GitHub status comes from the reader copy of the open repository.
-  // No copy online: no status, and the GitHub row shows "not connected".
-  const githubReaderPin = useActiveRepositoryReader();
-
+  const loadAccountMachines = useCallback(async (options?: { force?: boolean }) => {
+    // Shared cache: the popover unmounts on close, so a per-open fetch would
+    // start cold every time and one slow call would render an empty list.
+    setAccountMachines(await fetchAccountMachines(options));
+  }, []);
+  const reloadAccountMachines = useCallback(() => {
+    invalidateAccountMachines();
+    void loadAccountMachines({ force: true });
+  }, [loadAccountMachines]);
+  // Fetch account machines whenever the Machines tab opens (including the first
+  // render) without blocking the local saved/discovered rows.
   useEffect(() => {
-    setTab(initialTab);
-  }, [initialTab]);
+    if (!enabled) return;
+    void loadAccountMachines();
+  }, [enabled, loadAccountMachines]);
+  return { accountMachines, reloadAccountMachines };
+}
 
+/** GitHub status from the reader copy of the open repository; none offline. */
+function usePanelGitHubStatus(): GitHubStatus | null {
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const githubReaderPin = useActiveRepositoryReader();
   useEffect(() => {
     let cancelled = false;
     if (!githubReaderPin) {
@@ -236,6 +247,104 @@ export function ConnectionsPanel({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [githubReaderPin?.key]);
+  return githubStatus;
+}
+
+/** Flash the account machine row a caller asked for, once it renders. */
+function useFocusAccountMachineRow(machineId: string | null, ready: boolean): void {
+  const focusedMachineRequestRef = useRef<{ machineId: string; focused: boolean } | null>(null);
+  useEffect(() => {
+    if (focusedMachineRequestRef.current?.machineId !== machineId) {
+      focusedMachineRequestRef.current = machineId ? { machineId, focused: false } : null;
+    }
+    const request = focusedMachineRequestRef.current;
+    if (!ready || !machineId) return;
+    if (!request || request.focused) return;
+    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(machineId)}"]`);
+    if (!row) return;
+    request.focused = true;
+    return flashRowHighlight(row);
+  }, [machineId, ready]);
+}
+
+function usePanelNavigation(onClose: () => void) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const goToAccount = useCallback(() => {
+    onClose();
+    navigate("/account", {
+      state: { returnTo: `${location.pathname}${location.search}${location.hash}` },
+    });
+  }, [location.hash, location.pathname, location.search, navigate, onClose]);
+  const goToCloudSettings = useCallback(() => {
+    onClose();
+    navigate("/settings?tab=ade-cloud");
+  }, [navigate, onClose]);
+  return { goToAccount, goToCloudSettings };
+}
+
+const PANEL_FRAME_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  maxHeight: "calc(100vh / var(--ade-web-zoom-factor, 1) - 96px)",
+  borderRadius: "inherit",
+  overflow: "hidden",
+};
+
+function HostedConnectionsPanel({
+  machineId = null,
+  onClose,
+  onDisconnectRequested,
+  onRemoveRequested,
+}: ConnectionsPanelProps) {
+  const { status: accountStatus } = useAccountStatus();
+  const githubStatus = usePanelGitHubStatus();
+  const { accountMachines, reloadAccountMachines } = usePanelAccountMachines(true);
+  useFocusAccountMachineRow(machineId, accountMachines != null);
+  const { goToAccount, goToCloudSettings } = usePanelNavigation(onClose);
+  return (
+    <div style={PANEL_FRAME_STYLE}>
+      <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
+      <div style={{ overflowY: "auto", padding: 12 }} data-onboarding-anchor="connections-machines">
+        <RemoteTargetList
+          onDisconnectRequested={onDisconnectRequested}
+          onRemoveRequested={onRemoveRequested}
+          accountMachines={accountMachines?.machines}
+          accountMachinesState={accountMachines?.state}
+          accountSignedIn={accountStatus.signedIn}
+          onAccountRequested={goToAccount}
+          onAccountMachinesChanged={reloadAccountMachines}
+          onOpenCloudSettings={goToCloudSettings}
+          accountEmail={accountStatus.email ?? null}
+          thisComputerCode={null}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DesktopConnectionsPanel({
+  initialTab = "machines",
+  machineId = null,
+  onClose,
+  onDisconnectRequested,
+  onRemoveRequested,
+}: ConnectionsPanelProps) {
+  const { status: accountStatus } = useAccountStatus();
+  const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
+  const [connectionSnapshot, setConnectionSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const sync = useSyncConnections();
+  // GitHub status comes from the reader copy of the open repository.
+  // No copy online: no status, and the GitHub row shows "not connected".
+  const githubStatus = usePanelGitHubStatus();
+  const { accountMachines, reloadAccountMachines } = usePanelAccountMachines(tab === "machines");
+  useFocusAccountMachineRow(machineId, tab === "machines" && accountMachines != null);
+  const { goToAccount, goToCloudSettings } = usePanelNavigation(onClose);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
 
   // Track remote-machine connections so the Machines tab can show a live dot.
   // The Phone/Web dots reuse the sync device list already fetched above.
@@ -275,48 +384,6 @@ export function ConnectionsPanel({
     return { machines, mobile, web };
   }, [connectionSnapshot, sync.devices]);
 
-  const loadAccountMachines = useCallback(async (options?: { force?: boolean }) => {
-    // Shared cache: the popover unmounts on close, so a per-open fetch would
-    // start cold every time and one slow call would render an empty list.
-    setAccountMachines(await fetchAccountMachines(options));
-  }, []);
-
-  const reloadAccountMachines = useCallback(() => {
-    invalidateAccountMachines();
-    void loadAccountMachines({ force: true });
-  }, [loadAccountMachines]);
-
-  // Fetch account machines whenever the Machines tab opens (including the first
-  // render) without blocking the local saved/discovered rows.
-  useEffect(() => {
-    if (tab !== "machines") return;
-    void loadAccountMachines();
-  }, [loadAccountMachines, tab]);
-
-  const focusedMachineRequestRef = useRef<{ machineId: string; focused: boolean } | null>(null);
-  useEffect(() => {
-    if (focusedMachineRequestRef.current?.machineId !== machineId) {
-      focusedMachineRequestRef.current = machineId ? { machineId, focused: false } : null;
-    }
-    const request = focusedMachineRequestRef.current;
-    if (tab !== "machines" || !machineId || !accountMachines) return;
-    if (!request || request.focused) return;
-    const row = document.querySelector<HTMLElement>(`[data-account-machine-key="${CSS.escape(machineId)}"]`);
-    if (!row) return;
-    request.focused = true;
-    return flashRowHighlight(row);
-  }, [accountMachines, machineId, tab]);
-
-  const goToAccount = useCallback(() => {
-    onClose();
-    navigate("/account", {
-      state: { returnTo: `${location.pathname}${location.search}${location.hash}` },
-    });
-  }, [location.hash, location.pathname, location.search, navigate, onClose]);
-  const goToCloudSettings = useCallback(() => {
-    onClose();
-    navigate("/settings?tab=ade-cloud");
-  }, [navigate, onClose]);
 
   // Only where this ADE can read this computer's routes (not hosted web).
   const routesReadable = routesAvailable();
@@ -325,7 +392,7 @@ export function ConnectionsPanel({
     // Clip to the sheet's own corners, whatever radius the theme gives it, so
     // the coloured header never pokes past the curve. Menus portal out, so
     // nothing that should overflow is cut.
-    <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh / var(--ade-web-zoom-factor, 1) - 96px)", borderRadius: "inherit", overflow: "hidden" }}>
+    <div style={PANEL_FRAME_STYLE}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
       <div style={{ padding: "12px 12px 0" }}>

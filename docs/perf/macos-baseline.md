@@ -841,6 +841,10 @@ streaming measurements include the branch's follow-up fixes. They are recorded
 in the branch review evidence (`before-after.md` and the interleaved
 `after.json` capture), not a fresh idle or GPU measurement. Streaming numbers are
 interleaved A/B on this same machine under load; compare like conditions.
+The remote CLI terminal row was measured on 2026-11-12 on the Mac Studio
+(Mac16,9) against a dev test machine on the same Mac, relay only, at commit
+`154479ddc`. Each key waits for one ACK, about 35-60 ms over the relay, so the
+before number grows with the length of the burst.
 
 | Scenario / metric | Before | Baseline after | Ceiling | How |
 | --- | ---: | ---: | ---: | --- |
@@ -857,6 +861,7 @@ interleaved A/B on this same machine under load; compare like conditions.
 | App Control polls / hidden minute | 20 | 0 | 0 | `npm run bench:webclient` in `apps/desktop` |
 | OAuth reads / five minutes | 300 | 108 | 140 | `npm run bench:webclient` in `apps/desktop` |
 | Streaming script ms / event | 12.8 | 11.7 | 15.0 | `scripts/perf-chat-stream.mjs` |
+| Remote CLI terminal: 15 keys typed 30 ms apart, last key's ACK after the first key (ms) | 1,241 | 507 | 700 | CDP key events into a Claude CLI terminal on another computer over the relay; `terminal_input` / `terminal_input_ack` frame times |
 
 The zero-baseline long-task row has a small absolute ceiling rather than a
 percentage margin; hidden-tab reads have a strict zero ceiling. These rows do
