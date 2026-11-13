@@ -222,6 +222,33 @@ describe("sessionService resume metadata", () => {
     expect(created?.resumeMetadata?.credentialId).toBe("openrouter");
     expect(created?.resumeMetadata?.launch.credentialId).toBe("openrouter");
 
+    // An import from a route home ADE could not name keeps the home's folder
+    // name. It becomes a path on resume, so only that exact shape survives.
+    const routeHomeSessions = [
+      ["session-route-home", "r0123456789abcdef"],
+      ["session-route-escape", "../../outside"],
+    ] as const;
+    for (const [sessionId, routeHomeId] of routeHomeSessions) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Droid CLI",
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType: "droid",
+        resumeMetadata: {
+          provider: "droid",
+          targetKind: "session",
+          targetId: "1fb9028f-cfac-47b9-b6ec-bfa8fa986c68",
+          launch: { routeHomeId },
+        },
+      });
+    }
+    expect(service.get("session-route-home")?.resumeMetadata?.launch.routeHomeId).toBe("r0123456789abcdef");
+    expect(service.get("session-route-escape")?.resumeMetadata?.launch).not.toHaveProperty("routeHomeId");
+
     activeDisposers.push(async () => db.close());
   });
 
