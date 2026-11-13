@@ -300,6 +300,21 @@ describe("shared account directory trust boundary", () => {
     expect(() => selectAccountMachine(named, "arul’s")).toThrow(/not found/i);
     const twins = [...named, machine({ machineKey: "mk-studio-2", deviceId: "dev-t", name: "Mac Studio (2)" })];
     expect(() => selectAccountMachine(twins, "mac studio")).toThrow(/ambiguous.*mk-studio.*mk-studio-2/i);
+
+    // A second install on the same Mac keeps the host name under its own
+    // shown name. The plain name, typed either way, is the first machine, not
+    // a choice; only two machines that show the same name are ambiguous.
+    const sameHost = [
+      machine({ machineKey: "mk-studio", deviceId: "dev-s", name: "Arul’s Mac Studio" }),
+      machine({ machineKey: "mk-dev-tabs", deviceId: "dev-d", name: "Arul’s Mac Studio", customName: "Arul’s Mac Studio (dev tabs)" }),
+    ];
+    for (const typed of ["Arul’s Mac Studio", "Arul's Mac Studio", "aruls mac studio"]) {
+      expect(selectAccountMachine(sameHost, typed).machineKey).toBe("mk-studio");
+    }
+    expect(selectAccountMachine(sameHost, "Arul's Mac Studio", { exactOnly: true }).machineKey).toBe("mk-studio");
+    expect(selectAccountMachine(sameHost, "arul's mac studio (dev tabs)").machineKey).toBe("mk-dev-tabs");
+    const sameShownName = [...sameHost, machine({ machineKey: "mk-twin", deviceId: "dev-w", name: "Arul's Mac Studio" })];
+    expect(() => selectAccountMachine(sameShownName, "Arul’s Mac Studio")).toThrow(/ambiguous.*mk-studio.*mk-twin/i);
   });
 
   it("never mixes a partial account pairing response with stored credentials", () => {
